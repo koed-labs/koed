@@ -18,6 +18,7 @@ import {
   privacyLabelPolicySchema,
   resolveEffectivePrivacyPolicy,
   type EnvelopeEncryptionProvider,
+  type EncryptedPayloadEnvelope,
   type PrivacyClassificationResponse,
   type PrivacyDetectedSpan,
   type PrivacyLabelPolicy
@@ -781,7 +782,8 @@ export const createPrivacyClassificationRepository = (
   ): Promise<PrivacySanitizedSourceManifest | null> => {
     const access = await client.query<Row>(
       `select source_grant.owner_user_id, source_grant.team_id,
-              source_grant.team_workspace_id
+              source_grant.team_workspace_id, share_grant.frozen_at,
+              share_grant.freeze_source_access_expected
          from team_conversation_source_grants source_grant
          join team_memory_share_grants share_grant
            on share_grant.id=source_grant.share_grant_id
@@ -853,6 +855,66 @@ export const createPrivacyClassificationRepository = (
     const policies = policyResult.rows.map(mapPolicy);
     if (!policies.some((policy) => policy.scope === "deployment")) return null;
     const effectivePolicy = resolveMonotonicPrivacyPolicySet(policies);
+    if (
+      authorized.frozen_at !== null &&
+      authorized.freeze_source_access_expected === true
+    ) {
+      const frozen = await client.query<Row>(
+        `select source_snapshot,source_payload_count
+           from team_memory_grant_freeze_sources
+          where share_grant_id=$1 and team_id=$2 and team_workspace_id=$3
+            and purged_at is null and suppressed_at is null`,
+        [input.shareGrantId, teamId, teamWorkspaceId]
+      );
+      const snapshot = frozen.rows[0]?.source_snapshot as
+        | Record<string, unknown>
+        | undefined;
+      if (!snapshot || snapshot.schemaVersion !== 1) return null;
+      const published = snapshot.published as Record<string, unknown> | null;
+      if (!published) return null;
+      const artifactRow = published.sanitizedArtifactRow as Row | undefined;
+      const chunkRows = published.sanitizedChunkRows as Row[] | undefined;
+      if (!artifactRow || !Array.isArray(chunkRows)) return null;
+      const record = mapSanitizedArtifact(artifactRow);
+      const chunks = chunkRows.map(mapSanitizedChunk);
+      if (
+        record.shareGrantId !== input.shareGrantId ||
+        record.ownerUserId !== ownerUserId ||
+        record.teamId !== teamId ||
+        record.teamWorkspaceId !== teamWorkspaceId ||
+        record.classifierGenerationId !== generation.id ||
+        record.classifierHash !== generation.classifierHash ||
+        record.effectivePolicyHash !== effectivePolicy.effectivePolicyHash ||
+        record.status !== "ready" ||
+        (input.sanitizedArtifactId !== undefined &&
+          record.id !== input.sanitizedArtifactId) ||
+        chunks.length !== record.chunkCount ||
+        chunks.reduce((sum, chunk) => sum + chunk.sanitizedByteLength, 0) !==
+          record.sanitizedByteCount ||
+        frozen.rows[0]?.source_payload_count !== chunks.length + 1
+      )
+        return null;
+      const expectedBinding = bindingHash(
+        key,
+        record.ownerUserId,
+        "privacy-sanitized-artifact",
+        {
+          artifactId: record.id,
+          ownerManifestFingerprint: record.ownerManifestFingerprint,
+          metadataBindingHash: record.metadataBindingHash,
+          chunkBindings: chunks.map((chunk) => chunk.payloadBindingHash)
+        }
+      );
+      if (
+        !record.artifactBindingHash ||
+        !safeHashEqual(expectedBinding, record.artifactBindingHash)
+      ) {
+        throw new PrivacyClassificationMismatchError(
+          "Frozen sanitized source artifact binding mismatch"
+        );
+      }
+      return { record, chunks };
+    }
     const artifactResult = await client.query<Row>(
       `${selectSanitizedArtifact}
        join team_conversation_source_grants source_grant
@@ -945,18 +1007,49 @@ export const createPrivacyClassificationRepository = (
     artifact: PrivacySanitizedSourceArtifactRecord,
     chunk: PrivacySanitizedSourceChunkRecord
   ): Promise<string> => {
-    const plaintext =
-      await decryptTeamEncryptedFieldAfterAuthorizationWithClient(
-        client,
-        provider,
-        {
-          sourceTable: SANITIZED_CHUNK_SOURCE,
-          sourceId: chunk.id,
-          sourceColumn: SANITIZED_CHUNK_COLUMN,
-          teamId: artifact.teamId,
-          teamWorkspaceId: artifact.teamWorkspaceId
-        }
+    const frozen = await client.query<Row>(
+      `select grant_row.frozen_at,grant_row.freeze_source_access_expected,
+              payload.envelope
+         from team_memory_share_grants grant_row
+         left join team_memory_grant_freeze_sources header
+           on header.share_grant_id=grant_row.id and header.purged_at is null
+         left join team_memory_grant_freeze_source_payloads payload
+           on payload.share_grant_id=grant_row.id
+          and payload.team_id=grant_row.team_id
+          and payload.team_workspace_id=grant_row.team_workspace_id
+          and payload.source_table=$2 and payload.source_id=$3
+          and payload.source_column=$4
+        where grant_row.id=$1`,
+      [
+        artifact.shareGrantId,
+        SANITIZED_CHUNK_SOURCE,
+        chunk.id,
+        SANITIZED_CHUNK_COLUMN
+      ]
+    );
+    const frozenRow = frozen.rows[0];
+    const frozenClosureExpected =
+      frozenRow?.frozen_at && frozenRow.freeze_source_access_expected === true;
+    if (frozenClosureExpected && !frozenRow.envelope) {
+      throw new PrivacyClassificationUnavailableError(
+        "Frozen sanitized source ciphertext is unavailable"
       );
+    }
+    const plaintext = frozenClosureExpected
+      ? Buffer.from(
+          await provider.decrypt(frozenRow.envelope as EncryptedPayloadEnvelope)
+        ).toString("utf8")
+      : await decryptTeamEncryptedFieldAfterAuthorizationWithClient(
+          client,
+          provider,
+          {
+            sourceTable: SANITIZED_CHUNK_SOURCE,
+            sourceId: chunk.id,
+            sourceColumn: SANITIZED_CHUNK_COLUMN,
+            teamId: artifact.teamId,
+            teamWorkspaceId: artifact.teamWorkspaceId
+          }
+        );
     if (typeof plaintext !== "string") {
       throw new PrivacyClassificationUnavailableError(
         "Encrypted sanitized source chunk is missing"
@@ -2478,204 +2571,77 @@ export const createPrivacyClassificationRepository = (
     async readLatestSanitizedSourceArtifactByGrant(input) {
       return withTransaction(async (client) => {
         await client.query("set transaction isolation level repeatable read");
-        const access = await client.query<Row>(
-          `select source_grant.owner_user_id, source_grant.team_id,
-                  source_grant.team_workspace_id
-             from team_conversation_source_grants source_grant
-             join team_memory_share_grants share_grant
-               on share_grant.id=source_grant.share_grant_id
-              and share_grant.owner_user_id=source_grant.owner_user_id
-              and share_grant.team_id=source_grant.team_id
-              and share_grant.team_workspace_id=source_grant.team_workspace_id
-              and share_grant.lifecycle='active' and share_grant.revoked_at is null
-              and share_grant.personal_deleted_at is null
-             join source_owner_representation_consents consent
-               on consent.id=share_grant.consent_id
-              and consent.state='active' and consent.revoked_at is null
-              and (consent.expires_at is null or consent.expires_at > now())
-             join teams team on team.id=source_grant.team_id
-              and team.lifecycle='active'
-              and team.entitlement_status in ('active','grace')
-             join team_workspaces workspace
-               on workspace.id=source_grant.team_workspace_id
-              and workspace.team_id=source_grant.team_id
-              and workspace.lifecycle='active' and workspace.archived_at is null
-             join team_memberships membership
-               on membership.team_id=source_grant.team_id
-              and membership.user_id=$2
-              and membership.status='enabled' and membership.disabled_at is null
-             join team_workspace_access_grants workspace_access
-               on workspace_access.team_workspace_id=source_grant.team_workspace_id
-              and workspace_access.team_id=source_grant.team_id
-              and workspace_access.user_id=$2
-              and workspace_access.access in ('read','write')
-              and workspace_access.disabled_at is null
-            where source_grant.share_grant_id=$1
-              and source_grant.lifecycle='active' and source_grant.revoked_at is null
-            limit 1`,
-          [input.shareGrantId, input.actor.userId]
-        );
-        const authorized = access.rows[0];
-        if (!authorized) return null;
-        const ownerUserId = stringValue(authorized.owner_user_id);
-        const teamId = stringValue(authorized.team_id);
-        const teamWorkspaceId = stringValue(authorized.team_workspace_id);
-        const generationResult = await client.query<Row>(
-          "select * from privacy_classifier_generations where status='active' limit 1"
-        );
-        if (!generationResult.rows[0]) return null;
-        const generation = mapClassifierGeneration(generationResult.rows[0]);
-        const policyResult = await client.query<Row>(
-          `select policy.*
-             from privacy_content_policies policy
-             join deployment_identities deployment
-               on deployment.id=policy.deployment_identity_id
-              and deployment.locality='local' and deployment.disabled_at is null
-            where policy.status='active' and policy.effective_at <= now()
-              and (
-                (policy.scope='deployment' and policy.source_owner_user_id is null
-                  and policy.team_id is null and policy.team_workspace_id is null)
-                or (policy.scope='source_owner' and policy.source_owner_user_id=$1
-                  and policy.team_id is null and policy.team_workspace_id is null)
-                or (policy.scope='team' and policy.source_owner_user_id is null
-                  and policy.team_id=$2 and policy.team_workspace_id is null)
-                or (policy.scope='workspace' and policy.source_owner_user_id is null
-                  and policy.team_id=$2 and policy.team_workspace_id=$3)
-              )
-            order by policy.version desc`,
-          [ownerUserId, teamId, teamWorkspaceId]
-        );
-        const policies = policyResult.rows.map(mapPolicy);
-        if (!policies.some((policy) => policy.scope === "deployment")) {
-          return null;
-        }
-        const effectivePolicy = resolveMonotonicPrivacyPolicySet(policies);
-        const result = await client.query<Row>(
-          `${selectSanitizedArtifact}
-           join team_conversation_source_grants source_grant
-             on source_grant.share_grant_id=a.share_grant_id
-            and source_grant.share_grant_id=$1
-            and source_grant.owner_user_id=a.owner_user_id
-            and source_grant.team_id=a.team_id
-            and source_grant.team_workspace_id=a.team_workspace_id
-            and source_grant.lifecycle='active' and source_grant.revoked_at is null
-          where a.classifier_generation_id=$2 and a.classifier_hash=$3
-            and a.effective_policy_hash=$4
-            and a.status='ready' and a.invalidated_at is null
-            and (
-              (source_grant.mode='snapshot'
-                and a.source_artifact_id=source_grant.artifact_id
-                and a.source_frontier_cursor=source_grant.maximum_source_offset
-                and a.source_segment_count=source_grant.maximum_segment_index + 1)
-              or (source_grant.mode='continuous'
-                and a.source_artifact_id=(
-                  select candidate.id
-                    from conversation_source_artifacts candidate
-                   where candidate.owner_user_id=source_grant.owner_user_id
-                     and candidate.session_id=source_grant.session_id
-                     and candidate.logical_source_id=source_grant.logical_source_id
-                     and candidate.source_component_id='main'
-                     and candidate.source_component_role='primary'
-                     and candidate.lifecycle='finalized'
-                   order by candidate.source_created_at desc, candidate.id desc
-                   limit 1
-                ))
-            )
-          order by a.source_frontier_cursor desc, a.ready_at desc, a.id desc
-          limit 1`,
-          [
-            input.shareGrantId,
-            generation.id,
-            generation.classifierHash,
-            effectivePolicy.effectivePolicyHash
-          ]
-        );
-        if (!result.rows[0]) return null;
-        const record = mapSanitizedArtifact(result.rows[0]);
+        const manifest = await readCurrentSanitizedManifestWithClient(client, {
+          actor: input.actor,
+          shareGrantId: input.shareGrantId
+        });
+        if (!manifest) return null;
+        const record = manifest.record;
         if (!record.metadataBindingHash || !record.artifactBindingHash) {
           throw new PrivacyClassificationMismatchError(
             "Sanitized source artifact is missing ready-state bindings"
           );
         }
-        const metadata =
-          await decryptTeamEncryptedFieldAfterAuthorizationWithClient(
-            client,
-            input.provider,
-            {
-              sourceTable: SANITIZED_ARTIFACT_SOURCE,
-              sourceId: record.id,
-              sourceColumn: SANITIZED_METADATA_COLUMN,
-              teamId: record.teamId,
-              teamWorkspaceId: record.teamWorkspaceId
-            }
+        const frozen = await client.query<Row>(
+          `select grant_row.frozen_at,grant_row.freeze_source_access_expected,
+                  payload.envelope
+             from team_memory_share_grants grant_row
+             left join team_memory_grant_freeze_sources header
+               on header.share_grant_id=grant_row.id and header.purged_at is null
+             left join team_memory_grant_freeze_source_payloads payload
+               on payload.share_grant_id=grant_row.id
+              and payload.team_id=grant_row.team_id
+              and payload.team_workspace_id=grant_row.team_workspace_id
+              and payload.source_table=$2 and payload.source_id=$3
+              and payload.source_column=$4
+            where grant_row.id=$1`,
+          [
+            record.shareGrantId,
+            SANITIZED_ARTIFACT_SOURCE,
+            record.id,
+            SANITIZED_METADATA_COLUMN
+          ]
+        );
+        const frozenRow = frozen.rows[0];
+        const frozenClosureExpected =
+          frozenRow?.frozen_at &&
+          frozenRow.freeze_source_access_expected === true;
+        if (frozenClosureExpected && !frozenRow.envelope) {
+          throw new PrivacyClassificationUnavailableError(
+            "Frozen sanitized source metadata ciphertext is unavailable"
           );
+        }
+        const metadata = frozenClosureExpected
+          ? Buffer.from(
+              await input.provider.decrypt(
+                frozenRow.envelope as EncryptedPayloadEnvelope
+              )
+            ).toString("utf8")
+          : await decryptTeamEncryptedFieldAfterAuthorizationWithClient(
+              client,
+              input.provider,
+              {
+                sourceTable: SANITIZED_ARTIFACT_SOURCE,
+                sourceId: record.id,
+                sourceColumn: SANITIZED_METADATA_COLUMN,
+                teamId: record.teamId,
+                teamWorkspaceId: record.teamWorkspaceId
+              }
+            );
         if (metadata === null) {
           throw new PrivacyClassificationUnavailableError(
             "Encrypted sanitized source metadata is missing"
           );
         }
-        const chunkResult = await client.query<Row>(
-          `select id, artifact_id, classification_result_id, chunk_index,
-                source_start_byte, source_end_byte, sanitized_byte_length,
-                owner_chunk_fingerprint, payload_binding_hash
-           from privacy_sanitized_source_chunks
-          where artifact_id=$1 and invalidated_at is null
-          order by chunk_index asc`,
-          [record.id]
-        );
         const chunks: DecryptedPrivacySanitizedSourceArtifact["chunks"] = [];
-        for (const row of chunkResult.rows) {
-          const chunk = mapSanitizedChunk(row);
-          const plaintext =
-            await decryptTeamEncryptedFieldAfterAuthorizationWithClient(
-              client,
-              input.provider,
-              {
-                sourceTable: SANITIZED_CHUNK_SOURCE,
-                sourceId: chunk.id,
-                sourceColumn: SANITIZED_CHUNK_COLUMN,
-                teamId: record.teamId,
-                teamWorkspaceId: record.teamWorkspaceId
-              }
-            );
-          if (typeof plaintext !== "string") {
-            throw new PrivacyClassificationUnavailableError(
-              "Encrypted sanitized source chunk is missing"
-            );
-          }
-          const expectedFingerprint = keyedHash(
-            key,
-            "privacy-sanitized-chunk",
-            record.ownerUserId,
-            canonicalJson({ chunkIndex: chunk.chunkIndex, text: plaintext })
+        for (const chunk of manifest.chunks) {
+          const text = await decryptSanitizedChunkWithClient(
+            client,
+            input.provider,
+            record,
+            chunk
           );
-          const expectedBinding = bindingHash(
-            key,
-            record.ownerUserId,
-            "privacy-sanitized-chunk-binding",
-            {
-              artifactId: record.id,
-              id: chunk.id,
-              chunkIndex: chunk.chunkIndex,
-              classificationResultId: chunk.classificationResultId,
-              sourceStartByte: chunk.sourceStartByte,
-              sourceEndByte: chunk.sourceEndByte,
-              sanitizedByteLength: chunk.sanitizedByteLength,
-              ownerChunkFingerprint: chunk.ownerChunkFingerprint,
-              text: plaintext
-            }
-          );
-          if (
-            Buffer.byteLength(plaintext, "utf8") !==
-              chunk.sanitizedByteLength ||
-            !safeHashEqual(expectedFingerprint, chunk.ownerChunkFingerprint) ||
-            !safeHashEqual(expectedBinding, chunk.payloadBindingHash)
-          ) {
-            throw new PrivacyClassificationMismatchError(
-              "Sanitized source chunk binding mismatch"
-            );
-          }
-          chunks.push({ record: chunk, text: plaintext });
+          chunks.push({ record: chunk, text });
         }
         const expectedMetadataBinding = bindingHash(
           key,
@@ -2696,13 +2662,12 @@ export const createPrivacyClassificationRepository = (
             )
           }
         );
-        const totalBytes = chunks.reduce(
-          (sum, chunk) => sum + chunk.record.sanitizedByteLength,
-          0
-        );
         if (
           chunks.length !== record.chunkCount ||
-          totalBytes !== record.sanitizedByteCount ||
+          chunks.reduce(
+            (sum, chunk) => sum + chunk.record.sanitizedByteLength,
+            0
+          ) !== record.sanitizedByteCount ||
           !safeHashEqual(expectedMetadataBinding, record.metadataBindingHash) ||
           !safeHashEqual(expectedArtifactBinding, record.artifactBindingHash)
         ) {

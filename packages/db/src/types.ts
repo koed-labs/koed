@@ -481,12 +481,14 @@ export interface TeamMembershipActionReviewRecord {
 }
 
 export interface TeamLeaveReviewRecord {
-  team: Pick<TeamRecord, "id" | "name">;
+  team: Pick<TeamRecord, "id" | "name" | "version">;
   membership: Pick<
     TeamMembershipRecord,
     "userId" | "role" | "status" | "version" | "disabledAt"
   >;
   activeOwnerCount: number;
+  ownedWorkspaceProjectCount: number;
+  ownedWorkspaceProjects: Array<{ id: string; version: number }>;
 }
 
 export interface TeamWorkspaceCreationReviewRecord {

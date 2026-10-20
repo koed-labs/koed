@@ -19,6 +19,7 @@ import {
   sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryFreezeActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
   pendingShareSchema,
@@ -56,6 +57,7 @@ import {
   readGrantRepresentationPageQuerySchema,
   readGrantRepresentationQuerySchema,
   revokeShareGrantSchema,
+  freezeShareGrantSchema,
   revokeTeamConversationSourceGrantSchema,
   scopedShareGrantParamsSchema,
   shareGrantParamsSchema,
@@ -1205,6 +1207,58 @@ export const registerSharedMemoryRoutes = (
         )
       );
       return reply.status(result.statusCode).send(result.body);
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/share-grants/:shareGrantId/freeze",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      rejectApiToken(request);
+      const params = shareGrantParamsSchema.parse(request.params);
+      const input = freezeShareGrantSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      if (authenticated.kind !== "device") throw forbidden();
+      const binding = sharedMemoryFreezeActionGrantBinding({
+        referenceId: authenticated.authority.referenceId,
+        mutationId: input.mutationId,
+        teamId: input.teamId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        shareGrantId: params.shareGrantId,
+        expectedGrantVersion: input.expectedGrantVersion
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const grant = await repository.freezeShareGrant(
+              { userId: authenticated.actor.id },
+              {
+                mutationId: input.mutationId,
+                shareGrantId: params.shareGrantId,
+                expectedGrantVersion: input.expectedGrantVersion,
+                authority: authenticated.authority
+              }
+            );
+            if (
+              grant.teamId !== input.teamId ||
+              grant.teamWorkspaceId !== input.teamWorkspaceId
+            )
+              return null;
+            return {
+              statusCode: 200,
+              body: { grant: ownedShareGrantDto(grant) }
+            };
+          }
+        )
+      );
+      return result.body;
     }
   );
 

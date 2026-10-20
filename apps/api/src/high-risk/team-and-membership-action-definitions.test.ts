@@ -54,7 +54,7 @@ const baseRepository = () => ({
     activeOwnerCount: 2
   })),
   getTeamLeaveReview: vi.fn(async () => ({
-    team: { id: ids.team, name: "Koed Team" },
+    team: { id: ids.team, name: "Koed Team", version: 4 },
     membership: {
       userId: ids.actor,
       role: "admin" as const,
@@ -62,7 +62,9 @@ const baseRepository = () => ({
       version: 9,
       disabledAt: null
     },
-    activeOwnerCount: 1
+    activeOwnerCount: 1,
+    ownedWorkspaceProjectCount: 0,
+    ownedWorkspaceProjects: [] as Array<{ id: string; version: number }>
   })),
   getTeamWorkspaceCreationReview: vi.fn(async () => null),
   getTeamWorkspaceLifecycleReview: vi.fn(async () => null),
@@ -212,7 +214,7 @@ describe("Team and membership action definitions", () => {
     const promoted = await admit(promotion, repository);
     repository.getTeamMembershipActionReview.mockResolvedValueOnce({
       managerRole: "owner",
-      team: { id: ids.team, name: "Koed Team" },
+      team: { id: ids.team, name: "Koed Team", version: 4 },
       member: {
         userId: ids.member,
         role: "admin",
@@ -334,11 +336,83 @@ describe("Team and membership action definitions", () => {
         version: 9,
         disabledAt: null
       },
-      activeOwnerCount: 1
+      activeOwnerCount: 1,
+      ownedWorkspaceProjectCount: 0,
+      ownedWorkspaceProjects: []
     } as never);
     await expect(admit(intent, repository)).rejects.toBeInstanceOf(
       ActionApprovalPolicyError
     );
+  });
+
+  it("binds conditional Team leave Step-up to the complete authoritative owned Project set", async () => {
+    const repository = baseRepository();
+    const projectA = randomUUID();
+    const projectB = randomUUID();
+    repository.getTeamLeaveReview.mockResolvedValue({
+      team: { id: ids.team, name: "Koed Team", version: 4 },
+      membership: {
+        userId: ids.actor,
+        role: "admin",
+        status: "enabled",
+        version: 9,
+        disabledAt: null
+      },
+      activeOwnerCount: 1,
+      ownedWorkspaceProjectCount: 2,
+      ownedWorkspaceProjects: [
+        { id: projectA, version: 2 },
+        { id: projectB, version: 5 }
+      ]
+    });
+    const exact = {
+      action: "team.leave",
+      teamId: ids.team,
+      body: {
+        expectedVersion: 9,
+        expectedTeamVersion: 4,
+        expectedOwnedWorkspaceProjects: [
+          { id: projectA, version: 2 },
+          { id: projectB, version: 5 }
+        ]
+      }
+    } as const satisfies HighRiskActionGrantIntent;
+    const admitted = await admit(exact, repository);
+    expect(admitted).toMatchObject({
+      operation: expectedOperation({
+        action: "team.leave",
+        teamId: ids.team,
+        targetId: ids.team,
+        method: "POST",
+        path: `/v1/teams/${ids.team}/leave`,
+        body: exact.body
+      }),
+      policy: { disposition: "step_up" }
+    });
+    await expect(
+      admit(
+        {
+          ...exact,
+          body: {
+            ...exact.body,
+            expectedOwnedWorkspaceProjects: [
+              { id: projectB, version: 5 },
+              { id: projectA, version: 2 }
+            ]
+          }
+        },
+        repository
+      )
+    ).rejects.toBeInstanceOf(ActionApprovalPolicyError);
+    await expect(
+      admit(
+        {
+          ...exact,
+          body: { ...exact.body, expectedTeamVersion: 3 }
+        },
+        repository
+      )
+    ).rejects.toBeInstanceOf(ActionApprovalPolicyError);
   });
 
   it("fails closed for missing invitation and stale membership context", async () => {

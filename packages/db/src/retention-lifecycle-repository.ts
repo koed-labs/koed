@@ -2425,6 +2425,11 @@ const cleanupTeamEncryptedPayloads = async (
           + length(tag)::bigint
           + length(wrapped_dek::text)::bigint as removed_bytes
      ),
+     deleted_frozen_source_payloads as (
+       delete from team_memory_grant_freeze_source_payloads
+        where team_id = $1
+        returning length(envelope::text)::bigint as removed_bytes
+     ),
      deleted_payloads as (
        delete from encrypted_field_payloads
         where team_id = $1
@@ -2438,10 +2443,12 @@ const cleanupTeamEncryptedPayloads = async (
      select
        (
          (select count(*) from deleted_representation_chunks)
+         + (select count(*) from deleted_frozen_source_payloads)
          + (select count(*) from deleted_payloads)
        )::bigint as removed_count,
        (
          coalesce((select sum(removed_bytes) from deleted_representation_chunks), 0)
+         + coalesce((select sum(removed_bytes) from deleted_frozen_source_payloads), 0)
          + coalesce((select sum(removed_bytes) from deleted_payloads), 0)
        )::bigint as removed_bytes`,
     [teamId]
@@ -2469,6 +2476,9 @@ const cleanupTeamWrappedKeys = async (
           from team_memory_representation_chunks
          where team_id = $1
            and wrapped_dek is not null)
+       + (select count(*)
+            from team_memory_grant_freeze_source_payloads
+           where team_id = $1)
      )::bigint as remaining_count`,
     [teamId]
   );
@@ -2558,6 +2568,18 @@ const cleanupTeamSearchIndex = async (
     `delete from team_memory_semantic_items where team_id = $1`,
     [teamId]
   );
+  const frozenAliases = await client.query(
+    `delete from team_memory_grant_freeze_item_aliases where team_id = $1`,
+    [teamId]
+  );
+  const frozenRepresentations = await client.query(
+    `delete from team_memory_grant_freeze_representations where team_id = $1`,
+    [teamId]
+  );
+  const frozenSources = await client.query(
+    `delete from team_memory_grant_freeze_sources where team_id = $1`,
+    [teamId]
+  );
   const representations = await client.query(
     `update team_memory_representations
           set state = 'purged',
@@ -2572,6 +2594,7 @@ const cleanupTeamSearchIndex = async (
   const shareGrants = await client.query(
     `update team_memory_share_grants
           set lifecycle = 'purged',
+              freeze_manifest_hash = null, freeze_representation_count = null,
               tombstoned_at = coalesce(tombstoned_at, $2),
               purge_completed_at = $2,
               updated_at = $2
@@ -2582,6 +2605,9 @@ const cleanupTeamSearchIndex = async (
   return {
     removedRecordCount:
       (semanticItems.rowCount ?? 0) +
+      (frozenAliases.rowCount ?? 0) +
+      (frozenRepresentations.rowCount ?? 0) +
+      (frozenSources.rowCount ?? 0) +
       (representations.rowCount ?? 0) +
       (shareGrants.rowCount ?? 0),
     removedByteCount: 0
@@ -3397,6 +3423,11 @@ const cleanupShareGrantEncryptedPayloads = async (
           + length(tag)::bigint + length(wrapped_dek::text)::bigint
           as removed_bytes
      ),
+     deleted_frozen_source_payloads as (
+       delete from team_memory_grant_freeze_source_payloads
+        where share_grant_id = $1 and team_id = $2 and team_workspace_id = $3
+        returning length(envelope::text)::bigint as removed_bytes
+     ),
      deleted_payloads as (
        delete from encrypted_field_payloads
         where encryption_scope = 'team'
@@ -3421,8 +3452,10 @@ const cleanupShareGrantEncryptedPayloads = async (
      )
      select
        ((select count(*) from deleted_chunks)
+        + (select count(*) from deleted_frozen_source_payloads)
         + (select count(*) from deleted_payloads))::bigint as removed_count,
        (coalesce((select sum(removed_bytes) from deleted_chunks), 0)
+        + coalesce((select sum(removed_bytes) from deleted_frozen_source_payloads), 0)
         + coalesce((select sum(removed_bytes) from deleted_payloads), 0))::bigint
         as removed_bytes`,
     [target.shareGrantId, target.teamId, target.teamWorkspaceId]
@@ -3483,6 +3516,8 @@ const cleanupShareGrantWrappedKeys = async (
     `select (
        (select count(*) from team_memory_representation_chunks
          where share_grant_id = $1)
+       + (select count(*) from team_memory_grant_freeze_source_payloads
+           where share_grant_id = $1)
        +
        (select count(*) from encrypted_field_payloads payload
          where payload.encryption_scope = 'team'
@@ -3594,6 +3629,21 @@ const cleanupShareGrantDatabaseRows = async (
       returning id`,
     [target.shareGrantId, target.teamId, target.teamWorkspaceId, observedAt]
   );
+  const freezeAliases = await client.query(
+    `delete from team_memory_grant_freeze_item_aliases
+      where share_grant_id=$1 and team_id=$2 and team_workspace_id=$3`,
+    [target.shareGrantId, target.teamId, target.teamWorkspaceId]
+  );
+  const freezeRepresentations = await client.query(
+    `delete from team_memory_grant_freeze_representations
+      where share_grant_id=$1 and team_id=$2 and team_workspace_id=$3`,
+    [target.shareGrantId, target.teamId, target.teamWorkspaceId]
+  );
+  const freezeSources = await client.query(
+    `delete from team_memory_grant_freeze_sources
+      where share_grant_id=$1 and team_id=$2 and team_workspace_id=$3`,
+    [target.shareGrantId, target.teamId, target.teamWorkspaceId]
+  );
   const sanitizedArtifacts = await client.query(
     `delete from privacy_sanitized_source_artifacts
       where share_grant_id = $1
@@ -3604,6 +3654,7 @@ const cleanupShareGrantDatabaseRows = async (
   const grants = await client.query(
     `update team_memory_share_grants
         set lifecycle = 'purged',
+            freeze_manifest_hash = null, freeze_representation_count = null,
             active_retention_decision_id = null, active_purge_job_id = null,
             tombstoned_at = coalesce(tombstoned_at, $4),
             purge_completed_at = $4, updated_at = $4
@@ -3617,6 +3668,9 @@ const cleanupShareGrantDatabaseRows = async (
       counts.reduce((total, count) => total + count, 0) +
       (threads.rowCount ?? 0) +
       (representations.rowCount ?? 0) +
+      (freezeAliases.rowCount ?? 0) +
+      (freezeRepresentations.rowCount ?? 0) +
+      (freezeSources.rowCount ?? 0) +
       (sanitizedArtifacts.rowCount ?? 0) +
       (grants.rowCount ?? 0),
     removedByteCount: 0

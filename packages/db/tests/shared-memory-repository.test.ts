@@ -12,6 +12,9 @@ import {
   privacyClassificationExpectedManifestHash,
   privacyClassificationOrderedInputHash,
   privacyClassificationResultManifestHash,
+  highRiskActionGrantCanonicalHash,
+  highRiskActionGrantCommitment,
+  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
   sharedMemoryCeilingAuthorizes,
   crossIdentitySyncDeterministicUuid,
   personalNoteSourceRevisionHash,
@@ -51,6 +54,16 @@ import {
   inventoryApprovalActivity
 } from "../src/approval-activity-remediation.js";
 import { createDbPool } from "../src/connection.js";
+import { createDb } from "../src/connection.js";
+import { createHighRiskActionRepository } from "../src/high-risk-action-repository.js";
+import {
+  createTeamAccessRepository,
+  TeamActionGrantRequiredError
+} from "../src/team-access-repository.js";
+import { createTeamConversationSourceRepository } from "../src/team-conversation-source-repository.js";
+import { createSavepointPool } from "../src/savepoint-pool.js";
+import { createMemorySourceRepository } from "../src/repository.js";
+import { createCuratedMemoryRepository } from "../src/curated-memory-repository.js";
 import { upsertEncryptedFieldPayloadWithClient } from "../src/encrypted-payload-repository.js";
 import {
   createCrossIdentitySyncRepository,
@@ -63,6 +76,7 @@ import {
 import { runDbMigrations } from "../src/migrate.js";
 import {
   createPrivacyClassificationRepository,
+  privacySourceFrontierHash,
   type PrivacyClassificationRepository,
   type PrivacyClassifierGenerationRecord
 } from "../src/privacy-classification-repository.js";
@@ -88,7 +102,10 @@ import {
 } from "../src/shared-memory-repository.js";
 import type { ActorContext } from "../src/types.js";
 
-const databaseUrl = process.env.SHARED_MEMORY_TEST_DATABASE_URL;
+const databaseUrl =
+  process.env.SHARED_MEMORY_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
+const needsDisposableDatabase =
+  !process.env.SHARED_MEMORY_TEST_DATABASE_URL && Boolean(databaseUrl);
 const describeDb = databaseUrl ? describe : describe.skip;
 const allRepresentations: SharedMemoryRepresentation[] = [
   "memory_events",
@@ -927,6 +944,8 @@ describe("Shared Memory cumulative fidelity materialization", () => {
 
 describeDb("Shared Memory repository", () => {
   let pool: pg.Pool;
+  let disposableAdminPool: pg.Pool | null = null;
+  let disposableDatabaseName: string | null = null;
   let provider: EnvelopeEncryptionProvider;
   let ownerProvider: EnvelopeEncryptionProvider;
   let privacyProvider: EnvelopeEncryptionProvider;
@@ -2099,6 +2118,85 @@ describeDb("Shared Memory repository", () => {
     };
   };
 
+  const prepareApprovedTeamAction = async (input: {
+    actorUserId: string;
+    actorSessionId: string;
+    teamId: string;
+    action: "team.member.disable" | "team.workspace.access_update";
+    targetId: string;
+    request: { method: string; path: string; body: Record<string, unknown> };
+  }) => {
+    const credential = await pool.query<{
+      id: string;
+      upstream_backend_id: string;
+    }>(
+      `insert into device_credentials (
+         owner_user_id,credential_key_id,upstream_backend_id,
+         device_instance_id,verifier_kind,verifier_hash,operation_families)
+       values ($1,$2,$3,$4,'secret_hash',$5,array['action_grant'])
+       returning id,upstream_backend_id`,
+      [
+        input.actorUserId,
+        `team-parent-${randomUUID()}`,
+        `backend-${randomUUID()}`,
+        `device-${randomUUID()}`,
+        hash(`team-parent-secret:${randomUUID()}`)
+      ]
+    );
+    const actionGrant = createHighRiskActionRepository(createDb(pool), {
+      pool,
+      envelopeEncryptionProvider: provider,
+      teamEnvelopeEncryptionProvider: provider
+    });
+    const operation = {
+      ownerUserId: input.actorUserId,
+      deviceCredentialId: credential.rows[0]!.id,
+      upstreamBackendId: credential.rows[0]!.upstream_backend_id,
+      teamId: input.teamId,
+      operationFamily: "admin",
+      action: input.action,
+      targetId: input.targetId,
+      scopeHash: highRiskActionGrantCanonicalHash(
+        HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminScope,
+        {
+          operationFamily: "admin",
+          action: input.action,
+          teamId: input.teamId,
+          targetId: input.targetId
+        }
+      ),
+      requestHash: highRiskActionGrantCanonicalHash(
+        HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+        input.request
+      )
+    };
+    const secret = `hrg_${randomUUID().replaceAll("-", "")}`;
+    const issued = await actionGrant.createActionGrant({
+      ...operation,
+      clientRequestId: randomUUID(),
+      grantCommitment: highRiskActionGrantCommitment(secret),
+      credentialOperationFamily: "action_grant",
+      approvalTier: "step_up",
+      review: {
+        version: 1,
+        title: "Review Team access change?",
+        description: "Review the exact Team target and effect.",
+        consequence: "The target loses current access.",
+        confirmLabel: "Disable access",
+        details: []
+      }
+    });
+    expect(issued?.state).toBe("pending");
+    await actionGrant.decideBrowserActivation({
+      selector: issued!.selector,
+      ownerUserId: input.actorUserId,
+      userSessionId: input.actorSessionId,
+      freshlyAuthenticatedAt: new Date(),
+      decision: "approve"
+    });
+    return { actionGrant, operation, request: input.request, secret };
+  };
+
   const ensurePendingShareCompanion = async ({
     actor: owner,
     grant
@@ -2235,7 +2333,18 @@ describeDb("Shared Memory repository", () => {
   };
 
   beforeAll(async () => {
-    pool = createDbPool({ connectionString: databaseUrl });
+    let testUrl = databaseUrl!;
+    if (needsDisposableDatabase) {
+      disposableDatabaseName = `hq715_freeze_${randomUUID().replaceAll("-", "")}`;
+      disposableAdminPool = createDbPool({ connectionString: databaseUrl });
+      await disposableAdminPool.query(
+        `create database "${disposableDatabaseName}"`
+      );
+      const url = new URL(databaseUrl!);
+      url.pathname = `/${disposableDatabaseName}`;
+      testUrl = url.toString();
+    }
+    pool = createDbPool({ connectionString: testUrl });
     await runDbMigrations(pool);
     const deployment = await pool.query<{ id: string }>(
       `insert into deployment_identities (
@@ -2316,6 +2425,12 @@ describeDb("Shared Memory repository", () => {
 
   afterAll(async () => {
     await pool.end();
+    if (disposableAdminPool && disposableDatabaseName) {
+      await disposableAdminPool.query(
+        `drop database "${disposableDatabaseName}" with (force)`
+      );
+      await disposableAdminPool.end();
+    }
   });
 
   it("materializes and reads every cumulative layer authorized by a memory-events ceiling", async () => {
@@ -2371,6 +2486,2156 @@ describeDb("Shared Memory repository", () => {
       })
     ).resolves.toBeNull();
   });
+
+  it("freezes every published representation into a readable immutable closure", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      ownerAllowed: allRepresentations,
+      label: "freeze-all-representations"
+    });
+    const sourceRepresentationIds = new Map<
+      SharedMemoryRepresentation,
+      string
+    >();
+    for (const representation of allRepresentations) {
+      const preview = await createPersistedPreview(
+        fixture,
+        grant,
+        representation,
+        grant.currentRevision,
+        "freeze-all-representations",
+        allRepresentations
+      );
+      const published = await repository.materializeGrantRepresentation(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          shareGrantId: grant.shareGrantId,
+          consentId: grant.consentId,
+          expectedGrantVersion: grant.grantVersion,
+          preview
+        }
+      );
+      sourceRepresentationIds.set(representation, published.id);
+    }
+
+    const malformed = await pool.connect();
+    try {
+      await malformed.query("begin");
+      await expect(
+        malformed.query(
+          `insert into team_memory_grant_freeze_sources (
+           share_grant_id,team_id,team_workspace_id,source_snapshot,
+           source_payload_count,source_manifest_hash)
+         values ($1,$2,$3,'{}'::jsonb,0,$4)`,
+          [
+            grant.shareGrantId,
+            fixture.teamId,
+            fixture.teamWorkspaceId,
+            "a".repeat(64)
+          ]
+        )
+      ).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await malformed.query("rollback");
+      malformed.release();
+    }
+    const missingEnvelopeKeys = await pool.connect();
+    try {
+      await missingEnvelopeKeys.query("begin");
+      await missingEnvelopeKeys.query(
+        `insert into team_memory_grant_freeze_sources (
+           share_grant_id,team_id,team_workspace_id,source_snapshot,
+           source_payload_count,source_manifest_hash)
+         values ($1,$2,$3,$4::jsonb,1,$5)`,
+        [
+          grant.shareGrantId,
+          fixture.teamId,
+          fixture.teamWorkspaceId,
+          JSON.stringify({ schemaVersion: 1, capability: {}, published: null }),
+          "a".repeat(64)
+        ]
+      );
+      await expect(
+        missingEnvelopeKeys.query(
+          `insert into team_memory_grant_freeze_source_payloads (
+           share_grant_id,team_id,team_workspace_id,source_table,
+           source_id,source_column,plaintext_content_type,envelope)
+         values ($1,$2,$3,'privacy_sanitized_source_chunks',$4,
+           'encrypted_text','application/json',$5::jsonb)`,
+          [
+            grant.shareGrantId,
+            fixture.teamId,
+            fixture.teamWorkspaceId,
+            randomUUID(),
+            JSON.stringify({ version: 1 })
+          ]
+        )
+      ).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await missingEnvelopeKeys.query("rollback");
+      missingEnvelopeKeys.release();
+    }
+    const freezeMutationId = randomUUID();
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: freezeMutationId,
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
+    await expect(
+      repository.freezeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: freezeMutationId,
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion,
+        authority: authority(fixture)
+      })
+    ).resolves.toMatchObject({
+      id: grant.shareGrantId,
+      grantVersion: grant.grantVersion + 1
+    });
+    await expect(
+      repository.freezeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion,
+        authority: authority(fixture)
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+
+    const closure = await pool.query<{
+      frozen_at: Date | null;
+      freeze_representation_count: number | null;
+      associations: string;
+    }>(
+      `select grant_row.frozen_at,grant_row.freeze_representation_count,
+              (select count(*)::text from team_memory_grant_freeze_representations
+                where share_grant_id=grant_row.id) as associations
+         from team_memory_share_grants grant_row where grant_row.id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(closure.rows[0]?.frozen_at).not.toBeNull();
+    expect(closure.rows[0]?.freeze_representation_count).toBe(
+      allRepresentations.length
+    );
+    expect(Number(closure.rows[0]?.associations)).toBe(
+      allRepresentations.length
+    );
+
+    const frozenRows = await pool.query<{
+      representation: SharedMemoryRepresentation;
+      frozen_representation_id: string;
+    }>(
+      `select representation,frozen_representation_id
+         from team_memory_grant_freeze_representations
+        where share_grant_id=$1 order by representation`,
+      [grant.shareGrantId]
+    );
+    for (const frozen of frozenRows.rows) {
+      const read = await repository.readGrantRepresentation(
+        actor(fixture.readerUserId),
+        {
+          shareGrantId: grant.shareGrantId,
+          representation: frozen.representation
+        }
+      );
+      expect(read?.representation.id).toBe(frozen.frozen_representation_id);
+      await expect(
+        pool.query(
+          `update team_memory_representation_chunks
+              set ciphertext=ciphertext || 'tamper'
+            where representation_id=$1 and chunk_index=0`,
+          [frozen.frozen_representation_id]
+        )
+      ).rejects.toMatchObject({ code: "55000" });
+      const sourceRepresentationId = sourceRepresentationIds.get(
+        frozen.representation
+      );
+      expect(sourceRepresentationId).toBeTruthy();
+      await expect(
+        pool.query(
+          `update team_memory_representation_chunks
+              set aad=jsonb_set(aad, '{chunkFormatVersion}', '"2"'::jsonb)
+            where representation_id=$1 and chunk_index=0`,
+          [sourceRepresentationId]
+        )
+      ).rejects.toMatchObject({ code: "55000" });
+      const frozenItem = await pool.query<{
+        id: string;
+        content_hash: string;
+        source_item_index: number;
+        attempt_count: number;
+      }>(
+        `select id,content_hash,source_item_index,attempt_count
+           from team_memory_semantic_items
+          where representation_id=$1 order by source_item_index limit 1`,
+        [frozen.frozen_representation_id]
+      );
+      if (frozenItem.rows[0]) {
+        const item = frozenItem.rows[0];
+        const derived = await pool.query<{
+          content_hash: string;
+          source_item_index: number;
+          attempt_count: number;
+        }>(
+          `update team_memory_semantic_items
+              set attempt_count=attempt_count+1
+            where id=$1
+          returning content_hash,source_item_index,attempt_count`,
+          [item.id]
+        );
+        expect(derived.rows[0]).toEqual({
+          content_hash: item.content_hash,
+          source_item_index: item.source_item_index,
+          attempt_count: item.attempt_count + 1
+        });
+        await expect(
+          pool.query(
+            `update team_memory_semantic_items
+                set content_hash=$2
+              where id=$1`,
+            [item.id, hash(`frozen-item-tamper:${item.id}`)]
+          )
+        ).rejects.toMatchObject({ code: "55000" });
+      }
+    }
+  });
+
+  it("invalidates the frozen copy when its exact sanitized preview is privacy-invalidated", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "frozen-preview-privacy"
+    });
+    await materialize(fixture, grant);
+    const published = await pool.query<{ sanitized_source_preview_id: string }>(
+      `select sanitized_source_preview_id
+         from team_memory_representations
+        where share_grant_id=$1 and representation='memory_events'
+          and frozen_snapshot=false`,
+      [grant.shareGrantId]
+    );
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
+    expect(
+      await repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: "memory_events"
+      })
+    ).not.toBeNull();
+    await expect(
+      repository.invalidateSemanticPreview(actor(fixture.ownerUserId), {
+        semanticPreviewId: published.rows[0]!.sanitized_source_preview_id,
+        reasonCode: "privacy_material_invalidated"
+      })
+    ).resolves.toBe(true);
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.toBeNull();
+    const copies = await pool.query<{
+      state: string;
+      frozen_snapshot: boolean;
+    }>(
+      `select state,frozen_snapshot from team_memory_representations
+        where share_grant_id=$1 and representation='memory_events'`,
+      [grant.shareGrantId]
+    );
+    expect(copies.rows).toHaveLength(2);
+    expect(copies.rows.every((row) => row.state === "invalidated")).toBe(true);
+  });
+
+  it("keeps current consent expiry authoritative for a frozen representation", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "frozen-consent-expiry"
+    });
+    await materialize(fixture, grant);
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
+    const read = () =>
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: "memory_events"
+      });
+    expect(await read()).not.toBeNull();
+    await pool.query(
+      `update source_owner_representation_consents
+          set expires_at=now()-interval '1 second'
+        where id=$1`,
+      [grant.consentId]
+    );
+    await expect(read()).resolves.toBeNull();
+  });
+
+  it("requires fresh exact owner consent to re-share a frozen destination", async () => {
+    const fixture = await createWorkspaceFixture();
+    const original = await createGrant(fixture, { label: "fresh-re-share" });
+    await materialize(fixture, original);
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: original.shareGrantId,
+      expectedGrantVersion: original.grantVersion,
+      authority: authority(fixture)
+    });
+    await expect(
+      repository.createShareGrant(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: original.consentId,
+        authority: authority(fixture)
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    const fresh = await createConsent(fixture, original, {
+      representation: "memory_events",
+      mode: "continuous",
+      label: "fresh-re-share-consent"
+    });
+    const replacement = await repository.createShareGrant(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: fresh.consentId,
+        authority: authority(fixture)
+      }
+    );
+    expect(replacement.id).not.toBe(original.shareGrantId);
+    expect(replacement.consentId).toBe(fresh.consentId);
+    const history = await pool.query<{ id: string; frozen_at: Date | null }>(
+      `select id,frozen_at from team_memory_share_grants
+        where logical_memory_id=$1 and team_workspace_id=$2 order by created_at,id`,
+      [original.logicalMemoryId, fixture.teamWorkspaceId]
+    );
+    expect(history.rows).toHaveLength(2);
+    expect(
+      history.rows.find((row) => row.id === original.shareGrantId)?.frozen_at
+    ).not.toBeNull();
+    expect(
+      history.rows.find((row) => row.id === replacement.id)?.frozen_at
+    ).toBeNull();
+  });
+
+  it("pins the last published sanitized source and suppresses privacy-invalidated copies", async () => {
+    const fixture = await createWorkspaceFixture({
+      retentionSeconds: 0,
+      backupRetentionSeconds: 0
+    });
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "freeze-source-publication"
+    });
+    const sourceRepository = createMemorySourceRepository(pool);
+    const sourceAccess = createTeamConversationSourceRepository(pool);
+    const logicalSourceId = randomUUID();
+    const sourceGenerationId = randomUUID();
+    const captured = await pool.query<{ external_session_id: string }>(
+      `update sessions set external_session_id=$2 where id=$1
+        returning external_session_id`,
+      [grant.localSessionId, `freeze-source-${randomUUID()}`]
+    );
+    const source = await sourceRepository.ensureConversationSourceArtifact(
+      actor(fixture.ownerUserId),
+      {
+        sessionId: grant.localSessionId,
+        logicalSourceId,
+        sourceGenerationId,
+        replicaRole: "origin_local",
+        sourceKind: "codex",
+        sourceRuntime: "codex",
+        externalSessionId: captured.rows[0]!.external_session_id,
+        sourceFingerprint: hash(`freeze-source:${sourceGenerationId}`),
+        artifactFormat: "codex_rollout_jsonl",
+        artifactFormatVersion: 1,
+        sourceAdapterVersion: "codex-transcript-v1",
+        journalStartOffset: 0,
+        journalStartLine: 0,
+        liveStartOffset: 0,
+        liveStartLine: 0,
+        currentSourceLength: 24,
+        sourceCreatedAt: new Date("2026-10-19T00:00:00.000Z").toISOString(),
+        storageProvider: "filesystem",
+        storagePrefix: `freeze-source-${randomUUID()}`,
+        originDeploymentId: `deployment-${randomUUID()}`,
+        originDeviceId: `device-${randomUUID()}`,
+        originKeyId: `key-${randomUUID()}`,
+        originPublicKey: "a".repeat(43),
+        redactedSourceLabel: "Frozen Codex source"
+      }
+    );
+    const headDigest = hash(`source-head:${source.id}`);
+    const segment = await pool.query<{ id: string }>(
+      `insert into conversation_source_segments (
+         artifact_id,segment_index,source_start_offset,source_end_offset,
+         source_start_line,source_end_line,plaintext_digest,plaintext_size,
+         stored_size,storage_key,storage_provider,signed_manifest,
+         origin_signature,manifest_digest,previous_content_digest,content_digest
+       ) values ($1,0,0,24,0,1,$2,24,24,$3,'filesystem',
+         '{"version":1}'::jsonb,$4,$5,null,$6) returning id`,
+      [
+        source.id,
+        hash("source-plaintext"),
+        `${source.storagePrefix}/0.jsonl`,
+        "a".repeat(86),
+        hash("source-manifest"),
+        headDigest
+      ]
+    );
+    const sourceClosureHash = hash(`source-closure:${source.id}`);
+    await pool.query(
+      `update conversation_source_artifacts
+          set current_journal_sequence=0,provider_cursor_offset=24,
+              provider_cursor_line=1,current_source_length=24,
+              lifecycle='finalized',closure_hash=$2,
+              closure_manifest=$3::jsonb,closure_signature=$4,
+              finalized_at=now(),source_modified_at=now()
+        where id=$1`,
+      [
+        source.id,
+        sourceClosureHash,
+        JSON.stringify({
+          version: 1,
+          segmentCount: 1,
+          chainHeadDigest: headDigest
+        }),
+        "a".repeat(86)
+      ]
+    );
+    const auxiliary = await sourceRepository.ensureConversationSourceArtifact(
+      actor(fixture.ownerUserId),
+      {
+        sessionId: grant.localSessionId,
+        logicalSourceId,
+        sourceGenerationId,
+        sourceComponentId: "agent.worker-1",
+        sourceComponentRole: "auxiliary",
+        parentSourceComponentId: "main",
+        replicaRole: "origin_local",
+        sourceKind: "codex",
+        sourceRuntime: "codex",
+        externalSessionId: captured.rows[0]!.external_session_id,
+        sourceFingerprint: hash(`auxiliary:${sourceGenerationId}`),
+        artifactFormat: "codex_rollout_jsonl",
+        artifactFormatVersion: 1,
+        sourceAdapterVersion: "codex-transcript-v1",
+        journalStartOffset: 0,
+        journalStartLine: 0,
+        liveStartOffset: 0,
+        liveStartLine: 0,
+        currentSourceLength: 12,
+        sourceCreatedAt: new Date("2026-10-19T00:00:00.000Z").toISOString(),
+        storageProvider: "filesystem",
+        storagePrefix: `auxiliary-source-${randomUUID()}`,
+        originDeploymentId: source.originDeploymentId,
+        originDeviceId: source.originDeviceId,
+        originKeyId: source.originKeyId,
+        originPublicKey: source.originPublicKey,
+        redactedSourceLabel: "Frozen auxiliary source"
+      }
+    );
+    const auxiliaryHead = hash(`auxiliary-head:${auxiliary.id}`);
+    const auxiliarySegment = await pool.query<{ id: string }>(
+      `insert into conversation_source_segments (
+         artifact_id,segment_index,source_start_offset,source_end_offset,
+         source_start_line,source_end_line,plaintext_digest,plaintext_size,
+         stored_size,storage_key,storage_provider,signed_manifest,
+         origin_signature,manifest_digest,previous_content_digest,content_digest
+       ) values ($1,0,0,12,0,1,$2,12,12,$3,'filesystem',
+         '{"version":1}'::jsonb,$4,$5,null,$6) returning id`,
+      [
+        auxiliary.id,
+        hash("auxiliary-plaintext"),
+        `${auxiliary.storagePrefix}/0.jsonl`,
+        "a".repeat(86),
+        hash("auxiliary-manifest"),
+        auxiliaryHead
+      ]
+    );
+    const auxiliaryClosureHash = hash(`auxiliary-closure:${auxiliary.id}`);
+    await pool.query(
+      `update conversation_source_artifacts
+          set current_journal_sequence=0,provider_cursor_offset=12,
+              provider_cursor_line=1,current_source_length=12,
+              lifecycle='finalized',closure_hash=$2,
+              closure_manifest=$3::jsonb,closure_signature=$4,
+              finalized_at=now(),source_modified_at=now()
+        where id=$1`,
+      [
+        auxiliary.id,
+        auxiliaryClosureHash,
+        JSON.stringify({
+          version: 1,
+          segmentCount: 1,
+          chainHeadDigest: auxiliaryHead
+        }),
+        "a".repeat(86)
+      ]
+    );
+    await pool.query(
+      `update conversation_source_artifacts
+          set source_set_closure_hash=$2,
+              source_set_closure_manifest=$3::jsonb,
+              source_set_closure_signature=$4,source_set_finalized_at=now()
+        where id=$1`,
+      [
+        source.id,
+        hash(`source-set:${source.id}`),
+        JSON.stringify({
+          version: 1,
+          components: [
+            {
+              sourceComponentId: "main",
+              artifactClosureDigest: sourceClosureHash
+            },
+            {
+              sourceComponentId: "agent.worker-1",
+              artifactClosureDigest: auxiliaryClosureHash
+            }
+          ]
+        }),
+        "a".repeat(86)
+      ]
+    );
+    await pool.query(
+      `insert into team_conversation_source_grants (
+         share_grant_id,artifact_id,logical_source_id,source_generation_id,
+         owner_user_id,session_id,team_id,team_workspace_id,mode,
+         mutation_id,granted_by_user_id,creator_authority
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,'continuous',$9,$5,'test')`,
+      [
+        grant.shareGrantId,
+        source.id,
+        logicalSourceId,
+        sourceGenerationId,
+        fixture.ownerUserId,
+        grant.localSessionId,
+        fixture.teamId,
+        fixture.teamWorkspaceId,
+        randomUUID()
+      ]
+    );
+    const deployment = await pool.query<{ deployment_identity_id: string }>(
+      `select deployment_identity_id from privacy_content_policies
+        where scope='deployment' and status='active' limit 1`
+    );
+    const policy = await privacyRepository.resolveEffectiveContentPolicy({
+      deploymentIdentityId: deployment.rows[0]!.deployment_identity_id,
+      sourceOwnerUserId: fixture.ownerUserId,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId
+    });
+    const classification =
+      await privacyRepository.getOrCreateStructuralClassificationBinding({
+        actor: actor(fixture.ownerUserId),
+        provider: privacyProvider,
+        classifierHash: privacyClassifier.classifierHash
+      });
+    const sanitized = await privacyRepository.storeSanitizedSourceArtifact({
+      actor: actor(fixture.ownerUserId),
+      provider: privacyProvider,
+      shareGrantId: grant.shareGrantId,
+      sourceArtifactId: source.id,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      classifierHash: privacyClassifier.classifierHash,
+      effectivePolicyHash: policy.effectivePolicyHash,
+      sourceFrontierHash: privacySourceFrontierHash({
+        sourceArtifactId: source.id,
+        sourceFrontierCursor: 24,
+        sourceSegmentCount: 1,
+        headContentDigest: headDigest
+      }),
+      sourceFrontierCursor: 24,
+      sourceSegmentCount: 1,
+      sourceClosureHash,
+      format: "codex_rollout_jsonl",
+      formatVersion: 1,
+      metadata: { redactedTitle: "Published source" },
+      chunks: [
+        {
+          classificationResultId: classification.id,
+          sourceStartByte: 0,
+          sourceEndByte: 24,
+          text: "safe published source"
+        }
+      ]
+    });
+    const unpublished = await sourceRepository.ensureConversationSourceArtifact(
+      actor(fixture.ownerUserId),
+      {
+        sessionId: grant.localSessionId,
+        logicalSourceId,
+        sourceGenerationId: randomUUID(),
+        replicaRole: "origin_local",
+        sourceKind: "codex",
+        sourceRuntime: "codex",
+        externalSessionId: captured.rows[0]!.external_session_id,
+        sourceFingerprint: hash(`unpublished:${source.id}`),
+        artifactFormat: "codex_rollout_jsonl",
+        artifactFormatVersion: 1,
+        sourceAdapterVersion: "codex-transcript-v1",
+        journalStartOffset: 0,
+        journalStartLine: 0,
+        liveStartOffset: 0,
+        liveStartLine: 0,
+        currentSourceLength: 0,
+        sourceCreatedAt: new Date("2026-10-19T00:01:00.000Z").toISOString(),
+        storageProvider: "filesystem",
+        storagePrefix: `unpublished-source-${randomUUID()}`,
+        originDeploymentId: source.originDeploymentId,
+        originDeviceId: source.originDeviceId,
+        originKeyId: source.originKeyId,
+        originPublicKey: source.originPublicKey,
+        redactedSourceLabel: "Unpublished newer source"
+      }
+    );
+    await pool.query(
+      `update conversation_source_artifacts
+          set lifecycle='finalized',closure_hash=$2,
+              closure_manifest=$3::jsonb,closure_signature=$4,
+              finalized_at=now(),source_modified_at=now()
+        where id=$1`,
+      [
+        unpublished.id,
+        hash(`unpublished-closure:${unpublished.id}`),
+        JSON.stringify({ version: 1, segmentCount: 0, chainHeadDigest: null }),
+        "a".repeat(86)
+      ]
+    );
+    const later = await sourceRepository.ensureConversationSourceArtifact(
+      actor(fixture.ownerUserId),
+      {
+        sessionId: grant.localSessionId,
+        logicalSourceId,
+        sourceGenerationId: randomUUID(),
+        replicaRole: "origin_local",
+        sourceKind: "codex",
+        sourceRuntime: "codex",
+        externalSessionId: captured.rows[0]!.external_session_id,
+        sourceFingerprint: hash(`later:${source.id}`),
+        artifactFormat: "codex_rollout_jsonl",
+        artifactFormatVersion: 1,
+        sourceAdapterVersion: "codex-transcript-v1",
+        journalStartOffset: 0,
+        journalStartLine: 0,
+        liveStartOffset: 0,
+        liveStartLine: 0,
+        currentSourceLength: 8,
+        sourceCreatedAt: new Date("2026-10-19T00:02:00.000Z").toISOString(),
+        storageProvider: "filesystem",
+        storagePrefix: `later-${randomUUID()}`,
+        originDeploymentId: source.originDeploymentId,
+        originDeviceId: source.originDeviceId,
+        originKeyId: source.originKeyId,
+        originPublicKey: source.originPublicKey,
+        redactedSourceLabel: "Later source bytes"
+      }
+    );
+    // A legacy SQL writer publishes a newer source generation while holding
+    // the same source fence. Freeze must linearize after its commit, but must
+    // still choose the last actually ready sanitized closure above.
+    const publicationWriter = await pool.connect();
+    const staleSourceWriter = await pool.connect();
+    try {
+      await staleSourceWriter.query("begin isolation level repeatable read");
+      await staleSourceWriter.query(
+        `select publication_version from conversation_source_publication_fences
+          where owner_user_id=$1 and session_id=$2 and logical_source_id=$3`,
+        [fixture.ownerUserId, grant.localSessionId, logicalSourceId]
+      );
+      await publicationWriter.query("begin isolation level read committed");
+      await publicationWriter.query(
+        `update conversation_source_artifacts
+            set source_set_closure_hash=$2,
+                source_set_closure_manifest=$3::jsonb,
+                source_set_closure_signature=$4,source_set_finalized_at=now()
+          where id=$1`,
+        [
+          unpublished.id,
+          hash(`new-source-set:${unpublished.id}`),
+          JSON.stringify({
+            version: 1,
+            components: [
+              {
+                sourceComponentId: "main",
+                artifactClosureDigest: hash(
+                  `unpublished-closure:${unpublished.id}`
+                )
+              }
+            ]
+          }),
+          "a".repeat(86)
+        ]
+      );
+      const freezing = repository.freezeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion,
+        authority: authority(fixture)
+      });
+      await publicationWriter.query("commit");
+      await freezing;
+      await expect(
+        staleSourceWriter.query(
+          `update conversation_source_artifacts set updated_at=now() where id=$1`,
+          [unpublished.id]
+        )
+      ).rejects.toMatchObject({ code: "40001" });
+      await staleSourceWriter.query("rollback");
+    } finally {
+      await publicationWriter.query("rollback").catch(() => undefined);
+      await staleSourceWriter.query("rollback").catch(() => undefined);
+      publicationWriter.release();
+      staleSourceWriter.release();
+    }
+    await expect(
+      pool.query(
+        `update privacy_sanitized_source_artifacts set status='ready'
+        where id=$1`,
+        [sanitized.id]
+      )
+    ).rejects.toMatchObject({ code: "55000" });
+    // Another grant for this same logical source may still publish N+1. The
+    // first frozen grant remains pinned to N; the second pins N+1 when frozen.
+    const freshConsent = await createConsent(fixture, grant, {
+      representation: "memory_events",
+      mode: "continuous",
+      label: "new-grant-later-source"
+    });
+    const nextGrant = await repository.createShareGrant(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: freshConsent.consentId,
+        authority: authority(fixture)
+      }
+    );
+    await pool.query(
+      `insert into team_conversation_source_grants (
+         share_grant_id,artifact_id,logical_source_id,source_generation_id,
+         owner_user_id,session_id,team_id,team_workspace_id,mode,
+         mutation_id,granted_by_user_id,creator_authority
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,'continuous',$9,$5,'test')`,
+      [
+        nextGrant.id,
+        unpublished.id,
+        logicalSourceId,
+        unpublished.sourceGenerationId,
+        fixture.ownerUserId,
+        grant.localSessionId,
+        fixture.teamId,
+        fixture.teamWorkspaceId,
+        randomUUID()
+      ]
+    );
+    const laterSanitized = await privacyRepository.storeSanitizedSourceArtifact(
+      {
+        actor: actor(fixture.ownerUserId),
+        provider: privacyProvider,
+        shareGrantId: nextGrant.id,
+        sourceArtifactId: unpublished.id,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        classifierHash: privacyClassifier.classifierHash,
+        effectivePolicyHash: policy.effectivePolicyHash,
+        sourceFrontierHash: privacySourceFrontierHash({
+          sourceArtifactId: unpublished.id,
+          sourceFrontierCursor: 0,
+          sourceSegmentCount: 0,
+          headContentDigest: null
+        }),
+        sourceFrontierCursor: 0,
+        sourceSegmentCount: 0,
+        sourceClosureHash: hash(`unpublished-closure:${unpublished.id}`),
+        format: "codex_rollout_jsonl",
+        formatVersion: 1,
+        metadata: { redactedTitle: "Newer authorized publication" },
+        chunks: []
+      }
+    );
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: nextGrant.id,
+      expectedGrantVersion: nextGrant.grantVersion,
+      authority: authority(fixture)
+    });
+    const nextPinned =
+      await privacyRepository.readLatestSanitizedSourceManifestByGrant({
+        actor: actor(fixture.readerUserId),
+        shareGrantId: nextGrant.id
+      });
+    expect(nextPinned?.record.id).toBe(laterSanitized.id);
+    const nextClosure = await pool.query<{ source_id: string }>(
+      `select source_snapshot #>> '{published,sourceArtifactRow,id}' as source_id
+         from team_memory_grant_freeze_sources where share_grant_id=$1`,
+      [nextGrant.id]
+    );
+    expect(nextClosure.rows[0]?.source_id).toBe(unpublished.id);
+    const laterSegment = await pool.query<{ id: string }>(
+      `insert into conversation_source_segments (
+         artifact_id,segment_index,source_start_offset,source_end_offset,
+         source_start_line,source_end_line,plaintext_digest,plaintext_size,
+         stored_size,storage_key,storage_provider,signed_manifest,
+         origin_signature,manifest_digest,previous_content_digest,content_digest
+       ) values ($1,0,0,8,0,1,$2,8,8,$3,'filesystem',
+         '{"version":1}'::jsonb,$4,$5,null,$6) returning id`,
+      [
+        later.id,
+        hash("later plaintext"),
+        `${later.storagePrefix}/0.jsonl`,
+        "a".repeat(86),
+        hash("later manifest"),
+        hash("later content")
+      ]
+    );
+    await pool.query(
+      `update conversation_source_artifacts
+          set current_journal_sequence=0,provider_cursor_offset=8,
+              provider_cursor_line=1,current_source_length=8,
+              lifecycle='finalized',closure_hash=$2,
+              closure_manifest=$3::jsonb,closure_signature=$4,
+              finalized_at=now(),source_modified_at=now()
+        where id=$1`,
+      [
+        later.id,
+        hash("later closure"),
+        JSON.stringify({
+          version: 1,
+          segmentCount: 1,
+          chainHeadDigest: hash("later content")
+        }),
+        "a".repeat(86)
+      ]
+    );
+    const pinned = await sourceAccess.getTeamConversationSourceManifest(
+      actor(fixture.readerUserId),
+      { shareGrantId: grant.shareGrantId, afterSegmentIndex: -1, limit: 10 }
+    );
+    expect(pinned?.artifact.id).toBe(source.id);
+    expect(pinned?.segments.map((item) => item.id)).toEqual([
+      segment.rows[0]!.id
+    ]);
+    expect(pinned?.segments.map((item) => item.id)).not.toContain(
+      laterSegment.rows[0]!.id
+    );
+    const pinnedAuxiliary =
+      await sourceAccess.getTeamConversationSourceManifest(
+        actor(fixture.readerUserId),
+        {
+          shareGrantId: grant.shareGrantId,
+          sourceComponentId: "agent.worker-1",
+          afterSegmentIndex: -1,
+          limit: 10
+        }
+      );
+    expect(pinnedAuxiliary?.selectedComponent.id).toBe(auxiliary.id);
+    expect(pinnedAuxiliary?.segments.map((item) => item.id)).toEqual([
+      auxiliarySegment.rows[0]!.id
+    ]);
+    const frozenManifest =
+      await privacyRepository.readLatestSanitizedSourceManifestByGrant({
+        actor: actor(fixture.readerUserId),
+        shareGrantId: grant.shareGrantId
+      });
+    expect(frozenManifest?.record.id).toBe(sanitized.id);
+    expect(frozenManifest?.chunks).toHaveLength(1);
+    await expect(
+      privacyRepository.readSanitizedSourceChunkByGrant({
+        actor: actor(fixture.readerUserId),
+        provider: privacyProvider,
+        shareGrantId: grant.shareGrantId,
+        sanitizedArtifactId: sanitized.id,
+        chunkId: frozenManifest!.chunks[0]!.id
+      })
+    ).resolves.toMatchObject({ chunk: { text: "safe published source" } });
+    const copiedPayloads = await pool.query<{ count: number }>(
+      `select count(*)::integer as count from team_memory_grant_freeze_source_payloads
+        where share_grant_id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(copiedPayloads.rows[0]?.count).toBe(2);
+    const rewrappedSource = await repository.rewrapTeamRepresentationChunkBatch(
+      privacyProvider,
+      { teamId: fixture.teamId, force: true, batchSize: 10 }
+    );
+    expect(rewrappedSource.rewrappedRows).toBe(3);
+    await expect(
+      privacyRepository.readSanitizedSourceChunkByGrant({
+        actor: actor(fixture.readerUserId),
+        provider: privacyProvider,
+        shareGrantId: grant.shareGrantId,
+        sanitizedArtifactId: sanitized.id,
+        chunkId: frozenManifest!.chunks[0]!.id
+      })
+    ).resolves.toMatchObject({ chunk: { text: "safe published source" } });
+    await expect(
+      pool.query(
+        `update team_memory_grant_freeze_sources
+          set source_snapshot=source_snapshot #- '{published,sourceComponentClosures,1}'
+        where share_grant_id=$1`,
+        [grant.shareGrantId]
+      )
+    ).rejects.toMatchObject({ code: "55000" });
+    await expect(
+      pool.query(
+        `update team_memory_grant_freeze_source_payloads
+          set envelope=envelope-'aad'
+        where share_grant_id=$1 and source_table='privacy_sanitized_source_chunks'`,
+        [grant.shareGrantId]
+      )
+    ).rejects.toMatchObject({ code: "55000" });
+    await expect(
+      pool.query(
+        `delete from team_memory_grant_freeze_source_payloads
+        where share_grant_id=$1`,
+        [grant.shareGrantId]
+      )
+    ).rejects.toMatchObject({ code: "55000" });
+    await pool.query(
+      `update privacy_sanitized_source_artifacts
+          set status='invalidated',invalidated_at=now(),
+              invalidation_reason_code='superseded_materialization'
+        where id=$1`,
+      [sanitized.id]
+    );
+    expect(
+      (
+        await privacyRepository.readLatestSanitizedSourceManifestByGrant({
+          actor: actor(fixture.readerUserId),
+          shareGrantId: grant.shareGrantId
+        })
+      )?.record.id
+    ).toBe(sanitized.id);
+    const chunk = await pool.query<{ id: string }>(
+      `select id from privacy_sanitized_source_chunks where artifact_id=$1`,
+      [sanitized.id]
+    );
+    await pool.query(
+      `update privacy_sanitized_source_chunks
+          set invalidated_at=now(),invalidation_reason_code='privacy_policy_revoked'
+        where id=$1`,
+      [chunk.rows[0]!.id]
+    );
+    await expect(
+      privacyRepository.readLatestSanitizedSourceManifestByGrant({
+        actor: actor(fixture.readerUserId),
+        shareGrantId: grant.shareGrantId
+      })
+    ).resolves.toBeNull();
+    await expect(
+      sourceAccess.getTeamConversationSourceAccess(
+        actor(fixture.readerUserId),
+        { shareGrantId: grant.shareGrantId }
+      )
+    ).resolves.toBeNull();
+    const grantVersion = await pool.query<{ grant_version: number }>(
+      `select grant_version from team_memory_share_grants where id=$1`,
+      [grant.shareGrantId]
+    );
+    await repository.revokeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grantVersion.rows[0]!.grant_version,
+      reasonCode: "source_freeze_retention_purge",
+      authority: authority(fixture)
+    });
+    const claimed = await retentionRepository.claimNextPurgeJob();
+    expect(claimed?.job.target).toMatchObject({
+      kind: "share_grant",
+      shareGrantId: grant.shareGrantId
+    });
+    await retentionRepository.processClaimedPurgeJob({
+      purgeJobId: claimed!.job.id,
+      purgeAttemptId: claimed!.attempt.id
+    });
+    await retentionRepository.completePurgeJob(claimed!.job.id);
+    const retained = await pool.query<{ count: number }>(
+      `select count(*)::integer as count
+         from team_memory_grant_freeze_source_payloads
+        where share_grant_id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(retained.rows[0]?.count).toBe(0);
+  });
+
+  it.each(["publisher_first", "freeze_first"] as const)(
+    "linearizes same-grant sanitized N+1 ready publication with freeze: %s",
+    async (winner) => {
+      const fixture = await createWorkspaceFixture();
+      const grant = await createGrant(fixture, {
+        representation: "memory_events",
+        label: `csa-ready-race-${winner}`
+      });
+      await materialize(fixture, grant);
+      const sourceRepository = createMemorySourceRepository(pool);
+      const sourceAccess = createTeamConversationSourceRepository(pool);
+      const logicalSourceId = randomUUID();
+      const externalSessionId = `csa-race-${randomUUID()}`;
+      await pool.query(
+        `update sessions set external_session_id=$2 where id=$1`,
+        [grant.localSessionId, externalSessionId]
+      );
+      const makeGeneration = async (index: number, length: number) => {
+        const source = await sourceRepository.ensureConversationSourceArtifact(
+          actor(fixture.ownerUserId),
+          {
+            sessionId: grant.localSessionId,
+            logicalSourceId,
+            sourceGenerationId: randomUUID(),
+            replicaRole: "origin_local",
+            sourceKind: "codex",
+            sourceRuntime: "codex",
+            externalSessionId,
+            sourceFingerprint: hash(
+              `csa-race:${winner}:${index}:${logicalSourceId}`
+            ),
+            artifactFormat: "codex_rollout_jsonl",
+            artifactFormatVersion: 1,
+            sourceAdapterVersion: "codex-transcript-v1",
+            journalStartOffset: 0,
+            journalStartLine: 0,
+            liveStartOffset: 0,
+            liveStartLine: 0,
+            currentSourceLength: length,
+            sourceCreatedAt: new Date(
+              Date.UTC(2026, 9, 19, 0, index)
+            ).toISOString(),
+            storageProvider: "filesystem",
+            storagePrefix: `csa-race-${randomUUID()}`,
+            originDeploymentId: `deployment-${randomUUID()}`,
+            originDeviceId: `device-${randomUUID()}`,
+            originKeyId: `key-${randomUUID()}`,
+            originPublicKey: "a".repeat(43),
+            redactedSourceLabel: `Source generation ${index}`
+          }
+        );
+        const head = hash(`csa-race-head:${source.id}`);
+        const segment = await pool.query<{ id: string }>(
+          `insert into conversation_source_segments (
+             artifact_id,segment_index,source_start_offset,source_end_offset,
+             source_start_line,source_end_line,plaintext_digest,plaintext_size,
+             stored_size,storage_key,storage_provider,signed_manifest,
+             origin_signature,manifest_digest,previous_content_digest,content_digest
+           ) values ($1,0,0,$2,0,1,$3,$2,$2,$4,'filesystem',
+             '{"version":1}'::jsonb,$5,$6,null,$7) returning id`,
+          [
+            source.id,
+            length,
+            hash(`plain:${source.id}`),
+            `${source.storagePrefix}/0.jsonl`,
+            "a".repeat(86),
+            hash(`manifest:${source.id}`),
+            head
+          ]
+        );
+        const closureHash = hash(`csa-race-closure:${source.id}`);
+        await pool.query(
+          `update conversation_source_artifacts
+              set current_journal_sequence=0,provider_cursor_offset=$2,
+                  provider_cursor_line=1,current_source_length=$2,
+                  lifecycle='finalized',closure_hash=$3,
+                  closure_manifest=$4::jsonb,closure_signature=$5,
+                  finalized_at=now(),source_modified_at=now(),
+                  source_set_closure_hash=$6,
+                  source_set_closure_manifest=$7::jsonb,
+                  source_set_closure_signature=$5,source_set_finalized_at=now()
+            where id=$1`,
+          [
+            source.id,
+            length,
+            closureHash,
+            JSON.stringify({
+              version: 1,
+              segmentCount: 1,
+              chainHeadDigest: head
+            }),
+            "a".repeat(86),
+            hash(`source-set:${source.id}`),
+            JSON.stringify({
+              version: 1,
+              components: [
+                {
+                  sourceComponentId: "main",
+                  artifactClosureDigest: closureHash
+                }
+              ]
+            })
+          ]
+        );
+        return {
+          source,
+          segmentId: segment.rows[0]!.id,
+          head,
+          length,
+          closureHash
+        };
+      };
+      const n = await makeGeneration(0, 8);
+      await pool.query(
+        `insert into team_conversation_source_grants (
+           share_grant_id,artifact_id,logical_source_id,source_generation_id,
+           owner_user_id,session_id,team_id,team_workspace_id,mode,
+           mutation_id,granted_by_user_id,creator_authority
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,'continuous',$9,$5,'test')`,
+        [
+          grant.shareGrantId,
+          n.source.id,
+          logicalSourceId,
+          n.source.sourceGenerationId,
+          fixture.ownerUserId,
+          grant.localSessionId,
+          fixture.teamId,
+          fixture.teamWorkspaceId,
+          randomUUID()
+        ]
+      );
+      const deployment = await pool.query<{ deployment_identity_id: string }>(
+        `select deployment_identity_id from privacy_content_policies
+          where scope='deployment' and status='active' limit 1`
+      );
+      const policy = await privacyRepository.resolveEffectiveContentPolicy({
+        deploymentIdentityId: deployment.rows[0]!.deployment_identity_id,
+        sourceOwnerUserId: fixture.ownerUserId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId
+      });
+      const publishInput = (
+        generation: Awaited<ReturnType<typeof makeGeneration>>
+      ) => ({
+        actor: actor(fixture.ownerUserId),
+        provider: privacyProvider,
+        shareGrantId: grant.shareGrantId,
+        sourceArtifactId: generation.source.id,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        classifierHash: privacyClassifier.classifierHash,
+        effectivePolicyHash: policy.effectivePolicyHash,
+        sourceFrontierHash: privacySourceFrontierHash({
+          sourceArtifactId: generation.source.id,
+          sourceFrontierCursor: generation.length,
+          sourceSegmentCount: 1,
+          headContentDigest: generation.head
+        }),
+        sourceFrontierCursor: generation.length,
+        sourceSegmentCount: 1,
+        sourceClosureHash: generation.closureHash,
+        format: "codex_rollout_jsonl",
+        formatVersion: 1,
+        metadata: { redactedTitle: `Ready ${generation.length}` },
+        chunks: []
+      });
+      const readyN = await privacyRepository.storeSanitizedSourceArtifact(
+        publishInput(n)
+      );
+      const nPlusOne = await makeGeneration(1, 16);
+      const publisherClient = await pool.connect();
+      const freezeClient = await pool.connect();
+      const publisherPid = Number(
+        (
+          await publisherClient.query<{ pid: number }>(
+            "select pg_backend_pid() as pid"
+          )
+        ).rows[0]!.pid
+      );
+      const freezePid = Number(
+        (
+          await freezeClient.query<{ pid: number }>(
+            "select pg_backend_pid() as pid"
+          )
+        ).rows[0]!.pid
+      );
+      const waitForLock = async (pid: number) => {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const activity = await pool.query<{ wait_event_type: string | null }>(
+            `select wait_event_type from pg_stat_activity where pid=$1`,
+            [pid]
+          );
+          if (activity.rows[0]?.wait_event_type === "Lock") return;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        throw new Error("Expected source publication/freeze lock overlap");
+      };
+      let readyNPlusOne: { id: string } | null = null;
+      try {
+        await publisherClient.query("begin isolation level read committed");
+        await freezeClient.query("begin isolation level read committed");
+        const scopedPrivacy = createPrivacyClassificationRepository(
+          createSavepointPool(publisherClient, "curated_memory"),
+          { fingerprintKey: "shared-memory-privacy-test-fingerprint-key-v1" }
+        );
+        const freeze = () =>
+          repository.freezeShareGrant(
+            actor(fixture.ownerUserId),
+            {
+              mutationId: randomUUID(),
+              shareGrantId: grant.shareGrantId,
+              expectedGrantVersion: grant.grantVersion,
+              authority: authority(fixture)
+            },
+            freezeClient
+          );
+        if (winner === "publisher_first") {
+          readyNPlusOne = await scopedPrivacy.storeSanitizedSourceArtifact(
+            publishInput(nPlusOne)
+          );
+          const freezing = freeze();
+          await waitForLock(freezePid);
+          await publisherClient.query("commit");
+          await freezing;
+          await freezeClient.query("commit");
+        } else {
+          await freeze();
+          const publishing = scopedPrivacy.storeSanitizedSourceArtifact(
+            publishInput(nPlusOne)
+          );
+          const result = publishing.then(
+            (value) => ({ value }),
+            (error: unknown) => ({ error })
+          );
+          await waitForLock(publisherPid);
+          await freezeClient.query("commit");
+          const publicationOutcome = await result;
+          expect(
+            "error" in publicationOutcome ? publicationOutcome.error : null
+          ).toBeTruthy();
+          await publisherClient.query("rollback");
+        }
+      } finally {
+        await publisherClient.query("rollback").catch(() => undefined);
+        await freezeClient.query("rollback").catch(() => undefined);
+        publisherClient.release();
+        freezeClient.release();
+      }
+      const selected = winner === "publisher_first" ? nPlusOne : n;
+      const expectedReadyId = readyNPlusOne?.id ?? readyN.id;
+      const pinned =
+        await privacyRepository.readLatestSanitizedSourceManifestByGrant({
+          actor: actor(fixture.readerUserId),
+          shareGrantId: grant.shareGrantId
+        });
+      expect(pinned?.record.id).toBe(expectedReadyId);
+      const sourcePinned = await sourceAccess.getTeamConversationSourceManifest(
+        actor(fixture.readerUserId),
+        { shareGrantId: grant.shareGrantId, afterSegmentIndex: -1, limit: 10 }
+      );
+      expect(sourcePinned?.artifact.id).toBe(selected.source.id);
+      expect(sourcePinned?.segments.map((item) => item.id)).toEqual([
+        selected.segmentId
+      ]);
+      const closure = await pool.query<{
+        source_id: string;
+        frontier: number;
+        segment_count: number;
+        payload_count: number;
+      }>(
+        `select source_snapshot #>> '{published,sourceArtifactRow,id}' as source_id,
+                (source_snapshot #>> '{published,sanitizedArtifactRow,source_frontier_cursor}')::integer as frontier,
+                jsonb_array_length(source_snapshot #> '{published,sourceSegments}') as segment_count,
+                (select count(*)::integer from team_memory_grant_freeze_source_payloads
+                  where share_grant_id=$1) as payload_count
+           from team_memory_grant_freeze_sources where share_grant_id=$1`,
+        [grant.shareGrantId]
+      );
+      expect(closure.rows[0]).toMatchObject({
+        source_id: selected.source.id,
+        frontier: selected.length,
+        segment_count: 1,
+        payload_count: 1
+      });
+      const readyRows = await pool.query<{ id: string }>(
+        `select id from privacy_sanitized_source_artifacts
+          where share_grant_id=$1 and status='ready' order by ready_at,id`,
+        [grant.shareGrantId]
+      );
+      expect(readyRows.rows.map((row) => row.id)).toEqual(
+        winner === "publisher_first"
+          ? [readyN.id, expectedReadyId]
+          : [readyN.id]
+      );
+    },
+    20000
+  );
+
+  it("keeps snapshot Conversation Source Access and ciphertext readable after grant freeze", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      mode: "snapshot",
+      label: "snapshot-source-freeze"
+    });
+    await materialize(fixture, grant);
+    const sourceRepository = createMemorySourceRepository(pool);
+    const sourceAccess = createTeamConversationSourceRepository(pool);
+    const logicalSourceId = randomUUID();
+    const sourceGenerationId = randomUUID();
+    const externalSessionId = `snapshot-source-${randomUUID()}`;
+    await pool.query(`update sessions set external_session_id=$2 where id=$1`, [
+      grant.localSessionId,
+      externalSessionId
+    ]);
+    const source = await sourceRepository.ensureConversationSourceArtifact(
+      actor(fixture.ownerUserId),
+      {
+        sessionId: grant.localSessionId,
+        logicalSourceId,
+        sourceGenerationId,
+        replicaRole: "origin_local",
+        sourceKind: "codex",
+        sourceRuntime: "codex",
+        externalSessionId,
+        sourceFingerprint: hash(`snapshot:${sourceGenerationId}`),
+        artifactFormat: "codex_rollout_jsonl",
+        artifactFormatVersion: 1,
+        sourceAdapterVersion: "codex-transcript-v1",
+        journalStartOffset: 0,
+        journalStartLine: 0,
+        liveStartOffset: 0,
+        liveStartLine: 0,
+        currentSourceLength: 12,
+        sourceCreatedAt: new Date("2026-10-19T00:00:00.000Z").toISOString(),
+        storageProvider: "filesystem",
+        storagePrefix: `snapshot-${randomUUID()}`,
+        originDeploymentId: `deployment-${randomUUID()}`,
+        originDeviceId: `device-${randomUUID()}`,
+        originKeyId: `key-${randomUUID()}`,
+        originPublicKey: "a".repeat(43),
+        redactedSourceLabel: "Snapshot source"
+      }
+    );
+    const headDigest = hash(`snapshot-head:${source.id}`);
+    const segment = await pool.query<{ id: string }>(
+      `insert into conversation_source_segments (
+         artifact_id,segment_index,source_start_offset,source_end_offset,
+         source_start_line,source_end_line,plaintext_digest,plaintext_size,
+         stored_size,storage_key,storage_provider,signed_manifest,
+         origin_signature,manifest_digest,previous_content_digest,content_digest
+       ) values ($1,0,0,12,0,1,$2,12,12,$3,'filesystem',
+         '{"version":1}'::jsonb,$4,$5,null,$6) returning id`,
+      [
+        source.id,
+        hash("snapshot-plaintext"),
+        `${source.storagePrefix}/0.jsonl`,
+        "a".repeat(86),
+        hash("snapshot-manifest"),
+        headDigest
+      ]
+    );
+    const sourceClosureHash = hash(`snapshot-closure:${source.id}`);
+    await pool.query(
+      `update conversation_source_artifacts
+          set current_journal_sequence=0,provider_cursor_offset=12,
+              provider_cursor_line=1,current_source_length=12,
+              lifecycle='finalized',closure_hash=$2,
+              closure_manifest=$3::jsonb,closure_signature=$4,
+              finalized_at=now(),source_modified_at=now()
+        where id=$1`,
+      [
+        source.id,
+        sourceClosureHash,
+        JSON.stringify({
+          version: 1,
+          segmentCount: 1,
+          chainHeadDigest: headDigest
+        }),
+        "a".repeat(86)
+      ]
+    );
+    await pool.query(
+      `insert into team_conversation_source_grants (
+         share_grant_id,artifact_id,logical_source_id,source_generation_id,
+         owner_user_id,session_id,team_id,team_workspace_id,mode,
+         maximum_segment_index,maximum_source_offset,
+         mutation_id,granted_by_user_id,creator_authority
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,'snapshot',0,12,$9,$5,'test')`,
+      [
+        grant.shareGrantId,
+        source.id,
+        logicalSourceId,
+        sourceGenerationId,
+        fixture.ownerUserId,
+        grant.localSessionId,
+        fixture.teamId,
+        fixture.teamWorkspaceId,
+        randomUUID()
+      ]
+    );
+    const deployment = await pool.query<{ deployment_identity_id: string }>(
+      `select deployment_identity_id from privacy_content_policies
+        where scope='deployment' and status='active' limit 1`
+    );
+    const policy = await privacyRepository.resolveEffectiveContentPolicy({
+      deploymentIdentityId: deployment.rows[0]!.deployment_identity_id,
+      sourceOwnerUserId: fixture.ownerUserId,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId
+    });
+    const classification =
+      await privacyRepository.getOrCreateStructuralClassificationBinding({
+        actor: actor(fixture.ownerUserId),
+        provider: privacyProvider,
+        classifierHash: privacyClassifier.classifierHash
+      });
+    const sanitized = await privacyRepository.storeSanitizedSourceArtifact({
+      actor: actor(fixture.ownerUserId),
+      provider: privacyProvider,
+      shareGrantId: grant.shareGrantId,
+      sourceArtifactId: source.id,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      classifierHash: privacyClassifier.classifierHash,
+      effectivePolicyHash: policy.effectivePolicyHash,
+      sourceFrontierHash: privacySourceFrontierHash({
+        sourceArtifactId: source.id,
+        sourceFrontierCursor: 12,
+        sourceSegmentCount: 1,
+        headContentDigest: headDigest
+      }),
+      sourceFrontierCursor: 12,
+      sourceSegmentCount: 1,
+      sourceClosureHash,
+      format: "codex_rollout_jsonl",
+      formatVersion: 1,
+      metadata: { redactedTitle: "Snapshot source" },
+      chunks: [
+        {
+          classificationResultId: classification.id,
+          sourceStartByte: 0,
+          sourceEndByte: 12,
+          text: "snapshot safe"
+        }
+      ]
+    });
+    const before = await sourceAccess.getTeamConversationSourceManifest(
+      actor(fixture.readerUserId),
+      { shareGrantId: grant.shareGrantId, afterSegmentIndex: -1, limit: 10 }
+    );
+    expect(before?.segments.map((item) => item.id)).toEqual([
+      segment.rows[0]!.id
+    ]);
+    const beforeSanitized =
+      await privacyRepository.readLatestSanitizedSourceManifestByGrant({
+        actor: actor(fixture.readerUserId),
+        shareGrantId: grant.shareGrantId
+      });
+    expect(beforeSanitized?.record.id).toBe(sanitized.id);
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
+    const marker = await pool.query<{ freeze_source_access_expected: boolean }>(
+      `select freeze_source_access_expected from team_memory_share_grants where id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(marker.rows[0]?.freeze_source_access_expected).toBe(false);
+    const after = await sourceAccess.getTeamConversationSourceManifest(
+      actor(fixture.readerUserId),
+      { shareGrantId: grant.shareGrantId, afterSegmentIndex: -1, limit: 10 }
+    );
+    expect(after?.segments.map((item) => item.id)).toEqual([
+      segment.rows[0]!.id
+    ]);
+    const afterSanitized =
+      await privacyRepository.readLatestSanitizedSourceManifestByGrant({
+        actor: actor(fixture.readerUserId),
+        shareGrantId: grant.shareGrantId
+      });
+    expect(afterSanitized?.record.id).toBe(sanitized.id);
+    await expect(
+      privacyRepository.readSanitizedSourceChunkByGrant({
+        actor: actor(fixture.readerUserId),
+        provider: privacyProvider,
+        shareGrantId: grant.shareGrantId,
+        sanitizedArtifactId: sanitized.id,
+        chunkId: afterSanitized!.chunks[0]!.id
+      })
+    ).resolves.toMatchObject({ chunk: { text: "snapshot safe" } });
+    await pool.query(
+      `update team_conversation_source_grants
+          set lifecycle='revoked',revoked_at=now(),revoked_by_user_id=$2,
+              revocation_reason='owner_revoked'
+        where share_grant_id=$1`,
+      [grant.shareGrantId, fixture.ownerUserId]
+    );
+    await expect(
+      sourceAccess.getTeamConversationSourceManifest(
+        actor(fixture.readerUserId),
+        { shareGrantId: grant.shareGrantId, afterSegmentIndex: -1, limit: 10 }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      privacyRepository.readLatestSanitizedSourceManifestByGrant({
+        actor: actor(fixture.readerUserId),
+        shareGrantId: grant.shareGrantId
+      })
+    ).resolves.toBeNull();
+  });
+
+  it("freezes a source owner's grant inside Team leave after the last-owner preflight", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "team-leave-freeze"
+    });
+    const preview = await createPersistedPreview(
+      fixture,
+      grant,
+      "memory_events",
+      grant.currentRevision,
+      "team-leave-freeze",
+      allRepresentations
+    );
+    await repository.materializeGrantRepresentation(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        consentId: grant.consentId,
+        expectedGrantVersion: grant.grantVersion,
+        preview
+      }
+    );
+    await pool.query(
+      `update team_memory_share_grants
+          set personal_deleted_at=now(),personal_deleted_by_user_id=$2,
+              personal_deletion_reason='owner_deleted'
+        where id=$1`,
+      [grant.shareGrantId, fixture.ownerUserId]
+    );
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.not.toBeNull();
+    const team = createTeamAccessRepository(pool);
+    const membership = await pool.query<{ version: number }>(
+      `select version from team_memberships where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.ownerUserId]
+    );
+    const expectedVersion = membership.rows[0]!.version;
+    await expect(
+      team.leaveTeam(actor(fixture.ownerUserId), {
+        teamId: fixture.teamId,
+        expectedVersion
+      })
+    ).resolves.toBeNull();
+    const before = await pool.query<{ frozen_at: Date | null }>(
+      `select frozen_at from team_memory_share_grants where id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(before.rows[0]?.frozen_at).toBeNull();
+    await pool.query(
+      `update team_memberships set role='owner' where team_id=$1 and user_id=$2`,
+      [fixture.teamId, fixture.managerUserId]
+    );
+    await pool.query(`create table workspace_projects (id uuid primary key)`);
+    try {
+      await expect(
+        team.leaveTeam(actor(fixture.ownerUserId), {
+          teamId: fixture.teamId,
+          expectedVersion
+        })
+      ).rejects.toThrow("Workspace Project schema capability is inconsistent");
+      const unchanged = await pool.query<{ frozen_at: Date | null }>(
+        `select frozen_at from team_memory_share_grants where id=$1`,
+        [grant.shareGrantId]
+      );
+      expect(unchanged.rows[0]?.frozen_at).toBeNull();
+    } finally {
+      await pool.query(`drop table workspace_projects`);
+    }
+    await expect(
+      team.leaveTeam(actor(fixture.ownerUserId), {
+        teamId: fixture.teamId,
+        expectedVersion
+      })
+    ).rejects.toBeInstanceOf(TeamActionGrantRequiredError);
+    const stillEnabled = await pool.query<{
+      status: string;
+      access: string;
+      frozen_at: Date | null;
+    }>(
+      `select membership.status, access.access, share_grant.frozen_at
+         from team_memberships membership
+         join team_workspace_access_grants access
+           on access.team_id=membership.team_id and access.user_id=membership.user_id
+         join team_memory_share_grants share_grant
+           on share_grant.team_id=membership.team_id and share_grant.owner_user_id=membership.user_id
+        where membership.team_id=$1 and membership.user_id=$2 and share_grant.id=$3`,
+      [fixture.teamId, fixture.ownerUserId, grant.shareGrantId]
+    );
+    expect(stillEnabled.rows[0]).toMatchObject({
+      status: "enabled",
+      access: "write",
+      frozen_at: null
+    });
+    const credential = await pool.query<{ upstream_backend_id: string }>(
+      `update device_credentials
+          set operation_families=array_append(operation_families,'action_grant')
+        where id=$1 returning upstream_backend_id`,
+      [fixture.deviceCredentialId]
+    );
+    const actionGrant = createHighRiskActionRepository(createDb(pool), {
+      pool,
+      envelopeEncryptionProvider: provider,
+      teamEnvelopeEncryptionProvider: provider
+    });
+    const request = {
+      method: "POST",
+      path: `/v1/teams/${fixture.teamId}/leave`,
+      body: { expectedVersion }
+    };
+    const operation = {
+      ownerUserId: fixture.ownerUserId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId: credential.rows[0]!.upstream_backend_id,
+      teamId: fixture.teamId,
+      operationFamily: "admin",
+      action: "team.leave",
+      targetId: fixture.teamId,
+      scopeHash: highRiskActionGrantCanonicalHash(
+        HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminScope,
+        {
+          operationFamily: "admin",
+          action: "team.leave",
+          teamId: fixture.teamId,
+          targetId: fixture.teamId
+        }
+      ),
+      requestHash: highRiskActionGrantCanonicalHash(
+        HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+        request
+      )
+    };
+    const secret = `hrg_${randomUUID().replaceAll("-", "")}`;
+    const clientRequestId = randomUUID();
+    const issued = await actionGrant.createActionGrant({
+      ...operation,
+      clientRequestId,
+      grantCommitment: highRiskActionGrantCommitment(secret),
+      credentialOperationFamily: "action_grant",
+      approvalTier: "native_review",
+      review: {
+        version: 1,
+        title: "Leave Team?",
+        description: "Freeze the exact owner grants and leave this Team.",
+        consequence: "Current Team access ends.",
+        confirmLabel: "Leave Team",
+        details: []
+      }
+    });
+    expect(issued?.state).toBe("pending");
+    await actionGrant.decideNativeActionReview({
+      clientRequestId,
+      ownerUserId: fixture.ownerUserId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId: credential.rows[0]!.upstream_backend_id,
+      decision: "approve"
+    });
+    await expect(
+      actionGrant.executeActionGrant({
+        ...operation,
+        actionGrant: secret,
+        approvedRequest: {
+          ...request,
+          body: { expectedVersion: expectedVersion + 1 }
+        },
+        execute: async () => {
+          throw new Error("Mismatched reviewed body must not execute");
+        }
+      })
+    ).resolves.toBeNull();
+    await expect(
+      actionGrant.executeActionGrant({
+        ...operation,
+        actionGrant: secret,
+        approvedRequest: { ...request, path: "/v1/teams/other/leave" },
+        execute: async () => {
+          throw new Error("Mismatched reviewed path must not execute");
+        }
+      })
+    ).resolves.toBeNull();
+    const execute = async (failAfterFreeze = false) =>
+      actionGrant.executeActionGrant({
+        ...operation,
+        actionGrant: secret,
+        approvedRequest: request,
+        execute: async ({ team: scopedTeam }) => {
+          const membership = await scopedTeam.leaveTeam(
+            actor(fixture.ownerUserId),
+            { teamId: fixture.teamId, expectedVersion }
+          );
+          if (membership && failAfterFreeze) {
+            throw new Error("fail after transactional parent freeze");
+          }
+          return membership ? { statusCode: 200, body: { membership } } : null;
+        }
+      });
+    await expect(execute(true)).rejects.toThrow(
+      "fail after transactional parent freeze"
+    );
+    const afterRollback = await pool.query<{
+      frozen_at: Date | null;
+      membership_status: string;
+    }>(
+      `select grant_row.frozen_at,
+              (select membership.status from team_memberships membership
+                where membership.team_id=$2 and membership.user_id=$3)
+                as membership_status
+         from team_memory_share_grants grant_row where grant_row.id=$1`,
+      [grant.shareGrantId, fixture.teamId, fixture.ownerUserId]
+    );
+    expect(afterRollback.rows[0]).toMatchObject({
+      frozen_at: null,
+      membership_status: "enabled"
+    });
+    const result = await execute();
+    expect(result?.replayed).toBe(false);
+    const replay = await execute();
+    expect(replay).toMatchObject({
+      replayed: true,
+      body: { membership: { status: "disabled" } }
+    });
+    const left = result?.body.membership;
+    expect(left?.status).toBe("disabled");
+    const departureOrder = await pool.query<{ action: string }>(
+      `select action from audit_events
+        where actor_user_id=$1 and action in
+          ('team.workspace_access.removed','team.member.left')
+          and metadata->>'teamId'=$2
+        order by audit_sequence desc limit 2`,
+      [fixture.ownerUserId, fixture.teamId]
+    );
+    expect(departureOrder.rows.map((row) => row.action)).toEqual([
+      "team.member.left",
+      "team.workspace_access.removed"
+    ]);
+    const after = await pool.query<{ frozen_at: Date | null }>(
+      `select frozen_at from team_memory_share_grants where id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(after.rows[0]?.frozen_at).not.toBeNull();
+    const visible = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId: grant.shareGrantId, representation: "memory_events" }
+    );
+    const frozen = await pool.query<{ frozen_representation_id: string }>(
+      `select frozen_representation_id
+         from team_memory_grant_freeze_representations
+        where share_grant_id=$1 and representation='memory_events'`,
+      [grant.shareGrantId]
+    );
+    expect(visible?.representation.id).toBe(
+      frozen.rows[0]?.frozen_representation_id
+    );
+  });
+
+  it.each(["team.member.disable", "team.workspace.access_update"] as const)(
+    "freezes affected grants only through an approved %s Step-up parent",
+    async (action) => {
+      const fixture = await createWorkspaceFixture();
+      const grant = await createGrant(fixture, {
+        representation: "memory_events",
+        label: `approved-${action}`
+      });
+      await materialize(fixture, grant);
+      await pool.query(
+        `update team_memberships set role='owner'
+          where team_id=$1 and user_id=$2`,
+        [fixture.teamId, fixture.managerUserId]
+      );
+      const targetVersionQuery =
+        action === "team.member.disable"
+          ? `select version from team_memberships where team_id=$1 and user_id=$2`
+          : `select version from team_workspace_access_grants where team_workspace_id=$1 and user_id=$2`;
+      const targetVersion = await pool.query<{ version: number }>(
+        targetVersionQuery,
+        [
+          action === "team.member.disable"
+            ? fixture.teamId
+            : fixture.teamWorkspaceId,
+          fixture.ownerUserId
+        ]
+      );
+      const expectedVersion = targetVersion.rows[0]!.version;
+      const request =
+        action === "team.member.disable"
+          ? {
+              method: "POST",
+              path: `/v1/teams/${fixture.teamId}/members/${fixture.ownerUserId}/disable`,
+              body: { expectedVersion }
+            }
+          : {
+              method: "PUT",
+              path: `/v1/team-workspaces/${fixture.teamWorkspaceId}/access`,
+              body: {
+                userId: fixture.ownerUserId,
+                access: "disabled",
+                expectedVersion
+              }
+            };
+      const approved = await prepareApprovedTeamAction({
+        actorUserId: fixture.managerUserId,
+        actorSessionId: fixture.managerSessionId,
+        teamId: fixture.teamId,
+        action,
+        targetId:
+          action === "team.member.disable"
+            ? fixture.ownerUserId
+            : fixture.teamWorkspaceId,
+        request
+      });
+      const execute = () =>
+        approved.actionGrant.executeActionGrant({
+          ...approved.operation,
+          actionGrant: approved.secret,
+          approvedRequest: approved.request,
+          execute: async ({ team }) => {
+            const changed =
+              action === "team.member.disable"
+                ? await team.disableTeamMember(actor(fixture.managerUserId), {
+                    teamId: fixture.teamId,
+                    userId: fixture.ownerUserId,
+                    expectedVersion
+                  })
+                : await team.setTeamWorkspaceAccess(
+                    actor(fixture.managerUserId),
+                    {
+                      teamWorkspaceId: fixture.teamWorkspaceId,
+                      userId: fixture.ownerUserId,
+                      access: "disabled",
+                      expectedVersion
+                    }
+                  );
+            return changed ? { statusCode: 200, body: { changed } } : null;
+          }
+        });
+      expect((await execute())?.replayed).toBe(false);
+      expect((await execute())?.replayed).toBe(true);
+      const frozen = await pool.query<{ frozen_at: Date | null }>(
+        `select frozen_at from team_memory_share_grants where id=$1`,
+        [grant.shareGrantId]
+      );
+      expect(frozen.rows[0]?.frozen_at).not.toBeNull();
+      if (action === "team.member.disable") {
+        const order = await pool.query<{ action: string }>(
+          `select action from audit_events where actor_user_id=$1
+             and action in ('team.workspace_access.removed','team.member.disabled')
+             and metadata->>'teamId'=$2 order by audit_sequence desc limit 2`,
+          [fixture.managerUserId, fixture.teamId]
+        );
+        expect(order.rows.map((row) => row.action)).toEqual([
+          "team.member.disabled",
+          "team.workspace_access.removed"
+        ]);
+      }
+    }
+  );
+
+  it("purges frozen closure rows through the ordinary Share Grant retention job", async () => {
+    const fixture = await createWorkspaceFixture({
+      retentionSeconds: 0,
+      backupRetentionSeconds: 0
+    });
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "freeze-retention-purge"
+    });
+    await materialize(fixture, grant);
+    const frozen = await repository.freezeShareGrant(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion,
+        authority: authority(fixture)
+      }
+    );
+    const frozenCount = await pool.query<{ count: number }>(
+      `select count(*)::integer as count
+         from team_memory_grant_freeze_representations
+        where share_grant_id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(frozenCount.rows[0]?.count).toBeGreaterThan(0);
+    await retentionRepository.createPolicy({
+      target: {
+        scope: "share_grant",
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        shareGrantId: grant.shareGrantId,
+        logicalMemoryId: grant.logicalMemoryId
+      },
+      retentionSeconds: 0,
+      deletionGraceSeconds: 0,
+      backupRetentionSeconds: 0,
+      effectiveAt: new Date("2020-01-02T00:00:00.000Z"),
+      createdByUserId: fixture.ownerUserId
+    });
+    await repository.revokeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: frozen.grantVersion,
+      reasonCode: "frozen_retention_purge",
+      authority: authority(fixture)
+    });
+    const claimed = await retentionRepository.claimNextPurgeJob();
+    expect(claimed?.job.target).toMatchObject({
+      kind: "share_grant",
+      shareGrantId: grant.shareGrantId
+    });
+    await retentionRepository.processClaimedPurgeJob({
+      purgeJobId: claimed!.job.id,
+      purgeAttemptId: claimed!.attempt.id
+    });
+    await expect(
+      retentionRepository.completePurgeJob(claimed!.job.id)
+    ).resolves.toMatchObject({ completed: true });
+    const purged = await pool.query<{ lifecycle: string; copies: number }>(
+      `select grant_row.lifecycle,
+              (select count(*)::integer
+                 from team_memory_grant_freeze_representations closure
+                where closure.share_grant_id=grant_row.id) as copies
+         from team_memory_share_grants grant_row where grant_row.id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(purged.rows[0]).toMatchObject({ lifecycle: "purged", copies: 0 });
+  });
+
+  it("rejects legacy READ COMMITTED and stale repeatable-read publication after freeze", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "freeze-legacy-writer"
+    });
+    const published = await materialize(fixture, grant);
+    const staleWriter = await pool.connect();
+    try {
+      await staleWriter.query("begin isolation level repeatable read");
+      await staleWriter.query(
+        "select record_version from team_memory_representations where id=$1",
+        [published.id]
+      );
+      await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion,
+        authority: authority(fixture)
+      });
+      await expect(
+        staleWriter.query(
+          `update team_memory_representations
+            set record_version=record_version+1 where id=$1`,
+          [published.id]
+        )
+      ).rejects.toMatchObject({ code: "40001" });
+    } finally {
+      await staleWriter.query("rollback");
+      staleWriter.release();
+    }
+    await expect(
+      pool.query(
+        `update team_memory_representations
+          set record_version=record_version+1 where id=$1`,
+        [published.id]
+      )
+    ).rejects.toMatchObject({ code: "55000" });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.not.toBeNull();
+  });
+
+  it("keeps the future Project Bundled freeze stage unavailable without its authoritative parent", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "project-stage-unavailable"
+    });
+    const parent = {
+      action: "project.lifecycle.freeze_grant" as const,
+      outerAction: "workspace_project.delete" as const,
+      effect: "delete" as const,
+      outerActionGrantId: randomUUID(),
+      outerMutationId: randomUUID(),
+      outerTargetId: randomUUID(),
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      targetUserId: fixture.ownerUserId,
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion
+    };
+    await expect(
+      repository.freezeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion,
+        backendParent: parent
+      })
+    ).rejects.toThrow("requires its transaction");
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      for (const forged of [
+        {
+          action: "team.leave",
+          teamId: fixture.teamId,
+          targetUserId: fixture.ownerUserId
+        },
+        {
+          action: "team.workspace.restore",
+          teamId: fixture.teamId,
+          targetUserId: fixture.ownerUserId
+        },
+        {
+          action: "team.workspace.access_update",
+          teamId: fixture.teamId,
+          targetUserId: fixture.ownerUserId,
+          teamWorkspaceId: fixture.teamWorkspaceId
+        }
+      ]) {
+        await expect(
+          repository.freezeShareGrant(
+            actor(fixture.ownerUserId),
+            {
+              mutationId: randomUUID(),
+              shareGrantId: grant.shareGrantId,
+              expectedGrantVersion: grant.grantVersion,
+              backendParent: forged as never
+            },
+            client
+          )
+        ).rejects.toThrow("Backend lifecycle freeze authority is unavailable");
+      }
+      await expect(
+        repository.freezeShareGrant(
+          actor(fixture.ownerUserId),
+          {
+            mutationId: randomUUID(),
+            shareGrantId: grant.shareGrantId,
+            expectedGrantVersion: grant.grantVersion,
+            backendParent: parent
+          },
+          client
+        )
+      ).rejects.toThrow("authority is unavailable");
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
+  it("linearizes an in-flight legacy row writer with a whole-transaction freeze retry", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "freeze-in-flight-writer"
+    });
+    const published = await materialize(fixture, grant);
+    const fence = await pool.connect();
+    const legacy = await pool.connect();
+    try {
+      await fence.query("begin");
+      const fencePid = (
+        await fence.query<{ pid: number }>("select pg_backend_pid() as pid")
+      ).rows[0]!.pid;
+      await fence.query(
+        "select koed_lock_shared_memory_publication_fence($1)",
+        [grant.logicalMemoryId]
+      );
+      const waitForFence = async (targetPid?: number): Promise<void> => {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const waiting = await pool.query<{ waiting: boolean }>(
+            `select exists (
+               select 1 from pg_stat_activity activity
+                where activity.datname=current_database()
+                  and ($1::integer is null or activity.pid=$1)
+                  and $2::integer=any(pg_blocking_pids(activity.pid))
+             ) as waiting`,
+            [targetPid ?? null, fencePid]
+          );
+          if (waiting.rows[0]?.waiting) return;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error(
+          "Expected the legacy publication fence race did not form"
+        );
+      };
+      const freezeResult = repository
+        .freezeShareGrant(actor(fixture.ownerUserId), {
+          mutationId: randomUUID(),
+          shareGrantId: grant.shareGrantId,
+          expectedGrantVersion: grant.grantVersion,
+          authority: authority(fixture)
+        })
+        .then(
+          () => "committed" as const,
+          (error: unknown) => error
+        );
+      await waitForFence();
+      await legacy.query("begin isolation level read committed");
+      const legacyPid = (
+        await legacy.query<{ pid: number }>("select pg_backend_pid() as pid")
+      ).rows[0]!.pid;
+      const legacyResult = legacy
+        .query(
+          `update team_memory_representations
+            set record_version=record_version+1 where id=$1`,
+          [published.id]
+        )
+        .then(
+          async () => {
+            await legacy.query("commit");
+            return "committed" as const;
+          },
+          async (error: unknown) => {
+            await legacy.query("rollback");
+            return error;
+          }
+        );
+      await waitForFence(legacyPid);
+      await fence.query("commit");
+      expect(await freezeResult).toBe("committed");
+      const oldOutcome = await legacyResult;
+      if (oldOutcome !== "committed") {
+        expect(["40P01", "40001", "55000"]).toContain(
+          (oldOutcome as { code?: string }).code
+        );
+      }
+      const closure = await pool.query<{ frozen_at: Date | null }>(
+        "select frozen_at from team_memory_share_grants where id=$1",
+        [grant.shareGrantId]
+      );
+      expect(closure.rows[0]?.frozen_at).not.toBeNull();
+      await expect(
+        repository.readGrantRepresentation(actor(fixture.readerUserId), {
+          shareGrantId: grant.shareGrantId,
+          representation: "memory_events"
+        })
+      ).resolves.not.toBeNull();
+    } finally {
+      await fence.query("rollback").catch(() => undefined);
+      await legacy.query("rollback").catch(() => undefined);
+      fence.release();
+      legacy.release();
+    }
+  }, 15_000);
 
   it("uses indexed exact-revision lookups across the generic sharing workflow", async () => {
     const fixture = await createWorkspaceFixture();
@@ -6794,6 +9059,12 @@ describeDb("Shared Memory repository", () => {
       label: "policy-reduction"
     });
     await materialize(fixture, grant);
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
     const mutationId = randomUUID();
     const reduced = await repository.putTeamPolicy(
       actor(fixture.managerUserId),
@@ -6827,13 +9098,16 @@ describeDb("Shared Memory repository", () => {
         where g.id=$1`,
       [grant.shareGrantId]
     );
-    expect(states.rows).toEqual([
-      {
-        lifecycle: "unavailable",
-        representation: "memory_events",
-        state: "invalidated"
-      }
-    ]);
+    expect(states.rows).toHaveLength(2);
+    expect(states.rows).toEqual(
+      expect.arrayContaining([
+        {
+          lifecycle: "unavailable",
+          representation: "memory_events",
+          state: "invalidated"
+        }
+      ])
+    );
     const fallback = await pool.query(
       `select 1 from team_memory_representations
         where share_grant_id=$1 and representation='lcm_leaves'`,
@@ -7625,14 +9899,23 @@ describeDb("Shared Memory repository", () => {
         limit: 100
       }
     );
-    const claimedChunkCount = await pool.query<{ count: number }>(
-      `select count(distinct (representation_id,encrypted_chunk_index))::integer as count
-         from team_memory_semantic_items
-        where id=any($1::uuid[])`,
+    const claimedChunkCount = await pool.query<{
+      ordinary_count: number;
+      frozen_count: number;
+    }>(
+      `select count(distinct (item.representation_id,item.encrypted_chunk_index))
+                filter (where representation.frozen_snapshot=false)::integer as ordinary_count,
+              count(distinct (item.representation_id,item.encrypted_chunk_index))
+                filter (where representation.frozen_snapshot=true)::integer as frozen_count
+         from team_memory_semantic_items item
+         join team_memory_representations representation
+           on representation.id=item.representation_id
+        where item.id=any($1::uuid[])`,
       [semanticItems.map((item) => item.semanticItemId)]
     );
     expect(decryptSpy.mock.calls.length - decryptsBeforePendingClaim).toBe(
-      claimedChunkCount.rows[0]!.count * 2
+      claimedChunkCount.rows[0]!.ordinary_count * 2 +
+        claimedChunkCount.rows[0]!.frozen_count
     );
     expect(
       semanticItems.find(
@@ -8218,6 +10501,431 @@ describeDb("Shared Memory repository", () => {
       [fixture.teamWorkspaceId, fixture.readerUserId]
     );
     await expect(search()).resolves.toEqual([]);
+  });
+
+  it("completes frozen semantic embeddings from copied Team bytes and re-embeds on model change", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      label: "frozen-embedding-maintenance"
+    });
+    await materialize(fixture, grant, {
+      label: "frozen-embedding-maintenance"
+    });
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
+    const pending = (
+      await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
+    ).filter((item) => item.shareGrantId === grant.shareGrantId);
+    expect(pending.length).toBeGreaterThan(0);
+    const vector = [1, ...Array.from({ length: 383 }, () => 0)];
+    for (const item of pending) {
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: item.semanticItemId,
+          contentHash: item.contentHash,
+          model: "frozen-model-a",
+          dimensions: 384,
+          version: "frozen-model-a-v1",
+          vector
+        })
+      ).toBe(true);
+    }
+    const boundary = await repository.freezeSharedMemorySemanticRecallBoundary(
+      actor(fixture.readerUserId),
+      { teamWorkspaceId: fixture.teamWorkspaceId, maximumGrantCount: 128 }
+    );
+    expect(boundary.shareGrantIds).toContain(grant.shareGrantId);
+    const first = await repository.searchAuthorizedSharedMemorySemanticItems(
+      actor(fixture.readerUserId),
+      {
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        queryVector: vector,
+        model: "frozen-model-a",
+        dimensions: 384,
+        version: "frozen-model-a-v1",
+        limit: 50,
+        searchDomain: "global",
+        authorizationBoundary: boundary
+      }
+    );
+    expect(first.some((item) => item.shareGrantId === grant.shareGrantId)).toBe(
+      true
+    );
+    const changed = (
+      await repository.listPendingSharedMemorySemanticItems({
+        limit: 100,
+        model: "frozen-model-b",
+        dimensions: 384,
+        version: "frozen-model-b-v1"
+      })
+    ).filter((item) => item.shareGrantId === grant.shareGrantId);
+    expect(changed).toHaveLength(pending.length);
+    for (const item of changed) {
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: item.semanticItemId,
+          contentHash: item.contentHash,
+          model: "frozen-model-b",
+          dimensions: 384,
+          version: "frozen-model-b-v1",
+          vector
+        })
+      ).toBe(true);
+    }
+    const second = await repository.searchAuthorizedSharedMemorySemanticItems(
+      actor(fixture.readerUserId),
+      {
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        queryVector: vector,
+        model: "frozen-model-b",
+        dimensions: 384,
+        version: "frozen-model-b-v1",
+        limit: 50,
+        searchDomain: "global"
+      }
+    );
+    expect(
+      second.some((item) => item.shareGrantId === grant.shareGrantId)
+    ).toBe(true);
+    const retryRows = await pool.query<{ id: string }>(
+      `select item.id from team_memory_semantic_items item
+         join team_memory_representations representation
+           on representation.id=item.representation_id
+        where item.share_grant_id=$1 and representation.frozen_snapshot=true
+        order by item.source_item_index limit 2`,
+      [grant.shareGrantId]
+    );
+    expect(retryRows.rows).toHaveLength(2);
+    await pool.query(
+      `update team_memory_semantic_items
+          set embedding_state='failed',embedded_at=null,
+              last_error_class='TransientFailure',
+              next_attempt_at=now()-interval '1 second',updated_at=now()
+        where id=$1`,
+      [retryRows.rows[0]!.id]
+    );
+    await pool.query(
+      `update team_memory_semantic_items
+          set embedding_state='processing',embedded_at=null,
+              updated_at=now()-interval '6 minutes'
+        where id=$1`,
+      [retryRows.rows[1]!.id]
+    );
+    const reclaimed = (
+      await repository.listPendingSharedMemorySemanticItems({
+        limit: 100,
+        model: "frozen-model-b",
+        dimensions: 384,
+        version: "frozen-model-b-v1"
+      })
+    ).filter((item) => item.shareGrantId === grant.shareGrantId);
+    expect(new Set(reclaimed.map((item) => item.semanticItemId))).toEqual(
+      new Set(retryRows.rows.map((row) => row.id))
+    );
+    for (const item of reclaimed) {
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: item.semanticItemId,
+          contentHash: item.contentHash,
+          model: "frozen-model-b",
+          dimensions: 384,
+          version: "frozen-model-b-v1",
+          vector
+        })
+      ).toBe(true);
+    }
+  });
+
+  it.each(["revoke", "policy"] as const)(
+    "denies a frozen embedding stored after %s invalidates its claim",
+    async (invalidator) => {
+      const fixture = await createWorkspaceFixture();
+      const grant = await createGrant(fixture, {
+        label: `frozen-embedding-${invalidator}`
+      });
+      await materialize(fixture, grant);
+      await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        expectedGrantVersion: grant.grantVersion,
+        authority: authority(fixture)
+      });
+      const pending = (
+        await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
+      ).find((item) => item.shareGrantId === grant.shareGrantId);
+      expect(pending).toBeDefined();
+      if (invalidator === "revoke") {
+        const current = await pool.query<{ grant_version: number }>(
+          `select grant_version from team_memory_share_grants where id=$1`,
+          [grant.shareGrantId]
+        );
+        await repository.revokeShareGrant(actor(fixture.ownerUserId), {
+          mutationId: randomUUID(),
+          shareGrantId: grant.shareGrantId,
+          expectedGrantVersion: current.rows[0]!.grant_version,
+          reasonCode: "owner_revoked_embedding",
+          authority: authority(fixture)
+        });
+      } else {
+        await repository.putTeamPolicy(actor(fixture.managerUserId), {
+          mutationId: randomUUID(),
+          teamId: fixture.teamId,
+          expectedCurrentVersion: 1,
+          ...fidelityConsent(["lcm_leaves"])
+        });
+      }
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: pending!.semanticItemId,
+          contentHash: pending!.contentHash,
+          model: "invalidated-frozen-model",
+          dimensions: 384,
+          version: "v1",
+          vector: [1, ...Array.from({ length: 383 }, () => 0)]
+        })
+      ).toBe(false);
+      const stored = await pool.query<{ count: number }>(
+        `select count(*)::integer as count from team_memory_semantic_vectors_384
+          where semantic_item_id=$1`,
+        [pending!.semanticItemId]
+      );
+      expect(stored.rows[0]?.count).toBe(0);
+    }
+  );
+
+  it("keeps an unpublished frozen Conversation Source owner-visible and exactly revocable", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      label: "frozen-empty-source-access"
+    });
+    await materialize(fixture, grant);
+    const logicalSourceId = randomUUID();
+    const externalSessionId = `frozen-empty-${randomUUID()}`;
+    await pool.query(`update sessions set external_session_id=$2 where id=$1`, [
+      grant.localSessionId,
+      externalSessionId
+    ]);
+    const source = await createMemorySourceRepository(
+      pool
+    ).ensureConversationSourceArtifact(actor(fixture.ownerUserId), {
+      sessionId: grant.localSessionId,
+      logicalSourceId,
+      sourceGenerationId: randomUUID(),
+      replicaRole: "origin_local",
+      sourceKind: "codex",
+      sourceRuntime: "codex",
+      externalSessionId,
+      sourceFingerprint: hash(`frozen-empty:${logicalSourceId}`),
+      artifactFormat: "codex_rollout_jsonl",
+      artifactFormatVersion: 1,
+      sourceAdapterVersion: "codex-transcript-v1",
+      journalStartOffset: 0,
+      journalStartLine: 0,
+      liveStartOffset: 0,
+      liveStartLine: 0,
+      currentSourceLength: 0,
+      sourceCreatedAt: new Date("2026-10-19T00:00:00.000Z").toISOString(),
+      storageProvider: "filesystem",
+      storagePrefix: `frozen-empty-${randomUUID()}`,
+      originDeploymentId: `deployment-${randomUUID()}`,
+      originDeviceId: `device-${randomUUID()}`,
+      originKeyId: `key-${randomUUID()}`,
+      originPublicKey: "a".repeat(43),
+      redactedSourceLabel: "Empty conversation source"
+    });
+    await pool.query(
+      `insert into team_conversation_source_grants (
+         share_grant_id,artifact_id,logical_source_id,source_generation_id,
+         owner_user_id,session_id,team_id,team_workspace_id,mode,
+         mutation_id,granted_by_user_id,creator_authority
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,'continuous',$9,$5,'test')`,
+      [
+        grant.shareGrantId,
+        source.id,
+        logicalSourceId,
+        source.sourceGenerationId,
+        fixture.ownerUserId,
+        grant.localSessionId,
+        fixture.teamId,
+        fixture.teamWorkspaceId,
+        randomUUID()
+      ]
+    );
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
+    const sourceState = await pool.query<{
+      lifecycle: string;
+      version: number;
+    }>(
+      `select lifecycle,version from team_conversation_source_grants where share_grant_id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(sourceState.rows[0]?.lifecycle).toBe("frozen_empty");
+    const owned = await repository.getOwnerShare(actor(fixture.ownerUserId), {
+      kind: "grant",
+      id: grant.shareGrantId
+    });
+    expect(owned?.sourceAccess).toEqual({
+      mode: "continuous",
+      lifecycle: "active",
+      version: sourceState.rows[0]!.version
+    });
+    const sourceAccess = createTeamConversationSourceRepository(pool);
+    const revoked = await sourceAccess.revokeTeamConversationSourceGrant(
+      actor(fixture.ownerUserId),
+      {
+        shareGrantId: grant.shareGrantId,
+        teamId: fixture.teamId,
+        expectedVersion: sourceState.rows[0]!.version,
+        mutationId: randomUUID(),
+        reasonCode: "owner_revoked_empty_source"
+      }
+    );
+    expect(revoked?.lifecycle).toBe("revoked");
+    await expect(
+      sourceAccess.getTeamConversationSourceAccess(
+        actor(fixture.readerUserId),
+        { shareGrantId: grant.shareGrantId }
+      )
+    ).resolves.toBeNull();
+  });
+
+  it("reads an authenticated published empty Conversation Source after freeze", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      label: "published-empty-source"
+    });
+    await materialize(fixture, grant);
+    const logicalSourceId = randomUUID();
+    const externalSessionId = `published-empty-${randomUUID()}`;
+    await pool.query(`update sessions set external_session_id=$2 where id=$1`, [
+      grant.localSessionId,
+      externalSessionId
+    ]);
+    const source = await createMemorySourceRepository(
+      pool
+    ).ensureConversationSourceArtifact(actor(fixture.ownerUserId), {
+      sessionId: grant.localSessionId,
+      logicalSourceId,
+      sourceGenerationId: randomUUID(),
+      replicaRole: "origin_local",
+      sourceKind: "codex",
+      sourceRuntime: "codex",
+      externalSessionId,
+      sourceFingerprint: hash(`published-empty:${logicalSourceId}`),
+      artifactFormat: "codex_rollout_jsonl",
+      artifactFormatVersion: 1,
+      sourceAdapterVersion: "codex-transcript-v1",
+      journalStartOffset: 0,
+      journalStartLine: 0,
+      liveStartOffset: 0,
+      liveStartLine: 0,
+      currentSourceLength: 0,
+      sourceCreatedAt: new Date("2026-10-19T00:00:00.000Z").toISOString(),
+      storageProvider: "filesystem",
+      storagePrefix: `published-empty-${randomUUID()}`,
+      originDeploymentId: `deployment-${randomUUID()}`,
+      originDeviceId: `device-${randomUUID()}`,
+      originKeyId: `key-${randomUUID()}`,
+      originPublicKey: "a".repeat(43),
+      redactedSourceLabel: "Published empty source"
+    });
+    const closureHash = hash(`published-empty-closure:${source.id}`);
+    await pool.query(
+      `update conversation_source_artifacts
+          set lifecycle='finalized',closure_hash=$2,closure_manifest=$3::jsonb,
+              closure_signature=$4,finalized_at=now(),source_modified_at=now(),
+              source_set_closure_hash=$5,source_set_closure_manifest=$6::jsonb,
+              source_set_closure_signature=$4,source_set_finalized_at=now()
+        where id=$1`,
+      [
+        source.id,
+        closureHash,
+        JSON.stringify({ version: 1, segmentCount: 0, chainHeadDigest: null }),
+        "a".repeat(86),
+        hash(`published-empty-set:${source.id}`),
+        JSON.stringify({
+          version: 1,
+          components: [
+            { sourceComponentId: "main", artifactClosureDigest: closureHash }
+          ]
+        })
+      ]
+    );
+    await pool.query(
+      `insert into team_conversation_source_grants (
+         share_grant_id,artifact_id,logical_source_id,source_generation_id,
+         owner_user_id,session_id,team_id,team_workspace_id,mode,
+         mutation_id,granted_by_user_id,creator_authority
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,'continuous',$9,$5,'test')`,
+      [
+        grant.shareGrantId,
+        source.id,
+        logicalSourceId,
+        source.sourceGenerationId,
+        fixture.ownerUserId,
+        grant.localSessionId,
+        fixture.teamId,
+        fixture.teamWorkspaceId,
+        randomUUID()
+      ]
+    );
+    const deployment = await pool.query<{ deployment_identity_id: string }>(
+      `select deployment_identity_id from privacy_content_policies
+        where scope='deployment' and status='active' limit 1`
+    );
+    const policy = await privacyRepository.resolveEffectiveContentPolicy({
+      deploymentIdentityId: deployment.rows[0]!.deployment_identity_id,
+      sourceOwnerUserId: fixture.ownerUserId,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId
+    });
+    await privacyRepository.storeSanitizedSourceArtifact({
+      actor: actor(fixture.ownerUserId),
+      provider: privacyProvider,
+      shareGrantId: grant.shareGrantId,
+      sourceArtifactId: source.id,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      classifierHash: privacyClassifier.classifierHash,
+      effectivePolicyHash: policy.effectivePolicyHash,
+      sourceFrontierHash: privacySourceFrontierHash({
+        sourceArtifactId: source.id,
+        sourceFrontierCursor: 0,
+        sourceSegmentCount: 0,
+        headContentDigest: null
+      }),
+      sourceFrontierCursor: 0,
+      sourceSegmentCount: 0,
+      sourceClosureHash: closureHash,
+      format: "codex_rollout_jsonl",
+      formatVersion: 1,
+      metadata: { redactedTitle: "Empty but published" },
+      chunks: []
+    });
+    await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: grant.shareGrantId,
+      expectedGrantVersion: grant.grantVersion,
+      authority: authority(fixture)
+    });
+    const access = createTeamConversationSourceRepository(pool);
+    const manifest = await access.getTeamConversationSourceManifest(
+      actor(fixture.readerUserId),
+      { shareGrantId: grant.shareGrantId, afterSegmentIndex: -1, limit: 10 }
+    );
+    expect(manifest?.artifact.id).toBe(source.id);
+    expect(manifest?.segments).toEqual([]);
+    expect(manifest?.grant.maximumSegmentIndex).toBe(0);
+    expect(manifest?.grant.maximumSourceOffset).toBe(0);
   });
 
   it("preserves exact rollup fidelity and policy provenance through owner-private sync and Team materialization", async () => {
@@ -9255,6 +11963,375 @@ describeDb("Shared Memory repository", () => {
       semantic_count: "0"
     });
   });
+
+  it.each([false, true])(
+    "keeps other frozen Curated items readable while the owner suppresses one assertion (legacy publication: %s)",
+    async (legacyPublication) => {
+      const personal = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 71).toString("base64")
+      );
+      const ownerPrivate = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 72).toString("base64")
+      );
+      const team = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 73).toString("base64")
+      );
+      privacyProvider = personal;
+      const allowed: SharedMemoryRepresentation[] = [
+        "lcm_rollups",
+        "curated_assertions"
+      ];
+      const fixture = await createWorkspaceFixture({
+        teamAllowed: allowed,
+        workspaceAllowed: allowed
+      });
+      const options = {
+        resolvePersonalEncryptionProvider: () => personal,
+        resolveOwnerPrivateReplicaEncryptionProvider: () => ownerPrivate,
+        resolveTeamEncryptionProvider: () => team
+      };
+      repository = createSharedMemoryRepository(pool, options);
+      syncRepository = createCrossIdentitySyncRepository(pool, {
+        ownerPrivateReplicaEnvelopeEncryptionProvider: ownerPrivate
+      });
+      const source = await createSource(
+        fixture,
+        1,
+        "frozen-curated-suppression"
+      );
+      await putOwnerPolicy(fixture, source, allowed);
+      const evidenceId = source.seededEvents[0]!.contributorIds[0]!;
+      await upsertEncryptedFieldPayloadWithClient(
+        pool,
+        actor(fixture.ownerUserId),
+        personal,
+        {
+          sourceTable: "conversation_items",
+          sourceId: evidenceId,
+          sourceColumn: "raw_text",
+          plaintext: "Exact-session Curated evidence.",
+          visibility: "personal",
+          rowFamily: "conversation_item",
+          aad: { conversationItemId: evidenceId }
+        }
+      );
+      const insertAssertion = async (claim: string): Promise<string> => {
+        const id = randomUUID();
+        await pool.query(
+          `insert into curated_memory_assertions (
+           id,owner_user_id,visibility,assertion_text,normalized_assertion,
+           sensitivity,confidence,tags,metadata,status,observed_at
+         ) values ($1,$2,'personal','[koed encrypted curated memory]',
+           $3,'normal',95,'{}','{}','current',now())`,
+          [id, fixture.ownerUserId, `encrypted:${id}`]
+        );
+        await upsertEncryptedFieldPayloadWithClient(
+          pool,
+          actor(fixture.ownerUserId),
+          personal,
+          {
+            sourceTable: "curated_memory_assertions",
+            sourceId: id,
+            sourceColumn: "payload",
+            plaintext: {
+              assertionText: claim,
+              normalizedAssertion: claim.toLowerCase(),
+              tags: ["decision"],
+              metadata: {},
+              suppressionReason: null
+            },
+            visibility: "personal",
+            rowFamily: "curated_memory",
+            aad: { curatedMemoryId: id }
+          }
+        );
+        await pool.query(
+          `insert into curated_memory_sources (
+           assertion_id,source_type,source_role,conversation_item_id,metadata
+         ) values ($1,'conversation_item','primary_evidence',$2,'{}')`,
+          [id, evidenceId]
+        );
+        return id;
+      };
+      const firstId = await insertAssertion("Frozen assertion one.");
+      await insertAssertion("Frozen assertion two.");
+      const created = await createConsent(fixture, source, {
+        representation: "curated_assertions",
+        mode: "continuous",
+        representations: allowed,
+        label: "frozen-curated-suppression"
+      });
+      const grant = await repository.createShareGrant(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          logicalGrantId: randomUUID(),
+          consentId: created.consentId,
+          authority: authority(fixture)
+        }
+      );
+      await prepareSanitizedSemanticPreview(
+        fixture.ownerUserId,
+        created.preview,
+        repository
+      );
+      await repository.materializeGrantRepresentation(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          shareGrantId: grant.id,
+          consentId: created.consentId,
+          expectedGrantVersion: grant.grantVersion,
+          preview: created.preview
+        }
+      );
+      const embeddedItems = (
+        await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
+      ).filter((item) => item.shareGrantId === grant.id);
+      const curatedVector = [1, ...Array.from({ length: 383 }, () => 0)];
+      expect(embeddedItems).toHaveLength(2);
+      for (const item of embeddedItems) {
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: item.semanticItemId,
+          contentHash: item.contentHash,
+          model: "frozen-curated-test",
+          dimensions: 384,
+          version: "v1",
+          vector: curatedVector
+        });
+      }
+      if (legacyPublication) {
+        await pool.query(
+          `delete from team_memory_curated_item_eligibility
+          where share_grant_id=$1`,
+          [grant.id]
+        );
+      }
+      await repository.freezeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: grant.id,
+        expectedGrantVersion: grant.grantVersion,
+        authority: authority(fixture)
+      });
+      const read = () =>
+        repository.readGrantRepresentation(actor(fixture.readerUserId), {
+          shareGrantId: grant.id,
+          representation: "curated_assertions"
+        });
+      const search = () =>
+        repository.searchAuthorizedSharedMemorySemanticItems(
+          actor(fixture.readerUserId),
+          {
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            queryVector: curatedVector,
+            model: "frozen-curated-test",
+            dimensions: 384,
+            version: "v1",
+            limit: 10,
+            searchDomain: "global",
+            representations: ["curated_assertions"]
+          }
+        );
+      const scan = () =>
+        repository.scanAuthorizedSharedMemorySemanticItems(
+          actor(fixture.readerUserId),
+          {
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            queryVector: curatedVector,
+            model: "frozen-curated-test",
+            dimensions: 384,
+            version: "v1",
+            limit: 10,
+            searchDomain: "global",
+            representations: ["curated_assertions"]
+          }
+        );
+      expect(
+        (await read())?.items.map((item) => item.content.assertionText)
+      ).toEqual(["Frozen assertion one.", "Frozen assertion two."]);
+      const initialCandidates = await search();
+      expect(initialCandidates).toHaveLength(2);
+      expect((await scan())[0]?.candidateCount).toBe(2);
+      const firstCandidate = initialCandidates.find(
+        (candidate) =>
+          candidate.pseudonymousSourceId ===
+          sharedMemoryGrantScopedSourceId(grant.id, firstId)
+      );
+      expect(firstCandidate).toBeTruthy();
+      const sqlPseudonym = await pool.query<{ source_id: string }>(
+        `select koed_grant_scoped_curated_source_id($1::uuid,$2::uuid) as source_id`,
+        [grant.id, firstId]
+      );
+      expect(sqlPseudonym.rows[0]?.source_id).toBe(
+        sharedMemoryGrantScopedSourceId(grant.id, firstId)
+      );
+      const curated = createCuratedMemoryRepository(pool, {
+        envelopeEncryptionProvider: personal,
+        onCuratedMemoryChanged: async (owner, client, ids) => {
+          const transactional = createSharedMemoryRepository(
+            createSavepointPool(client, "curated_memory"),
+            options
+          );
+          await transactional.syncCuratedSharedItemEligibility(owner, ids);
+          await transactional.reconcileCuratedGrantRepresentations(owner);
+        }
+      });
+      await curated.suppressCuratedMemoryAssertion(
+        actor(fixture.ownerUserId),
+        firstId,
+        { reason: "source owner suppression" }
+      );
+      expect(
+        (await read())?.items.map((item) => item.content.assertionText)
+      ).toEqual(["Frozen assertion two."]);
+      expect(await search()).toHaveLength(1);
+      expect((await scan())[0]?.candidateCount).toBe(1);
+      const blockedEmbedding = await pool.query<{
+        id: string;
+        content_hash: string;
+      }>(
+        `update team_memory_semantic_items item
+            set embedding_state='processing',embedded_at=null,
+                updated_at=now()-interval '6 minutes'
+          from team_memory_representations representation
+         where item.representation_id=representation.id
+           and representation.frozen_snapshot=true
+           and item.share_grant_id=$1 and item.pseudonymous_source_id=$2
+        returning item.id,item.content_hash`,
+        [grant.id, sharedMemoryGrantScopedSourceId(grant.id, firstId)]
+      );
+      expect(blockedEmbedding.rows).toHaveLength(1);
+      const blockedPending =
+        await repository.listPendingSharedMemorySemanticItems({
+          limit: 100,
+          model: "frozen-curated-test",
+          dimensions: 384,
+          version: "v1"
+        });
+      expect(
+        blockedPending.some(
+          (item) => item.semanticItemId === blockedEmbedding.rows[0]!.id
+        )
+      ).toBe(false);
+      expect(
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: blockedEmbedding.rows[0]!.id,
+          contentHash: blockedEmbedding.rows[0]!.content_hash,
+          model: "frozen-curated-test-v2",
+          dimensions: 384,
+          version: "v2",
+          vector: curatedVector
+        })
+      ).toBe(false);
+      await pool.query(
+        `update team_memory_semantic_items
+            set embedding_state='embedded',embedded_at=now(),updated_at=now()
+          where id=$1`,
+        [blockedEmbedding.rows[0]!.id]
+      );
+      await expect(
+        repository.expandAuthorizedSharedMemorySemanticItem(
+          actor(fixture.readerUserId),
+          {
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            candidateId: firstCandidate!.candidateId,
+            searchDomain: "global"
+          }
+        )
+      ).resolves.toBeNull();
+      const restore = async (mutateContent: boolean) => {
+        const client = await pool.connect();
+        try {
+          await client.query("begin");
+          if (mutateContent) {
+            await upsertEncryptedFieldPayloadWithClient(
+              client,
+              actor(fixture.ownerUserId),
+              personal,
+              {
+                sourceTable: "curated_memory_assertions",
+                sourceId: firstId,
+                sourceColumn: "payload",
+                plaintext: {
+                  assertionText: "Frozen assertion one changed.",
+                  normalizedAssertion: "frozen assertion one changed.",
+                  tags: ["decision"],
+                  metadata: {},
+                  suppressionReason: null
+                },
+                visibility: "personal",
+                rowFamily: "curated_memory",
+                aad: { curatedMemoryId: firstId }
+              }
+            );
+          }
+          await client.query(
+            `update curated_memory_assertions
+              set status='current',suppressed_at=null,
+                  suppressed_by_user_id=null,suppression_reason=null
+            where id=$1 and owner_user_id=$2`,
+            [firstId, fixture.ownerUserId]
+          );
+          await createSharedMemoryRepository(
+            createSavepointPool(client, "curated_memory"),
+            options
+          ).syncCuratedSharedItemEligibility(actor(fixture.ownerUserId), [
+            firstId
+          ]);
+          await client.query("commit");
+        } catch (error) {
+          await client.query("rollback");
+          throw error;
+        } finally {
+          client.release();
+        }
+      };
+      await restore(false);
+      expect((await read())?.items).toHaveLength(2);
+      expect(await search()).toHaveLength(2);
+      await curated.suppressCuratedMemoryAssertion(
+        actor(fixture.ownerUserId),
+        firstId,
+        { reason: "source owner suppression again" }
+      );
+      await restore(true);
+      expect(
+        (await read())?.items.map((item) => item.content.assertionText)
+      ).toEqual(["Frozen assertion two."]);
+      expect(await search()).toHaveLength(1);
+      const newId = await insertAssertion("New post-freeze assertion.");
+      await repository.syncCuratedSharedItemEligibility(
+        actor(fixture.ownerUserId),
+        [newId]
+      );
+      expect(
+        (await read())?.items.map((item) => item.content.assertionText)
+      ).toEqual(["Frozen assertion two."]);
+      expect(await search()).toHaveLength(1);
+      const markers = await pool.query<{
+        marker: string;
+        frozen_snapshot: boolean;
+      }>(
+        `select row_to_json(marker)::text as marker,rep.frozen_snapshot
+         from team_memory_curated_item_eligibility marker
+         join team_memory_representations rep on rep.id=marker.representation_id
+        where marker.share_grant_id=$1`,
+        [grant.id]
+      );
+      expect(markers.rows).toHaveLength(legacyPublication ? 1 : 2);
+      expect(markers.rows.every((row) => !row.marker.includes(firstId))).toBe(
+        true
+      );
+      expect(markers.rows.filter((row) => row.frozen_snapshot)).toHaveLength(
+        legacyPublication ? 1 : 2
+      );
+      await pool.query(
+        "update conversation_items set memory_excluded_at=now() where id=$1",
+        [evidenceId]
+      );
+      expect((await read())?.items).toHaveLength(0);
+    }
+  );
 
   it("rewraps Team representation DEKs without decrypting or changing ciphertext", async () => {
     const fixture = await createWorkspaceFixture();

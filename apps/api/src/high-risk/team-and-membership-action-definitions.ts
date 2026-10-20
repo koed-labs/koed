@@ -328,6 +328,41 @@ const teamLeaveActionDefinition = defineTeamAction<
     ) {
       unavailable("Team leave");
     }
+    const claimed = intent.body.expectedOwnedWorkspaceProjects ?? [];
+    const actual = review.ownedWorkspaceProjects;
+    if (
+      claimed.length !== actual.length ||
+      claimed.some(
+        (project, index) =>
+          project.id !== actual[index]?.id ||
+          project.version !== actual[index]?.version
+      ) ||
+      (intent.body.expectedTeamVersion !== undefined &&
+        intent.body.expectedTeamVersion !== review.team.version)
+    ) {
+      unavailable("Team leave");
+    }
+    if (actual.length > 0) {
+      if (intent.body.expectedTeamVersion !== review.team.version) {
+        unavailable("Team leave");
+      }
+      return stepUp({
+        title: `Leave ${review.team.name} and remove owned Projects?`,
+        description:
+          "Review the exact owned Workspace Project set before leaving the Team.",
+        consequence:
+          "Owned Projects require copy-back and Team cleanup before membership removal.",
+        confirmLabel: "Review Team departure",
+        details: [
+          { label: "Team", value: review.team.name },
+          { label: "Team version", value: String(review.team.version) },
+          ...actual.map((project) => ({
+            label: "Owned Project",
+            value: `${project.id} (version ${project.version})`
+          }))
+        ]
+      });
+    }
     return nativeReview({
       title: `Leave ${review.team.name}?`,
       description: "You will lose Team and Workspace Access.",

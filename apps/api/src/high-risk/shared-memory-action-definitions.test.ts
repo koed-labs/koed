@@ -384,6 +384,7 @@ describe("Shared Memory action definitions", () => {
 
     const admittedDerived = await admit(derived);
     const admittedRaw = await admit(raw, rawRepository);
+    const admittedCurated = await admit(shareIntent("lcm_rollups", true));
 
     expect(admittedDerived).toMatchObject({
       operation: sharedMemoryPendingShareActionGrantBinding({
@@ -418,6 +419,9 @@ describe("Shared Memory action definitions", () => {
           consequence: expect.stringContaining("invalidates other Share Grants")
         }
       }
+    });
+    expect(admittedCurated).toMatchObject({
+      policy: { disposition: "step_up" }
     });
   });
 

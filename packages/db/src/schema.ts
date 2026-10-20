@@ -1384,6 +1384,58 @@ export const conversationSourceArtifacts = pgTable(
   ]
 );
 
+export const conversationSourcePublicationFences = pgTable(
+  "conversation_source_publication_fences",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    logicalSourceId: uuid("logical_source_id").notNull(),
+    publicationVersion: bigint("publication_version", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.ownerUserId, table.sessionId, table.logicalSourceId],
+      name: "conversation_source_publication_fences_pk"
+    }),
+    check(
+      "conversation_source_publication_fences_version_check",
+      sql`${table.publicationVersion} >= 0`
+    )
+  ]
+);
+
+export const sharedMemoryPublicationFences = pgTable(
+  "shared_memory_publication_fences",
+  {
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    publicationVersion: bigint("publication_version", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.logicalMemoryId],
+      name: "shared_memory_publication_fences_pk"
+    }),
+    check(
+      "shared_memory_publication_fences_version_check",
+      sql`${table.publicationVersion} >= 0`
+    )
+  ]
+);
+
 export const conversationSourceSegments = pgTable(
   "conversation_source_segments",
   {
@@ -7837,6 +7889,13 @@ export const teamMemoryShareGrants = pgTable(
       { onDelete: "restrict" }
     ),
     tombstonedAt: timestamp("tombstoned_at", { withTimezone: true }),
+    frozenAt: timestamp("frozen_at", { withTimezone: true }),
+    freezeMutationId: uuid("freeze_mutation_id"),
+    freezeManifestHash: text("freeze_manifest_hash"),
+    freezeRepresentationCount: integer("freeze_representation_count"),
+    freezeSourceAccessExpected: boolean("freeze_source_access_expected")
+      .notNull()
+      .default(false),
     purgeCompletedAt: timestamp("purge_completed_at", { withTimezone: true })
   },
   (table) => [
@@ -7932,7 +7991,9 @@ export const teamMemoryShareGrants = pgTable(
     ),
     uniqueIndex("team_memory_share_grants_destination_unique")
       .on(table.logicalMemoryId, table.teamWorkspaceId)
-      .where(sql`${table.logicalMemoryId} is not null`),
+      .where(
+        sql`${table.logicalMemoryId} is not null and ${table.frozenAt} is null`
+      ),
     index("team_memory_share_grants_workspace_active_idx")
       .on(table.teamWorkspaceId, table.createdAt.desc())
       .where(sql`${table.revokedAt} is null`),
@@ -7995,6 +8056,27 @@ export const teamMemoryShareGrants = pgTable(
         and ${table.retentionTriggeredAt} is not null
         and ${table.retainUntil} is not null
       )`
+    ),
+    check(
+      "team_memory_share_grants_freeze_check",
+      sql`coalesce(((${table.frozenAt} is null
+          and ${table.freezeMutationId} is null
+          and ${table.freezeManifestHash} is null
+          and ${table.freezeRepresentationCount} is null
+          and ${table.freezeSourceAccessExpected} = false)
+        or (${table.frozenAt} is not null
+          and ${table.freezeMutationId} is not null
+          and ${table.purgeCompletedAt} is null
+          and ${table.freezeManifestHash} is not null
+          and ${table.freezeManifestHash} ~ '^[0-9a-f]{64}$'
+          and ${table.freezeRepresentationCount} is not null
+          and ${table.freezeRepresentationCount} >= 0)
+        or (${table.frozenAt} is not null
+          and ${table.freezeMutationId} is not null
+          and ${table.purgeCompletedAt} is not null
+          and ${table.lifecycle} = 'purged'
+          and ${table.freezeManifestHash} is null
+          and ${table.freezeRepresentationCount} is null)), false)`
     )
   ]
 );
@@ -8081,6 +8163,10 @@ export const teamConversationSourceGrants = pgTable(
           and ${table.revokedAt} is null
           and ${table.revokedByUserId} is null
           and ${table.revocationReason} is null)
+        or (${table.lifecycle} = 'frozen_empty'
+          and ${table.revokedAt} is null
+          and ${table.revokedByUserId} is null
+          and ${table.revocationReason} is null)
         or (${table.lifecycle} = 'revoked'
           and ${table.revokedAt} is not null
           and ${table.revokedByUserId} is not null
@@ -8099,21 +8185,24 @@ export const teamMemoryRepresentations = pgTable(
     id: id(),
     shareGrantId: uuid("share_grant_id").notNull(),
     consentId: uuid("consent_id").notNull(),
-    sourcePreviewId: uuid("source_preview_id")
-      .notNull()
-      .references(() => sharedSourcePreviews.id, {
+    sourcePreviewId: uuid("source_preview_id").references(
+      () => sharedSourcePreviews.id,
+      {
         onDelete: "restrict"
-      }),
-    sourceArtifactId: uuid("source_artifact_id")
-      .notNull()
-      .references(() => sharedSourceArtifacts.id, {
+      }
+    ),
+    sourceArtifactId: uuid("source_artifact_id").references(
+      () => sharedSourceArtifacts.id,
+      {
         onDelete: "restrict"
-      }),
-    sanitizedSourcePreviewId: uuid("sanitized_source_preview_id")
-      .notNull()
-      .references(() => sharedSourceSemanticPreviews.id, {
+      }
+    ),
+    sanitizedSourcePreviewId: uuid("sanitized_source_preview_id").references(
+      () => sharedSourceSemanticPreviews.id,
+      {
         onDelete: "restrict"
-      }),
+      }
+    ),
     privacyClassifierGenerationId: uuid(
       "privacy_classifier_generation_id"
     ).notNull(),
@@ -8125,6 +8214,8 @@ export const teamMemoryRepresentations = pgTable(
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
     logicalMemoryId: uuid("logical_memory_id").notNull(),
     sourceRevisionId: uuid("source_revision_id").notNull(),
+    frozenSnapshot: boolean("frozen_snapshot").notNull().default(false),
+    sourceRepresentationId: uuid("source_representation_id"),
     representation: sharedMemoryRepresentation("representation").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     sourceRevisionHash: text("source_revision_hash").notNull(),
@@ -8267,6 +8358,7 @@ export const teamMemoryRepresentations = pgTable(
       table.fidelityPolicyRevision,
       table.contentPolicyVersion,
       table.classifierVersion,
+      table.frozenSnapshot,
       table.sanitizedSourcePreviewId
     ),
     unique("team_memory_representations_scope_unique").on(
@@ -8315,6 +8407,22 @@ export const teamMemoryRepresentations = pgTable(
         and ${table.sanitizedContentHash} ~ '^[0-9a-f]{64}$'`
     ),
     check(
+      "team_memory_representations_frozen_snapshot_check",
+      sql`(${table.frozenSnapshot} = false and ${table.sourceRepresentationId} is null)
+        or (${table.frozenSnapshot} = true
+          and ${table.sourceRepresentationId} is not null
+          and ${table.sourcePreviewId} is null
+          and ${table.sourceArtifactId} is null
+          and ${table.sanitizedSourcePreviewId} is null)`
+    ),
+    check(
+      "team_memory_representations_source_reference_check",
+      sql`(${table.frozenSnapshot} = true)
+        or (${table.sourcePreviewId} is not null
+          and ${table.sourceArtifactId} is not null
+          and ${table.sanitizedSourcePreviewId} is not null)`
+    ),
+    check(
       "team_memory_representations_lifecycle_check",
       sql`(
         ${table.state} = 'pending'
@@ -8351,6 +8459,88 @@ export const teamMemoryRepresentations = pgTable(
         and ${table.tombstonedAt} is not null
         and ${table.purgeCompletedAt} is not null
       )`
+    )
+  ]
+);
+
+// One grant can authorize several representation types at once. This immutable
+// per-type binding records each published closure independently of mutable
+// source-preview, source-artifact, and semantic-preview rows. Its source
+// representation ID is provenance only; frozen reads use frozenRepresentationId.
+export const teamMemoryGrantFreezeRepresentations = pgTable(
+  "team_memory_grant_freeze_representations",
+  {
+    shareGrantId: uuid("share_grant_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    representation: sharedMemoryRepresentation("representation").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    sourceRepresentationId: uuid("source_representation_id").notNull(),
+    frozenRepresentationId: uuid("frozen_representation_id").notNull(),
+    sourceBindingSnapshot: jsonb("source_binding_snapshot")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    manifestHash: text("manifest_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.shareGrantId, table.representation],
+      name: "team_memory_grant_freeze_representations_pk"
+    }),
+    foreignKey({
+      columns: [
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId
+      ],
+      foreignColumns: [
+        teamMemoryShareGrants.id,
+        teamMemoryShareGrants.teamId,
+        teamMemoryShareGrants.teamWorkspaceId,
+        teamMemoryShareGrants.logicalMemoryId
+      ],
+      name: "team_memory_grant_freeze_representations_grant_scope_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [
+        table.frozenRepresentationId,
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId,
+        table.representation,
+        table.sourceRevision
+      ],
+      foreignColumns: [
+        teamMemoryRepresentations.id,
+        teamMemoryRepresentations.shareGrantId,
+        teamMemoryRepresentations.teamId,
+        teamMemoryRepresentations.teamWorkspaceId,
+        teamMemoryRepresentations.logicalMemoryId,
+        teamMemoryRepresentations.representation,
+        teamMemoryRepresentations.sourceRevision
+      ],
+      name: "team_memory_grant_freeze_representations_snapshot_fk"
+    }).onDelete("cascade"),
+    unique("team_memory_grant_freeze_representations_snapshot_unique").on(
+      table.frozenRepresentationId
+    ),
+    unique("team_memory_grant_freeze_representations_scope_unique").on(
+      table.shareGrantId,
+      table.teamId,
+      table.teamWorkspaceId,
+      table.logicalMemoryId,
+      table.representation,
+      table.frozenRepresentationId
+    ),
+    check(
+      "team_memory_grant_freeze_representations_binding_check",
+      sql`jsonb_typeof(${table.sourceBindingSnapshot}) = 'object'
+        and ${table.sourceRevision} >= 0
+        and ${table.manifestHash} ~ '^[0-9a-f]{64}$'`
     )
   ]
 );
@@ -8492,6 +8682,14 @@ export const teamMemorySemanticItems = pgTable(
       table.representationId,
       table.sourceItemIndex
     ),
+    unique("team_memory_semantic_items_exact_scope_unique").on(
+      table.id,
+      table.representationId,
+      table.shareGrantId,
+      table.teamId,
+      table.teamWorkspaceId,
+      table.logicalMemoryId
+    ),
     index("team_memory_semantic_items_pending_idx").on(
       table.embeddingState,
       table.nextAttemptAt,
@@ -8537,6 +8735,131 @@ export const teamMemorySemanticItems = pgTable(
         and ((${table.embeddingState} = 'failed' and ${table.nextAttemptAt} is not null
               and length(trim(${table.lastErrorClass})) > 0)
           or (${table.embeddingState} <> 'failed' and ${table.nextAttemptAt} is null))`
+    )
+  ]
+);
+
+// The owner-side Curated callback updates only this grant-scoped, pseudonymous
+// eligibility state. Copied semantic ciphertext and vectors remain immutable.
+export const teamMemoryCuratedItemEligibility = pgTable(
+  "team_memory_curated_item_eligibility",
+  {
+    semanticItemId: uuid("semantic_item_id").primaryKey(),
+    representationId: uuid("representation_id").notNull(),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    pseudonymousSourceId: uuid("pseudonymous_source_id").notNull(),
+    pinnedRevisionHash: text("pinned_revision_hash"),
+    blockedAt: timestamp("blocked_at", { withTimezone: true }),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [
+        table.semanticItemId,
+        table.representationId,
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId
+      ],
+      foreignColumns: [
+        teamMemorySemanticItems.id,
+        teamMemorySemanticItems.representationId,
+        teamMemorySemanticItems.shareGrantId,
+        teamMemorySemanticItems.teamId,
+        teamMemorySemanticItems.teamWorkspaceId,
+        teamMemorySemanticItems.logicalMemoryId
+      ],
+      name: "team_memory_curated_item_eligibility_item_scope_fk"
+    }).onDelete("cascade"),
+    index("team_memory_curated_item_eligibility_grant_source_idx").on(
+      table.shareGrantId,
+      table.pseudonymousSourceId
+    ),
+    check(
+      "team_memory_curated_item_eligibility_hash_check",
+      sql`${table.pinnedRevisionHash} is null or length(${table.pinnedRevisionHash}) = 64`
+    ),
+    check(
+      "team_memory_curated_item_eligibility_unknown_blocked_check",
+      sql`${table.pinnedRevisionHash} is not null or ${table.blockedAt} is not null`
+    )
+  ]
+);
+
+// Original semantic-item IDs are opaque references that may already have been
+// returned to an authorized member. This grant-scoped alias keeps those
+// references bound to the matching frozen clone without retaining the mutable
+// original item row or allowing an alias to point into another grant.
+export const teamMemoryGrantFreezeItemAliases = pgTable(
+  "team_memory_grant_freeze_item_aliases",
+  {
+    shareGrantId: uuid("share_grant_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    representation: sharedMemoryRepresentation("representation").notNull(),
+    frozenRepresentationId: uuid("frozen_representation_id").notNull(),
+    sourceSemanticItemId: uuid("source_semantic_item_id").notNull(),
+    frozenSemanticItemId: uuid("frozen_semantic_item_id").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.shareGrantId,
+        table.representation,
+        table.sourceSemanticItemId
+      ],
+      name: "team_memory_grant_freeze_item_aliases_pk"
+    }),
+    foreignKey({
+      columns: [
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId,
+        table.representation,
+        table.frozenRepresentationId
+      ],
+      foreignColumns: [
+        teamMemoryGrantFreezeRepresentations.shareGrantId,
+        teamMemoryGrantFreezeRepresentations.teamId,
+        teamMemoryGrantFreezeRepresentations.teamWorkspaceId,
+        teamMemoryGrantFreezeRepresentations.logicalMemoryId,
+        teamMemoryGrantFreezeRepresentations.representation,
+        teamMemoryGrantFreezeRepresentations.frozenRepresentationId
+      ],
+      name: "team_memory_grant_freeze_item_aliases_representation_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [
+        table.frozenSemanticItemId,
+        table.frozenRepresentationId,
+        table.shareGrantId,
+        table.teamId,
+        table.teamWorkspaceId,
+        table.logicalMemoryId
+      ],
+      foreignColumns: [
+        teamMemorySemanticItems.id,
+        teamMemorySemanticItems.representationId,
+        teamMemorySemanticItems.shareGrantId,
+        teamMemorySemanticItems.teamId,
+        teamMemorySemanticItems.teamWorkspaceId,
+        teamMemorySemanticItems.logicalMemoryId
+      ],
+      name: "team_memory_grant_freeze_item_aliases_item_fk"
+    }).onDelete("cascade"),
+    unique("team_memory_grant_freeze_item_aliases_frozen_item_unique").on(
+      table.frozenSemanticItemId
+    ),
+    check(
+      "team_memory_grant_freeze_item_aliases_id_check",
+      sql`${table.sourceSemanticItemId} <> ${table.frozenSemanticItemId}`
     )
   ]
 );
@@ -8601,6 +8924,154 @@ export const teamMemorySemanticVectors3072 = pgTable(
     index("team_memory_semantic_vectors_3072_hnsw_idx").using(
       "hnsw",
       table.embedding.op("halfvec_cosine_ops")
+    )
+  ]
+);
+
+// A Team-side immutable snapshot of the authorized Conversation Source Access
+// The Workspace Project model is a later migration. This durable state lets
+// Team leave distinguish its intentional current absence from a partially
+// applied or unexpectedly missing future authoritative model.
+export const projectLifecycleSchemaCapabilities = pgTable(
+  "project_lifecycle_schema_capabilities",
+  {
+    capability: text("capability").primaryKey(),
+    state: text("state").notNull(),
+    enabledAt: timestamp("enabled_at", { withTimezone: true })
+  },
+  (table) => [
+    check(
+      "project_lifecycle_schema_capabilities_state_check",
+      sql`(${table.capability} = 'workspace_projects'
+        and ((${table.state} = 'absent' and ${table.enabledAt} is null)
+          or (${table.state} = 'enabled' and ${table.enabledAt} is not null)))`
+    )
+  ]
+);
+
+// A Team-side immutable snapshot of the authorized Conversation Source Access
+// frontier at the grant freeze boundary. The JSON contains only signed source
+// identity/frontier metadata and sanitized Team artifact/chunk metadata; its
+// encrypted field envelopes live in the child table below.
+export const teamMemoryGrantFreezeSources = pgTable(
+  "team_memory_grant_freeze_sources",
+  {
+    shareGrantId: uuid("share_grant_id")
+      .primaryKey()
+      .references(() => teamMemoryShareGrants.id, { onDelete: "cascade" }),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    sourceSnapshot: jsonb("source_snapshot")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    sourcePayloadCount: integer("source_payload_count").notNull().default(0),
+    sourceManifestHash: text("source_manifest_hash"),
+    createdAt: now(),
+    // Monotonic privacy tombstone. A source-side invalidation also suppresses
+    // its frozen Team copy, including after the original artifact is purged.
+    suppressedAt: timestamp("suppressed_at", { withTimezone: true }),
+    purgedAt: timestamp("purged_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.shareGrantId, table.teamId, table.teamWorkspaceId],
+      foreignColumns: [
+        teamMemoryShareGrants.id,
+        teamMemoryShareGrants.teamId,
+        teamMemoryShareGrants.teamWorkspaceId
+      ],
+      name: "team_memory_grant_freeze_sources_scope_fk"
+    }).onDelete("cascade"),
+    check(
+      "team_memory_grant_freeze_sources_snapshot_check",
+      sql`coalesce((jsonb_typeof(${table.sourceSnapshot}) = 'object'
+        and ${table.sourcePayloadCount} >= 0
+        and ((${table.purgedAt} is null
+              and ${table.sourceSnapshot}->>'schemaVersion' = '1'
+              and jsonb_typeof(${table.sourceSnapshot}->'capability') = 'object'
+              and ${table.sourceSnapshot} ? 'published'
+              and ${table.sourceManifestHash} is not null
+              and ${table.sourceManifestHash} ~ '^[0-9a-f]{64}$')
+          or (${table.purgedAt} is not null
+              and ${table.sourceSnapshot} = '{}'::jsonb
+              and ${table.sourcePayloadCount} = 0
+              and ${table.sourceManifestHash} is null))), false)`
+    )
+  ]
+);
+
+// These are copies of already-authorized Team-encrypted envelopes. Their
+// original source identity, provenance, AAD, ciphertext location and creation
+// time are retained exactly so reads and key rewrap cannot retarget the AAD.
+export const teamMemoryGrantFreezeSourcePayloads = pgTable(
+  "team_memory_grant_freeze_source_payloads",
+  {
+    id: id(),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    sourceTable: text("source_table").notNull(),
+    sourceId: uuid("source_id").notNull(),
+    sourceColumn: text("source_column").notNull(),
+    plaintextContentType: text("plaintext_content_type").notNull(),
+    envelope: jsonb("envelope").$type<EncryptedPayloadEnvelope>().notNull(),
+    createdAt: now(),
+    rewrappedAt: timestamp("rewrapped_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.shareGrantId],
+      foreignColumns: [teamMemoryGrantFreezeSources.shareGrantId],
+      name: "team_memory_grant_freeze_source_payloads_header_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.shareGrantId, table.teamId, table.teamWorkspaceId],
+      foreignColumns: [
+        teamMemoryShareGrants.id,
+        teamMemoryShareGrants.teamId,
+        teamMemoryShareGrants.teamWorkspaceId
+      ],
+      name: "team_memory_grant_freeze_source_payloads_scope_fk"
+    }).onDelete("cascade"),
+    unique("team_memory_grant_freeze_source_payloads_identity_unique").on(
+      table.shareGrantId,
+      table.sourceTable,
+      table.sourceId,
+      table.sourceColumn
+    ),
+    index("team_memory_grant_freeze_source_payloads_rewrap_idx").on(
+      table.teamId,
+      table.shareGrantId,
+      table.id
+    ),
+    check(
+      "team_memory_grant_freeze_source_payloads_identity_check",
+      sql`coalesce((${table.sourceTable} in ('privacy_sanitized_source_artifacts','privacy_sanitized_source_chunks')
+        and length(trim(${table.sourceColumn})) > 0
+        and jsonb_typeof(${table.envelope}) = 'object'
+        and jsonb_typeof(${table.envelope}->'version') = 'number'
+        and ${table.envelope}->>'version' = '1'
+        and jsonb_typeof(${table.envelope}->'providerMode') = 'string'
+        and length(trim(${table.envelope}->>'providerMode')) > 0
+        and jsonb_typeof(${table.envelope}->'keyId') = 'string'
+        and length(trim(${table.envelope}->>'keyId')) > 0
+        and jsonb_typeof(${table.envelope}->'keyVersion') = 'number'
+        and ${table.envelope}->'keyVersion' >= '0'::jsonb
+        and jsonb_typeof(${table.envelope}->'algorithm') = 'string'
+        and length(trim(${table.envelope}->>'algorithm')) > 0
+        and jsonb_typeof(${table.envelope}->'ciphertext') = 'string'
+        and length(trim(${table.envelope}->>'ciphertext')) > 0
+        and jsonb_typeof(${table.envelope}->'nonce') = 'string'
+        and length(trim(${table.envelope}->>'nonce')) > 0
+        and jsonb_typeof(${table.envelope}->'tag') = 'string'
+        and length(trim(${table.envelope}->>'tag')) > 0
+        and jsonb_typeof(${table.envelope}->'scope') = 'object'
+        and jsonb_typeof(${table.envelope}->'provenance') = 'object'
+        and jsonb_typeof(${table.envelope}->'wrappedDek') = 'object'
+        and jsonb_typeof(${table.envelope}->'aad') = 'object'
+        and jsonb_typeof(${table.envelope}->'ciphertextLocation') = 'string'
+        and length(trim(${table.envelope}->>'ciphertextLocation')) > 0
+        and jsonb_typeof(${table.envelope}->'createdAt') = 'string'), false)`
     )
   ]
 );

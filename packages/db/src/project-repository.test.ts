@@ -30,12 +30,30 @@ describe.skipIf(!testUrl)("Personal Project repository", () => {
   }, 120_000);
 
   afterAll(async () => {
-    await pool?.end();
-    if (admin && database)
-      await admin.query(
-        `drop database if exists ${quote(database)} with (force)`
-      );
-    await admin?.end();
+    try {
+      await pool?.end();
+      if (admin && database) {
+        let sessions = -1;
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          const active = await admin.query<{ count: number }>(
+            `select count(*)::integer as count from pg_stat_activity
+              where datname=$1 and pid<>pg_backend_pid()`,
+            [database]
+          );
+          sessions = active.rows[0]!.count;
+          if (sessions === 0) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (sessions !== 0) {
+          throw new Error(
+            `Project repository test database still has ${sessions} active session(s)`
+          );
+        }
+        await admin.query(`drop database if exists ${quote(database)}`);
+      }
+    } finally {
+      await admin?.end();
+    }
   });
 
   const fixture = async (

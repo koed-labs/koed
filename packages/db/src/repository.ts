@@ -3942,7 +3942,7 @@ export const createMemorySourceRepository = (
   });
   const curatedMemoryRepository = createCuratedMemoryRepository(pool, {
     envelopeEncryptionProvider: options.envelopeEncryptionProvider,
-    onCuratedMemoryChanged: async (actor, client) => {
+    onCuratedMemoryChanged: async (actor, client, assertionIds) => {
       const transactionalSharedMemoryRepository = createSharedMemoryRepository(
         createSavepointPool(client, "curated_memory"),
         {
@@ -3958,6 +3958,10 @@ export const createMemorySourceRepository = (
               requireOwnerPrivateReplicaEnvelopeEncryptionProvider()
             )
         }
+      );
+      await transactionalSharedMemoryRepository.syncCuratedSharedItemEligibility(
+        actor,
+        assertionIds
       );
       await transactionalSharedMemoryRepository.reconcileCuratedGrantRepresentations(
         actor

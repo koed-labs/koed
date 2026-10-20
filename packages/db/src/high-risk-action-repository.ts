@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   collaborationApprovalReviewSchema,
+  highRiskActionGrantCanonicalHash,
   highRiskActionGrantCommitment,
+  HIGH_RISK_ACTION_GRANT_HASH_DOMAINS,
   type CollaborationApprovalReview,
   type CollaborationApprovalTier,
   type EncryptedPayloadEnvelope,
@@ -34,6 +36,7 @@ import {
 } from "./schema.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
 import { createTeamConversationSourceRepository } from "./team-conversation-source-repository.js";
+import { issueTeamLifecycleFreezeAuthority } from "./team-lifecycle-freeze-authority.js";
 
 export const defaultHighRiskConfirmationTtlMs = 5 * 60 * 1000;
 export const defaultHighRiskActionGrantTtlMs = 60 * 1000;
@@ -134,6 +137,7 @@ export interface ExecuteHighRiskActionGrantInput<
   TBody
 > extends HighRiskOperationBinding {
   actionGrant: string;
+  approvedRequest?: { method: string; path: string; body: unknown };
   execute: (repositories: {
     team: ReturnType<typeof createTeamAccessRepository>;
     retention: ReturnType<typeof createRetentionLifecycleRepository>;
@@ -434,16 +438,137 @@ const mapBindingRecord = (
   expiresAt: timestampIso(grant?.expiresAt ?? confirmation.expiresAt)
 });
 
+type TeamFreezeParentAction =
+  | "team.leave"
+  | "team.member.disable"
+  | "team.workspace.access_update";
+
+const isTeamFreezeParentAction = (
+  action: string
+): action is TeamFreezeParentAction =>
+  action === "team.leave" ||
+  action === "team.member.disable" ||
+  action === "team.workspace.access_update";
+
+interface VerifiedTeamFreezeParent {
+  action: TeamFreezeParentAction;
+  actorUserId: string;
+  teamId: string;
+  targetId: string;
+  actionGrantId: string;
+  requestId: string;
+  requestHash: string;
+  approvalTier: CollaborationApprovalTier;
+  requestBody: Record<string, unknown>;
+}
+
 const buildScopedRepositories = (
   client: pg.PoolClient,
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider,
   teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider,
-  ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider
+  ownerPrivateReplicaEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider,
+  verifiedTeamFreezeParent?: VerifiedTeamFreezeParent
 ) => {
   const savepointPool = createSavepointPool(client, "high_risk");
+  const scopedSharedMemory = createSharedMemoryRepository(savepointPool, {
+    resolvePersonalEncryptionProvider: () => {
+      if (!envelopeEncryptionProvider) {
+        throw new Error(
+          "Envelope encryption is required for Curated Memory execution"
+        );
+      }
+      return Promise.resolve(envelopeEncryptionProvider);
+    },
+    resolveTeamEncryptionProvider: () => {
+      if (!teamEnvelopeEncryptionProvider) {
+        throw new Error(
+          "Team envelope encryption is required for Shared Memory execution"
+        );
+      }
+      return Promise.resolve(teamEnvelopeEncryptionProvider);
+    },
+    resolveOwnerPrivateReplicaEncryptionProvider: () => {
+      if (!ownerPrivateReplicaEnvelopeEncryptionProvider) {
+        throw new Error(
+          "Owner-private replica envelope encryption is required for Shared Memory execution"
+        );
+      }
+      return Promise.resolve(ownerPrivateReplicaEnvelopeEncryptionProvider);
+    },
+    delegatedDeviceActionGrantExecution: true
+  });
   return {
     team: createTeamAccessRepository(savepointPool, {
-      envelopeEncryptionProvider
+      envelopeEncryptionProvider,
+      freezeShareGrantForParent: async (transactionClient, input) => {
+        const parent = input.parent;
+        const verified = verifiedTeamFreezeParent;
+        const expectedVersion = verified?.requestBody.expectedVersion;
+        if (
+          !verified ||
+          verified.action !== parent.action ||
+          verified.actorUserId !== input.actorUserId ||
+          verified.teamId !== parent.teamId ||
+          !Number.isSafeInteger(expectedVersion) ||
+          expectedVersion !== parent.targetVersion ||
+          (verified.action === "team.leave" &&
+            (verified.approvalTier !== "native_review" ||
+              verified.targetId !== parent.teamId ||
+              parent.targetUserId !== verified.actorUserId ||
+              parent.teamWorkspaceId !== undefined ||
+              (Array.isArray(
+                verified.requestBody.expectedOwnedWorkspaceProjects
+              ) &&
+                verified.requestBody.expectedOwnedWorkspaceProjects.length !==
+                  0))) ||
+          (verified.action === "team.member.disable" &&
+            (verified.approvalTier !== "step_up" ||
+              verified.targetId !== parent.targetUserId ||
+              parent.targetUserId === verified.actorUserId ||
+              parent.teamWorkspaceId !== undefined)) ||
+          (verified.action === "team.workspace.access_update" &&
+            (verified.approvalTier !== "step_up" ||
+              verified.targetId !== parent.teamWorkspaceId ||
+              verified.requestBody.userId !== parent.targetUserId ||
+              verified.requestBody.access !== "disabled"))
+        ) {
+          throw new Error("Verified Team lifecycle freeze parent mismatch");
+        }
+        const outerTx = await client.query<{ txid: string }>(
+          "select txid_current()::text as txid"
+        );
+        const nestedTx = await transactionClient.query<{ txid: string }>(
+          "select txid_current()::text as txid"
+        );
+        if (outerTx.rows[0]?.txid !== nestedTx.rows[0]?.txid) {
+          throw new Error("Team lifecycle freeze crossed transactions");
+        }
+        const token = issueTeamLifecycleFreezeAuthority({
+          transactionClient,
+          action: verified.action,
+          outerActionGrantId: verified.actionGrantId,
+          outerRequestId: verified.requestId,
+          outerRequestHash: verified.requestHash,
+          approvalTier: verified.approvalTier as "native_review" | "step_up",
+          actorUserId: input.actorUserId,
+          teamId: parent.teamId,
+          targetUserId: parent.targetUserId,
+          targetVersion: parent.targetVersion,
+          teamWorkspaceId: parent.teamWorkspaceId ?? null,
+          shareGrantId: input.shareGrantId,
+          expectedGrantVersion: input.expectedGrantVersion
+        });
+        await scopedSharedMemory.freezeShareGrant(
+          { userId: input.actorUserId },
+          {
+            mutationId: input.mutationId,
+            shareGrantId: input.shareGrantId,
+            expectedGrantVersion: input.expectedGrantVersion,
+            backendParent: token
+          },
+          transactionClient
+        );
+      }
     }),
     retention: createRetentionLifecycleRepository(savepointPool, {
       authorizeHoldActor: async (context) => {
@@ -466,33 +591,7 @@ const buildScopedRepositories = (
         return result.rowCount === 1;
       }
     }),
-    sharedMemory: createSharedMemoryRepository(savepointPool, {
-      resolvePersonalEncryptionProvider: () => {
-        if (!envelopeEncryptionProvider) {
-          throw new Error(
-            "Envelope encryption is required for Curated Memory execution"
-          );
-        }
-        return Promise.resolve(envelopeEncryptionProvider);
-      },
-      resolveTeamEncryptionProvider: () => {
-        if (!teamEnvelopeEncryptionProvider) {
-          throw new Error(
-            "Team envelope encryption is required for Shared Memory execution"
-          );
-        }
-        return Promise.resolve(teamEnvelopeEncryptionProvider);
-      },
-      resolveOwnerPrivateReplicaEncryptionProvider: () => {
-        if (!ownerPrivateReplicaEnvelopeEncryptionProvider) {
-          throw new Error(
-            "Owner-private replica envelope encryption is required for Shared Memory execution"
-          );
-        }
-        return Promise.resolve(ownerPrivateReplicaEnvelopeEncryptionProvider);
-      },
-      delegatedDeviceActionGrantExecution: true
-    }),
+    sharedMemory: scopedSharedMemory,
     sync: createCrossIdentitySyncRepository(savepointPool, {
       envelopeEncryptionProvider: ownerPrivateReplicaEnvelopeEncryptionProvider
     }),
@@ -1266,185 +1365,257 @@ export const createHighRiskActionRepository = (
         );
       }
 
-      const client = await pool.connect();
-      try {
-        await client.query("begin");
-        if (input.operationFamily === "share_grant_management") {
-          await client.query("set transaction isolation level repeatable read");
-        }
-        const tx = createDb(client);
-        const requiredCredentialFamily = credentialOperationFamily(
-          input.operationFamily
-        );
-        if (!requiredCredentialFamily) {
-          await client.query("rollback");
-          return null;
-        }
-        const [activeCredential] = await tx
-          .select({ id: deviceCredentials.id })
-          .from(deviceCredentials)
-          .where(
-            and(
-              eq(deviceCredentials.id, input.deviceCredentialId),
-              eq(deviceCredentials.ownerUserId, input.ownerUserId),
-              eq(deviceCredentials.upstreamBackendId, input.upstreamBackendId),
-              sql`${requiredCredentialFamily} = any(${deviceCredentials.operationFamilies})`,
-              isNull(deviceCredentials.revokedAt),
-              or(
-                isNull(deviceCredentials.expiresAt),
-                gt(deviceCredentials.expiresAt, sql`now()`)
-              )
-            )
-          )
-          .limit(1)
-          .for("update");
-        if (!activeCredential) {
-          await client.query("rollback");
-          return null;
-        }
-        const [row] = await tx
-          .select({
-            confirmation: highRiskBrowserConfirmations,
-            grant: highRiskDeviceActionGrants
-          })
-          .from(highRiskDeviceActionGrants)
-          .innerJoin(
-            highRiskBrowserConfirmations,
-            eq(
-              highRiskBrowserConfirmations.id,
-              highRiskDeviceActionGrants.confirmationId
-            )
-          )
-          .where(
-            and(
-              eq(highRiskDeviceActionGrants.secretCommitment, commitment),
-              eq(highRiskDeviceActionGrants.ownerUserId, input.ownerUserId),
-              eq(
-                highRiskDeviceActionGrants.deviceCredentialId,
-                input.deviceCredentialId
-              ),
-              eq(
-                highRiskDeviceActionGrants.upstreamBackendId,
-                input.upstreamBackendId
-              ),
-              input.teamId === null
-                ? isNull(highRiskDeviceActionGrants.teamId)
-                : eq(highRiskDeviceActionGrants.teamId, input.teamId),
-              eq(
-                highRiskDeviceActionGrants.operationFamily,
-                input.operationFamily
-              ),
-              eq(highRiskDeviceActionGrants.action, input.action),
-              input.targetId === null
-                ? isNull(highRiskDeviceActionGrants.targetId)
-                : eq(highRiskDeviceActionGrants.targetId, input.targetId),
-              eq(highRiskDeviceActionGrants.scopeHash, input.scopeHash),
-              eq(highRiskDeviceActionGrants.requestHash, input.requestHash)
-            )
-          )
-          .limit(1)
-          .for("update", {
-            of: [highRiskDeviceActionGrants, highRiskBrowserConfirmations]
-          });
-        if (!row) {
-          await client.query("rollback");
-          return null;
-        }
-
-        const grant = row.grant;
-        const confirmation = row.confirmation;
-        if (
-          grant.state === "consumed" &&
-          grant.useCount === 1 &&
-          grant.consumedAt !== null
-        ) {
-          const [storedReceipt = null] = await tx
-            .select()
-            .from(highRiskActionGrantExecutionReceipts)
-            .where(
-              eq(highRiskActionGrantExecutionReceipts.actionGrantId, grant.id)
-            )
-            .limit(1);
-          const receipt = await decodeReceiptRow<TBody>(
-            receiptEncryptionProvider,
-            storedReceipt
-          );
-          await client.query("commit");
-          if (!receipt) {
-            throw new Error(
-              "Consumed high-risk action grant is missing a receipt"
+      // A legacy writer can hold an artifact row before its trigger reaches
+      // the common source fence. PostgreSQL may resolve that inversion with
+      // 40P01 (or abort an RR snapshot with 40001). Retry the *whole* action
+      // transaction so its one-use grant and receipt remain atomic.
+      const attempts = input.action === "shared_memory.grant.freeze" ? 3 : 1;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        const client = await pool.connect();
+        try {
+          await client.query("begin");
+          if (
+            input.operationFamily === "share_grant_management" &&
+            input.action !== "shared_memory.grant.freeze"
+          ) {
+            await client.query(
+              "set transaction isolation level repeatable read"
             );
           }
-          return { ...receipt, replayed: true };
-        }
+          const tx = createDb(client);
+          const requiredCredentialFamily = credentialOperationFamily(
+            input.operationFamily
+          );
+          if (!requiredCredentialFamily) {
+            await client.query("rollback");
+            return null;
+          }
+          const [activeCredential] = await tx
+            .select({ id: deviceCredentials.id })
+            .from(deviceCredentials)
+            .where(
+              and(
+                eq(deviceCredentials.id, input.deviceCredentialId),
+                eq(deviceCredentials.ownerUserId, input.ownerUserId),
+                eq(
+                  deviceCredentials.upstreamBackendId,
+                  input.upstreamBackendId
+                ),
+                sql`${requiredCredentialFamily} = any(${deviceCredentials.operationFamilies})`,
+                isNull(deviceCredentials.revokedAt),
+                or(
+                  isNull(deviceCredentials.expiresAt),
+                  gt(deviceCredentials.expiresAt, sql`now()`)
+                )
+              )
+            )
+            .limit(1)
+            .for("update");
+          if (!activeCredential) {
+            await client.query("rollback");
+            return null;
+          }
+          const [row] = await tx
+            .select({
+              confirmation: highRiskBrowserConfirmations,
+              grant: highRiskDeviceActionGrants
+            })
+            .from(highRiskDeviceActionGrants)
+            .innerJoin(
+              highRiskBrowserConfirmations,
+              eq(
+                highRiskBrowserConfirmations.id,
+                highRiskDeviceActionGrants.confirmationId
+              )
+            )
+            .where(
+              and(
+                eq(highRiskDeviceActionGrants.secretCommitment, commitment),
+                eq(highRiskDeviceActionGrants.ownerUserId, input.ownerUserId),
+                eq(
+                  highRiskDeviceActionGrants.deviceCredentialId,
+                  input.deviceCredentialId
+                ),
+                eq(
+                  highRiskDeviceActionGrants.upstreamBackendId,
+                  input.upstreamBackendId
+                ),
+                input.teamId === null
+                  ? isNull(highRiskDeviceActionGrants.teamId)
+                  : eq(highRiskDeviceActionGrants.teamId, input.teamId),
+                eq(
+                  highRiskDeviceActionGrants.operationFamily,
+                  input.operationFamily
+                ),
+                eq(highRiskDeviceActionGrants.action, input.action),
+                input.targetId === null
+                  ? isNull(highRiskDeviceActionGrants.targetId)
+                  : eq(highRiskDeviceActionGrants.targetId, input.targetId),
+                eq(highRiskDeviceActionGrants.scopeHash, input.scopeHash),
+                eq(highRiskDeviceActionGrants.requestHash, input.requestHash)
+              )
+            )
+            .limit(1)
+            .for("update", {
+              of: [highRiskDeviceActionGrants, highRiskBrowserConfirmations]
+            });
+          if (!row) {
+            await client.query("rollback");
+            return null;
+          }
 
-        if (
-          grant.state !== "active" ||
-          grant.useCount !== 0 ||
-          grant.expiresAt.getTime() <= Date.now() ||
-          confirmation.state !== "approved"
-        ) {
-          await client.query("rollback");
-          return null;
-        }
+          const grant = row.grant;
+          const confirmation = row.confirmation;
+          let verifiedTeamFreezeParent: VerifiedTeamFreezeParent | undefined;
+          if (isTeamFreezeParentAction(grant.action)) {
+            const approved = input.approvedRequest;
+            const approvedBody = approved?.body;
+            const expectedRequest =
+              grant.teamId && grant.targetId
+                ? grant.action === "team.leave"
+                  ? { method: "POST", path: `/v1/teams/${grant.teamId}/leave` }
+                  : grant.action === "team.member.disable"
+                    ? {
+                        method: "POST",
+                        path: `/v1/teams/${grant.teamId}/members/${grant.targetId}/disable`
+                      }
+                    : {
+                        method: "PUT",
+                        path: `/v1/team-workspaces/${grant.targetId}/access`
+                      }
+                : null;
+            if (
+              !approved ||
+              !expectedRequest ||
+              approved.method !== expectedRequest.method ||
+              approved.path !== expectedRequest.path ||
+              !approvedBody ||
+              typeof approvedBody !== "object" ||
+              Array.isArray(approvedBody) ||
+              !grant.teamId ||
+              !grant.targetId ||
+              highRiskActionGrantCanonicalHash(
+                HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+                approved
+              ) !== grant.requestHash
+            ) {
+              await client.query("rollback");
+              return null;
+            }
+            verifiedTeamFreezeParent = {
+              action: grant.action,
+              actorUserId: grant.ownerUserId,
+              teamId: grant.teamId,
+              targetId: grant.targetId,
+              actionGrantId: grant.id,
+              requestId: confirmation.clientRequestId,
+              requestHash: grant.requestHash,
+              approvalTier: confirmation.approvalTier,
+              requestBody: approvedBody as Record<string, unknown>
+            };
+          }
+          if (
+            grant.state === "consumed" &&
+            grant.useCount === 1 &&
+            grant.consumedAt !== null
+          ) {
+            const [storedReceipt = null] = await tx
+              .select()
+              .from(highRiskActionGrantExecutionReceipts)
+              .where(
+                eq(highRiskActionGrantExecutionReceipts.actionGrantId, grant.id)
+              )
+              .limit(1);
+            const receipt = await decodeReceiptRow<TBody>(
+              receiptEncryptionProvider,
+              storedReceipt
+            );
+            await client.query("commit");
+            if (!receipt) {
+              throw new Error(
+                "Consumed high-risk action grant is missing a receipt"
+              );
+            }
+            return { ...receipt, replayed: true };
+          }
 
-        const receipt = await input.execute(
-          buildScopedRepositories(
-            client,
-            options.envelopeEncryptionProvider,
-            options.teamEnvelopeEncryptionProvider,
-            options.ownerPrivateReplicaEnvelopeEncryptionProvider
-          )
-        );
-        if (!receipt) {
-          await client.query("rollback");
-          return null;
-        }
+          if (
+            grant.state !== "active" ||
+            grant.useCount !== 0 ||
+            grant.expiresAt.getTime() <= Date.now() ||
+            confirmation.state !== "approved"
+          ) {
+            await client.query("rollback");
+            return null;
+          }
 
-        const bodyJson = receiptBodyJson(receipt.body);
-        const storedBody = await encodeReceiptBody({
-          provider: receiptEncryptionProvider,
-          bodyJson,
-          grant
-        });
-        await tx
-          .insert(highRiskActionGrantExecutionReceipts)
-          .values({
-            actionGrantId: grant.id,
+          const receipt = await input.execute(
+            buildScopedRepositories(
+              client,
+              options.envelopeEncryptionProvider,
+              options.teamEnvelopeEncryptionProvider,
+              options.ownerPrivateReplicaEnvelopeEncryptionProvider,
+              verifiedTeamFreezeParent
+            )
+          );
+          if (!receipt) {
+            await client.query("rollback");
+            return null;
+          }
+
+          const bodyJson = receiptBodyJson(receipt.body);
+          const storedBody = await encodeReceiptBody({
+            provider: receiptEncryptionProvider,
+            bodyJson,
+            grant
+          });
+          await tx
+            .insert(highRiskActionGrantExecutionReceipts)
+            .values({
+              actionGrantId: grant.id,
+              ownerUserId: grant.ownerUserId,
+              statusCode: receipt.statusCode,
+              receiptBody: storedBody,
+              receiptHash: hashReceiptPayload(bodyJson)
+            })
+            .returning({ id: highRiskActionGrantExecutionReceipts.id });
+          await tx
+            .update(highRiskDeviceActionGrants)
+            .set({
+              state: "consumed",
+              useCount: 1,
+              consumedAt: sql`now()`
+            })
+            .where(eq(highRiskDeviceActionGrants.id, grant.id));
+
+          await insertAudit(tx, {
+            actorUserId: input.ownerUserId,
             ownerUserId: grant.ownerUserId,
-            statusCode: receipt.statusCode,
-            receiptBody: storedBody,
-            receiptHash: hashReceiptPayload(bodyJson)
-          })
-          .returning({ id: highRiskActionGrantExecutionReceipts.id });
-        await tx
-          .update(highRiskDeviceActionGrants)
-          .set({
-            state: "consumed",
-            useCount: 1,
-            consumedAt: sql`now()`
-          })
-          .where(eq(highRiskDeviceActionGrants.id, grant.id));
+            teamId: grant.teamId,
+            action: "high_risk.action_grant.consumed",
+            targetTable: "high_risk_device_action_grants",
+            targetId: grant.id,
+            metadata: grantAuditMetadata(grant, confirmation.clientRequestId)
+          });
+          await notifyActionGrant(client, confirmation.clientRequestId);
 
-        await insertAudit(tx, {
-          actorUserId: input.ownerUserId,
-          ownerUserId: grant.ownerUserId,
-          teamId: grant.teamId,
-          action: "high_risk.action_grant.consumed",
-          targetTable: "high_risk_device_action_grants",
-          targetId: grant.id,
-          metadata: grantAuditMetadata(grant, confirmation.clientRequestId)
-        });
-        await notifyActionGrant(client, confirmation.clientRequestId);
-
-        await client.query("commit");
-        return { ...receipt, replayed: false };
-      } catch (error) {
-        await client.query("rollback");
-        throw error;
-      } finally {
-        client.release();
+          await client.query("commit");
+          return { ...receipt, replayed: false };
+        } catch (error) {
+          await client.query("rollback");
+          const code = (error as { code?: unknown }).code;
+          if (
+            attempt + 1 < attempts &&
+            (code === "40P01" || code === "40001")
+          ) {
+            continue;
+          }
+          throw error;
+        } finally {
+          client.release();
+        }
       }
+      return null;
     },
 
     async lookupLegalHoldTeamId(holdId) {

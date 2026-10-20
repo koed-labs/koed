@@ -17,6 +17,7 @@ import {
   createSharedMemoryCandidatePreviewSchema,
   createSharedMemoryPreviewSchema,
   createPendingShareSchema,
+  freezeShareGrantSchema,
   changeSharedMemoryFidelityBundleSchema,
   putTeamConversationSourceGrantSchema,
   revokeShareGrantSchema,
@@ -28,6 +29,7 @@ import {
   createTeamSchema,
   createTeamWorkspaceSchema,
   expectedVersionSchema,
+  teamLeaveActionSchema,
   setTeamBillingSeatPolicySchema,
   setTeamEntitlementStateSchema,
   setTeamWorkspaceAccessSchema,
@@ -52,7 +54,8 @@ import {
   bindSharedMemoryCandidatePreviewOperation,
   bindSharedMemoryPendingShareOperation,
   bindSharedMemoryPreviewOperation,
-  bindSharedMemoryRevokeOperation
+  bindSharedMemoryRevokeOperation,
+  bindSharedMemoryFreezeOperation
 } from "./shared-memory-action-definitions.js";
 import {
   bindConversationSourceDiscoveryOperation,
@@ -109,7 +112,7 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("team.leave"),
       teamId: uuidSchema,
-      body: expectedVersionSchema
+      body: teamLeaveActionSchema
     })
     .strict(),
   z
@@ -286,6 +289,16 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       shareGrantId: uuidSchema,
       expectedGrantVersion: revokeShareGrantSchema.shape.expectedGrantVersion,
       reasonCode: revokeShareGrantSchema.shape.reasonCode
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("shared_memory.grant.freeze"),
+      mutationId: uuidSchema,
+      teamId: uuidSchema,
+      teamWorkspaceId: uuidSchema,
+      shareGrantId: uuidSchema,
+      expectedGrantVersion: freezeShareGrantSchema.shape.expectedGrantVersion
     })
     .strict(),
   z
@@ -879,6 +892,8 @@ export const resolveHighRiskActionGrantOperation = (input: {
       return bindSharedMemoryPendingShareOperation(intent, clientRequestId);
     case "shared_memory.revoke":
       return bindSharedMemoryRevokeOperation(intent, clientRequestId);
+    case "shared_memory.grant.freeze":
+      return bindSharedMemoryFreezeOperation(intent, clientRequestId);
     case "shared_memory.conversation_source_grant":
       return bindConversationSourceGrantOperation(intent, clientRequestId);
     case "shared_memory.conversation_source_revoke":

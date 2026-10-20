@@ -897,6 +897,17 @@ const createFixture = () => {
       grantVersion += 1;
       return grantRecord();
     },
+    async freezeShareGrant(actor, input) {
+      repositoryCalls += 1;
+      if (actor.userId !== ids.alice || input.shareGrantId !== ids.grant) {
+        throw new SharedMemoryAuthorizationError("private grant detail");
+      }
+      if (input.expectedGrantVersion !== grantVersion) {
+        throw new SharedMemoryConflictError("private grant version detail");
+      }
+      grantVersion += 1;
+      return grantRecord();
+    },
     async materializeGrantRepresentation(actor, input) {
       repositoryCalls += 1;
       if (
@@ -918,6 +929,7 @@ const createFixture = () => {
     async advanceContinuousGrantRepresentations() {
       return { advanced: 0 };
     },
+    async syncCuratedSharedItemEligibility() {},
     async reconcileCuratedGrantRepresentations() {
       return { rematerialized: 0, invalidated: 0 };
     },
@@ -1515,6 +1527,63 @@ describe("Shared Memory HTTP routes", () => {
       }
     ]);
     expect(JSON.stringify(diagnostics)).not.toContain("hrg_changed_secret");
+    await app.close();
+  });
+
+  it("freezes only the exact source owner's grant with a reviewed device Action Grant", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const url = `/v1/shared-memory/share-grants/${fixture.ids.grant}/freeze`;
+    const payload = {
+      mutationId: randomUUID(),
+      teamId: fixture.ids.teamA,
+      teamWorkspaceId: fixture.ids.workspaceA,
+      expectedGrantVersion: 1,
+      authority: {
+        action: SHARED_MEMORY_AUTHORITY,
+        source: "device_action_grant" as const,
+        referenceId: fixture.ids.actionGrantAuthority
+      }
+    };
+    const denied = await Promise.all([
+      app.inject({
+        method: "POST",
+        url,
+        headers: sessionHeaders(fixture.ids.alice),
+        payload
+      }),
+      app.inject({
+        method: "POST",
+        url,
+        headers: {
+          authorization: "Koed-Device reader:secret",
+          "x-koed-action-grant": "hrg_test_shared_memory_secret"
+        },
+        payload
+      }),
+      app.inject({
+        method: "POST",
+        url,
+        headers: { authorization: "Koed-Device owner-share:secret" },
+        payload
+      })
+    ]);
+    expect(denied.map((result) => result.statusCode)).toEqual([401, 403, 403]);
+    expect(fixture.repositoryCalls).toBe(0);
+    const accepted = await app.inject({
+      method: "POST",
+      url,
+      headers: {
+        authorization: "Koed-Device owner-share:secret",
+        "x-koed-action-grant": "hrg_test_shared_memory_secret"
+      },
+      payload
+    });
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect(
+      jsonBody<{ grant: { grantVersion: number } }>(accepted).grant.grantVersion
+    ).toBe(2);
+    expect(fixture.repositoryCalls).toBe(1);
     await app.close();
   });
 

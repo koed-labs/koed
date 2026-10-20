@@ -7,7 +7,8 @@ import {
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
-  sharedMemoryTranscriptRevokeActionGrantBinding
+  sharedMemoryTranscriptRevokeActionGrantBinding,
+  projectLifecycleFreezeStageBindingHash
 } from "./shared-memory-action-grant.js";
 
 describe("Shared Memory fidelity action grant bindings", () => {
@@ -129,6 +130,44 @@ describe("Shared Memory fidelity action grant bindings", () => {
       expect(omitted.scopeHash).toBe(explicit.scopeHash);
       expect(omitted.requestHash).toBe(explicit.requestHash);
     }
+  });
+});
+
+describe("backend-only Project freeze stage binding", () => {
+  it("binds an exact approved parent and rejects widened or unknown actions", () => {
+    const binding = {
+      action: "project.lifecycle.freeze_grant" as const,
+      outerAction: "workspace_project.member_remove" as const,
+      effect: "remove" as const,
+      outerActionGrantId: randomUUID(),
+      outerMutationId: randomUUID(),
+      outerTargetId: randomUUID(),
+      teamId: randomUUID(),
+      teamWorkspaceId: randomUUID(),
+      targetUserId: randomUUID(),
+      shareGrantId: randomUUID(),
+      expectedGrantVersion: 2
+    };
+    const hash = projectLifecycleFreezeStageBindingHash(binding);
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      projectLifecycleFreezeStageBindingHash({
+        ...binding,
+        shareGrantId: randomUUID()
+      })
+    ).not.toBe(hash);
+    expect(() =>
+      projectLifecycleFreezeStageBindingHash({
+        ...binding,
+        effect: "delete"
+      })
+    ).toThrow("incomplete");
+    expect(() =>
+      projectLifecycleFreezeStageBindingHash({
+        ...binding,
+        outerAction: "project.restore" as never
+      })
+    ).toThrow("incomplete");
   });
 });
 

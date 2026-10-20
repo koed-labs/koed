@@ -2282,10 +2282,10 @@ const seedConversationSourceFixture = async (client, runtime) => {
          origin_public_key, redacted_source_label, finalized_at
        ) values (
          $1,$2,$3,$4,$5,'main','primary',null,'jsonl','origin_local',
-         'codex','codex',$6,$7,'jsonl',1,'codex-transcript-v1','finalized',
+         'codex','codex',$6,$7,'jsonl',1,'codex-transcript-v1','active',
          0,0,0,0,$8,$9,$8,$10,$11,$11,'envelope_db',$12,
-         $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
-         'Fixture Codex session',$19
+         null,null,null,null,null,null,null,$13,$14,$15,$16,
+         'Fixture Codex session',null
        )`,
       [
         source.artifactId,
@@ -2300,13 +2300,6 @@ const seedConversationSourceFixture = async (client, runtime) => {
         segmentRows.length - 1,
         sourceCreatedAt,
         `${FIXTURE_VERSION}/${source.key}`,
-        closureHash,
-        json(signedClosure.manifest),
-        signedClosure.signature,
-        sourceSetClosureHash,
-        json(signedSourceSetClosure.manifest),
-        signedSourceSetClosure.signature,
-        closedAt,
         fixtureInfrastructure.sourceDeploymentId,
         fixtureUuid(`conversation-source:${source.key}:device`),
         originKeyId,
@@ -2351,6 +2344,29 @@ const seedConversationSourceFixture = async (client, runtime) => {
         ]
       );
     }
+    const finalized = await client.query(
+      `update conversation_source_artifacts
+          set lifecycle='finalized',closure_hash=$2,
+              closure_manifest=$3::jsonb,closure_signature=$4,
+              source_set_closure_hash=$5,
+              source_set_closure_manifest=$6::jsonb,
+              source_set_closure_signature=$7,
+              source_set_finalized_at=$8,finalized_at=$8,
+              updated_at=now()
+        where id=$1 and lifecycle='active'`,
+      [
+        source.artifactId,
+        closureHash,
+        json(signedClosure.manifest),
+        signedClosure.signature,
+        sourceSetClosureHash,
+        json(signedSourceSetClosure.manifest),
+        signedSourceSetClosure.signature,
+        closedAt
+      ]
+    );
+    if (finalized.rowCount !== 1)
+      throw new Error(`Fixture source did not finalize: ${source.key}`);
     const snapshotMaximumOffset =
       source.mode === "snapshot"
         ? segmentRows[source.maximumSegmentIndex].manifest.endByteCursor
@@ -2805,13 +2821,13 @@ export const resetFixture = async (client) => {
         where id in (select id from fixture_reset_share_grants)`
     );
     await client.query(
-      `delete from conversation_source_segments
-       where artifact_id = any($1::uuid[])`,
+      `delete from conversation_source_artifacts
+       where id = any($1::uuid[])`,
       [fixtureConversationSources.map((source) => source.artifactId)]
     );
     await client.query(
-      `delete from conversation_source_artifacts
-       where id = any($1::uuid[])`,
+      `delete from conversation_source_segments
+       where artifact_id = any($1::uuid[])`,
       [fixtureConversationSources.map((source) => source.artifactId)]
     );
     await client.query(

@@ -14,7 +14,10 @@ import { dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { createLocalTestKeyEnvelopeEncryptionProvider } from "@koed/shared";
+import {
+  createLocalTestKeyEnvelopeEncryptionProvider,
+  sharedMemoryGrantScopedSourceId
+} from "@koed/shared";
 import { loadRootEnv } from "../../../scripts/api-token-bootstrap-lib.mjs";
 import {
   getLatestMigrationTimestamp,
@@ -72,9 +75,9 @@ const expectedGenericSharedMemoryTag = "0035_concerned_the_twelve";
 const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
-const expectedLatestMigrationTag = "0047_freezing_ken_ellis";
+const expectedLatestMigrationTag = "0048_tan_spot";
 const preMultiComponentSourceIndex = 29;
-const expectedLatestMigrationIndex = 47;
+const expectedLatestMigrationIndex = 48;
 const expectedPre0020Fingerprint =
   "0308ea8a58969a9dbbfd1fc480d32f71fd4507b2fcc130c73cf9c244af1a8598";
 
@@ -1370,6 +1373,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preFreezeFolder = await createMigrationSlice(journal, 47, {
+    folderPrefix: "koed-pre-freeze-"
+  });
+  temporaryFolders.add(preFreezeFolder);
+  const preFreezeRecords = await migrationRecords(
+    preFreezeFolder,
+    journal.entries.slice(0, 48)
+  );
   const preProjectsFolder = await createMigrationSlice(journal, 46, {
     folderPrefix: "koed-pre-personal-projects-"
   });
@@ -2022,6 +2033,64 @@ try {
       await runDbMigrations(pool);
       await assertMigrationLedger(pool, fullRecords);
       await verifyLocalRuntimeCutover(pool, fixture);
+      await assertCurrentSchema(pool);
+    });
+  });
+
+  await runScenario("hq715-freeze-0047-upgrade", async () => {
+    const target = await createDisposableDatabase("freeze_upgrade");
+    await withPool(target.url, async (pool) => {
+      await runDbMigrations(pool, { migrationsFolder: preFreezeFolder });
+      await assertMigrationLedger(pool, preFreezeRecords);
+      const before = await pool.query(
+        "select to_regclass('public.team_memory_grant_freeze_sources') as closure"
+      );
+      if (before.rows[0]?.closure !== null) {
+        throw new Error("Frozen closure unexpectedly exists before 0048");
+      }
+      await runDbMigrations(pool);
+      await assertMigrationLedger(pool, fullRecords);
+      const capability = await pool.query(
+        `select state,to_regclass('public.workspace_projects') as project_relation
+           from project_lifecycle_schema_capabilities
+          where capability='workspace_projects'`
+      );
+      if (
+        capability.rows[0]?.state !== "absent" ||
+        capability.rows[0]?.project_relation !== null
+      ) {
+        throw new Error(
+          "Workspace Project capability is not explicitly absent"
+        );
+      }
+      const closure = await pool.query(
+        `select to_regclass('public.team_memory_grant_freeze_sources') as header,
+                to_regclass('public.team_memory_grant_freeze_source_payloads') as payloads,
+                to_regclass('public.team_memory_curated_item_eligibility') as curated_eligibility,
+                to_regclass('public.shared_memory_publication_fences') as memory_fence,
+                to_regclass('public.conversation_source_publication_fences') as source_fence`
+      );
+      if (
+        Object.values(closure.rows[0] ?? {}).some((value) => value === null)
+      ) {
+        throw new Error(
+          "Frozen closure or publication fence missing after 0048"
+        );
+      }
+      const grantId = randomUUID();
+      const assertionId = randomUUID();
+      const pseudonym = await pool.query(
+        `select koed_grant_scoped_curated_source_id($1::uuid,$2::uuid) as id`,
+        [grantId, assertionId]
+      );
+      if (
+        pseudonym.rows[0]?.id !==
+        sharedMemoryGrantScopedSourceId(grantId, assertionId)
+      ) {
+        throw new Error(
+          "Curated marker pseudonym differs from Team item identity"
+        );
+      }
       await assertCurrentSchema(pool);
     });
   });

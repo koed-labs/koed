@@ -10,6 +10,7 @@ import {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryFreezeActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
   type SharedMemoryRepresentation,
@@ -32,6 +33,7 @@ type SharedMemoryAction =
   | "shared_memory.pending_share"
   | "shared_memory.preview"
   | "shared_memory.revoke"
+  | "shared_memory.grant.freeze"
   | "shared_memory.conversation_source_grant"
   | "shared_memory.conversation_source_revoke"
   | "shared_memory.change_fidelity";
@@ -191,6 +193,22 @@ export const bindSharedMemoryRevokeOperation = (
     reasonCode: intent.reasonCode
   });
 
+export const bindSharedMemoryFreezeOperation = (
+  intent: Extract<
+    SharedMemoryActionIntent,
+    { action: "shared_memory.grant.freeze" }
+  >,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  sharedMemoryFreezeActionGrantBinding({
+    referenceId,
+    mutationId: intent.mutationId,
+    teamId: intent.teamId,
+    teamWorkspaceId: intent.teamWorkspaceId,
+    shareGrantId: intent.shareGrantId,
+    expectedGrantVersion: intent.expectedGrantVersion
+  });
+
 export const bindSharedMemoryFidelityChangeOperation = (
   intent: Extract<
     SharedMemoryActionIntent,
@@ -259,7 +277,9 @@ const shareReview = (
   >
 ): ActionApprovalPolicy =>
   reviewed(
-    intent.maximumFidelity === "memory_events" ? "step_up" : "native_review",
+    intent.maximumFidelity === "memory_events" || intent.includeCuratedMemory
+      ? "step_up"
+      : "native_review",
     {
       title: "Share Personal Memory with this Workspace?",
       description: review.sourceOwnerPolicyWillActivate
@@ -526,6 +546,45 @@ const revokeDefinition = {
   }
 };
 
+const freezeDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    if (input.intent.action !== "shared_memory.grant.freeze") return null;
+    const review = requireReview(
+      await input.repository.getSharedMemoryRevokeReview(
+        { userId: input.userId },
+        {
+          teamId: input.intent.teamId,
+          teamWorkspaceId: input.intent.teamWorkspaceId,
+          shareGrantId: input.intent.shareGrantId,
+          expectedGrantVersion: input.intent.expectedGrantVersion
+        }
+      ),
+      "Share Grant freeze"
+    );
+    return {
+      operation: bindSharedMemoryFreezeOperation(
+        input.intent,
+        input.clientRequestId
+      ),
+      policy: reviewed("native_review", {
+        title: "Freeze this Share Grant?",
+        description:
+          "Keep only the already-published Team Memory from this source.",
+        consequence:
+          "Later source messages and revisions will not enter this grant. Existing consent and current Team access rules still apply.",
+        confirmLabel: "Freeze grant",
+        details: [
+          { label: "Personal Memory", value: sourceName(review) },
+          { label: "Team", value: review.team.name },
+          { label: "Workspace", value: review.workspace.name },
+          { label: "Share Grant", value: input.intent.shareGrantId }
+        ]
+      })
+    };
+  }
+};
+
 const fidelityChangeDefinition = {
   operationFamily: "share_grant_management" as const,
   async admit(input: SharedMemoryAdmissionInput) {
@@ -647,6 +706,7 @@ export const sharedMemoryActionDefinitions = {
   "shared_memory.pending_share": pendingShareDefinition,
   "shared_memory.preview": previewDefinition,
   "shared_memory.revoke": revokeDefinition,
+  "shared_memory.grant.freeze": freezeDefinition,
   "shared_memory.conversation_source_grant": conversationSourceGrantDefinition,
   "shared_memory.conversation_source_revoke":
     conversationSourceRevokeDefinition,

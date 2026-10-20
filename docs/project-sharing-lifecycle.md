@@ -30,12 +30,14 @@ also supports local Project-to-Workspace mapping for recall. That
 mapping does not create a shared Project or sharing authority
 (`docs/team-workspace-project-mapping.md`).
 
-The shared Project entity, Project Share Policy, Project-owner lifecycle,
-Project deletion behavior below, and atomic grant-advancement freeze are
-intended behavior and require implementation before they are available. They
-must not be inferred from the current Project mapping or existing Share Grant
-routes. In particular, `shared_memory.grant.freeze` and
-`project.lifecycle.freeze_grant` are target actions, not existing routes.
+The shared Project entity, Project Share Policy, Project-owner lifecycle, and
+Project deletion behavior below still require implementation. The exact
+owner-reviewed `shared_memory.grant.freeze` route and immutable published
+closure are implemented. Current Team leave, member disable, and Workspace
+Access disable freeze affected grants atomically. The backend-only
+`project.lifecycle.freeze_grant` binding fails closed until an authoritative
+Workspace Project parent exists; it is not an independent route. Project
+lifecycle behavior must not be inferred from local Project mapping.
 
 ## Sharing and ownership
 
@@ -207,8 +209,8 @@ does not require Team enrollment or browser approval when no Team grant is
 affected. For each active Team Share Grant attached to its exact Captured
 Session, the source owner uses the target per-grant
 `shared_memory.grant.freeze` Native-review action and waits for every required
-Team freeze before reporting deletion complete. This action is not implemented
-yet. That Team operation pins the last
+Team freeze before reporting deletion complete. This Personal deletion caller
+is still pending. The Team operation pins the last
 actually published revision and complete immutable authorized representation
 closure. Published material remains recallable under existing authorization;
 later messages and revisions are excluded. The freeze does not revoke the
@@ -227,7 +229,7 @@ only the source owner can trash or forget that Personal data through the local
 Note lifecycle. If local Note trash affects active Team grants, the source
 owner separately requests each required target `shared_memory.grant.freeze`
 Native-review operation and waits for those Team operations before reporting
-the local trash complete. The target action is not implemented yet. A purely
+the local trash complete. The local trash caller is still pending. A purely
 Personal Note operation needs no Team enrollment or browser approval. Published
 Team material remains recallable under existing authorization and later
 revisions are excluded. Source trash state is separate from Note revision
@@ -243,8 +245,8 @@ Decks as one batch. Before reporting success, freeze every active Team grant
 attached to a child Conversation's exact Captured Session or a supported
 Project Source Note revision. The source owner requests a target
 `shared_memory.grant.freeze` Native-review operation for each exact grant; this
-includes explicit grants created outside the Project Share Policy. This target
-action is not implemented yet. Wait for every required Team freeze
+includes explicit grants created outside the Project Share Policy. This
+Personal Project deletion caller is still pending. Wait for every required Team freeze
 before reporting deletion complete or purging child records. Personal Memory
 assertions remain and keep the Project label. After confirmation, stop local
 Agent work running in the Project and pause its Scheduled Jobs. Show an Undo
@@ -337,8 +339,8 @@ Moving a Conversation out of a shared Project is a local owner-controlled
 action; it does not need Team enrollment if no Team grant is affected. Before
 detaching, the source owner uses the target per-grant
 `shared_memory.grant.freeze` Native-review action for each old Project-policy
-grant and waits for those Team freezes. This target action is not implemented
-yet. Each freeze also pins any attached
+grant and waits for those Team freezes. This local move caller is still pending.
+Each freeze also pins any attached
 continuous Conversation Source Access frontier. The old grant and previously
 published Team material remain under their existing authorization unless the
 owner separately revokes that exact grant. A new shared destination requires a
@@ -466,13 +468,18 @@ actually published semantic revision and immutable authorized representation
 closure; unpublished work does not become visible. The Team backend serializes
 the operation against in-flight advancement so one transaction determines the
 pinned boundary. For a Personal command that affects a Team grant, the exact
-source owner explicitly requests each target per-grant freeze through Native
-review and waits for it before the Personal command reports completion. This
-target action is not implemented yet. A Team lifecycle freeze is a Bundled
+source owner explicitly requests each per-grant freeze through Native review
+and waits for it before the Personal command reports completion. The Personal
+callers are still pending. A Team lifecycle freeze is a Bundled
 stage only of an exact allowlisted outer Team action and inherits that action's
 target, authority, request binding, and approval; callers cannot request the
-stage independently. These target freezes are not implemented yet and can run
-while the source owner's Desktop is offline.
+stage independently. Current Team parent actions use this freeze while the
+source owner's Desktop is offline; Workspace Project parents remain pending.
+When an affected browser Team lifecycle request needs that freeze, the
+existing browser route returns an explicit Action Grant requirement. The
+reviewed, exact one-use Action Grant path performs the freeze and parent
+mutation together; browser requests with no affected unfrozen grant keep their
+existing behavior.
 
 If the grant has attached continuous Conversation Source Access, the same
 atomic operation pins its last authorized sanitized source generation and
@@ -482,6 +489,12 @@ Its independent expiry, revocation, membership, Workspace Access, and
 Team-audience policy checks still apply. Snapshot source access remains pinned
 to its existing snapshot. Unrelated grants and Cross-Identity Sync relationships
 are unchanged.
+An empty published source has a pinned zero-segment frontier and remains
+readable as empty metadata. If no sanitized source was published, the internal
+source capability is `frozen_empty`: it exposes no bytes but remains separately
+revocable by its owner. The strict v1 Source Access lifecycle reports that
+unrevoked state as `active` with its current version, so an owner can review
+and revoke the exact capability without treating freeze as revocation.
 
 A freeze keeps the grant's consent and published representation, stops future
 advancement, and does not itself end Team recall. Revocation, suppression,
@@ -493,6 +506,26 @@ authorized closure. If the assertion was suppressed and absent when the grant
 was frozen, Undo cannot add or publish it to the frozen grant. An unfrozen
 grant remains subject to its existing consent, provenance, representation,
 and policy checks.
+
+For published Curated items, the Team stores only a grant-scoped pseudonymous
+item ID, its pinned revision hash, and mutable eligibility markers. The source
+owner's existing Curated mutation transaction blocks the exact copied item
+before suppression commits. Undo clears that marker only when the owner-side
+current assertion still has the same content, evidence provenance, and Session
+scope as the pinned item. Team recall verifies the copied ciphertext and hash
+before filtering blocked items; semantic search and citation expansion use the
+same marker. An assertion added after freeze has no copied item. Older
+published Curated items without a per-item revision hash remain readable until
+an owner mutation blocks them, then stay blocked unless an owner-authorized
+path can prove the exact pinned revision. Source evidence invalidation blocks
+the affected Session's copied Curated items until owner reconciliation proves
+their eligibility. Neither a Team reader nor an offline Team lifecycle action
+reads the owner's Personal store to decide this state.
+Semantic embedding jobs may finish or refresh vectors for the already copied,
+fixed Team-safe items after freeze. They recheck current authorization and
+privacy before storing a result; only derived embedding state and vectors may
+change. The pinned source identity, ciphertext, item set, and content hashes
+cannot advance.
 
 Restoring a resource does not resume a frozen grant, recreate a revoked grant,
 or re-enable sharing. A new grant or explicit owner sharing action is required
@@ -534,8 +567,8 @@ These rules specify behavior, not routes, database columns, or a particular
 API. A Team-authoritative Project lifecycle operation must not claim success
 until the Team Backend has completed its required grant and access changes. A
 Personal command remains a local owner operation; when it affects a Team grant,
-it must wait for the exact owner-authorized target freeze or revocation to
-complete before reporting success. The target freeze is not implemented today.
-Existing code for explicit Share Grants, personal
-forgetting, Workspace Access, or source access must not be treated as an
-implementation of the Project Share Policy or its lifecycle freeze.
+it must wait for the exact owner-authorized freeze or revocation to complete
+before reporting success. The freeze route and current Team parent integration
+exist; Project-specific callers and Project Share Policy do not. Existing code
+for personal forgetting, Workspace Access, or source access does not implement
+those pending Project workflows.

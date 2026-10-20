@@ -12909,6 +12909,35 @@ describeDb("memory repository visibility", () => {
       resolvePersonalEncryptionProvider: () => sharedMemoryProvider,
       resolveOwnerPrivateReplicaEncryptionProvider: () => sharedMemoryProvider
     });
+    const beforeFreeze = await pool.query<{ grant_version: number }>(
+      `select grant_version from team_memory_share_grants where id=$1`,
+      [shareGrant.id]
+    );
+    await sharedMemory.freezeShareGrant(
+      { userId: owner.id },
+      {
+        mutationId: randomUUID(),
+        shareGrantId: shareGrant.id,
+        expectedGrantVersion: beforeFreeze.rows[0]!.grant_version,
+        authority: {
+          action: SHARED_MEMORY_AUTHORITY,
+          source: "browser_session",
+          referenceId: ownerSession.rows[0]!.id
+        }
+      }
+    );
+    await expect(
+      pool.query(
+        `select lifecycle from team_conversation_source_grants where share_grant_id=$1`,
+        [shareGrant.id]
+      )
+    ).resolves.toMatchObject({ rows: [{ lifecycle: "frozen_empty" }] });
+    await expect(
+      repo.getTeamConversationSourceAccess(
+        { userId: member.id },
+        { shareGrantId: shareGrant.id }
+      )
+    ).resolves.toBeNull();
     const parentGrant = await pool.query<{ grant_version: number }>(
       `select grant_version from team_memory_share_grants where id=$1`,
       [shareGrant.id]
@@ -12941,7 +12970,7 @@ describeDb("memory repository visibility", () => {
       rows: [
         {
           lifecycle: "revoked",
-          version: 5,
+          version: 6,
           revocation_reason: "parent_share_revoked"
         }
       ]

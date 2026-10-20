@@ -4,6 +4,7 @@ import {
 } from "@koed/shared";
 import {
   defaultFreshAuthenticationMaxAgeMs,
+  TeamActionGrantRequiredError,
   type DeviceCredentialAuthContext,
   type MemorySourceRepository,
   type TeamAccessRepository
@@ -25,6 +26,7 @@ import {
   createTeamSchema,
   createTeamWorkspaceSchema,
   expectedVersionSchema,
+  teamLeaveActionSchema,
   listTeamInvitesQuerySchema,
   listTeamWorkspacesQuerySchema,
   setTeamBillingSeatPolicySchema,
@@ -314,7 +316,17 @@ export const registerTeamRoutes = (
       if (requireIdentity) {
         await requireVerifiedTeamIdentity(repository, actor.user);
       }
-      const result = await execute(repository);
+      let result: Awaited<ReturnType<typeof execute>>;
+      try {
+        result = await execute(repository);
+      } catch (error) {
+        if (error instanceof TeamActionGrantRequiredError) {
+          throw forbidden(
+            "A scoped one-time Action Grant is required for this Team change"
+          );
+        }
+        throw error;
+      }
       if (!result) {
         throw forbidden("Team administration action is not authorized");
       }
@@ -335,6 +347,11 @@ export const registerTeamRoutes = (
         path: requestPath(request),
         body: input.body
       }),
+      approvedRequest: {
+        method: request.method.toUpperCase(),
+        path: requestPath(request),
+        body: input.body
+      },
       execute: async ({ team, sync, externalAuth }) => {
         const repository = { ...team, ...sync, ...externalAuth };
         if (requireIdentity) {
@@ -718,7 +735,7 @@ export const registerTeamRoutes = (
     async (request) => {
       const actor = await authenticateAdminActor(request);
       const { teamId } = teamIdParamsSchema.parse(request.params);
-      const input = expectedVersionSchema.parse(request.body);
+      const input = teamLeaveActionSchema.parse(request.body);
       return (
         await runVersioned(() =>
           runHighRiskTeamWrite(
