@@ -63,7 +63,8 @@ export const createCuratedMemoryClient =
             a.visibility !== "personal" ||
             a.status !== "current" ||
             a.scope !== request.scope ||
-            a.projectId !== (request.scope === "project" ? request.projectId : null)
+            a.projectId !==
+              (request.scope === "project" ? request.projectId : null)
         )
       )
         throw new Error("Memory list crossed owner or scope.");

@@ -2186,14 +2186,12 @@ export const registerManagedConversationRoutes = (
                 commandKind: "stop"
               }
             );
-            return reply
-              .status(202)
-              .send({
-                item,
-                executionId: current.id,
-                reused: true,
-                stopPending: true
-              });
+            return reply.status(202).send({
+              item,
+              executionId: current.id,
+              reused: true,
+              stopPending: true
+            });
           }
           throw Object.assign(
             new Error("Refresh the Work Item after the previous Agent stops"),
@@ -2226,13 +2224,11 @@ export const registerManagedConversationRoutes = (
             new Error("Work Item Retry needs reconciliation"),
             { statusCode: 409 }
           );
-        return reply
-          .status(202)
-          .send({
-            item: updated,
-            executionId: retried.execution.id,
-            reused: true
-          });
+        return reply.status(202).send({
+          item: updated,
+          executionId: retried.execution.id,
+          reused: true
+        });
       }
       if (
         !["todo", "blocked"].includes(item.status) ||
@@ -2374,13 +2370,11 @@ export const registerManagedConversationRoutes = (
           new Error("Work Item dispatch needs reconciliation"),
           { statusCode: 409 }
         );
-      return reply
-        .status(202)
-        .send({
-          item: updated,
-          executionId: started.execution.id,
-          reused: false
-        });
+      return reply.status(202).send({
+        item: updated,
+        executionId: started.execution.id,
+        reused: false
+      });
     }
   );
 

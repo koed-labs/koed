@@ -38,7 +38,7 @@ export const createCuratedMemoryPreloadApi = (
         result.assertions.some(
           (a) =>
             a.scope !== scope ||
-          a.projectId !== (scope === "project" ? projectId : null)
+            a.projectId !== (scope === "project" ? projectId : null)
         )
       )
         throw new Error("Invalid memory list identity.");
@@ -51,7 +51,7 @@ export const createCuratedMemoryPreloadApi = (
         result.assertions.some(
           (a) =>
             a.scope !== scope ||
-          a.projectId !== (scope === "project" ? projectId : null)
+            a.projectId !== (scope === "project" ? projectId : null)
         )
       )
         throw new Error("Invalid memory list identity.");
