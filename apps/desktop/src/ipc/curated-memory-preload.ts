@@ -25,13 +25,15 @@ export const createCuratedMemoryPreloadApi = (
     page: async (
       scope: "project" | "me" | "unscoped",
       projectId?: string,
-      cursor?: MemoryCursor
+      cursor?: MemoryCursor,
+      since?: string
     ) => {
       const result = await command({
         operation: "list",
         scope,
         projectId,
-        cursor
+        cursor,
+        since
       });
       if (
         result.operation !== "list" ||

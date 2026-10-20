@@ -61,9 +61,12 @@ const hq207Capture =
   new URLSearchParams(window.location.search).get("hq207Capture") === "yes" ||
   hq209Capture ||
   hq403Capture ||
-  new URLSearchParams(window.location.search).get("hq304Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq304Capture") === "yes" ||
+  new URLSearchParams(window.location.search).get("hq305Capture") === "yes";
 const hq304Capture =
   new URLSearchParams(window.location.search).get("hq304Capture") === "yes";
+const hq305Capture =
+  new URLSearchParams(window.location.search).get("hq305Capture") === "yes";
 const hq304OwnerId = "00000000-0000-4000-8000-000000000109";
 const hq304Ids = [
   "00000000-0000-4000-8000-000000003041",
@@ -160,6 +163,96 @@ const hq304MemoryApi: CuratedMemoryDesktopApi = {
     row.projectId = scope === "project" ? projectId! : null;
     row.classificationVersion++;
     return { assertion: structuredClone(row), pending: false };
+  }
+};
+const hq305Ids = [
+  "00000000-0000-4000-8000-000000003051",
+  "00000000-0000-4000-8000-000000003052"
+];
+const hq305Rows = [
+  {
+    ...hq304Row(
+      hq305Ids[0]!,
+      "project",
+      "learning",
+      "Use the midpoint formula for large price changes"
+    ),
+    createdAt: new Date().toISOString()
+  },
+  {
+    ...hq304Row(
+      hq305Ids[1]!,
+      "project",
+      "decision",
+      "Review the launch copy with users"
+    ),
+    createdAt: new Date().toISOString()
+  },
+  {
+    ...hq304Row(
+      "00000000-0000-4000-8000-000000003053",
+      "project",
+      "fact",
+      "An older Project memory"
+    ),
+    updatedAt: new Date().toISOString()
+  }
+];
+const hq305Trace = {
+  pages: 0,
+  since: [] as string[],
+  forgets: [] as string[],
+  undos: [] as string[]
+};
+const hq305MemoryApi: CuratedMemoryDesktopApi = {
+  ...hq304MemoryApi,
+  list: async (scope, projectId) =>
+    structuredClone(
+      hq305Rows.filter(
+        (row) =>
+          row.scope === scope &&
+          row.projectId === (scope === "project" ? projectId : null) &&
+          row.status === "current"
+      )
+    ),
+  detail: async (id) =>
+    structuredClone(hq305Rows.find((row) => row.id === id)!),
+  page: async (scope, projectId, cursor, since) => {
+    hq305Trace.pages++;
+    if (since) hq305Trace.since.push(since);
+    const matching = hq305Rows.filter(
+      (row) =>
+        row.scope === scope &&
+        row.projectId === (scope === "project" ? projectId : null) &&
+        row.status === "current" &&
+        (!since || Date.parse(row.createdAt) >= Date.parse(since))
+    );
+    const index = cursor ? 1 : 0;
+    const assertions = matching.slice(index, index + 1);
+    return {
+      assertions: structuredClone(assertions),
+      nextCursor: matching[index + 1]
+        ? { updatedAt: assertions[0]!.updatedAt, id: assertions[0]!.id }
+        : null
+    };
+  },
+  forget: async (id) => {
+    const row = hq305Rows.find((entry) => entry.id === id);
+    if (!row || row.ownerUserId !== hq304OwnerId)
+      throw new Error("Not your memory");
+    row.status = "suppressed";
+    row.suppressionToken = "305123456";
+    hq305Trace.forgets.push(id);
+    return structuredClone(row);
+  },
+  undo: async (id, token) => {
+    const row = hq305Rows.find((entry) => entry.id === id);
+    if (!row || row.suppressionToken !== token)
+      throw new Error("Invalid Undo token");
+    row.status = "current";
+    row.suppressionToken = null;
+    hq305Trace.undos.push(`${id}:${token}`);
+    return structuredClone(row);
   }
 };
 const hq205ProjectId = "00000000-0000-4000-8000-000000002031";
@@ -412,6 +505,7 @@ const installSettingsDesktop = () => {
   window.koedDesktop = {
     ...originalDesktop,
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
+    ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
     ...(hq106Capture ? { personalMemory: sidebarPersonalMemoryApi } : {}),
     ...(hq204Capture || hq205Capture || hq207Capture
       ? {
@@ -2163,6 +2257,15 @@ export function HqValidationApp() {
     (
       window as Window & { __koedHq306Trace?: typeof hq306Trace }
     ).__koedHq306Trace = hq306Trace;
+    if (hq305Capture) {
+      hq305Trace.pages = 0;
+      hq305Trace.since.length = 0;
+      hq305Trace.forgets.length = 0;
+      hq305Trace.undos.length = 0;
+      (
+        window as Window & { __koedHq305Trace?: typeof hq305Trace }
+      ).__koedHq305Trace = hq305Trace;
+    }
     hq104SentMessageId = "";
     hq104Recovery.clear();
     resumedFixtureIdentities.clear();
@@ -2186,6 +2289,8 @@ export function HqValidationApp() {
       restoreDesktop();
       delete (window as Window & { __koedHq306Trace?: typeof hq306Trace })
         .__koedHq306Trace;
+      delete (window as Window & { __koedHq305Trace?: typeof hq305Trace })
+        .__koedHq305Trace;
       delete window.__koedHqFixture;
       delete (
         window as Window & {

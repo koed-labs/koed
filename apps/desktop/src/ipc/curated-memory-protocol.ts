@@ -57,7 +57,8 @@ export const curatedMemoryRequestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("list"),
       scope,
       projectId: id.optional(),
-      cursor: memoryCursorSchema.optional()
+      cursor: memoryCursorSchema.optional(),
+      since: z.string().datetime({ offset: true }).optional()
     })
     .strict(),
   z.object({ operation: z.literal("detail"), assertionId: id }).strict(),
@@ -116,7 +117,8 @@ export interface CuratedMemoryDesktopApi {
   page(
     scope: "project" | "me" | "unscoped",
     projectId?: string,
-    cursor?: MemoryCursor
+    cursor?: MemoryCursor,
+    since?: string
   ): Promise<CuratedMemoryPage>;
   list(
     scope: "project" | "me" | "unscoped",

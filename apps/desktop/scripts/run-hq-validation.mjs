@@ -366,6 +366,35 @@ try {
       await rm(dispatchProfile, { recursive: true, force: true });
     }
   }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const learnedReport = resolve(scratchDir, "hq-305", "HQ305.native.json");
+    await rm(learnedReport, { force: true });
+    const learnedProfile = await mkdtemp(
+      resolve(scratchDir, "hq305-electron-profile-")
+    );
+    try {
+      const learned = spawnSync(electronPath, ["scripts/validate-hq305.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ305_USER_DATA_DIR: learnedProfile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (learned.error) throw learned.error;
+      process.exitCode = learned.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(learnedReport, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ305.native", owner: "HQ-305", status: "pass" }
+        );
+        process.stdout.write(
+          "PASS HQ305.native [HQ-305]: today's Project memory, detail, exact Forget/Undo, and external refresh; S19.1 memory chips remain owned by HQ-308.\n"
+        );
+      }
+    } finally {
+      await rm(learnedProfile, { recursive: true, force: true });
+    }
+  }
 } finally {
   await rm(userDataPath, { recursive: true, force: true });
 }

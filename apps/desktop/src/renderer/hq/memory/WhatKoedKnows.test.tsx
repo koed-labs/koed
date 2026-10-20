@@ -113,6 +113,7 @@ describe("What Koed knows identity and ownership", () => {
       project?: Project;
       profileKey?: string;
       open?: boolean;
+      openRequest?: { id: number; item: CuratedAssertion } | null;
     } = {}
   ) =>
     act(async () =>
@@ -124,6 +125,7 @@ describe("What Koed knows identity and ownership", () => {
           ownerId={overrides.ownerId ?? owner}
           profileKey={overrides.profileKey ?? "profile-a"}
           open={overrides.open ?? true}
+          openRequest={overrides.openRequest}
           onClose={() => {}}
         />
       )
@@ -158,6 +160,42 @@ describe("What Koed knows identity and ownership", () => {
     expect(node.querySelector(".hq-knows__origin")).toBeNull();
     await act(async () => me.resolve(page([item("Me preference", "me")])));
     expect(node.textContent).toContain("Me preference");
+  });
+  it("opens an external Project selection after Me and does not reopen after Back", async () => {
+    const projectRow = item("Project learning");
+    const meRow = item("Me preference", "me");
+    const memoryApi = api(
+      async (scope) =>
+        page(
+          scope === "project" ? [projectRow] : scope === "me" ? [meRow] : []
+        ),
+      async () => projectRow
+    );
+    await render(memoryApi);
+    await act(async () =>
+      (node.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement).click()
+    );
+    expect(node.textContent).toContain("Me preference");
+    await render(memoryApi, { open: false });
+    await render(memoryApi, {
+      open: true,
+      openRequest: { id: 1, item: projectRow }
+    });
+    expect(node.querySelector(".hq-knows__origin")).not.toBeNull();
+    expect(node.querySelector(".hq-knows h2")?.textContent).toBe(
+      "Project learning"
+    );
+    await act(async () =>
+      (node.querySelector(".hq-knows__back") as HTMLButtonElement).click()
+    );
+    expect(node.querySelector(".hq-knows__origin")).toBeNull();
+    await act(async () =>
+      (node.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement).click()
+    );
+    await act(async () =>
+      (node.querySelectorAll('[role="tab"]')[0] as HTMLButtonElement).click()
+    );
+    expect(node.querySelector(".hq-knows__origin")).toBeNull();
   });
   it("gates private rows on owner, profile, Project and API changes, including ABA", async () => {
     const old = deferred<CuratedMemoryPage>();

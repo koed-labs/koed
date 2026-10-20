@@ -33,6 +33,31 @@ const assertion = {
 };
 
 describe("Curated Memory Desktop client", () => {
+  it("passes the since boundary and rejects earlier assertions", async () => {
+    const request = vi.fn(async (path: string) => {
+      expect(path).toContain("/v1/memory/curated/assertions?");
+      return { assertions: [assertion], next_cursor: null };
+    });
+    const client = createCuratedMemoryClient(request, async () => authority);
+    const since = "2026-10-20T00:00:00+02:00";
+    await client({
+      operation: "list",
+      scope: "project",
+      projectId: project,
+      since
+    });
+    expect(request.mock.calls[0]?.[0]).toContain(
+      `since=${encodeURIComponent(since)}`
+    );
+    await expect(
+      client({
+        operation: "list",
+        scope: "project",
+        projectId: project,
+        since: "2026-10-21T00:00:00+02:00"
+      })
+    ).rejects.toThrow("scope");
+  });
   it("bounds Project lists to the owner and selected Project", async () => {
     const request = vi.fn(
       async (

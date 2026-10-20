@@ -16,7 +16,10 @@ import type { AgentsDesktopApi } from "../../../ipc/agents-protocol.js";
 import type { Project } from "@koed/shared/project-contract";
 import type { WorkItem } from "@koed/shared/work-item-contract";
 import type { DesktopProject } from "../../../project-memory-ui.js";
-import type { CuratedMemoryDesktopApi } from "../../../ipc/curated-memory-protocol.js";
+import type {
+  CuratedAssertion,
+  CuratedMemoryDesktopApi
+} from "../../../ipc/curated-memory-protocol.js";
 import type {
   ManagedConversationDesktopApi,
   ManagedConversationListEntry,
@@ -28,6 +31,7 @@ import { hqRuntimeItemTitle } from "../conversation/hq-runtime-item-title.js";
 import { projectNavigation } from "../project-navigation.js";
 import { nowInspectableExecutions, type NowNeed } from "../now/now-model.js";
 import { HqProjectSources } from "./HqProjectSources.js";
+import { HqLearnedToday } from "./HqLearnedToday.js";
 import { WhatKoedKnows } from "../memory/WhatKoedKnows.js";
 import {
   parseWorkItemInput,
@@ -145,6 +149,16 @@ export function HqProjectView({
     count: string | null;
   }>({ key: -1, count: null });
   const [memoryRevision, setMemoryRevision] = useState(0);
+  const [memorySelection, setMemorySelection] = useState<{
+    key: number;
+    id: number;
+    item: CuratedAssertion;
+  } | null>(null);
+  const memorySelectionId = useRef(0);
+  const [learnedState, setLearnedState] = useState<{
+    key: number;
+    count: number | null;
+  }>({ key: -1, count: null });
   const memoryIdentity = useRef({
     api: curatedMemoryApi,
     ownerId,
@@ -889,6 +903,7 @@ export function HqProjectView({
             className="hq-project-view__memory"
             aria-label="What Koed knows"
             onClick={() => {
+              setMemorySelection(null);
               setSourceCloseSignal((value) => value + 1);
               setMemoryOpen(true);
               setBriefFor(null);
@@ -913,9 +928,13 @@ export function HqProjectView({
           ownedAgents={ownedAgents}
           panelHost={panelHost}
           open={memoryOpen}
+          openRequest={
+            memorySelection?.key === memoryKey ? memorySelection : null
+          }
           onChanged={() => setMemoryRevision((value) => value + 1)}
           onClose={() => {
             setMemoryOpen(false);
+            setMemorySelection(null);
             onSourcesOpenChange?.(false);
             onContextChange?.(null);
           }}
@@ -1328,6 +1347,36 @@ export function HqProjectView({
           {sectionHead("done", "Done today", work.doneToday.length)}
           {!folded.done ? (
             <>
+              {curatedMemoryApi ? (
+                <HqLearnedToday
+                  key={memoryKey}
+                  api={curatedMemoryApi}
+                  projectId={project.id}
+                  ownerId={ownerId ?? null}
+                  onChanged={() => setMemoryRevision((value) => value + 1)}
+                  memoryRevision={memoryRevision}
+                  ownedAgents={ownedAgents}
+                  onOpenItem={(item) => {
+                    setMemorySelection({
+                      key: memoryKey,
+                      id: ++memorySelectionId.current,
+                      item
+                    });
+                    setSourceCloseSignal((value) => value + 1);
+                    setMemoryOpen(true);
+                    setBriefFor(null);
+                    onSourcesOpenChange?.(true);
+                    onContextChange?.("What Koed knows");
+                  }}
+                  onCount={(count) =>
+                    setLearnedState((state) =>
+                      state.key === memoryKey && state.count === count
+                        ? state
+                        : { key: memoryKey, count }
+                    )
+                  }
+                />
+              ) : null}
               {(expanded.done
                 ? work.doneToday
                 : work.doneToday.slice(0, cap.done)
@@ -1352,7 +1401,10 @@ export function HqProjectView({
                     : `Show ${work.doneToday.length - cap.done} more`}
                 </button>
               ) : null}
-              {!work.doneToday.length ? (
+              {!work.doneToday.length &&
+              (!curatedMemoryApi ||
+                (learnedState.key === memoryKey &&
+                  learnedState.count === 0)) ? (
                 <p className="hq-project-view__none">
                   Nothing finished yet today.
                 </p>

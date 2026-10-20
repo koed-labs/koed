@@ -35,7 +35,7 @@ const date = (value: string) =>
         month: "short",
         year: "numeric"
       }).format(new Date(value));
-const sourceLabel = (assertion: CuratedAssertion) => {
+export const sourceLabel = (assertion: CuratedAssertion) => {
   const source = assertion.sources[0];
   const title = source?.metadata?.title;
   if (typeof title === "string" && title.trim()) return title;
@@ -43,7 +43,7 @@ const sourceLabel = (assertion: CuratedAssertion) => {
 };
 const owned = (assertion: CuratedAssertion, ownerId: string | null) =>
   assertion.ownerUserId === ownerId && assertion.visibility === "personal";
-const who = (
+export const who = (
   assertion: CuratedAssertion,
   ownerId: string | null,
   agents: readonly { id: string; name: string }[]
@@ -69,7 +69,8 @@ export function WhatKoedKnows({
   panelHost,
   open,
   onClose,
-  onChanged
+  onChanged,
+  openRequest
 }: {
   api: CuratedMemoryDesktopApi;
   project: Project;
@@ -81,6 +82,7 @@ export function WhatKoedKnows({
   open: boolean;
   onClose: () => void;
   onChanged?: () => void;
+  openRequest?: { id: number; item: CuratedAssertion } | null;
 }) {
   const [tab, setTab] = useState<"project" | "me" | "unscoped">("project");
   const [rowState, setRowState] = useState<{
@@ -107,6 +109,7 @@ export function WhatKoedKnows({
   } | null>(null);
   const [refresh, setRefresh] = useState(0);
   const actionRef = useRef<number | null>(null);
+  const externalOpenRef = useRef<{ id: number; done: boolean } | null>(null);
   const [countState, setCountState] = useState<{
     key: number;
     values: Record<"project" | "me" | "unscoped", string>;
@@ -327,6 +330,18 @@ export function WhatKoedKnows({
       )
         setDetail(item);
     });
+  useEffect(() => {
+    if (!open || !openRequest) return;
+    if (externalOpenRef.current?.id !== openRequest.id)
+      externalOpenRef.current = { id: openRequest.id, done: false };
+    if (externalOpenRef.current.done) return;
+    if (tab !== openRequest.item.scope) {
+      setTab(openRequest.item.scope);
+      return;
+    }
+    externalOpenRef.current.done = true;
+    openDetail(openRequest.item);
+  }, [open, openRequest?.id, tab, key]);
   const forget = (assertion: CuratedAssertion) =>
     void act(async (current) => {
       if (!owned(assertion, ownerId)) return;

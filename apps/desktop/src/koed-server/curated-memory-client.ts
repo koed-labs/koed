@@ -48,6 +48,7 @@ export const createCuratedMemoryClient =
       });
       if (request.scope === "project")
         query.set("project_id", request.projectId!);
+      if (request.since) query.set("since", request.since);
       if (request.cursor) {
         query.set("before_updated_at", request.cursor.updatedAt);
         query.set("before_id", request.cursor.id);
@@ -62,6 +63,9 @@ export const createCuratedMemoryClient =
             a.ownerUserId !== bound.ownerId ||
             a.visibility !== "personal" ||
             a.status !== "current" ||
+            (request.since &&
+              (!Number.isFinite(Date.parse(a.createdAt)) ||
+                Date.parse(a.createdAt) < Date.parse(request.since))) ||
             a.scope !== request.scope ||
             a.projectId !==
               (request.scope === "project" ? request.projectId : null)
