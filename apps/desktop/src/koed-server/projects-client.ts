@@ -13,6 +13,7 @@ import {
   type ProjectsResult
 } from "../ipc/projects-protocol.js";
 import { createProjectSourceClient } from "./project-source-client.js";
+import { createProjectWorkItemClient } from "./project-work-item-client.js";
 
 export type ProjectsAuthority = {
   key: string;
@@ -81,6 +82,12 @@ export const createProjectsClient = (
         throw new Error("Project HQ identity mismatch.");
       return projectsResultSchema.parse({ operation: "hq", value: parsed });
     }
+    if (
+      request.operation === "workItemList" ||
+      request.operation === "workItemCreate" ||
+      request.operation === "workItemPatch"
+    )
+      return createProjectWorkItemClient(send, json)(request);
     if (request.operation === "create") {
       const parsed = projectSchema.parse(
         await send("/v1/projects", json("POST", request.value))

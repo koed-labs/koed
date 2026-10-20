@@ -15,6 +15,11 @@ import {
   projectSourcesSchema
 } from "@koed/shared/project-source-contract";
 import { z } from "zod";
+import {
+  createWorkItemSchema,
+  patchWorkItemSchema,
+  workItemSchema
+} from "@koed/shared/work-item-contract";
 
 export const projectsCommandChannel = "koed:projects:command";
 
@@ -22,6 +27,24 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("list") }).strict(),
   z.object({ operation: z.literal("pickFolder") }).strict(),
   z.object({ operation: z.literal("hq"), projectId: z.uuid() }).strict(),
+  z
+    .object({ operation: z.literal("workItemList"), projectId: z.uuid() })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("workItemCreate"),
+      projectId: z.uuid(),
+      value: createWorkItemSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("workItemPatch"),
+      projectId: z.uuid(),
+      itemId: z.uuid(),
+      value: patchWorkItemSchema
+    })
+    .strict(),
   z
     .object({ operation: z.literal("sourceList"), projectId: z.uuid() })
     .strict(),
@@ -141,6 +164,19 @@ export const projectsResultSchema = z.discriminatedUnion("operation", [
     .strict(),
   z.object({ operation: z.literal("hq"), value: projectHqSchema }).strict(),
   z
+    .object({
+      operation: z.literal("workItemList"),
+      projectId: z.uuid(),
+      items: z.array(workItemSchema)
+    })
+    .strict(),
+  z
+    .object({ operation: z.literal("workItemCreate"), value: workItemSchema })
+    .strict(),
+  z
+    .object({ operation: z.literal("workItemPatch"), value: workItemSchema })
+    .strict(),
+  z
     .object({ operation: z.literal("sourceList"), value: projectSourcesSchema })
     .strict(),
   z
@@ -247,6 +283,16 @@ export type ProjectsRequest = z.infer<typeof projectsRequestSchema>;
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 
 export interface ProjectsDesktopApi {
+  workItemList?(projectId: string): Promise<z.infer<typeof workItemSchema>[]>;
+  workItemCreate?(
+    projectId: string,
+    value: z.infer<typeof createWorkItemSchema>
+  ): Promise<z.infer<typeof workItemSchema>>;
+  workItemPatch?(
+    projectId: string,
+    itemId: string,
+    value: z.infer<typeof patchWorkItemSchema>
+  ): Promise<z.infer<typeof workItemSchema>>;
   sourceUpload?(
     projectId: string
   ): Promise<z.infer<typeof projectSourceSchema> | null>;

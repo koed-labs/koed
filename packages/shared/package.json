@@ -39,6 +39,14 @@
       "types": "./dist/project-source-contract.d.ts",
       "import": "./dist/project-source-contract.js"
     },
+    "./work-item-contract": {
+      "types": "./dist/work-item-contract.d.ts",
+      "import": "./dist/work-item-contract.js"
+    },
+    "./due-date": {
+      "types": "./dist/due-date.d.ts",
+      "import": "./dist/due-date.js"
+    },
     "./agent-contract": {
       "types": "./dist/agent-contract.d.ts",
       "import": "./dist/agent-contract.js"

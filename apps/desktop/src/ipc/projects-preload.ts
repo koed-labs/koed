@@ -29,7 +29,12 @@ export const createProjectsPreloadApi = (
         throw new Error("Invalid Project Source identity correlation.");
       return result;
     }
-    if ("projectId" in request && "value" in result && result.value !== null) {
+    if (
+      "projectId" in request &&
+      "value" in result &&
+      result.value !== null &&
+      !request.operation.startsWith("workItem")
+    ) {
       const project =
         "project" in result.value ? result.value.project : result.value;
       if ("id" in project && project.id !== request.projectId)
@@ -44,6 +49,44 @@ export const createProjectsPreloadApi = (
     return result;
   };
   const api: ProjectsDesktopApi = {
+    workItemList: async (projectId) => {
+      const result = await command({ operation: "workItemList", projectId });
+      if (
+        result.operation !== "workItemList" ||
+        result.projectId !== projectId ||
+        result.items.some((item) => item.projectId !== projectId)
+      )
+        throw new Error("Invalid Work Item list identity.");
+      return result.items;
+    },
+    workItemCreate: async (projectId, value) => {
+      const result = await command({
+        operation: "workItemCreate",
+        projectId,
+        value
+      });
+      if (
+        result.operation !== "workItemCreate" ||
+        result.value.projectId !== projectId
+      )
+        throw new Error("Invalid Work Item creation identity.");
+      return result.value;
+    },
+    workItemPatch: async (projectId, itemId, value) => {
+      const result = await command({
+        operation: "workItemPatch",
+        projectId,
+        itemId,
+        value
+      });
+      if (
+        result.operation !== "workItemPatch" ||
+        result.value.projectId !== projectId ||
+        result.value.id !== itemId
+      )
+        throw new Error("Invalid Work Item patch identity.");
+      return result.value;
+    },
     sourceUpload: async (projectId) => {
       const result = await command({ operation: "sourceUpload", projectId });
       if (result.operation !== "sourceUpload")

@@ -16,10 +16,12 @@ const projectViewReportPath = resolve(
   "hq-207",
   "browser-report.json"
 );
+const workItemReportPath = resolve(scratchDir, "hq-403", "browser-report.json");
 
 await mkdir(scratchDir, { recursive: true });
 await rm(sourcesReportPath, { force: true });
 await rm(projectViewReportPath, { force: true });
+await rm(workItemReportPath, { force: true });
 const userDataPath = await mkdtemp(
   resolve(scratchDir, "hq-008-electron-profile-")
 );
@@ -141,6 +143,37 @@ try {
       process.stdout.write(
         "PASS HQ209.native [HQ-209]: owner-readable Source text and exact Note revision context in the native Project view.\n"
       );
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const workItemProfile = await mkdtemp(
+      resolve(scratchDir, "hq403-electron-profile-")
+    );
+    try {
+      const workItemView = spawnSync(
+        electronPath,
+        ["scripts/validate-hq403.mjs"],
+        {
+          cwd: desktopDir,
+          env: { ...process.env, KOED_HQ403_USER_DATA_DIR: workItemProfile },
+          stdio: "inherit",
+          timeout: 60_000
+        }
+      );
+      if (workItemView.error) throw workItemView.error;
+      process.exitCode = workItemView.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(workItemReportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, status: report.status },
+          { id: "HQ403.native", status: "pass" }
+        );
+        process.stdout.write(
+          "PASS HQ403.native [HQ-403]: Work Item sections, due entry, caps, folds, versioned tick-off and activity.\n"
+        );
+      }
+    } finally {
+      await rm(workItemProfile, { recursive: true, force: true });
+    }
   }
 } finally {
   await rm(userDataPath, { recursive: true, force: true });

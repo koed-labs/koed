@@ -33,6 +33,10 @@
         "packages/mcp-server/src/runtime-contracts.ts"
       ],
       "@koed/shared": ["packages/shared/src/index.ts"],
+      "@koed/shared/work-item-contract": [
+        "packages/shared/src/work-item-contract.ts"
+      ],
+      "@koed/shared/due-date": ["packages/shared/src/due-date.ts"],
       "@koed/shared/ai-client-contract": [
         "packages/shared/src/ai-client-contract.ts"
       ],

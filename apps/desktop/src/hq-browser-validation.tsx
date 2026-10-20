@@ -17,7 +17,7 @@ import type {
   CollaborationRendererClient
 } from "./collaboration/renderer-client.js";
 import type { DesktopApi, KoedServerStatus } from "./types.js";
-import type { Project, ProjectSource } from "@koed/shared";
+import type { Project, ProjectSource, WorkItem } from "@koed/shared";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
 import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
 
@@ -37,9 +37,12 @@ const hq205Capture =
   new URLSearchParams(window.location.search).get("hq205Capture") === "yes";
 const hq209Capture =
   new URLSearchParams(window.location.search).get("hq209Capture") === "yes";
+const hq403Capture =
+  new URLSearchParams(window.location.search).get("hq403Capture") === "yes";
 const hq207Capture =
   new URLSearchParams(window.location.search).get("hq207Capture") === "yes" ||
-  hq209Capture;
+  hq209Capture ||
+  hq403Capture;
 const hq205ProjectId = "00000000-0000-4000-8000-000000002031";
 const hq205SourceOwnerId = "00000000-0000-4000-8000-000000002051";
 const hq205SourceTime = "2026-10-20T09:00:00.000Z";
@@ -1038,7 +1041,136 @@ const hq208Status = () => {
     cancellationPending: false
   };
 };
+const hq403Seed = (
+  id: string,
+  title: string,
+  status: WorkItem["status"],
+  dueOn: string | null = null
+): WorkItem => ({
+  id,
+  projectId: hq204ProjectId,
+  kind: "todo",
+  key: null,
+  title,
+  goal: title,
+  origin: "manual",
+  originRef: null,
+  idempotencyKey: null,
+  status,
+  blockedReason:
+    status === "blocked"
+      ? "The Conversation stopped before completing this item."
+      : null,
+  assigneeAgentId: null,
+  executionId: null,
+  dispatchKey: null,
+  prProvider: null,
+  prNumber: null,
+  prUrl: null,
+  prState: null,
+  dueOn,
+  doneAt: status === "done" ? "2026-10-20T09:00:00.000Z" : null,
+  doneBy: null,
+  createdBy: hq205SourceOwnerId,
+  createdAt: "2026-10-19T09:00:00.000Z",
+  updatedAt: "2026-10-20T09:00:00.000Z",
+  version: 1
+});
+let hq403Items: WorkItem[] = [
+  hq403Seed(
+    "00000000-0000-4000-8000-000000004031",
+    "Review release notes",
+    "todo",
+    "2026-10-20"
+  ),
+  hq403Seed(
+    "00000000-0000-4000-8000-000000004032",
+    "Tidy the Project brief",
+    "todo"
+  ),
+  hq403Seed("00000000-0000-4000-8000-000000004036", "Check the budget", "todo"),
+  hq403Seed(
+    "00000000-0000-4000-8000-000000004037",
+    "Draft the announcement",
+    "todo"
+  ),
+  hq403Seed(
+    "00000000-0000-4000-8000-000000004038",
+    "Confirm the venue",
+    "todo"
+  ),
+  hq403Seed("00000000-0000-4000-8000-000000004039", "Update the FAQ", "todo"),
+  hq403Seed("00000000-0000-4000-8000-000000004040", "Book the review", "todo"),
+  hq403Seed(
+    "00000000-0000-4000-8000-000000004033",
+    "Check the launch copy",
+    "doing"
+  ),
+  hq403Seed(
+    "00000000-0000-4000-8000-000000004034",
+    "Fix the build failure",
+    "blocked"
+  ),
+  hq403Seed(
+    "00000000-0000-4000-8000-000000004035",
+    "Update the outline",
+    "done"
+  ),
+  {
+    ...hq403Seed(
+      "00000000-0000-4000-8000-000000004041",
+      "Review the release PR",
+      "review"
+    ),
+    prProvider: "GitHub",
+    prNumber: 42,
+    prUrl: "https://github.com/koed-labs/koed/pull/42",
+    prState: "open"
+  }
+];
 const sidebarProjectsApi = {
+  workItemList: async (projectId: string) =>
+    hq403Capture && projectId === hq204ProjectId
+      ? structuredClone(hq403Items)
+      : [],
+  workItemCreate: async (
+    projectId: string,
+    value: { title: string; goal: string; dueOn?: string | null }
+  ) => {
+    if (!hq403Capture || projectId !== hq204ProjectId)
+      throw new Error("Work Items unavailable.");
+    const item = {
+      ...hq403Seed(
+        crypto.randomUUID(),
+        value.title,
+        "todo",
+        value.dueOn ?? null
+      ),
+      goal: value.goal
+    };
+    hq403Items = [item, ...hq403Items];
+    return structuredClone(item);
+  },
+  workItemPatch: async (
+    projectId: string,
+    itemId: string,
+    value: { version: number; action?: "mark_done" | "back_to_todo" | "untick" }
+  ) => {
+    const item = hq403Items.find(
+      (row) => row.id === itemId && row.projectId === projectId
+    );
+    if (!hq403Capture || !item || item.version !== value.version)
+      throw new Error("Work Item changed.");
+    const updated: WorkItem = {
+      ...item,
+      status: value.action === "mark_done" ? "done" : "todo",
+      doneAt: value.action === "mark_done" ? new Date().toISOString() : null,
+      version: item.version + 1,
+      updatedAt: new Date().toISOString()
+    };
+    hq403Items = hq403Items.map((row) => (row.id === itemId ? updated : row));
+    return structuredClone(updated);
+  },
   sourceList: async (projectId: string) =>
     (hq205Capture && projectId === hq205ProjectId) ||
     (hq207Capture && projectId === hq204ProjectId)
