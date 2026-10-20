@@ -182,8 +182,12 @@ amendment in [ADR 0043](adr/0043-durable-memory-answer-execution.md) and
 ## Runtime Contract
 
 The owner-authenticated loopback runtime exposes start, get, cancel, and an SSE
-stream for one task. Start validates and applies the Memory Answer input schema
-before eligibility checks. If a Team Workspace request has no authorized Team
+stream for one task. Start validates the public Memory Answer request before
+eligibility checks. Explicit Personal Project and Folder targets are bound to
+the authenticated owner and normalized before acceptance. Their versioned
+selection stays in the encrypted task request; workers use the pinned execution
+input and never rediscover a target from their directory. Legacy requests retain
+their existing defaults. If a Team Workspace request has no authorized Team
 task route, start rejects it before acceptance. A stream resolves ownership and
 retention before sending success headers. It emits current state first, then monotonic
 task versions and keepalive comments, and honors `Last-Event-ID`. Every event

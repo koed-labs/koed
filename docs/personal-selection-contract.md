@@ -1042,6 +1042,28 @@ migration history and defensive source validation do not expose an upgrade flow.
 
 ## Bounded Personal selection consumer
 
+### Public MCP Project and Folder selection
+
+`memory_answer` accepts `recall_target` for an explicit Personal Project or exact
+Folder. Project targets use `{kind: "project", project: {ownerUserId, projectId}}`.
+Folder targets use `{kind: "folder", folder: <PersonalFolderReference>}` with the
+full recorded Folder identity. Paths alone cannot select a Folder.
+
+Do not combine `recall_target` with `search_domain`, `project_id`, `session_id`,
+`team_workspace_id`, or `team_backend_id`. The runtime checks the authenticated
+owner before acceptance and persists one versioned selection. It does not
+discover a checkout or use a caller-to-Team mapping for these explicit targets.
+Blocking, non-blocking, and remote Personal submission use the same boundary.
+Every search and expansion receives the accepted selection and rechecks current
+membership and source eligibility. Existing Git, Session, and Global selectors
+retain their supported legacy request form.
+
+Migration `0048_personal_summary_changes` extends the source journal to LCM node
+creation, updates, invalidation, and deletion. A summary can complete after the
+last captured turn, including when a manual title prevents any Session update.
+These events tell the consumer to refresh selected source data through its
+authorized read APIs. They contain no summary text and grant no Team authority.
+
 P1-16 exposes owner-authenticated metadata APIs for a future consumer. They do
 not create a Team grant, publish to a Workspace, authorize source-body reads,
 or change capture. A portable source reference identifies evidence; it does

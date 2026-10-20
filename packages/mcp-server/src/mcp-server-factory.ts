@@ -51,7 +51,7 @@ import type {
 import {
   memoryAccessCheckInputSchema,
   memoryAnswerAdapterInputSchema,
-  memoryAnswerInputSchema,
+  parseMemoryAnswerRequest,
   memoryExpandInputSchema,
   memoryIntakeProposeInputSchema,
   memorySearchInputSchema,
@@ -323,6 +323,7 @@ export const createKoedMcpServer = async (
             directory === undefined &&
             !callerContextResolver &&
             executionInput.project_id === undefined &&
+            executionInput.recall_target === undefined &&
             executionInput.repository_context === undefined
           ) {
             if ((executionInput.search_domain ?? "project") === "project")
@@ -359,7 +360,7 @@ export const createKoedMcpServer = async (
           ) {
             try {
               const task = await runtimeClient.startMemoryAnswerTask(
-                memoryAnswerInputSchema.parse(delivery.executionInput),
+                parseMemoryAnswerRequest(delivery.executionInput),
                 caller,
                 invocationKey,
                 context.mcpReq.signal
@@ -377,7 +378,7 @@ export const createKoedMcpServer = async (
           const response = await runtimeClient.callTool(
             toolName,
             toolName === "memory_answer"
-              ? memoryAnswerInputSchema.parse(delivery.executionInput)
+              ? parseMemoryAnswerRequest(delivery.executionInput)
               : (input as Record<string, unknown>),
             caller,
             context.mcpReq.signal,

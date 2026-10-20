@@ -337,6 +337,13 @@
       "when": 1792458683834,
       "tag": "0047_personal_project_model",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1792498861780,
+      "tag": "0048_personal_summary_changes",
+      "breakpoints": true
     }
   ]
 }

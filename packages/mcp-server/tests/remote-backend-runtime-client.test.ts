@@ -90,6 +90,36 @@ const repositoryContext = (root: string): RepositoryIdentity => ({
 });
 
 describe("remote backend runtime client", () => {
+  it.each(["blocking", "non_blocking"] as const)(
+    "pins a Personal Project in %s mode without checkout discovery",
+    async (mode) => {
+      const { client, runtime } = fixture();
+      client.accessCheck.mockResolvedValue({ user: { id } } as Awaited<
+        ReturnType<RemoteMemoryApiClient["accessCheck"]>
+      >);
+      const recall_target = {
+        kind: "project",
+        project: { ownerUserId: id, projectId: id }
+      };
+      const input = { query: "Decision", recall_target };
+      if (mode === "blocking")
+        await runtime.callTool("memory_answer", input, { cwd: "/unrelated" });
+      else await runtime.startMemoryAnswerTask(input, { cwd: "/unrelated" });
+      expect(client.acceptMemoryAnswerTask).toHaveBeenCalledOnce();
+      expect(
+        client.acceptMemoryAnswerTask.mock.calls[0]![0].request
+      ).toMatchObject({
+        requestVersion: 1,
+        selection: { version: 1, ownerUserId: id, target: recall_target },
+        input: {
+          search_domain: "project",
+          project_id: id,
+          repository_context: null
+        },
+        caller: { cwd: "" }
+      });
+    }
+  );
   it("preserves Windows source Project IDs and rejects relative paths", async () => {
     const { client, runtime } = fixture();
     await runtime.startMemoryAnswerTask(

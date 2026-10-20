@@ -88,6 +88,9 @@ A Team Workspace is the destination for shared Memory.
 The User can share a Folder, Git Anchor, Project, or individual Conversation
 to a selected Team and Workspace. Each selection contributes the User's
 matching Memory. It does not share filesystem contents or repository files.
+A Personal Project remains private when used as a sharing selector.
+Sharing its Memory does not publish its name or private membership structure.
+Team collections are deferred beyond Package 2.
 
 New sharing always includes existing and future matching Conversations.
 Later turns update the shared Memory automatically.
@@ -149,10 +152,10 @@ Her checkout path can differ. Repository recall in Engineering can find both
 Users' authorized contributions. Cloning the repository does not authorize
 sharing, and matching repository identity exposes no unshared Personal Memory.
 
-The intended Team view can expose `Launch` as a shared grouping of authorized
-contributions. Local Projects with equal names do not establish shared identity.
-The shared grouping's identity and contribution controls still need design.
-Local folder paths can select contributions without disclosure to the Team.
+The Team sees authorized contributions without receiving a collection named `Launch`.
+The Personal Project name, private membership structure, and local folder paths remain private.
+Alice can select her own contributions independently.
+Team collections remain outside Package 2.
 
 ## What changes on this branch
 
@@ -171,7 +174,7 @@ The new model requires separate source context and membership.
 | Sharing admission  | Consent and grants bind individual sources                         | Add owner-authorized continuous selection across qualifying sources            |
 | Sharing mode       | Semantic shares support snapshot and continuous modes              | Use continuous behavior for new shares in this model                           |
 | Pause and resume   | Existing controls govern source advancement                        | Also govern new-member admission and catch-up across the selection             |
-| Team context       | Grants carry repository snapshots                                  | Preserve approved Git context and add separately authorized grouping metadata  |
+| Team context       | Grants carry repository snapshots                                  | Preserve approved Git context and keep Personal Project organization private   |
 | Desktop            | Move and Restore operate on assignment                             | Provide inclusion controls, independent filters, and continuous sharing status |
 
 ## Work package 1 Personal Project remediation
@@ -183,8 +186,8 @@ Desktop controls, Personal Device Sync, and migration of existing assignments.
 
 Existing Team sharing must continue to work through this change.
 Compatibility changes needed to preserve its contracts belong in this package.
-New continuous selection, Team grouping, and rule-based publication belong in
-Package 2. Package 1 can complete and land independently.
+New continuous selection and rule-based publication belong in Package 2.
+Team collections are deferred. Package 1 can complete and land independently.
 
 The [Personal Project implementation plan](personal-project-implementation-plan.md)
 records the confirmed decisions, engineering defaults, ordered work items,
@@ -265,7 +268,7 @@ Existing retained provenance remains evidence rather than automatic authority.
 Preserve existing Team grant repository snapshots during the transition.
 Changing Personal organization must not silently retarget Team filtering.
 Keep existing sharing consent and source access unchanged.
-Migration of sharing modes and shared grouping metadata belongs in Package 2.
+Compatibility for existing sharing modes and disclosed Team metadata belongs in Package 2.
 
 Update the repository recall, Personal Desktop, client integration, and Personal
 Device Sync documentation with the implementation.
@@ -297,7 +300,8 @@ stop control publication and access.
 
 This package uses Package 1's source and membership contracts.
 It includes Team backend authority, local publication work, and the local
-Desktop sharing controls. It also includes shared grouping and Team recall.
+Desktop sharing controls. It also includes Team recall of authorized Workspace
+contributions and Git Anchors. Team collections are deferred.
 Personal membership design remains owned by Package 1.
 
 ### Sharing authority and processing
@@ -337,14 +341,13 @@ pending members, catch-up progress, and remaining sharing reasons.
 Remove the Snapshot/Continuous choice from the new semantic sharing flow.
 
 Keep Workspace selection explicit or bound to an enabled mapping.
-A repository fingerprint and a shared grouping identifier grant no Workspace
-Access. Team filtering must operate only on authorized representations and
+A repository fingerprint grants no Workspace Access. Team filtering must operate only on authorized representations and
 approved metadata. Local folder equality cannot merge different Users' contexts.
 
-Add the approved shared grouping identity and contribution controls.
+Keep Personal Projects private as selectors for source contributions.
 Preserve Git Anchor filtering across authorized contributions from different Users.
-Do not expose unshared members, local folder paths, or private source metadata
-through grouping, counts, summaries, or evidence expansion.
+Do not expose Personal Project names, private membership structure, local folder paths,
+or unshared source metadata through counts, summaries, or evidence expansion.
 
 ### Sharing migration and completion
 
@@ -376,22 +379,46 @@ Package 2 must consume the same source and membership definitions.
 
 ### Package 2 decisions
 
-Resolve these before committing to ongoing sharing authority.
-They determine which destination can receive each selected source.
-They cannot alter Personal ownership or bypass Workspace Access.
+On 20 October 2026, the User confirmed the following policies.
+Removing a Conversation from a shared Project revokes the sharing reason
+supplied by that Project. Independent rules and direct shares retain their
+own authority.
 
-- Define exclusions from destination sharing.
-  A proposed destination exclusion blocks automatic inclusion by other rules.
-- Confirm whether leaving a shared Project revokes access supplied by that
-  Project. This was proposed, but not explicitly resolved in the discussion.
-- Define the shared grouping identifier, its editors, and how another User
-  explicitly contributes to it. Equal names never establish identity.
-- Define how changes to shared detail, policy, and destination interact with
-  active rules. Scope expansion must remain visible to the User.
-- Define shared detail when several rules cover one source. Removing a broader
-  sharing reason must not leave its extra detail accessible through a narrower reason.
-- Choose the migration treatment for snapshot shares and previously disclosed
-  Team metadata. Preserve the limits of existing owner consent.
+Excluding the owner's Conversation from a Team Workspace revokes its existing
+access there and blocks every sharing route until the owner removes the exclusion.
+The exclusion preserves Personal Memory and other Users' independent contributions.
+Removing the exclusion resumes eligible sharing and catches up automatically
+through currently active continuous rules. Paused and stopped rules keep their states.
+Without an applicable active rule, removing the exclusion publishes nothing.
+The removal action shows the sharing effect before confirmation.
+
+When several reasons share one source, the highest detail permitted by a
+remaining reason and current policy is available. Removing a broader reason
+removes its additional detail while preserving narrower authorized access.
+Each reason still authorizes only its own eligible content revisions.
+
+Changes to an active continuous rule's shared detail or content policy apply
+to both existing and future Memory. Sharing more requires explicit review and
+confirmation before reprocessing eligible history and following future updates.
+Reductions remove unsupported access while preserving independently authorized access.
+Already authorized new members and later turns require no repeated confirmation.
+
+Personal Projects remain private and select Memory for sharing to a Team Workspace.
+Sharing does not create a Team collection or publish Personal Project organization.
+Team collections are deferred beyond Package 2.
+
+Existing snapshot shares retain their content and consent limits.
+An explicit owner action is required to convert them to continuous sharing.
+Previously disclosed metadata retains its existing authorization boundary.
+
+Each destination Workspace has independent sharing rules.
+Adding a Workspace leaves existing sharing unchanged until the owner explicitly stops it.
+Each rule retains its destination, detail, policy, and lifecycle state.
+Changing destinations uses separate start and stop actions.
+
+These policies preserve Personal ownership and current Workspace Access requirements.
+The [Package 2 preparation](team-continuous-sharing-preparation.md) records
+the confirmed decisions and implementation sequence.
 
 ## Acceptance scenarios
 

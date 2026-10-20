@@ -1,5 +1,7 @@
 ---
 id: memory-answer-tool-description
-version: memory-answer-tool-description-v15
+version: memory-answer-tool-description-v16
 ---
 Use non-blocking by default. Set delivery_mode=non_blocking for those memory_answer calls. Blocking is an option only when you absolutely cannot start any work until you have checked for relevant memory. Before project work or a new topic, call this tool for prior decisions, preferences and facts, even if the User did not ask for recall. Skip only simple tasks that need no history. Keep task_id, do independent work, then collect with memory_answer_result(wait=true) when needed. Do not invent busywork. Ask one focused question. Narrow follow-ups only for needed missing facts; stop after a clear not-found. Pending is not not-found. Do not poll rapidly or repeat a pending question. Default to search_domain=project; use search_domain=session for a known chat and search_domain=global for cross-project history or an unknown Project. For Team, use memory_workspaces to select authorized Workspace/backend IDs. Add time bounds when requested.
+
+For an explicit Personal umbrella Project or exact Folder, use recall_target with kind project or folder and its full owner-scoped identity. Omit search_domain, project_id, session_id and Team routing fields in that request. Project membership does not change a Conversation's Git or Folder context. Never infer an umbrella Project from the caller directory or substitute a parent Folder for an exact Folder identity.

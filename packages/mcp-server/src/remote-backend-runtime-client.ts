@@ -1,4 +1,5 @@
 import { pinRepositoryRecallContext } from "./repository-recall-context.js";
+import { pinPersonalRecallRequest } from "./personal-recall-request.js";
 import path from "node:path";
 import {
   isTeamMemoryAnswerTaskCapability,
@@ -17,6 +18,7 @@ import type {
 import {
   memoryAccessCheckInputSchema,
   memoryAnswerInputSchema,
+  memoryAnswerRequestSchema,
   memoryExpandInputSchema,
   memoryIntakeProposeInputSchema,
   memorySearchInputSchema,
@@ -177,14 +179,20 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
     signal?: AbortSignal
   ): Promise<MemoryAnswerTask> {
     assertActive(signal);
-    let input = memoryAnswerInputSchema.parse(rawInput);
-    input = await pinRepositoryRecallContext(
-      input,
-      caller,
-      process.env,
-      this.options.client.resolveProjectRouting?.bind(this.options.client)
+    const pinned = await pinPersonalRecallRequest(
+      rawInput,
+      this.options.client
     );
-    requireProject(input);
+    let input = pinned.input;
+    if (!pinned.selection) {
+      input = await pinRepositoryRecallContext(
+        input,
+        caller,
+        process.env,
+        this.options.client.resolveProjectRouting?.bind(this.options.client)
+      );
+      requireProject(input);
+    }
     if (
       (input.team_workspace_id || input.team_backend_id) &&
       input.search_domain === "project"
@@ -214,7 +222,15 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
     const { task } = await this.options.client.acceptMemoryAnswerTask({
       origin: "mcp",
       ...(invocationKey ? { invocation_key: invocationKey } : {}),
-      request: { input, caller: safeCaller(input, caller) },
+      request: {
+        input,
+        caller: pinned.selection
+          ? { ...safeCaller(input, caller), cwd: "" }
+          : safeCaller(input, caller),
+        ...(pinned.selection
+          ? { requestVersion: 1, selection: pinned.selection }
+          : {})
+      },
       max_queued: this.maxQueued
     });
     return task;
@@ -246,8 +262,9 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
     assertActive(signal);
     switch (name) {
       case "memory_answer": {
-        const input = memoryAnswerInputSchema.parse(rawInput);
-        requireProject(input);
+        const input = memoryAnswerRequestSchema.parse(rawInput);
+        if (!input.recall_target)
+          requireProject(memoryAnswerInputSchema.parse(input));
         const task = await this.delivery.accept(
           input,
           caller,

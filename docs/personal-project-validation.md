@@ -1,5 +1,75 @@
 # Personal Project validation
 
+## Package 1 verification fixes
+
+On 20 October 2026, review of local commit `6d7ce920` identified two gaps:
+public MCP selection of Personal Projects and exact Folders, and missing LCM
+Summary change notifications. Both fixes now have regression coverage.
+
+The public adapter accepts an explicit Project or Folder `recall_target` without
+requiring a caller directory. Local, direct, and remote Personal submission bind
+the target to the authenticated User. New tasks persist the versioned selection
+before execution. Conflicting legacy selectors, cross-owner targets, and Team
+routing fields are rejected. Searches and expansion retain the accepted scope.
+Existing Git, Session, and Global request forms retain their current defaults.
+
+Forward migration `0048_personal_summary_changes` observes LCM node creation,
+updates, invalidation, and deletion. A completed summary now produces a source
+notification even when a manual Conversation title prevents a Session update.
+The regression also checks owner isolation and content-free event payloads.
+The migration applies to the already-installed Package 1 baseline; migration
+`0047_personal_project_model` was not rewritten.
+
+The final focused acceptance runs passed 500 tests across 40 files:
+
+| Boundary                                                                            | Files | Tests |
+| ----------------------------------------------------------------------------------- | ----: | ----: |
+| Public MCP, transport, durable tasks, remote submission, execution, capture         |    10 |   179 |
+| Personal membership, Folder rules, recall, consumer, tasks, migration compatibility |    12 |    59 |
+| Encrypted two-device source, membership, and rule delivery                          |     3 |     3 |
+| Existing Team Shared Memory repository                                              |     1 |    87 |
+| Desktop selection, membership, correction, and transfer controls                    |    12 |   130 |
+| Shared recall contracts                                                             |     1 |    28 |
+| Prompt loading                                                                      |     1 |    14 |
+
+These checks used disposable PostgreSQL 17 databases. The consumer regression
+also passed when applying 0048 to the previously tested 0047 database. Team
+acceptance passed all 87 cases in a fresh database with other checks idle.
+An earlier concurrent run hit per-test timeouts and a later contaminated
+assertion; that run does not establish acceptance. Production and test
+typechecks, Drizzle metadata validation, full formatting, and whitespace checks
+passed. The final full `pnpm lint` rerun also passed after adding an explicit
+query-result type to the new regression test. The existing native Electron
+acceptance was not repeated because these
+fixes change the MCP boundary and database journal, not Desktop interactions.
+
+The exact commands for the final runs were:
+
+```sh
+pnpm typecheck
+pnpm typecheck:test
+pnpm --filter @koed/mcp-server typecheck
+pnpm --filter @koed/db migrate:check
+pnpm lint
+pnpm fmt:prettier:check
+git diff --check
+
+pnpm --filter @koed/mcp-server exec vitest run tests/personal-recall-request.test.ts tests/memory-tool-executor.test.ts tests/memory-answer-task-coordinator.test.ts tests/memory-answer-task-runtime.test.ts tests/remote-backend-runtime-client.test.ts tests/mcp-memory-answer-tasks.test.ts tests/mcp-v2-protocol.test.ts tests/codex-memory-dispatch.test.ts tests/memory-answer-task-scheduler.test.ts tests/capture-folder-context.test.ts --no-file-parallelism
+pnpm --filter @koed/mcp-server exec vitest run tests/prompt-loader.test.ts --no-file-parallelism
+pnpm --filter @koed/db exec vitest run tests/personal-membership.test.ts tests/personal-folder.test.ts tests/personal-folder-rule.test.ts tests/personal-project-rule.test.ts tests/personal-project-exclusion.test.ts tests/personal-project-selection.test.ts tests/personal-source-correction.test.ts tests/personal-selection-consumer.test.ts tests/repository-recall.test.ts tests/memory-answer-task-repository.test.ts tests/memory-answer-task-request.test.ts tests/merged-migrations.test.ts --no-file-parallelism
+pnpm --filter @koed/db exec vitest run tests/personal-rule-delivery.test.ts tests/personal-membership-delivery.test.ts tests/personal-source-closed-sync.test.ts --no-file-parallelism
+pnpm --filter @koed/db exec vitest run tests/shared-memory-repository.test.ts --no-file-parallelism
+pnpm --filter @koed/desktop exec vitest run src/project-folder-filters.test.ts src/project-conversation-folders.test.ts src/project-memory-ui.test.ts src/project-row-presentation.test.ts src/koed-server/project-selection-command.test.ts src/ipc/managed-project-preload.test.ts src/renderer/views/personal/PersonalMemoryViews.test.tsx src/renderer/views/personal/PersonalAskNotes.test.tsx src/renderer/views/personal/ProjectMembershipActions.test.tsx src/renderer/views/personal/ProjectSyncDetails.test.tsx src/renderer/views/personal/SourceContextCorrectionDialog.test.tsx src/renderer/views/personal/ProjectTransferCard.test.tsx --no-file-parallelism
+pnpm --filter @koed/shared exec vitest run src/repository-recall.test.ts --no-file-parallelism
+```
+
+Database commands used their existing fixture environment variables, each set
+to isolated disposable databases. No production or existing application database
+was used. This closes the two verification findings and supplies the Package 2
+selection handoff without granting Team publication authority.
+
+## Original implementation acceptance
+
 Local acceptance was executed on 20 October 2026 against disposable PostgreSQL
 17 databases. Package 1 implements independent Personal Project membership,
 recorded Git and exact Folder recall, reviewed source corrections, Personal
@@ -39,8 +109,9 @@ Validation used an isolated PostgreSQL 17 cluster with disposable databases:
   were not repeated for this migration-only cleanup.
 
 Migration numbers in the earlier acceptance evidence below refer to the original
-branch sequence; the current installable history ends at
-`0047_personal_project_model`.
+branch sequence. The consolidated baseline ends at
+`0047_personal_project_model`; the forward summary-notification fix follows in
+`0048_personal_summary_changes`.
 
 ## Upgrade workflow removal
 
@@ -285,5 +356,6 @@ than source content.
 Membership, source-context correction, exclusions, availability, and removals
 remain separate facts. This contract grants no Team publication authority.
 Package 2 still owns consent, destination policy, sharing reasons, publication,
-shared grouping, and Team acceptance. Existing Team grants and repository
-snapshots retain their current meaning.
+and Team acceptance. Personal Projects remain private sharing selectors.
+The User deferred Team collections on 20 October 2026.
+Existing Team grants and repository snapshots retain their current meaning.

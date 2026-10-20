@@ -14,6 +14,15 @@ answer; collect it again after continuing useful work. Use
 
 ## Memory Answer Setup
 
+For an explicit Personal Project or exact Folder, pass `recall_target` to
+`memory_answer`. Project targets contain `kind: "project"` and
+`project: {ownerUserId, projectId}`. Folder targets contain `kind: "folder"` and
+the full recorded Folder reference. See the
+[Personal selection contract](personal-selection-contract.md#public-mcp-project-and-folder-selection).
+Omit legacy selectors and Team routing fields from these requests. The same
+target works with blocking or non-blocking delivery and does not depend on the
+current conversation directory.
+
 Configure the packaged Local Operator Script with:
 
 ```bash

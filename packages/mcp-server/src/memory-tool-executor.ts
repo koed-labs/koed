@@ -3,6 +3,7 @@ import {
   resolveRequestedProjectRoot
 } from "./repository-recall-context.js";
 import path from "node:path";
+import { pinPersonalRecallRequest } from "./personal-recall-request.js";
 import {
   assertPersonalSelectionInput,
   authorizedPersonalSelectionSnapshot,
@@ -340,13 +341,15 @@ export class MemoryToolExecutor {
             this.services.curatedMemoryReviewService ?? undefined
         })) as unknown as Record<string, unknown>;
       }
-      case "memory_answer":
+      case "memory_answer": {
+        const pinned = await pinPersonalRecallRequest(rawInput, this.client);
         return await this.executeMemoryAnswer(
-          memoryAnswerInputSchema.parse(rawInput),
+          pinned.input,
           caller,
-          { origin: "mcp_memory_answer" },
+          { origin: "mcp_memory_answer", personalSelection: pinned.selection },
           signal
         );
+      }
       case "memory_intake_propose": {
         const input = memoryIntakeProposeInputSchema.parse(rawInput);
         const sourceProject =

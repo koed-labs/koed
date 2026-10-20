@@ -6,7 +6,10 @@ import {
 } from "@koed/shared";
 import type { LocalRuntimeCallerContext } from "./local-runtime-protocol.js";
 import { MemoryAnswerTaskScheduler } from "./memory-answer-task-scheduler.js";
-import { memoryAnswerInputSchema } from "./memory-tool-schemas.js";
+import {
+  memoryAnswerRequestSchema,
+  parseMemoryAnswerRequest
+} from "./memory-tool-schemas.js";
 
 export interface MemoryAnswerTaskStartRequest {
   input: Record<string, unknown>;
@@ -58,13 +61,16 @@ export class MemoryAnswerTaskRuntime {
   async start(
     request: MemoryAnswerTaskStartRequest
   ): Promise<MemoryAnswerTask> {
-    const parsed = memoryAnswerInputSchema.safeParse(request.input);
+    const parsed = memoryAnswerRequestSchema.safeParse(request.input);
     if (!parsed.success) {
       throw Object.assign(new Error("Invalid Memory Answer task input"), {
         statusCode: 400
       });
     }
-    const normalized = { ...request, input: parsed.data };
+    const normalized = {
+      ...request,
+      input: parseMemoryAnswerRequest(parsed.data)
+    };
     return await this.scheduler.start({
       origin: request.caller.clientInfo?.name === "pi" ? "pi_extension" : "mcp",
       invocationKey: request.invocationKey,

@@ -410,6 +410,99 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
       repo.startPersonalSelectionEnumeration(actor, { target })
     ).rejects.toMatchObject({ code: "selection_unavailable", statusCode: 404 });
   }, 60_000);
+  it("notifies completed and invalidated LCM Summaries even when a manual title prevents a Session update", async () => {
+    const repo = createMemorySourceRepository(pool);
+    const actor = await user(),
+      other = await user();
+    const session = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID()
+    });
+    const otherSession = await repo.createCapturedSession(other, {
+      externalSessionId: randomUUID()
+    });
+    await repo.createMemoryEvent(actor, {
+      sessionId: session.id,
+      projectId: "fixture",
+      visibility: "personal",
+      actor: "user",
+      eventType: "captured",
+      rawEventType: "user_message",
+      content: "A synthetic source whose summary completes after capture.",
+      idempotencyKey: randomUUID()
+    });
+    await pool.query(
+      'update sessions set metadata=metadata || \'{"threadName":"Manual title","threadNameSource":"manual"}\'::jsonb where id=$1',
+      [session.id]
+    );
+    let baseline = await repo.startPersonalSelectionEnumeration(actor, {
+      target: { kind: "local_session", sessionId: session.id }
+    });
+    const otherBaseline = await repo.startPersonalSelectionEnumeration(other, {
+      target: { kind: "local_session", sessionId: otherSession.id }
+    });
+    const nodes = await repo.createLcmNodes(actor, {
+      visibility: "personal",
+      sessionId: session.id,
+      force: true,
+      finalize: true
+    });
+    expect(nodes.leafNodeIds.length).toBeGreaterThan(0);
+    const created = await repo.reconcilePersonalSelectionChanges(actor, {
+      cursor: baseline.changeCursor!
+    });
+    expect(created.reconciliationRequired).toBe(true);
+    baseline = await repo.startPersonalSelectionEnumeration(actor, {
+      target: { kind: "local_session", sessionId: session.id }
+    });
+    await repo.updateLcmNodeSummary({
+      nodeId: nodes.leafNodeIds[0]!,
+      summaryText: "Completed synthetic summary.",
+      summaryModel: "fixture-client",
+      summaryPromptVersion: "fixture",
+      summaryTokenEstimate: 8,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Generated title",
+        summary_text: "Completed synthetic summary.",
+        lexical_anchors: []
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    const completed = await repo.reconcilePersonalSelectionChanges(actor, {
+      cursor: baseline.changeCursor!
+    });
+    expect(completed.reconciliationRequired).toBe(true);
+    expect(completed.events.length).toBeGreaterThan(0);
+    expect(completed.events.every((event) => event.kind === "source")).toBe(
+      true
+    );
+    expect(JSON.stringify(completed)).not.toContain(
+      "Completed synthetic summary"
+    );
+    expect(
+      (
+        await pool.query<{ name: string }>(
+          "select metadata->>'threadName' name from sessions where id=$1",
+          [session.id]
+        )
+      ).rows[0].name
+    ).toBe("Manual title");
+    expect(
+      (
+        await repo.reconcilePersonalSelectionChanges(other, {
+          cursor: otherBaseline.changeCursor!
+        })
+      ).events
+    ).toEqual([]);
+    await repo.invalidateLcmGraphNode(actor, nodes.leafNodeIds[0]!);
+    expect(
+      (
+        await repo.reconcilePersonalSelectionChanges(actor, {
+          cursor: completed.changeCursor!
+        })
+      ).reconciliationRequired
+    ).toBe(true);
+  });
   it("does not skip a lower allocated journal ID that commits after a completed change window, including rolled-back savepoints", async () => {
     const repo = createMemorySourceRepository(pool),
       actor = await user();

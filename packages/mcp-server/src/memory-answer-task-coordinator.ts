@@ -15,6 +15,7 @@ import {
   type MemoryAnswerTaskExecutionAuthority
 } from "@koed/shared";
 import { MemoryApiClient } from "./index.js";
+import { pinPersonalRecallRequest } from "./personal-recall-request.js";
 import type { MemoryAnswerRetrievalClient } from "./answer-worker.js";
 import type {
   MemoryAnswerTaskApi,
@@ -433,6 +434,32 @@ export const createMemoryAnswerTaskCoordinator = (
   return new MemoryAnswerTaskCoordinator({
     backends,
     resolveStart: async (request) => {
+      if (
+        (request.request.input as Record<string, unknown>)?.recall_target !==
+        undefined
+      ) {
+        if (
+          request.request.selection !== undefined ||
+          request.request.requestVersion !== undefined
+        )
+          throw unavailable(
+            "Recall target cannot replace an accepted selection",
+            400
+          );
+        const pinned = await pinPersonalRecallRequest(
+          request.request.input,
+          client
+        );
+        request = {
+          ...request,
+          request: {
+            ...request.request,
+            input: pinned.input,
+            requestVersion: 1,
+            selection: pinned.selection
+          }
+        };
+      }
       const selection = personalSelectionFromTaskRequest({
         ...request.request,
         input: request.request.input
