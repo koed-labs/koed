@@ -23,10 +23,14 @@ import {
   ChevronDown,
   Folder,
   FolderOpen,
+  LayoutGrid,
   LockKeyhole,
+  MoreHorizontal,
   Plus,
   Search,
-  SquarePen
+  SquarePen,
+  Trash2,
+  UserRoundPlus
 } from "lucide-react";
 import {
   Tooltip,
@@ -124,6 +128,7 @@ export type HqSidebarProps = {
   groupsReady?: boolean;
   loading?: boolean;
   onCreateProject?: () => void;
+  onDeleteProject?: (projectId: string) => void;
   onNewConversation?: () => void;
   onOpenNow?: () => void;
   nowActive?: boolean;
@@ -145,6 +150,7 @@ export function HqSidebar({
   groupsReady: groupsReadyProp,
   loading = false,
   onCreateProject,
+  onDeleteProject,
   onNewConversation,
   onOpenNow,
   nowActive = false,
@@ -173,6 +179,41 @@ export function HqSidebar({
   const [expandedLists, setExpandedLists] = useState<ReadonlySet<string>>(
     () => new Set()
   );
+  const [projectMenuId, setProjectMenuId] = useState<string | null>(null);
+  const [projectMenuPosition, setProjectMenuPosition] = useState({
+    x: 0,
+    y: 0
+  });
+  const menuReturnFocus = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!projectMenuId) return;
+    document
+      .querySelector<HTMLElement>(
+        "[data-hq-project-menu] [role=menuitem]:not([disabled])"
+      )
+      ?.focus();
+    const dismiss = (event: PointerEvent) => {
+      if (
+        !(event.target instanceof Element) ||
+        !event.target.closest(".hq-sidebar__project-row")
+      )
+        setProjectMenuId(null);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setProjectMenuId(null);
+        requestAnimationFrame(() => menuReturnFocus.current?.focus());
+      }
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [projectMenuId]);
 
   useEffect(() => {
     void preferencesStore.load();
@@ -320,7 +361,20 @@ export function HqSidebar({
     const selected = route.kind === "project" && route.projectId === project.id;
     return (
       <li className="hq-sidebar__project" key={project.id}>
-        <div className="hq-sidebar__project-row" data-hq-project-row="">
+        <div
+          className="hq-sidebar__project-row"
+          data-hq-project-row=""
+          onContextMenu={(event) => {
+            if (!personalProjects?.some(({ id }) => id === project.id)) return;
+            event.preventDefault();
+            menuReturnFocus.current =
+              event.currentTarget.querySelector<HTMLElement>(
+                `[data-hq-project-menu-trigger]`
+              );
+            setProjectMenuPosition({ x: event.clientX, y: event.clientY });
+            setProjectMenuId(project.id);
+          }}
+        >
           <button
             aria-current={selected ? "page" : undefined}
             aria-controls={childrenId}
@@ -353,6 +407,113 @@ export function HqSidebar({
             )}
             <span>{project.name}</span>
           </button>
+          {personalProjects?.some(({ id }) => id === project.id) ? (
+            <>
+              <button
+                aria-label={`More for ${project.name}`}
+                aria-haspopup="menu"
+                aria-expanded={projectMenuId === project.id}
+                className="hq-sidebar__project-more"
+                data-hq-project-menu-trigger={project.id}
+                onClick={(event) => {
+                  menuReturnFocus.current = event.currentTarget;
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setProjectMenuPosition({
+                    x: rect.right - 210,
+                    y: rect.bottom
+                  });
+                  setProjectMenuId(
+                    projectMenuId === project.id ? null : project.id
+                  );
+                }}
+                type="button"
+              >
+                <MoreHorizontal aria-hidden="true" />
+              </button>
+              {projectMenuId === project.id ? (
+                <div
+                  className="hq-sidebar__project-menu"
+                  data-hq-project-menu=""
+                  role="menu"
+                  aria-label={`${project.name} actions`}
+                  style={{
+                    left: Math.max(
+                      8,
+                      Math.min(projectMenuPosition.x, window.innerWidth - 220)
+                    ),
+                    top: Math.max(
+                      8,
+                      Math.min(projectMenuPosition.y, window.innerHeight - 146)
+                    ),
+                    right: "auto",
+                    bottom: "auto"
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      !["ArrowDown", "ArrowUp", "Home", "End"].includes(
+                        event.key
+                      )
+                    )
+                      return;
+                    event.preventDefault();
+                    const items = [
+                      ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                        '[role="menuitem"]:not([disabled])'
+                      )
+                    ];
+                    if (!items.length) return;
+                    const index = items.indexOf(
+                      document.activeElement as HTMLButtonElement
+                    );
+                    const next =
+                      event.key === "Home"
+                        ? 0
+                        : event.key === "End"
+                          ? items.length - 1
+                          : (index +
+                              (event.key === "ArrowDown" ? 1 : -1) +
+                              items.length) %
+                            items.length;
+                    items[next]?.focus();
+                  }}
+                >
+                  <button
+                    role="menuitem"
+                    type="button"
+                    onClick={() => {
+                      setProjectMenuId(null);
+                      onSelectProject(project.id);
+                    }}
+                  >
+                    <LayoutGrid aria-hidden="true" />
+                    Open HQ
+                  </button>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    disabled
+                    title="Sharing is unavailable"
+                  >
+                    <UserRoundPlus aria-hidden="true" />
+                    Share
+                  </button>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    disabled={!onDeleteProject}
+                    className="hq-sidebar__project-menu-danger"
+                    onClick={() => {
+                      setProjectMenuId(null);
+                      onDeleteProject?.(project.id);
+                    }}
+                  >
+                    <Trash2 aria-hidden="true" />
+                    Delete project
+                  </button>
+                </div>
+              ) : null}
+            </>
+          ) : null}
         </div>
         <ul
           className="hq-sidebar__nested-list hq-sidebar__project-conversations"
@@ -457,6 +618,7 @@ export function HqSidebar({
             inert={compact}
             onScroll={(event) => {
               preservedScrollTop.current = event.currentTarget.scrollTop;
+              setProjectMenuId(null);
             }}
             ref={scrollContainerRef}
           >

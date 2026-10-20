@@ -478,6 +478,17 @@ const bootstrap = async () => {
       }
       const result = await server.discoverProject(selected.filePaths[0]);
       return { canceled: false, result };
+    },
+    pickProjectFolder: async () => {
+      const options = {
+        buttonLabel: "Choose folder",
+        properties: ["openDirectory"] as Array<"openDirectory">,
+        title: "Choose a Project folder"
+      };
+      const selected = mainWindow
+        ? await dialog.showOpenDialog(mainWindow, options)
+        : await dialog.showOpenDialog(options);
+      return selected.canceled ? null : (selected.filePaths[0] ?? null);
     }
   });
   if (menuBarIconPath && existsSync(menuBarIconPath)) {

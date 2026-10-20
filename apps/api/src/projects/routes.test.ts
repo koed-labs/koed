@@ -8,13 +8,14 @@ import {
   deleteDesktopLocalCredential,
   storeDesktopLocalCredential
 } from "@koed/shared";
+import type { Project } from "@koed/shared/project-contract";
 import { registerProjectRoutes } from "./routes.js";
 import { ProjectNativeReviewDeclined } from "./delete-coordinator.js";
 
 const owner = randomUUID();
 const projectId = randomUUID();
 const now = "2026-10-20T00:00:00.000Z";
-const project = {
+const project: Project = {
   id: projectId,
   name: "Atlas",
   key: "ATLAS",
@@ -117,8 +118,8 @@ describe("Personal Project routes", () => {
         headers,
         payload: { name: "Denied" }
       });
-      expect(create.statusCode).toBe(403);
-      expect(patch.statusCode).toBe(403);
+      expect(create.statusCode).toBe(401);
+      expect(patch.statusCode).toBe(401);
       expect(repository.create).not.toHaveBeenCalled();
       expect(repository.patch).not.toHaveBeenCalled();
       const remote = await app.inject({
@@ -693,6 +694,309 @@ describe("Personal Project routes", () => {
         batchId
       );
       expect(managed.enqueueManagedConversationControl).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Desktop Personal Project lifecycle authorization", () => {
+  it("uses the existing owner write credential for create, preview, delete, progress, status, cancel and restore", async () => {
+    const home = mkdtempSync(join(tmpdir(), "koed-project-write-"));
+    const app = Fastify();
+    const batchId = randomUUID();
+    let current: Project = { ...project };
+    let operation: Record<string, unknown> | null = null;
+    const operationFor = (id: string, state: string) => ({
+      batchId: id,
+      projectId,
+      ownerUserId: owner,
+      sources: [],
+      executions: [],
+      backendAcks: [],
+      grantFreezeAcks: [],
+      runtimeAcks: [],
+      state,
+      sourceManifestHash: "a".repeat(64),
+      executionSetHash: "b".repeat(64)
+    });
+    const repository = {
+      list: vi.fn(async () => ({ projects: [current], nextCursor: null })),
+      create: vi.fn(async () => current),
+      deletePreview: vi.fn(async () => ({
+        project: current,
+        executionSetHash: "b".repeat(64),
+        activeExecutions: []
+      })),
+      listPendingReleaseOperations: vi.fn(async () => []),
+      beginDelete: vi.fn(
+        async (_owner: string, _id: string, value: { batchId: string }) => {
+          operation = operationFor(value.batchId, "preparing");
+          current = {
+            ...current,
+            version: current.version + 1,
+            deletionPhase: "preparing",
+            deleteBatchId: value.batchId
+          };
+          return current;
+        }
+      ),
+      getDeleteOperation: vi.fn(async () => operation),
+      getDeleteOperationByBatch: vi.fn(
+        async (_owner: string, _id: string, id: string) =>
+          operation?.batchId === id ? operation : null
+      ),
+      get: vi.fn(async () => current),
+      markDeleteReady: vi.fn(async () => undefined),
+      completeDelete: vi.fn(async () => {
+        operation = operationFor(batchId, "complete");
+        current = {
+          ...current,
+          version: current.version + 1,
+          lifecycle: "deleted",
+          deletionPhase: "complete",
+          deletedAt: now
+        };
+        return current;
+      }),
+      cancelDelete: vi.fn(async () => {
+        operation = operationFor(batchId, "cancelled");
+        current = {
+          ...current,
+          version: current.version + 1,
+          lifecycle: "active",
+          deletionPhase: null,
+          deleteBatchId: null,
+          deletedAt: null
+        };
+        return current;
+      }),
+      restore: vi.fn(async () => {
+        operation = operationFor(batchId, "restored");
+        current = {
+          ...current,
+          version: current.version + 1,
+          lifecycle: "active",
+          deletionPhase: null,
+          deleteBatchId: null,
+          deletedAt: null
+        };
+        return current;
+      })
+    };
+    const fallback = vi.fn(async () => ({ id: owner }));
+    registerProjectRoutes(app, {
+      repository: repository as never,
+      managedRepository: {
+        getManagedConversationExecution: vi.fn(),
+        enqueueManagedConversationControl: vi.fn()
+      } as never,
+      sourceCoordinator: null,
+      deploymentProfile: "local_personal",
+      koedHome: home,
+      auth: { authenticateSessionOrDeviceCredential: fallback } as never,
+      readRateLimit: async () => undefined,
+      writeRateLimit: async () => undefined
+    });
+    try {
+      const readOnly = storeDesktopLocalCredential(home, {
+        ownerUserId: owner,
+        operationFamilies: ["personal_collaboration_read"]
+      });
+      const createPayload = { name: "Atlas", idempotencyKey: "desktop-create" };
+      const denied = await app.inject({
+        method: "POST",
+        url: "/v1/projects",
+        headers: { authorization: readOnly.authorization },
+        payload: createPayload
+      });
+      expect(denied.statusCode).toBe(401);
+      expect(repository.create).not.toHaveBeenCalled();
+      deleteDesktopLocalCredential(home);
+      const desktop = storeDesktopLocalCredential(home, {
+        ownerUserId: owner,
+        operationFamilies: [
+          "personal_collaboration_read",
+          "personal_collaboration_write"
+        ]
+      });
+      const headers = { authorization: desktop.authorization };
+      const create = await app.inject({
+        method: "POST",
+        url: "/v1/projects",
+        headers,
+        payload: createPayload
+      });
+      expect(create.statusCode, create.body).toBe(201);
+      const preview = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${projectId}/delete-preview`,
+        headers
+      });
+      expect(preview.statusCode, preview.body).toBe(200);
+      const begin = await app.inject({
+        method: "DELETE",
+        url: `/v1/projects/${projectId}`,
+        headers,
+        payload: { version: 1, batchId, executionSetHash: "b".repeat(64) }
+      });
+      expect(begin.statusCode, begin.body).toBe(202);
+      expect(begin.json()).toMatchObject({
+        operation: { batchId },
+        complete: true,
+        project: { lifecycle: "deleted" }
+      });
+      const status = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${projectId}/delete-status?batchId=${batchId}`,
+        headers
+      });
+      expect(status.statusCode, status.body).toBe(200);
+      const restore = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/restore`,
+        headers,
+        payload: { version: current.version, batchId }
+      });
+      expect(restore.statusCode, restore.body).toBe(200);
+      expect(restore.json()).toMatchObject({ lifecycle: "active" });
+      const reconcile = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/restore-reconcile`,
+        headers
+      });
+      expect(reconcile.statusCode, reconcile.body).toBe(200);
+      expect(reconcile.json()).toMatchObject({ released: true });
+      const releaseReads =
+        repository.listPendingReleaseOperations.mock.calls.length;
+      current = {
+        ...current,
+        deletionPhase: "preparing",
+        deleteBatchId: randomUUID()
+      };
+      const staleRestore = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/restore-reconcile`,
+        headers,
+        payload: { batchId }
+      });
+      expect(staleRestore.statusCode).toBe(409);
+      expect(repository.listPendingReleaseOperations).toHaveBeenCalledTimes(
+        releaseReads
+      );
+      current = { ...current, deletionPhase: null, deleteBatchId: null };
+      await repository.beginDelete(owner, projectId, { batchId });
+      const progress = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/delete-progress`,
+        headers
+      });
+      expect(progress.statusCode, progress.body).toBe(200);
+      await repository.beginDelete(owner, projectId, { batchId });
+      const cancel = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/delete-cancel`,
+        headers,
+        payload: { batchId }
+      });
+      expect(cancel.statusCode, cancel.body).toBe(200);
+      expect(cancel.json()).toMatchObject({
+        operation: { state: "cancelled" },
+        cancellationPending: false
+      });
+      expect(fallback).not.toHaveBeenCalled();
+      for (const [method, url, payload] of [
+        [
+          "GET",
+          `/v1/projects/${projectId}/delete-status?batchId=${batchId}`,
+          undefined
+        ],
+        ["POST", "/v1/projects", createPayload],
+        [
+          "DELETE",
+          `/v1/projects/${projectId}`,
+          { version: 1, batchId, executionSetHash: "b".repeat(64) }
+        ]
+      ] as const) {
+        const remote = await app.inject({
+          method,
+          url,
+          payload,
+          headers,
+          remoteAddress: "192.0.2.1"
+        });
+        expect(remote.statusCode).toBe(403);
+      }
+      const forged = await app.inject({
+        method: "POST",
+        url: "/v1/projects",
+        headers: { authorization: `${desktop.authorization}forged` },
+        payload: createPayload
+      });
+      expect(forged.statusCode).toBe(401);
+      deleteDesktopLocalCredential(home);
+      const revoked = await app.inject({
+        method: "POST",
+        url: "/v1/projects",
+        headers,
+        payload: createPayload
+      });
+      expect(revoked.statusCode).toBe(401);
+      expect(repository.create).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Project batch correlation", () => {
+  it("rejects progress for a different current batch before runtime or grant work", async () => {
+    const app = Fastify();
+    const currentBatch = randomUUID();
+    const requestedBatch = randomUUID();
+    const managed = {
+      getManagedConversationExecution: vi.fn(),
+      enqueueManagedConversationControl: vi.fn()
+    };
+    const coordinator = { advance: vi.fn(), cancel: vi.fn() };
+    const repository = {
+      getDeleteOperation: vi.fn(async () => ({
+        batchId: currentBatch,
+        state: "preparing",
+        sources: [],
+        executions: [],
+        backendAcks: [],
+        grantFreezeAcks: [],
+        runtimeAcks: []
+      })),
+      get: vi.fn(),
+      markDeleteReady: vi.fn(),
+      completeDelete: vi.fn()
+    };
+    registerProjectRoutes(app, {
+      repository: repository as never,
+      managedRepository: managed as never,
+      sourceCoordinator: coordinator as never,
+      deploymentProfile: "local_personal",
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: owner })
+      } as never,
+      readRateLimit: async () => undefined,
+      writeRateLimit: async () => undefined
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/delete-progress`,
+        payload: { batchId: requestedBatch }
+      });
+      expect(response.statusCode).toBe(409);
+      expect(repository.get).not.toHaveBeenCalled();
+      expect(managed.getManagedConversationExecution).not.toHaveBeenCalled();
+      expect(managed.enqueueManagedConversationControl).not.toHaveBeenCalled();
+      expect(coordinator.advance).not.toHaveBeenCalled();
+      expect(repository.completeDelete).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

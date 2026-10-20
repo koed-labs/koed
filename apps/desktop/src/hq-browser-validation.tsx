@@ -28,6 +28,9 @@ const hq108Overflow =
   new URLSearchParams(window.location.search).get("nowOverflow") === "yes";
 const hq203Empty =
   new URLSearchParams(window.location.search).get("hq203Empty") === "yes";
+// Renderer-only presentation fixture. API behavior is verified in Project route tests.
+const hq208Capture =
+  new URLSearchParams(window.location.search).get("hq208Capture") === "yes";
 const hq108ProjectIds = [
   "hq103-koed",
   "hq103-notes",
@@ -749,7 +752,24 @@ if (hq203Empty)
 let sidebarPersonalProjects: Project[] = structuredClone(
   initialSidebarPersonalProjects
 );
+let hq208Deleted: Project | null = null;
+let hq208BatchId: string | null = null;
+const hq208Status = () => {
+  if (!hq208Deleted || !hq208BatchId)
+    throw new Error("No capture delete batch.");
+  return {
+    project: structuredClone(hq208Deleted),
+    operation: { batchId: hq208BatchId, state: "complete" as const },
+    complete: true,
+    retryable: false,
+    pendingFreezeCount: 0,
+    pendingExecutionCount: 0,
+    pendingReviews: [],
+    cancellationPending: false
+  };
+};
 const sidebarProjectsApi = {
+  pickFolder: async () => null,
   list: async () => {
     if (failInitialFirstClassProjectsLoad) {
       failInitialFirstClassProjectsLoad = false;
@@ -759,6 +779,83 @@ const sidebarProjectsApi = {
   },
   hq: async () => {
     throw new Error("HQ Project view is a later ticket.");
+  },
+  create: async ({
+    name,
+    folderPath
+  }: {
+    name: string;
+    folderPath?: string | null;
+  }) => {
+    if (!hq208Capture)
+      throw new Error("Fixture Project writes are unavailable.");
+    const project = {
+      ...sidebarProjectRecord(crypto.randomUUID(), name),
+      folderPath: folderPath ?? null
+    };
+    sidebarPersonalProjects.push(project);
+    return structuredClone(project);
+  },
+  deletePreview: async (id: string) => {
+    if (!hq208Capture)
+      throw new Error("Fixture Project writes are unavailable.");
+    const project = sidebarPersonalProjects.find((item) => item.id === id);
+    if (!project) throw new Error("Project unavailable.");
+    return {
+      project: structuredClone(project),
+      executionSetHash: "b".repeat(64),
+      activeExecutions: []
+    };
+  },
+  delete: async (id: string, { batchId }: { batchId: string }) => {
+    if (!hq208Capture)
+      throw new Error("Fixture Project writes are unavailable.");
+    const project = sidebarPersonalProjects.find((item) => item.id === id);
+    if (!project) throw new Error("Project unavailable.");
+    hq208BatchId = batchId;
+    hq208Deleted = {
+      ...project,
+      lifecycle: "deleted",
+      deletionPhase: "complete",
+      deleteBatchId: batchId,
+      deletedAt: FIXTURE_TIME,
+      version: project.version + 1
+    };
+    sidebarPersonalProjects = sidebarPersonalProjects.filter(
+      (item) => item.id !== id
+    );
+    return hq208Status();
+  },
+  deleteProgress: async () => {
+    throw new Error("Fixture Project writes are unavailable.");
+  },
+  deleteStatus: async (_id: string, batchId: string) => {
+    if (!hq208Capture || batchId !== hq208BatchId)
+      throw new Error("Fixture Project writes are unavailable.");
+    return hq208Status();
+  },
+  deleteCancel: async () => {
+    throw new Error("Fixture Project writes are unavailable.");
+  },
+  restore: async () => {
+    if (!hq208Capture || !hq208Deleted)
+      throw new Error("Fixture Project writes are unavailable.");
+    const restored: Project = {
+      ...hq208Deleted,
+      lifecycle: "active",
+      deletionPhase: null,
+      deleteBatchId: null,
+      deletedAt: null,
+      version: hq208Deleted.version + 1
+    };
+    sidebarPersonalProjects.push(restored);
+    hq208Deleted = restored;
+    return structuredClone(restored);
+  },
+  restoreReconcile: async () => {
+    if (!hq208Capture || !hq208Deleted)
+      throw new Error("Fixture Project writes are unavailable.");
+    return { project: structuredClone(hq208Deleted), released: true };
   }
 };
 

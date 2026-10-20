@@ -1391,13 +1391,13 @@ const runValidation = async () => {
         await delay(20);
         const folds = await window.webContents.executeJavaScript(`(() => ({
           expanded: !(document.querySelector('#hq-group-just-me')?.hasAttribute('hidden') ?? true),
-          newProjectDisabled: document.querySelector('button[aria-label="New project"]')?.disabled === true,
+          newProjectEnabled: document.querySelector('button[aria-label="New project"]')?.disabled === false,
           nowEnabled: document.querySelector('button[aria-label="Now"]')?.disabled === false,
           newChatEnabled: document.querySelector('button[aria-label="New chat"]')?.disabled === false,
           searchLabel: document.querySelector('button[aria-label="Search and commands"]')?.getAttribute('aria-label')
         }))()`);
         assert.equal(folds.expanded, true);
-        assert.equal(folds.newProjectDisabled, true);
+        assert.equal(folds.newProjectEnabled, true);
         assert.equal(folds.nowEnabled, true);
         assert.equal(folds.newChatEnabled, true);
         assert.equal(folds.searchLabel, "Search and commands");
@@ -2537,6 +2537,132 @@ const runValidation = async () => {
       ),
       true
     );
+
+    // HQ-208 presentation captures use a renderer-only Project API fixture.
+    // Lifecycle and credential behavior is covered by native/API tests.
+    await window.loadFile(pagePath, {
+      query: { view: "hq", hq208Capture: "yes" }
+    });
+    await waitForHqFixture(window);
+    const hq208ProjectId = "00000000-0000-4000-8000-000000002032";
+    const setHq208Theme = async (theme) =>
+      window.webContents.executeJavaScript(`(() => {
+      document.documentElement.classList.remove('light', 'dark');
+      document.documentElement.classList.add(${JSON.stringify(theme)});
+      document.documentElement.dataset.theme = ${JSON.stringify(theme)};
+    })()`);
+    const clickHq208 = async (selector) =>
+      window.webContents.executeJavaScript(
+        `document.querySelector(${JSON.stringify(selector)})?.click()`
+      );
+    await setHq208Theme("light");
+    await clickHq208(`[data-hq-project-menu-trigger="${hq208ProjectId}"]`);
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `Boolean(document.querySelector('[data-hq-project-menu]'))`
+      ),
+      true
+    );
+    await captureScreenshot("hq208-project-menu-light.png");
+    await setHq208Theme("dark");
+    await captureScreenshot("hq208-project-menu-dark.png");
+    await clickHq208('[data-hq-project-menu] [role="menuitem"]:last-child');
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (
+        await window.webContents.executeJavaScript(
+          `document.querySelector('.hq-project-modal')?.textContent?.includes('Delete Research archive?')`
+        )
+      )
+        break;
+      await delay(25);
+    }
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `document.querySelector('.hq-project-modal')?.textContent?.includes('Koed keeps what it learned.')`
+      ),
+      true
+    );
+    await captureScreenshot("hq208-delete-confirm-dark.png");
+    await setHq208Theme("light");
+    await captureScreenshot("hq208-delete-confirm-light.png");
+    await clickHq208(".hq-project-modal__danger");
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (
+        await window.webContents.executeJavaScript(
+          `Boolean(document.querySelector('.hq-project-toast'))`
+        )
+      )
+        break;
+      await delay(25);
+    }
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `Boolean(document.querySelector('.hq-project-toast button'))`
+      ),
+      true
+    );
+    await captureScreenshot("hq208-delete-undo-light.png");
+    await setHq208Theme("dark");
+    await captureScreenshot("hq208-delete-undo-dark.png");
+    await clickHq208(".hq-project-toast button:first-of-type");
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (
+        await window.webContents.executeJavaScript(
+          `Boolean(document.querySelector('[data-hq-project-link="${hq208ProjectId}"]')) && !document.querySelector('.hq-project-toast')`
+        )
+      )
+        break;
+      await delay(25);
+    }
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `Boolean(document.querySelector('[data-hq-project-link="${hq208ProjectId}"]')) && !document.querySelector('.hq-project-toast')`
+      ),
+      true
+    );
+    await clickHq208('[aria-label="New project"]');
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (
+        await window.webContents.executeJavaScript(
+          `Boolean(document.querySelector('#hq-new-project-name'))`
+        )
+      )
+        break;
+      await delay(25);
+    }
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `document.querySelector('.hq-project-modal')?.textContent?.includes('No folder. Chats and memory only.')`
+      ),
+      true
+    );
+    await captureScreenshot("hq208-create-project-dark.png");
+    await setHq208Theme("light");
+    await captureScreenshot("hq208-create-project-light.png");
+    await window.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('#hq-new-project-name');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, 'Browser-created Project');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await clickHq208('.hq-project-modal button[type="submit"]');
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-hq-route="project"]')?.getAttribute('data-hq-project-id') && [...document.querySelectorAll('[data-hq-project-link]')].some((row) => row.textContent?.includes('Browser-created Project'))`
+        )
+      )
+        break;
+      await delay(25);
+    }
+    const hq208Created = await window.webContents.executeJavaScript(`(() => ({
+      routeId: document.querySelector('[data-hq-route="project"]')?.getAttribute('data-hq-project-id'),
+      row: [...document.querySelectorAll('[data-hq-project-link]')].find((item) => item.textContent?.includes('Browser-created Project'))?.getAttribute('data-hq-project-link'),
+      dialogClosed: !document.querySelector('.hq-project-modal')
+    }))()`);
+    assert.ok(hq208Created.routeId && hq208Created.routeId !== hq208ProjectId);
+    assert.equal(hq208Created.row, hq208Created.routeId);
+    assert.equal(hq208Created.dialogClosed, true);
 
     process.stdout.write(
       `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`

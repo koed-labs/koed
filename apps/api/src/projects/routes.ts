@@ -24,10 +24,14 @@ import {
   ProjectNativeReviewDeclined,
   type ProjectSourceCoordinator
 } from "./delete-coordinator.js";
-import { authenticateProjectRead } from "./desktop-read-auth.js";
+import {
+  authenticateProjectOperation,
+  authenticateProjectRead
+} from "./desktop-read-auth.js";
 
 const paramsSchema = z.object({ id: z.uuid() }).strict();
 const cancelSchema = z.object({ batchId: z.uuid() }).strict();
+const optionalBatchSchema = z.object({ batchId: z.uuid().optional() }).strict();
 const deleteStatusQuerySchema = z
   .object({ batchId: z.uuid().optional() })
   .strict();
@@ -75,16 +79,9 @@ export function registerProjectRoutes(
     return input.repository;
   };
   const authenticate = (
-    request: Parameters<
-      typeof input.auth.authenticateSessionOrDeviceCredential
-    >[0],
+    request: Parameters<typeof authenticateProjectOperation>[0],
     write: boolean
-  ) =>
-    input.auth.authenticateSessionOrDeviceCredential(
-      request,
-      write ? "personal_collaboration_write" : "personal_collaboration_read",
-      { apiTokenError: "API Tokens cannot authorize Project operations" }
-    );
+  ) => authenticateProjectOperation(request, input, write);
   const handle = (
     reply: { code: (status: number) => { send: (value: unknown) => unknown } },
     error: unknown
@@ -156,7 +153,7 @@ export function registerProjectRoutes(
             "Prior Project source release is pending"
           );
         await repo().beginDelete(user.id, id, body);
-        return reply.code(202).send(await progress(user.id, id));
+        return reply.code(202).send(await progress(user.id, id, body.batchId));
       } catch (error) {
         return handle(reply, error);
       }
@@ -164,13 +161,13 @@ export function registerProjectRoutes(
   );
   const reconcileRestoredSources = async (
     ownerUserId: string,
-    id: string
+    id: string,
+    batchId?: string
   ): Promise<boolean> => {
     const repository = repo();
-    const pending = await repository.listPendingReleaseOperations(
-      ownerUserId,
-      id
-    );
+    const pending = (
+      await repository.listPendingReleaseOperations(ownerUserId, id)
+    ).filter((operation) => !batchId || operation.batchId === batchId);
     for (const operation of pending) {
       if (operation.sources.some((source) => source.backends.length > 0)) {
         if (!input.sourceCoordinator) return false;
@@ -186,11 +183,17 @@ export function registerProjectRoutes(
     }
     return true;
   };
-  const progress = async (ownerUserId: string, id: string) => {
+  const progress = async (
+    ownerUserId: string,
+    id: string,
+    batchId?: string
+  ) => {
     const repository = repo();
     const operation = await repository.getDeleteOperation(ownerUserId, id);
     if (!operation)
       throw new ProjectNotFoundError("Project deletion not found");
+    if (batchId && operation.batchId !== batchId)
+      throw new ProjectConflictError("Project delete batch changed");
     const before = await repository.get(ownerUserId, id);
     if (before.lifecycle === "deleted")
       return projectDeleteStatusSchema.parse({
@@ -304,6 +307,8 @@ export function registerProjectRoutes(
     const refreshed = await repository.getDeleteOperation(ownerUserId, id);
     if (!refreshed)
       throw new ProjectConflictError("Project deletion operation changed");
+    if (refreshed.batchId !== operation.batchId)
+      throw new ProjectConflictError("Project delete batch changed");
     if (
       remoteVerified &&
       refreshed.sources.every((source) =>
@@ -376,8 +381,9 @@ export function registerProjectRoutes(
     async (request, reply) => {
       const user = await authenticate(request, true);
       const { id } = paramsSchema.parse(request.params);
+      const { batchId } = optionalBatchSchema.parse(request.body ?? {});
       try {
-        return await progress(user.id, id);
+        return await progress(user.id, id, batchId);
       } catch (error) {
         return handle(reply, error);
       }
@@ -560,10 +566,46 @@ export function registerProjectRoutes(
     async (request, reply) => {
       const user = await authenticate(request, true);
       const { id } = paramsSchema.parse(request.params);
+      const { batchId } = optionalBatchSchema.parse(request.body ?? {});
       try {
-        const released = await reconcileRestoredSources(user.id, id);
+        if (batchId) {
+          const operation = await repo().getDeleteOperationByBatch(
+            user.id,
+            id,
+            batchId
+          );
+          if (!operation)
+            throw new ProjectNotFoundError("Project deletion batch not found");
+          if (
+            operation.state !== "restored" &&
+            operation.state !== "restore_releasing"
+          )
+            throw new ProjectConflictError(
+              "Project restore batch is not current"
+            );
+          const current = await repo().get(user.id, id);
+          if (
+            current.lifecycle !== "active" ||
+            current.deletionPhase !== null ||
+            current.deleteBatchId !== null
+          )
+            throw new ProjectConflictError(
+              "Project restore is no longer current"
+            );
+        }
+        const released = await reconcileRestoredSources(user.id, id, batchId);
+        const project = projectSchema.parse(await repo().get(user.id, id));
+        if (
+          batchId &&
+          (project.lifecycle !== "active" ||
+            project.deletionPhase !== null ||
+            project.deleteBatchId !== null)
+        )
+          throw new ProjectConflictError(
+            "Project restore is no longer current"
+          );
         return {
-          project: projectSchema.parse(await repo().get(user.id, id)),
+          project,
           released
         };
       } catch (error) {

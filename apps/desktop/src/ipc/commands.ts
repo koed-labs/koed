@@ -172,6 +172,7 @@ export const registerDesktopCommandHandlers = (
     localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
     projects?: (request: ProjectsRequest) => Promise<ProjectsResult>;
+    pickProjectFolder?: () => Promise<string | null>;
     agents?: (request: AgentsRequest) => Promise<AgentsResult>;
     managedConversation: (
       request: ManagedConversationRequest
@@ -459,17 +460,31 @@ export const registerDesktopCommandHandlers = (
   ipcMain.handle(projectsCommandChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins))
       throw new Error("Untrusted Desktop IPC sender.");
-    if (!options.projects) throw new Error("Projects are unavailable.");
     const request = projectsRequestSchema.parse(value);
+    if (request.operation === "pickFolder") {
+      if (!options.pickProjectFolder)
+        throw new Error("Project folder selection is unavailable.");
+      return projectsResultSchema.parse({
+        operation: "pickFolder",
+        path: await options.pickProjectFolder()
+      });
+    }
+    if (!options.projects) throw new Error("Projects are unavailable.");
     const result = projectsResultSchema.parse(await options.projects(request));
     if (result.operation !== request.operation)
       throw new Error("Invalid Projects operation correlation.");
-    if (
-      request.operation === "hq" &&
-      result.operation === "hq" &&
-      result.value.project.id !== request.projectId
-    )
-      throw new Error("Invalid Project HQ identity.");
+    if ("projectId" in request && "value" in result && result.value !== null) {
+      const project =
+        "project" in result.value ? result.value.project : result.value;
+      if ("id" in project && project.id !== request.projectId)
+        throw new Error("Invalid Project identity.");
+      if (
+        "batchId" in request &&
+        "operation" in result.value &&
+        result.value.operation?.batchId !== request.batchId
+      )
+        throw new Error("Invalid Project batch identity.");
+    }
     return result;
   });
   ipcMain.handle(agentsCommandChannel, async (event, value: unknown) => {

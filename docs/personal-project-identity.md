@@ -5,11 +5,15 @@ are implemented under [ADR 0059](./adr/0059-first-class-personal-projects.md).
 The HQ Conversation and shared Project links remain later work.
 
 The Desktop Projects bridge reads the owner-scoped `/v1/projects` and
-`/v1/projects/:id/hq` endpoints with its existing local Desktop credential.
-This read access requires a local or developer deployment, a loopback socket,
-and the existing `personal_collaboration_read` credential family. Project
-writes retain their separate authorization path. Personal API Tokens cannot
-authorize Project operations. The graph thread read exposes the nullable
+`/v1/projects/:id/hq` endpoints and submits create and lifecycle actions with
+its existing local Desktop credential. Read and write access require a local
+or developer deployment and a loopback socket. Reads require the existing
+`personal_collaboration_read` family; writes require
+`personal_collaboration_write`. Each Desktop request uses the owner, origin,
+and credential captured before dispatch and rejects a profile change. Personal
+API Tokens cannot authorize Project operations. The delete UI uses the API's
+preview, batch status, and 30-day restore contract, and shows Undo only after
+the full delete batch completes. The graph thread read exposes the nullable
 effective Personal Project ID from the captured Session's verified assignment;
 the Desktop keeps that ID separate from local discovery and execution IDs.
 The capture association commits an owner-scoped Project change event with a

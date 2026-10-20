@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import type { Project } from "@koed/shared/project-contract";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -106,6 +107,9 @@ describe("HQ sidebar", () => {
       projectsError?: boolean;
       nowActive?: boolean;
       onOpenNow?: () => void;
+      personalProjects?: readonly Project[];
+      onDeleteProject?: (projectId: string) => void;
+      onCreateProject?: () => void;
     } = {},
     renderedProjects: readonly DesktopProject[] = projects
   ) => {
@@ -117,6 +121,9 @@ describe("HQ sidebar", () => {
           onOpenSearchAndCommands={onOpenSearchAndCommands}
           onRetryProjects={onRetryProjects}
           onOpenNow={options.onOpenNow}
+          personalProjects={options.personalProjects}
+          onDeleteProject={options.onDeleteProject}
+          onCreateProject={options.onCreateProject}
           nowActive={options.nowActive}
           onSelectConversation={onSelectConversation}
           onSelectProject={onSelectProject}
@@ -518,5 +525,72 @@ describe("HQ sidebar", () => {
     );
     await act(async () => account?.click());
     expect(onOpenSettings).toHaveBeenCalledOnce();
+  });
+
+  it("opens the Personal Project menu by ellipsis and right click, without offering Leave", async () => {
+    const onDeleteProject = vi.fn();
+    const personalProjects: Project[] = [
+      {
+        id: "project-a",
+        name: "Alpha",
+        key: "ALPHA",
+        folderPath: null,
+        lifecycle: "active",
+        deletionPhase: null,
+        deleteBatchId: null,
+        deletedAt: null,
+        createdAt: timestamp(1),
+        updatedAt: timestamp(1),
+        version: 1
+      }
+    ];
+    await render(initialRoute, { personalProjects, onDeleteProject });
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-hq-project-menu-trigger="project-a"]'
+    );
+    expect(trigger).not.toBeNull();
+    await act(async () => trigger?.click());
+    expect(container.querySelector('[role="menu"]')?.textContent).toContain(
+      "Delete project"
+    );
+    expect(container.querySelector('[role="menu"]')?.textContent).not.toContain(
+      "Leave project"
+    );
+    const share = [
+      ...container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')
+    ].find((item) => item.textContent === "Share");
+    expect(share?.disabled).toBe(true);
+    const deleteButton = [
+      ...container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')
+    ].find((item) => item.textContent === "Delete project");
+    await act(async () => deleteButton?.click());
+    expect(onDeleteProject).toHaveBeenCalledWith("project-a");
+    const row = container.querySelector<HTMLElement>("[data-hq-project-row]");
+    await act(async () =>
+      row?.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+      )
+    );
+    expect(container.querySelector('[role="menu"]')).not.toBeNull();
+    const menu = container.querySelector<HTMLElement>('[role="menu"]')!;
+    expect(document.activeElement?.textContent).toBe("Open HQ");
+    await act(async () =>
+      menu.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })
+      )
+    );
+    expect(document.activeElement?.textContent).toBe("Delete project");
+    await act(async () =>
+      menu.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Home", bubbles: true })
+      )
+    );
+    expect(document.activeElement?.textContent).toBe("Open HQ");
+    await act(async () =>
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      )
+    );
+    expect(container.querySelector('[role="menu"]')).toBeNull();
   });
 });

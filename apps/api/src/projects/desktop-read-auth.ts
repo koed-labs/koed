@@ -8,20 +8,21 @@ import type { ApiRouteContext } from "../server/context.js";
 const localProfiles = new Set(["developer", "local_personal"]);
 const loopbackAddresses = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
-/** An existing local Desktop credential may read only its own Personal Projects. */
-export async function authenticateProjectRead(
+/** An existing local Desktop credential is scoped to one owner's Personal Projects. */
+export async function authenticateProjectOperation(
   request: FastifyRequest,
   input: {
     deploymentProfile: string;
     koedHome?: string;
     auth: ApiRouteContext["auth"];
-  }
+  },
+  write: boolean
 ): Promise<{ id: string }> {
   const authorization = request.headers.authorization?.trim();
   if (authorization?.startsWith("Koed-Desktop")) {
     if (!localProfiles.has(input.deploymentProfile) || !input.koedHome)
       throw Object.assign(
-        new Error("Desktop Project reads require a local profile"),
+        new Error("Desktop Project operations require a local profile"),
         { statusCode: 403 }
       );
     const address = request.raw.socket?.remoteAddress ?? "";
@@ -37,7 +38,9 @@ export async function authenticateProjectRead(
           authorization,
           {
             ownerUserId: stored.ownerUserId,
-            operationFamily: "personal_collaboration_read"
+            operationFamily: write
+              ? "personal_collaboration_write"
+              : "personal_collaboration_read"
           }
         )
       : null;
@@ -49,7 +52,12 @@ export async function authenticateProjectRead(
   }
   return await input.auth.authenticateSessionOrDeviceCredential(
     request,
-    "personal_collaboration_read",
+    write ? "personal_collaboration_write" : "personal_collaboration_read",
     { apiTokenError: "API Tokens cannot authorize Project operations" }
   );
 }
+
+export const authenticateProjectRead = (
+  request: FastifyRequest,
+  input: Parameters<typeof authenticateProjectOperation>[1]
+) => authenticateProjectOperation(request, input, false);

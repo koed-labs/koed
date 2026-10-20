@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { ProjectsStore } from "./useProjects.js";
+import type { ProjectsDesktopApi } from "../../ipc/projects-protocol.js";
 
 const now = "2026-10-20T00:00:00.000Z";
 const project = (id: string, version = 1) => ({
@@ -23,6 +24,19 @@ const deferred = <T>() => {
   });
   return { promise, resolve };
 };
+const mockApi = (list: ProjectsDesktopApi["list"]): ProjectsDesktopApi => ({
+  list,
+  pickFolder: vi.fn(),
+  hq: vi.fn(),
+  create: vi.fn(),
+  deletePreview: vi.fn(),
+  delete: vi.fn(),
+  deleteProgress: vi.fn(),
+  deleteStatus: vi.fn(),
+  deleteCancel: vi.fn(),
+  restore: vi.fn(),
+  restoreReconcile: vi.fn()
+});
 
 describe("ProjectsStore", () => {
   it("clears old authority synchronously and ignores its delayed list", async () => {
@@ -32,7 +46,7 @@ describe("ProjectsStore", () => {
       .fn()
       .mockReturnValueOnce(old.promise)
       .mockResolvedValueOnce([current]);
-    const store = new ProjectsStore({ list, hq: vi.fn() });
+    const store = new ProjectsStore(mockApi(list));
     store.setOwner("owner", "profile-a");
     store.setOwner("owner", "profile-b");
     expect(store.current()).toMatchObject({
@@ -53,7 +67,7 @@ describe("ProjectsStore", () => {
       .mockResolvedValueOnce([updated])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([project(id, 4)]);
-    const store = new ProjectsStore({ list, hq: vi.fn() });
+    const store = new ProjectsStore(mockApi(list));
     store.setOwner("owner", "profile-a");
     store.projectChanged("owner", "profile-a", id, updated);
     stale.resolve([project(id)]);
@@ -84,7 +98,7 @@ describe("ProjectsStore", () => {
       .fn()
       .mockResolvedValueOnce([project(id)])
       .mockResolvedValueOnce([project(id, 2)]);
-    const store = new ProjectsStore({ list, hq: vi.fn() });
+    const store = new ProjectsStore(mockApi(list));
     store.setOwner("owner", "profile-a");
     await vi.waitFor(() => expect(store.current().loaded).toBe(true));
     const updated = { ...project(id, 3), name: "Atlas updated" };
@@ -103,7 +117,7 @@ describe("ProjectsStore", () => {
       .fn()
       .mockResolvedValueOnce([first, second])
       .mockReturnValueOnce(later.promise);
-    const store = new ProjectsStore({ list, hq: vi.fn() });
+    const store = new ProjectsStore(mockApi(list));
     store.setOwner("owner", "profile-a");
     await vi.waitFor(() => expect(store.current().loaded).toBe(true));
     store.projectChanged("owner", "profile-a", second.id, renamed);

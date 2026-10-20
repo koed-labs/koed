@@ -41,6 +41,7 @@ import { hqLayoutCommands, type HqCommand } from "./hq-command-palette.js";
 import { hqSettingsShortcut } from "./settings/HqSettings.js";
 import { reconcileHqRoute, type HqRoute } from "./hq-navigation.js";
 import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
+import { useProjectMenuActions } from "./useProjectMenuActions.js";
 import { NowView } from "./now/NowView.js";
 import { nowConversationDestination, type NowNeed } from "./now/now-model.js";
 
@@ -296,6 +297,13 @@ export function HqApplication({
           : projects.find(({ id }) => id === next.projectId)
     });
   };
+  const projectMenu = useProjectMenuActions({
+    api: projectsApi,
+    store: projectsStore,
+    ownerId: visibilityOwnerId,
+    profileKey: visibilityProfileKey,
+    onOpenProject: (projectId) => selectRoute({ kind: "project", projectId })
+  });
   const project =
     route.kind === "conversation"
       ? projects.find(({ id }) => id === route.projectId)
@@ -547,6 +555,16 @@ export function HqApplication({
             onSelectProject={(projectId) =>
               selectRoute({ kind: "project", projectId })
             }
+            onCreateProject={
+              projectsStore && firstClassLoaded
+                ? projectMenu.openCreate
+                : undefined
+            }
+            onDeleteProject={
+              projectsStore && firstClassLoaded
+                ? projectMenu.openDelete
+                : undefined
+            }
             onOpenNow={() => selectRoute({ kind: "home" })}
             nowActive={route.kind === "home" && !blankOpen}
             onSelectConversation={(projectId, sessionId) =>
@@ -732,6 +750,7 @@ export function HqApplication({
           )}
         </section>
       </HqShell>
+      {projectMenu.ui}
       <HqSearch
         destinations={destinations}
         open={searchOpen}

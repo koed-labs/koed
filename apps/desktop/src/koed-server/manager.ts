@@ -1,5 +1,8 @@
 import { hostname } from "node:os";
-import { createProjectsClient } from "./projects-client.js";
+import {
+  createProjectsClient,
+  type ProjectsAuthority
+} from "./projects-client.js";
 import { createAgentsClient, type AgentsAuthority } from "./agents-client.js";
 import { resolveChiefDefaultInstance } from "./agent-default-instance.js";
 import { agentBootstrapContextSchema } from "@koed/shared/agent-contract";
@@ -3793,10 +3796,46 @@ export const createKoedServerManager = ({
   };
 
   const projects = createProjectsClient(
-    (path) => managedProjectJson(path, { method: "GET" }, 8_000_000),
+    async (path, init, bound: ProjectsAuthority) => {
+      const remote = await fetchBoundedJsonObject(
+        personalMemoryFetch,
+        new URL(path, bound.apiOrigin),
+        {
+          ...init,
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            ...init.headers,
+            authorization: bound.authorization
+          }
+        },
+        { timeoutMs: 30_000, maxBytes: 8_000_000 }
+      );
+      if (!remote.response.ok) {
+        await remote.response.body?.cancel().catch(() => undefined);
+        throw new PersonalMemoryBoundaryError(
+          remote.response.status === 404 ? "not_found" : "request_failed",
+          remote.response.status === 408 || remote.response.status >= 500
+        );
+      }
+      return remote.payload;
+    },
     async () => {
       const access = await managedProjectAccess(true);
-      return `${access.apiOrigin}\u0000${access.authorization}`;
+      const credential = readDesktopLocalCredentialAuthorization(
+        resolveKoedHome(environment)
+      );
+      if (!credential || credential.authorization !== access.authorization)
+        throw new PersonalMemoryBoundaryError("not_ready", true);
+      return {
+        key: `${access.apiOrigin}\u0000${credential.authorization}\u0000${credential.ownerUserId}\u0000${credential.credentialKeyId}`,
+        ownerId: credential.ownerUserId,
+        apiOrigin: access.apiOrigin,
+        authorization: credential.authorization,
+        canWrite: credential.operationFamilies.includes(
+          "personal_collaboration_write"
+        )
+      };
     }
   );
 
