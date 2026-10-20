@@ -34599,6 +34599,11 @@ describeDb("memory repository visibility", () => {
         idempotencyKey: `curated-memory-agent-event-${randomUUID()}`
       }
     );
+    // An ingestion owner ID alone cannot turn an agent claim into human evidence.
+    await pool.query("update memory_events set actor_user_id=$2 where id=$1", [
+      agentEvent.id,
+      owner.id
+    ]);
     const mixedProposal = await repo.createCuratedMemoryProposal(
       { userId: owner.id },
       {
@@ -34809,6 +34814,8 @@ describeDb("memory repository visibility", () => {
         ),
         assertion: {
           assertionText: "The user strongly prefers window seats when flying.",
+          kind: "preference",
+          scope: "me",
           topicTitle: "Travel preferences",
           confidence: 94,
           sources: [
@@ -34836,10 +34843,321 @@ describeDb("memory repository visibility", () => {
       )
     ).resolves.toMatchObject({
       assertionText: "The user strongly prefers window seats when flying.",
+      kind: "preference",
+      scope: "me",
+      authorKind: "user",
+      authorRef: owner.id,
       confidence: 94,
       createdByModel: "gpt-5.4-mini",
       createdByPromptVersion: "curated-memory-local-review-v1"
     });
+
+    const reviewedFollowup = async (
+      decision: "store" | "supersede" | "conflict",
+      assertionText: string,
+      scope: "me" | "unscoped" = "me",
+      targetAssertionId: string | null = null,
+      legacy = false
+    ) => {
+      const followup = await repo.createCuratedMemoryProposal(
+        { userId: owner.id },
+        {
+          proposedClaim: assertionText,
+          evidenceConversationItemIds: [item!.id],
+          operation: decision,
+          targetAssertionId
+        }
+      );
+      const [lease] = await repo.claimPendingCuratedMemoryProposals(
+        { userId: owner.id },
+        { proposalId: followup.id, leaseSeconds: 60 }
+      );
+      const result = repo.processCuratedMemoryProposal(
+        { userId: owner.id },
+        {
+          proposalId: followup.id,
+          decision,
+          targetAssertionId,
+          expectedAttemptCount: lease!.proposal.attemptCount,
+          evidenceRevisions: lease!.evidence.map((evidence) => ({
+            sourceType: evidence.sourceType,
+            sourceId: evidence.sourceId,
+            sourceHash: evidence.sourceHash
+          })),
+          selectedEvidenceIds: [item!.id],
+          candidateAssertionIds: lease!.currentAssertions.map(
+            (candidate) => candidate.assertionId
+          ),
+          assertion: {
+            assertionText,
+            ...(legacy ? {} : { kind: "preference", scope }),
+            sources: [
+              {
+                sourceType: "conversation_item",
+                sourceRole: "primary_evidence",
+                conversationItemId: item!.id
+              }
+            ]
+          }
+        }
+      );
+      return { result, proposalId: followup.id };
+    };
+    await pool.query(
+      "update curated_memory_assertions set kind=null where id=$1",
+      [processed.assertionId]
+    );
+    const duplicate = await reviewedFollowup(
+      "store",
+      "The user strongly prefers window seats when flying."
+    );
+    await expect(duplicate.result).resolves.toMatchObject({
+      status: "merged",
+      assertionId: processed.assertionId
+    });
+    await expect(
+      repo.getCuratedMemoryAssertion(
+        { userId: owner.id },
+        processed.assertionId!
+      )
+    ).resolves.toMatchObject({ kind: "preference", scope: "me" });
+    const legacy = await reviewedFollowup(
+      "conflict",
+      `Legacy conflict ${randomUUID()}.`,
+      "me",
+      processed.assertionId,
+      true
+    );
+    const legacyResult = await legacy.result;
+    await expect(
+      repo.getCuratedMemoryAssertion(
+        { userId: owner.id },
+        legacyResult.assertionId!
+      )
+    ).resolves.toMatchObject({ kind: "preference", scope: "me" });
+    const incompatible = await reviewedFollowup(
+      "supersede",
+      `Changed scope ${randomUUID()}`,
+      "unscoped",
+      processed.assertionId
+    );
+    await expect(incompatible.result).rejects.toThrow(
+      "target scope change requires withdrawal acknowledgement"
+    );
+    await expect(
+      repo.getCuratedMemoryProposal(
+        { userId: owner.id },
+        incompatible.proposalId
+      )
+    ).resolves.toMatchObject({ status: "pending", assertionId: null });
+    await expect(
+      repo.getCuratedMemoryAssertion(
+        { userId: owner.id },
+        processed.assertionId!
+      )
+    ).resolves.toMatchObject({ status: "current", scope: "me" });
+    const supersession = await reviewedFollowup(
+      "supersede",
+      `The user now prefers aisle seats ${randomUUID()}.`,
+      "me",
+      processed.assertionId
+    );
+    const superseded = await supersession.result;
+    expect(superseded.status).toBe("superseded");
+    await expect(
+      repo.getCuratedMemoryAssertion(
+        { userId: owner.id },
+        superseded.assertionId!
+      )
+    ).resolves.toMatchObject({
+      kind: "preference",
+      scope: "me",
+      supersedesAssertionId: processed.assertionId
+    });
+    const conflicted = await reviewedFollowup(
+      "conflict",
+      `Conflicting seat preference ${randomUUID()}.`,
+      "me",
+      superseded.assertionId
+    );
+    const conflictResult = await conflicted.result;
+    expect(conflictResult.status).toBe("conflicted");
+    await expect(
+      repo.getCuratedMemoryAssertion(
+        { userId: owner.id },
+        conflictResult.assertionId!
+      )
+    ).resolves.toMatchObject({
+      kind: "preference",
+      scope: "me",
+      status: "conflicting",
+      conflictWithAssertionId: superseded.assertionId
+    });
+  });
+
+  it("classifies Project review only from the selected source's first-class Personal Project", async () => {
+    const owner = await repo.createUser({
+      email: `curated-review-project-${randomUUID()}@example.com`
+    });
+    const projectId = randomUUID();
+    await pool.query(
+      `insert into projects(id,owner_user_id,name,key) values($1,$2,'Review project',$3)`,
+      [projectId, owner.id, `review-${randomUUID()}`]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `curated-project-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "api"
+      }
+    );
+    await pool.query(
+      `update sessions set automatic_project_id=$2,
+          automatic_project_name='Local project',
+          automatic_project_detected_at=now(),
+          automatic_personal_project_id=$3 where id=$1`,
+      [session.id, `local-context-${randomUUID()}`, projectId]
+    );
+    const [item] = await repo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            rawJson: {
+              type: "event_msg",
+              payload: { content: "Use the blue release checklist." }
+            },
+            rawText: "Use the blue release checklist.",
+            sourceHash: `review-project-${randomUUID()}`,
+            idempotencyKey: `review-project-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          }
+        ]
+      }
+    );
+    const complete = async (assertionText: string) => {
+      const proposal = await repo.createCuratedMemoryProposal(
+        { userId: owner.id },
+        {
+          proposedClaim: assertionText,
+          projectContextId: projectId,
+          evidenceConversationItemIds: [item!.id]
+        }
+      );
+      const [claimed] = await repo.claimPendingCuratedMemoryProposals(
+        { userId: owner.id },
+        { proposalId: proposal.id, leaseSeconds: 60 }
+      );
+      return repo.processCuratedMemoryProposal(
+        { userId: owner.id },
+        {
+          proposalId: proposal.id,
+          decision: "store",
+          expectedAttemptCount: claimed!.proposal.attemptCount,
+          evidenceRevisions: claimed!.evidence.map((evidence) => ({
+            sourceType: evidence.sourceType,
+            sourceId: evidence.sourceId,
+            sourceHash: evidence.sourceHash
+          })),
+          selectedEvidenceIds: [item!.id],
+          candidateAssertionIds: [],
+          assertion: {
+            assertionText,
+            kind: "decision",
+            scope: "project",
+            sources: [
+              {
+                sourceType: "conversation_item",
+                sourceRole: "primary_evidence",
+                conversationItemId: item!.id
+              }
+            ]
+          }
+        }
+      );
+    };
+    const accepted = await complete(`Use the blue checklist ${randomUUID()}.`);
+    await expect(
+      repo.getCuratedMemoryAssertion(
+        { userId: owner.id },
+        accepted.assertionId!
+      )
+    ).resolves.toMatchObject({
+      kind: "decision",
+      scope: "project",
+      projectId,
+      authorKind: "user",
+      authorRef: owner.id
+    });
+    const legacyProposal = await repo.createCuratedMemoryProposal(
+      { userId: owner.id },
+      {
+        proposedClaim: `Legacy Project correction ${randomUUID()}`,
+        evidenceConversationItemIds: [item!.id],
+        operation: "conflict",
+        targetAssertionId: accepted.assertionId
+      }
+    );
+    const [legacyLease] = await repo.claimPendingCuratedMemoryProposals(
+      { userId: owner.id },
+      { proposalId: legacyProposal.id, leaseSeconds: 60 }
+    );
+    const legacyResult = await repo.processCuratedMemoryProposal(
+      { userId: owner.id },
+      {
+        proposalId: legacyProposal.id,
+        decision: "conflict",
+        targetAssertionId: accepted.assertionId,
+        expectedAttemptCount: legacyLease!.proposal.attemptCount,
+        evidenceRevisions: legacyLease!.evidence.map((evidence) => ({
+          sourceType: evidence.sourceType,
+          sourceId: evidence.sourceId,
+          sourceHash: evidence.sourceHash
+        })),
+        selectedEvidenceIds: [item!.id],
+        candidateAssertionIds: legacyLease!.currentAssertions.map(
+          (candidate) => candidate.assertionId
+        ),
+        assertion: {
+          assertionText: `Legacy Project conflict ${randomUUID()}`,
+          sources: [
+            {
+              sourceType: "conversation_item",
+              sourceRole: "conflicting_evidence",
+              conversationItemId: item!.id
+            }
+          ]
+        }
+      }
+    );
+    await expect(
+      repo.getCuratedMemoryAssertion(
+        { userId: owner.id },
+        legacyResult.assertionId!
+      )
+    ).resolves.toMatchObject({
+      kind: "decision",
+      scope: "project",
+      projectId
+    });
+    await pool.query(
+      `update sessions set project_override_id=$2,
+          project_override_name='Loose override',
+          project_override_at=now(),
+          project_override_by_user_id=$3,
+          project_override_personal_project_id=null where id=$1`,
+      [session.id, `loose-context-${randomUUID()}`, owner.id]
+    );
+    await expect(complete(`Loose context ${randomUUID()}.`)).rejects.toThrow(
+      "Project scope lacks matching source provenance"
+    );
   });
 
   it("rejects an accepted Curated Memory review after its evidence is deleted", async () => {

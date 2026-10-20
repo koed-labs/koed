@@ -22,6 +22,8 @@ export interface CuratedMemoryIntakeResult {
     | "skipped";
   assertionId?: string | null;
   assertionText?: string | null;
+  assertionKind?: "decision" | "fact" | "learning" | "preference" | null;
+  assertionScope?: "me" | "project" | "unscoped" | null;
   skippedReason?: string | null;
   review?: {
     outcome: "accepted" | "rejected";
@@ -66,6 +68,8 @@ export interface CuratedMemoryIntakeCase {
     sensitivity?: CuratedMemorySensitivity;
     allowedSensitivities?: CuratedMemorySensitivity[];
     recallQuery?: string;
+    kind?: "decision" | "fact" | "learning" | "preference";
+    scope?: "me" | "project" | "unscoped";
   };
   notes?: string;
 }
@@ -248,6 +252,26 @@ export const scoreCuratedMemoryIntakeRun = (
   ];
 
   if (shouldPropose) {
+    if (benchmarkCase.expected.kind || benchmarkCase.expected.scope) {
+      const classificationMatches =
+        (!benchmarkCase.expected.kind ||
+          run.intake?.assertionKind === benchmarkCase.expected.kind) &&
+        (!benchmarkCase.expected.scope ||
+          run.intake?.assertionScope === benchmarkCase.expected.scope);
+      details.push(
+        detail(
+          "stored_classification",
+          classificationMatches ? 1 : 0,
+          classificationMatches
+            ? "stored assertion has the expected classification"
+            : "stored assertion classification differs from the expected kind or scope",
+          {
+            kind: run.intake?.assertionKind,
+            scope: run.intake?.assertionScope
+          }
+        )
+      );
+    }
     details.push(
       detail(
         "intake_acceptance",
@@ -468,7 +492,9 @@ export const idealCuratedMemoryIntakeRun = (
       proposalId: "proposal-1",
       proposalStatus: "stored",
       assertionId: "assertion-1",
-      assertionText: claim
+      assertionText: claim,
+      assertionKind: benchmarkCase.expected.kind ?? null,
+      assertionScope: benchmarkCase.expected.scope ?? null
     },
     semanticAssessment: {
       status: "judged",

@@ -215,6 +215,8 @@ export const registerCuratedMemoryRoutes = (
           workerResult: input.worker_result,
           assertion: {
             assertionText: input.assertion_text,
+            kind: input.kind,
+            scope: input.scope,
             topicTitle: input.topic_title,
             tags: input.tags,
             sensitivity: input.sensitivity,

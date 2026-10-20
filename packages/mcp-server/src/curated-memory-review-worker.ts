@@ -19,7 +19,7 @@ const PROVIDER = "codex";
 const DEFAULT_TIMEOUT_MS = 90_000;
 const DEFAULT_MAX_PROMPT_TOKENS = 24_000;
 export const CURATED_MEMORY_REVIEW_PROMPT_VERSION =
-  "curated-memory-local-review-v1";
+  "curated-memory-local-review-v2";
 
 export interface CuratedMemoryReviewConfig {
   provider: AiClientProvider;
@@ -48,6 +48,9 @@ export interface CuratedMemoryReviewEvidence {
 export interface CuratedMemoryReviewCandidate {
   assertionId: string;
   assertionText: string;
+  kind?: "decision" | "fact" | "learning" | "preference" | null;
+  scope?: "me" | "project" | "unscoped";
+  projectId?: string | null;
   topicTitle: string | null;
   tags: string[];
   sensitivity: "normal" | "sensitive" | "review_required";
@@ -67,6 +70,9 @@ export interface CuratedMemoryReviewBundle {
     operation: "store" | "merge" | "supersede" | "conflict";
     targetAssertionId: string | null;
     attemptCount: number;
+    scopeHint?: "me" | "project" | "unscoped" | null;
+    kindHint?: "decision" | "fact" | "learning" | "preference" | null;
+    projectContextId?: string | null;
   };
   evidence: CuratedMemoryReviewEvidence[];
   rejectedSourceCount: number;
@@ -79,6 +85,8 @@ const acceptedReviewSchema = z.object({
   target_assertion_id: z.string().uuid().nullable(),
   selected_evidence_ids: z.array(z.string().uuid()).min(1),
   assertion_text: z.string().trim().min(1).max(4000),
+  kind: z.enum(["decision", "fact", "learning", "preference"]),
+  scope: z.enum(["me", "project", "unscoped"]),
   topic_title: z.string().trim().min(1).max(500).nullable(),
   tags: z.array(z.string().trim().min(1).max(80)).max(20),
   sensitivity: z.enum(["normal", "sensitive", "review_required"]),
@@ -248,12 +256,16 @@ export const buildCuratedMemoryReviewPrompt = (
     "Accept only specific, reusable user facts, preferences, decisions, plans, or corrections that the evidence supports.",
     "Reject transient requests, task chatter, public facts the user merely asked about, agent claims, unsupported inferences, and incomplete evidence.",
     "If accepted, rewrite the assertion clearly and self-contained. Do not merely copy the proposal.",
+    "Classify the assertion as decision, fact, learning, or preference, and propose scope me, project, or unscoped. Proposal hints are suggestions, not evidence.",
+    "Use project only when the proposal supplies a Project context and every selected source supports that same Project. Use me for durable owner-wide knowledge; use unscoped when the evidence does not support either classification.",
+    "Never assign an author, source identity, Session identity, Project ID, or Team eligibility. Koed validates provenance and Project ownership independently.",
     "Choose store for a new assertion, merge for duplicate evidence, supersede for a correction, or conflict for genuine unresolved contradiction.",
     "For merge, supersede, or conflict, target_assertion_id must be one supplied current assertion. For store it must be null.",
+    "When correcting or linking a current assertion, preserve its existing scope unless evidence supports a separately reviewed classification change. A missing legacy kind is unknown; classify the new assertion from evidence.",
     "selected_evidence_ids must contain only supplied evidence IDs and every selected item must support the final assertion.",
     "A sensitivity hint of review_required must be rejected with requires_user_review.",
     "Return exactly one JSON object matching one of these shapes:",
-    '{"outcome":"accepted","operation":"store|merge|supersede|conflict","target_assertion_id":null,"selected_evidence_ids":["uuid"],"assertion_text":"...","topic_title":null,"tags":[],"sensitivity":"normal|sensitive|review_required","confidence":0,"expires_at":null,"reason_category":"new_durable_memory|duplicate_evidence|correction|conflicting_evidence","decision_reason":"..."}',
+    '{"outcome":"accepted","operation":"store|merge|supersede|conflict","target_assertion_id":null,"selected_evidence_ids":["uuid"],"assertion_text":"...","kind":"decision|fact|learning|preference","scope":"me|project|unscoped","topic_title":null,"tags":[],"sensitivity":"normal|sensitive|review_required","confidence":0,"expires_at":null,"reason_category":"new_durable_memory|duplicate_evidence|correction|conflicting_evidence","decision_reason":"..."}',
     '{"outcome":"rejected","reason_category":"unsupported_by_evidence|negated_or_qualified|ephemeral_or_task_specific|not_user_authored|incomplete_evidence|requires_user_review|not_durable_memory","decision_reason":"..."}',
     "",
     "REVIEW_INPUT_JSON",

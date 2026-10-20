@@ -763,6 +763,9 @@ export const createCuratedMemoryRecordMethods = ({
               return {
                 assertionId: assertion.id,
                 assertionText: assertion.assertionText,
+                kind: assertion.kind,
+                scope: assertion.scope,
+                projectId: assertion.projectId,
                 topicTitle: assertion.topicTitle,
                 tags: assertion.tags,
                 sensitivity: assertion.sensitivity,

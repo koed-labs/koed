@@ -24,7 +24,7 @@ const mustCase = (id: string) => {
 
 describe("curated-memory-intake benchmark cases", () => {
   it("covers durable facts and negative no-store examples", () => {
-    expect(curatedMemoryIntakeCases).toHaveLength(14);
+    expect(curatedMemoryIntakeCases).toHaveLength(15);
     expect(
       curatedMemoryIntakeCases.every(
         (benchmarkCase) => benchmarkCase.runs === 5
@@ -34,7 +34,7 @@ describe("curated-memory-intake benchmark cases", () => {
       curatedMemoryIntakeCases.filter(
         (benchmarkCase) => benchmarkCase.expected.shouldPropose
       )
-    ).toHaveLength(6);
+    ).toHaveLength(7);
     expect(
       curatedMemoryIntakeCases.filter(
         (benchmarkCase) => !benchmarkCase.expected.shouldPropose
@@ -65,14 +65,46 @@ describe("curated-memory-intake benchmark scoring", () => {
 
     expect(summary.suite).toBe("curated-memory-intake");
     expect(summary.totalScore).toBe(summary.maxScore);
-    expect(summary.totalScore).toBe(310);
-    expect(summary.maxScore).toBe(310);
+    expect(summary.totalScore).toBe(360);
+    expect(summary.maxScore).toBe(360);
     expect(summary.averageScoreRatio).toBe(1);
     expect(summary.proposalDecisionAccuracy).toBe(1);
     expect(summary.acceptanceRate).toBe(1);
     expect(summary.recallSuccessRate).toBe(1);
     expect(summary.falseFactProposalRate).toBe(0);
     expect(summary.falseFactStorageRate).toBe(0);
+  });
+
+  it("scores all four stored Memory Kinds and rejects a mislabeled result", () => {
+    const cases = [
+      "birthday-user-profile",
+      "coding-language-preference",
+      "project-decision",
+      "workflow-learning"
+    ];
+    expect(cases.map((id) => mustCase(id).expected.kind)).toEqual([
+      "fact",
+      "preference",
+      "decision",
+      "learning"
+    ]);
+    for (const id of cases) {
+      const benchmarkCase = mustCase(id);
+      const run = idealCuratedMemoryIntakeRun(benchmarkCase);
+      expect(
+        scoreCuratedMemoryIntakeRun(benchmarkCase, run).details.find(
+          (detail) => detail.name === "stored_classification"
+        )
+      ).toMatchObject({ score: 1 });
+      run.intake!.assertionKind = "fact";
+      if (benchmarkCase.expected.kind !== "fact") {
+        expect(
+          scoreCuratedMemoryIntakeRun(benchmarkCase, run).details.find(
+            (detail) => detail.name === "stored_classification"
+          )
+        ).toMatchObject({ score: 0 });
+      }
+    }
   });
 
   it("scores all four positive layers", () => {
@@ -299,7 +331,7 @@ describe("curated-memory-intake benchmark scoring", () => {
 
     const summary = summarizeCuratedMemoryIntakeBenchmark([first, second]);
 
-    expect(summary.totalScore).toBe(9);
+    expect(summary.totalScore).toBe(10);
     expect(summary.proposalCallRate).toBe(0.5);
     expect(summary.proposalDecisionAccuracy).toBe(1);
     expect(summary.falseFactProposalRate).toBe(0);

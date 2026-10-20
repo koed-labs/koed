@@ -161,6 +161,8 @@ export const startCuratedMemoryReviewService = (
                   operation: result.decision.operation,
                   target_assertion_id: result.decision.target_assertion_id,
                   assertion_text: result.decision.assertion_text,
+                  kind: result.decision.kind,
+                  scope: result.decision.scope,
                   topic_title: result.decision.topic_title,
                   tags: result.decision.tags,
                   sensitivity: result.decision.sensitivity,

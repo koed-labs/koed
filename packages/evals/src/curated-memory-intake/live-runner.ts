@@ -514,13 +514,15 @@ const runWorkflowCase = async (
                 operation: review.decision.operation,
                 target_assertion_id: review.decision.target_assertion_id,
                 assertion_text: review.decision.assertion_text,
+                kind: review.decision.kind,
+                scope: review.decision.scope,
                 topic_title: review.decision.topic_title,
                 tags: review.decision.tags,
                 sensitivity: review.decision.sensitivity,
                 confidence: review.decision.confidence,
                 expires_at: review.decision.expires_at,
                 reviewer_model: review.model,
-                reviewer_prompt_version: "curated-memory-local-review-v1"
+                reviewer_prompt_version: "curated-memory-local-review-v2"
               }
             : {})
         }
@@ -531,6 +533,18 @@ const runWorkflowCase = async (
         );
       }
       const completed = submitted.body.proposal as Record<string, unknown>;
+      const storedAssertion =
+        typeof completed.assertionId === "string"
+          ? await injectJson(app, {
+              method: "GET",
+              url: `/v1/memory/curated/assertions/${completed.assertionId}`,
+              headers: { authorization }
+            })
+          : null;
+      const assertion =
+        storedAssertion?.statusCode === 200
+          ? (storedAssertion.body.assertion as Record<string, unknown>)
+          : null;
       intake = {
         proposalId: proposal.id,
         proposalStatus:
@@ -542,6 +556,14 @@ const runWorkflowCase = async (
         assertionText:
           review.decision.outcome === "accepted"
             ? review.decision.assertion_text
+            : null,
+        assertionKind:
+          typeof assertion?.kind === "string"
+            ? (assertion.kind as CuratedMemoryIntakeResult["assertionKind"])
+            : null,
+        assertionScope:
+          typeof assertion?.scope === "string"
+            ? (assertion.scope as CuratedMemoryIntakeResult["assertionScope"])
             : null,
         skippedReason:
           typeof completed.decisionReason === "string"

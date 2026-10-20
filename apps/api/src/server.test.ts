@@ -17871,6 +17871,8 @@ describe("account and access flows", () => {
         selected_evidence_ids: [selectedId],
         candidate_assertion_ids: [],
         assertion_text: "The user strongly prefers window seats when flying.",
+        kind: "preference",
+        scope: "me",
         topic_title: "Travel preferences",
         tags: ["travel"],
         sensitivity: "normal",
@@ -17888,6 +17890,8 @@ describe("account and access flows", () => {
     expect(reviewInputs[0]).toMatchObject({
       selectedEvidenceIds: [selectedId],
       assertion: {
+        kind: "preference",
+        scope: "me",
         sources: [
           {
             sourceType: "conversation_item",

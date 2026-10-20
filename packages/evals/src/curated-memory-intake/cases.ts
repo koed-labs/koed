@@ -10,6 +10,8 @@ export const curatedMemoryIntakeCases: CuratedMemoryIntakeCase[] = [
     runs,
     expected: {
       shouldPropose: true,
+      kind: "fact",
+      scope: "me",
       referenceClaim: "The user's birthday is 14 March.",
       proposalTopic: "Personal details",
       recallQuery: "When is the user's birthday?",
@@ -27,6 +29,7 @@ export const curatedMemoryIntakeCases: CuratedMemoryIntakeCase[] = [
     runs,
     expected: {
       shouldPropose: true,
+      kind: "fact",
       referenceClaim:
         "Maya Chen is the Koed backend lead, while Iris Patel owns most desktop packaging work.",
       proposalTopic: "Team roles",
@@ -44,6 +47,8 @@ export const curatedMemoryIntakeCases: CuratedMemoryIntakeCase[] = [
     runs,
     expected: {
       shouldPropose: true,
+      kind: "preference",
+      scope: "me",
       referenceClaim:
         "For quick internal tooling, the user strongly prefers TypeScript over Python unless the library ecosystem forces Python.",
       proposalTopic: "Coding preferences",
@@ -62,6 +67,7 @@ export const curatedMemoryIntakeCases: CuratedMemoryIntakeCase[] = [
     runs,
     expected: {
       shouldPropose: true,
+      kind: "decision",
       referenceClaim:
         "For this repository, Curated Memory remains API-only until the backend behavior is proven; no Explorer UI should be added before then.",
       proposalTopic: "Project decision",
@@ -71,6 +77,24 @@ export const curatedMemoryIntakeCases: CuratedMemoryIntakeCase[] = [
       sensitivity: "normal"
     },
     notes: "Project decision that should be recalled later."
+  },
+  {
+    id: "workflow-learning",
+    prompt:
+      "I learned that this repository's release checks need the shared and core packages built before typechecking the API.",
+    runs,
+    expected: {
+      shouldPropose: true,
+      kind: "learning",
+      referenceClaim:
+        "For this repository, build shared and core packages before typechecking the API release checks.",
+      proposalTopic: "Release workflow learning",
+      recallQuery: "What did the user learn about API release checks?",
+      tags: ["release", "learning"],
+      minEvidenceItems: 1,
+      sensitivity: "normal"
+    },
+    notes: "Durable experience about a repository workflow."
   },
   {
     id: "travel-itinerary",

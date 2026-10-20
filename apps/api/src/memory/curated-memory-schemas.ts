@@ -106,6 +106,8 @@ export const curatedMemoryReviewResultSchema = z.discriminatedUnion("outcome", [
     operation: operationSchema,
     target_assertion_id: z.string().uuid().nullable().optional(),
     assertion_text: z.string().trim().min(1).max(4000),
+    kind: z.enum(["decision", "fact", "learning", "preference"]).optional(),
+    scope: z.enum(["me", "project", "unscoped"]).optional(),
     topic_title: z.string().trim().min(1).max(500).nullable().optional(),
     tags: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
     sensitivity: sensitivitySchema.default("normal"),

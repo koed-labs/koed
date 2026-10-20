@@ -73,6 +73,8 @@ describe("Curated Memory review service", () => {
         target_assertion_id: null,
         selected_evidence_ids: [evidenceId],
         assertion_text: "The user strongly prefers window seats when flying.",
+        kind: "preference",
+        scope: "me",
         topic_title: "Travel preferences",
         tags: ["travel"],
         sensitivity: "normal",
@@ -111,7 +113,9 @@ describe("Curated Memory review service", () => {
               source_hash: "source-hash-1"
             }
           ],
-          assertion_text: "The user strongly prefers window seats when flying."
+          assertion_text: "The user strongly prefers window seats when flying.",
+          kind: "preference",
+          scope: "me"
         })
       );
     } finally {
@@ -133,6 +137,8 @@ describe("Curated Memory review service", () => {
         target_assertion_id: null,
         selected_evidence_ids: [evidenceId],
         assertion_text: "The user prefers window seats.",
+        kind: "preference",
+        scope: "me",
         topic_title: null,
         tags: [],
         sensitivity: "normal",

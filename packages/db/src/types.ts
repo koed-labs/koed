@@ -1880,6 +1880,9 @@ export interface CuratedMemoryReviewEvidence {
 export interface CuratedMemoryReviewCandidate {
   assertionId: string;
   assertionText: string;
+  kind: CuratedMemoryKind | null;
+  scope: CuratedMemoryScope;
+  projectId: string | null;
   topicTitle: string | null;
   tags: string[];
   sensitivity: CuratedMemorySensitivity;
@@ -1902,6 +1905,9 @@ export interface CuratedMemoryResolvedEvidence {
 export interface CuratedMemoryCreateAssertionInput {
   proposalId?: string;
   assertionText: string;
+  /** Reviewer classification. Absent on legacy v1 writers. */
+  kind?: CuratedMemoryKind | null;
+  scope?: CuratedMemoryScope;
   topicTitle?: string | null;
   sensitivity?: CuratedMemorySensitivity;
   confidence?: number;

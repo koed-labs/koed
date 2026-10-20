@@ -40,9 +40,111 @@ import type {
   ActorContext,
   CuratedMemoryAssertionRecord,
   CuratedMemoryCreateAssertionInput,
+  CuratedMemoryScope,
   CuratedMemoryProposalStatus,
   CuratedMemoryTopicRecord
 } from "./types.js";
+
+const reviewClassificationWithClient = async (
+  client: pg.PoolClient,
+  actor: ActorContext,
+  proposal: ProposalRow,
+  input: CuratedMemoryCreateAssertionInput,
+  inheritedProjectId: string | null = null
+): Promise<
+  Pick<CuratedMemoryCreateAssertionInput, "scope" | "kind"> & {
+    projectId: string | null;
+    authorKind: "user" | null;
+    authorRef: string | null;
+  }
+> => {
+  const scope: CuratedMemoryScope = input.scope ?? "unscoped";
+  const selected = input.sources;
+  const result = await client.query<{
+    source_id: string;
+    project_id: string | null;
+    user_authored: boolean;
+  }>(
+    `select ci.id as source_id,
+            case when session.project_override_id is not null
+                 then session.project_override_personal_project_id
+                 else session.automatic_personal_project_id end as project_id,
+            (session.id is not null and
+             ci.source_event_type in ('user_message','UserPromptSubmit')) as user_authored
+       from conversation_items ci
+       left join sessions session on session.id=ci.session_id
+         and session.owner_user_id=$1 and session.personal_deleted_at is null
+      where ci.owner_user_id=$1 and ci.id=any($2::uuid[])
+        and ci.visibility='personal' and ci.personal_deleted_at is null
+        and ci.memory_excluded_at is null
+     union all
+     select me.id as source_id,
+            case when session.project_override_id is not null
+                 then session.project_override_personal_project_id
+                 else session.automatic_personal_project_id end as project_id,
+            (session.id is not null and me.actor_user_id=$1::uuid
+             and message.id is not null and message.role='user') as user_authored
+       from memory_events me
+       left join messages message on message.id=me.message_id
+         and message.owner_user_id=$1 and message.session_id=me.session_id
+       left join sessions session on session.id=me.session_id
+         and session.owner_user_id=$1 and session.personal_deleted_at is null
+      where me.owner_user_id=$1 and me.id=any($3::uuid[])
+        and me.visibility='personal' and me.invalidated_at is null
+        and me.personal_deleted_at is null`,
+    [
+      actor.userId,
+      selected.flatMap((source) =>
+        source.conversationItemId ? [source.conversationItemId] : []
+      ),
+      selected.flatMap((source) =>
+        source.memoryEventId ? [source.memoryEventId] : []
+      )
+    ]
+  );
+  if (
+    result.rows.length !== selected.length ||
+    new Set(result.rows.map((row) => row.source_id)).size !== selected.length
+  ) {
+    throw Object.assign(new Error("Curated Memory source provenance changed"), {
+      statusCode: 409
+    });
+  }
+  let projectId: string | null = null;
+  if (scope === "project") {
+    const projectContextId = proposal.project_context_id ?? inheritedProjectId;
+    if (
+      !projectContextId ||
+      result.rows.some((row) => row.project_id !== projectContextId)
+    ) {
+      throw Object.assign(
+        new Error(
+          "Curated Memory Project scope lacks matching source provenance"
+        ),
+        { statusCode: 409 }
+      );
+    }
+    const project = await client.query<{ id: string }>(
+      `select id from projects where id=$1 and owner_user_id=$2
+         and lifecycle='active' and deletion_phase is null for update`,
+      [projectContextId, actor.userId]
+    );
+    if (!project.rows[0]) {
+      throw Object.assign(new Error("Curated Memory Project is unavailable"), {
+        statusCode: 409
+      });
+    }
+    projectId = projectContextId;
+  }
+  const userAuthored = result.rows.every((row) => row.user_authored);
+  return {
+    scope,
+    projectId,
+    kind: input.kind ?? null,
+    authorKind: userAuthored ? "user" : null,
+    authorRef: userAuthored ? actor.userId : null
+  };
+};
 
 const upsertTopic = async (
   client: pg.PoolClient,
@@ -174,7 +276,8 @@ const createAssertionWithClient = async (
   client: pg.PoolClient,
   actor: ActorContext,
   provider: EnvelopeEncryptionProvider | undefined,
-  input: CuratedMemoryCreateAssertionInput
+  input: CuratedMemoryCreateAssertionInput,
+  classification?: Awaited<ReturnType<typeof reviewClassificationWithClient>>
 ): Promise<CuratedMemoryAssertionRecord> => {
   const assertionText = input.assertionText.trim();
   if (!assertionText) {
@@ -200,21 +303,71 @@ const createAssertionWithClient = async (
       assertionText
     );
   }
+  if (existingAssertion) {
+    const locked = await client.query<AssertionRow>(
+      `select ${assertionSelect}
+         from curated_memory_assertions cma
+         left join curated_memory_topics cmt on cmt.id=cma.topic_id
+        where cma.id=$1 and cma.owner_user_id=$2
+          and cma.status='current' and cma.suppressed_at is null
+        for update of cma`,
+      [existingAssertion.id, actor.userId]
+    );
+    if (!locked.rows[0]) {
+      throw Object.assign(new Error("Curated Memory duplicate changed"), {
+        statusCode: 409
+      });
+    }
+    existingAssertion = await hydrateAssertionRow(
+      client,
+      actor,
+      provider,
+      locked.rows[0]
+    );
+  }
+  if (
+    classification &&
+    existingAssertion &&
+    ((input.scope !== undefined &&
+      (existingAssertion.scope !== classification.scope ||
+        existingAssertion.project_id !== classification.projectId)) ||
+      (existingAssertion.kind !== null &&
+        existingAssertion.kind !== classification.kind))
+  ) {
+    throw Object.assign(
+      new Error(
+        "Curated Memory duplicate requires acknowledged classification change"
+      ),
+      { statusCode: 409 }
+    );
+  }
   const result = existingAssertion
     ? await client.query<{ id: string }>(
         `
           update curated_memory_assertions
-          set topic_id = coalesce($2::uuid, topic_id), updated_at = now()
+          set topic_id = coalesce($2::uuid, topic_id),
+              kind = coalesce(kind,$4::curated_memory_kind),
+              updated_at = now()
           where id = $1 and owner_user_id = $3
           returning id
         `,
-        [existingAssertion.id, topic?.id ?? null, actor.userId]
+        [
+          existingAssertion.id,
+          topic?.id ?? null,
+          actor.userId,
+          classification?.kind ?? null
+        ]
       )
     : await client.query<{ id: string }>(
         `
       insert into curated_memory_assertions (
         owner_user_id,
         visibility,
+        scope,
+        project_id,
+        kind,
+        author_kind,
+        author_ref,
         topic_id,
         assertion_text,
         normalized_assertion,
@@ -233,6 +386,11 @@ const createAssertionWithClient = async (
       values (
         $1,
         'personal',
+        $17::curated_memory_scope,
+        $18::uuid,
+        $19::curated_memory_kind,
+        $20::curated_memory_author_kind,
+        $21,
         $2,
         $3,
         $4,
@@ -255,6 +413,7 @@ const createAssertionWithClient = async (
           and expires_at is null
         do update set
           topic_id = coalesce(excluded.topic_id, curated_memory_assertions.topic_id),
+          kind = coalesce(curated_memory_assertions.kind, excluded.kind),
           tags = (
             select array(
               select distinct tag
@@ -288,7 +447,12 @@ const createAssertionWithClient = async (
           input.conflictWithAssertionId ?? null,
           input.createdByModel ?? null,
           input.createdByPromptVersion ?? null,
-          normalized(assertionText)
+          normalized(assertionText),
+          classification?.scope ?? "unscoped",
+          classification?.projectId ?? null,
+          classification?.kind ?? null,
+          classification?.authorKind ?? null,
+          classification?.authorRef ?? null
         ]
       );
   const assertionId = result.rows[0]?.id;
@@ -573,6 +737,19 @@ export const createCuratedMemoryProposalTransitionMethods = ({
           )
         );
         if (
+          (input.assertion?.sources ?? []).some(
+            (source) =>
+              (source.sourceType !== "conversation_item" &&
+                source.sourceType !== "memory_event") ||
+              (source.sourceType === "conversation_item" &&
+                !proposal.evidence_conversation_item_ids.includes(
+                  source.conversationItemId ?? ""
+                )) ||
+              (source.sourceType === "memory_event" &&
+                !proposal.evidence_memory_event_ids.includes(
+                  source.memoryEventId ?? ""
+                ))
+          ) ||
           selectedEvidenceIds.size === 0 ||
           [...selectedEvidenceIds].some((id) => !proposalEvidenceIds.has(id)) ||
           selectedEvidenceIds.size !== assertionEvidenceIds.size ||
@@ -594,6 +771,49 @@ export const createCuratedMemoryProposalTransitionMethods = ({
           "Curated Memory review target was not supplied to the local reviewer"
         );
       }
+      if (input.decision !== "skip") {
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [actor.userId]
+        );
+      }
+      const targetPreview = targetAssertionId
+        ? (
+            await client.query<{
+              scope: CuratedMemoryScope;
+              project_id: string | null;
+              kind: CuratedMemoryCreateAssertionInput["kind"];
+              classification_version: number;
+            }>(
+              `select scope,project_id,kind,classification_version
+                 from curated_memory_assertions
+                where id=$1 and owner_user_id=$2
+                  and visibility='personal' and status='current'
+                  and suppressed_at is null`,
+              [targetAssertionId, actor.userId]
+            )
+          ).rows[0]
+        : null;
+      const classification =
+        input.expectedAttemptCount !== undefined &&
+        input.decision !== "skip" &&
+        input.assertion &&
+        (input.assertion.kind !== undefined ||
+          input.assertion.scope !== undefined ||
+          targetPreview != null)
+          ? await reviewClassificationWithClient(
+              client,
+              actor,
+              proposal,
+              {
+                ...input.assertion,
+                scope:
+                  input.assertion.scope ?? targetPreview?.scope ?? "unscoped",
+                kind: input.assertion.kind ?? targetPreview?.kind ?? null
+              },
+              targetPreview?.project_id ?? null
+            )
+          : undefined;
       if (targetAssertionId) {
         const targetResult = await client.query<AssertionRow>(
           `
@@ -617,6 +837,16 @@ export const createCuratedMemoryProposalTransitionMethods = ({
             "Curated Memory target assertion not found or not current"
           );
         }
+        if (
+          targetPreview &&
+          targetRow.classification_version !==
+            targetPreview.classification_version
+        ) {
+          throw Object.assign(
+            new Error("Curated Memory target classification changed"),
+            { statusCode: 409 }
+          );
+        }
         const hydratedTarget = await hydrateAssertionRow(
           client,
           actor,
@@ -632,6 +862,19 @@ export const createCuratedMemoryProposalTransitionMethods = ({
         target = mapAssertion(
           hydratedTarget,
           sourceMap.get(hydratedTarget.id) ?? []
+        );
+      }
+      if (
+        classification &&
+        target &&
+        (classification.scope !== target.scope ||
+          classification.projectId !== target.projectId)
+      ) {
+        throw Object.assign(
+          new Error(
+            "Curated Memory target scope change requires withdrawal acknowledgement"
+          ),
+          { statusCode: 409 }
         );
       }
 
@@ -653,7 +896,8 @@ export const createCuratedMemoryProposalTransitionMethods = ({
           client,
           actor,
           envelopeEncryptionProvider,
-          input.assertion
+          input.assertion,
+          classification
         );
         assertionId = assertion.id;
         nextStatus = duplicate ? "merged" : "stored";
@@ -676,7 +920,8 @@ export const createCuratedMemoryProposalTransitionMethods = ({
               ...target.metadata,
               ...(input.assertion.metadata ?? {})
             }
-          }
+          },
+          classification
         );
         assertionId = merged.id;
         nextStatus = "merged";
@@ -694,7 +939,8 @@ export const createCuratedMemoryProposalTransitionMethods = ({
             ...input.assertion,
             status: "current",
             supersedesAssertionId: target.id
-          }
+          },
+          classification
         );
         await client.query(
           `
@@ -725,7 +971,8 @@ export const createCuratedMemoryProposalTransitionMethods = ({
             ...input.assertion,
             status: "conflicting",
             conflictWithAssertionId: target.id
-          }
+          },
+          classification
         );
         assertionId = conflicting.id;
         nextStatus = "conflicted";

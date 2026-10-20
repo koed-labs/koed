@@ -105,7 +105,21 @@ Personal Project; the other scopes have no Project ID. Existing writers and v1
 requests can omit these fields, and old assertions become `unscoped`. Unknown
 authors stay unknown. Proposal scope, kind, and Project context are hints; a
 Project context must be owned and active before it is stored. The existing
-reviewer does not yet turn those hints into authoritative classification.
+reviewer proposes one of four Memory Kinds and a Me, Project, or unscoped
+classification for each accepted assertion. The completion path checks every
+selected direct source against its current revision and derives Project identity
+from the source Session's authoritative Personal Project association. An
+explicit loose Project override cannot inherit an automatic Project. A Project
+classification requires an active owner-owned Project matching the proposal
+context and every selected source. Author fields are set to the User only when
+the selected source chain supports that attribution; otherwise they stay
+unknown. Legacy v1 review submissions without classification create unscoped
+assertions with no invented kind and preserve an existing target's classification.
+A reviewer cannot assign a Project ID or Team sharing
+eligibility. A duplicate or target scope change that would require withdrawing
+Team representations conflicts and leaves the proposal pending for a separately
+acknowledged HQ-301 classification operation; the review transaction does not
+change that classification.
 
 Legacy assertions wait in a durable activation queue until their previously
 shared Curated copies have been withdrawn. The trusted source-owning local edge

@@ -54,12 +54,45 @@ const config = () =>
 
 const runnerReturning = (payload: unknown): CuratedMemoryReviewRunner =>
   vi.fn().mockResolvedValue({
-    text: JSON.stringify(payload),
+    text: JSON.stringify(
+      typeof payload === "object" &&
+        payload !== null &&
+        "outcome" in payload &&
+        payload.outcome === "accepted"
+        ? { kind: "preference", scope: "me", ...payload }
+        : payload
+    ),
     model: "gpt-5.4-mini",
     tokenUsage: { last: { inputTokens: 300, outputTokens: 80 } }
   });
 
 describe("Curated Memory local review worker", () => {
+  it.each(["decision", "fact", "learning", "preference"] as const)(
+    "returns the reviewed %s kind and scope",
+    async (kind) => {
+      const result = await reviewCuratedMemoryProposal(
+        bundle(),
+        config(),
+        runnerReturning({
+          outcome: "accepted",
+          operation: "store",
+          target_assertion_id: null,
+          selected_evidence_ids: [evidenceId],
+          assertion_text: "The user prefers window seats.",
+          kind,
+          scope: "me",
+          topic_title: null,
+          tags: [],
+          sensitivity: "normal",
+          confidence: 90,
+          expires_at: null,
+          reason_category: "new_durable_memory",
+          decision_reason: "Supported."
+        })
+      );
+      expect(result.decision).toMatchObject({ kind, scope: "me" });
+    }
+  );
   it("accepts a semantic rewrite without requiring a quoted proposal", async () => {
     const result = await reviewCuratedMemoryProposal(
       bundle(),
