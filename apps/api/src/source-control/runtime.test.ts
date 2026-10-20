@@ -965,4 +965,70 @@ describe("version-2 merge runtime", () => {
     });
     expect(fixture.operations).toHaveLength(0);
   });
+
+  it.each(["lease", "generation", "owner"] as const)(
+    "does not claim or dispatch when runner %s authority changes during readiness reads",
+    async (change) => {
+      const fixture = await setup();
+      const prepared = await fixture.prepare();
+      const originalFetch = fixture.providerFetch.getMockImplementation()!;
+      const originalAuthority = await fixture.assertExecutionAuthority(
+        userId,
+        executionId
+      );
+      let changed = false;
+      fixture.providerFetch.mockImplementation(async (input, init) => {
+        const response = await originalFetch(input, init);
+        if (String(input).includes("/check-runs")) changed = true;
+        return response;
+      });
+      fixture.assertExecutionAuthority.mockImplementation(async () => {
+        if (!changed) return originalAuthority;
+        if (change === "owner")
+          throw Object.assign(new Error("Execution not found"), {
+            statusCode: 404
+          });
+        return {
+          ...originalAuthority,
+          ...(change === "generation"
+            ? { executionGeneration: originalAuthority.executionGeneration + 1 }
+            : { state: "completed" })
+        };
+      });
+      await expect(fixture.claim(prepared)).rejects.toMatchObject({
+        statusCode: change === "owner" ? 404 : 409
+      });
+      expect(changed).toBe(true);
+      expect(fixture.journal.entries.get(prepared.operationId)?.state).toBe(
+        "prepared"
+      );
+      expect(fixture.operations).toHaveLength(0);
+    }
+  );
+
+  it("does not claim when the provider credential rotates during readiness reads", async () => {
+    const fixture = await setup();
+    const prepared = await fixture.prepare();
+    const originalFetch = fixture.providerFetch.getMockImplementation()!;
+    let rotated = false;
+    fixture.providerFetch.mockImplementation(async (input, init) => {
+      const response = await originalFetch(input, init);
+      if (String(input).includes("/check-runs")) rotated = true;
+      return response;
+    });
+    fixture.credentialResolver.mockImplementation(async () =>
+      JSON.stringify({
+        scheme: "bearer",
+        token: rotated ? "new-secret" : "fixture-secret"
+      })
+    );
+    await expect(fixture.claim(prepared)).rejects.toMatchObject({
+      code: "source_control_stale"
+    });
+    expect(rotated).toBe(true);
+    expect(fixture.journal.entries.get(prepared.operationId)?.state).toBe(
+      "prepared"
+    );
+    expect(fixture.operations).toHaveLength(0);
+  });
 });

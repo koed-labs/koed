@@ -1180,7 +1180,7 @@ export const createSourceControlRuntime = (options: {
             })
           )
         };
-        return { providerInput, grant, remote, connection };
+        return { providerInput, grant, remote, connection, authority };
       };
       const asResult = (entry: MergeJournalEntry): SourceControlV2Result =>
         sourceControlV2ResultSchema.parse({
@@ -1425,6 +1425,23 @@ export const createSourceControlRuntime = (options: {
       if (sha256(JSON.stringify(current)) !== entry.readinessDigest)
         throw sourceControlError(
           "Merge readiness changed",
+          409,
+          "source_control_stale"
+        );
+      // Provider reads can outlive the runner lease or a local credential/policy
+      // rotation. Re-read the full local authority immediately before the one-use
+      // claim; no provider mutation is allowed on the old prepared context.
+      const refreshed = await bound();
+      if (
+        !["starting", "running", "reconciling", "quiesced"].includes(
+          refreshed.authority.state
+        ) ||
+        sha256(
+          JSON.stringify({ ...refreshed.providerInput, fetch: undefined })
+        ) !== sha256(JSON.stringify({ ...providerInput, fetch: undefined }))
+      )
+        throw sourceControlError(
+          "Merge execution authority changed",
           409,
           "source_control_stale"
         );
