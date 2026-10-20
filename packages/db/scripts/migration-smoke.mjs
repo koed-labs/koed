@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0063_mushy_champions";
-const expectedLatestMigrationIndex = 63;
+const expectedLatestMigrationTag = "0064_ambiguous_cerebro";
+const expectedLatestMigrationIndex = 64;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -1746,6 +1746,14 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preMergeFolder = await createMigrationSlice(journal, 63, {
+    folderPrefix: "koed-pre-source-control-merge-"
+  });
+  temporaryFolders.add(preMergeFolder);
+  const preMergeRecords = await migrationRecords(
+    preMergeFolder,
+    journal.entries.slice(0, 64)
+  );
   const preCitationFolder = await createMigrationSlice(journal, 62, {
     folderPrefix: "koed-pre-managed-citations-"
   });
@@ -3388,6 +3396,158 @@ try {
         throw new Error("0062 migration rerun changed schema");
     });
   });
+
+  await runScenario(
+    "merge-journal-0064-upgrade-rollback-and-fence",
+    async () => {
+      const target = await createDisposableDatabase(
+        "source_control_merge_upgrade"
+      );
+      const ownerId = randomUUID();
+      const otherOwnerId = randomUUID();
+      const operationId = randomUUID();
+      const otherOperationId = randomUUID();
+      const interrupted = await createMigrationSlice(journal, 64, {
+        folderPrefix: "koed-source-control-merge-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(interrupted);
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: preMergeFolder });
+        await assertMigrationLedger(pool, preMergeRecords);
+        await pool.query("insert into users(id,email) values($1,$2),($3,$4)", [
+          ownerId,
+          `${ownerId}@example.test`,
+          otherOwnerId,
+          `${otherOwnerId}@example.test`
+        ]);
+        let failed = false;
+        try {
+          await runDbMigrations(pool, { migrationsFolder: interrupted });
+        } catch {
+          failed = true;
+        }
+        if (!failed)
+          throw new Error(
+            "Interrupted merge journal migration unexpectedly succeeded"
+          );
+        const rolledBack = await pool.query(
+          `select to_regclass('public.source_control_merge_operations')::text as operations,
+          exists(select 1 from users where id=$1) as retained`,
+          [ownerId]
+        );
+        if (
+          rolledBack.rows[0]?.operations !== null ||
+          rolledBack.rows[0]?.retained !== true
+        )
+          throw new Error(
+            "0064 interrupted migration changed retained owner data"
+          );
+        await assertMigrationLedger(pool, preMergeRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+        const insert = `insert into source_control_merge_operations
+        (id,owner_user_id,pr_key,idempotency_key,readiness_digest,prepared,state,expires_at)
+        values($1,$2,$3,$4,$5,$6::jsonb,$7,now()+interval '5 minutes')`;
+        const values = [
+          operationId,
+          ownerId,
+          "approved-pr",
+          `merge:${operationId}`,
+          "a".repeat(64),
+          JSON.stringify({
+            version: 1,
+            ciphertext: "migration-envelope-marker"
+          }),
+          "prepared"
+        ];
+        await pool.query(insert, values);
+        await pool.query(insert, [
+          otherOperationId,
+          ownerId,
+          values[2],
+          `merge:${otherOperationId}`,
+          ...values.slice(4)
+        ]);
+        await pool.query(
+          "update source_control_merge_operations set state='claimed' where id=$1",
+          [operationId]
+        );
+        await expectSqlState(
+          pool,
+          "update source_control_merge_operations set state='claimed' where id=$1",
+          "23505",
+          "Only one dispatch may hold the durable PR fence",
+          [otherOperationId]
+        );
+        for (const state of ["pending", "unknown"]) {
+          await pool.query(
+            "update source_control_merge_operations set state=$2 where id=$1",
+            [operationId, state]
+          );
+          await expectSqlState(
+            pool,
+            "update source_control_merge_operations set state='claimed' where id=$1",
+            "23505",
+            "Uncertain or pending outcomes retain the PR fence",
+            [otherOperationId]
+          );
+        }
+        await expectSqlState(
+          pool,
+          insert,
+          "23505",
+          "Approval idempotency key cannot be reused",
+          [randomUUID(), ownerId, "another-pr", values[3], ...values.slice(4)]
+        );
+        await expectSqlState(
+          pool,
+          insert,
+          "23503",
+          "Merge journal requires a retained owner",
+          [
+            randomUUID(),
+            randomUUID(),
+            "missing-owner-pr",
+            "missing-owner",
+            ...values.slice(4)
+          ]
+        );
+        await expectSqlState(
+          pool,
+          "update source_control_merge_operations set state='retry' where id=$1",
+          "23514",
+          "Retry is not a merge journal state",
+          [operationId]
+        );
+        await pool.query(
+          "update source_control_merge_operations set state='rejected' where id=$1",
+          [operationId]
+        );
+        await pool.query(
+          "update source_control_merge_operations set state='claimed' where id=$1",
+          [otherOperationId]
+        );
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== stable)
+          throw new Error("0064 migration rerun changed schema");
+        const retained = await pool.query(
+          "select state,prepared from source_control_merge_operations where id=$1 and owner_user_id=$2",
+          [otherOperationId, ownerId]
+        );
+        if (
+          retained.rows[0]?.state !== "claimed" ||
+          retained.rows[0]?.prepared?.ciphertext !== "migration-envelope-marker"
+        )
+          throw new Error(
+            "0064 migration rerun changed retained claim or opaque ciphertext"
+          );
+      });
+    }
+  );
 
   await runScenario("managed-citations-0063-upgrade-and-custody", async () => {
     const target = await createDisposableDatabase("managed_citations_upgrade");

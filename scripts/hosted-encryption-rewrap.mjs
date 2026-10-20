@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import {
   createDbPool,
-  createMemorySourceRepository
+  createMemorySourceRepository,
+  createSourceControlMergeRepository
 } from "../packages/db/dist/index.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
@@ -11,7 +12,7 @@ import { loadRootEnv } from "./api-token-bootstrap-lib.mjs";
 
 const usage = `Usage: pnpm hosted:encryption-rewrap [options]
 
-Rewrap encrypted-field, Managed Conversation citation, and Shared Memory representation DEKs with the configured
+Rewrap encrypted-field, Managed Conversation citation, merge journal, and Shared Memory representation DEKs with the configured
 Team/general and owner-private envelope providers.
 
 Options:
@@ -244,6 +245,33 @@ try {
             failedRows: 0
           };
         });
+  const embeddedFamily = async (table, columns, runBatch) =>
+    args.teamId ||
+    (args.sourceTable && args.sourceTable !== table) ||
+    (args.sourceColumn && !columns.includes(args.sourceColumn))
+      ? { ...emptyAggregate(), done: true }
+      : runBatches(async (afterId) => {
+          const batch = await runBatch({
+            ownerUserId: args.ownerUserId,
+            batchSize: args.batchSize,
+            force: args.force,
+            dryRun: args.dryRun,
+            afterId
+          });
+          return {
+            ...batch,
+            wouldRewrapRows: args.dryRun ? batch.processedRows : 0,
+            failedRows: 0
+          };
+        });
+  const mergeJournal = createSourceControlMergeRepository(pool, {
+    envelopeEncryptionProvider: provider
+  });
+  const mergeFields = await embeddedFamily(
+    "source_control_merge_operations",
+    ["prepared"],
+    (input) => mergeJournal.rewrapSourceControlMergeBatch(provider, input)
+  );
   const teamRepresentations =
     args.ownerUserId || args.sourceTable || args.sourceColumn
       ? { ...emptyAggregate(), done: true }
@@ -260,6 +288,7 @@ try {
     teamGeneralFields,
     ownerPrivateFields,
     citationFields,
+    mergeFields,
     teamRepresentations
   };
   const totals = Object.values(aggregates).reduce(
