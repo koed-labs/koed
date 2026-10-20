@@ -23,6 +23,7 @@ const chatLifecycleReportPath = resolve(
   "browser-report.json"
 );
 const chatMoveReportPath = resolve(scratchDir, "hq-107", "browser-report.json");
+const dispatchReportPath = resolve(scratchDir, "hq-404", "browser-report.json");
 const memoryScopeReportPath = resolve(
   scratchDir,
   "hq-304",
@@ -35,6 +36,7 @@ await rm(projectViewReportPath, { force: true });
 await rm(workItemReportPath, { force: true });
 await rm(chatLifecycleReportPath, { force: true });
 await rm(chatMoveReportPath, { force: true });
+await rm(dispatchReportPath, { force: true });
 await rm(memoryScopeReportPath, { force: true });
 const userDataPath = await mkdtemp(
   resolve(scratchDir, "hq-008-electron-profile-")
@@ -285,6 +287,36 @@ try {
       }
     } finally {
       await rm(memoryProfile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const dispatchProfile = await mkdtemp(
+      resolve(scratchDir, "hq404-electron-profile-")
+    );
+    try {
+      const dispatchHq = spawnSync(
+        electronPath,
+        ["scripts/validate-hq404.mjs"],
+        {
+          cwd: desktopDir,
+          env: { ...process.env, KOED_HQ404_USER_DATA_DIR: dispatchProfile },
+          stdio: "inherit"
+        }
+      );
+      if (dispatchHq.error) throw dispatchHq.error;
+      process.exitCode = dispatchHq.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(dispatchReportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ404.native", owner: "HQ-404", status: "pass" }
+        );
+        process.stdout.write(
+          "PASS HQ404.native [HQ-404]: Send, Working now, linked Conversation reuse and Work brief; compound S04.1 awaits HQ-405.\n"
+        );
+      }
+    } finally {
+      await rm(dispatchProfile, { recursive: true, force: true });
     }
   }
 } finally {

@@ -181,6 +181,7 @@ const run = async () => {
       JSON.stringify(
         {
           id: "HQ404.native",
+          owner: "HQ-404",
           status: "pass",
           checks: [
             "Agent picker from Work Item arrow",
