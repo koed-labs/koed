@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { storeDesktopLocalCredential } from "@koed/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const roots: string[] = [];
@@ -25,6 +26,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.KOED_HOME;
   delete process.env.KOED_MANAGED_MEMORY_ACTIONS;
+  delete process.env.KOED_MANAGED_DOC_EXECUTION_ID;
+  delete process.env.KOED_MANAGED_DOC_EXECUTION_GENERATION;
+  delete process.env.KOED_MANAGED_DOC_API_URL;
+  delete process.env.KOED_MANAGED_DOC_HELPER_URL;
   roots
     .splice(0)
     .forEach((root) => rmSync(root, { recursive: true, force: true }));
@@ -99,8 +104,114 @@ const setup = async () => {
       cwd: "/work/project",
       sessionManager: { getSessionId: () => session }
     });
-  return { invoke, tools };
+  return { invoke, tools, home };
 };
+
+describe("Pi installed document Work Item tool", () => {
+  it("registers only with a managed selector, reads through the packaged helper, and emits a fixed apply receipt", async () => {
+    const ordinary = await setup();
+    expect(ordinary.tools.has("work_items_from_doc")).toBe(false);
+    const executionId = "ae4e3f31-7300-49b9-ab81-a4df03d9bdd7";
+    const sourceId = "ce4e3f31-7300-49b9-ab81-a4df03d9bdd7";
+    process.env.KOED_MANAGED_DOC_EXECUTION_ID = executionId;
+    process.env.KOED_MANAGED_DOC_EXECUTION_GENERATION = "2";
+    process.env.KOED_MANAGED_DOC_API_URL = "http://127.0.0.1:32123";
+    process.env.KOED_MANAGED_DOC_HELPER_URL = new URL(
+      "../dist/work-items-from-doc-tool.js",
+      import.meta.url
+    ).href;
+    const managed = await setup();
+    expect(managed.tools.has("work_items_from_doc")).toBe(true);
+    storeDesktopLocalCredential(managed.home, {
+      ownerUserId: executionId,
+      operationFamilies: ["personal_collaboration_read", "managed_execution"]
+    });
+    const send = vi.fn(
+      async (url: Parameters<typeof fetch>[0]) =>
+        new Response(
+          String(url).includes("/list")
+            ? JSON.stringify({
+                documents: [
+                  {
+                    sourceId,
+                    name: "Syllabus.txt",
+                    noteRevisionId: executionId
+                  }
+                ],
+                nextCursor: null
+              })
+            : JSON.stringify({
+                sourceId,
+                sourceRevisionId: executionId,
+                noteRevisionId: executionId,
+                name: "Syllabus.txt",
+                lines: [{ lineNumber: 1, text: "Paper due Friday" }],
+                nextCursor: null,
+                remaining: false
+              }),
+          { status: 200 }
+        )
+    );
+    vi.stubGlobal("fetch", send);
+    const discovered = await managed.invoke("work_items_from_doc", {
+      mode: "list"
+    });
+    expect(discovered.details).toEqual({
+      documents: [
+        { sourceId, name: "Syllabus.txt", noteRevisionId: executionId }
+      ],
+      nextCursor: null
+    });
+    expect(String(send.mock.calls[0]?.[0])).toContain(
+      `/${executionId}/work-items-from-doc/list`
+    );
+    const page = await managed.invoke("work_items_from_doc", {
+      mode: "read",
+      source_id: sourceId
+    });
+    expect(page.details).toMatchObject({
+      sourceId,
+      lines: [{ text: "Paper due Friday" }]
+    });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(String(send.mock.calls[1]?.[0])).toContain(
+      `/${executionId}/work-items-from-doc/read`
+    );
+    const apply = await managed.invoke("work_items_from_doc", {
+      mode: "apply",
+      source_id: sourceId,
+      source_revision_id: executionId,
+      note_revision_id: executionId,
+      proposals: [
+        {
+          line_number: 1,
+          source_line: "Paper due Friday",
+          title: "Paper",
+          goal: "Write paper",
+          due_text: null
+        }
+      ]
+    });
+    expect(apply.details).toEqual({ status: "requested" });
+    expect(send).toHaveBeenCalledTimes(2);
+    send.mockImplementationOnce(
+      async () => new Response("{}", { status: 409 })
+    );
+    await expect(
+      managed.invoke("work_items_from_doc", {
+        mode: "read",
+        source_id: sourceId
+      })
+    ).rejects.toThrow("409");
+    const noCredential = await setup();
+    await expect(
+      noCredential.invoke("work_items_from_doc", {
+        mode: "read",
+        source_id: sourceId
+      })
+    ).rejects.toThrow("lacks local owner authority");
+  });
+});
 
 describe("Pi explicit Memory Answer tasks", () => {
   it("gates native managed memory tools and emits request-only receipts", async () => {

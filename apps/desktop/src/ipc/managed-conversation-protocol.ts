@@ -167,6 +167,7 @@ export type ManagedConversationSendRequest = {
   idempotencyKey: string;
   clientUserMessageId: string;
   prompt: string;
+  selectedDocumentSourceId?: string;
   fileMentionCommandIds: string[];
   terminalContextReferences: string[];
   settingsChange?: ManagedConversationSettingsChange;
@@ -771,6 +772,9 @@ export const parseManagedConversationRequest = (
         "idempotencyKey",
         "clientUserMessageId",
         "prompt",
+        ...(Object.hasOwn(input, "selectedDocumentSourceId")
+          ? ["selectedDocumentSourceId"]
+          : []),
         "fileMentionCommandIds",
         "terminalContextReferences",
         ...(Object.hasOwn(input, "settingsChange") ? ["settingsChange"] : [])
@@ -812,6 +816,14 @@ export const parseManagedConversationRequest = (
         "Client user message id"
       ),
       prompt: prompt(input.prompt),
+      ...(Object.hasOwn(input, "selectedDocumentSourceId")
+        ? {
+            selectedDocumentSourceId: uuid(
+              input.selectedDocumentSourceId,
+              "Selected document Source id"
+            )
+          }
+        : {}),
       ...(Object.hasOwn(input, "settingsChange")
         ? {
             settingsChange: (() => {

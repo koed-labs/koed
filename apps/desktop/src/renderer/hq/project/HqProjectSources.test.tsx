@@ -74,6 +74,49 @@ describe("Project Sources in HQ", () => {
     await act(async () => root.unmount());
     node.remove();
   });
+  it("offers a ready document to the managed HQ Conversation by exact Source ID", async () => {
+    const onMakeWorkItems = vi.fn();
+    await act(async () =>
+      root.render(
+        <HqProjectSources
+          projectId={projectId}
+          projectName="Atlas"
+          api={api()}
+          onMakeWorkItems={onMakeWorkItems}
+        />
+      )
+    );
+    await act(async () =>
+      (
+        node.querySelector(
+          '[aria-label="Open 2 Project sources"]'
+        ) as HTMLButtonElement
+      ).click()
+    );
+    await act(async () =>
+      (
+        [...node.querySelectorAll(".hq-project-sources__row")].find((row) =>
+          row.textContent?.includes("Plan.md")
+        ) as HTMLButtonElement
+      ).click()
+    );
+    const button = [...node.querySelectorAll("button")].find((item) =>
+      item.textContent?.includes(
+        "Ask Chief of Staff to turn Plan.md into to-dos"
+      )
+    );
+    expect(button).toBeTruthy();
+    expect(
+      (button as HTMLButtonElement).compareDocumentPosition(
+        node.querySelector(".hq-project-sources__panel-body") as HTMLElement
+      ) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    await act(async () => button!.click());
+    expect(onMakeWorkItems).toHaveBeenCalledExactlyOnceWith(
+      { id: docSource.id, name: "Plan.md" },
+      "to-dos"
+    );
+  });
   it("shows count, doc key item, skill group and its honest contribution explanation", async () => {
     await act(async () =>
       root.render(

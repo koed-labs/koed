@@ -3969,6 +3969,9 @@ export const createKoedServerManager = ({
               idempotencyKey: request.idempotencyKey,
               clientUserMessageId: request.clientUserMessageId,
               prompt: request.prompt,
+              ...(request.selectedDocumentSourceId
+                ? { selectedDocumentSourceId: request.selectedDocumentSourceId }
+                : {}),
               fileMentionCommandIds: request.fileMentionCommandIds,
               terminalContextReferences: request.terminalContextReferences,
               ...(request.settingsChange

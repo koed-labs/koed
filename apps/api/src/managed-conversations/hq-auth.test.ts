@@ -208,6 +208,61 @@ describe("HQ managed launch authority", () => {
   });
 });
 
+describe("HQ selected document prompt HTTP admission", () => {
+  it("rejects a generic API Token before looking up or decrypting a selected Source", async () => {
+    const owner = randomUUID();
+    const home = mkdtempSync(join(tmpdir(), "koed-hq-document-authority-"));
+    homes.push(home);
+    const repository = {
+      getApiTokenUser: vi.fn(async () => ({ id: owner })),
+      getManagedConversationExecution: vi.fn()
+    };
+    const auth = createAuthHelpers(() => repository as never, {
+      hashSecret: (value) => value,
+      cookieSecure: false
+    });
+    const sources = { readDocument: vi.fn(), list: vi.fn() };
+    const app = Fastify();
+    registerManagedConversationRoutes(
+      app,
+      {
+        config: { deploymentProfile: "local_personal", koedHome: home },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth,
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined
+        },
+        requireRepository: () => repository
+      } as unknown as ApiRouteContext,
+      null,
+      null,
+      sources as never
+    );
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/managed-conversations/${randomUUID()}/prompts`,
+        headers: { authorization: "Bearer fixture-token" },
+        payload: {
+          executionGeneration: 1,
+          idempotencyKey: randomUUID(),
+          clientUserMessageId: randomUUID(),
+          prompt: "Turn Plan.md into tickets",
+          selectedDocumentSourceId: randomUUID()
+        }
+      });
+      expect(response.statusCode, response.body).toBe(403);
+      expect(repository.getApiTokenUser).toHaveBeenCalledOnce();
+      expect(repository.getManagedConversationExecution).not.toHaveBeenCalled();
+      expect(sources.readDocument).not.toHaveBeenCalled();
+      expect(sources.list).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("HQ managed start HTTP admission", () => {
   it("rejects dispatch before local mutation when remote Managed Conversation authority is selected", async () => {
     const owner = randomUUID();

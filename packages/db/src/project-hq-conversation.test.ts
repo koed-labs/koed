@@ -45,6 +45,66 @@ describe.skipIf(!testUrl)("private Project HQ Conversation", () => {
     await admin?.end();
   });
 
+  it("replays the same selected document without changing its encrypted start command", async () => {
+    const docOwner = randomUUID();
+    await pool.query("insert into users(id,email) values ($1,$2)", [
+      docOwner,
+      `${docOwner}@example.test`
+    ]);
+    const projects = createProjectApiRepository(pool);
+    const project = await projects.create(docOwner, {
+      name: "Document action",
+      folderPath: null,
+      idempotencyKey: "hq406-selected-document"
+    });
+    await projects.reserveHqConversation(docOwner, project.id);
+    const managed = createManagedConversationRepository(pool, {
+      envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64url")
+      )
+    });
+    const selectedDocumentSourceId = randomUUID();
+    const launch = {
+      projectId: project.id,
+      hqProjectId: project.id,
+      hqPrivatePath: `/private/project-hq/${docOwner}/${project.id}`,
+      contextKind: "independent" as const,
+      provider: "codex",
+      aiClientInstanceId: "codex.default",
+      model: "gpt-test",
+      permissionMode: "supervised" as const,
+      runnerKind: "local_device" as const,
+      runnerDeploymentId: deployment,
+      runnerDeviceId: device,
+      idempotencyKey: `project-hq:${project.id}`,
+      initialPrompt: "Turn Plan.md into to-dos",
+      selectedDocumentSourceId,
+      deferUntilRuntimeBinding: true
+    };
+    const first = await managed.createManagedConversation(
+      { userId: docOwner },
+      launch
+    );
+    const replay = await managed.createManagedConversation(
+      { userId: docOwner },
+      launch
+    );
+    expect(replay.execution.id).toBe(first.execution.id);
+    expect(replay.command.payload).toMatchObject({
+      prompt: "Turn Plan.md into to-dos",
+      selectedDocumentSourceId
+    });
+    await expect(
+      managed.createManagedConversation(
+        { userId: docOwner },
+        {
+          ...launch,
+          selectedDocumentSourceId: randomUUID()
+        }
+      )
+    ).rejects.toThrow("another document");
+  }, 120_000);
+
   it("reserves lazily, binds one validated managed execution, and excludes its capture", async () => {
     const projects = createProjectApiRepository(pool);
     const managed = createManagedConversationRepository(pool, {

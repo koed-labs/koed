@@ -1,5 +1,20 @@
 import { createHash } from "node:crypto";
 export {
+  workItemsFromDocParamsSchema,
+  workItemsFromDocReadSchema,
+  workItemsFromDocListSchema,
+  workItemsFromDocProposalSchema,
+  workItemsFromDocApplySchema,
+  workItemsFromDocReadPageSchema,
+  workItemsFromDocListPageSchema,
+  workItemsFromDocToolProposalSchema,
+  workItemsFromDocToolReadSchema,
+  workItemsFromDocToolListSchema,
+  workItemsFromDocToolApplySchema,
+  workItemsFromDocToolInputSchema,
+  type WorkItemsFromDocToolApply
+} from "./work-items-from-doc-contract.js";
+export {
   scheduledJobScheduleSchema,
   createScheduledJobSchema,
   editScheduledJobSchema,

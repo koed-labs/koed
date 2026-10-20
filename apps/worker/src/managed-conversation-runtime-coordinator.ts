@@ -23,6 +23,7 @@ import {
   type ManagedConversationService
 } from "./managed-conversation-service.js";
 import { createWorkItemCompletionObserver } from "./work-item-completion.js";
+import { createWorkItemsFromDocObserver } from "./work-items-from-doc-observer.js";
 import { createReviewRequestMergeProposalObserver } from "./review-request-merge-proposal.js";
 import { guardLocalSharedWorkItemRepository } from "./shared-work-item-runtime-guard.js";
 import {
@@ -147,6 +148,12 @@ export const createManagedConversationRuntimeCoordinator = (options: {
       return true;
     }
   );
+  const observeLocalDocumentWorkItems = createWorkItemsFromDocObserver({
+    repository: options.localRepository,
+    apiUrl: options.apiUrl,
+    koedHome: options.koedHome,
+    ...(options.fetch ? { fetch: options.fetch } : {})
+  });
   const observeLocalMergeProposal = createReviewRequestMergeProposalObserver(
     options.localRepository
   );
@@ -161,6 +168,7 @@ export const createManagedConversationRuntimeCoordinator = (options: {
     ServiceOptions["onKoedToolCompleted"]
   > = async (event) => {
     await observeLocalWorkItemCompletion(event);
+    await observeLocalDocumentWorkItems(event);
     await observeLocalMergeProposal(event);
     try {
       await observeLocalMemoryAction(event);

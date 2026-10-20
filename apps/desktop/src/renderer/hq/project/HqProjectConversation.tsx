@@ -1,7 +1,7 @@
 import type { Agent } from "@koed/shared/agent-contract";
 import { Pixelkin } from "../agents/Pixelkin.js";
 import { ArrowUp, Paperclip, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
@@ -40,6 +40,8 @@ export function HqProjectConversation({
   inspectorOpen = false,
   panelHostRef,
   contextLabel,
+  documentWorkItemIntent,
+  onDocumentWorkItemIntentConsumed,
   onOfferChatForget,
   onClearContext
 }: {
@@ -56,6 +58,12 @@ export function HqProjectConversation({
   inspectorOpen?: boolean;
   panelHostRef?: (node: HTMLDivElement | null) => void;
   contextLabel?: string | null;
+  documentWorkItemIntent?: {
+    id: string;
+    prompt: string;
+    sourceId: string;
+  } | null;
+  onDocumentWorkItemIntentConsumed?: (id: string) => void;
   onClearContext?: () => void;
   onOfferChatForget?: (sourceSessionId: string) => Promise<boolean>;
 }) {
@@ -68,6 +76,7 @@ export function HqProjectConversation({
   } | null>(null);
   const [prompt, setPrompt] = useState("");
   const [attemptedPrompt, setAttemptedPrompt] = useState<string | null>(null);
+  const attemptedDocumentSourceId = useRef<string | null>(null);
   const [options, setOptions] =
     useState<ManagedConversationLaunchOptions | null>(null);
   const [selection, setSelection] = useState<HqSelection>({
@@ -83,6 +92,7 @@ export function HqProjectConversation({
   const [uncertain, setUncertain] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const startedDocumentIntent = useRef<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -257,26 +267,38 @@ export function HqProjectConversation({
     [store, thread]
   );
 
-  const start = async (retry = false) => {
-    if (!retry && !prompt.trim()) return;
+  const start = async (
+    retry = false,
+    documentPrompt?: string,
+    selectedDocumentSourceId?: string
+  ) => {
+    if (!retry && !(documentPrompt ?? prompt).trim()) return;
     const text = retry
       ? attemptedPrompt
-      : contextLabel
-        ? `About ${contextLabel}: ${prompt}`
-        : prompt;
+      : documentPrompt
+        ? documentPrompt
+        : contextLabel
+          ? `About ${contextLabel}: ${prompt}`
+          : prompt;
     if (pending || loading || !text?.trim() || (executionId && !retry)) return;
     if (!selection.permissionMode) {
       setError("Ask first is unavailable for the configured Chief of Staff.");
       return;
     }
-    if (!retry) setAttemptedPrompt(text);
+    if (!retry) {
+      setAttemptedPrompt(text);
+      attemptedDocumentSourceId.current = selectedDocumentSourceId ?? null;
+    }
     setPending(true);
     setError("");
     try {
       const result = await api.start(
         project.id,
         text,
-        selection.permissionMode
+        selection.permissionMode,
+        retry
+          ? (attemptedDocumentSourceId.current ?? undefined)
+          : selectedDocumentSourceId
       );
       setExecutionId(result.executionId);
       setUncertain(false);
@@ -299,6 +321,44 @@ export function HqProjectConversation({
       setPending(false);
     }
   };
+
+  useEffect(() => {
+    if (
+      !documentWorkItemIntent ||
+      startedDocumentIntent.current === documentWorkItemIntent.id ||
+      executionId ||
+      pending ||
+      loading ||
+      uncertain ||
+      !options ||
+      !selection.permissionMode
+    )
+      return;
+    if (prompt.trim()) {
+      setError(
+        "Send or clear the current draft before making Work Items from a document."
+      );
+      return;
+    }
+    startedDocumentIntent.current = documentWorkItemIntent.id;
+    onDocumentWorkItemIntentConsumed?.(documentWorkItemIntent.id);
+    setPrompt(documentWorkItemIntent.prompt);
+    void start(
+      false,
+      documentWorkItemIntent.prompt,
+      documentWorkItemIntent.sourceId
+    );
+  }, [
+    documentWorkItemIntent,
+    onDocumentWorkItemIntentConsumed,
+    executionId,
+    pending,
+    loading,
+    uncertain,
+    options,
+    selection.permissionMode,
+    prompt
+  ]);
 
   const checkDelivery = async () => {
     setLoading(true);
@@ -338,6 +398,12 @@ export function HqProjectConversation({
           onRetryStart={() => undefined}
           markdownAdapters={markdownAdapters}
           contextLabel={contextLabel}
+          documentWorkItemIntent={
+            startedDocumentIntent.current === documentWorkItemIntent?.id
+              ? null
+              : documentWorkItemIntent
+          }
+          onDocumentWorkItemIntentConsumed={onDocumentWorkItemIntentConsumed}
           onClearContext={onClearContext}
           onOfferChatForget={onOfferChatForget}
           inspectorOpen={inspectorOpen}

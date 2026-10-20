@@ -430,6 +430,84 @@ export default function koedExtension(pi) {
       }
     });
   }
+  if (
+    process.env.KOED_MANAGED_DOC_EXECUTION_ID &&
+    process.env.KOED_MANAGED_DOC_EXECUTION_GENERATION &&
+    process.env.KOED_MANAGED_DOC_API_URL &&
+    process.env.KOED_MANAGED_DOC_HELPER_URL
+  ) {
+    pi.registerTool({
+      name: "work_items_from_doc",
+      label: "Make Work Items from a document",
+      description:
+        "For a typed request, first list current Project documents by name and continue while nextCursor exists; ask the User if names are ambiguous. A Project HQ selection lists only that document. Read the chosen source_id in pages (or omit it for a selected document), then request apply with current revision IDs and verbatim line evidence. Koed verifies the current Agent lease and duplicate lines. No to-tickets skill is required.",
+      parameters: Type.Union([
+        Type.Object(
+          {
+            mode: Type.Literal("list"),
+            cursor: Type.Optional(Type.Integer({ minimum: 0 }))
+          },
+          { additionalProperties: false }
+        ),
+        Type.Object(
+          {
+            mode: Type.Literal("read"),
+            source_id: Type.Optional(Type.String({ format: "uuid" })),
+            cursor: Type.Optional(Type.Integer({ minimum: 0 }))
+          },
+          { additionalProperties: false }
+        ),
+        Type.Object(
+          {
+            mode: Type.Literal("apply"),
+            source_id: Type.String({ format: "uuid" }),
+            source_revision_id: Type.String({ format: "uuid" }),
+            note_revision_id: Type.String({ format: "uuid" }),
+            proposals: Type.Array(
+              Type.Object(
+                {
+                  line_number: Type.Integer({ minimum: 1 }),
+                  source_line: Type.String({ minLength: 1, maxLength: 4000 }),
+                  title: Type.String({ minLength: 1, maxLength: 500 }),
+                  goal: Type.String({ minLength: 1, maxLength: 20000 }),
+                  due_text: Type.Union([
+                    Type.Null(),
+                    Type.String({ minLength: 1, maxLength: 100 })
+                  ])
+                },
+                { additionalProperties: false }
+              ),
+              { minItems: 1, maxItems: 30 }
+            )
+          },
+          { additionalProperties: false }
+        )
+      ]),
+      async execute(_toolCallId, input) {
+        if (input.mode === "apply") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: 'Koed work_items_from_doc apply request v1: {"status":"requested"}'
+              }
+            ],
+            details: { status: "requested" }
+          };
+        }
+        const { readWorkItemsFromDocPage, listWorkItemsFromDocSources } =
+          await import(process.env.KOED_MANAGED_DOC_HELPER_URL);
+        const page =
+          input.mode === "list"
+            ? await listWorkItemsFromDocSources(input, process.env)
+            : await readWorkItemsFromDocPage(input, process.env);
+        return {
+          content: [{ type: "text", text: JSON.stringify(page) }],
+          details: page
+        };
+      }
+    });
+  }
   pi.on("session_start", (_event, ctx) => {
     sessionController?.abort();
     sessionController = new AbortController();

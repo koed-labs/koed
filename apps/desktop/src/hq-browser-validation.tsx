@@ -52,6 +52,11 @@ const hq307Capture =
   new URLSearchParams(window.location.search).get("hq307Capture") === "yes";
 const hq308Capture =
   new URLSearchParams(window.location.search).get("hq308Capture") === "yes";
+const hq406Capture =
+  new URLSearchParams(window.location.search).get("hq406Capture") === "yes";
+const hq406ActiveCapture =
+  hq406Capture &&
+  new URLSearchParams(window.location.search).get("hq406Active") === "yes";
 const hq502Capture =
   new URLSearchParams(window.location.search).get("hq502Capture") === "yes";
 const hq712Capture =
@@ -63,6 +68,7 @@ const hq204Capture =
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
   hq307Capture ||
   hq308Capture ||
+  hq406Capture ||
   hq502Capture ||
   hq407Capture;
 const hq306Capture =
@@ -75,7 +81,8 @@ const hq306Trace = { aliasLookups: 0, detailOpens: 0, raceComplete: false };
 const hq205Capture =
   new URLSearchParams(window.location.search).get("hq205Capture") === "yes";
 const hq209Capture =
-  new URLSearchParams(window.location.search).get("hq209Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq209Capture") === "yes" ||
+  hq406Capture;
 const hq404Capture =
   new URLSearchParams(window.location.search).get("hq404Capture") === "yes";
 const hq405Capture =
@@ -507,7 +514,9 @@ const hq204Trace = {
   resume: 0,
   send: 0,
   firstPrompt: "",
-  nextPrompt: ""
+  nextPrompt: "",
+  firstSelectedDocumentSourceId: "",
+  nextSelectedDocumentSourceId: ""
 };
 const hq108ProjectIds = [
   "hq103-koed",
@@ -756,9 +765,16 @@ const installSettingsDesktop = () => {
                     }
                   : null
             }),
-            start: async (projectId: string, prompt: string) => {
+            start: async (
+              projectId: string,
+              prompt: string,
+              _permissionMode?: string,
+              selectedDocumentSourceId?: string
+            ) => {
               hq204Trace.start += 1;
               hq204Trace.firstPrompt = prompt;
+              hq204Trace.firstSelectedDocumentSourceId =
+                selectedDocumentSourceId ?? "";
               hq204Started = true;
               return {
                 projectId,
@@ -1144,11 +1160,14 @@ const hq204ManagedConversations = {
   },
   send: async (input: {
     prompt: string;
+    selectedDocumentSourceId?: string;
     idempotencyKey: string;
     clientUserMessageId: string;
   }) => {
     hq204Trace.send += 1;
     hq204Trace.nextPrompt = input.prompt;
+    hq204Trace.nextSelectedDocumentSourceId =
+      input.selectedDocumentSourceId ?? "";
     return {
       operation: "send" as const,
       status: "queued" as const,
@@ -3028,7 +3047,7 @@ export function HqValidationApp() {
     }
     fixture.reset();
     hq104SentPrompt = "";
-    hq204Started = hq306Capture;
+    hq204Started = hq306Capture || hq406ActiveCapture;
     Object.assign(hq204Trace, {
       reserve: 0,
       reserveByProject: {},
@@ -3039,7 +3058,9 @@ export function HqValidationApp() {
       firstPrompt: hq306Capture
         ? "Plan next week around the investor meetings"
         : "",
-      nextPrompt: ""
+      nextPrompt: "",
+      firstSelectedDocumentSourceId: "",
+      nextSelectedDocumentSourceId: ""
     });
     (
       window as Window & { __koedHq204Trace?: typeof hq204Trace }

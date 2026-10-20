@@ -89,6 +89,20 @@
   font-size: 12px;
   padding: 0 14px 8px;
 }
+.hq-project-sources__ask {
+  align-self: flex-start;
+  margin: 0 14px 10px;
+  padding: 0;
+  color: var(--hq-fg);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.hq-project-sources__ask:disabled {
+  opacity: 0.5;
+}
 .hq-project-sources__panel-body {
   overflow-y: auto;
   min-height: 0;

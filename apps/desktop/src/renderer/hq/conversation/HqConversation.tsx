@@ -1045,6 +1045,8 @@ export function HqActiveConversation({
   openFilePickerOnReady = false,
   inventoryOnly = false,
   contextLabel,
+  documentWorkItemIntent,
+  onDocumentWorkItemIntentConsumed,
   onClearContext,
   inspectorOpen = false,
   panelHostRef,
@@ -1071,6 +1073,12 @@ export function HqActiveConversation({
   openFilePickerOnReady?: boolean;
   inventoryOnly?: boolean;
   contextLabel?: string | null;
+  documentWorkItemIntent?: {
+    id: string;
+    prompt: string;
+    sourceId: string;
+  } | null;
+  onDocumentWorkItemIntentConsumed?: (id: string) => void;
   onClearContext?: () => void;
   inspectorOpen?: boolean;
   panelHostRef?: (node: HTMLDivElement | null) => void;
@@ -1168,6 +1176,10 @@ export function HqActiveConversation({
       : ""
   );
   const promptEdited = useRef(false);
+  const consumedDocumentIntent = useRef<string | null>(null);
+  const [draftReadForIdentity, setDraftReadForIdentity] = useState<
+    string | null
+  >(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [fileOpen, setFileOpen] = useState(false);
   const initialFilePicker = useRef(openFilePickerOnReady);
@@ -1206,6 +1218,7 @@ export function HqActiveConversation({
     key: string;
     messageId: string;
     prompt: string;
+    selectedDocumentSourceId?: string;
     attachments: Attachment[];
     settingsChange: ReturnType<typeof hqSettingsChange>;
     request?: ManagedConversationPendingSend["request"];
@@ -1709,22 +1722,35 @@ export function HqActiveConversation({
           )
         )
           setPrompt((current) => current || result.value);
+        if (alive) setDraftReadForIdentity(identityKey);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (alive && documentWorkItemIntent)
+          setError(
+            "The saved draft could not be checked. Review this Conversation before making Work Items."
+          );
+      });
     return () => {
       alive = false;
     };
   }, [
     api,
+    identityKey,
     conversation,
+    documentWorkItemIntent,
     draft?.initialPrompt?.status,
     draft?.initialPrompt?.prompt
   ]);
-  const send = async (manualRetry = false) => {
+  const send = async (
+    manualRetry = false,
+    documentPrompt?: string,
+    selectedDocumentSourceId?: string
+  ) => {
     const effectivePrompt =
-      privateProjectHq && contextLabel && !manualRetry
+      documentPrompt ??
+      (privateProjectHq && contextLabel && !manualRetry
         ? `About ${contextLabel}: ${prompt}`
-        : prompt;
+        : prompt);
     const exactRetry =
       manualRetry &&
       pending.current?.request &&
@@ -1738,7 +1764,10 @@ export function HqActiveConversation({
       );
       return;
     }
-    const unverified = findUnverifiedSlashCommand(prompt, slash.commands);
+    const unverified = findUnverifiedSlashCommand(
+      effectivePrompt,
+      slash.commands
+    );
     if (unverified && !exactRetry) {
       setError(`/${unverified} is not verified and cannot be dispatched.`);
       return;
@@ -1751,7 +1780,7 @@ export function HqActiveConversation({
       (!runtime && !exactRetry) ||
       resumeStatus !== "ready" ||
       (expectedForExecution !== conversation.executionId && !exactRetry) ||
-      !prompt.trim() ||
+      !effectivePrompt.trim() ||
       busy ||
       (manualRetry && matchingTerminal) ||
       (runtimeBusy &&
@@ -1765,11 +1794,13 @@ export function HqActiveConversation({
     const settingsChange = expected
       ? hqSettingsChange(expected, selection)
       : null;
-    const submission =
+    const submission: NonNullable<typeof pending.current> =
       manualRetry && pending.current
         ? pending.current
         : pending.current &&
             pending.current.prompt === effectivePrompt &&
+            (pending.current.selectedDocumentSourceId ?? null) ===
+              (selectedDocumentSourceId ?? null) &&
             JSON.stringify(pending.current.attachments) ===
               JSON.stringify(attachments) &&
             JSON.stringify(pending.current.settingsChange) ===
@@ -1779,6 +1810,7 @@ export function HqActiveConversation({
               key: `desktop-prompt:${crypto.randomUUID()}`,
               messageId: crypto.randomUUID(),
               prompt: effectivePrompt,
+              selectedDocumentSourceId,
               attachments,
               settingsChange
             };
@@ -1790,6 +1822,9 @@ export function HqActiveConversation({
         idempotencyKey: submission.key,
         clientUserMessageId: submission.messageId,
         prompt: submission.prompt,
+        ...(submission.selectedDocumentSourceId
+          ? { selectedDocumentSourceId: submission.selectedDocumentSourceId }
+          : {}),
         fileMentionCommandIds: submission.attachments.map(
           (item) => item.commandId
         ),
@@ -1925,6 +1960,64 @@ export function HqActiveConversation({
       if (identityKeyRef.current === identityKey) setBusy(false);
     }
   };
+  useEffect(() => {
+    if (
+      !privateProjectHq ||
+      !documentWorkItemIntent ||
+      consumedDocumentIntent.current === documentWorkItemIntent.id ||
+      !api ||
+      !recoveryReady ||
+      !lifecycle?.persistPendingSend ||
+      !conversation?.executionId ||
+      !runtime ||
+      resumeStatus !== "ready" ||
+      draftReadForIdentity !== identityKey ||
+      expectedForExecution !== conversation.executionId ||
+      busy ||
+      runtimeBusy ||
+      runtime.executionState === "failed" ||
+      sendLocked ||
+      !expected ||
+      !hqSelectionIsSupported(options, selection)
+    )
+      return;
+    if (prompt.trim() || attachments.length) {
+      setError(
+        "Send or clear the current draft before making Work Items from a document."
+      );
+      return;
+    }
+    consumedDocumentIntent.current = documentWorkItemIntent.id;
+    onDocumentWorkItemIntentConsumed?.(documentWorkItemIntent.id);
+    promptEdited.current = true;
+    setPrompt(documentWorkItemIntent.prompt);
+    void send(
+      false,
+      documentWorkItemIntent.prompt,
+      documentWorkItemIntent.sourceId
+    );
+  }, [
+    documentWorkItemIntent,
+    onDocumentWorkItemIntentConsumed,
+    privateProjectHq,
+    api,
+    recoveryReady,
+    lifecycle,
+    conversation?.executionId,
+    runtime,
+    resumeStatus,
+    expectedForExecution,
+    draftReadForIdentity,
+    identityKey,
+    busy,
+    runtimeBusy,
+    sendLocked,
+    expected,
+    options,
+    selection,
+    prompt,
+    attachments
+  ]);
   const respond = async (
     item: ManagedConversationRuntimeItem,
     response: {

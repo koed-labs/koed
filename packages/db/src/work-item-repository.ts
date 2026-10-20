@@ -301,6 +301,210 @@ export const createWorkItemRepository = (
         }
       : null;
   },
+  async createFromDocument(input: {
+    ownerUserId: string;
+    projectId: string;
+    sourceId: string;
+    sourceRevisionId: string;
+    noteRevisionId: string;
+    sourceText: string;
+    executionId: string;
+    executionGeneration: number;
+    commandId: string;
+    leaseToken: string;
+    proposals: Array<{
+      lineNumber: number;
+      sourceLine: string;
+      title: string;
+      goal: string;
+      dueOn: string | null;
+    }>;
+  }): Promise<{ items: WorkItem[]; created: number; alreadyExisting: number }> {
+    return inTransaction(pool, async (client) => {
+      const project = await client.query<{ key: string }>(
+        `select key from projects where id=$1 and owner_user_id=$2
+         and lifecycle='active' and deletion_phase is null
+         and team_backend_id is null and team_workspace_id is null
+         and workspace_project_id is null for update`,
+        [input.projectId, input.ownerUserId]
+      );
+      if (!project.rows[0])
+        throw new WorkItemUnavailableError("Project is unavailable");
+      const command = await client
+        .query(
+          `select 1 from managed_conversation_commands command
+         join managed_conversation_executions execution
+           on execution.id=command.execution_id and execution.owner_user_id=command.owner_user_id
+         where command.id=$1 and command.owner_user_id=$2 and command.execution_id=$3
+           and command.execution_generation=$4 and command.lease_token=$5
+           and command.state='dispatching' and command.lease_expires_at>clock_timestamp()
+           and execution.project_id=$6 and execution.execution_generation=$4
+           and execution.state in ('starting','running','reconciling')
+         for update of command,execution nowait`,
+          [
+            input.commandId,
+            input.ownerUserId,
+            input.executionId,
+            input.executionGeneration,
+            input.leaseToken,
+            input.projectId
+          ]
+        )
+        .catch((cause: unknown) => {
+          // A human prompt locks its execution before reading the Project. Do
+          // not wait in the opposite order while holding this Project lock.
+          if (
+            cause &&
+            typeof cause === "object" &&
+            "code" in cause &&
+            cause.code === "55P03"
+          )
+            throw new WorkItemConflictError(
+              "Agent command is busy; retry from the current turn",
+              null
+            );
+          throw cause;
+        });
+      if (!command.rowCount)
+        throw new WorkItemConflictError("Agent command lease changed", null);
+      const source = await client.query(
+        `select 1 from project_sources source
+         join project_source_revisions revision
+           on revision.source_id=source.id and revision.owner_user_id=source.owner_user_id
+          and revision.note_revision_id=source.current_revision_id
+         join personal_note_revisions note_revision
+           on note_revision.id=revision.note_revision_id
+          and note_revision.owner_user_id=source.owner_user_id
+         join personal_notes note on note.id=note_revision.note_id
+          and note.owner_user_id=source.owner_user_id
+         where source.id=$1 and source.project_id=$2 and source.owner_user_id=$3
+           and source.kind='doc' and source.status='ready'
+           and source.deleted_at is null and source.remove_batch_id is null
+           and revision.id=$4 and revision.note_revision_id=$5
+           and note_revision.projection_state='available'
+           and note_revision.forgotten_at is null and note.lifecycle='active'
+         for update of source,revision,note_revision,note`,
+        [
+          input.sourceId,
+          input.projectId,
+          input.ownerUserId,
+          input.sourceRevisionId,
+          input.noteRevisionId
+        ]
+      );
+      if (!source.rowCount)
+        throw new WorkItemConflictError(
+          "Project Source revision changed",
+          null
+        );
+      const lines = input.sourceText.replace(/\r\n?/g, "\n").split("\n");
+      const existingKeys = await client.query<{ key: string }>(
+        `select key from project_work_items where owner_user_id=$1 and project_id=$2
+           and key is not null`,
+        [input.ownerUserId, input.projectId]
+      );
+      const prefix = `${project.rows[0].key}-`;
+      let nextNumber =
+        1 +
+        Math.max(
+          0,
+          ...existingKeys.rows.map(({ key }) =>
+            key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length))
+              ? Number(key.slice(prefix.length))
+              : 0
+          )
+        );
+      const repo = await client.query(
+        `select 1 from project_sources where owner_user_id=$1 and project_id=$2
+           and kind='repo' and deleted_at is null and remove_batch_id is null
+           and status='ready' limit 1`,
+        [input.ownerUserId, input.projectId]
+      );
+      const kind = repo.rowCount ? "ticket" : "todo";
+      const items: WorkItem[] = [];
+      let created = 0;
+      const seen = new Set<string>();
+      for (const proposal of input.proposals) {
+        if (
+          !Number.isInteger(proposal.lineNumber) ||
+          proposal.lineNumber < 1 ||
+          lines[proposal.lineNumber - 1] !== proposal.sourceLine ||
+          proposal.sourceLine.length > 4_000 ||
+          !proposal.sourceLine.trim()
+        )
+          throw new WorkItemConflictError(
+            "Document line evidence changed",
+            null
+          );
+        const idempotencyKey = workItemPlanLineKey(
+          input.sourceRevisionId,
+          proposal.sourceLine
+        );
+        if (seen.has(idempotencyKey)) continue;
+        seen.add(idempotencyKey);
+        const existing = await client.query<Row>(
+          `select * from project_work_items where owner_user_id=$1 and project_id=$2
+             and origin='plan' and idempotency_key=$3 for update`,
+          [input.ownerUserId, input.projectId, idempotencyKey]
+        );
+        if (existing.rows[0]) {
+          if (existing.rows[0].deleted_at !== null)
+            throw new WorkItemGoneError("Document Work Item was deleted");
+          items.push(publicRecord(existing.rows[0]));
+          continue;
+        }
+        const value: CreateWorkItem = {
+          kind,
+          key: kind === "ticket" ? `${prefix}${nextNumber++}` : null,
+          title: proposal.title,
+          goal: proposal.goal,
+          origin: "plan",
+          originRef: input.sourceId,
+          idempotencyKey,
+          dueOn: proposal.dueOn
+        };
+        const inserted = await client.query<Row>(
+          `insert into project_work_items
+           (owner_user_id,project_id,kind,key,title,goal,origin,origin_ref,
+            idempotency_key,creation_payload_hash,due_on,created_by)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$1) returning *`,
+          [
+            input.ownerUserId,
+            input.projectId,
+            value.kind,
+            value.key,
+            value.title,
+            value.goal,
+            value.origin,
+            value.originRef,
+            idempotencyKey,
+            creationPayloadHash(value),
+            value.dueOn
+          ]
+        );
+        const item = publicRecord(inserted.rows[0]!);
+        items.push(item);
+        created += 1;
+        await appendProjectActivityWithClient(client, {
+          ownerUserId: input.ownerUserId,
+          projectId: input.projectId,
+          actorUserId: input.ownerUserId,
+          kind: "work_item_created",
+          ref: item.id
+        });
+        await emitChanged(client, input.ownerUserId, item.id);
+      }
+      const freshLease = await client.query(
+        `select 1 from managed_conversation_commands where id=$1 and owner_user_id=$2
+           and state='dispatching' and lease_token=$3
+           and lease_expires_at>clock_timestamp()`,
+        [input.commandId, input.ownerUserId, input.leaseToken]
+      );
+      if (!freshLease.rowCount)
+        throw new WorkItemConflictError("Agent command lease expired", null);
+      return { items, created, alreadyExisting: items.length - created };
+    });
+  },
   async hasActiveManagedWorkItem(input: {
     ownerUserId: string;
     executionId: string;

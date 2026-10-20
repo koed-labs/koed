@@ -34,6 +34,40 @@ describe("Project HQ Conversation preload", () => {
     await expect(api.read("not-a-uuid")).rejects.toThrow();
     expect(invoke).toHaveBeenCalledTimes(1);
   });
+  it("keeps the selected document ID separate from the visible first message", async () => {
+    const projectId = randomUUID();
+    const sourceId = randomUUID();
+    const invoke = vi.fn().mockResolvedValue({
+      operation: "start",
+      projectId,
+      executionId: randomUUID(),
+      commandId: randomUUID(),
+      commandState: "queued"
+    });
+    const api = createProjectHqConversationPreloadApi(invoke);
+    await api.start(
+      projectId,
+      "Turn Plan.md into tickets",
+      "supervised",
+      sourceId
+    );
+    expect(invoke).toHaveBeenCalledWith(projectHqConversationChannel, {
+      operation: "start",
+      projectId,
+      prompt: "Turn Plan.md into tickets",
+      permissionMode: "supervised",
+      selectedDocumentSourceId: sourceId
+    });
+    await expect(
+      api.start(
+        projectId,
+        "Turn Plan.md into tickets",
+        "supervised",
+        randomUUID().slice(0, 8)
+      )
+    ).rejects.toThrow();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
 
   it("rejects responses for a different operation or Project", async () => {
     const projectId = randomUUID();

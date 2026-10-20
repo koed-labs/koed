@@ -653,6 +653,17 @@ export const createManagedConversationService = (options: {
       child.KOED_MANAGED_MEMORY_ACTIONS = "1";
     else delete child.KOED_MANAGED_MEMORY_ACTIONS;
     if (options.onKoedToolCompleted) child[managedMergeProposalFlag] = "1";
+    delete child.KOED_MANAGED_DOC_EXECUTION_ID;
+    delete child.KOED_MANAGED_DOC_EXECUTION_GENERATION;
+    delete child.KOED_MANAGED_DOC_API_URL;
+    delete child.KOED_MANAGED_DOC_HELPER_URL;
+    if (options.onKoedToolCompleted && execution.projectId) {
+      child.KOED_MANAGED_DOC_EXECUTION_ID = execution.id;
+      child.KOED_MANAGED_DOC_EXECUTION_GENERATION = String(
+        execution.executionGeneration
+      );
+      child.KOED_MANAGED_DOC_API_URL = options.apiUrl;
+    }
     return child;
   };
   const claudeCaptureStatePath = resolve(

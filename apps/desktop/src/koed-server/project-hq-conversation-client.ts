@@ -74,6 +74,12 @@ export const createProjectHqConversationClient =
                 request.operation === "start"
                   ? {
                       prompt: request.prompt,
+                      ...(request.selectedDocumentSourceId
+                        ? {
+                            selectedDocumentSourceId:
+                              request.selectedDocumentSourceId
+                          }
+                        : {}),
                       ...(request.permissionMode
                         ? { permissionMode: request.permissionMode }
                         : {})

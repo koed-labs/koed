@@ -83,6 +83,25 @@ tools before the first turn and fails startup if the server cannot initialize.
 Desktop credentials include the distinct file, terminal, preview, and source-control
 operation families; none grants an AI Client permission or a remote mutation approval.
 
+For a private managed Project Conversation, Codex and Claude Code receive the
+`work_items_from_doc` MCP tool; Pi receives the same tool through its installed
+Koed extension. The child environment contains only the execution selector,
+generation, local API URL, and (for Pi) the installed read-helper code path.
+No Desktop credential is placed there. The tool's read helper obtains the
+existing encrypted local Desktop credential at call time. The tool's `list` mode
+returns at most 30 current readable document IDs, names, and Note revision selectors
+per page, without document text. A typed request can discover an exact document;
+the AI Client asks the User if names are ambiguous. A Project HQ document action
+stores its owner-verified Source selector in the encrypted current command, so
+`list` exposes only that Source. The visible User prompt contains no Source ID or
+tool syntax. The subsequent `read` mode returns bounded pages of the chosen Source.
+The server checks the current
+owner, Project, Note revision, command lease, and generation. An apply tool call
+returns a fixed request receipt; only the Worker can apply its source-backed
+proposals through the current lease. This works for a plain document instruction
+without slash-command discovery or a to-tickets skill. A discovered skill can
+guide the connected AI Client, but it supplies no authority to write Work Items.
+
 ## Slash command suggestions
 
 Desktop command discovery reaches the Worker adapters through

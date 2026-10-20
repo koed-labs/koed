@@ -1153,6 +1153,36 @@ export const routeIdentityContracts = [
     localEdgeDeploymentModes
   ),
   route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/work-items-from-doc/list",
+    "desktop_local_credential",
+    "projects",
+    "Discover bounded metadata for current owner Project documents under a leased managed AI Client command.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/work-items-from-doc/read",
+    "desktop_local_credential",
+    "projects",
+    "Read bounded lines from one current owner Project Source Note for a leased managed AI Client.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/work-items-from-doc/apply",
+    "desktop_local_credential",
+    "projects",
+    "Create idempotent Work Items from exact current Source lines under a trusted managed command lease.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
     "POST",
     "/v1/projects/{projectId}/work-items/{itemId}/reconcile-pr",
     "session_or_device_credential",

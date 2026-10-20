@@ -144,6 +144,8 @@ export function HqProjectView({
   panelHost,
   onSourcesOpenChange,
   onContextChange,
+  onMakeWorkItems,
+  chiefName,
   closeSignal,
   onSelectConversation,
   onOpenPrivateHq,
@@ -171,6 +173,11 @@ export function HqProjectView({
   panelHost?: HTMLElement | null;
   onSourcesOpenChange?: (open: boolean) => void;
   onContextChange?: (label: string | null) => void;
+  onMakeWorkItems?: (
+    source: { id: string; name: string },
+    kind: "tickets" | "to-dos"
+  ) => void;
+  chiefName?: string;
   closeSignal?: number;
   onSelectConversation: (need: NowNeed) => void;
   onOpenPrivateHq?: () => void;
@@ -1191,6 +1198,8 @@ export function HqProjectView({
             onContextChange={(label) => {
               if (!memoryOpen) onContextChange?.(label);
             }}
+            onMakeWorkItems={onMakeWorkItems}
+            chiefName={chiefName}
             closeSignal={(closeSignal ?? 0) + sourceCloseSignal}
           />
         ) : null}

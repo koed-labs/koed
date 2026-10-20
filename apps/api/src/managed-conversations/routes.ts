@@ -248,6 +248,7 @@ const promptSchema = z
     idempotencyKey: idempotencyKeySchema,
     clientUserMessageId: z.uuid(),
     prompt: z.string().trim().min(1).max(256_000),
+    selectedDocumentSourceId: z.uuid().optional(),
     settingsChange: z
       .object({
         expected: conversationSettingsSchema,
@@ -2820,7 +2821,7 @@ export const registerManagedConversationRoutes = (
         )}`,
         `Bounded readable Project Source excerpts: ${JSON.stringify(documents.filter(Boolean))}`,
         `Call memory_answer with search_domain=project and a question about this Work Item's goal to find related Personal Memory. Treat returned citations as evidence, and do not use Team chat messages as input.`,
-        "Report meaningful progress in this Conversation. If no pull request is needed, call work_item_complete when the goal is met. If the User asks to merge a pull request, call review_request_merge_propose with its number; Koed handles review and merge without giving you provider credentials or merge authority."
+        "Report meaningful progress in this Conversation. For a User request to turn a Project document into Work Items, use work_items_from_doc to read every page of that Source, identify actionable tasks by meaning, and apply exact line and revision evidence. The apply tool receipt requests Koed verification; it does not confirm creation. It works without a to-tickets skill; if a relevant skill is available, you may use it for guidance. If no pull request is needed, call work_item_complete when the goal is met. If the User asks to merge a pull request, call review_request_merge_propose with its number; Koed handles review and merge without giving you provider credentials or merge authority."
       ].join("\n\n");
       const started = await repository.createManagedConversation(
         { userId: user.id },
@@ -2889,10 +2890,32 @@ export const registerManagedConversationRoutes = (
             .refine((value) => value.trim().length > 0),
           permissionMode: z
             .enum(["supervised", "auto_edit", "auto", "full_access"])
-            .optional()
+            .optional(),
+          selectedDocumentSourceId: z.uuid().optional()
         })
         .strict()
         .parse(request.body ?? {});
+      if (firstMessage.selectedDocumentSourceId) {
+        if (!projectSources)
+          throw Object.assign(new Error("Project Sources are unavailable"), {
+            statusCode: 503
+          });
+        const document = await projectSources.readDocument(
+          user.id,
+          params.id,
+          firstMessage.selectedDocumentSourceId
+        );
+        const sources = await projectSources.list(user.id, params.id);
+        const kind = sources.some(
+          (source) => source.kind === "repo" && source.status === "ready"
+        )
+          ? "tickets"
+          : "to-dos";
+        if (firstMessage.prompt !== `Turn ${document.name} into ${kind}`)
+          throw Object.assign(new Error("Selected document prompt changed"), {
+            statusCode: 409
+          });
+      }
       const chief = (await hqAgents.list(user.id)).find(
         (agent) => agent.isChiefOfStaff
       );
@@ -2951,6 +2974,7 @@ export const registerManagedConversationRoutes = (
           hqProjectId: params.id,
           hqPrivatePath: canonicalPrivatePath,
           initialPrompt: firstMessage.prompt,
+          selectedDocumentSourceId: firstMessage.selectedDocumentSourceId,
           runnerDeploymentId: runner.deploymentId,
           runnerDeviceId: runner.deviceId,
           deferUntilRuntimeBinding: true
@@ -3449,6 +3473,51 @@ export const registerManagedConversationRoutes = (
       const user = await authenticateManaged(request);
       const { executionId } = executionParamsSchema.parse(request.params);
       const input = promptSchema.parse(request.body);
+      if (input.selectedDocumentSourceId) {
+        // A document selection adds Project Source authority to this prompt.
+        // Generic managed-execution credentials alone cannot read its contents.
+        const documentOwner = await authenticateHqManagedWrite(
+          request,
+          context
+        );
+        if (documentOwner.id !== user.id)
+          throw Object.assign(new Error("Selected document owner changed"), {
+            statusCode: 403
+          });
+        if (
+          !localExecutionProfiles.has(context.config.deploymentProfile) ||
+          !projectSources
+        )
+          throw Object.assign(
+            new Error("Selected documents require a local Project"),
+            { statusCode: 403 }
+          );
+        const selectedExecution = await context
+          .requireRepository()
+          .getManagedConversationExecution({ userId: user.id }, executionId);
+        if (!selectedExecution)
+          throw Object.assign(new Error("Managed Conversation not found"), {
+            statusCode: 404
+          });
+        const document = await projectSources.readDocument(
+          user.id,
+          selectedExecution.projectId,
+          input.selectedDocumentSourceId
+        );
+        const sources = await projectSources.list(
+          user.id,
+          selectedExecution.projectId
+        );
+        const kind = sources.some(
+          (source) => source.kind === "repo" && source.status === "ready"
+        )
+          ? "tickets"
+          : "to-dos";
+        if (input.prompt !== `Turn ${document.name} into ${kind}`)
+          throw Object.assign(new Error("Selected document prompt changed"), {
+            statusCode: 409
+          });
+      }
       const localSource = localExecutionProfiles.has(
         context.config.deploymentProfile
       )
@@ -3521,6 +3590,7 @@ export const registerManagedConversationRoutes = (
             idempotencyKey: input.idempotencyKey,
             clientUserMessageId: input.clientUserMessageId,
             prompt,
+            selectedDocumentSourceId: input.selectedDocumentSourceId,
             fileMentionCommandIds: input.fileMentionCommandIds,
             settingsChange: input.settingsChange
           }

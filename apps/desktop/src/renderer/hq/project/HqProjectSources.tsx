@@ -31,22 +31,29 @@ const meta = (source: ProjectSource) =>
 export function HqProjectSources({
   projectId,
   projectName,
+  chiefName = "Chief of Staff",
   api,
   visibilityOwnerId,
   visibilityProfileKey,
   panelHost,
   onOpenChange,
   onContextChange,
+  onMakeWorkItems,
   closeSignal
 }: {
   projectId: string;
   projectName: string;
+  chiefName?: string;
   api: ProjectsDesktopApi;
   visibilityOwnerId?: string | null;
   visibilityProfileKey?: string | null;
   panelHost?: HTMLElement | null;
   onOpenChange?: (open: boolean) => void;
   onContextChange?: (label: string | null) => void;
+  onMakeWorkItems?: (
+    source: Pick<ProjectSource, "id" | "name">,
+    kind: "tickets" | "to-dos"
+  ) => void;
   closeSignal?: number;
 }) {
   const [sources, setSources] = useState<ProjectSource[]>([]);
@@ -278,6 +285,33 @@ export function HqProjectSources({
           ? `${source.kind === "skill" ? "Skill" : "Source"} · ${projectName}`
           : `${projectName} reads these`}
       </div>
+      {source?.kind === "doc" &&
+      source.status === "ready" &&
+      source.currentRevisionId &&
+      onMakeWorkItems ? (
+        <button
+          className="hq-project-sources__ask"
+          type="button"
+          disabled={busy}
+          onClick={() =>
+            onMakeWorkItems(
+              { id: source.id, name: source.name },
+              sources.some(
+                (item) => item.kind === "repo" && item.status === "ready"
+              )
+                ? "tickets"
+                : "to-dos"
+            )
+          }
+        >
+          Ask {chiefName} to turn {source.name} into{" "}
+          {sources.some(
+            (item) => item.kind === "repo" && item.status === "ready"
+          )
+            ? "tickets"
+            : "to-dos"}
+        </button>
+      ) : null}
       <div className="hq-project-sources__panel-body">
         {source ? (
           <>

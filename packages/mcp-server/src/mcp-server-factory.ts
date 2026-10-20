@@ -31,6 +31,7 @@ import releaseManifest from "@koed/koed/package.json" with { type: "json" };
 import { assertKoedReleaseVersion } from "@koed/koed/release-version";
 import { z } from "zod";
 import { registerWorkItemCompletionTool } from "./work-item-completion-tool.js";
+import { registerWorkItemsFromDocTool } from "./work-items-from-doc-tool.js";
 import { registerReviewRequestMergeProposalTool } from "./review-request-merge-proposal-tool.js";
 import { registerMemoryActionTools } from "./memory-action-tools.js";
 import {
@@ -531,6 +532,12 @@ export const createKoedMcpServer = async (
     registerMemoryActionTools(server);
   if (process.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1")
     registerWorkItemCompletionTool(server);
+  if (
+    environment.KOED_MANAGED_DOC_EXECUTION_ID &&
+    environment.KOED_MANAGED_DOC_EXECUTION_GENERATION &&
+    environment.KOED_MANAGED_DOC_API_URL
+  )
+    registerWorkItemsFromDocTool(server, environment);
   if (process.env.KOED_MANAGED_MERGE_PROPOSAL === "1")
     registerReviewRequestMergeProposalTool(server);
 

@@ -46,13 +46,15 @@ export const createProjectHqConversationPreloadApi = (
     start: async (
       projectId: string,
       prompt: string,
-      permissionMode?: "supervised" | "auto_edit" | "auto" | "full_access"
+      permissionMode?: "supervised" | "auto_edit" | "auto" | "full_access",
+      selectedDocumentSourceId?: string
     ) => {
       const result = await command({
         operation: "start",
         projectId,
         prompt,
-        ...(permissionMode ? { permissionMode } : {})
+        ...(permissionMode ? { permissionMode } : {}),
+        ...(selectedDocumentSourceId ? { selectedDocumentSourceId } : {})
       });
       if (result.operation !== "start" || result.projectId !== projectId)
         throw new Error("Invalid Project HQ Conversation start.");

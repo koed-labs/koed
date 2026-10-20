@@ -16,6 +16,44 @@ const authority = (
 });
 
 describe("Project HQ Conversation main client", () => {
+  it("sends a short first message and the selected document as distinct typed fields", async () => {
+    const projectId = randomUUID();
+    const selectedDocumentSourceId = randomUUID();
+    const bound = authority();
+    const requestJson = vi.fn(
+      async (
+        _path: string,
+        _init: RequestInit,
+        _authority: ProjectHqAuthority
+      ) => {
+        void [_path, _init, _authority];
+        return {
+          execution: { id: randomUUID(), projectId },
+          command: { id: randomUUID(), state: "queued" }
+        };
+      }
+    );
+    const client = createProjectHqConversationClient({
+      authority: async () => bound,
+      requestJson
+    });
+    await client({
+      operation: "start",
+      projectId,
+      prompt: "Turn Plan.md into tickets",
+      permissionMode: "supervised",
+      selectedDocumentSourceId
+    });
+    const sent = JSON.parse(
+      (requestJson.mock.calls[0]![1] as RequestInit).body as string
+    );
+    expect(sent).toEqual({
+      prompt: "Turn Plan.md into tickets",
+      permissionMode: "supervised",
+      selectedDocumentSourceId
+    });
+    expect(sent.prompt).not.toContain(selectedDocumentSourceId);
+  });
   it("reads an empty or captured HQ identity through GET without write authority", async () => {
     const id = randomUUID();
     const executionId = randomUUID();

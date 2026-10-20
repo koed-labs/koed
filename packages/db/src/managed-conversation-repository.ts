@@ -312,6 +312,7 @@ export interface ManagedConversationRepository {
       runnerDeviceId: string;
       idempotencyKey: string;
       initialPrompt?: string;
+      selectedDocumentSourceId?: string;
       deferUntilRuntimeBinding?: boolean;
       hqProjectId?: string;
       hqPrivatePath?: string;
@@ -357,6 +358,7 @@ export interface ManagedConversationRepository {
       idempotencyKey: string;
       clientUserMessageId: string;
       prompt: string;
+      selectedDocumentSourceId?: string;
       fileMentionCommandIds?: string[];
       settingsChange?: ManagedConversationSettingsChange;
     }
@@ -1159,6 +1161,7 @@ const startDigest = (input: {
   runnerDeploymentId: string;
   runnerDeviceId: string;
   initialPrompt?: string;
+  selectedDocumentSourceId?: string;
   deferUntilRuntimeBinding?: boolean;
 }): string =>
   sha256(
@@ -1178,6 +1181,9 @@ const startDigest = (input: {
       runnerDeploymentId: input.runnerDeploymentId,
       runnerDeviceId: input.runnerDeviceId,
       initialPrompt: input.initialPrompt ?? null,
+      ...(input.selectedDocumentSourceId
+        ? { selectedDocumentSourceId: input.selectedDocumentSourceId }
+        : {}),
       deferUntilRuntimeBinding: input.deferUntilRuntimeBinding === true
     })
   );
@@ -1330,6 +1336,7 @@ export const createManagedConversationRepository = (
     executionId: string;
     commandId: string;
     prompt: string;
+    selectedDocumentSourceId?: string;
     fileMentions?: Array<Record<string, unknown>>;
     workItemSourceProof?: Array<{
       id: string;
@@ -1354,6 +1361,9 @@ export const createManagedConversationRepository = (
       objectClass: "managed_conversation_prompt",
       value: {
         prompt: input.prompt,
+        ...(input.selectedDocumentSourceId
+          ? { selectedDocumentSourceId: input.selectedDocumentSourceId }
+          : {}),
         settings: input.settings,
         ...(input.workItemSourceProof
           ? { workItemSourceProof: input.workItemSourceProof }
@@ -2011,6 +2021,14 @@ export const createManagedConversationRepository = (
                 "Project HQ already started with another first message",
                 409
               );
+            if (
+              (originalStart?.selectedDocumentSourceId ?? null) !==
+              (input.selectedDocumentSourceId ?? null)
+            )
+              throw statusError(
+                "Project HQ already started with another document",
+                409
+              );
             await client.query("commit");
             return {
               execution: mapExecution(execution.rows[0]),
@@ -2081,6 +2099,7 @@ export const createManagedConversationRepository = (
             runnerDeploymentId: input.runnerDeploymentId,
             runnerDeviceId: input.runnerDeviceId,
             initialPrompt: input.initialPrompt,
+            selectedDocumentSourceId: input.selectedDocumentSourceId,
             deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
           });
           if (existing.rows[0].request_digest !== expectedDigest) {
@@ -2114,6 +2133,7 @@ export const createManagedConversationRepository = (
           runnerDeploymentId: input.runnerDeploymentId,
           runnerDeviceId: input.runnerDeviceId,
           initialPrompt: input.initialPrompt,
+          selectedDocumentSourceId: input.selectedDocumentSourceId,
           deferUntilRuntimeBinding: input.deferUntilRuntimeBinding
         });
         const executionResult = await client.query<ExecutionRow>(
@@ -2146,6 +2166,7 @@ export const createManagedConversationRepository = (
               executionId,
               commandId,
               prompt: input.initialPrompt,
+              selectedDocumentSourceId: input.selectedDocumentSourceId,
               ...(input.workItemDispatch
                 ? { workItemSourceProof: input.workItemDispatch.sources ?? [] }
                 : {}),
@@ -2643,6 +2664,9 @@ export const createManagedConversationRepository = (
             executionGeneration: input.executionGeneration,
             clientUserMessageId: input.clientUserMessageId,
             prompt,
+            ...(input.selectedDocumentSourceId
+              ? { selectedDocumentSourceId: input.selectedDocumentSourceId }
+              : {}),
             fileMentionCommandIds,
             ...(settingsChange ? { settingsChange } : {})
           })
@@ -2729,6 +2753,7 @@ export const createManagedConversationRepository = (
           executionId: input.executionId,
           commandId,
           prompt,
+          selectedDocumentSourceId: input.selectedDocumentSourceId,
           fileMentions,
           settings
         });

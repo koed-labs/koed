@@ -258,6 +258,21 @@ export class PiManagedConversationSession {
       ...(this.config.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1"
         ? { KOED_MANAGED_WORK_ITEM_COMPLETION: "1" }
         : {}),
+      ...(this.config.env.KOED_MANAGED_DOC_EXECUTION_ID &&
+      this.config.env.KOED_MANAGED_DOC_EXECUTION_GENERATION &&
+      this.config.env.KOED_MANAGED_DOC_API_URL
+        ? {
+            KOED_MANAGED_DOC_EXECUTION_ID:
+              this.config.env.KOED_MANAGED_DOC_EXECUTION_ID,
+            KOED_MANAGED_DOC_EXECUTION_GENERATION:
+              this.config.env.KOED_MANAGED_DOC_EXECUTION_GENERATION,
+            KOED_MANAGED_DOC_API_URL: this.config.env.KOED_MANAGED_DOC_API_URL,
+            KOED_MANAGED_DOC_HELPER_URL: new URL(
+              "./work-items-from-doc-tool.js",
+              import.meta.url
+            ).href
+          }
+        : {}),
       KOED_MANAGED_PERMISSION_MODE: this.config.permissionMode,
       // This session presents only the turn it prompted. A deferred completion
       // would start a later turn that has no output owner, so recall blocks.
@@ -568,6 +583,7 @@ export class PiManagedConversationSession {
             "memory_forget",
             "memory_correct",
             "work_item_complete",
+            "work_items_from_doc",
             "review_request_merge_propose"
           ].includes(toolName)
         )

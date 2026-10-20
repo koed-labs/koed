@@ -23,7 +23,8 @@ export const projectHqConversationRequestSchema = z.discriminatedUnion(
           .refine((value) => value.trim().length > 0),
         permissionMode: z
           .enum(["supervised", "auto_edit", "auto", "full_access"])
-          .optional()
+          .optional(),
+        selectedDocumentSourceId: z.uuid().optional()
       })
       .strict()
   ]
@@ -73,7 +74,8 @@ export interface ProjectHqConversationDesktopApi {
   start(
     projectId: string,
     prompt: string,
-    permissionMode?: "supervised" | "auto_edit" | "auto" | "full_access"
+    permissionMode?: "supervised" | "auto_edit" | "auto" | "full_access",
+    selectedDocumentSourceId?: string
   ): Promise<{
     projectId: string;
     executionId: string;

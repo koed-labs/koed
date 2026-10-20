@@ -251,6 +251,14 @@ export function HqApplication({
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [sharedRefreshSignal, setSharedRefreshSignal] = useState(0);
   const [artifactContext, setArtifactContext] = useState<string | null>(null);
+  const [documentWorkItemIntent, setDocumentWorkItemIntent] = useState<{
+    id: string;
+    projectId: string;
+    ownerId: string | null;
+    profileKey: string | null;
+    prompt: string;
+    sourceId: string;
+  } | null>(null);
   const [nowMemoryOpen, setNowMemoryOpen] = useState(false);
   const [nowMemoryHost, setNowMemoryHost] = useState<HTMLDivElement | null>(
     null
@@ -482,6 +490,22 @@ export function HqApplication({
       : reconcileHqRoute(selection.route, selection.project, projects);
   const routeRef = useRef(route);
   routeRef.current = route;
+  useEffect(() => {
+    const projectId = route.kind === "project" ? route.projectId : null;
+    setDocumentWorkItemIntent((current) =>
+      current &&
+      (current.projectId !== projectId ||
+        current.ownerId !== (visibilityOwnerId ?? null) ||
+        current.profileKey !== (visibilityProfileKey ?? null))
+        ? null
+        : current
+    );
+  }, [
+    route.kind,
+    route.kind === "project" ? route.projectId : null,
+    visibilityOwnerId,
+    visibilityProfileKey
+  ]);
   useEffect(() => {
     if (route.kind !== "home") setNowMemoryOpen(false);
   }, [route.kind]);
@@ -1247,6 +1271,18 @@ export function HqApplication({
         inspectorOpen={sourcesOpen}
         panelHostRef={setSourcesPanelHost}
         contextLabel={artifactContext}
+        documentWorkItemIntent={
+          documentWorkItemIntent?.projectId === project.id &&
+          documentWorkItemIntent.ownerId === (visibilityOwnerId ?? null) &&
+          documentWorkItemIntent.profileKey === (visibilityProfileKey ?? null)
+            ? documentWorkItemIntent
+            : null
+        }
+        onDocumentWorkItemIntentConsumed={(id) =>
+          setDocumentWorkItemIntent((current) =>
+            current?.id === id ? null : current
+          )
+        }
         onClearContext={() => {
           setCloseInspectorSignal((value) => value + 1);
           setSourcesOpen(false);
@@ -1657,12 +1693,26 @@ export function HqApplication({
                   ? agentsSnapshot.agents
                   : []
               }
+              chiefName={chiefAgent?.name ?? "Chief of Staff"}
               panelHost={sourcesPanelHost}
               onSourcesOpenChange={(open) => {
                 setSourcesOpen(open);
                 if (open) shellActions.current?.showContext();
               }}
               onContextChange={setArtifactContext}
+              onMakeWorkItems={(source, kind) => {
+                setDocumentWorkItemIntent({
+                  id: crypto.randomUUID(),
+                  projectId: personalProject.id,
+                  ownerId: visibilityOwnerId ?? null,
+                  profileKey: visibilityProfileKey ?? null,
+                  sourceId: source.id,
+                  prompt: `Turn ${source.name} into ${kind}`
+                });
+                setCloseInspectorSignal((value) => value + 1);
+                setSourcesOpen(false);
+                setArtifactContext(null);
+              }}
               closeSignal={closeInspectorSignal}
               onSelectConversation={openNowNeed}
               onOpenCitationMessage={openCitationMessage}
