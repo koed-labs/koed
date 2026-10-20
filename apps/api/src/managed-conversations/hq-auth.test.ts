@@ -209,6 +209,107 @@ describe("HQ managed launch authority", () => {
 });
 
 describe("HQ managed start HTTP admission", () => {
+  it("rejects dispatch before local mutation when remote Managed Conversation authority is selected", async () => {
+    const owner = randomUUID();
+    const projectId = randomUUID();
+    const itemId = randomUUID();
+    const agentId = randomUUID();
+    const home = mkdtempSync(join(tmpdir(), "koed-work-remote-authority-"));
+    homes.push(home);
+    writeFileSync(
+      join(home, "upstreams.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        updatedAt: "2026-07-27T00:00:00.000Z",
+        activeBackendId: "personal-authority",
+        backends: [
+          {
+            id: "personal-authority",
+            displayName: "Personal authority",
+            baseUrl: "https://personal.example.test/koed",
+            profile: "private_vps",
+            createdAt: "2026-07-27T00:00:00.000Z",
+            updatedAt: "2026-07-27T00:00:00.000Z",
+            routePolicy: { managedExecution: "enabled" },
+            credential: { status: "configured" },
+            capabilities: {
+              state: "validated",
+              checkedAt: "2026-07-27T00:00:00.000Z",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              schemaVersion: 3,
+              profile: "private_vps",
+              payload: {
+                capabilities: {
+                  "memory.managedConversations": { availability: "available" }
+                }
+              }
+            }
+          }
+        ]
+      })
+    );
+    const getForRealtime = vi.fn();
+    const createManagedConversation = vi.fn();
+    const retryWorkItemConversation = vi.fn();
+    const enqueueManagedConversationControl = vi.fn();
+    const app = Fastify();
+    app.setErrorHandler((error, _request, reply) =>
+      reply
+        .code((error as Error & { statusCode?: number }).statusCode ?? 500)
+        .send({ message: error.message })
+    );
+    registerManagedConversationRoutes(
+      app,
+      {
+        config: { deploymentProfile: "local_personal", koedHome: home },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth: { authenticateSessionOrDeviceCredential: vi.fn() },
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined,
+          managedConversationRead: async () => undefined,
+          managedConversationWrite: async () => undefined
+        },
+        localEdge: {
+          upstreamBackendsPath: join(home, "upstreams.json"),
+          remoteOperationsAllowed: () => true,
+          resolveUpstreamAuthorization: () => "Koed-Device fixture:secret",
+          fetch: vi.fn()
+        },
+        requireRepository: () => ({
+          createManagedConversation,
+          retryWorkItemConversation,
+          enqueueManagedConversationControl
+        })
+      } as unknown as ApiRouteContext,
+      { list: vi.fn() } as never,
+      { getForRealtime } as never
+    );
+    try {
+      const credential = storeDesktopLocalCredential(home, {
+        ownerUserId: owner,
+        operationFamilies: ["personal_collaboration_write", "managed_execution"]
+      });
+      for (const version of [1, 2]) {
+        const response = await app.inject({
+          method: "POST",
+          url: `/v1/projects/${projectId}/work-items/${itemId}/dispatch`,
+          headers: { authorization: credential.authorization },
+          payload: { agentId, version }
+        });
+        expect(response.statusCode, response.body).toBe(503);
+        expect(response.json()).toMatchObject({
+          message: expect.stringContaining("remote Managed Conversations")
+        });
+      }
+      expect(getForRealtime).not.toHaveBeenCalled();
+      expect(createManagedConversation).not.toHaveBeenCalled();
+      expect(retryWorkItemConversation).not.toHaveBeenCalled();
+      expect(enqueueManagedConversationControl).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
   it("launches a chosen Agent with a Source-bound brief through the scoped Desktop route", async () => {
     const owner = randomUUID();
     const projectId = randomUUID();
