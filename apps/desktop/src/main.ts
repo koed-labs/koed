@@ -250,6 +250,41 @@ const createServerManager = (
     },
     ...(managedConversationDraftStore ? { managedConversationDraftStore } : {}),
     ...(personalDevicePairingStore ? { personalDevicePairingStore } : {}),
+    confirmSourceControlMerge: async (prepared) => {
+      const review = prepared.readiness;
+      const options: MessageBoxOptions = {
+        type: "warning",
+        title: "Review pull request merge",
+        message: `Merge ${review.repository} #${review.reviewRequestNumber}?`,
+        detail: [
+          review.title,
+          `Account: ${review.accountLabel}`,
+          `Target: ${review.targetBranch}`,
+          `Head: ${review.expectedHeadObjectId}`,
+          `Method: ${review.mergeMethod}`,
+          `Checks (${review.checks.length}):`,
+          ...review.checks.map(
+            (check) =>
+              `  ${check.required ? "Required" : "Other"}: ${check.name} · ${check.state} · ${check.source} #${check.id}`
+          ),
+          `Reviews (${review.reviews.length}; ${review.approvedReviewCount} of ${review.requiredReviewCount} required):`,
+          ...review.reviews.map(
+            (item) =>
+              `  ${item.user}: ${item.state} · ${item.commitObjectId.slice(0, 12)} · #${item.id}`
+          ),
+          `Readiness: ${prepared.readinessSnapshotDigest}`,
+          `Expires: ${prepared.expiresAt}`
+        ].join("\n"),
+        buttons: ["Cancel", "Merge"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true
+      };
+      const result = mainWindow
+        ? await dialog.showMessageBox(mainWindow, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 1;
+    },
     confirmSourceControlMutation: async ({ operation }) => {
       const options: MessageBoxOptions = {
         type: "warning",

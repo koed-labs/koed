@@ -1,9 +1,14 @@
 import { execFileSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MemorySourceRepository } from "@koed/db";
+import type {
+  MemorySourceRepository,
+  SourceControlMergeRepository,
+  MergeJournalEntry
+} from "@koed/db";
 import { createGitExecutionCheckoutDriver } from "@koed/shared/execution-checkout";
 
 import { createSourceControlRuntime } from "./runtime.js";
@@ -35,6 +40,7 @@ const fixture = async (options?: {
   provider?: "azure_devops" | "bitbucket";
   host?: string;
   capabilities?: readonly string[];
+  mergeJournal?: SourceControlMergeRepository;
 }) => {
   const root = mkdtempSync(resolve(tmpdir(), "koed-source-control-"));
   roots.push(root);
@@ -212,7 +218,8 @@ const fixture = async (options?: {
     requireRepository: () => repository,
     fetch: providerFetch,
     resolveCredential: credentialResolver,
-    onReviewRequestCreated
+    onReviewRequestCreated,
+    mergeJournal: options?.mergeJournal
   });
   return {
     assertExecutionAuthority,
@@ -597,5 +604,365 @@ describe("source-control runtime", () => {
         "utf8"
       )
     ).toThrow();
+  });
+});
+
+const mergeJournalFixture = () => {
+  const entries = new Map<string, MergeJournalEntry>();
+  const repository = {
+    async prepare(input: any) {
+      const entry: MergeJournalEntry = {
+        ...input,
+        state: "prepared",
+        providerOperationId: null,
+        mergeCommitObjectId: null,
+        claimedAt: null
+      };
+      entries.set(entry.id, entry);
+      return entry;
+    },
+    async get(_owner: string, id: string) {
+      return entries.get(id) ?? null;
+    },
+    async unresolved(owner: string, prKey: string) {
+      return (
+        [...entries.values()].find(
+          (entry) =>
+            entry.ownerUserId === owner &&
+            entry.prKey === prKey &&
+            ["claimed", "pending", "unknown"].includes(entry.state)
+        ) ?? null
+      );
+    },
+    async claim(owner: string, id: string) {
+      const entry = entries.get(id);
+      if (
+        !entry ||
+        entry.ownerUserId !== owner ||
+        entry.state !== "prepared" ||
+        entry.expiresAt.getTime() <= Date.now() ||
+        (await repository.unresolved(owner, entry.prKey))
+      )
+        return null;
+      entry.state = "claimed";
+      entry.claimedAt = new Date();
+      return entry;
+    },
+    async setOutcome(
+      _owner: string,
+      id: string,
+      state: MergeJournalEntry["state"],
+      providerOperationId: string | null,
+      mergeCommitObjectId: string | null
+    ) {
+      const entry = entries.get(id);
+      if (!entry) return null;
+      entry.state = state;
+      entry.providerOperationId =
+        providerOperationId ?? entry.providerOperationId;
+      entry.mergeCommitObjectId =
+        mergeCommitObjectId ?? entry.mergeCommitObjectId;
+      return entry;
+    }
+  } as unknown as SourceControlMergeRepository;
+  return { repository, entries };
+};
+
+describe("version-2 merge runtime", () => {
+  const mergeOperationId = "77777777-7777-4777-8777-777777777777";
+  const desktopAuthorization = "Koed-Desktop fixture:secret";
+  const setup = async () => {
+    const journal = mergeJournalFixture();
+    const test = await fixture({ mergeJournal: journal.repository });
+    const remotes = await test.runtime.execute(userId, {
+      contractVersion: 1,
+      executionId,
+      executionGeneration: 2,
+      kind: "remotes"
+    });
+    if (remotes.kind !== "remotes") throw new Error("No remotes");
+    const remoteIdentityHash = remotes.remotes[0]!.remoteIdentityHash;
+    writeFileSync(
+      resolve(test.koedHome, "config", "source-control-merge-policy.json"),
+      JSON.stringify({
+        version: 1,
+        repositories: [
+          {
+            connectionId,
+            remoteIdentityHash,
+            targetBranch: "main",
+            allowedMethods: ["merge", "squash"]
+          }
+        ]
+      }),
+      { mode: 0o600 }
+    );
+    let checksPassed = true;
+    let reviewId = 5;
+    let dispatchFails = false;
+    const operations: string[] = [];
+    test.providerFetch.mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      const path = url.pathname;
+      if (init?.method === "PUT") {
+        operations.push(path);
+        if (dispatchFails) throw new Error("provider timeout");
+        return new Response(
+          JSON.stringify({
+            status: "pending",
+            details: { uuid: mergeOperationId }
+          }),
+          { status: 202 }
+        );
+      }
+      const value =
+        path === "/repos/acme/repo"
+          ? {
+              full_name: "acme/repo",
+              allow_merge_commit: true,
+              allow_squash_merge: true,
+              allow_rebase_merge: false
+            }
+          : path === "/repos/acme/repo/pulls/7"
+            ? {
+                title: "Fixture review",
+                state: "open",
+                draft: false,
+                merged: false,
+                mergeable: true,
+                mergeable_state: "clean",
+                head: {
+                  sha: test.headObjectId,
+                  repo: { full_name: "acme/repo" }
+                },
+                base: { ref: "main" }
+              }
+            : path.endsWith("/rules/branches/main")
+              ? []
+              : path.endsWith("/branches/main/protection")
+                ? {
+                    enforce_admins: { enabled: true },
+                    required_pull_request_reviews: {
+                      required_approving_review_count: 1
+                    },
+                    required_status_checks: {
+                      checks: [{ context: "ci", app_id: 7 }]
+                    }
+                  }
+                : path.endsWith("/pulls/7/reviews")
+                  ? [
+                      {
+                        id: reviewId,
+                        commit_id: test.headObjectId,
+                        user: { login: "reviewer" },
+                        state: "APPROVED",
+                        submitted_at: "2026-10-20T00:00:00Z"
+                      }
+                    ]
+                  : path.endsWith(`/commits/${test.headObjectId}/check-runs`)
+                    ? {
+                        total_count: 1,
+                        check_runs: [
+                          {
+                            id: 8,
+                            name: "ci",
+                            status: "completed",
+                            conclusion: checksPassed ? "success" : "failure",
+                            app: { id: 7 }
+                          }
+                        ]
+                      }
+                    : path.endsWith(`/commits/${test.headObjectId}/statuses`)
+                      ? []
+                      : path.endsWith(`/merge-async/${mergeOperationId}`)
+                        ? {
+                            status: "pending",
+                            details: {
+                              uuid: mergeOperationId,
+                              merge_method: "squash",
+                              merge_action: "direct_merge",
+                              expected_head_sha: test.headObjectId,
+                              bypass_rules: false
+                            }
+                          }
+                        : null;
+      if (value === null) throw new Error(`Unexpected ${path}`);
+      return new Response(JSON.stringify(value), { status: 200 });
+    });
+    const base = {
+      contractVersion: 2,
+      executionId,
+      executionGeneration: 2,
+      remoteIdentityHash
+    } as const;
+    const prepare = async () => {
+      const result = await test.runtime.executeV2(
+        userId,
+        {
+          ...base,
+          kind: "review_request_merge_prepare",
+          reviewRequestNumber: 7,
+          mergeMethod: "squash"
+        },
+        desktopAuthorization
+      );
+      if (result.kind !== "review_request_merge_prepared")
+        throw new Error("Not prepared");
+      return result;
+    };
+    const claim = (
+      prepared: Awaited<ReturnType<typeof prepare>>,
+      proof?: string
+    ) =>
+      test.runtime.executeV2(
+        userId,
+        {
+          ...base,
+          kind: "review_request_merge",
+          operationId: prepared.operationId,
+          approvalProof:
+            proof ??
+            createHmac("sha256", desktopAuthorization)
+              .update(
+                JSON.stringify([
+                  prepared.operationId,
+                  prepared.readinessSnapshotDigest,
+                  prepared.expiresAt
+                ])
+              )
+              .digest("hex")
+        },
+        desktopAuthorization
+      );
+    const status = (operationId: string) =>
+      test.runtime.executeV2(
+        userId,
+        {
+          ...base,
+          kind: "review_request_merge_status",
+          operationId
+        },
+        desktopAuthorization
+      );
+    return {
+      ...test,
+      journal,
+      base,
+      prepare,
+      claim,
+      status,
+      operations,
+      setChecksPassed: (value: boolean) => {
+        checksPassed = value;
+      },
+      setReviewId: (value: number) => {
+        reviewId = value;
+      },
+      setDispatchFails: (value: boolean) => {
+        dispatchFails = value;
+      }
+    };
+  };
+
+  it("requires exact native proof, consumes one dispatch and fences unknown recovery", async () => {
+    const fixture = await setup();
+    expect(
+      await fixture.runtime.executeV2(
+        userId,
+        {
+          ...fixture.base,
+          kind: "review_request_merge_capability",
+          reviewRequestNumber: 7
+        },
+        desktopAuthorization
+      )
+    ).toMatchObject({
+      kind: "review_request_merge_capability",
+      available: true,
+      allowedMergeMethods: ["merge", "squash"],
+      provider: "github"
+    });
+    const prepared = await fixture.prepare();
+    await expect(fixture.claim(prepared, "0".repeat(64))).rejects.toMatchObject(
+      { code: "source_control_approval_required" }
+    );
+    fixture.setDispatchFails(true);
+    expect(await fixture.claim(prepared)).toMatchObject({ outcome: "unknown" });
+    expect(await fixture.claim(prepared)).toMatchObject({ outcome: "unknown" });
+    expect(fixture.operations).toHaveLength(1);
+    expect(await fixture.status(prepared.operationId)).toMatchObject({
+      outcome: "unknown"
+    });
+    await expect(fixture.prepare()).rejects.toMatchObject({
+      code: "source_control_operation_indeterminate"
+    });
+    expect(fixture.operations).toHaveLength(1);
+  });
+
+  it("requires fresh review when checks change on the same head", async () => {
+    const fixture = await setup();
+    const prepared = await fixture.prepare();
+    fixture.setChecksPassed(false);
+    await expect(fixture.claim(prepared)).rejects.toMatchObject({
+      code: "source_control_stale"
+    });
+    expect(fixture.operations).toHaveLength(0);
+    fixture.setChecksPassed(true);
+    const renewed = await fixture.prepare();
+    expect(renewed.operationId).not.toBe(prepared.operationId);
+    expect(await fixture.claim(renewed)).toMatchObject({ outcome: "pending" });
+    expect(fixture.operations).toHaveLength(1);
+    const providerCalls = fixture.providerFetch.mock.calls;
+    expect(providerCalls.length).toBeGreaterThan(0);
+    for (const [url, init] of providerCalls) {
+      expect(String(url)).not.toContain("fixture-secret");
+      expect(JSON.stringify(init?.body ?? null)).not.toContain(
+        "fixture-secret"
+      );
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        "Bearer fixture-secret"
+      );
+    }
+    expect(JSON.stringify(renewed)).not.toContain("fixture-secret");
+    expect(
+      JSON.stringify(await fixture.status(renewed.operationId))
+    ).not.toContain("fixture-secret");
+    expect(
+      JSON.stringify(fixture.assertExecutionAuthority.mock.calls)
+    ).not.toContain("fixture-secret");
+  });
+
+  it("binds the exact approval identity even when approval count stays constant", async () => {
+    const fixture = await setup();
+    const prepared = await fixture.prepare();
+    fixture.setReviewId(6);
+    await expect(fixture.claim(prepared)).rejects.toMatchObject({
+      code: "source_control_stale"
+    });
+    expect(fixture.operations).toHaveLength(0);
+  });
+
+  it("invalidates Native approval when the private grant changes but still allows the chosen method", async () => {
+    const fixture = await setup();
+    const prepared = await fixture.prepare();
+    writeFileSync(
+      resolve(fixture.koedHome, "config", "source-control-merge-policy.json"),
+      JSON.stringify({
+        version: 1,
+        repositories: [
+          {
+            connectionId,
+            remoteIdentityHash: fixture.base.remoteIdentityHash,
+            targetBranch: "main",
+            allowedMethods: ["squash"]
+          }
+        ]
+      }),
+      { mode: 0o600 }
+    );
+    await expect(fixture.claim(prepared)).rejects.toMatchObject({
+      code: "source_control_stale"
+    });
+    expect(fixture.operations).toHaveLength(0);
   });
 });

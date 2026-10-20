@@ -7,6 +7,10 @@ import {
   sourceControlResultSchema,
   verifyDesktopLocalCredentialAuthorization
 } from "@koed/shared";
+import {
+  sourceControlV2RequestSchema,
+  sourceControlV2ResultSchema
+} from "@koed/shared/source-control-v2";
 
 import type { ApiRouteContext } from "../server/context.js";
 
@@ -113,6 +117,60 @@ export const registerSourceControlRoutes = (
       }
       return sourceControlResultSchema.parse(
         await context.sourceControl.runtime.execute(user.id, operation)
+      );
+    }
+  );
+  app.post(
+    "/v2/managed-conversations/:executionId/source-control",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const { executionId } = executionParamsSchema.parse(request.params);
+      const operation = sourceControlV2RequestSchema.parse(request.body);
+      if (operation.executionId !== executionId) {
+        throw Object.assign(
+          new Error("Source-control execution identity conflicted"),
+          {
+            statusCode: 409
+          }
+        );
+      }
+      const authorization = request.headers.authorization?.trim() ?? "";
+      if (
+        !localProfiles.has(context.config.deploymentProfile) ||
+        !isLoopbackRequest(request) ||
+        !authorization.startsWith("Koed-Desktop ")
+      ) {
+        throw Object.assign(
+          new Error("Native Desktop merge service is required"),
+          {
+            statusCode: 403
+          }
+        );
+      }
+      const stored = readDesktopLocalCredentialAuthorization(
+        context.config.koedHome
+      );
+      const verified = stored
+        ? verifyDesktopLocalCredentialAuthorization(
+            context.config.koedHome,
+            authorization,
+            {
+              ownerUserId: stored.ownerUserId,
+              operationFamily: "managed_source_control"
+            }
+          )
+        : null;
+      if (!verified) {
+        throw Object.assign(new Error("Invalid Desktop local credential"), {
+          statusCode: 401
+        });
+      }
+      return sourceControlV2ResultSchema.parse(
+        await context.sourceControl.runtime.executeV2(
+          verified.ownerUserId,
+          operation,
+          authorization
+        )
       );
     }
   );

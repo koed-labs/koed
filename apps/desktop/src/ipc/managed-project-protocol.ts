@@ -18,6 +18,10 @@ import {
   sourceControlOperationSchema,
   sourceControlResultSchema
 } from "@koed/shared/source-control";
+import {
+  sourceControlMergeMethodSchema,
+  sourceControlV2ResultSchema
+} from "@koed/shared/source-control-v2";
 import { z } from "zod";
 
 export const managedProjectCommandChannel = "koed:managed-project:command";
@@ -180,6 +184,16 @@ export const managedProjectRequestSchema = z.union([
       operation: z.literal("source_control"),
       sourceControlOperation: sourceControlOperationSchema
     })
+    .strict(),
+  z
+    .object({
+      ...requestBase,
+      operation: z.literal("source_control_merge"),
+      executionGeneration: z.number().int().positive(),
+      remoteIdentityHash: z.string().regex(/^[a-f0-9]{64}$/),
+      reviewRequestNumber: z.number().int().positive(),
+      mergeMethod: sourceControlMergeMethodSchema
+    })
     .strict()
 ]);
 
@@ -304,6 +318,13 @@ export const managedProjectResultSchema = z.discriminatedUnion("operation", [
       ...responseBase,
       operation: z.literal("source_control"),
       result: sourceControlResultSchema
+    })
+    .strict(),
+  z
+    .object({
+      ...responseBase,
+      operation: z.literal("source_control_merge"),
+      result: sourceControlV2ResultSchema
     })
     .strict(),
   z

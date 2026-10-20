@@ -144,6 +144,8 @@ const securityForIdentity = (
       return [{ deviceCredential: [] }];
     case "local_edge_client_credential":
       return [{ localEdgeClientCredential: [] }];
+    case "desktop_local_credential":
+      return [{ desktopLocalCredential: [] }];
     case "pds_relay_proof":
       return [{ pdsRelayProof: [] }];
     case "internal_service_token":
@@ -201,6 +203,13 @@ export const openApiDocument = {
         name: "Authorization",
         description:
           "Use the scoped local-edge client header value: Koed-Device <credentialKeyId>:<secret>."
+      },
+      desktopLocalCredential: {
+        type: "apiKey",
+        in: "header",
+        name: "Authorization",
+        description:
+          "Native Desktop main-process credential on loopback; merge dispatch also requires an exact one-use Native review proof."
       },
       pdsRelayProof: {
         type: "apiKey",

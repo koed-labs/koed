@@ -42,6 +42,8 @@ import { LocalApiRateLimitError } from "../local-api-errors.js";
 import { localPathDescendant, normalizedLocalPath } from "../local-path.js";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
+import { type SourceControlV2Result } from "@koed/shared/source-control-v2";
+import { reviewAndDispatchSourceControlMerge } from "./source-control-merge-native-client.js";
 import WebSocket from "ws";
 import {
   approvalActivityClassificationSchema,
@@ -272,6 +274,12 @@ export interface KoedServerManagerOptions {
   confirmSourceControlMutation?: (input: {
     operation: string;
   }) => Promise<boolean>;
+  confirmSourceControlMerge?: (
+    prepared: Extract<
+      SourceControlV2Result,
+      { kind: "review_request_merge_prepared" }
+    >
+  ) => Promise<boolean>;
 }
 
 export interface KoedServerManager {
@@ -1681,7 +1689,8 @@ export const createKoedServerManager = ({
   startPairingServer = startPersonalDevicePairingServer,
   personalDevicePairingStore,
   managedConversationDraftStore,
-  confirmSourceControlMutation
+  confirmSourceControlMutation,
+  confirmSourceControlMerge
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
   let enrollmentReconciliation: Promise<void> | null = null;
@@ -4438,6 +4447,22 @@ export const createKoedServerManager = ({
         operation: "preview_nominate",
         executionId: request.executionId,
         preview: payload.preview as never
+      });
+    }
+
+    if (request.operation === "source_control_merge") {
+      const result = await reviewAndDispatchSourceControlMerge({
+        selector: request,
+        access: managedProjectAccess,
+        request: managedProjectJson,
+        confirm: confirmSourceControlMerge ?? (async () => false)
+      });
+      if (!result)
+        throw new PersonalMemoryBoundaryError("request_failed", false);
+      return correlated({
+        operation: "source_control_merge",
+        executionId: request.executionId,
+        result
       });
     }
 

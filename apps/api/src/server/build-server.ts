@@ -10,6 +10,7 @@ import { type Visibility } from "@koed/core";
 import {
   createCollaborationRepository,
   createDbPool,
+  createSourceControlMergeRepository,
   createEmbeddingCapacityRepository,
   createMemorySourceRepository,
   createPersonalDeviceSyncRepository,
@@ -1491,6 +1492,13 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     koedHome: config.koedHome,
     requireRepository,
     fetch: localEdgeFetch,
+    ...(pool && envelopeEncryptionProvider
+      ? {
+          mergeJournal: createSourceControlMergeRepository(pool, {
+            envelopeEncryptionProvider
+          })
+        }
+      : {}),
     ...(workItemRepository
       ? {
           onReviewRequestCreated: async (review: {

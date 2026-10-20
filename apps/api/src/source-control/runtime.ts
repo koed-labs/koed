@@ -1,5 +1,10 @@
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomUUID,
+  timingSafeEqual
+} from "node:crypto";
 import {
   chmod,
   lstat,
@@ -13,8 +18,18 @@ import { promisify } from "node:util";
 
 import type {
   ManagedTerminalExecutionAuthority,
-  MemorySourceRepository
+  MemorySourceRepository,
+  SourceControlMergeRepository,
+  MergeJournalEntry
 } from "@koed/db";
+import {
+  SOURCE_CONTROL_MERGE_CONTRACT_VERSION,
+  sourceControlV2RequestSchema,
+  sourceControlV2ResultSchema,
+  sourceControlMergeReadinessSchema,
+  type SourceControlV2Result,
+  type SourceControlMergeReadiness
+} from "@koed/shared/source-control-v2";
 import {
   sourceControlConnectionSchema,
   sourceControlOperationSchema,
@@ -38,6 +53,11 @@ import {
   type SourceControlCredential,
   type SourceControlProviderRepository
 } from "./provider-drivers.js";
+import {
+  readGithubMergeReadiness,
+  dispatchGithubMerge,
+  reconcileGithubMerge
+} from "./merge-provider-driver.js";
 
 const execFileAsync = promisify(execFile);
 const objectIdPattern = /^[a-f0-9]{40,64}$/i;
@@ -46,6 +66,26 @@ const connectionsFileSchema = z
   .object({
     version: z.literal(1),
     connections: z.array(sourceControlConnectionSchema).max(64)
+  })
+  .strict();
+const mergePolicySchema = z
+  .object({
+    version: z.literal(1),
+    repositories: z
+      .array(
+        z
+          .object({
+            connectionId: z.uuid(),
+            remoteIdentityHash: z.string().regex(/^[a-f0-9]{64}$/),
+            targetBranch: z.string().trim().min(1).max(1024),
+            allowedMethods: z
+              .array(z.enum(["merge", "squash", "rebase"]))
+              .min(1)
+              .max(3)
+          })
+          .strict()
+      )
+      .max(64)
   })
   .strict();
 
@@ -72,6 +112,11 @@ const journalSchema = z
 
 export interface SourceControlRuntime {
   execute(ownerUserId: string, value: unknown): Promise<SourceControlResult>;
+  executeV2(
+    ownerUserId: string,
+    value: unknown,
+    desktopAuthorization: string
+  ): Promise<SourceControlV2Result>;
 }
 
 const sourceControlError = (
@@ -300,6 +345,7 @@ export const createSourceControlRuntime = (options: {
   koedHome: string;
   requireRepository(): MemorySourceRepository;
   fetch: typeof fetch;
+  mergeJournal?: SourceControlMergeRepository;
   resolveCredential?: (reference: string) => Promise<string | null>;
   assertExecutionAuthority(
     ownerUserId: string,
@@ -323,6 +369,11 @@ export const createSourceControlRuntime = (options: {
     options.koedHome,
     "state",
     "source-control-operations.json"
+  );
+  const mergePolicyPath = resolve(
+    options.koedHome,
+    "config",
+    "source-control-merge-policy.json"
   );
   let checkoutDriver: ReturnType<
     typeof createGitExecutionCheckoutDriver
@@ -366,7 +417,7 @@ export const createSourceControlRuntime = (options: {
 
   const executionContext = async (
     ownerUserId: string,
-    operation: SourceControlOperation
+    operation: { executionId: string; executionGeneration: number }
   ) => {
     const repository = options.requireRepository();
     const [execution, binding] = await Promise.all([
@@ -1049,6 +1100,370 @@ export const createSourceControlRuntime = (options: {
         });
       }
       return result;
+    },
+    async executeV2(ownerUserId, value, desktopAuthorization) {
+      const operation = sourceControlV2RequestSchema.parse(value);
+      if (
+        operation.contractVersion !== SOURCE_CONTROL_MERGE_CONTRACT_VERSION ||
+        !options.mergeJournal
+      )
+        throw sourceControlError(
+          "Merge journal is unavailable",
+          503,
+          "source_control_capability_unavailable"
+        );
+      const mergeJournal = options.mergeJournal;
+      const bound = async () => {
+        const { binding } = await executionContext(ownerUserId, operation);
+        const authority = await options.assertExecutionAuthority(
+          ownerUserId,
+          operation.executionId
+        );
+        const remote = (await remotesFor(binding.projectPath)).find(
+          (candidate) =>
+            candidate.remoteIdentityHash === operation.remoteIdentityHash
+        );
+        if (!remote || !remote.connectionId || remote.provider !== "github")
+          throw sourceControlError(
+            "Merge is unavailable",
+            409,
+            "source_control_capability_unavailable"
+          );
+        const connection = (await connections()).find(
+          (candidate) =>
+            candidate.id === remote.connectionId && candidate.state === "active"
+        );
+        if (
+          !connection ||
+          !connection.capabilities.includes("review_request_read") ||
+          !connection.capabilities.includes("checks_read")
+        )
+          throw sourceControlError(
+            "Merge connection is unavailable",
+            409,
+            "source_control_capability_unavailable"
+          );
+        const credential = await credentialFor(connection);
+        const policyFile = await readPrivateJson(mergePolicyPath);
+        const policy = policyFile ? mergePolicySchema.parse(policyFile) : null;
+        const grant = policy?.repositories.find(
+          (candidate) =>
+            candidate.connectionId === connection.id &&
+            candidate.remoteIdentityHash === operation.remoteIdentityHash
+        );
+        if (!grant)
+          throw sourceControlError(
+            "Merge policy is unavailable",
+            409,
+            "source_control_capability_unavailable"
+          );
+        const providerInput = {
+          connection,
+          credential,
+          repository: remote.repository,
+          fetch: options.fetch,
+          accountLabel: connection.accountLabel,
+          remoteIdentityHash: operation.remoteIdentityHash,
+          executionId: operation.executionId,
+          executionGeneration: operation.executionGeneration,
+          runnerDeploymentId: authority.runnerDeploymentId,
+          runnerDeviceId: authority.runnerDeviceId,
+          credentialGeneration: connection.credentialGeneration,
+          policyVersion: policy!.version,
+          policyDigest: sha256(
+            JSON.stringify({
+              version: policy!.version,
+              connectionId: grant.connectionId,
+              remoteIdentityHash: grant.remoteIdentityHash,
+              targetBranch: grant.targetBranch,
+              allowedMethods: [...grant.allowedMethods].sort()
+            })
+          )
+        };
+        return { providerInput, grant, remote, connection };
+      };
+      const asResult = (entry: MergeJournalEntry): SourceControlV2Result =>
+        sourceControlV2ResultSchema.parse({
+          kind: "review_request_merge_result",
+          operationId: entry.id,
+          outcome:
+            entry.state === "claimed" || entry.state === "prepared"
+              ? "unknown"
+              : entry.state,
+          providerOperationId: entry.providerOperationId,
+          mergeCommitObjectId: entry.mergeCommitObjectId
+        });
+      if (operation.kind === "review_request_merge_capability") {
+        const { binding } = await executionContext(ownerUserId, operation);
+        const remote = (await remotesFor(binding.projectPath)).find(
+          (candidate) =>
+            candidate.remoteIdentityHash === operation.remoteIdentityHash
+        );
+        let openUrl: string | null = null;
+        if (remote?.connectionId) {
+          try {
+            const read = await executeBound(ownerUserId, {
+              contractVersion: 1,
+              executionId: operation.executionId,
+              executionGeneration: operation.executionGeneration,
+              remoteIdentityHash: operation.remoteIdentityHash,
+              kind: "review_request",
+              number: operation.reviewRequestNumber
+            });
+            if (read.kind === "review_request")
+              openUrl = read.reviewRequest.webUrl;
+          } catch {
+            /* Capability discovery remains fail-closed. */
+          }
+        }
+        if (remote?.provider !== "github")
+          return sourceControlV2ResultSchema.parse({
+            kind: "review_request_merge_capability",
+            available: false,
+            reason: "provider_unavailable",
+            allowedMergeMethods: [],
+            provider: remote?.provider ?? null,
+            openUrl
+          });
+        try {
+          const { providerInput, grant } = await bound();
+          const supported = [] as Array<"merge" | "squash" | "rebase">;
+          for (const method of grant.allowedMethods) {
+            try {
+              const snapshot = await readGithubMergeReadiness(
+                providerInput,
+                operation.reviewRequestNumber,
+                method
+              );
+              if (snapshot.targetBranch === grant.targetBranch)
+                supported.push(method);
+            } catch {
+              /* A method is available only on complete positive evidence. */
+            }
+          }
+          return sourceControlV2ResultSchema.parse({
+            kind: "review_request_merge_capability",
+            available: supported.length > 0,
+            reason: supported.length > 0 ? "ready" : "readiness_unavailable",
+            allowedMergeMethods: supported,
+            provider: "github",
+            openUrl
+          });
+        } catch {
+          return sourceControlV2ResultSchema.parse({
+            kind: "review_request_merge_capability",
+            available: false,
+            reason: "policy_unavailable",
+            allowedMergeMethods: [],
+            provider: "github",
+            openUrl
+          });
+        }
+      }
+      if (operation.kind === "review_request_merge_prepare") {
+        const { providerInput, grant } = await bound();
+        if (!grant.allowedMethods.includes(operation.mergeMethod))
+          throw sourceControlError(
+            "Merge method is not allowed",
+            409,
+            "source_control_capability_unavailable"
+          );
+        const readiness = await readGithubMergeReadiness(
+          providerInput,
+          operation.reviewRequestNumber,
+          operation.mergeMethod
+        );
+        if (readiness.targetBranch !== grant.targetBranch)
+          throw sourceControlError(
+            "Merge target is not allowed",
+            409,
+            "source_control_capability_unavailable"
+          );
+        const prKey = sha256(
+          JSON.stringify([
+            readiness.host,
+            readiness.repository,
+            operation.reviewRequestNumber
+          ])
+        );
+        const predecessor = await mergeJournal.unresolved(ownerUserId, prKey);
+        if (predecessor)
+          throw sourceControlError(
+            "Previous merge has not resolved",
+            409,
+            "source_control_operation_indeterminate"
+          );
+        const operationId = randomUUID();
+        const readinessSnapshotDigest = sha256(JSON.stringify(readiness));
+        const expiresAt = new Date(Date.now() + 5 * 60_000);
+        const idempotencyKey = `merge:${operationId}`;
+        await mergeJournal.prepare({
+          id: operationId,
+          ownerUserId,
+          prKey,
+          idempotencyKey,
+          readinessDigest: readinessSnapshotDigest,
+          prepared: readiness,
+          expiresAt
+        });
+        return sourceControlV2ResultSchema.parse({
+          kind: "review_request_merge_prepared",
+          operationId,
+          operationGeneration: 1,
+          idempotencyKey,
+          readiness,
+          readinessSnapshotDigest,
+          expiresAt: expiresAt.toISOString()
+        });
+      }
+      const entry = await mergeJournal.get<SourceControlMergeReadiness>(
+        ownerUserId,
+        operation.operationId
+      );
+      if (!entry)
+        throw sourceControlError(
+          "Merge operation was not found",
+          404,
+          "source_control_not_found"
+        );
+      const readiness = sourceControlMergeReadinessSchema.parse(entry.prepared);
+      if (
+        readiness.executionId !== operation.executionId ||
+        readiness.executionGeneration !== operation.executionGeneration ||
+        readiness.remoteIdentityHash !== operation.remoteIdentityHash
+      )
+        throw sourceControlError(
+          "Merge binding changed",
+          409,
+          "source_control_stale"
+        );
+      if (operation.kind === "review_request_merge_status") {
+        if (
+          entry.state === "prepared" ||
+          entry.state === "merged" ||
+          entry.state === "rejected"
+        )
+          return asResult(entry);
+        try {
+          const connection = (await connections()).find(
+            (candidate) =>
+              candidate.id === readiness.connectionId &&
+              candidate.state === "active" &&
+              candidate.provider === "github" &&
+              candidate.accountLabel === readiness.accountLabel &&
+              candidate.host === readiness.host &&
+              candidate.apiOrigin === readiness.apiOrigin
+          );
+          if (!connection) return asResult(entry);
+          const [namespace, repository, extra] =
+            readiness.repository.split("/");
+          if (!namespace || !repository || extra) return asResult(entry);
+          const status = await reconcileGithubMerge(
+            {
+              connection,
+              credential: await credentialFor(connection),
+              repository: { namespace, repository, project: null },
+              fetch: options.fetch
+            },
+            readiness,
+            entry.providerOperationId
+          );
+          const updated = await mergeJournal.setOutcome(
+            ownerUserId,
+            entry.id,
+            status.outcome,
+            entry.providerOperationId,
+            status.mergeCommitObjectId
+          );
+          return asResult(
+            updated ?? (await mergeJournal.get(ownerUserId, entry.id)) ?? entry
+          );
+        } catch {
+          return asResult(entry);
+        }
+      }
+      // The Desktop credential is held by native main, not the renderer. The
+      // one-use receipt is minted only after the OS reviewed this exact envelope.
+      const proof = createHmac("sha256", desktopAuthorization)
+        .update(
+          JSON.stringify([
+            entry.id,
+            entry.readinessDigest,
+            entry.expiresAt.toISOString()
+          ])
+        )
+        .digest();
+      const supplied = Buffer.from(operation.approvalProof, "hex");
+      if (supplied.length !== proof.length || !timingSafeEqual(supplied, proof))
+        throw sourceControlError(
+          "Native merge review is required",
+          403,
+          "source_control_approval_required"
+        );
+      if (entry.state !== "prepared") return asResult(entry);
+      if (entry.expiresAt.getTime() <= Date.now())
+        throw sourceControlError(
+          "Merge review expired",
+          409,
+          "source_control_stale"
+        );
+      const { providerInput, grant } = await bound();
+      if (
+        grant.targetBranch !== readiness.targetBranch ||
+        !grant.allowedMethods.includes(readiness.mergeMethod)
+      )
+        throw sourceControlError(
+          "Merge policy changed",
+          409,
+          "source_control_stale"
+        );
+      const current = await readGithubMergeReadiness(
+        providerInput,
+        readiness.reviewRequestNumber,
+        readiness.mergeMethod
+      );
+      if (sha256(JSON.stringify(current)) !== entry.readinessDigest)
+        throw sourceControlError(
+          "Merge readiness changed",
+          409,
+          "source_control_stale"
+        );
+      const claimed = await mergeJournal.claim(ownerUserId, entry.id);
+      if (!claimed) {
+        const latest = await mergeJournal.get(ownerUserId, entry.id);
+        if (latest?.state !== "prepared") return asResult(latest ?? entry);
+        throw sourceControlError(
+          "Previous merge has not resolved",
+          409,
+          "source_control_operation_indeterminate"
+        );
+      }
+      try {
+        const dispatched = await dispatchGithubMerge(providerInput, readiness);
+        const completed = await mergeJournal.setOutcome(
+          ownerUserId,
+          entry.id,
+          dispatched.outcome,
+          dispatched.providerOperationId,
+          dispatched.mergeCommitObjectId
+        );
+        return asResult(
+          completed ??
+            (await mergeJournal.get(ownerUserId, entry.id)) ??
+            claimed
+        );
+      } catch {
+        const unknown = await mergeJournal.setOutcome(
+          ownerUserId,
+          entry.id,
+          "unknown",
+          null,
+          null
+        );
+        return asResult(
+          unknown ?? (await mergeJournal.get(ownerUserId, entry.id)) ?? claimed
+        );
+      }
     }
   };
 };

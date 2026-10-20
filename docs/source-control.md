@@ -44,8 +44,68 @@ Koed never runs `git pull`. Updating a checkout is two reviewed steps:
    explicit future operation.
 
 Push cannot accept an arbitrary local source ref; it publishes the verified
-execution `HEAD` to a validated branch name. Force push, merge, history rewrite,
-repository administration, and protected-branch mutation are unavailable.
+execution `HEAD` to a validated branch name. Force push, local Git merge,
+history rewrite, repository administration, and direct protected-branch
+mutation are unavailable. Pull-request merge has a separate version-2 service
+described below.
+
+## Reviewed pull-request merge (version 2)
+
+The strict version-1 route and DTOs remain unchanged. A Desktop explicitly
+selects `/v2/managed-conversations/:executionId/source-control` to prepare,
+dispatch, discover capability, or read a pull-request merge. Discovery returns
+verified allowed methods when ready, or a bounded unavailability reason and
+provider URL when one can be read. This route accepts only the Desktop
+local credential on loopback in a local Personal deployment. The renderer or
+Agent sends a minimal PR selector to Desktop main; it cannot supply credentials,
+approval proof, repository identity, target, head, or readiness evidence.
+
+Merge requires an explicit private
+`KOED_HOME/config/source-control-merge-policy.json` allowlist, separate from
+version-1 connection capabilities. It has `version: 1` and `repositories`
+entries containing the exact `connectionId`, `remoteIdentityHash`,
+`targetBranch`, and nonempty `allowedMethods` subset of `merge`, `squash`, and
+`rebase`. Koed also reads the provider's repository-allowed methods. Both sets
+must admit the selected method. Missing policy, unavailable data, an unsupported
+provider, or an unprotected/unsupported target leaves merge unavailable; the
+Desktop can open the pull request on its provider.
+
+For now, Koed supports a narrow GitHub direct-merge path. It reads the exact
+PR, repository merge settings, target branch protection, branch rules,
+paginated reviews, check runs, and commit statuses. It requires positive
+mergeability, a clean provider state, the required approving reviews and checks,
+admin-enforced protection, and no unhandled branch ruleset. The bounded
+snapshot binds account, repository, remote, runner, execution and credential
+generations, PR, target, head, method, policy, reviews, checks, and protection.
+An unknown or incomplete snapshot fails closed. GitLab, Bitbucket, Azure
+DevOps, merge queues, and policies Koed cannot prove remain unavailable.
+
+The server stores the prepared operation as an owner-scoped encrypted envelope
+bound to its operation ID and readiness digest. Rotation uses the same
+custody-checked rewrap path as other encrypted Personal records. Desktop main
+displays the exact repository, PR, target, head, selected method, readiness
+summary, digest, and expiry in a Native review dialog. On approval it signs a
+one-use receipt with the Desktop-local credential; this proof never enters a
+renderer message. The server verifies the proof and current authority,
+re-reads readiness, and atomically claims the approved operation before any
+provider write. Full access does not bypass Native review. A changed head,
+check, review, method, target, credential or policy needs a new approval.
+
+The durable SQL journal allows one claim per approval and fences any later
+merge for the same provider PR across all Users while a predecessor is claimed, pending, or
+unknown. GitHub's fixed asynchronous merge path uses the expected head SHA,
+`merge_action: direct_merge`, and `bypass_rules: false`; provider protections
+remain authoritative at mutation time. A provider-accepted operation is
+`pending`; only authoritative merge evidence is `merged`. After a timeout or
+crash, recovery reads the exact PR and operation status without resubmitting
+the mutation. An open PR alone leaves the outcome `unknown`. An operation
+status record that has expired or cannot be bound to the approved head and
+method also remains `unknown`.
+
+Read-only recovery may use a newer generation of the same active connection
+credential, with the same provider host, API origin, account label, and
+connection ID. It does not require the original execution still to run; no
+later mutation is authorized by that recovery read.
 
 Existing local Project selection establishes the source checkout used by a
 Managed Conversation. Another enrolled device receives source through the

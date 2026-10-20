@@ -15720,3 +15720,38 @@ export const remoteMcpOAuthCredentials = pgTable(
     )
   ]
 );
+
+/** Single-use source-control merge claim and per-pull-request predecessor fence. */
+export const sourceControlMergeOperations = pgTable(
+  "source_control_merge_operations",
+  {
+    id: uuid("id").primaryKey(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    prKey: text("pr_key").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    readinessDigest: text("readiness_digest").notNull(),
+    prepared: jsonb("prepared").notNull(),
+    state: text("state").notNull(),
+    providerOperationId: uuid("provider_operation_id"),
+    mergeCommitObjectId: text("merge_commit_object_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("source_control_merge_owner_idempotency_unique").on(
+      table.ownerUserId,
+      table.idempotencyKey
+    ),
+    uniqueIndex("source_control_merge_active_pr_unique")
+      .on(table.ownerUserId, table.prKey)
+      .where(sql`${table.state} in ('claimed', 'pending', 'unknown')`),
+    check(
+      "source_control_merge_state_check",
+      sql`${table.state} in ('prepared', 'claimed', 'pending', 'merged', 'rejected', 'unknown')`
+    )
+  ]
+);

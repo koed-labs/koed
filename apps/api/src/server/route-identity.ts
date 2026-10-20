@@ -13,7 +13,8 @@ export type RouteIdentity =
   | "device_credential"
   | "local_edge_client_credential"
   | "pds_relay_proof"
-  | "upstream_credential";
+  | "upstream_credential"
+  | "desktop_local_credential";
 
 export type RouteIdentityStatus = "implemented" | "not_implemented";
 export type RouteDeploymentMode = DeploymentProfile;
@@ -2906,6 +2907,16 @@ export const routeIdentityContracts = [
     "session_or_device_credential",
     "personal_memory",
     "Run a provider-neutral, revision-bound source-control operation in the exact managed execution checkout.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v2/managed-conversations/{executionId}/source-control",
+    "desktop_local_credential",
+    "personal_memory",
+    "Prepare, natively review, dispatch, or reconcile an exact pull-request merge.",
     "none",
     "implemented",
     localEdgeDeploymentModes

@@ -1,5 +1,11 @@
 export { createAuditRepository } from "./audit-repository.js";
 export {
+  createSourceControlMergeRepository,
+  type SourceControlMergeRepository,
+  type MergeJournalEntry,
+  type MergeJournalState
+} from "./source-control-merge-repository.js";
+export {
   appendProjectActivityWithClient,
   createProjectActivityRepository,
   ProjectActivityCursorError,

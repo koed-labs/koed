@@ -1,5 +1,9 @@
 import Fastify from "fastify";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { storeDesktopLocalCredential } from "@koed/shared";
 
 import type { ApiRouteContext } from "../server/context.js";
 import { registerSourceControlRoutes } from "./routes.js";
@@ -11,9 +15,12 @@ const remoteIdentityHash = "b".repeat(64);
 
 describe("source-control routes", () => {
   const apps: ReturnType<typeof Fastify>[] = [];
+  const homes: string[] = [];
 
   afterEach(async () => {
     await Promise.all(apps.splice(0).map((app) => app.close()));
+    for (const home of homes.splice(0))
+      rmSync(home, { recursive: true, force: true });
   });
 
   const fixture = (createdAt = new Date()) => {
@@ -148,5 +155,69 @@ describe("source-control routes", () => {
     });
     expect(response.statusCode).toBe(409);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("requires the native Desktop credential for v2 even with a fresh session or boolean approval header", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-merge-route-"));
+    homes.push(koedHome);
+    const desktop = storeDesktopLocalCredential(koedHome, {
+      ownerUserId: userId,
+      operationFamilies: ["managed_source_control"]
+    });
+    const executeV2 = vi.fn(async () => ({
+      kind: "review_request_merge_result",
+      operationId: "33333333-3333-4333-8333-333333333333",
+      outcome: "unknown",
+      providerOperationId: null,
+      mergeCommitObjectId: null
+    }));
+    const app = Fastify();
+    apps.push(app);
+    registerSourceControlRoutes(app, {
+      config: { deploymentProfile: "developer", koedHome },
+      auth: {
+        authenticateSessionContext: vi.fn(async () => ({
+          user: { id: userId },
+          createdAt: new Date()
+        }))
+      },
+      rateLimit: { memoryWrite: async () => undefined },
+      sourceControl: { runtime: { executeV2 } }
+    } as unknown as ApiRouteContext);
+    const payload = {
+      contractVersion: 2,
+      executionId,
+      executionGeneration: 1,
+      remoteIdentityHash,
+      kind: "review_request_merge_status",
+      operationId: "33333333-3333-4333-8333-333333333333"
+    };
+    for (const headers of [
+      {},
+      { "x-koed-desktop-source-control-approval": "1" },
+      { authorization: "Bearer model-token" },
+      { authorization: "Koed-Device fixture:secret" }
+    ]) {
+      const denied = await app.inject({
+        method: "POST",
+        url: `/v2/managed-conversations/${executionId}/source-control`,
+        headers,
+        payload
+      });
+      expect(denied.statusCode).toBe(403);
+    }
+    expect(executeV2).not.toHaveBeenCalled();
+    const approved = await app.inject({
+      method: "POST",
+      url: `/v2/managed-conversations/${executionId}/source-control`,
+      headers: { authorization: desktop.authorization },
+      payload
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(executeV2).toHaveBeenCalledWith(
+      userId,
+      payload,
+      desktop.authorization
+    );
   });
 });
