@@ -53,9 +53,11 @@ import type {
   ActorContext,
   AuditEventRecord,
   ListTeamAuditEventsInput,
+  MyTeamInviteRecord,
   TeamBillingSeatStateRecord,
   TeamBillingSeatSyncStatus,
   TeamInviteAcceptanceReviewRecord,
+  TeamInviteDecisionReviewRecord,
   TeamInviteCreationReviewRecord,
   TeamInviteRecord,
   TeamInviteRevocationReviewRecord,
@@ -104,6 +106,7 @@ const reviewAcceptanceMemberships = alias(
   teamMemberships,
   "review_acceptance_memberships"
 );
+const inviteCreators = alias(users, "invite_creators");
 const reviewManagerWorkspaceAccess = alias(
   teamWorkspaceAccessGrants,
   "review_manager_workspace_access"
@@ -186,6 +189,57 @@ const staleVersion = (): never => {
 
 const inviteAcceptanceConflict = Symbol("inviteAcceptanceConflict");
 
+type InvitationBinding = Pick<
+  typeof teamInvites.$inferSelect,
+  | "recipientUserId"
+  | "recipientLeaveGeneration"
+  | "issuanceMembershipVersion"
+  | "issuanceMembershipStatus"
+  | "issuanceDisabledReason"
+>;
+type MembershipBinding = Pick<
+  typeof teamMemberships.$inferSelect,
+  "version" | "status" | "disabledReason" | "leaveGeneration"
+> | null;
+
+const invitationMatchesLifecycle = (
+  invite: InvitationBinding,
+  userId: string,
+  membership: MembershipBinding
+): boolean => {
+  const generation = membership?.leaveGeneration ?? (membership ? null : 0);
+  if (generation === null) return false;
+  if (invite.recipientUserId !== null && invite.recipientUserId !== userId)
+    return false;
+  if (
+    invite.recipientLeaveGeneration !== null &&
+    invite.recipientLeaveGeneration !== generation
+  )
+    return false;
+  if (invite.recipientUserId === null && generation !== 0) return false;
+  if (invite.issuanceMembershipVersion !== null) {
+    if (
+      !membership ||
+      membership.version !== invite.issuanceMembershipVersion ||
+      membership.status !== invite.issuanceMembershipStatus ||
+      membership.disabledReason !== invite.issuanceDisabledReason
+    )
+      return false;
+  }
+  if (membership?.status === "disabled") {
+    return (
+      membership.disabledReason === "member_left" &&
+      generation > 0 &&
+      invite.recipientUserId === userId &&
+      invite.recipientLeaveGeneration === generation &&
+      invite.issuanceMembershipVersion === membership.version &&
+      invite.issuanceMembershipStatus === "disabled" &&
+      invite.issuanceDisabledReason === "member_left"
+    );
+  }
+  return true;
+};
+
 const mapTeamRecord = (row: {
   id: string;
   name: string;
@@ -227,6 +281,7 @@ const mapMembershipRecord = (row: {
   role: TeamRole;
   status: TeamMembershipStatus;
   version: number;
+  leaveGeneration: number | null;
   createdAt: Date | string;
   updatedAt: Date | string;
   acceptedAt: Date | string | null;
@@ -238,6 +293,7 @@ const mapMembershipRecord = (row: {
   role: row.role,
   status: row.status,
   version: row.version,
+  leaveGeneration: row.leaveGeneration,
   createdAt: timestampIso(row.createdAt),
   updatedAt: timestampIso(row.updatedAt),
   acceptedAt: row.acceptedAt ? timestampIso(row.acceptedAt) : null,
@@ -266,6 +322,12 @@ const mapInviteRecord = (row: {
   normalizedEmail: string | null;
   backendOriginHash: string | null;
   role: TeamRole;
+  recipientUserId: string | null;
+  recipientLeaveGeneration: number | null;
+  issuanceMembershipVersion: number | null;
+  issuanceMembershipStatus: TeamMembershipStatus | null;
+  issuanceDisabledReason: string | null;
+  inviterAgentDisplayName: string | null;
   version: number;
   lifecycle: TeamInviteLifecycle;
   createdByUserId: string | null;
@@ -273,6 +335,7 @@ const mapInviteRecord = (row: {
   createdAt: Date | string;
   expiresAt: Date | string;
   acceptedAt: Date | string | null;
+  declinedAt: Date | string | null;
   revokedAt: Date | string | null;
 }): TeamInviteRecord => {
   if (row.defaultWorkspaceAccess === "disabled") {
@@ -288,6 +351,12 @@ const mapInviteRecord = (row: {
     normalizedEmail: row.normalizedEmail!,
     backendOriginHash: row.backendOriginHash!,
     role: row.role,
+    recipientUserId: row.recipientUserId,
+    recipientLeaveGeneration: row.recipientLeaveGeneration,
+    issuanceMembershipVersion: row.issuanceMembershipVersion,
+    issuanceMembershipStatus: row.issuanceMembershipStatus,
+    issuanceDisabledReason: row.issuanceDisabledReason,
+    inviterAgentDisplayName: row.inviterAgentDisplayName,
     version: row.version,
     lifecycle: row.lifecycle,
     createdByUserId: row.createdByUserId,
@@ -295,6 +364,7 @@ const mapInviteRecord = (row: {
     createdAt: timestampIso(row.createdAt),
     expiresAt: timestampIso(row.expiresAt),
     acceptedAt: row.acceptedAt ? timestampIso(row.acceptedAt) : null,
+    declinedAt: row.declinedAt ? timestampIso(row.declinedAt) : null,
     revokedAt: row.revokedAt ? timestampIso(row.revokedAt) : null
   };
 };
@@ -1310,6 +1380,7 @@ export const createTeamAccessRepository = (
           role: "owner",
           status: "enabled",
           version: 1,
+          leaveGeneration: 0,
           acceptedAt: sql`now()`
         });
 
@@ -2823,6 +2894,7 @@ export const createTeamAccessRepository = (
             status: "disabled",
             disabledAt: sql`now()`,
             disabledReason: "member_left",
+            leaveGeneration: sql`coalesce(${teamMemberships.leaveGeneration}, 0) + 1`,
             version: sql`${teamMemberships.version} + 1`,
             updatedAt: sql`now()`
           })
@@ -3443,6 +3515,7 @@ export const createTeamAccessRepository = (
         expectedWorkspaceProjectVersion?: number;
         defaultWorkspaceAccess: "read" | "write";
         email: string;
+        inviterAgentDisplayName?: string | null;
         role: TeamRole;
         backendOriginHash: string;
         tokenHash: string;
@@ -3469,6 +3542,7 @@ export const createTeamAccessRepository = (
       }
 
       return db.transaction(async (tx) => {
+        await lockTeamOwnerLifecycle(tx, input.teamId);
         const lockedManager = await getManagingMembershipForUpdate(
           tx,
           actor,
@@ -3519,6 +3593,31 @@ export const createTeamAccessRepository = (
           if (!project) return null;
         }
 
+        const recipient = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(sql`lower(btrim(${users.email})) = ${email}`)
+          .limit(2);
+        // An ambiguous address cannot safely establish a recipient lifecycle.
+        if (recipient.length > 1) return null;
+        const recipientUserId = recipient[0]?.id ?? null;
+        const recipientMembership = recipientUserId
+          ? ((
+              await tx
+                .select()
+                .from(teamMemberships)
+                .where(
+                  and(
+                    eq(teamMemberships.teamId, input.teamId),
+                    eq(teamMemberships.userId, recipientUserId)
+                  )
+                )
+                .limit(1)
+                .for("update")
+            )[0] ?? null)
+          : null;
+        if (recipientMembership && recipientMembership.leaveGeneration === null)
+          return null;
         const inviteRows = await tx
           .insert(teamInvites)
           .values({
@@ -3530,6 +3629,23 @@ export const createTeamAccessRepository = (
             normalizedEmail: email,
             backendOriginHash: input.backendOriginHash,
             role: input.role,
+            inviterAgentDisplayName: input.inviterAgentDisplayName ?? null,
+            recipientUserId,
+            recipientLeaveGeneration: recipientUserId
+              ? (recipientMembership?.leaveGeneration ?? 0)
+              : null,
+            issuanceMembershipVersion:
+              recipientMembership?.status === "disabled"
+                ? recipientMembership.version
+                : null,
+            issuanceMembershipStatus:
+              recipientMembership?.status === "disabled"
+                ? recipientMembership.status
+                : null,
+            issuanceDisabledReason:
+              recipientMembership?.status === "disabled"
+                ? recipientMembership.disabledReason
+                : null,
             lifecycle: "pending",
             tokenHash: input.tokenHash,
             createdByUserId: actor.userId,
@@ -3649,6 +3765,190 @@ export const createTeamAccessRepository = (
       };
     },
 
+    async listMyTeamInvites(
+      actor: ActorContext,
+      originHash: string
+    ): Promise<MyTeamInviteRecord[]> {
+      const rows = await db
+        .select({
+          invite: teamInvites,
+          user: users,
+          team: teams,
+          workspace: teamWorkspaces,
+          project: workspaceProjects,
+          creatorName: inviteCreators.displayName,
+          membership: reviewAcceptanceMemberships
+        })
+        .from(teamInvites)
+        .innerJoin(users, eq(users.id, actor.userId))
+        .innerJoin(teams, eq(teams.id, teamInvites.teamId))
+        .innerJoin(
+          teamWorkspaces,
+          and(
+            eq(teamWorkspaces.id, teamInvites.defaultTeamWorkspaceId),
+            eq(teamWorkspaces.teamId, teamInvites.teamId)
+          )
+        )
+        .leftJoin(
+          workspaceProjects,
+          eq(workspaceProjects.id, teamInvites.workspaceProjectId)
+        )
+        .leftJoin(
+          inviteCreators,
+          eq(inviteCreators.id, teamInvites.createdByUserId)
+        )
+        .leftJoin(
+          reviewAcceptanceMemberships,
+          and(
+            eq(reviewAcceptanceMemberships.teamId, teamInvites.teamId),
+            eq(reviewAcceptanceMemberships.userId, actor.userId)
+          )
+        )
+        .where(
+          and(
+            eq(teamInvites.lifecycle, "pending"),
+            gt(teamInvites.expiresAt, sql`now()`),
+            eq(teamInvites.backendOriginHash, originHash),
+            sql`lower(btrim(${users.email})) = ${teamInvites.normalizedEmail}`,
+            isNull(users.disabledAt),
+            isNull(users.deletedAt),
+            eq(teams.lifecycle, "active"),
+            inArray(teams.entitlementStatus, ["active", "grace"]),
+            eq(teamWorkspaces.lifecycle, "active")
+          )
+        )
+        .orderBy(desc(teamInvites.createdAt))
+        .limit(100);
+      return rows
+        .filter(
+          (row) =>
+            row.invite.defaultWorkspaceAccess !== "disabled" &&
+            (!row.invite.workspaceProjectId ||
+              row.project?.lifecycle === "active") &&
+            invitationMatchesLifecycle(row.invite, actor.userId, row.membership)
+        )
+        .map((row) => ({
+          id: row.invite.id,
+          version: row.invite.version,
+          backendOriginHash: row.invite.backendOriginHash!,
+          membershipVersion: row.membership?.version ?? null,
+          membershipStatus: row.membership?.status ?? null,
+          membershipDisabledReason: row.membership?.disabledReason ?? null,
+          leaveGeneration: row.membership?.leaveGeneration ?? 0,
+          team: { id: row.team.id, name: row.team.name },
+          workspace: { id: row.workspace.id, name: row.workspace.name },
+          project: row.project
+            ? { id: row.project.id, name: row.project.name }
+            : null,
+          inviter: {
+            displayName: row.creatorName,
+            agentDisplayName: row.invite.inviterAgentDisplayName
+          },
+          role: row.invite.role,
+          effectiveRole:
+            row.membership?.status === "enabled"
+              ? row.membership.role
+              : row.invite.role,
+          workspaceAccess: row.invite.defaultWorkspaceAccess as
+            | "read"
+            | "write",
+          expiresAt: timestampIso(row.invite.expiresAt)
+        }));
+    },
+
+    async getTeamInviteDecisionReview(
+      actor: ActorContext,
+      input: {
+        inviteId: string;
+        expectedVersion: number;
+        backendOriginHash: string;
+      }
+    ): Promise<TeamInviteDecisionReviewRecord | null> {
+      const rows = await db
+        .select({
+          invite: teamInvites,
+          team: teams,
+          workspace: teamWorkspaces,
+          membership: reviewAcceptanceMemberships
+        })
+        .from(teamInvites)
+        .innerJoin(users, eq(users.id, actor.userId))
+        .innerJoin(teams, eq(teams.id, teamInvites.teamId))
+        .innerJoin(
+          teamWorkspaces,
+          and(
+            eq(teamWorkspaces.id, teamInvites.defaultTeamWorkspaceId),
+            eq(teamWorkspaces.teamId, teamInvites.teamId)
+          )
+        )
+        .leftJoin(
+          reviewAcceptanceMemberships,
+          and(
+            eq(reviewAcceptanceMemberships.teamId, teamInvites.teamId),
+            eq(reviewAcceptanceMemberships.userId, actor.userId)
+          )
+        )
+        .where(
+          and(
+            eq(teamInvites.id, input.inviteId),
+            eq(teamInvites.version, input.expectedVersion),
+            eq(teamInvites.lifecycle, "pending"),
+            gt(teamInvites.expiresAt, sql`now()`),
+            eq(teamInvites.backendOriginHash, input.backendOriginHash),
+            sql`lower(btrim(${users.email})) = ${teamInvites.normalizedEmail}`,
+            isNull(users.disabledAt),
+            isNull(users.deletedAt),
+            eq(teams.lifecycle, "active"),
+            inArray(teams.entitlementStatus, ["active", "grace"]),
+            eq(teamWorkspaces.lifecycle, "active")
+          )
+        )
+        .limit(1);
+      const row = rows[0];
+      if (
+        !row ||
+        !invitationMatchesLifecycle(row.invite, actor.userId, row.membership)
+      )
+        return null;
+      if (row.invite.workspaceProjectId) {
+        const project = (
+          await db
+            .select({ id: workspaceProjects.id })
+            .from(workspaceProjects)
+            .where(
+              and(
+                eq(workspaceProjects.id, row.invite.workspaceProjectId),
+                eq(workspaceProjects.teamId, row.invite.teamId),
+                eq(
+                  workspaceProjects.workspaceId,
+                  row.invite.defaultTeamWorkspaceId!
+                ),
+                eq(workspaceProjects.lifecycle, "active")
+              )
+            )
+            .limit(1)
+        )[0];
+        if (!project) return null;
+      }
+      return {
+        invite: mapInviteRecord(row.invite),
+        team: mapTeamRecord(row.team),
+        defaultWorkspace: {
+          id: row.workspace.id,
+          name: row.workspace.name,
+          lifecycle: row.workspace.lifecycle
+        },
+        effectiveRole:
+          row.membership?.status === "enabled"
+            ? row.membership.role
+            : row.invite.role,
+        membershipVersion: row.membership?.version ?? null,
+        membershipStatus: row.membership?.status ?? null,
+        membershipDisabledReason: row.membership?.disabledReason ?? null,
+        leaveGeneration: row.membership?.leaveGeneration ?? 0
+      };
+    },
+
     async getTeamInviteAcceptanceReview(
       actor: ActorContext,
       tokenHash: string
@@ -3658,9 +3958,7 @@ export const createTeamAccessRepository = (
           invite: teamInvites,
           team: teams,
           defaultWorkspace: teamWorkspaces,
-          existingMembershipRole: reviewAcceptanceMemberships.role,
-          existingMembershipStatus: reviewAcceptanceMemberships.status,
-          existingMembershipDisabledAt: reviewAcceptanceMemberships.disabledAt
+          existingMembership: reviewAcceptanceMemberships
         })
         .from(teamInvites)
         .innerJoin(teams, eq(teams.id, teamInvites.teamId))
@@ -3696,10 +3994,35 @@ export const createTeamAccessRepository = (
       const row = rows[0];
       if (
         !row ||
-        row.existingMembershipStatus === "disabled" ||
-        row.existingMembershipDisabledAt !== null
+        !invitationMatchesLifecycle(
+          row.invite,
+          actor.userId,
+          row.existingMembership
+        ) ||
+        (row.existingMembership?.status !== "disabled" &&
+          row.existingMembership?.disabledAt != null)
       ) {
         return null;
+      }
+      if (row.invite.workspaceProjectId) {
+        const project = (
+          await db
+            .select({ id: workspaceProjects.id })
+            .from(workspaceProjects)
+            .where(
+              and(
+                eq(workspaceProjects.id, row.invite.workspaceProjectId),
+                eq(workspaceProjects.teamId, row.invite.teamId),
+                eq(
+                  workspaceProjects.workspaceId,
+                  row.invite.defaultTeamWorkspaceId!
+                ),
+                eq(workspaceProjects.lifecycle, "active")
+              )
+            )
+            .limit(1)
+        )[0];
+        if (!project) return null;
       }
       return row
         ? {
@@ -3711,9 +4034,8 @@ export const createTeamAccessRepository = (
               lifecycle: row.defaultWorkspace.lifecycle
             },
             effectiveRole:
-              row.existingMembershipStatus === "enabled" &&
-              row.existingMembershipRole
-                ? row.existingMembershipRole
+              row.existingMembership?.status === "enabled"
+                ? row.existingMembership.role
                 : row.invite.role
           }
         : null;
@@ -4194,19 +4516,40 @@ export const createTeamAccessRepository = (
     },
 
     async acceptTeamInvite(input: {
-      tokenHash: string;
+      tokenHash?: string;
+      inviteId?: string;
       userId: string;
       expectedVersion: number;
       expectedBackendOriginHash: string;
+      expectedMembershipVersion?: number | null;
+      expectedMembershipStatus?: TeamMembershipStatus | null;
+      expectedMembershipDisabledReason?: string | null;
+      expectedLeaveGeneration?: number;
     }): Promise<AcceptedTeamInviteRecord | null> {
       try {
         return await db.transaction(async (tx) => {
+          const selector = input.inviteId
+            ? eq(teamInvites.id, input.inviteId)
+            : input.tokenHash
+              ? eq(teamInvites.tokenHash, input.tokenHash)
+              : null;
+          if (!selector) return null;
+          const candidate = (
+            await tx
+              .select({ id: teamInvites.id, teamId: teamInvites.teamId })
+              .from(teamInvites)
+              .where(selector)
+              .limit(1)
+          )[0];
+          if (!candidate) return null;
+          await lockTeamOwnerLifecycle(tx, candidate.teamId);
           const inviteRows = await tx
             .select()
             .from(teamInvites)
             .where(
               and(
-                eq(teamInvites.tokenHash, input.tokenHash),
+                selector,
+                eq(teamInvites.teamId, candidate.teamId),
                 eq(teamInvites.lifecycle, "pending"),
                 eq(teamInvites.version, input.expectedVersion),
                 eq(
@@ -4222,7 +4565,6 @@ export const createTeamAccessRepository = (
           if (!inviteRow) {
             return null;
           }
-          await lockTeamOwnerLifecycle(tx, inviteRow.teamId);
           const teamRows = await tx
             .select({ entitlementStatus: teams.entitlementStatus })
             .from(teams)
@@ -4254,6 +4596,27 @@ export const createTeamAccessRepository = (
           ) {
             return null;
           }
+          if (inviteRow.workspaceProjectId) {
+            const project = (
+              await tx
+                .select({ id: workspaceProjects.id })
+                .from(workspaceProjects)
+                .where(
+                  and(
+                    eq(workspaceProjects.id, inviteRow.workspaceProjectId),
+                    eq(workspaceProjects.teamId, inviteRow.teamId),
+                    eq(
+                      workspaceProjects.workspaceId,
+                      inviteRow.defaultTeamWorkspaceId
+                    ),
+                    eq(workspaceProjects.lifecycle, "active")
+                  )
+                )
+                .limit(1)
+                .for("update")
+            )[0];
+            if (!project) return null;
+          }
 
           const userRows = await tx
             .select()
@@ -4282,7 +4645,26 @@ export const createTeamAccessRepository = (
             .limit(1)
             .for("update");
           const existingMembership = existingMembershipRows[0];
-          if (existingMembership?.status === "disabled") {
+          if (
+            !invitationMatchesLifecycle(
+              inviteRow,
+              user.id,
+              existingMembership ?? null
+            )
+          ) {
+            return null;
+          }
+          if (
+            input.expectedMembershipVersion !== undefined &&
+            (input.expectedMembershipVersion !==
+              (existingMembership?.version ?? null) ||
+              input.expectedMembershipStatus !==
+                (existingMembership?.status ?? null) ||
+              input.expectedMembershipDisabledReason !==
+                (existingMembership?.disabledReason ?? null) ||
+              input.expectedLeaveGeneration !==
+                (existingMembership?.leaveGeneration ?? 0))
+          ) {
             return null;
           }
           const acceptedRole =
@@ -4317,6 +4699,7 @@ export const createTeamAccessRepository = (
                   role: acceptedRole,
                   status: "enabled",
                   version: 1,
+                  leaveGeneration: 0,
                   acceptedAt: sql`now()`,
                   disabledAt: null
                 })
@@ -4499,6 +4882,166 @@ export const createTeamAccessRepository = (
         }
         throw error;
       }
+    },
+
+    async declineTeamInvite(input: {
+      inviteId: string;
+      userId: string;
+      expectedVersion: number;
+      expectedBackendOriginHash: string;
+      expectedMembershipVersion: number | null;
+      expectedMembershipStatus: TeamMembershipStatus | null;
+      expectedMembershipDisabledReason: string | null;
+      expectedLeaveGeneration: number;
+    }): Promise<TeamInviteRecord | null> {
+      return db.transaction(async (tx) => {
+        const candidate = (
+          await tx
+            .select({ teamId: teamInvites.teamId })
+            .from(teamInvites)
+            .where(eq(teamInvites.id, input.inviteId))
+            .limit(1)
+        )[0];
+        if (!candidate) return null;
+        await lockTeamOwnerLifecycle(tx, candidate.teamId);
+        const invitation = (
+          await tx
+            .select()
+            .from(teamInvites)
+            .where(
+              and(
+                eq(teamInvites.id, input.inviteId),
+                eq(teamInvites.teamId, candidate.teamId),
+                eq(teamInvites.lifecycle, "pending"),
+                eq(teamInvites.version, input.expectedVersion),
+                eq(
+                  teamInvites.backendOriginHash,
+                  input.expectedBackendOriginHash
+                ),
+                gt(teamInvites.expiresAt, sql`now()`)
+              )
+            )
+            .limit(1)
+            .for("update")
+        )[0];
+        if (!invitation) return null;
+        const team = (
+          await tx
+            .select({ entitlementStatus: teams.entitlementStatus })
+            .from(teams)
+            .where(
+              and(
+                eq(teams.id, invitation.teamId),
+                eq(teams.lifecycle, "active")
+              )
+            )
+            .limit(1)
+        )[0];
+        const workspace = invitation.defaultTeamWorkspaceId
+          ? await getTeamWorkspaceForUpdate(
+              tx,
+              invitation.teamId,
+              invitation.defaultTeamWorkspaceId
+            )
+          : null;
+        const project = invitation.workspaceProjectId
+          ? (
+              await tx
+                .select({ id: workspaceProjects.id })
+                .from(workspaceProjects)
+                .where(
+                  and(
+                    eq(workspaceProjects.id, invitation.workspaceProjectId),
+                    eq(workspaceProjects.teamId, invitation.teamId),
+                    eq(
+                      workspaceProjects.workspaceId,
+                      invitation.defaultTeamWorkspaceId!
+                    ),
+                    eq(workspaceProjects.lifecycle, "active")
+                  )
+                )
+                .limit(1)
+                .for("update")
+            )[0]
+          : true;
+        const user = (
+          await tx
+            .select()
+            .from(users)
+            .where(eq(users.id, input.userId))
+            .limit(1)
+        )[0];
+        const membership =
+          (
+            await tx
+              .select()
+              .from(teamMemberships)
+              .where(
+                and(
+                  eq(teamMemberships.teamId, invitation.teamId),
+                  eq(teamMemberships.userId, input.userId)
+                )
+              )
+              .limit(1)
+              .for("update")
+          )[0] ?? null;
+        if (
+          !team ||
+          !teamEntitlementAllowsAccess(team.entitlementStatus) ||
+          !workspace ||
+          workspace.lifecycle !== "active" ||
+          !project ||
+          !user ||
+          user.disabledAt ||
+          user.deletedAt ||
+          normalizeEmail(user.email) !== invitation.normalizedEmail ||
+          !invitationMatchesLifecycle(invitation, input.userId, membership) ||
+          input.expectedMembershipVersion !== (membership?.version ?? null) ||
+          input.expectedMembershipStatus !== (membership?.status ?? null) ||
+          input.expectedMembershipDisabledReason !==
+            (membership?.disabledReason ?? null) ||
+          input.expectedLeaveGeneration !== (membership?.leaveGeneration ?? 0)
+        )
+          return null;
+        const declined = (
+          await tx
+            .update(teamInvites)
+            .set({
+              lifecycle: "declined",
+              declinedAt: sql`now()`,
+              version: sql`${teamInvites.version} + 1`
+            })
+            .where(
+              and(
+                eq(teamInvites.id, invitation.id),
+                eq(teamInvites.lifecycle, "pending"),
+                eq(teamInvites.version, input.expectedVersion)
+              )
+            )
+            .returning()
+        )[0];
+        if (!declined) return null;
+        await insertTeamAudit(tx, {
+          actorUserId: input.userId,
+          action: "team.invite.declined",
+          targetTable: "team_invites",
+          targetId: invitation.id,
+          metadata: {
+            teamId: invitation.teamId,
+            previousVersion: invitation.version,
+            version: declined.version
+          }
+        });
+        await appendCollaborationOutboxEvent(tx, {
+          family: "team_membership_access",
+          teamId: invitation.teamId,
+          teamWorkspaceId: invitation.defaultTeamWorkspaceId,
+          resourceType: "team_invite",
+          resourceId: invitation.id,
+          actorUserId: input.userId
+        });
+        return mapInviteRecord(declined);
+      });
     },
 
     async revokeTeamInvite(

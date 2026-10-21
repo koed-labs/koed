@@ -738,6 +738,7 @@ const createPersonalRepository = (): CommandRepository => {
       : null;
 
   return {
+    resolveInvitationAgentDisplayName: async () => null,
     findPersonalNoteByIdempotencyKey: async () => null,
     createPersonalNote: async () => {
       throw new Error("Personal Notes use the Personal Desktop API");

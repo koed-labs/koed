@@ -1087,6 +1087,57 @@ try {
       await rm(profile, { recursive: true, force: true });
     }
   }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-703", "HQ703.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq703-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq703.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ703_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          {
+            id: report.id,
+            owner: report.owner,
+            status: report.status,
+            scope: report.scope
+          },
+          {
+            id: "HQ703.ui.native",
+            owner: "HQ-703",
+            status: "pass",
+            scope: "renderer-fixture"
+          }
+        );
+        assert.deepEqual(report.scenarioAssertions, [
+          { id: "S13.1", detail: "pre-join summary-sharing disclosure" },
+          {
+            id: "S14.1",
+            detail: "addressed invite scope and Native decision controls"
+          }
+        ]);
+        assert.equal(report.nativeGrantAuthorityProved, false);
+        assert.deepEqual(report.screenshots, [
+          "invitation-light.png",
+          "invitation-dark.png"
+        ]);
+        process.stdout.write(
+          "PASS S13.1/S14.1 UI [HQ-703]: recipient invitation, pre-join summary notice, and decision controls in new HQ light/dark. API authority and compound joined-state acceptance are proved separately.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
 } finally {
   await rm(userDataPath, { recursive: true, force: true });
 }

@@ -37,6 +37,7 @@ type HighRiskRepository = Pick<
   | "decideNativeActionReview"
   | "listTeams"
   | "getTeamInviteAcceptanceReview"
+  | "getTeamInviteDecisionReview"
   | "getTeamInviteRevocationReview"
   | "getTeamMembershipActionReview"
   | "getTeamLeaveReview"
@@ -70,6 +71,10 @@ export interface HighRiskRouteContext {
   authenticateSessionContext: AuthHelpers["authenticateSessionContext"];
   authenticateDeviceCredential: AuthHelpers["authenticateDeviceCredential"];
   hashSecret: HashSecret;
+  verifyInAppInviteRecipient?: (
+    user: { id: string; email: string },
+    backendOriginHash: string
+  ) => Promise<void>;
   rateLimit: {
     browser: RateLimitHandler;
     deviceRead: RateLimitHandler;
@@ -200,6 +205,18 @@ export const registerHighRiskRoutes = (
       );
       requireOperationFamily(auth, credentialOperationFamily);
       const repository = context.requireRepository();
+      if (
+        (input.intent.action === "team.invite.decline" ||
+          input.intent.action === "team.invite.accept") &&
+        "backendOriginHash" in input.intent.body
+      ) {
+        if (!context.verifyInAppInviteRecipient)
+          throw forbidden("Invitation identity verification is unavailable");
+        await context.verifyInAppInviteRecipient(
+          auth.user,
+          input.intent.body.backendOriginHash
+        );
+      }
       const admission = await admitHighRiskActionGrant({
         repository,
         projectSharePolicyRepository: context.projectSharePolicyRepository,

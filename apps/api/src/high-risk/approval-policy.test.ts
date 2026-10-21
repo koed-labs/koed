@@ -93,6 +93,36 @@ const matrixCases: Array<{
   },
   {
     intent: {
+      action: "team.invite.accept",
+      body: {
+        inviteId: uuid(8),
+        backendOriginHash: "a".repeat(64),
+        expectedVersion: 1,
+        expectedMembershipVersion: null,
+        expectedMembershipStatus: null,
+        expectedMembershipDisabledReason: null,
+        expectedLeaveGeneration: 0
+      }
+    },
+    expected: "native_review"
+  },
+  {
+    intent: {
+      action: "team.invite.decline",
+      body: {
+        inviteId: uuid(8),
+        backendOriginHash: "a".repeat(64),
+        expectedVersion: 1,
+        expectedMembershipVersion: null,
+        expectedMembershipStatus: null,
+        expectedMembershipDisabledReason: null,
+        expectedLeaveGeneration: 0
+      }
+    },
+    expected: "native_review"
+  },
+  {
+    intent: {
       action: "team.member.role_update",
       teamId: uuid(1),
       userId: uuid(5),

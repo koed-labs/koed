@@ -618,6 +618,18 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: read
   },
+  "collaboration.list_my_invitations": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.accept_invitation_in_app": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.decline_invitation": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
   "collaboration.revoke_invitation": {
     scope: "team",
     desktopOperationFamily: write

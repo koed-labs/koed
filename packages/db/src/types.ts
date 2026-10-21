@@ -213,6 +213,7 @@ export type TeamWorkspaceLifecycle =
 export type TeamInviteLifecycle =
   | "pending"
   | "accepted"
+  | "declined"
   | "revoked"
   | "expired";
 
@@ -351,6 +352,7 @@ export interface TeamMembershipRecord {
   role: TeamRole;
   status: TeamMembershipStatus;
   version: number;
+  leaveGeneration: number | null;
   createdAt: string;
   updatedAt: string;
   acceptedAt: string | null;
@@ -436,6 +438,12 @@ export interface TeamInviteRecord {
   normalizedEmail: string;
   backendOriginHash: string;
   role: TeamRole;
+  recipientUserId: string | null;
+  recipientLeaveGeneration: number | null;
+  issuanceMembershipVersion: number | null;
+  issuanceMembershipStatus: TeamMembershipStatus | null;
+  issuanceDisabledReason: string | null;
+  inviterAgentDisplayName: string | null;
   version: number;
   lifecycle: TeamInviteLifecycle;
   createdByUserId: string | null;
@@ -443,6 +451,7 @@ export interface TeamInviteRecord {
   createdAt: string;
   expiresAt: string;
   acceptedAt: string | null;
+  declinedAt: string | null;
   revokedAt: string | null;
 }
 
@@ -457,6 +466,32 @@ export interface TeamInviteReviewRecord {
   invite: TeamInviteRecord;
   team: TeamRecord;
   defaultWorkspace: Pick<TeamWorkspaceRecord, "id" | "name" | "lifecycle">;
+}
+
+export interface MyTeamInviteRecord {
+  id: string;
+  version: number;
+  backendOriginHash: string;
+  membershipVersion: number | null;
+  membershipStatus: TeamMembershipStatus | null;
+  membershipDisabledReason: string | null;
+  leaveGeneration: number;
+  team: { id: string; name: string };
+  workspace: { id: string; name: string };
+  project: { id: string; name: string } | null;
+  inviter: { displayName: string | null; agentDisplayName: string | null };
+  role: TeamRole;
+  effectiveRole: TeamRole;
+  workspaceAccess: Exclude<TeamWorkspaceAccessLevel, "disabled">;
+  expiresAt: string;
+}
+
+export interface TeamInviteDecisionReviewRecord extends TeamInviteReviewRecord {
+  effectiveRole: TeamRole;
+  membershipVersion: number | null;
+  membershipStatus: TeamMembershipStatus | null;
+  membershipDisabledReason: string | null;
+  leaveGeneration: number;
 }
 
 export interface TeamInviteAcceptanceReviewRecord extends TeamInviteReviewRecord {
@@ -2259,6 +2294,7 @@ export interface MemorySourceRepository
       expectedWorkspaceProjectVersion?: number;
       defaultWorkspaceAccess: Exclude<TeamWorkspaceAccessLevel, "disabled">;
       email: string;
+      inviterAgentDisplayName?: string | null;
       role: TeamRole;
       backendOriginHash: string;
       tokenHash: string;
@@ -2278,6 +2314,28 @@ export interface MemorySourceRepository
     actor: ActorContext,
     tokenHash: string
   ): Promise<TeamInviteAcceptanceReviewRecord | null>;
+  listMyTeamInvites(
+    actor: ActorContext,
+    backendOriginHash: string
+  ): Promise<MyTeamInviteRecord[]>;
+  getTeamInviteDecisionReview(
+    actor: ActorContext,
+    input: {
+      inviteId: string;
+      expectedVersion: number;
+      backendOriginHash: string;
+    }
+  ): Promise<TeamInviteDecisionReviewRecord | null>;
+  declineTeamInvite(input: {
+    inviteId: string;
+    userId: string;
+    expectedVersion: number;
+    expectedBackendOriginHash: string;
+    expectedMembershipVersion: number | null;
+    expectedMembershipStatus: TeamMembershipStatus | null;
+    expectedMembershipDisabledReason: string | null;
+    expectedLeaveGeneration: number;
+  }): Promise<TeamInviteRecord | null>;
   getTeamInviteRevocationReview(
     actor: ActorContext,
     input: { teamId: string; inviteId: string }
@@ -2312,10 +2370,15 @@ export interface MemorySourceRepository
     tokenHash: string
   ): Promise<TeamInviteReviewRecord | null>;
   acceptTeamInvite(input: {
-    tokenHash: string;
+    tokenHash?: string;
+    inviteId?: string;
     userId: string;
     expectedVersion: number;
     expectedBackendOriginHash: string;
+    expectedMembershipVersion?: number | null;
+    expectedMembershipStatus?: TeamMembershipStatus | null;
+    expectedMembershipDisabledReason?: string | null;
+    expectedLeaveGeneration?: number;
   }): Promise<AcceptedTeamInviteRecord | null>;
   listTeamInvites(
     actor: ActorContext,

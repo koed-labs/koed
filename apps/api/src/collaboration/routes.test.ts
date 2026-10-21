@@ -318,6 +318,9 @@ const createCollaborationFixture = () => {
       MemorySourceRepository,
       "getPersonalNoteMemoryEvent" | "getLocalSyncDeployment"
     > = {
+    async resolveInvitationAgentDisplayName() {
+      return null;
+    },
     async getLocalSyncDeployment() {
       return {
         id: ids.deployment,

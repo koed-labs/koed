@@ -790,6 +790,10 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       items: [],
       nextCursor: null
     })),
+    listMyInvitations: vi.fn(async () => []),
+    decideInvitation: vi.fn(async () => {
+      throw new Error("No invitation selected");
+    }),
     revokeInvitation: vi.fn(
       async ({ teamId, invitationId, expectedVersion }) => ({
         id: invitationId,

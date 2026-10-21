@@ -3279,6 +3279,36 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/team-invites/mine",
+    "device_credential",
+    "team_memory",
+    "List current invitations addressed to the authenticated enrolled User.",
+    "none",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/team-invites/accept-in-app",
+    "device_credential",
+    "team_memory",
+    "Accept one exact invitation after Native review.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/team-invites/decline",
+    "device_credential",
+    "team_memory",
+    "Decline one exact invitation after Native review.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/team-context",
     "session_or_device_credential",
     "team_memory",

@@ -17,6 +17,7 @@ import {
   type CapturedSessionSummaryRecord
 } from "./captured-session-repository.js";
 import type { ActorContext } from "./types.js";
+import { createManagedTextActionRepository } from "./managed-text-action-repository.js";
 
 const THREAD_NAME_MARKER = "[koed encrypted collaboration name]";
 const THREAD_TOPIC_MARKER = "[koed encrypted collaboration topic]";
@@ -369,6 +370,18 @@ export type CreateCollaborationThreadInput =
     };
 
 export interface CollaborationRepository {
+  resolveInvitationAgentDisplayName(
+    actor: ActorContext,
+    input: {
+      executionId: string;
+      actionId: string;
+      revision: number;
+      projectId: string;
+      workspaceProjectId: string;
+      teamBackendId: string;
+      email: string;
+    }
+  ): Promise<string | null>;
   isProjectThreadId(threadId: string): Promise<boolean>;
   getOrCreateProjectThread(
     actor: ActorContext,
@@ -4958,6 +4971,12 @@ export const createCollaborationRepository = (
     teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   }
 ): CollaborationRepository & CollaborationRealtimeMaterializationRepository => {
+  const textActions = options.envelopeEncryptionProvider
+    ? createManagedTextActionRepository(
+        pool,
+        options.envelopeEncryptionProvider
+      )
+    : null;
   const requireProvider = (
     scope: CollaborationScope = "personal"
   ): EnvelopeEncryptionProvider => {
@@ -4984,6 +5003,49 @@ export const createCollaborationRepository = (
     return requireProvider(result.rows[0]?.scope);
   };
   return {
+    async resolveInvitationAgentDisplayName(actor, input) {
+      if (!textActions) return null;
+      const action = await textActions.reconcileManagedTextAction(actor, {
+        executionId: input.executionId,
+        actionId: input.actionId
+      });
+      if (
+        !action ||
+        action.name !== "koed_team_invite" ||
+        action.state !== "claimed" ||
+        action.revision !== input.revision ||
+        action.arguments.projectId !== input.projectId ||
+        String(action.arguments.email).trim().toLowerCase() !==
+          input.email.trim().toLowerCase() ||
+        action.snapshot.workspaceProjectId !== input.workspaceProjectId ||
+        action.snapshot.teamBackendId !== input.teamBackendId
+      )
+        return null;
+      const agents = await pool.query<{
+        id: string;
+        name: string;
+      }>(
+        `select agent.id,agent.name from agents agent
+          join managed_conversation_executions execution
+            on execution.owner_user_id=agent.owner_user_id
+           and execution.ai_client_instance_id=agent.ai_client_instance_id
+          join ai_client_instances instance on instance.owner_user_id=agent.owner_user_id
+           and instance.instance_id=agent.ai_client_instance_id
+         where execution.id=$1 and execution.owner_user_id=$2
+           and agent.id=$3
+           and instance.driver_id=execution.provider and instance.enabled=true
+           and agent.default_permission_mode=execution.permission_mode
+           and (agent.default_model is null or agent.default_model=execution.model)
+         order by agent.id`,
+        [input.executionId, actor.userId, action.snapshot.agentId]
+      );
+      const agent = agents.rows[0];
+      return agent &&
+        agent.id === action.snapshot.agentId &&
+        agent.name === action.snapshot.agentName
+        ? agent.name
+        : null;
+    },
     async isProjectThreadId(threadId) {
       const found = await pool.query<{ kind: string }>(
         "select kind::text as kind from collaboration_threads where id=$1 limit 1",

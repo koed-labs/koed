@@ -723,7 +723,8 @@ export {
   sharedMemorySessionSchema,
   sharedMemorySessionReferenceSchema,
   sharedMemorySourceItemSchema,
-  sharedMemorySourcePageSchema
+  sharedMemorySourcePageSchema,
+  collaborationMyInvitationSchema
 } from "./collaboration-contract.js";
 export type {
   CollaborationActionGrantIntent,
@@ -747,6 +748,7 @@ export type {
   CollaborationMembership,
   CollaborationInvitation,
   CollaborationInvitationPage,
+  CollaborationMyInvitation,
   CollaborationPerson,
   CollaborationTeamPerson,
   CollaborationReadState,

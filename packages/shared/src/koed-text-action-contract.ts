@@ -42,6 +42,9 @@ export const koedTextActionInputSchemas = {
   koed_todo_send: z
     .object({ projectId: uuid, workItemId: uuid, agentId: uuid })
     .strict(),
+  koed_team_invite: z
+    .object({ projectId: uuid, email: z.email().max(320) })
+    .strict(),
   koed_job_create: z
     .object({
       title: name,

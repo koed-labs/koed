@@ -1814,6 +1814,18 @@ export const collaborationActionGrantIntentSchema = z
     actionGrantIntent("collaboration.join_team", {
       invitation: boundedRequiredUtf8(MAX_INVITATION_BYTES)
     }),
+    actionGrantIntent("collaboration.decide_invitation", {
+      decision: z.enum(["accept", "decline"]),
+      inviteId: z.uuid(),
+      backendOriginHash: sha256Schema,
+      expectedVersion: positiveVersionSchema,
+      expectedMembershipVersion: positiveVersionSchema.nullable(),
+      expectedMembershipStatus: z
+        .enum(["invited", "enabled", "disabled"])
+        .nullable(),
+      expectedMembershipDisabledReason: z.string().nullable(),
+      expectedLeaveGeneration: z.number().int().nonnegative()
+    }),
     actionGrantIntent("collaboration.create_workspace", {
       teamId: z.uuid(),
       name: collaborationNameSchema,
@@ -1827,6 +1839,7 @@ export const collaborationActionGrantIntentSchema = z
       workspaceProjectId: z.uuid().nullable().optional(),
       expectedWorkspaceProjectVersion: positiveVersionSchema.optional(),
       defaultWorkspaceAccess: z.enum(["read", "write"]),
+      inviterAgentDisplayName: collaborationDisplayNameSchema.optional(),
       ttlHours: z
         .number()
         .int()
@@ -2218,14 +2231,66 @@ export const collaborationInvitationSchema = z
     defaultWorkspaceAccess: z.enum(["read", "write"]),
     email: normalizedEmailSchema,
     role: z.enum(["owner", "admin", "member"]),
-    lifecycle: z.enum(["pending", "accepted", "revoked", "expired"]),
+    lifecycle: z.enum([
+      "pending",
+      "accepted",
+      "declined",
+      "revoked",
+      "expired"
+    ]),
     version: positiveVersionSchema,
     createdAt: collaborationTimestampSchema,
     expiresAt: collaborationTimestampSchema,
     acceptedAt: collaborationTimestampSchema.nullable(),
+    declinedAt: collaborationTimestampSchema.nullable().optional(),
     revokedAt: collaborationTimestampSchema.nullable()
   })
   .strict();
+
+export const collaborationMyInvitationSchema = z
+  .object({
+    id: z.uuid(),
+    version: positiveVersionSchema,
+    backendOriginHash: sha256Schema,
+    membershipVersion: positiveVersionSchema.nullable(),
+    membershipStatus: z.enum(["invited", "enabled", "disabled"]).nullable(),
+    membershipDisabledReason: z.string().nullable(),
+    leaveGeneration: z.number().int().nonnegative(),
+    team: z.object({ id: z.uuid(), name: collaborationNameSchema }).strict(),
+    workspace: z
+      .object({ id: z.uuid(), name: collaborationNameSchema })
+      .strict(),
+    project: z
+      .object({ id: z.uuid(), name: collaborationNameSchema })
+      .strict()
+      .nullable(),
+    inviter: z
+      .object({
+        displayName: collaborationDisplayNameSchema.nullable(),
+        agentDisplayName: collaborationDisplayNameSchema.nullable()
+      })
+      .strict(),
+    role: z.enum(["owner", "admin", "member"]),
+    effectiveRole: z.enum(["owner", "admin", "member"]),
+    workspaceAccess: z.enum(["read", "write"]),
+    expiresAt: collaborationTimestampSchema
+  })
+  .strict();
+export type CollaborationMyInvitation = z.infer<
+  typeof collaborationMyInvitationSchema
+>;
+
+const collaborationInviteDecisionShape = {
+  inviteId: z.uuid(),
+  backendOriginHash: sha256Schema,
+  expectedVersion: positiveVersionSchema,
+  expectedMembershipVersion: positiveVersionSchema.nullable(),
+  expectedMembershipStatus: z
+    .enum(["invited", "enabled", "disabled"])
+    .nullable(),
+  expectedMembershipDisabledReason: z.string().nullable(),
+  expectedLeaveGeneration: z.number().int().nonnegative()
+};
 
 export const collaborationInvitationPageSchema = z
   .object({
@@ -2827,11 +2892,21 @@ export const collaborationRendererCommandSchema = z
       workspaceProjectId: z.uuid().nullable().optional(),
       expectedWorkspaceProjectVersion: positiveVersionSchema.optional(),
       defaultWorkspaceAccess: z.enum(["read", "write"]),
+      inviterAgentDisplayName: collaborationDisplayNameSchema.optional(),
       ttlHours: z
         .number()
         .int()
         .min(1)
         .max(24 * 30),
+      managedTextAction: z
+        .object({
+          executionId: z.uuid(),
+          actionId: z.uuid(),
+          revision: positiveVersionSchema,
+          projectId: z.uuid()
+        })
+        .strict()
+        .optional(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.list_invitations", {
@@ -2839,6 +2914,15 @@ export const collaborationRendererCommandSchema = z
       includeRevoked: z.boolean(),
       cursor: collaborationOpaqueCursorSchema.nullable(),
       limit: z.number().int().min(1).max(COLLABORATION_HISTORY_PAGE_MAX_ITEMS)
+    }),
+    command("collaboration.list_my_invitations", {}),
+    command("collaboration.accept_invitation_in_app", {
+      ...collaborationInviteDecisionShape,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.decline_invitation", {
+      ...collaborationInviteDecisionShape,
+      actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.revoke_invitation", {
       teamId: z.uuid(),
@@ -3188,6 +3272,9 @@ const commandNameSchema = z.enum([
   "collaboration.load_shared_source_page",
   "collaboration.create_invitation",
   "collaboration.list_invitations",
+  "collaboration.list_my_invitations",
+  "collaboration.accept_invitation_in_app",
+  "collaboration.decline_invitation",
   "collaboration.revoke_invitation",
   "collaboration.update_member_role",
   "collaboration.disable_member",
@@ -3328,6 +3415,20 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.list_invitations",
     z.object({ page: collaborationInvitationPageSchema }).strict()
+  ),
+  successResult(
+    "collaboration.list_my_invitations",
+    z
+      .object({ invites: z.array(collaborationMyInvitationSchema).max(100) })
+      .strict()
+  ),
+  successResult(
+    "collaboration.accept_invitation_in_app",
+    z.object({ invitation: collaborationInvitationSchema }).strict()
+  ),
+  successResult(
+    "collaboration.decline_invitation",
+    z.object({ invitation: collaborationInvitationSchema }).strict()
   ),
   successResult(
     "collaboration.revoke_invitation",

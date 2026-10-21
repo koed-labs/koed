@@ -16,6 +16,7 @@ import {
   type CollaborationMessagePage,
   type CollaborationInvitation,
   type CollaborationInvitationPage,
+  type CollaborationMyInvitation,
   type CollaborationMembership,
   type CollaborationReadState,
   type CollaborationRendererCommand,
@@ -219,6 +220,13 @@ export interface CollaborationRendererClient {
     workspaceProjectId?: string | null;
     expectedWorkspaceProjectVersion?: number;
     defaultWorkspaceAccess: "read" | "write";
+    inviterAgentDisplayName?: string;
+    managedTextAction?: {
+      executionId: string;
+      actionId: string;
+      revision: number;
+      projectId: string;
+    };
     ttlHours: number;
   }): Promise<{
     invitation: CollaborationInvitation;
@@ -228,6 +236,11 @@ export interface CollaborationRendererClient {
     teamId: string;
     cursor?: string | null;
   }): Promise<CollaborationInvitationPage>;
+  listMyInvitations(): Promise<CollaborationMyInvitation[]>;
+  decideInvitation(
+    input: CollaborationMyInvitation,
+    decision: "accept" | "decline"
+  ): Promise<CollaborationInvitation>;
   revokeInvitation(input: {
     teamId: string;
     invitationId: string;
@@ -1647,6 +1660,7 @@ export const createCollaborationRendererClient = (
         "Stop Project summary sharing",
       "collaboration.create_team": "Create Team",
       "collaboration.join_team": "Join Team",
+      "collaboration.decide_invitation": "Decide invitation",
       "collaboration.create_workspace": "Create Workspace",
       "collaboration.create_invitation": "Create invitation",
       "collaboration.revoke_invitation": "Revoke invitation",
@@ -3657,10 +3671,12 @@ export const createCollaborationRendererClient = (
     },
     async createInvitation(input) {
       const commandRequestId = crypto.randomUUID();
+      const grantInput = { ...input };
+      delete (grantInput as Partial<typeof input>).managedTextAction;
       const actionGrant = await waitForActionGrant({
         intent: "collaboration.create_invitation",
         commandRequestId,
-        ...input
+        ...grantInput
       });
       const result = await runApprovedAction(
         collaborationRendererCommandSchema.parse({
@@ -3686,6 +3702,48 @@ export const createCollaborationRendererClient = (
         throw new Error("Unexpected collaboration result.");
       }
       return result.data.page;
+    },
+    async listMyInvitations() {
+      const result = await command("collaboration.list_my_invitations", {});
+      if (!result.ok || result.command !== "collaboration.list_my_invitations")
+        throw new Error("Invitations could not be loaded.");
+      return result.data.invites;
+    },
+    async decideInvitation(invitation, decision) {
+      const input = {
+        inviteId: invitation.id,
+        backendOriginHash: invitation.backendOriginHash,
+        expectedVersion: invitation.version,
+        expectedMembershipVersion: invitation.membershipVersion,
+        expectedMembershipStatus: invitation.membershipStatus,
+        expectedMembershipDisabledReason: invitation.membershipDisabledReason,
+        expectedLeaveGeneration: invitation.leaveGeneration
+      };
+      const commandRequestId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.decide_invitation",
+        commandRequestId,
+        decision,
+        ...input
+      });
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command:
+            decision === "accept"
+              ? "collaboration.accept_invitation_in_app"
+              : "collaboration.decline_invitation",
+          input: { ...input, actionGrant }
+        })
+      );
+      if (
+        !result.ok ||
+        (result.command !== "collaboration.accept_invitation_in_app" &&
+          result.command !== "collaboration.decline_invitation")
+      )
+        throw new Error("Invitation changed. Refresh and review it again.");
+      return result.data.invitation;
     },
     async revokeInvitation(input) {
       const commandRequestId = crypto.randomUUID();

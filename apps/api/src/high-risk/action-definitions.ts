@@ -28,6 +28,7 @@ export type HighRiskActionDefinitionRepository = Pick<
   MemorySourceRepository,
   | "getTeamInviteCreationReview"
   | "getTeamInviteAcceptanceReview"
+  | "getTeamInviteDecisionReview"
   | "getTeamInviteRevocationReview"
   | "getTeamMembershipActionReview"
   | "getTeamLeaveReview"

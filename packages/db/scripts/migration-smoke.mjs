@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0075_dashing_khan";
-const expectedLatestMigrationIndex = 75;
+const expectedLatestMigrationTag = "0077_backfill_member_leave_generation";
+const expectedLatestMigrationIndex = 77;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -1016,7 +1016,17 @@ const assertLatestSchema = async (pool) => {
       ["share_attempt_key", "text", "NO"],
       ["created_at", "timestamp with time zone", "NO"]
     ],
-    team_invites: [["workspace_project_id", "uuid", "YES"]],
+    team_invites: [
+      ["workspace_project_id", "uuid", "YES"],
+      ["recipient_user_id", "uuid", "YES"],
+      ["recipient_leave_generation", "integer", "YES"],
+      ["issuance_membership_version", "integer", "YES"],
+      ["issuance_membership_status", "USER-DEFINED", "YES"],
+      ["issuance_disabled_reason", "text", "YES"],
+      ["inviter_agent_display_name", "text", "YES"],
+      ["declined_at", "timestamp with time zone", "YES"]
+    ],
+    team_memberships: [["leave_generation", "integer", "YES"]],
     personal_workspace_project_copyback_stages: [
       ["owner_user_id", "uuid", "NO"],
       ["personal_project_id", "uuid", "NO"],
@@ -1076,6 +1086,17 @@ const assertLatestSchema = async (pool) => {
     );
   }
   const expectedConstraints = [
+    ["team_invites", "team_invites_recipient_generation_check", "c"],
+    ["team_invites", "team_invites_issuance_membership_check", "c"],
+    ["team_invites", "team_invites_lifecycle_shape_check", "c"],
+    ["team_memberships", "team_memberships_leave_generation_check", "c"],
+    [
+      "team_invites",
+      "team_invites_recipient_user_id_users_id_fk",
+      "f",
+      "users",
+      "c"
+    ],
     ["remote_mcp_oauth_clients", "remote_mcp_oauth_clients_pkey", "p"],
     ["remote_mcp_oauth_credentials", "remote_mcp_oauth_credentials_pkey", "p"],
     ["remote_mcp_oauth_grants", "remote_mcp_oauth_grants_pkey", "p"],
@@ -5847,6 +5868,125 @@ try {
         await assertMigrationLedger(pool, fullRecords);
         if ((await schemaFingerprint(pool)) !== stable)
           throw new Error("0073 migration rerun changed schema");
+      });
+    }
+  );
+
+  await runScenario(
+    "team-invite-0076-0077-generation-backfill-and-shape",
+    async () => {
+      const target = await createDisposableDatabase("team_invite_generation");
+      const predecessor = await createMigrationSlice(journal, 75, {
+        folderPrefix: "koed-team-invite-predecessor-"
+      });
+      temporaryFolders.add(predecessor);
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: predecessor });
+        const owner = randomUUID();
+        const leaver = randomUUID();
+        const unknown = randomUUID();
+        const team = randomUUID();
+        const workspace = randomUUID();
+        await pool.query(
+          "insert into users(id,email) values($1,$2),($3,$4),($5,$6)",
+          [
+            owner,
+            `${owner}@example.test`,
+            leaver,
+            `${leaver}@example.test`,
+            unknown,
+            `${unknown}@example.test`
+          ]
+        );
+        await pool.query(
+          "insert into teams(id,name) values($1,'Invite migration Team')",
+          [team]
+        );
+        await pool.query(
+          "insert into team_workspaces(id,team_id,name) values($1,$2,'General')",
+          [workspace, team]
+        );
+        await pool.query(
+          `insert into team_memberships(team_id,user_id,role,status,disabled_at,disabled_reason)
+        values($1,$2,'owner','enabled',null,null),
+              ($1,$3,'member','disabled',now(),'member_left'),
+              ($1,$4,'member','enabled',null,null)`,
+          [team, owner, leaver, unknown]
+        );
+        await pool.query(
+          `insert into team_invites(team_id,default_team_workspace_id,email,normalized_email,
+        backend_origin_hash,role,token_hash,expires_at)
+        values($1,$2,$3,$3,$4,'member',$5,now()+interval '1 day')`,
+          [
+            team,
+            workspace,
+            `${leaver}@example.test`,
+            "a".repeat(64),
+            "b".repeat(64)
+          ]
+        );
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        const generations = await pool.query(
+          `select user_id,leave_generation from team_memberships
+        where team_id=$1`,
+          [team]
+        );
+        const byUser = new Map(
+          generations.rows.map((row) => [row.user_id, row.leave_generation])
+        );
+        if (
+          byUser.get(leaver) !== 1 ||
+          byUser.get(owner) !== null ||
+          byUser.get(unknown) !== null
+        ) {
+          throw new Error(
+            "0077 did not backfill only proved member_left history"
+          );
+        }
+        const rejectCheck = async (
+          suffix,
+          extraColumns,
+          extraValues,
+          values
+        ) => {
+          try {
+            await pool.query(
+              `insert into team_invites(team_id,default_team_workspace_id,email,
+            normalized_email,backend_origin_hash,role,token_hash,expires_at${extraColumns})
+            values($1,$2,$3,$3,$4,'member',$5,now()+interval '1 day'${extraValues})`,
+              [
+                team,
+                workspace,
+                `${suffix}@example.test`,
+                "a".repeat(64),
+                randomUUID().replaceAll("-", "").repeat(2),
+                ...values
+              ]
+            );
+          } catch (error) {
+            if (error?.code === "23514") return;
+            throw error;
+          }
+          throw new Error(`0076 accepted invalid ${suffix} binding`);
+        };
+        await rejectCheck("missing-generation", ",recipient_user_id", ",$6", [
+          leaver
+        ]);
+        await rejectCheck(
+          "missing-issuance-status",
+          ",issuance_membership_version,issuance_disabled_reason",
+          ",$6,$7",
+          [1, "member_left"]
+        );
+        await rejectCheck(
+          "missing-issuance-reason",
+          ",issuance_membership_version,issuance_membership_status",
+          ",$6,$7",
+          [1, "disabled"]
+        );
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
       });
     }
   );

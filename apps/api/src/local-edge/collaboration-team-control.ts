@@ -2,6 +2,7 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationCommandResultSchema,
   collaborationInvitationSchema,
+  collaborationMyInvitationSchema,
   collaborationMembershipSchema,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
@@ -35,6 +36,9 @@ export const collaborationTeamControlCommandNames = [
   "collaboration.create_workspace",
   "collaboration.create_invitation",
   "collaboration.list_invitations",
+  "collaboration.list_my_invitations",
+  "collaboration.accept_invitation_in_app",
+  "collaboration.decline_invitation",
   "collaboration.revoke_invitation",
   "collaboration.update_member_role",
   "collaboration.disable_member",
@@ -109,6 +113,15 @@ export interface CollaborationTeamControlContext {
   resolveActionGrantSecret?(
     binding: CollaborationTeamControlActionBinding
   ): Promise<string | null>;
+  resolveInvitationAgentDisplayName?(input: {
+    executionId: string;
+    actionId: string;
+    revision: number;
+    projectId: string;
+    workspaceProjectId: string;
+    teamBackendId: string;
+    email: string;
+  }): Promise<string | null>;
 }
 
 export type CollaborationTeamControlIntegrationRequirementCode =
@@ -145,7 +158,7 @@ const cursorPayloadSchema = z
 
 const timestampSchema = z.string().datetime({ offset: true });
 
-const remoteInvitationSchema = z
+export const remoteInvitationSchema = z
   .object({
     id: z.uuid(),
     teamId: z.uuid(),
@@ -153,11 +166,18 @@ const remoteInvitationSchema = z
     defaultWorkspaceAccess: z.enum(["read", "write"]),
     email: z.email().max(320),
     role: z.enum(["owner", "admin", "member"]),
-    lifecycle: z.enum(["pending", "accepted", "revoked", "expired"]),
+    lifecycle: z.enum([
+      "pending",
+      "accepted",
+      "declined",
+      "revoked",
+      "expired"
+    ]),
     version: z.number().int().safe().positive(),
     createdAt: timestampSchema,
     expiresAt: timestampSchema,
     acceptedAt: timestampSchema.nullable(),
+    declinedAt: timestampSchema.nullable().optional(),
     revokedAt: timestampSchema.nullable()
   })
   .passthrough()
@@ -165,6 +185,8 @@ const remoteInvitationSchema = z
     if (
       (invitation.lifecycle === "accepted") !==
         (invitation.acceptedAt !== null) ||
+      (invitation.lifecycle === "declined") !==
+        (invitation.declinedAt != null) ||
       (invitation.lifecycle === "revoked") !== (invitation.revokedAt !== null)
     ) {
       refinement.addIssue({
@@ -495,6 +517,7 @@ const mapInvitation = (value: z.infer<typeof remoteInvitationSchema>) =>
     createdAt: value.createdAt,
     expiresAt: value.expiresAt,
     acceptedAt: value.acceptedAt,
+    declinedAt: value.declinedAt ?? null,
     revokedAt: value.revokedAt
   });
 
@@ -867,6 +890,31 @@ const dispatch = async (
 
     case "collaboration.create_invitation": {
       const path = `/v1/teams/${encodeURIComponent(command.input.teamId)}/invites`;
+      const managedTextAction = command.input.managedTextAction;
+      if (
+        Boolean(managedTextAction) !==
+          Boolean(command.input.inviterAgentDisplayName) ||
+        (managedTextAction &&
+          (!command.input.workspaceProjectId ||
+            !context.resolveInvitationAgentDisplayName))
+      ) {
+        return failure(command, safeError("permission_denied"));
+      }
+      const agentDisplayName =
+        managedTextAction && command.input.workspaceProjectId
+          ? await context.resolveInvitationAgentDisplayName!({
+              ...managedTextAction,
+              workspaceProjectId: command.input.workspaceProjectId,
+              teamBackendId: context.backend.id,
+              email: command.input.email
+            })
+          : null;
+      if (
+        managedTextAction &&
+        (!agentDisplayName ||
+          agentDisplayName !== command.input.inviterAgentDisplayName)
+      )
+        return failure(command, safeError("permission_denied"));
       const body = {
         email: command.input.email,
         role: command.input.role,
@@ -879,7 +927,10 @@ const dispatch = async (
             }
           : {}),
         defaultWorkspaceAccess: command.input.defaultWorkspaceAccess,
-        ttlHours: command.input.ttlHours
+        ttlHours: command.input.ttlHours,
+        ...(agentDisplayName
+          ? { inviterAgentDisplayName: agentDisplayName }
+          : {})
       };
       const grant = await actionGrantSecret(command, context, {
         reference: command.input.actionGrant,
@@ -995,6 +1046,63 @@ const dispatch = async (
           nextCursor
         }
       });
+    }
+
+    case "collaboration.list_my_invitations": {
+      const payload = z
+        .object({ invites: z.array(collaborationMyInvitationSchema).max(100) })
+        .strict()
+        .parse(
+          await remoteRequest(context, {
+            operationFamily: "team_workspace_read",
+            method: "GET",
+            path: "/v1/team-invites/mine",
+            authentication: { kind: "device" }
+          })
+        );
+      return success(command, payload);
+    }
+
+    case "collaboration.accept_invitation_in_app":
+    case "collaboration.decline_invitation": {
+      const accept =
+        command.command === "collaboration.accept_invitation_in_app";
+      const path = accept
+        ? "/v1/team-invites/accept-in-app"
+        : "/v1/team-invites/decline";
+      const { actionGrant, ...body } = command.input;
+      const grant = await actionGrantSecret(command, context, {
+        reference: actionGrant,
+        action: accept ? "team.invite.accept" : "team.invite.decline",
+        teamId: null,
+        targetId: body.inviteId,
+        method: "POST",
+        path,
+        body
+      });
+      if (isDispatchResult(grant)) return grant;
+      if (!grant) return failure(command, safeError("permission_denied"));
+      const payload = z
+        .object({ invite: remoteInvitationSchema })
+        .passthrough()
+        .parse(
+          await remoteRequest(context, {
+            operationFamily: "admin",
+            method: "POST",
+            path,
+            body,
+            idempotencyKey: command.requestId,
+            authentication: { kind: "device", actionGrant: grant }
+          })
+        );
+      const invitation = mapInvitation(payload.invite);
+      if (
+        invitation.id !== body.inviteId ||
+        invitation.lifecycle !== (accept ? "accepted" : "declined") ||
+        invitation.version !== body.expectedVersion + 1
+      )
+        return failure(command, safeError("internal_error"));
+      return success(command, { invitation });
     }
 
     case "collaboration.revoke_invitation": {

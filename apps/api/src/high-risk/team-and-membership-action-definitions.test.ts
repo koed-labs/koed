@@ -28,6 +28,21 @@ const baseRepository = () => ({
     defaultWorkspace: { name: "Engineering" },
     effectiveRole: "admin" as const
   })),
+  getTeamInviteDecisionReview: vi.fn(async () => ({
+    invite: {
+      id: ids.invite,
+      version: 4,
+      role: "member" as const,
+      defaultWorkspaceAccess: "read" as const
+    },
+    team: { name: "Koed Team" },
+    defaultWorkspace: { name: "Engineering" },
+    effectiveRole: "member" as "member" | "admin",
+    membershipVersion: null as number | null,
+    membershipStatus: null as "enabled" | null,
+    membershipDisabledReason: null,
+    leaveGeneration: 0
+  })),
   getTeamInviteRevocationReview: vi.fn(async () => ({
     managerRole: "admin" as const,
     team: { id: ids.team, name: "Koed Team" },
@@ -164,6 +179,86 @@ describe("Team and membership action definitions", () => {
       { userId: ids.actor },
       `hashed:${intent.body.inviteToken}`
     );
+  });
+
+  it.each(["team.invite.accept", "team.invite.decline"] as const)(
+    "binds %s to exact in-app recipient review without token authority",
+    async (action) => {
+      const repository = baseRepository();
+      const body = {
+        inviteId: ids.invite,
+        backendOriginHash: "a".repeat(64),
+        expectedVersion: 4,
+        expectedMembershipVersion: null,
+        expectedMembershipStatus: null,
+        expectedMembershipDisabledReason: null,
+        expectedLeaveGeneration: 0
+      };
+      const admitted = await admit({ action, body }, repository);
+      expect(admitted).toMatchObject({
+        operation: expectedOperation({
+          action,
+          teamId: null,
+          targetId: ids.invite,
+          method: "POST",
+          path:
+            action === "team.invite.accept"
+              ? "/v1/team-invites/accept-in-app"
+              : "/v1/team-invites/decline",
+          body
+        }),
+        policy: { disposition: "native_review" }
+      });
+      expect(repository.getTeamInviteDecisionReview).toHaveBeenCalledWith(
+        { userId: ids.actor },
+        {
+          inviteId: ids.invite,
+          expectedVersion: 4,
+          backendOriginHash: body.backendOriginHash
+        }
+      );
+      repository.getTeamInviteDecisionReview.mockResolvedValueOnce({
+        ...(await repository.getTeamInviteDecisionReview.mock.results[0]!
+          .value),
+        membershipVersion: 2
+      });
+      await expect(admit({ action, body }, repository)).rejects.toThrow(
+        ActionApprovalPolicyError
+      );
+    }
+  );
+
+  it("shows the existing enabled role when an invite adds only Workspace Access", async () => {
+    const repository = baseRepository();
+    repository.getTeamInviteDecisionReview.mockResolvedValueOnce({
+      ...(await repository.getTeamInviteDecisionReview()),
+      effectiveRole: "admin",
+      membershipVersion: 2,
+      membershipStatus: "enabled"
+    });
+    const admitted = await admit(
+      {
+        action: "team.invite.accept",
+        body: {
+          inviteId: ids.invite,
+          backendOriginHash: "a".repeat(64),
+          expectedVersion: 4,
+          expectedMembershipVersion: 2,
+          expectedMembershipStatus: "enabled",
+          expectedMembershipDisabledReason: null,
+          expectedLeaveGeneration: 0
+        }
+      },
+      repository
+    );
+    expect(admitted?.policy).toMatchObject({
+      disposition: "native_review",
+      review: {
+        details: expect.arrayContaining([
+          { label: "Membership", value: "admin · read" }
+        ])
+      }
+    });
   });
 
   it("owns exact invitation revocation context, version, and Native review", async () => {

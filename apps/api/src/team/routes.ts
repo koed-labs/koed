@@ -28,6 +28,7 @@ import {
   createTeamWorkspaceSchema,
   expectedVersionSchema,
   teamLeaveActionSchema,
+  teamInviteDecisionSchema,
   listTeamInvitesQuerySchema,
   listTeamWorkspacesQuerySchema,
   setTeamBillingSeatPolicySchema,
@@ -260,9 +261,11 @@ export const registerTeamRoutes = (
     if (
       !identity ||
       identity.provider !== "workos_authkit" ||
+      identity.status !== "linked" ||
+      !identity.emailVerified ||
       identity.providerEnvironment !==
         context.config.workos.providerEnvironment ||
-      identity.email.toLowerCase() !== user.email.toLowerCase()
+      identity.email.trim().toLowerCase() !== user.email.trim().toLowerCase()
     ) {
       throw forbidden(
         "A current verified WorkOS/AuthKit identity is required for Team administration"
@@ -829,6 +832,11 @@ export const registerTeamRoutes = (
       const { teamId } = teamIdParamsSchema.parse(request.params);
       const input = createTeamInviteSchema.parse(request.body);
       const actor = await authenticateAdminActor(request);
+      if (input.inviterAgentDisplayName && actor.kind !== "device") {
+        throw forbidden(
+          "Inviter Agent metadata requires the trusted enrolled Desktop edge"
+        );
+      }
       return (
         await runHighRiskTeamWrite(
           request,
@@ -862,6 +870,7 @@ export const registerTeamRoutes = (
                   input.expectedWorkspaceProjectVersion,
                 defaultWorkspaceAccess: input.defaultWorkspaceAccess,
                 email: input.email,
+                inviterAgentDisplayName: input.inviterAgentDisplayName,
                 role: input.role,
                 backendOriginHash: backendOriginHash(
                   deployment.protocolDeploymentId
@@ -983,6 +992,126 @@ export const registerTeamRoutes = (
         )
       ).body;
     }
+  );
+
+  app.get(
+    "/v1/team-invites/mine",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      rejectApiToken(request);
+      if (!z.object({}).strict().safeParse(request.query).success) {
+        throw badRequest(
+          "Invitation inbox does not accept recipient or Team filters"
+        );
+      }
+      const credential = await authenticateDeviceCredential(request);
+      if (
+        !credential.credential.operationFamilies.includes("team_workspace_read")
+      ) {
+        throw forbidden("Device credential cannot read Team invitations");
+      }
+      const user = credential.user;
+      const repository = requireRepository();
+      await requireVerifiedTeamIdentity(repository, user);
+      const deployment = await repository.ensureLocalSyncDeployment({
+        profile: context.config.deploymentProfile,
+        protocolDeploymentId: verifiedLocalDeploymentId()
+      });
+      return {
+        invites: await repository.listMyTeamInvites(
+          { userId: user.id },
+          backendOriginHash(deployment.protocolDeploymentId)
+        )
+      };
+    }
+  );
+
+  const decideInvite =
+    (decision: "accept" | "decline") => async (request: FastifyRequest) => {
+      const actor = await authenticateAdminActor(request);
+      if (actor.kind !== "device")
+        throw forbidden("An enrolled Desktop decision is required");
+      const input = teamInviteDecisionSchema.parse(request.body);
+      return (
+        await runHighRiskTeamWrite<Record<string, unknown>>(
+          request,
+          actor,
+          {
+            action: `team.invite.${decision}`,
+            teamId: null,
+            targetId: input.inviteId,
+            body: request.body
+          },
+          async (repo) => {
+            const deployment = await repo.ensureLocalSyncDeployment({
+              profile: context.config.deploymentProfile,
+              protocolDeploymentId: verifiedLocalDeploymentId()
+            });
+            const originHash = backendOriginHash(
+              deployment.protocolDeploymentId
+            );
+            if (input.backendOriginHash !== originHash)
+              throw forbidden("Invitation backend changed");
+            const review = await repo.getTeamInviteDecisionReview(
+              { userId: actor.user.id },
+              {
+                inviteId: input.inviteId,
+                expectedVersion: input.expectedVersion,
+                backendOriginHash: originHash
+              }
+            );
+            if (
+              !review ||
+              review.membershipVersion !== input.expectedMembershipVersion ||
+              review.membershipStatus !== input.expectedMembershipStatus ||
+              review.membershipDisabledReason !==
+                input.expectedMembershipDisabledReason ||
+              review.leaveGeneration !== input.expectedLeaveGeneration
+            )
+              throw conflict("Invitation changed; review it again");
+            if (decision === "decline") {
+              const invite = await repo.declineTeamInvite({
+                ...input,
+                userId: actor.user.id,
+                expectedBackendOriginHash: originHash
+              });
+              return invite
+                ? {
+                    statusCode: 200,
+                    body: { invite: legacyTeamInvite(invite) }
+                  }
+                : null;
+            }
+            const accepted = await repo.acceptTeamInvite({
+              ...input,
+              userId: actor.user.id,
+              expectedBackendOriginHash: originHash
+            });
+            return accepted
+              ? {
+                  statusCode: 200,
+                  body: {
+                    invite: legacyTeamInvite(accepted.invite),
+                    membership: accepted.membership,
+                    user: publicUser(accepted.user),
+                    createdUser: accepted.createdUser
+                  }
+                }
+              : null;
+          }
+        )
+      ).body;
+    };
+
+  app.post(
+    "/v1/team-invites/accept-in-app",
+    { preHandler: memoryWriteRateLimit },
+    decideInvite("accept")
+  );
+  app.post(
+    "/v1/team-invites/decline",
+    { preHandler: memoryWriteRateLimit },
+    decideInvite("decline")
   );
 
   app.get(

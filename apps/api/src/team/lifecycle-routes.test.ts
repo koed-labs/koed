@@ -6,12 +6,17 @@ import type {
   TeamWorkspaceRecord,
   UserRecord
 } from "@koed/db";
-import { TeamActionGrantRequiredError } from "@koed/db";
+import {
+  createTeamAccessRepository,
+  runDbMigrations,
+  TeamActionGrantRequiredError
+} from "@koed/db";
 import {
   sharedMemoryGrantScopedPrincipalId,
   sharedMemoryGrantScopedSourceId
 } from "@koed/shared";
 import Fastify, { type FastifyRequest } from "fastify";
+import pg from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -24,6 +29,7 @@ import {
   teamAdminRequestHash,
   teamAdminScopeHash
 } from "./routes.js";
+import { remoteInvitationSchema } from "../local-edge/collaboration-team-control.js";
 
 const user: UserRecord = {
   id: randomUUID(),
@@ -80,6 +86,7 @@ const membership = (): TeamMembershipRecord => ({
   role: "owner",
   status: "enabled",
   version: 1,
+  leaveGeneration: 0,
   createdAt: now(),
   updatedAt: now(),
   acceptedAt: now(),
@@ -310,7 +317,17 @@ const createFixture = async (input?: {
           user
         };
       }),
-      authenticateDeviceCredential: vi.fn(async () => {
+      authenticateDeviceCredential: vi.fn(async (request: FastifyRequest) => {
+        if (
+          !/^Koed-Device(?:\s|$)/i.test(request.headers.authorization ?? "")
+        ) {
+          throw Object.assign(
+            new Error("Enrolled device credential required"),
+            {
+              statusCode: 401
+            }
+          );
+        }
         if (input?.deviceCredentialError) throw input.deviceCredentialError;
         return auth;
       }),
@@ -363,6 +380,241 @@ const createFixture = async (input?: {
 };
 
 describe("Team lifecycle routes", () => {
+  it("returns a real declined route response that the local edge accepts", async () => {
+    const inviteId = randomUUID();
+    const originHash = createHash("sha256")
+      .update(`koed:backend-origin:v1\n${deploymentId}`)
+      .digest("hex");
+    const declinedAt = now();
+    const fixture = await createFixture({
+      repository: {
+        getTeamInviteDecisionReview: vi.fn(async () => ({
+          membershipVersion: null,
+          membershipStatus: null,
+          membershipDisabledReason: null,
+          leaveGeneration: 0
+        })),
+        declineTeamInvite: vi.fn(async () =>
+          pendingInvite({
+            id: inviteId,
+            backendOriginHash: originHash,
+            lifecycle: "declined",
+            version: 4,
+            declinedAt
+          })
+        )
+      }
+    });
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/team-invites/decline",
+      headers: {
+        authorization: "Koed-Device device-key:secret",
+        "x-koed-action-grant": "hrg_invite_decline"
+      },
+      payload: {
+        inviteId,
+        backendOriginHash: originHash,
+        expectedVersion: 3,
+        expectedMembershipVersion: null,
+        expectedMembershipStatus: null,
+        expectedMembershipDisabledReason: null,
+        expectedLeaveGeneration: 0
+      }
+    });
+    await fixture.app.close();
+    expect(response.statusCode).toBe(200);
+    const parsed = remoteInvitationSchema.parse(response.json().invite);
+    expect(parsed).toMatchObject({
+      id: inviteId,
+      lifecycle: "declined",
+      declinedAt
+    });
+    expect(JSON.stringify(response.json())).not.toContain(
+      "recipientLeaveGeneration"
+    );
+  });
+  it.skipIf(!process.env.KOED_HQ703_TEST_DATABASE_URL)(
+    "serves a real addressed non-member inbox through the device-only route",
+    async () => {
+      const testUrl = process.env.KOED_HQ703_TEST_DATABASE_URL!;
+      const admin = new pg.Pool({ connectionString: testUrl });
+      const database = `hq703_api_${randomUUID().replaceAll("-", "")}`;
+      const quoted = `"${database}"`;
+      let pool: pg.Pool | null = null;
+      try {
+        await admin.query(`create database ${quoted}`);
+        const url = new URL(testUrl);
+        url.pathname = `/${database}`;
+        pool = new pg.Pool({ connectionString: url.toString() });
+        await runDbMigrations(pool);
+        await pool.query("insert into users(id,email) values($1,$2),($3,$4)", [
+          user.id,
+          user.email,
+          randomUUID(),
+          "inviter@example.test"
+        ]);
+        const inviter = (
+          await pool.query<{ id: string }>(
+            "select id from users where email='inviter@example.test'"
+          )
+        ).rows[0]!.id;
+        await pool.query(
+          "insert into teams(id,name) values($1,'Real Invite Team')",
+          [teamId]
+        );
+        await pool.query(
+          "insert into team_memberships(team_id,user_id,role,leave_generation) values($1,$2,'owner',0)",
+          [teamId, inviter]
+        );
+        await pool.query(
+          "insert into team_workspaces(id,team_id,name) values($1,$2,'Real Workspace')",
+          [workspaceId, teamId]
+        );
+        const real = createTeamAccessRepository(pool);
+        const fixture = await createFixture({
+          repository: {
+            listMyTeamInvites: real.listMyTeamInvites.bind(real),
+            getTeamMembership: vi.fn(() => {
+              throw new Error("Non-member inbox may not require membership");
+            })
+          }
+        });
+        const deployment = await fixture.repository.ensureLocalSyncDeployment({
+          profile: "developer",
+          protocolDeploymentId: deploymentId
+        });
+        const originHash = createHash("sha256")
+          .update(`koed:backend-origin:v1\n${deployment.protocolDeploymentId}`)
+          .digest("hex");
+        const invitation = await real.createTeamInvite(
+          { userId: inviter },
+          {
+            teamId,
+            defaultTeamWorkspaceId: workspaceId,
+            defaultWorkspaceAccess: "read",
+            email: user.email,
+            role: "member",
+            backendOriginHash: originHash,
+            tokenHash: randomUUID().replaceAll("-", "").repeat(2),
+            expiresAt: new Date(Date.now() + 86_400_000)
+          }
+        );
+        const response = await fixture.app.inject({
+          method: "GET",
+          url: "/v1/team-invites/mine",
+          headers: { authorization: "Koed-Device device-key:secret" }
+        });
+        await fixture.app.close();
+        expect(response.statusCode).toBe(200);
+        expect(response.json().invites).toMatchObject([
+          {
+            id: invitation!.id,
+            membershipVersion: null,
+            effectiveRole: "member"
+          }
+        ]);
+        expect(JSON.stringify(response.json())).not.toContain("tokenHash");
+      } finally {
+        await pool?.end();
+        await admin.query(`drop database if exists ${quoted} with (force)`);
+        await admin.end();
+      }
+    },
+    120_000
+  );
+  it("lists addressed invitations for an enrolled non-member without a Team membership lookup", async () => {
+    const listMyTeamInvites = vi.fn(async () => [
+      {
+        id: randomUUID(),
+        version: 1,
+        team: { id: teamId, name: "Lifecycle Team" },
+        workspace: { id: workspaceId, name: "General" },
+        inviter: { displayName: "Owner", agentDisplayName: null },
+        project: null,
+        role: "member",
+        effectiveRole: "member",
+        workspaceAccess: "read",
+        expiresAt: now(),
+        backendOriginHash: "a".repeat(64),
+        membershipVersion: null,
+        membershipStatus: null,
+        membershipDisabledReason: null,
+        leaveGeneration: 0
+      }
+    ]);
+    const getTeamMembership = vi.fn();
+    const fixture = await createFixture({
+      repository: { listMyTeamInvites, getTeamMembership }
+    });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/v1/team-invites/mine",
+      headers: { authorization: "Koed-Device device-key:secret" }
+    });
+    const filtered = await fixture.app.inject({
+      method: "GET",
+      url: `/v1/team-invites/mine?teamId=${teamId}`,
+      headers: { authorization: "Koed-Device device-key:secret" }
+    });
+    await fixture.app.close();
+    expect(response.statusCode).toBe(200);
+    expect(response.json().invites).toHaveLength(1);
+    expect(JSON.stringify(response.json())).not.toContain("inviteToken");
+    expect(getTeamMembership).not.toHaveBeenCalled();
+    expect(listMyTeamInvites).toHaveBeenCalledWith(
+      { userId: user.id },
+      expect.stringMatching(/^[a-f0-9]{64}$/)
+    );
+    expect(filtered.statusCode).toBe(400);
+  });
+
+  it("limits the recipient inbox to enrolled Team-read device credentials", async () => {
+    const listMyTeamInvites = vi.fn(async () => []);
+    const fixture = await createFixture({
+      deviceOperationFamilies: ["action_grant"],
+      repository: { listMyTeamInvites }
+    });
+    const requests = await Promise.all([
+      fixture.app.inject({ method: "GET", url: "/v1/team-invites/mine" }),
+      fixture.app.inject({
+        method: "GET",
+        url: "/v1/team-invites/mine",
+        headers: { authorization: "Bearer personal-token" }
+      }),
+      fixture.app.inject({
+        method: "GET",
+        url: "/v1/team-invites/mine",
+        headers: { authorization: "Koed-Device device-key:secret" }
+      })
+    ]);
+    await fixture.app.close();
+    expect(requests.map((response) => response.statusCode)).toEqual([
+      401, 403, 403
+    ]);
+    expect(listMyTeamInvites).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the current verified provider identity is missing or unverified", async () => {
+    const listMyTeamInvites = vi.fn(async () => []);
+    const fixture = await createFixture({
+      deploymentProfile: "koed_managed_cloud",
+      workosAuthKitEnabled: true,
+      repository: {
+        listMyTeamInvites,
+        getVerifiedExternalAuthIdentityForUser: vi.fn(async () => null)
+      }
+    });
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/v1/team-invites/mine",
+      headers: { authorization: "Koed-Device device-key:secret" }
+    });
+    await fixture.app.close();
+    expect(response.statusCode).toBe(403);
+    expect(listMyTeamInvites).not.toHaveBeenCalled();
+  });
+
   it("returns one authorized Team navigation snapshot", async () => {
     const fixture = await createFixture();
     const response = await fixture.app.inject({

@@ -462,6 +462,9 @@ const createRepositoryFixture = () => {
   };
 
   const repository: CollaborationRepository = {
+    async resolveInvitationAgentDisplayName() {
+      return null;
+    },
     async isProjectThreadId() {
       return false;
     },

@@ -1385,6 +1385,7 @@ const createFakeRepository = () => {
         role: "owner",
         status: "enabled",
         version: 1,
+        leaveGeneration: 0,
         createdAt: now,
         updatedAt: now,
         acceptedAt: now,
@@ -1781,6 +1782,12 @@ const createFakeRepository = () => {
         normalizedEmail: input.email.toLowerCase(),
         backendOriginHash: input.backendOriginHash,
         role: input.role,
+        recipientUserId: null,
+        recipientLeaveGeneration: null,
+        issuanceMembershipVersion: null,
+        issuanceMembershipStatus: null,
+        issuanceDisabledReason: null,
+        inviterAgentDisplayName: null,
         version: 1,
         lifecycle: "pending",
         createdByUserId: actor.userId,
@@ -1788,6 +1795,7 @@ const createFakeRepository = () => {
         createdAt: now,
         expiresAt: input.expiresAt.toISOString(),
         acceptedAt: null,
+        declinedAt: null,
         revokedAt: null,
         tokenHash: input.tokenHash
       };
@@ -1820,6 +1828,7 @@ const createFakeRepository = () => {
             role: input.role,
             status: "invited",
             version: (existingMembership?.version ?? 0) + 1,
+            leaveGeneration: existingMembership?.leaveGeneration ?? 0,
             createdAt: existingMembership?.createdAt ?? now,
             updatedAt: now,
             acceptedAt: null,
@@ -1847,7 +1856,7 @@ const createFakeRepository = () => {
       return invite;
     },
     async acceptTeamInvite(input) {
-      const invite = teamInvites.get(input.tokenHash);
+      const invite = input.tokenHash ? teamInvites.get(input.tokenHash) : null;
       if (
         !invite ||
         invite.lifecycle !== "pending" ||
@@ -1883,6 +1892,7 @@ const createFakeRepository = () => {
         role: invite.role,
         status: "enabled",
         version: (existingMembership?.version ?? 0) + 1,
+        leaveGeneration: existingMembership?.leaveGeneration ?? 0,
         createdAt: existingMembership?.createdAt ?? now,
         updatedAt: now,
         acceptedAt: now,

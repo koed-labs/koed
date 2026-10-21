@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { TeamInviteRecord } from "@koed/db";
 import { describe, expect, it } from "vitest";
 import { legacyTeamInvite } from "./invite-serialization.js";
+import { remoteInvitationSchema } from "../local-edge/collaboration-team-control.js";
 
 const legacy = {
   id: randomUUID(),
@@ -21,11 +22,24 @@ const legacy = {
   acceptedAt: null,
   revokedAt: null
 };
+const internalBindings = {
+  recipientUserId: null,
+  recipientLeaveGeneration: null,
+  issuanceMembershipVersion: null,
+  issuanceMembershipStatus: null,
+  issuanceDisabledReason: null,
+  inviterAgentDisplayName: null,
+  declinedAt: null
+};
 describe("strict legacy invitation response", () => {
   it.each([null, randomUUID()])(
     "preserves the v1 record with internal Project handoff %s",
     (workspaceProjectId) => {
-      const internal: TeamInviteRecord = { ...legacy, workspaceProjectId };
+      const internal: TeamInviteRecord = {
+        ...legacy,
+        ...internalBindings,
+        workspaceProjectId
+      };
       expect(legacyTeamInvite(internal)).toEqual(legacy);
       expect(JSON.stringify(legacyTeamInvite(internal))).toBe(
         JSON.stringify(legacy)
@@ -33,4 +47,19 @@ describe("strict legacy invitation response", () => {
       expect(internal.workspaceProjectId).toBe(workspaceProjectId);
     }
   );
+  it("adds the required terminal timestamp only for a declined invitation", () => {
+    const declinedAt = "2026-10-21T12:00:00.000Z";
+    const internal: TeamInviteRecord = {
+      ...legacy,
+      ...internalBindings,
+      workspaceProjectId: null,
+      lifecycle: "declined",
+      version: 2,
+      declinedAt
+    };
+    const response = legacyTeamInvite(internal);
+    expect(response).toMatchObject({ lifecycle: "declined", declinedAt });
+    expect(JSON.stringify(response)).not.toContain("recipientLeaveGeneration");
+    expect(remoteInvitationSchema.parse(response).declinedAt).toBe(declinedAt);
+  });
 });

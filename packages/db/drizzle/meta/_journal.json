@@ -533,6 +533,20 @@
       "when": 1792594951251,
       "tag": "0075_dashing_khan",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1792599313700,
+      "tag": "0076_low_cable",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1792599316989,
+      "tag": "0077_backfill_member_leave_generation",
+      "breakpoints": true
     }
   ]
 }

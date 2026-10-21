@@ -258,6 +258,7 @@ export const workspaceLifecycle = pgEnum("workspace_lifecycle", [
 export const inviteLifecycle = pgEnum("invite_lifecycle", [
   "pending",
   "accepted",
+  "declined",
   "revoked",
   "expired"
 ]);
@@ -1475,6 +1476,7 @@ export const teamMemberships = pgTable(
     role: teamRole("role").notNull(),
     status: teamMembershipStatus("status").notNull().default("enabled"),
     version: integer("version").notNull().default(1),
+    leaveGeneration: integer("leave_generation"),
     presenceMode: text("presence_mode").notNull().default("auto"),
     manualPresenceStatus: text("manual_presence_status")
       .notNull()
@@ -1495,6 +1497,10 @@ export const teamMemberships = pgTable(
     index("team_memberships_user_idx").on(table.userId, table.status),
     index("team_memberships_team_idx").on(table.teamId, table.role),
     check("team_memberships_version_check", sql`${table.version} > 0`),
+    check(
+      "team_memberships_leave_generation_check",
+      sql`${table.leaveGeneration} is null or ${table.leaveGeneration} >= 0`
+    ),
     check(
       "team_memberships_presence_mode_check",
       sql`${table.presenceMode} in ('auto', 'manual')`
@@ -2463,6 +2469,16 @@ export const teamInvites = pgTable(
     normalizedEmail: text("normalized_email"),
     backendOriginHash: text("backend_origin_hash"),
     role: teamRole("role").notNull(),
+    recipientUserId: uuid("recipient_user_id").references(() => users.id, {
+      onDelete: "cascade"
+    }),
+    recipientLeaveGeneration: integer("recipient_leave_generation"),
+    issuanceMembershipVersion: integer("issuance_membership_version"),
+    issuanceMembershipStatus: teamMembershipStatus(
+      "issuance_membership_status"
+    ),
+    issuanceDisabledReason: text("issuance_disabled_reason"),
+    inviterAgentDisplayName: text("inviter_agent_display_name"),
     version: integer("version").notNull().default(1),
     lifecycle: inviteLifecycle("lifecycle").notNull().default("pending"),
     tokenHash: text("token_hash").notNull().unique(),
@@ -2475,6 +2491,7 @@ export const teamInvites = pgTable(
     createdAt: now(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    declinedAt: timestamp("declined_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true })
   },
   (table) => [
@@ -2512,20 +2529,37 @@ export const teamInvites = pgTable(
       sql`(
         ${table.lifecycle} = 'pending'
         and ${table.acceptedAt} is null
+        and ${table.declinedAt} is null
         and ${table.revokedAt} is null
       ) or (
         ${table.lifecycle} = 'accepted'
         and ${table.acceptedAt} is not null
+        and ${table.declinedAt} is null
+        and ${table.revokedAt} is null
+      ) or (
+        ${table.lifecycle}::text = 'declined'
+        and ${table.acceptedAt} is null
+        and ${table.declinedAt} is not null
         and ${table.revokedAt} is null
       ) or (
         ${table.lifecycle} = 'revoked'
         and ${table.acceptedAt} is null
+        and ${table.declinedAt} is null
         and ${table.revokedAt} is not null
       ) or (
         ${table.lifecycle} = 'expired'
         and ${table.acceptedAt} is null
+        and ${table.declinedAt} is null
         and ${table.revokedAt} is null
       )`
+    ),
+    check(
+      "team_invites_recipient_generation_check",
+      sql`(${table.recipientUserId} is null and ${table.recipientLeaveGeneration} is null) or (${table.recipientUserId} is not null and ${table.recipientLeaveGeneration} is not null and ${table.recipientLeaveGeneration} >= 0)`
+    ),
+    check(
+      "team_invites_issuance_membership_check",
+      sql`(${table.issuanceMembershipVersion} is null and ${table.issuanceMembershipStatus} is null and ${table.issuanceDisabledReason} is null) or (${table.issuanceMembershipVersion} is not null and ${table.issuanceMembershipVersion} > 0 and ${table.issuanceMembershipStatus} is not null and ${table.issuanceMembershipStatus} = 'disabled' and ${table.issuanceDisabledReason} is not null)`
     )
   ]
 );

@@ -18,6 +18,14 @@ import type {
 } from "./managed-text-action-contract.js";
 import { deckCreateFromTextAction } from "./managed-deck-action.js";
 
+export const uniqueInvitationAgent = <T extends { id: string; name: string }>(
+  candidates: readonly T[]
+): T | null => {
+  // The AI Client instance is shared; a Chief profile is not proof that it
+  // authored this execution when another eligible Agent uses the same instance.
+  return candidates.length === 1 ? candidates[0]! : null;
+};
+
 type Row = {
   id: string;
   owner_user_id: string;
@@ -685,6 +693,7 @@ const targetSnapshot = async (
       project.workspace_project_id !== teamProof.workspaceProjectId ||
       ![
         "koed_todo_add",
+        "koed_team_invite",
         "koed_todo_send",
         "koed_job_create",
         "koed_job_pause",
@@ -892,6 +901,32 @@ const targetSnapshot = async (
       activeExecutionCount: activeExecutions.length
     };
   }
+  if (name === "koed_team_invite") {
+    if (!origin || !teamProof) return null;
+    const agents = await client.query<{
+      id: string;
+      name: string;
+      is_chief_of_staff: boolean;
+    }>(
+      `select agent.id,agent.name,agent.is_chief_of_staff from agents agent
+        join managed_conversation_executions execution
+          on execution.owner_user_id=agent.owner_user_id
+         and execution.ai_client_instance_id=agent.ai_client_instance_id
+        join ai_client_instances instance on instance.owner_user_id=agent.owner_user_id
+         and instance.instance_id=agent.ai_client_instance_id
+       where execution.id=$1 and execution.owner_user_id=$2
+         and execution.logical_session_id=$3
+         and instance.driver_id=execution.provider and instance.enabled=true
+         and agent.default_permission_mode=execution.permission_mode
+         and (agent.default_model is null or agent.default_model=execution.model)
+       order by agent.is_chief_of_staff desc,agent.id`,
+      [origin.executionId, ownerUserId, origin.logicalSessionId]
+    );
+    const agent = uniqueInvitationAgent(agents.rows);
+    return agent
+      ? { ...base, ...team, agentId: agent.id, agentName: agent.name }
+      : null;
+  }
   if (name === "koed_hq_open" || name === "koed_todo_add")
     return { ...base, ...team };
   if (name === "koed_todo_send") {
@@ -1009,6 +1044,7 @@ export const createManagedTextActionRepository = (
     if (
       ![
         "koed_todo_add",
+        "koed_team_invite",
         "koed_todo_send",
         "koed_job_create",
         "koed_job_pause",

@@ -14,6 +14,7 @@ const label: Record<KoedTextActionProjection["name"], string> = {
   koed_chat_delete: "Delete chat",
   koed_todo_add: "Add to-do",
   koed_todo_send: "Send to Agent",
+  koed_team_invite: "Invite to Project",
   koed_job_create: "Schedule Job",
   koed_job_pause: "Pause or resume Job",
   koed_deck_make: "Make flashcards",
@@ -31,6 +32,8 @@ const detail = (action: KoedTextActionProjection) => {
       return `${String(args.title ?? "To-do")}${args.dueOn ? ` · ${String(args.dueOn)}` : ""}`;
     case "koed_todo_send":
       return `Send ${String(action.snapshot.workItemTitle ?? "this to-do")} to ${String(action.snapshot.agentName ?? "your Agent")}`;
+    case "koed_team_invite":
+      return `Invite ${String(args.email)} to ${String(action.snapshot.projectName ?? "the shared Project")}. Native review will confirm the exact Team and access.`;
     case "koed_job_create":
       return `${String(args.title ?? "Scheduled Job")} · ${String(action.snapshot.agentName ?? "Agent")}`;
     case "koed_job_pause":

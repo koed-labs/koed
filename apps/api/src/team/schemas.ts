@@ -133,6 +133,7 @@ export const createTeamInviteSchema = z
     expectedWorkspaceProjectVersion: z.number().int().positive().optional(),
     defaultWorkspaceAccess: z.enum(["read", "write"]).default("write"),
     email: z.string().trim().email(),
+    inviterAgentDisplayName: z.string().trim().min(1).max(120).optional(),
     role: teamRoleSchema,
     ttlHours: z.coerce
       .number()
@@ -153,4 +154,18 @@ export const listTeamInvitesQuerySchema = z
 
 export const acceptTeamInviteSchema = z
   .object({ inviteToken: z.string().trim().min(1) })
+  .strict();
+
+export const teamInviteDecisionSchema = z
+  .object({
+    inviteId: z.uuid(),
+    backendOriginHash: z.string().regex(/^[a-f0-9]{64}$/),
+    expectedVersion: z.number().int().positive(),
+    expectedMembershipVersion: z.number().int().positive().nullable(),
+    expectedMembershipStatus: z
+      .enum(["invited", "enabled", "disabled"])
+      .nullable(),
+    expectedMembershipDisabledReason: z.string().nullable(),
+    expectedLeaveGeneration: z.number().int().nonnegative()
+  })
   .strict();

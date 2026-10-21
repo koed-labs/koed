@@ -455,6 +455,10 @@ export default function koedExtension(pi) {
         dueOn: Type.Optional(Type.String({ format: "date" }))
       },
       koed_todo_send: { projectId: uuid, workItemId: uuid, agentId: uuid },
+      koed_team_invite: {
+        projectId: uuid,
+        email: Type.String({ format: "email", maxLength: 320 })
+      },
       koed_deck_make: {
         projectId: uuid,
         title: Type.String({ minLength: 1, maxLength: 500 }),

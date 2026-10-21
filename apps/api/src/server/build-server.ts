@@ -12,6 +12,7 @@ import cookie from "@fastify/cookie";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyRequest } from "fastify";
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { Redis } from "ioredis";
 import { z } from "zod";
 import { type Visibility } from "@koed/core";
@@ -234,7 +235,7 @@ import { registerOperationalRoutes } from "./operational-routes.js";
 import { createRemoteMcpOAuthProvider } from "../auth/remote-mcp-oauth.js";
 import { registerRemoteMcpOAuthRoutes } from "../auth/remote-mcp-oauth-routes.js";
 import { registerRemoteMcpRoutes } from "./remote-mcp.js";
-import { supportsWorkos } from "./capabilities.js";
+import { supportsWorkos, authProvidersForDeployment } from "./capabilities.js";
 import type { ApiRouteContext } from "./context.js";
 import { registerTeamCollaborationFeatureGate } from "./team-collaboration-feature.js";
 import {
@@ -2258,6 +2259,47 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
   registerHighRiskRoutes(app, {
     requireRepository,
+    verifyInAppInviteRecipient: async (user, originHash) => {
+      const deployment = routeContext.deploymentIdentity.inspect();
+      if (
+        deployment.health !== "healthy" ||
+        !deployment.remoteOperationsAllowed ||
+        !deployment.deploymentId ||
+        createHash("sha256")
+          .update(`koed:backend-origin:v1\n${deployment.deploymentId}`)
+          .digest("hex") !== originHash
+      )
+        throw Object.assign(new Error("Invitation backend is not verified"), {
+          statusCode: 403
+        });
+      if (config.deploymentProfile === "developer") return;
+      if (
+        !authProvidersForDeployment({
+          deploymentProfile: config.deploymentProfile,
+          workosAuthKitEnabled: config.workos.authkitEnabled
+        }).includes("workos")
+      )
+        throw Object.assign(
+          new Error("Verified Team identity is unavailable"),
+          { statusCode: 403 }
+        );
+      const identity =
+        await requireRepository().getVerifiedExternalAuthIdentityForUser(
+          user.id
+        );
+      if (
+        !identity ||
+        identity.provider !== "workos_authkit" ||
+        identity.status !== "linked" ||
+        !identity.emailVerified ||
+        identity.providerEnvironment !== config.workos.providerEnvironment ||
+        identity.email.trim().toLowerCase() !== user.email.trim().toLowerCase()
+      )
+        throw Object.assign(
+          new Error("A current verified WorkOS/AuthKit identity is required"),
+          { statusCode: 403 }
+        );
+    },
     projectSharePolicyRepository,
     hashSecret,
     authenticateSessionContext: authHelpers.authenticateSessionContext,

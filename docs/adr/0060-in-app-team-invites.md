@@ -320,11 +320,10 @@ access, audit, or outbox effects. A new invitation is a separate record.
 
 ## Implementation Boundary
 
-This ADR records accepted behavior. It does not claim that the in-app list,
-inviter Agent display metadata, recipient-ID decision path, Decline action,
-`declined` lifecycle value, Now card, freeform text shortcut, or
-generation-bound rejoin behavior exists today. The API and Desktop
-implementation must preserve this contract and the existing token-based
-acceptance path. The prototype's local Undo toast does not define a persisted
+HQ-703 implements the in-app list, inviter Agent display metadata,
+recipient-ID decision path, Decline action, `declined` lifecycle value, Now
+card, freeform text shortcut, and generation-bound rejoin behavior. The API
+and Desktop preserve this contract and the existing token-based acceptance
+path. The prototype's local Undo toast does not define a persisted
 state-reversal contract; do not reopen a declined invitation unless a later
 approved contract defines that operation.

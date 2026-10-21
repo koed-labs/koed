@@ -111,6 +111,33 @@ const hq702Capture =
   new URLSearchParams(window.location.search).get("hq702Capture") === "yes";
 const hq711Capture =
   new URLSearchParams(window.location.search).get("hq711Capture") === "yes";
+const hq703Capture =
+  new URLSearchParams(window.location.search).get("hq703Capture") === "yes";
+const hq703Trace = { decisions: [] as string[], failNext: false };
+const hq703Invitation = {
+  id: "00000000-0000-4000-8000-000000007031",
+  version: 1,
+  backendOriginHash: "a".repeat(64),
+  membershipVersion: null,
+  membershipStatus: null,
+  membershipDisabledReason: null,
+  leaveGeneration: 0,
+  team: { id: "00000000-0000-4000-8000-000000007032", name: "Launch Team" },
+  workspace: {
+    id: "00000000-0000-4000-8000-000000007033",
+    name: "Launch workspace"
+  },
+  project: { id: "00000000-0000-4000-8000-000000007034", name: "landing-site" },
+  inviter: {
+    displayName: "Maya Chen",
+    agentDisplayName: "Maya’s Design Agent"
+  },
+  role: "member" as const,
+  effectiveRole: "member" as const,
+  workspaceAccess: "write" as const,
+  expiresAt: "2026-10-27T09:00:00.000Z"
+};
+let hq703Invitations = [hq703Invitation];
 let hq702PolicyStatus: "absent" | "active" | "revoked" = "absent";
 const hq702Trace = {
   statusReads: 0,
@@ -894,6 +921,29 @@ const publishHq105VisibilityUpdate = (update: CollaborationClientUpdate) => {
 };
 const settingsCollaborationClient = {
   reportTeamActivity: async () => [],
+  listMyInvitations: async () => (hq703Capture ? [...hq703Invitations] : []),
+  decideInvitation: async (
+    invite: typeof hq703Invitation,
+    decision: "accept" | "decline"
+  ) => {
+    if (
+      !hq703Capture ||
+      invite.id !== hq703Invitation.id ||
+      invite.version !== hq703Invitation.version
+    )
+      throw new Error("Invitation changed");
+    hq703Trace.decisions.push(decision);
+    if (hq703Trace.failNext) {
+      hq703Trace.failNext = false;
+      throw new Error("Native review canceled");
+    }
+    hq703Invitations = [];
+    return {
+      ...invite,
+      lifecycle: decision === "accept" ? "accepted" : "declined",
+      version: invite.version + 1
+    };
+  },
   subscribeProjectThreadV2: async (
     _input: unknown,
     listener: NonNullable<typeof hq705RealtimeListener>
@@ -4603,6 +4653,14 @@ export function HqValidationApp() {
       (
         window as Window & { __koedHq702Trace?: typeof hq702Trace }
       ).__koedHq702Trace = hq702Trace;
+    if (hq703Capture) {
+      hq703Invitations = [hq703Invitation];
+      hq703Trace.decisions.length = 0;
+      hq703Trace.failNext = false;
+      (
+        window as Window & { __koedHq703Trace?: typeof hq703Trace }
+      ).__koedHq703Trace = hq703Trace;
+    }
     if (hq705Capture)
       (
         window as Window & { __koedHq705Trace?: typeof hq705Trace }

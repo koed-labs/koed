@@ -18,6 +18,7 @@ import type {
 type TeamAndMembershipAction =
   | "team.create"
   | "team.invite.accept"
+  | "team.invite.decline"
   | "team.invite.revoke"
   | "team.member.role_update"
   | "team.member.disable"
@@ -31,6 +32,7 @@ export type TeamAndMembershipIntent = Extract<
 type TeamAndMembershipRepository = Pick<
   MemorySourceRepository,
   | "getTeamInviteAcceptanceReview"
+  | "getTeamInviteDecisionReview"
   | "getTeamInviteRevocationReview"
   | "getTeamMembershipActionReview"
   | "getTeamLeaveReview"
@@ -131,19 +133,45 @@ const teamInviteAcceptActionDefinition = defineTeamAction<
       operationFamily: "admin",
       action: intent.action,
       teamId: null,
-      targetId: null,
+      targetId: "inviteId" in intent.body ? intent.body.inviteId : null,
       method: "POST",
-      path: "/v1/team-invites/accept",
+      path:
+        "inviteId" in intent.body
+          ? "/v1/team-invites/accept-in-app"
+          : "/v1/team-invites/accept",
       body: intent.body
     }),
   resolvePolicy: async ({ repository, userId, hashSecret, intent }) => {
     const review = requireReview(
-      await repository.getTeamInviteAcceptanceReview(
-        { userId },
-        hashSecret(intent.body.inviteToken)
-      ),
+      "inviteId" in intent.body
+        ? await repository.getTeamInviteDecisionReview(
+            { userId },
+            {
+              inviteId: intent.body.inviteId,
+              expectedVersion: intent.body.expectedVersion,
+              backendOriginHash: intent.body.backendOriginHash
+            }
+          )
+        : await repository.getTeamInviteAcceptanceReview(
+            { userId },
+            hashSecret(intent.body.inviteToken)
+          ),
       "Team invitation acceptance"
     );
+    if (
+      "inviteId" in intent.body &&
+      (review.invite.version !== intent.body.expectedVersion ||
+        !("membershipVersion" in review) ||
+        !("membershipStatus" in review) ||
+        !("membershipDisabledReason" in review) ||
+        !("leaveGeneration" in review) ||
+        review.membershipVersion !== intent.body.expectedMembershipVersion ||
+        review.membershipStatus !== intent.body.expectedMembershipStatus ||
+        review.membershipDisabledReason !==
+          intent.body.expectedMembershipDisabledReason ||
+        review.leaveGeneration !== intent.body.expectedLeaveGeneration)
+    )
+      unavailable("Invitation changed");
     return nativeReview({
       title: `Join ${review.team.name}?`,
       description:
@@ -157,6 +185,53 @@ const teamInviteAcceptActionDefinition = defineTeamAction<
           label: "Membership",
           value: `${review.effectiveRole} · ${review.invite.defaultWorkspaceAccess}`
         },
+        { label: "Initial Workspace", value: review.defaultWorkspace.name }
+      ]
+    });
+  }
+});
+
+const teamInviteDeclineActionDefinition = defineTeamAction<
+  Extract<TeamAndMembershipIntent, { action: "team.invite.decline" }>
+>({
+  action: "team.invite.decline",
+  resolveOperation: (intent) =>
+    bindTeamAdminOperation({
+      operationFamily: "admin",
+      action: intent.action,
+      teamId: null,
+      targetId: intent.body.inviteId,
+      method: "POST",
+      path: "/v1/team-invites/decline",
+      body: intent.body
+    }),
+  resolvePolicy: async ({ repository, userId, intent }) => {
+    const review = requireReview(
+      await repository.getTeamInviteDecisionReview(
+        { userId },
+        {
+          inviteId: intent.body.inviteId,
+          expectedVersion: intent.body.expectedVersion,
+          backendOriginHash: intent.body.backendOriginHash
+        }
+      ),
+      "Team invitation decline"
+    );
+    if (
+      review.membershipVersion !== intent.body.expectedMembershipVersion ||
+      review.membershipStatus !== intent.body.expectedMembershipStatus ||
+      review.membershipDisabledReason !==
+        intent.body.expectedMembershipDisabledReason ||
+      review.leaveGeneration !== intent.body.expectedLeaveGeneration
+    )
+      unavailable("Invitation changed");
+    return nativeReview({
+      title: `Decline invitation to ${review.team.name}?`,
+      description: "This invitation will close.",
+      consequence: "You will not join this Team or receive Workspace Access.",
+      confirmLabel: "Decline invitation",
+      details: [
+        { label: "Team", value: review.team.name },
         { label: "Initial Workspace", value: review.defaultWorkspace.name }
       ]
     });
@@ -377,6 +452,7 @@ const teamLeaveActionDefinition = defineTeamAction<
 export const teamAndMembershipActionDefinitions = {
   "team.create": teamCreateActionDefinition,
   "team.invite.accept": teamInviteAcceptActionDefinition,
+  "team.invite.decline": teamInviteDeclineActionDefinition,
   "team.invite.revoke": teamInviteRevokeActionDefinition,
   "team.member.role_update": teamMemberRoleUpdateActionDefinition,
   "team.member.disable": teamMemberDisableActionDefinition,
@@ -392,6 +468,8 @@ export const resolveTeamAndMembershipActionGrantOperation = (input: {
       return teamCreateActionDefinition.resolveOperation(input.intent);
     case "team.invite.accept":
       return teamInviteAcceptActionDefinition.resolveOperation(input.intent);
+    case "team.invite.decline":
+      return teamInviteDeclineActionDefinition.resolveOperation(input.intent);
     case "team.invite.revoke":
       return teamInviteRevokeActionDefinition.resolveOperation(input.intent);
     case "team.member.role_update":

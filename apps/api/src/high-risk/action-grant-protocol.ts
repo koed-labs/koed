@@ -30,6 +30,7 @@ import {
   createTeamWorkspaceSchema,
   expectedVersionSchema,
   teamLeaveActionSchema,
+  teamInviteDecisionSchema,
   setTeamBillingSeatPolicySchema,
   setTeamEntitlementStateSchema,
   setTeamWorkspaceAccessSchema,
@@ -94,7 +95,13 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("team.invite.accept"),
-      body: acceptTeamInviteSchema
+      body: z.union([acceptTeamInviteSchema, teamInviteDecisionSchema])
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("team.invite.decline"),
+      body: teamInviteDecisionSchema
     })
     .strict(),
   z
@@ -705,6 +712,17 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
         ? { action: "team.invite.accept", body: { inviteToken } }
         : null;
     }
+    case "collaboration.decide_invitation": {
+      const { decision, ...body } = intent;
+      const decisionBody = { ...body };
+      delete (decisionBody as Partial<typeof body>).intent;
+      delete (decisionBody as Partial<typeof body>).commandRequestId;
+      return {
+        action:
+          decision === "accept" ? "team.invite.accept" : "team.invite.decline",
+        body: decisionBody
+      };
+    }
     case "collaboration.create_workspace":
       return {
         action: "team.workspace.create",
@@ -730,6 +748,9 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
               }
             : {}),
           defaultWorkspaceAccess: intent.defaultWorkspaceAccess,
+          ...(intent.inviterAgentDisplayName
+            ? { inviterAgentDisplayName: intent.inviterAgentDisplayName }
+            : {}),
           ttlHours: intent.ttlHours
         }
       };
@@ -977,6 +998,7 @@ export const resolveHighRiskActionGrantOperation = (input: {
   switch (intent.action) {
     case "team.create":
     case "team.invite.accept":
+    case "team.invite.decline":
     case "team.member.role_update":
     case "team.member.disable":
     case "team.leave":

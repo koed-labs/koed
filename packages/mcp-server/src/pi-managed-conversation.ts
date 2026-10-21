@@ -603,6 +603,7 @@ export class PiManagedConversationSession {
             "koed_chat_delete",
             "koed_todo_add",
             "koed_todo_send",
+            "koed_team_invite",
             "koed_job_create",
             "koed_job_pause",
             "koed_deck_make",

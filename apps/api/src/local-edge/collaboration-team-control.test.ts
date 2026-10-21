@@ -716,6 +716,71 @@ describe("invitation control", () => {
     });
   });
 
+  it("accepts Agent display metadata only when the trusted owner edge resolves the exact claimed text action", async () => {
+    const managedTextAction = {
+      executionId: randomUUID(),
+      actionId: randomUUID(),
+      revision: 2,
+      projectId: randomUUID()
+    };
+    const command = parsedCommand({
+      command: "collaboration.create_invitation",
+      input: {
+        teamId: ids.team,
+        email: "member@example.test",
+        role: "member",
+        defaultWorkspaceId: ids.workspace,
+        workspaceProjectId: randomUUID(),
+        expectedWorkspaceProjectVersion: 3,
+        defaultWorkspaceAccess: "write",
+        ttlHours: 24,
+        inviterAgentDisplayName: "Chief of Staff",
+        managedTextAction,
+        actionGrant: { id: ids.actionGrant }
+      }
+    });
+    const untrusted = context({ resolveInvitationAgentDisplayName: undefined });
+    expectError(
+      await dispatchCollaborationTeamControlCommand(command, untrusted),
+      "permission_denied"
+    );
+    expect(untrusted.fetch).not.toHaveBeenCalled();
+    const mismatched = context({
+      resolveInvitationAgentDisplayName: async () => "Other Agent"
+    });
+    expectError(
+      await dispatchCollaborationTeamControlCommand(command, mismatched),
+      "permission_denied"
+    );
+    expect(mismatched.fetch).not.toHaveBeenCalled();
+    const bindings: CollaborationTeamControlActionBinding[] = [];
+    const trusted = context({
+      resolveInvitationAgentDisplayName: async (input) => {
+        expect(input).toMatchObject({
+          ...managedTextAction,
+          email: "member@example.test",
+          teamBackendId: "team-vps"
+        });
+        return "Chief of Staff";
+      },
+      resolveActionGrantSecret: async (binding) => {
+        bindings.push(binding);
+        return grantSecret;
+      },
+      response: {
+        invite: invitationRecord(),
+        inviteToken: `kti_${"t".repeat(43)}`
+      }
+    });
+    expect(
+      handled(await dispatchCollaborationTeamControlCommand(command, trusted))
+        .ok
+    ).toBe(true);
+    expect(bindings[0]?.body).toMatchObject({
+      inviterAgentDisplayName: "Chief of Staff"
+    });
+  });
+
   it("accepts only a URL bound to the enrolled backend and keeps its token in the request body", async () => {
     const token = `kti_${"j".repeat(43)}`;
     const command = parsedCommand({

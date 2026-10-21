@@ -78,6 +78,55 @@
   display: grid;
   gap: 2px;
 }
+.hq-now__invitation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  margin: 3px 4px;
+  border: 1px solid var(--hq-border);
+  border-radius: 13px;
+  background: var(--hq-card);
+}
+.hq-now__invitation-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.hq-now__invitation-copy strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.hq-now__invitation-copy small,
+.hq-now__invitation-copy p {
+  margin: 0;
+  color: var(--hq-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.hq-now__invitation-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.hq-now__invitation-actions button {
+  border: 1px solid var(--hq-border);
+  border-radius: 9px;
+  padding: 7px 12px;
+  background: var(--hq-surface);
+  color: var(--hq-fg);
+  font: inherit;
+  cursor: pointer;
+}
+.hq-now__invitation-actions button:last-child {
+  color: var(--hq-accent);
+  border-color: var(--hq-accent);
+}
+.hq-now__invitation-actions button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
 .hq-now__row {
   width: 100%;
   min-height: 64px;

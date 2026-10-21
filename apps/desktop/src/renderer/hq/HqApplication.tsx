@@ -1752,6 +1752,63 @@ export function HqApplication({
         });
         return stillCurrent();
       }
+      case "koed_team_invite": {
+        if (!visibilityClient || !projectsApi?.sharedMembers) return false;
+        if (
+          typeof action.snapshot.agentName !== "string" ||
+          !action.snapshot.agentName.trim()
+        )
+          return false;
+        const project = personalProjects.find(
+          (candidate) => candidate.id === args.projectId
+        );
+        if (
+          !project?.workspaceProjectId ||
+          !project.teamBackendId ||
+          !project.teamWorkspaceId ||
+          project.teamBackendId !== action.snapshot.teamBackendId ||
+          project.workspaceProjectId !== action.snapshot.workspaceProjectId
+        )
+          return false;
+        const current = visibilityClient.current();
+        if (!current || current.connection.backendId !== project.teamBackendId)
+          return false;
+        const team = current.navigation.teams.find((candidate) =>
+          candidate.workspaces.some(
+            (workspace) => workspace.id === project.teamWorkspaceId
+          )
+        );
+        if (!team || (team.role !== "owner" && team.role !== "admin"))
+          return false;
+        const members = await projectsApi.sharedMembers(
+          project.workspaceProjectId,
+          project.teamBackendId
+        );
+        if (
+          !stillCurrent() ||
+          members.projectId !== project.workspaceProjectId ||
+          members.version !== action.snapshot.teamProjectVersion
+        )
+          return false;
+        await visibilityClient.createInvitation({
+          teamId: team.id,
+          email: String(args.email),
+          role: "member",
+          defaultWorkspaceId: project.teamWorkspaceId,
+          workspaceProjectId: project.workspaceProjectId,
+          expectedWorkspaceProjectVersion: members.version,
+          defaultWorkspaceAccess: "write",
+          inviterAgentDisplayName: action.snapshot.agentName,
+          managedTextAction: {
+            executionId: action.executionId,
+            actionId: action.id,
+            revision: action.revision,
+            projectId: String(args.projectId)
+          },
+          ttlHours: 72
+        });
+        return stillCurrent();
+      }
       case "koed_deck_make": {
         const textActions = window.koedDesktop?.managedTextActions;
         if (!textActions?.applyDeckMake) return false;
@@ -2703,6 +2760,7 @@ export function HqApplication({
               {route.kind === "home" && !blankOpen ? (
                 <NowView
                   key={visibilityOwnerId ?? "no-owner"}
+                  invitationsClient={visibilityClient}
                   scheduledJobs={scheduledJobs}
                   scheduledJobAgents={agentsSnapshot?.agents ?? []}
                   onOpenJob={openScheduledJob}
@@ -2752,6 +2810,7 @@ export function HqApplication({
           ) : route.kind === "home" ? (
             <NowView
               key={visibilityOwnerId ?? "no-owner"}
+              invitationsClient={visibilityClient}
               scheduledJobs={scheduledJobs}
               scheduledJobAgents={agentsSnapshot?.agents ?? []}
               onOpenJob={openScheduledJob}

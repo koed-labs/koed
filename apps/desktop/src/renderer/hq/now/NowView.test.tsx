@@ -15,6 +15,8 @@ import type {
 import { dueChoiceDate } from "../due/hq-due-model.js";
 import { viewerTimeZone } from "../project/hq-work-item-model.js";
 import { NowView } from "./NowView.js";
+import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
+import type { CollaborationMyInvitation } from "@koed/shared/collaboration";
 
 const projects = Array.from({ length: 7 }, (_, index) => ({
   id: `project-${index}`,
@@ -82,6 +84,86 @@ describe("Now view", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("clears invitations on backend switch and rejects a delayed old response", async () => {
+    const ownerId = "00000000-0000-4000-8000-000000000001";
+    const invite: CollaborationMyInvitation = {
+      id: "00000000-0000-4000-8000-000000000002",
+      version: 1,
+      backendOriginHash: "a".repeat(64),
+      membershipVersion: null,
+      membershipStatus: null,
+      membershipDisabledReason: null,
+      leaveGeneration: 0,
+      team: { id: "00000000-0000-4000-8000-000000000003", name: "Old Team" },
+      workspace: {
+        id: "00000000-0000-4000-8000-000000000004",
+        name: "Old Workspace"
+      },
+      project: null,
+      inviter: { displayName: "Old Owner", agentDisplayName: null },
+      role: "member",
+      effectiveRole: "member",
+      workspaceAccess: "read",
+      expiresAt: "2026-10-27T09:00:00.000Z"
+    };
+    let backend = "old";
+    const listeners = new Set<() => void>();
+    let resolveOld!: (items: CollaborationMyInvitation[]) => void;
+    const oldResponse = new Promise<CollaborationMyInvitation[]>((resolve) => {
+      resolveOld = resolve;
+    });
+    let oldLoads = 0;
+    const listMyInvitations = vi.fn(() =>
+      backend === "old"
+        ? ++oldLoads === 1
+          ? Promise.resolve([invite])
+          : oldResponse
+        : Promise.resolve([])
+    );
+    const client = {
+      current: () => ({
+        connection: { backendId: backend, connectedAt: null },
+        navigation: { personalOwner: { id: ownerId }, teamPrincipal: null }
+      }),
+      currentRemoteUrl: () => `https://${backend}.example.test`,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      listMyInvitations,
+      decideInvitation: vi.fn()
+    } as unknown as CollaborationRendererClient;
+    const render = async () => {
+      await act(async () =>
+        root.render(
+          <NowView
+            projects={[]}
+            approvals={[]}
+            ownerId={ownerId}
+            profileKey={`${backend}||https://${backend}.example.test`}
+            invitationsClient={client}
+            onSelectProject={vi.fn()}
+            onSelectConversation={vi.fn()}
+          />
+        )
+      );
+    };
+    await render();
+    expect(container.querySelectorAll(".hq-now__invitation")).toHaveLength(1);
+    await act(async () =>
+      (container.querySelector(".hq-now__refresh") as HTMLButtonElement).click()
+    );
+    await act(async () => {
+      backend = "new";
+      for (const listener of listeners) listener();
+    });
+    await render();
+    expect(container.querySelectorAll(".hq-now__invitation")).toHaveLength(0);
+    await act(async () => resolveOld([invite]));
+    expect(container.querySelectorAll(".hq-now__invitation")).toHaveLength(0);
+    expect(listMyInvitations).toHaveBeenCalledTimes(3);
   });
 
   it("caps Project rows, persists fold state, and opens the selected Project", async () => {

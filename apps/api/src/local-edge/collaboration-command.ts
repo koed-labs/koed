@@ -3906,7 +3906,11 @@ export const registerCollaborationCommandRoute = (
                   body: binding.body,
                   idempotencyKey: input.command.requestId
                 })
-              )
+              ),
+            resolveInvitationAgentDisplayName: (invite) =>
+              options
+                .requireCollaborationRepository()
+                .resolveInvitationAgentDisplayName({ userId: user.id }, invite)
           }
         );
         if (dispatched.status === "handled") return dispatched.result;

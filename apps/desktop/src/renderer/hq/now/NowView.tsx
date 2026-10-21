@@ -6,7 +6,7 @@ import {
   RotateCw,
   ShieldAlert
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { Project } from "@koed/shared";
 import type { WorkItem } from "@koed/shared/work-item-contract";
@@ -21,7 +21,11 @@ import type {
   ManagedConversationRuntimeItem,
   ManagedConversationListEntry
 } from "../../../ipc/managed-conversation-protocol.js";
-import type { CollaborationActionGrantProjection } from "../../../collaboration/renderer-client.js";
+import type {
+  CollaborationActionGrantProjection,
+  CollaborationRendererClient
+} from "../../../collaboration/renderer-client.js";
+import type { CollaborationMyInvitation } from "@koed/shared/collaboration";
 import type { ManagedConversationLifecycle } from "../../state/use-managed-conversation-lifecycle.js";
 import {
   nowNeedsFromApprovals,
@@ -54,6 +58,7 @@ export function NowView({
   personalProjects,
   projectsApi,
   api,
+  invitationsClient,
   lifecycle,
   approvals,
   blockedConversationSessions,
@@ -76,6 +81,7 @@ export function NowView({
   personalProjects?: readonly Project[];
   projectsApi?: ProjectsDesktopApi | null;
   api?: ManagedConversationDesktopApi | null;
+  invitationsClient?: CollaborationRendererClient | null;
   lifecycle?: ManagedConversationLifecycle;
   approvals: readonly CollaborationActionGrantProjection[];
   blockedConversationSessions?: ReadonlySet<string>;
@@ -129,6 +135,100 @@ export function NowView({
   const [loading, setLoading] = useState(true);
   const [runtimeError, setRuntimeError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const invitationAuthority = () => {
+    if (!invitationsClient || !ownerId || !profileKey) return null;
+    const snapshot = invitationsClient.current();
+    const remoteUrl = invitationsClient.currentRemoteUrl();
+    if (
+      !snapshot ||
+      !snapshot.connection.backendId ||
+      !remoteUrl ||
+      snapshot.navigation.personalOwner.id !== ownerId ||
+      profileKey !==
+        `${snapshot.connection.backendId}|${snapshot.connection.connectedAt ?? ""}|${remoteUrl}`
+    )
+      return null;
+    return JSON.stringify([
+      ownerId,
+      profileKey,
+      snapshot.navigation.personalOwner.id,
+      snapshot.navigation.teamPrincipal?.id ?? null,
+      snapshot.connection.backendId,
+      remoteUrl
+    ]);
+  };
+  const authorityKey = useSyncExternalStore(
+    (notify) => invitationsClient?.subscribe(() => notify()) ?? (() => {}),
+    invitationAuthority,
+    () => null
+  );
+  const [invitationSnapshot, setInvitationSnapshot] = useState<{
+    authorityKey: string;
+    items: readonly CollaborationMyInvitation[];
+  } | null>(null);
+  const invitations =
+    invitationSnapshot?.authorityKey === authorityKey
+      ? invitationSnapshot.items
+      : [];
+  const [invitationError, setInvitationError] = useState("");
+  const [invitationBusy, setInvitationBusy] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    setInvitationSnapshot(null);
+    setInvitationError("");
+    setInvitationBusy(null);
+    if (!invitationsClient || !authorityKey) {
+      return;
+    }
+    void invitationsClient
+      .listMyInvitations()
+      .then((items) => {
+        if (active && invitationAuthority() === authorityKey) {
+          setInvitationSnapshot({ authorityKey, items });
+          setInvitationError("");
+        }
+      })
+      .catch(() => {
+        if (active && invitationAuthority() === authorityKey) {
+          setInvitationSnapshot(null);
+          setInvitationError(
+            "Team invitations could not load. Refresh to try again."
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [invitationsClient, authorityKey, refreshKey]);
+  const decideInvitation = async (
+    invite: CollaborationMyInvitation,
+    decision: "accept" | "decline"
+  ) => {
+    if (
+      !invitationsClient ||
+      !authorityKey ||
+      invitationBusy ||
+      invitationSnapshot?.authorityKey !== authorityKey
+    )
+      return;
+    const decisionAuthority = authorityKey;
+    setInvitationBusy(invite.id);
+    setInvitationError("");
+    try {
+      await invitationsClient.decideInvitation(invite, decision);
+      if (invitationAuthority() === decisionAuthority)
+        setRefreshKey((value) => value + 1);
+    } catch {
+      if (invitationAuthority() === decisionAuthority) {
+        setInvitationError(
+          "Invitation changed or the review was canceled. Refresh to check its current state."
+        );
+        setRefreshKey((value) => value + 1);
+      }
+    } finally {
+      if (invitationAuthority() === decisionAuthority) setInvitationBusy(null);
+    }
+  };
   const [sourceApi, setSourceApi] =
     useState<ManagedConversationDesktopApi | null>(null);
   const [sourceOwnerId, setSourceOwnerId] = useState<string | null>(null);
@@ -507,7 +607,9 @@ export function NowView({
         <section
           className="hq-now__section"
           aria-label="Needs you"
-          data-has-items={needRows.length + jobNeeds.length > 0}
+          data-has-items={
+            needRows.length + jobNeeds.length + invitations.length > 0
+          }
         >
           <header className="hq-now__section-header">
             <button
@@ -517,7 +619,10 @@ export function NowView({
             >
               <ChevronDown aria-hidden="true" />
               <i className="hq-now__section-dot" aria-hidden="true" />
-              Needs you <span>{needRows.length + jobNeeds.length}</span>
+              Needs you{" "}
+              <span>
+                {needRows.length + jobNeeds.length + invitations.length}
+              </span>
             </button>
             <button
               type="button"
@@ -534,6 +639,60 @@ export function NowView({
               {runtimeError && (sourceCurrent || !api?.list) ? (
                 <p role="alert">{runtimeError}</p>
               ) : null}
+              {invitationError ? <p role="alert">{invitationError}</p> : null}
+              {invitations.map((invite) => (
+                <article
+                  key={invite.id}
+                  className="hq-now__invitation"
+                  aria-label={`Invitation to ${invite.team.name}`}
+                >
+                  <div className="hq-now__invitation-copy">
+                    <strong>
+                      {invite.inviter.displayName || "A teammate"} invited you
+                      to {invite.project?.name ?? invite.workspace.name}
+                    </strong>
+                    <small>
+                      {invite.team.name} ·{" "}
+                      {invite.project ? "Project" : "Workspace"} ·{" "}
+                      {invite.effectiveRole} · {invite.workspaceAccess} access
+                    </small>
+                    {invite.inviter.agentDisplayName ? (
+                      <small>
+                        Inviter’s Agent: {invite.inviter.agentDisplayName}
+                      </small>
+                    ) : null}
+                    <small>
+                      Expires{" "}
+                      {new Date(invite.expiresAt).toLocaleDateString(
+                        undefined,
+                        { month: "short", day: "numeric", year: "numeric" }
+                      )}
+                    </small>
+                    {invite.project ? (
+                      <p>
+                        Your chats in {invite.project.name} will be shared as
+                        summaries with {invite.team.name}.
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="hq-now__invitation-actions">
+                    <button
+                      type="button"
+                      disabled={invitationBusy === invite.id}
+                      onClick={() => void decideInvitation(invite, "decline")}
+                    >
+                      Decline
+                    </button>
+                    <button
+                      type="button"
+                      disabled={invitationBusy === invite.id}
+                      onClick={() => void decideInvitation(invite, "accept")}
+                    >
+                      Accept
+                    </button>
+                  </div>
+                </article>
+              ))}
               {dueError ? <p role="alert">{dueError}</p> : null}
               {dueNotice ? <p role="status">{dueNotice}</p> : null}
               {dueLoading && personalProjects?.length ? (
@@ -568,7 +727,7 @@ export function NowView({
                 (!scheduledJobs.loading &&
                   !scheduledJobs.error &&
                   !scheduledJobs.truncated)) &&
-              needRows.length + jobNeeds.length === 0 ? (
+              needRows.length + jobNeeds.length + invitations.length === 0 ? (
                 <p className="hq-now__empty">Nothing needs you right now.</p>
               ) : null}
               {nowVisible(needRows, moreNeeds).map((entry) =>
