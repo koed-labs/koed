@@ -667,5 +667,7 @@ until the Team Backend has completed its required grant and access changes. A
 Personal command remains a local owner operation; when it affects a Team grant,
 it must wait for the exact owner-authorized freeze or revocation to complete
 before reporting success. The exact freeze route, HQ-202 Personal Project
-coordinator, and HQ-712 Workspace Project lifecycle paths exist. Project Share
-Policy, Deck/card collaboration, and Project Thread remain follow-up work.
+coordinator, HQ-712 Workspace Project lifecycle paths, and HQ-801 Deck/card
+storage and collaboration routes exist. See [Flashcard Deck storage and API](./flashcard-decks.md).
+The human-only Project Thread is implemented. Project Share Policy, Deck
+study/Again learning, and two-user live Project validation remain follow-up work.

@@ -30,6 +30,7 @@ import {
   createAgentsRepository,
   createProjectActivityRepository,
   createProjectApiRepository,
+  createFlashcardDeckRepository,
   createWorkspaceProjectRepository,
   createPersonalWorkspaceProjectRepository,
   createScheduledJobRepository,
@@ -65,6 +66,7 @@ import { registerWorkItemRoutes } from "../work-items/routes.js";
 import { registerWorkItemsFromDocumentRoutes } from "../work-items/from-document-routes.js";
 import { registerAgentRoutes } from "../agents/routes.js";
 import { registerProjectRoutes } from "../projects/routes.js";
+import { registerDeckRoutes } from "../projects/deck-routes.js";
 import { registerScheduledJobRoutes } from "../scheduled-jobs/routes.js";
 import { createScheduledJobTeamAuthority } from "../scheduled-jobs/team-authority.js";
 import { createManagedTextActionTeamAdapter } from "../managed-conversations/text-action-team-authority.js";
@@ -529,6 +531,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             localEdgeUpstreamBackendsPath
           ).backends.map((backend) => backend.id)
       })
+    : null;
+  const flashcardDeckRepository = pool
+    ? createFlashcardDeckRepository(pool)
     : null;
   let scheduledJobTeamAuthority: ScheduledJobTeamAuthority | null = null;
   const scheduledJobRepository = pool
@@ -2161,6 +2166,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite
   });
+  registerDeckRoutes(app, {
+    repository: flashcardDeckRepository,
+    deploymentProfile: config.deploymentProfile,
+    koedHome: config.koedHome,
+    auth: authHelpers,
+    readRateLimit: rateLimitHandlers.memoryRead,
+    writeRateLimit: rateLimitHandlers.memoryWrite
+  });
   registerScheduledJobRoutes(
     app,
     routeContext,
@@ -2208,7 +2221,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     routeContext,
     personalWorkspaceProjectRepository,
     projectSourceRepository,
-    () => void projectSourceIngestionService?.runNow()
+    () => void projectSourceIngestionService?.runNow(),
+    flashcardDeckRepository
   );
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: requireRepository,

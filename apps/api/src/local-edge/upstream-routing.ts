@@ -538,6 +538,9 @@ export const assertUpstreamOperationPathAllowed = (
         ) ||
         /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/sources\/[0-9a-f-]{36}\/uploader-proof$/i.test(
           pathname
+        ) ||
+        /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/decks(?:\/[0-9a-f-]{36})?$/i.test(
+          pathname
         ))
     )
       return;
@@ -580,6 +583,9 @@ export const assertUpstreamOperationPathAllowed = (
           ) ||
           /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/work-items\/[0-9a-f-]{36}\/dispatch-receipt$/i.test(
             pathname
+          ) ||
+          /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/decks(?:\/[0-9a-f-]{36}\/cards)?$/i.test(
+            pathname
           ))) ||
       (method === "PATCH" &&
         (/^\/v1\/workspace-projects\/[0-9a-f-]{36}\/(?:work-items|sources)\/[0-9a-f-]{36}$/i.test(
@@ -587,7 +593,14 @@ export const assertUpstreamOperationPathAllowed = (
         ) ||
           /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/work-items\/[0-9a-f-]{36}\/dispatch-progress$/i.test(
             pathname
-          )))
+          ) ||
+          /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/decks\/[0-9a-f-]{36}(?:\/cards\/[0-9a-f-]{36})?$/i.test(
+            pathname
+          ))) ||
+      (method === "DELETE" &&
+        /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/decks\/[0-9a-f-]{36}$/i.test(
+          pathname
+        ))
     )
       return;
     deny();

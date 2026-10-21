@@ -55,7 +55,7 @@ const transaction = async <T>(
   }
 };
 
-const notifyProjectChange = async (
+export const notifyProjectChange = async (
   client: pg.PoolClient,
   input: {
     teamId: string;
@@ -303,6 +303,7 @@ export const workspaceProjectCopyManifestHash = (input: {
   personalProjectVersion: number;
   workItems: Array<{ id: string }>;
   sources: Array<{ id: string }>;
+  decks?: Array<{ id: string; cards: Array<{ id: string }> }>;
 }) =>
   createHash("sha256")
     .update(
@@ -311,7 +312,17 @@ export const workspaceProjectCopyManifestHash = (input: {
         workItems: [...input.workItems].sort((a, b) =>
           a.id.localeCompare(b.id)
         ),
-        sources: [...input.sources].sort((a, b) => a.id.localeCompare(b.id))
+        sources: [...input.sources].sort((a, b) => a.id.localeCompare(b.id)),
+        ...(input.decks?.length
+          ? {
+              decks: [...input.decks]
+                .sort((a, b) => a.id.localeCompare(b.id))
+                .map((d) => ({
+                  ...d,
+                  cards: [...d.cards].sort((a, b) => a.id.localeCompare(b.id))
+                }))
+            }
+          : {})
       })
     )
     .digest("hex");
@@ -1130,6 +1141,20 @@ export const createWorkspaceProjectRepository = (
           personalNoteId?: string | null;
           personalNoteRevisionId?: string | null;
         }>;
+        decks?: Array<{
+          id: string;
+          title: string;
+          scope: string;
+          madeFrom: string;
+          createdByAgentId: string | null;
+          cards: Array<{
+            id: string;
+            question: string;
+            answer: string;
+            sourceRef: string | null;
+            topicLabel: string | null;
+          }>;
+        }>;
       }
     ) {
       return transaction(pool, async (client) => {
@@ -1204,6 +1229,49 @@ export const createWorkspaceProjectRepository = (
               source.personalNoteRevisionId ?? null
             ]
           );
+        }
+        for (const deck of input.decks ?? []) {
+          const deckId = randomUUID();
+          await client.query(
+            `insert into workspace_project_decks
+            (id,workspace_project_id,created_by_team_member_id,source_deck_id,title,scope,made_from,created_by_agent_id)
+            values($1,$2,$3,$4,$5,$6,$7,$8) on conflict (workspace_project_id,created_by_team_member_id,source_deck_id) do nothing`,
+            [
+              deckId,
+              projectId,
+              project.actor_team_member_id,
+              deck.id,
+              deck.title,
+              deck.scope,
+              deck.madeFrom,
+              deck.createdByAgentId
+            ]
+          );
+          const actual = (
+            await client.query<{ id: string }>(
+              `select id from workspace_project_decks
+            where workspace_project_id=$1 and created_by_team_member_id=$2 and source_deck_id=$3`,
+              [projectId, project.actor_team_member_id, deck.id]
+            )
+          ).rows[0];
+          if (!actual)
+            throw new WorkspaceProjectUnavailableError("Deck copy unavailable");
+          for (const card of deck.cards)
+            await client.query(
+              `insert into workspace_project_deck_cards
+            (id,workspace_project_id,deck_id,source_card_id,question,answer,source_ref,topic_label)
+            values($1,$2,$3,$4,$5,$6,$7,$8) on conflict (deck_id,source_card_id) do nothing`,
+              [
+                randomUUID(),
+                projectId,
+                actual.id,
+                card.id,
+                card.question,
+                card.answer,
+                card.sourceRef,
+                card.topicLabel
+              ]
+            );
         }
         const updated = await one(
           client,
@@ -2690,6 +2758,11 @@ export const createWorkspaceProjectRepository = (
         update workspace_projects
            set lifecycle='deleted',deleted_at=now(),version=version+1,updated_at=now()
          where id=$1`,
+          [projectId]
+        );
+        await client.query(
+          `update workspace_project_decks set deleted_at=now(),version=version+1,updated_at=now()
+          where workspace_project_id=$1 and deleted_at is null`,
           [projectId]
         );
         await client.query(

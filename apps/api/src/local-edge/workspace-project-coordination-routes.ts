@@ -10,7 +10,8 @@ import {
   PersonalWorkspaceProjectUnavailableError,
   workspaceProjectCopyManifestHash,
   type PersonalWorkspaceProjectRepository,
-  type ProjectSourceRepository
+  type ProjectSourceRepository,
+  type createFlashcardDeckRepository
 } from "@koed/db";
 import type { ApiRouteContext } from "../server/context.js";
 import { workspaceProjectWorkItemSchema } from "@koed/shared/workspace-project-contract";
@@ -20,6 +21,12 @@ import {
   projectSourceReadSchema
 } from "@koed/shared";
 import { createHash } from "node:crypto";
+import {
+  deckSchema,
+  deckProgressListSchema,
+  deckProgressSchema,
+  putDeckProgressSchema
+} from "@koed/shared";
 import { authenticateProjectOperation } from "../projects/desktop-read-auth.js";
 import {
   readLocalEdgeUpstreamRegistry,
@@ -79,6 +86,69 @@ const proofSchema = z
     copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/)
   })
   .strict();
+const deckCopyMapSchema = z
+  .object({
+    projectId: z.uuid(),
+    copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+    cards: z
+      .array(
+        z
+          .object({
+            sourceDeckId: z.uuid(),
+            deckId: z.uuid(),
+            sourceCardId: z.uuid(),
+            cardId: z.uuid()
+          })
+          .strict()
+      )
+      .max(50000)
+  })
+  .strict();
+const copyBackDeckSchema = z
+  .object({
+    id: z.uuid(),
+    sourceOwnerTeamMemberId: z.uuid(),
+    sourceDeckId: z.uuid().nullable(),
+    title: z.string().min(1).max(500),
+    scope: z.string().max(2000),
+    madeFrom: z.string().max(4000),
+    createdByAgentId: z.uuid().nullable(),
+    cards: z
+      .array(
+        z
+          .object({
+            id: z.uuid(),
+            sourceCardId: z.uuid().nullable(),
+            question: z.string().min(1).max(4000),
+            answer: z.string().min(1).max(16000),
+            sourceRef: z.string().max(2048).nullable(),
+            topicLabel: z.string().max(240).nullable()
+          })
+          .strict()
+      )
+      .max(500)
+  })
+  .strict();
+const copyBackDecksSchema = z
+  .array(copyBackDeckSchema)
+  .max(100)
+  .superRefine((decks, context) => {
+    const deckIds = new Set<string>();
+    const cardIds = new Set<string>();
+    for (const deck of decks) {
+      if (deckIds.has(deck.id))
+        context.addIssue({ code: "custom", message: "Duplicate Team Deck ID" });
+      deckIds.add(deck.id);
+      for (const card of deck.cards) {
+        if (cardIds.has(card.id))
+          context.addIssue({
+            code: "custom",
+            message: "Duplicate Team Card ID"
+          });
+        cardIds.add(card.id);
+      }
+    }
+  });
 const lifecycleSchema = z
   .object({
     id: z.uuid(),
@@ -144,11 +214,12 @@ export const registerWorkspaceProjectCoordinationRoutes = (
   context: ApiRouteContext,
   repository: PersonalWorkspaceProjectRepository | null,
   sourceRepository: ProjectSourceRepository | null,
-  requestSourceIngestion?: () => void
+  requestSourceIngestion?: () => void,
+  deckRepository?: ReturnType<typeof createFlashcardDeckRepository> | null
 ) => {
   const repo = () =>
     repository ?? denied("Personal Workspace Project state unavailable", 503);
-  const authenticateLocal = async (request: FastifyRequest) => {
+  const authenticateLocal = async (request: FastifyRequest, write = true) => {
     if (!request.headers.authorization?.trim().startsWith("Koed-Desktop "))
       denied("Desktop local credential required");
     const actor = await authenticateProjectOperation(
@@ -158,12 +229,17 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         deploymentProfile: context.config.deploymentProfile,
         koedHome: context.config.koedHome
       },
-      true
+      write
     );
     const local = verifyDesktopLocalCredentialAuthorization(
       context.config.koedHome,
       request.headers.authorization,
-      { ownerUserId: actor.id, operationFamily: "personal_collaboration_write" }
+      {
+        ownerUserId: actor.id,
+        operationFamily: write
+          ? "personal_collaboration_write"
+          : "personal_collaboration_read"
+      }
     );
     if (!local) denied("Enrolled local credential required");
     return { actor, local: local! };
@@ -171,9 +247,10 @@ export const registerWorkspaceProjectCoordinationRoutes = (
   const authenticate = async (
     request: FastifyRequest,
     backendId: string,
-    family: "team_workspace_read" | "team_workspace_write"
+    family: "team_workspace_read" | "team_workspace_write",
+    personalWrite = true
   ) => {
-    const { actor, local } = await authenticateLocal(request);
+    const { actor, local } = await authenticateLocal(request, personalWrite);
     const teamHeader = request.headers["x-koed-team-client-credential"];
     const team = verifyLocalEdgeClientCredentialAuthorization(
       context.config.koedHome,
@@ -210,6 +287,94 @@ export const registerWorkspaceProjectCoordinationRoutes = (
       denied("Authoritative Team Project state unavailable", 424);
     return remote.payload;
   };
+  const deckRepo = () =>
+    deckRepository ?? denied("Personal Deck progress unavailable", 503);
+  const linkedDeck = async (
+    request: FastifyRequest,
+    projectId: string,
+    deckId: string,
+    write: boolean
+  ) => {
+    const local = await authenticateLocal(request, write);
+    const link = await repo().getLink(local.actor.id, projectId);
+    if (!link) denied("Shared Project link unavailable", 404);
+    await authenticate(
+      request,
+      link!.teamBackendId,
+      "team_workspace_read",
+      write
+    );
+    const principal = await teamPrincipal(link!.teamBackendId);
+    if (
+      (await repo().principalBinding(local.actor.id, link!.teamBackendId)) !==
+      principal
+    )
+      denied("Enrolled Team principal changed", 409);
+    const remote = deckSchema.parse(
+      await requestTeam(
+        link!.teamBackendId,
+        `/v1/workspace-projects/${link!.workspaceProjectId}/decks/${deckId}`
+      )
+    );
+    if (remote.projectId !== link!.workspaceProjectId || remote.id !== deckId)
+      denied("Team Deck identity changed", 409);
+    return { ownerUserId: local.actor.id, link: link!, deck: remote };
+  };
+  app.get(
+    "/v1/local-edge/projects/:projectId/decks/:deckId/progress",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const { projectId, deckId } = z
+        .object({ projectId: z.uuid(), deckId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const current = await linkedDeck(request, projectId, deckId, false);
+      const local = await deckRepo().progress(current.ownerUserId, projectId);
+      if (
+        local.link.teamBackendId !== current.link.teamBackendId ||
+        local.link.workspaceProjectId !== current.link.workspaceProjectId
+      )
+        denied("Project link changed", 409);
+      const active = new Set(current.deck.cards.map((c) => c.id));
+      return deckProgressListSchema.parse({
+        progress: local.progress
+          .filter((p) => p.deckId === deckId && active.has(p.cardId))
+          .map((p) => ({
+            cardId: p.cardId,
+            box: p.box,
+            nextAt: p.nextAt,
+            misses: p.misses
+          }))
+      });
+    }
+  );
+  app.put(
+    "/v1/local-edge/projects/:projectId/decks/:deckId/cards/:cardId/progress",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const { projectId, deckId, cardId } = z
+        .object({ projectId: z.uuid(), deckId: z.uuid(), cardId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const body = putDeckProgressSchema.parse(request.body);
+      const current = await linkedDeck(request, projectId, deckId, true);
+      if (!current.deck.cards.some((c) => c.id === cardId))
+        denied("Team Card unavailable", 404);
+      return deckProgressSchema.parse(
+        await deckRepo().putProgress(
+          current.ownerUserId,
+          projectId,
+          deckId,
+          cardId,
+          body,
+          {
+            teamBackendId: current.link.teamBackendId,
+            workspaceProjectId: current.link.workspaceProjectId
+          }
+        )
+      );
+    }
+  );
   const cancelTeamAttempt = async (
     backendId: string,
     teamId: string,
@@ -331,6 +496,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         })
       )
       .parse(stage.workItems);
+    const decks = copyBackDecksSchema.parse(stage.decks);
     const result = await repo().copyBackOwnedProject(
       ownerUserId,
       personalProjectId,
@@ -338,7 +504,8 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         stageId: stage.id,
         workspaceProjectId,
         ownerTeamMemberId: stage.ownerTeamMemberId,
-        workItems
+        workItems,
+        decks
       }
     );
     return { ...result, cleared: true, stageId: stage.id };
@@ -676,6 +843,17 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         proof.copyManifestHash !== workspaceProjectCopyManifestHash(snapshot)
       )
         denied("Personal Project changed before Team confirmation", 409);
+      const deckCopyMap = deckCopyMapSchema.parse(
+        await requestTeam(
+          body.teamBackendId,
+          `/v1/workspace-projects/${body.workspaceProjectId}/deck-copy-map`
+        )
+      );
+      if (
+        deckCopyMap.projectId !== body.workspaceProjectId ||
+        deckCopyMap.copyManifestHash !== proof.copyManifestHash
+      )
+        denied("Team Deck copy changed", 409);
       await repo().bindPrincipal(authority.actor.id, {
         teamBackendId: body.teamBackendId,
         teamPrincipalUserId: principal,
@@ -688,7 +866,8 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         teamBackendId: body.teamBackendId,
         teamId: proof.teamId,
         workspaceId: proof.workspaceId,
-        workspaceProjectId: proof.projectId
+        workspaceProjectId: proof.projectId,
+        deckCopyMap: deckCopyMap.cards
       });
     }
   );
@@ -882,6 +1061,30 @@ export const registerWorkspaceProjectCoordinationRoutes = (
           items.push(...page.items);
           offset = page.nextOffset;
         }
+        const deckPage = z
+          .object({
+            projectId: z.uuid(),
+            projectVersion: z.number().int().positive(),
+            decks: copyBackDecksSchema
+          })
+          .strict()
+          .parse(
+            await requestTeam(
+              body.teamBackendId,
+              `/v1/workspace-projects/${project.id}/copy-back-decks?expectedProjectVersion=${project.version}`
+            )
+          );
+        if (
+          deckPage.projectId !== project.id ||
+          deckPage.projectVersion !== project.version
+        )
+          denied("Owned Project Decks changed during Team leave staging", 409);
+        stagedBytes += Buffer.byteLength(
+          JSON.stringify(deckPage.decks),
+          "utf8"
+        );
+        if (stagedBytes > 7_000_000)
+          denied("Owned Project copy-back exceeds the staging limit", 413);
         const staged = await repo().stageOwnedCopyBack(authority.actor.id, {
           personalProjectId,
           teamBackendId: body.teamBackendId,
@@ -916,7 +1119,8 @@ export const registerWorkspaceProjectCoordinationRoutes = (
               dueOn,
               doneAt
             })
-          )
+          ),
+          decks: deckPage.decks
         });
         stages.push({
           workspaceProjectId: project.id,
@@ -991,6 +1195,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
             })
           )
           .parse(stage.workItems);
+        const decks = copyBackDecksSchema.parse(stage.decks);
         const result = await repo().copyBackOwnedProject(
           authority.actor.id,
           stage.personalProjectId,
@@ -998,7 +1203,8 @@ export const registerWorkspaceProjectCoordinationRoutes = (
             stageId,
             workspaceProjectId: stage.workspaceProjectId,
             ownerTeamMemberId: stage.ownerTeamMemberId,
-            workItems
+            workItems,
+            decks
           }
         );
         completed.push({ stageId, ...result });

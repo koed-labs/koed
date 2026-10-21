@@ -1502,6 +1502,9 @@ export const personalWorkspaceProjectCopybackStages = pgTable(
     ownedSetHash: text("owned_set_hash").notNull(),
     payloadHash: text("payload_hash").notNull(),
     workItems: jsonb("work_items").notNull(),
+    decks: jsonb("decks")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     state: text("state").notNull().default("staged"),
     appliedAt: timestamp("applied_at", { withTimezone: true }),
     createdAt: now(),
@@ -1640,6 +1643,111 @@ export const workspaceProjectWorkItems = pgTable(
     check(
       "workspace_project_work_items_version_positive",
       sql`${table.version} > 0`
+    )
+  ]
+);
+
+// Shared Deck content belongs to the Workspace Project. Agent provenance is
+// opaque here: a Team database must never reference a Personal Agent row.
+export const workspaceProjectDecks = pgTable(
+  "workspace_project_decks",
+  {
+    id: id(),
+    workspaceProjectId: uuid("workspace_project_id")
+      .notNull()
+      .references(() => workspaceProjects.id),
+    createdByTeamMemberId: uuid("created_by_team_member_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    sourceDeckId: uuid("source_deck_id"),
+    idempotencyKey: text("idempotency_key"),
+    creationPayloadHash: text("creation_payload_hash"),
+    title: text("title").notNull(),
+    scope: text("scope").notNull(),
+    madeFrom: text("made_from").notNull(),
+    createdByAgentId: uuid("created_by_agent_id"),
+    uses: integer("uses").notNull().default(0),
+    version: integer("version").notNull().default(1),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("workspace_project_decks_project_id_unique").on(
+      table.workspaceProjectId,
+      table.id
+    ),
+    unique("workspace_project_decks_source_unique").on(
+      table.workspaceProjectId,
+      table.createdByTeamMemberId,
+      table.sourceDeckId
+    ),
+    unique("workspace_project_decks_create_unique").on(
+      table.workspaceProjectId,
+      table.createdByTeamMemberId,
+      table.idempotencyKey
+    ),
+    index("workspace_project_decks_page_idx").on(
+      table.workspaceProjectId,
+      table.createdAt,
+      table.id
+    ),
+    check(
+      "workspace_project_decks_version_positive",
+      sql`${table.version} > 0`
+    ),
+    check("workspace_project_decks_uses_nonnegative", sql`${table.uses} >= 0`),
+    check(
+      "workspace_project_decks_title_nonblank",
+      sql`length(trim(${table.title})) > 0`
+    )
+  ]
+);
+
+export const workspaceProjectDeckCards = pgTable(
+  "workspace_project_deck_cards",
+  {
+    id: id(),
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    deckId: uuid("deck_id").notNull(),
+    sourceCardId: uuid("source_card_id"),
+    question: text("question").notNull(),
+    answer: text("answer").notNull(),
+    sourceRef: text("source_ref"),
+    topicLabel: text("topic_label"),
+    version: integer("version").notNull().default(1),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.workspaceProjectId, table.deckId],
+      foreignColumns: [
+        workspaceProjectDecks.workspaceProjectId,
+        workspaceProjectDecks.id
+      ],
+      name: "workspace_project_deck_cards_deck_fk"
+    }),
+    unique("workspace_project_deck_cards_deck_id_unique").on(
+      table.deckId,
+      table.id
+    ),
+    unique("workspace_project_deck_cards_source_unique").on(
+      table.deckId,
+      table.sourceCardId
+    ),
+    check(
+      "workspace_project_deck_cards_version_positive",
+      sql`${table.version} > 0`
+    ),
+    check(
+      "workspace_project_deck_cards_question_nonblank",
+      sql`length(trim(${table.question})) > 0`
+    ),
+    check(
+      "workspace_project_deck_cards_answer_nonblank",
+      sql`length(trim(${table.answer})) > 0`
     )
   ]
 );
@@ -14025,6 +14133,129 @@ export const agents = pgTable(
     check(
       "agents_model_check",
       sql`${table.defaultModel} is null or length(trim(${table.defaultModel})) between 1 and 512`
+    )
+  ]
+);
+
+export const projectDecks = pgTable(
+  "project_decks",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    title: text("title").notNull(),
+    scope: text("scope").notNull(),
+    madeFrom: text("made_from").notNull(),
+    createdByAgentId: uuid("created_by_agent_id"),
+    idempotencyKey: text("idempotency_key"),
+    creationPayloadHash: text("creation_payload_hash"),
+    uses: integer("uses").notNull().default(0),
+    version: integer("version").notNull().default(1),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deleteBatchId: uuid("delete_batch_id"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "project_decks_owner_project_fk"
+    }),
+    foreignKey({
+      columns: [table.createdByAgentId, table.ownerUserId],
+      foreignColumns: [agents.id, agents.ownerUserId],
+      name: "project_decks_owner_agent_fk"
+    }),
+    unique("project_decks_owner_id_unique").on(table.ownerUserId, table.id),
+    unique("project_decks_create_unique").on(
+      table.ownerUserId,
+      table.projectId,
+      table.idempotencyKey
+    ),
+    index("project_decks_page_idx").on(
+      table.ownerUserId,
+      table.projectId,
+      table.createdAt,
+      table.id
+    ),
+    check(
+      "project_decks_title_nonblank",
+      sql`length(trim(${table.title})) > 0`
+    ),
+    check("project_decks_uses_nonnegative", sql`${table.uses} >= 0`),
+    check("project_decks_version_positive", sql`${table.version} > 0`)
+  ]
+);
+
+export const deckCards = pgTable(
+  "deck_cards",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    deckId: uuid("deck_id").notNull(),
+    question: text("question").notNull(),
+    answer: text("answer").notNull(),
+    sourceRef: text("source_ref"),
+    topicLabel: text("topic_label"),
+    version: integer("version").notNull().default(1),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.deckId],
+      foreignColumns: [projectDecks.ownerUserId, projectDecks.id],
+      name: "deck_cards_owner_deck_fk"
+    }),
+    unique("deck_cards_owner_id_unique").on(table.ownerUserId, table.id),
+    check(
+      "deck_cards_question_nonblank",
+      sql`length(trim(${table.question})) > 0`
+    ),
+    check("deck_cards_answer_nonblank", sql`length(trim(${table.answer})) > 0`),
+    check("deck_cards_version_positive", sql`${table.version} > 0`)
+  ]
+);
+
+// This table exists only in the Personal deployment. Shared card IDs remain
+// Team-side opaque references; no Team FK or Team-owned progress exists.
+export const deckCardProgress = pgTable(
+  "deck_card_progress",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    personalProjectId: uuid("personal_project_id").notNull(),
+    teamBackendId: text("team_backend_id"),
+    workspaceProjectId: uuid("workspace_project_id"),
+    deckId: uuid("deck_id").notNull(),
+    cardId: uuid("card_id").notNull(),
+    box: integer("box").notNull().default(0),
+    nextAt: timestamp("next_at", { withTimezone: true }),
+    misses: integer("misses").notNull().default(0),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.personalProjectId],
+      foreignColumns: [projects.ownerUserId, projects.id],
+      name: "deck_card_progress_owner_project_fk"
+    }),
+    primaryKey({
+      columns: [table.ownerUserId, table.personalProjectId, table.cardId]
+    }),
+    index("deck_card_progress_due_idx").on(
+      table.ownerUserId,
+      table.personalProjectId,
+      table.nextAt
+    ),
+    check("deck_card_progress_box_nonnegative", sql`${table.box} >= 0`),
+    check("deck_card_progress_misses_nonnegative", sql`${table.misses} >= 0`),
+    check(
+      "deck_card_progress_team_pair",
+      sql`(${table.teamBackendId} is null and ${table.workspaceProjectId} is null) or (${table.teamBackendId} is not null and ${table.workspaceProjectId} is not null)`
     )
   ]
 );

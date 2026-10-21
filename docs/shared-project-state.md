@@ -1,8 +1,10 @@
 # Shared Project State
 
 Status: Workspace Project state and lifecycle are implemented under
-[ADR 0062](./adr/0062-shared-project-state.md). Deck/card collaboration,
-Project Thread, and Project Share Policy remain separate follow-up work.
+[ADR 0062](./adr/0062-shared-project-state.md). Deck/card storage and
+collaboration routes and the human-only Project Thread are implemented. Project
+Share Policy, Deck study/Again learning, and two-user live Project validation
+remain follow-up work.
 Workspace Project Work Items, Source metadata, activity, member associations,
 and exact Project lifecycle actions use the Team backend; binaries, extracted
 Personal Note revisions, Conversations, and execution state stay Personal.

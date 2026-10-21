@@ -1,3 +1,8 @@
+export {
+  createFlashcardDeckRepository,
+  DeckUnavailableError,
+  DeckConflictError
+} from "./flashcard-deck-repository.js";
 export { createAuditRepository } from "./audit-repository.js";
 export {
   createWorkspaceProjectRepository,

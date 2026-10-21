@@ -911,6 +911,40 @@ describe("local edge upstream routing", () => {
     ).toThrow("not allowed for operation family");
   });
 
+  it("routes Team Deck content by read and write capability without exposing progress", () => {
+    const project = "11111111-1111-4111-8111-111111111111";
+    const deck = "22222222-2222-4222-8222-222222222222";
+    const card = "33333333-3333-4333-8333-333333333333";
+    const base = `/v1/workspace-projects/${project}/decks`;
+    for (const path of [base, `${base}/${deck}`])
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_workspace_read", "GET", path)
+      ).not.toThrow();
+    for (const [method, path] of [
+      ["POST", base],
+      ["PATCH", `${base}/${deck}`],
+      ["DELETE", `${base}/${deck}`],
+      ["POST", `${base}/${deck}/cards`],
+      ["PATCH", `${base}/${deck}/cards/${card}`]
+    ] as const)
+      expect(() =>
+        assertUpstreamOperationPathAllowed("team_workspace_write", method, path)
+      ).not.toThrow();
+    for (const [family, method, path] of [
+      ["team_workspace_read", "POST", base],
+      ["team_workspace_write", "GET", base],
+      ["team_workspace_write", "PUT", `${base}/${deck}`],
+      ["team_workspace_read", "GET", `${base}/invalid-id`],
+      ["team_workspace_read", "GET", `${base}/${deck}/cards`],
+      ["team_workspace_read", "GET", `${base}/${deck}/progress`],
+      ["team_workspace_write", "PUT", `${base}/${deck}/cards/${card}/progress`],
+      ["team_workspace_read", "GET", `/v1/projects/${project}/deck-progress`]
+    ] as const)
+      expect(() =>
+        assertUpstreamOperationPathAllowed(family, method, path)
+      ).toThrow("not allowed for operation family");
+  });
+
   it("routes file inspection only for its explicit enrolled family", () => {
     const managedBackend = backend({
       routePolicy: { managedExecution: "enabled" }

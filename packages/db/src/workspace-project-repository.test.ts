@@ -7,6 +7,7 @@ import {
 } from "./workspace-project-repository.js";
 import { runDbMigrations } from "./migrate.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
+import { createFlashcardDeckRepository } from "./flashcard-deck-repository.js";
 
 const testUrl = process.env.KOED_HQ712_TEST_DATABASE_URL;
 describe.skipIf(!testUrl)("Workspace Project Team state", () => {
@@ -51,6 +52,8 @@ describe.skipIf(!testUrl)("Workspace Project Team state", () => {
     ]);
     for (const table of [
       "workspace_project_activity",
+      "workspace_project_deck_cards",
+      "workspace_project_decks",
       "workspace_project_work_items",
       "workspace_project_sources",
       "workspace_project_members"
@@ -125,7 +128,9 @@ describe.skipIf(!testUrl)("Workspace Project Team state", () => {
       [aliceMember, bobMember].sort()
     );
     expect(roster.people).toHaveLength(2);
-    await repo.copyFirstShare(alice, project.id, {
+    const sourceDeckId = randomUUID();
+    const sourceCardId = randomUUID();
+    const copy: Parameters<typeof repo.copyFirstShare>[2] = {
       personalProjectVersion: 1,
       expectedVersion: 1,
       workItems: [
@@ -137,8 +142,74 @@ describe.skipIf(!testUrl)("Workspace Project Team state", () => {
           status: "todo"
         }
       ],
-      sources: []
-    });
+      sources: [],
+      decks: [
+        {
+          id: sourceDeckId,
+          title: "First-share Deck",
+          scope: "Chapter 1",
+          madeFrom: "Handout",
+          createdByAgentId: null,
+          cards: [
+            {
+              id: sourceCardId,
+              question: "Question",
+              answer: "Answer",
+              sourceRef: "Handout p. 2",
+              topicLabel: "Chapter 1"
+            }
+          ]
+        }
+      ]
+    };
+    await repo.copyFirstShare(alice, project.id, copy);
+    await repo.copyFirstShare(alice, project.id, copy);
+    const copiedDeck = await pool.query(
+      `select d.title,d.scope,d.made_from,d.created_by_team_member_id,c.question,c.answer,c.source_ref,c.topic_label
+       from workspace_project_decks d join workspace_project_deck_cards c on c.deck_id=d.id
+       where d.workspace_project_id=$1 and d.source_deck_id=$2 and c.source_card_id=$3`,
+      [project.id, sourceDeckId, sourceCardId]
+    );
+    expect(copiedDeck.rows).toEqual([
+      {
+        title: "First-share Deck",
+        scope: "Chapter 1",
+        made_from: "Handout",
+        created_by_team_member_id: aliceMember,
+        question: "Question",
+        answer: "Answer",
+        source_ref: "Handout p. 2",
+        topic_label: "Chapter 1"
+      }
+    ]);
+    const copiedIdentity = await pool.query<{
+      deck_id: string;
+      card_id: string;
+    }>(
+      `select d.id as deck_id,c.id as card_id from workspace_project_decks d
+       join workspace_project_deck_cards c on c.deck_id=d.id
+       where d.workspace_project_id=$1 and d.source_deck_id=$2 and c.source_card_id=$3`,
+      [project.id, sourceDeckId, sourceCardId]
+    );
+    await pool.query(
+      `update workspace_project_deck_cards set deleted_at=now() where id=$1`,
+      [copiedIdentity.rows[0]!.card_id]
+    );
+    await pool.query(
+      `update workspace_project_decks set deleted_at=now() where id=$1`,
+      [copiedIdentity.rows[0]!.deck_id]
+    );
+    expect(
+      (await createFlashcardDeckRepository(pool).copyMapTeam(alice, project.id))
+        .cards
+    ).toEqual([
+      {
+        sourceDeckId,
+        sourceCardId,
+        deckId: copiedIdentity.rows[0]!.deck_id,
+        cardId: copiedIdentity.rows[0]!.card_id
+      }
+    ]);
     const [item] = (await repo.listWorkItems(bob, project.id, { offset: 0 }))
       .items;
     expect(item).toBeDefined();

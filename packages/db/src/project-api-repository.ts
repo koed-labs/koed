@@ -151,13 +151,16 @@ const assertFutureProjectCapabilities = async (
   if (
     result.rows.length !== 5 ||
     result.rows.some((row) =>
+      row.capability === "project_decks" ||
       row.capability === "project_sources" ||
       row.capability === "project_scheduled_jobs"
         ? row.state !== "enabled" ||
           row.relation !==
             (row.capability === "project_sources"
               ? "project_sources"
-              : "scheduled_jobs")
+              : row.capability === "project_decks"
+                ? "project_decks"
+                : "scheduled_jobs")
         : row.state !== "absent" || row.relation !== null
     )
   )
@@ -1471,6 +1474,11 @@ export const createProjectApiRepository = (
           where owner_user_id=$1 and project_id=$2 and deleted_at is null`,
         [ownerUserId, projectId, batchId]
       );
+      await client.query(
+        `update project_decks set deleted_at=now(),delete_batch_id=$3,updated_at=now()
+          where owner_user_id=$1 and project_id=$2 and deleted_at is null`,
+        [ownerUserId, projectId, batchId]
+      );
       const current = await ownerProject(client, ownerUserId, projectId, true);
       if (
         current.lifecycle !== "active" ||
@@ -1549,6 +1557,11 @@ export const createProjectApiRepository = (
       );
       await client.query(
         `update project_sources set deleted_at=null,delete_batch_id=null,updated_at=now()
+          where owner_user_id=$1 and project_id=$2 and delete_batch_id=$3`,
+        [ownerUserId, projectId, input.batchId]
+      );
+      await client.query(
+        `update project_decks set deleted_at=null,delete_batch_id=null,updated_at=now()
           where owner_user_id=$1 and project_id=$2 and delete_batch_id=$3`,
         [ownerUserId, projectId, input.batchId]
       );

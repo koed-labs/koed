@@ -7,6 +7,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createCollaborationRepository,
+  createFlashcardDeckRepository,
   createMemorySourceRepository,
   createPersonalWorkspaceProjectRepository,
   createProjectApiRepository,
@@ -36,6 +37,18 @@ const ids = {
   workspaceProject: randomUUID(),
   ownerMember: randomUUID(),
   copiedItem: randomUUID()
+};
+const deckIds = {
+  personalDeck: randomUUID(),
+  personalCard: randomUUID(),
+  personalCardRemoved: randomUUID(),
+  personalDeckRemoved: randomUUID(),
+  personalCardOnRemovedDeck: randomUUID(),
+  teamDeck: randomUUID(),
+  teamCard: randomUUID(),
+  teamCardRemoved: randomUUID(),
+  teamDeckRemoved: randomUUID(),
+  teamCardOnRemovedDeck: randomUUID()
 };
 const backendId = "team-vps";
 const teamItem = () => ({
@@ -108,6 +121,9 @@ describe.skipIf(!testUrl)(
     let staleLeavePage = false;
     let unlinkedOwnedProject = false;
     let noOwnedProjects = false;
+    let teamDeckUnavailable = false;
+    let teamDeckRevoked = false;
+    let teamDeckMismatched = false;
     const leavePageOffsets: number[] = [];
 
     const send = (
@@ -177,6 +193,54 @@ describe.skipIf(!testUrl)(
         { kind: "skill", name: "Plan skill" }
       );
       personalSourceId = personalSource.id;
+      await pool.query(
+        `insert into project_decks(id,owner_user_id,project_id,title,scope,made_from,idempotency_key,creation_payload_hash)
+         values($1,$2,$3,'Original Deck','Unit 1','Notes',$4,$5)`,
+        [
+          deckIds.personalDeck,
+          ids.personalUser,
+          projectId,
+          randomUUID(),
+          "a".repeat(64)
+        ]
+      );
+      await pool.query(
+        `insert into deck_cards(id,owner_user_id,deck_id,question,answer,source_ref)
+         values($1,$2,$3,'Original question','Original answer','Notes p. 1')`,
+        [deckIds.personalCard, ids.personalUser, deckIds.personalDeck]
+      );
+      await pool.query(
+        `insert into deck_cards(id,owner_user_id,deck_id,question,answer)
+         values($1,$2,$3,'Removed card','Removed answer')`,
+        [deckIds.personalCardRemoved, ids.personalUser, deckIds.personalDeck]
+      );
+      await pool.query(
+        `insert into project_decks(id,owner_user_id,project_id,title,scope,made_from,idempotency_key,creation_payload_hash)
+         values($1,$2,$3,'Removed Deck','Unit 2','Notes',$4,$5)`,
+        [
+          deckIds.personalDeckRemoved,
+          ids.personalUser,
+          projectId,
+          randomUUID(),
+          "b".repeat(64)
+        ]
+      );
+      await pool.query(
+        `insert into deck_cards(id,owner_user_id,deck_id,question,answer)
+         values($1,$2,$3,'Removed Deck question','Removed Deck answer')`,
+        [
+          deckIds.personalCardOnRemovedDeck,
+          ids.personalUser,
+          deckIds.personalDeckRemoved
+        ]
+      );
+      await createFlashcardDeckRepository(pool).putProgress(
+        ids.personalUser,
+        projectId,
+        deckIds.personalDeck,
+        deckIds.personalCard,
+        { box: 3, nextAt: null, misses: 1 }
+      );
       const repository = createPersonalWorkspaceProjectRepository(pool);
       manifestHash = workspaceProjectCopyManifestHash(
         await repository.shareSnapshot(ids.personalUser, projectId)
@@ -273,6 +337,105 @@ describe.skipIf(!testUrl)(
             copyManifestHash: manifestHash
           };
         else if (
+          path ===
+          `/v1/workspace-projects/${ids.workspaceProject}/deck-copy-map`
+        )
+          payload = {
+            projectId: ids.workspaceProject,
+            copyManifestHash: manifestHash,
+            cards: [
+              {
+                sourceDeckId: deckIds.personalDeck,
+                deckId: deckIds.teamDeck,
+                sourceCardId: deckIds.personalCard,
+                cardId: deckIds.teamCard
+              },
+              {
+                sourceDeckId: deckIds.personalDeck,
+                deckId: deckIds.teamDeck,
+                sourceCardId: deckIds.personalCardRemoved,
+                cardId: deckIds.teamCardRemoved
+              },
+              {
+                sourceDeckId: deckIds.personalDeckRemoved,
+                deckId: deckIds.teamDeckRemoved,
+                sourceCardId: deckIds.personalCardOnRemovedDeck,
+                cardId: deckIds.teamCardOnRemovedDeck
+              }
+            ]
+          };
+        else if (
+          path ===
+          `/v1/workspace-projects/${ids.workspaceProject}/copy-back-decks`
+        )
+          payload = {
+            projectId: ids.workspaceProject,
+            projectVersion: 1,
+            decks: [
+              {
+                id: deckIds.teamDeck,
+                sourceOwnerTeamMemberId: ids.ownerMember,
+                sourceDeckId: deckIds.personalDeck,
+                title: "Team-edited Deck",
+                scope: "Unit 1",
+                madeFrom: "Notes",
+                createdByAgentId: null,
+                cards: [
+                  {
+                    id: deckIds.teamCard,
+                    sourceCardId: deckIds.personalCard,
+                    question: "Team-edited question",
+                    answer: "Team-edited answer",
+                    sourceRef: "Notes p. 2",
+                    topicLabel: null
+                  }
+                ]
+              }
+            ]
+          };
+        else if (
+          path ===
+          `/v1/workspace-projects/${ids.workspaceProject}/decks/${deckIds.teamDeck}`
+        ) {
+          if (teamDeckUnavailable)
+            return new Response(JSON.stringify({ error: "Team unavailable" }), {
+              status: 503,
+              headers: { "content-type": "application/json" }
+            });
+          if (teamDeckRevoked)
+            return new Response(
+              JSON.stringify({ error: "Team access revoked" }),
+              {
+                status: 403,
+                headers: { "content-type": "application/json" }
+              }
+            );
+          payload = {
+            id: deckIds.teamDeck,
+            projectId: teamDeckMismatched ? randomUUID() : ids.workspaceProject,
+            title: "Team-edited Deck",
+            scope: "Unit 1",
+            madeFrom: "Notes",
+            createdByAgentId: null,
+            uses: 0,
+            version: 1,
+            createdAt: "2026-10-20T20:00:00.000Z",
+            updatedAt: "2026-10-20T20:00:00.000Z",
+            cards: [
+              {
+                id: deckIds.teamCard,
+                deckId: deckIds.teamDeck,
+                question: "Team-edited question",
+                answer: "Team-edited answer",
+                sourceRef: "Notes p. 2",
+                topicLabel: null,
+                version: 1,
+                createdAt: "2026-10-20T20:00:00.000Z",
+                updatedAt: "2026-10-20T20:00:00.000Z"
+              }
+            ]
+          };
+        } else if (
           path === `/v1/workspace-projects/${ids.workspaceProject}/lifecycle`
         )
           payload = {
@@ -387,7 +550,8 @@ describe.skipIf(!testUrl)(
         sourceRepository,
         () => {
           sourceIngestionRequests++;
-        }
+        },
+        createFlashcardDeckRepository(pool)
       );
       await app.ready();
     }, 120_000);
@@ -651,6 +815,23 @@ describe.skipIf(!testUrl)(
         team_workspace_id: ids.workspace,
         workspace_project_id: ids.workspaceProject
       });
+      expect(
+        (
+          await pool.query(
+            "select deck_id,card_id,box,misses,team_backend_id,workspace_project_id from deck_card_progress where owner_user_id=$1 and personal_project_id=$2",
+            [ids.personalUser, projectId]
+          )
+        ).rows
+      ).toMatchObject([
+        {
+          deck_id: deckIds.teamDeck,
+          card_id: deckIds.teamCard,
+          box: 3,
+          misses: 1,
+          team_backend_id: backendId,
+          workspace_project_id: ids.workspaceProject
+        }
+      ]);
       const principal = await pool.query(
         `select local_user_id,team_backend_id,team_principal_user_id
       from personal_workspace_project_principal_bindings where local_user_id=$1`,
@@ -676,6 +857,58 @@ describe.skipIf(!testUrl)(
       expect(stillLinked.rows[0]?.workspace_project_id).toBe(
         ids.workspaceProject
       );
+    });
+
+    it("keeps shared Deck progress Personal behind live Team read proof", async () => {
+      const base = `/v1/local-edge/projects/${projectId}/decks/${deckIds.teamDeck}`;
+      const request = (method: "GET" | "PUT", url: string, payload?: unknown) =>
+        app.inject({
+          method,
+          url,
+          remoteAddress: "127.0.0.1",
+          headers: {
+            authorization: localAuthorization,
+            "x-koed-team-client-credential": teamAuthorization
+          },
+          ...(payload === undefined ? {} : { payload })
+        });
+      const read = () => request("GET", `${base}/progress`);
+      const write = () =>
+        request("PUT", `${base}/cards/${deckIds.teamCard}/progress`, {
+          box: 4,
+          nextAt: null,
+          misses: 2
+        });
+      expect((await read()).json()).toMatchObject({
+        progress: [{ cardId: deckIds.teamCard, box: 3, misses: 1 }]
+      });
+      expect((await write()).statusCode).toBe(200);
+      expect((await read()).json()).toMatchObject({
+        progress: [{ cardId: deckIds.teamCard, box: 4, misses: 2 }]
+      });
+      teamDeckUnavailable = true;
+      expect((await read()).statusCode).toBe(424);
+      expect((await write()).statusCode).toBe(424);
+      teamDeckUnavailable = false;
+      teamDeckRevoked = true;
+      expect((await read()).statusCode).toBe(424);
+      expect((await write()).statusCode).toBe(424);
+      teamDeckRevoked = false;
+      teamDeckMismatched = true;
+      expect((await read()).statusCode).toBe(409);
+      expect((await write()).statusCode).toBe(409);
+      teamDeckMismatched = false;
+      statusPrincipal = randomUUID();
+      expect((await read()).statusCode).toBe(409);
+      expect((await write()).statusCode).toBe(409);
+      statusPrincipal = ids.teamUser;
+      const noTeamCredential = await app.inject({
+        method: "GET",
+        url: `${base}/progress`,
+        remoteAddress: "127.0.0.1",
+        headers: { authorization: localAuthorization }
+      });
+      expect(noTeamCredential.statusCode).toBe(403);
     });
 
     it("uploads through exact dual authority, keeps real Note bytes Personal, and rechecks uploader access after decrypt", async () => {
@@ -984,6 +1217,46 @@ describe.skipIf(!testUrl)(
         [projectId]
       );
       expect(copied.rows[0]?.n).toBe(51);
+      expect(
+        (
+          await pool.query(
+            "select id,title from project_decks where owner_user_id=$1 and project_id=$2 and deleted_at is null",
+            [ids.personalUser, projectId]
+          )
+        ).rows
+      ).toEqual([{ id: deckIds.personalDeck, title: "Team-edited Deck" }]);
+      expect(
+        (
+          await pool.query(
+            "select id,question,answer,source_ref from deck_cards where owner_user_id=$1 and deck_id=$2 and deleted_at is null",
+            [ids.personalUser, deckIds.personalDeck]
+          )
+        ).rows
+      ).toEqual([
+        {
+          id: deckIds.personalCard,
+          question: "Team-edited question",
+          answer: "Team-edited answer",
+          source_ref: "Notes p. 2"
+        }
+      ]);
+      expect(
+        (
+          await pool.query(
+            "select deck_id,card_id,box,misses,team_backend_id,workspace_project_id from deck_card_progress where owner_user_id=$1 and personal_project_id=$2",
+            [ids.personalUser, projectId]
+          )
+        ).rows
+      ).toMatchObject([
+        {
+          deck_id: deckIds.personalDeck,
+          card_id: deckIds.personalCard,
+          box: 4,
+          misses: 2,
+          team_backend_id: null,
+          workspace_project_id: null
+        }
+      ]);
       const receipt = await pool.query(
         `select owner_user_id,personal_project_id,team_backend_id,
                 workspace_project_id,reason
@@ -1008,6 +1281,14 @@ describe.skipIf(!testUrl)(
       expect(retry.json()).toMatchObject({
         completed: [{ stageId, alreadyApplied: true }]
       });
+      expect(
+        (
+          await pool.query(
+            "select count(*)::int as n from project_decks where owner_user_id=$1 and project_id=$2 and deleted_at is null",
+            [ids.personalUser, projectId]
+          )
+        ).rows[0]?.n
+      ).toBe(1);
       expect(
         (
           await pool.query(

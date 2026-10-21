@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0073_chubby_psylocke";
-const expectedLatestMigrationIndex = 73;
+const expectedLatestMigrationTag = "0074_hot_albert_cleary";
+const expectedLatestMigrationIndex = 74;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -730,6 +730,28 @@ const assertMigrationLedger = async (pool, expectedRecords) => {
 
 const assertLatestSchema = async (pool) => {
   const columnsByTable = {
+    project_decks: [
+      ["id", "uuid", "NO"],
+      ["project_id", "uuid", "NO"],
+      ["created_by_agent_id", "uuid", "YES"]
+    ],
+    deck_cards: [
+      ["id", "uuid", "NO"],
+      ["deck_id", "uuid", "NO"]
+    ],
+    deck_card_progress: [
+      ["owner_user_id", "uuid", "NO"],
+      ["personal_project_id", "uuid", "NO"],
+      ["card_id", "uuid", "NO"]
+    ],
+    workspace_project_decks: [
+      ["id", "uuid", "NO"],
+      ["workspace_project_id", "uuid", "NO"]
+    ],
+    workspace_project_deck_cards: [
+      ["id", "uuid", "NO"],
+      ["deck_id", "uuid", "NO"]
+    ],
     remote_mcp_oauth_clients: [
       ["id", "uuid", "NO"],
       ["metadata", "jsonb", "NO"],
@@ -1358,6 +1380,19 @@ const assertLatestSchema = async (pool) => {
     `select state,enabled_at is not null as enabled,to_regclass('public.project_sources')::text as relation
        from project_lifecycle_schema_capabilities where capability='project_sources'`
   );
+  const deckCapability = await pool.query(
+    `select state,enabled_at is not null as enabled,to_regclass('public.project_decks')::text as relation from project_lifecycle_schema_capabilities where capability='project_decks'`
+  );
+  if (
+    !isDeepStrictEqual(deckCapability.rows[0], {
+      state: "enabled",
+      enabled: true,
+      relation: "project_decks"
+    })
+  )
+    throw new Error(
+      `Project Deck lifecycle adapter is not enabled: ${JSON.stringify(deckCapability.rows[0])}`
+    );
   if (
     !isDeepStrictEqual(sourceCapability.rows[0], {
       state: "enabled",

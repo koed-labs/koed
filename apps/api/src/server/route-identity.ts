@@ -960,6 +960,89 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
 ];
 
 export const routeIdentityContracts = [
+  ...(["GET", "PUT"] as const).map((method) =>
+    route(
+      method,
+      method === "GET"
+        ? "/v1/local-edge/projects/{projectId}/decks/{deckId}/progress"
+        : "/v1/local-edge/projects/{projectId}/decks/{deckId}/cards/{cardId}/progress",
+      "desktop_local_credential",
+      "projects",
+      "Owner-local study progress after live Team Project and Deck authority checks.",
+      "none",
+      "implemented",
+      localEdgeDeploymentModes
+    )
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/deck-copy-map",
+    "session_or_device_credential",
+    "projects",
+    "Owner-only first-share Deck identity map for private progress continuity.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/copy-back-decks",
+    "session_or_device_credential",
+    "projects",
+    "Owner-only bounded Deck snapshot for reviewed Team leave copy-back.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  ...(
+    [
+      ["GET", "/v1/projects/{projectId}/decks"],
+      ["POST", "/v1/projects/{projectId}/decks"],
+      ["GET", "/v1/projects/{projectId}/decks/{deckId}"],
+      ["PATCH", "/v1/projects/{projectId}/decks/{deckId}"],
+      ["DELETE", "/v1/projects/{projectId}/decks/{deckId}"],
+      ["POST", "/v1/projects/{projectId}/decks/{deckId}/cards"],
+      ["PATCH", "/v1/projects/{projectId}/decks/{deckId}/cards/{cardId}"],
+      ["GET", "/v1/projects/{projectId}/deck-progress"],
+      ["PUT", "/v1/projects/{projectId}/decks/{deckId}/cards/{cardId}/progress"]
+    ] as const
+  ).map(([method, path]) =>
+    route(
+      method,
+      path,
+      "session_or_device_credential",
+      "projects",
+      "Owner-scoped Personal Deck content or study progress.",
+      "none",
+      "implemented",
+      localEdgeDeploymentModes
+    )
+  ),
+  ...(
+    [
+      ["GET", "/v1/workspace-projects/{projectId}/decks"],
+      ["POST", "/v1/workspace-projects/{projectId}/decks"],
+      ["GET", "/v1/workspace-projects/{projectId}/decks/{deckId}"],
+      ["PATCH", "/v1/workspace-projects/{projectId}/decks/{deckId}"],
+      ["DELETE", "/v1/workspace-projects/{projectId}/decks/{deckId}"],
+      ["POST", "/v1/workspace-projects/{projectId}/decks/{deckId}/cards"],
+      [
+        "PATCH",
+        "/v1/workspace-projects/{projectId}/decks/{deckId}/cards/{cardId}"
+      ]
+    ] as const
+  ).map(([method, path]) =>
+    route(
+      method,
+      path,
+      "session_or_device_credential",
+      "projects",
+      "Current Workspace Project membership and access authorize shared Deck content.",
+      "request_time_team_workspace",
+      "implemented",
+      teamDeploymentModes
+    )
+  ),
   ...workspaceProjectRouteIdentityContracts,
   route(
     "POST",

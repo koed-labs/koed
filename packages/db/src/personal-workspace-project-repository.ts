@@ -9,6 +9,27 @@ import {
 
 export class PersonalWorkspaceProjectConflictError extends Error {}
 export class PersonalWorkspaceProjectUnavailableError extends Error {}
+type CopyBackDeck = {
+  id: string;
+  sourceOwnerTeamMemberId: string;
+  sourceDeckId: string | null;
+  title: string;
+  scope: string;
+  madeFrom: string;
+  createdByAgentId: string | null;
+  cards: Array<{
+    id: string;
+    sourceCardId: string | null;
+    question: string;
+    answer: string;
+    sourceRef: string | null;
+    topicLabel: string | null;
+  }>;
+};
+const copyBackPayload = (
+  workItems: unknown,
+  decks: CopyBackDeck[] | undefined
+) => (decks?.length ? { workItems, decks } : workItems);
 
 const canonicalJson = (value: unknown): string => {
   const encoded = JSON.stringify(
@@ -25,6 +46,50 @@ const canonicalJson = (value: unknown): string => {
   if (encoded === undefined)
     throw new Error("Copy-back payload is unavailable");
   return encoded;
+};
+
+const deckSnapshot = async (
+  client: pg.Pool | pg.PoolClient,
+  ownerUserId: string,
+  projectId: string
+) => {
+  const decks = await client.query<{
+    id: string;
+    title: string;
+    scope: string;
+    made_from: string;
+    created_by_agent_id: string | null;
+  }>(
+    "select id,title,scope,made_from,created_by_agent_id from project_decks where owner_user_id=$1 and project_id=$2 and deleted_at is null order by created_at,id",
+    [ownerUserId, projectId]
+  );
+  return Promise.all(
+    decks.rows.map(async (d) => ({
+      id: d.id,
+      title: d.title,
+      scope: d.scope,
+      madeFrom: d.made_from,
+      createdByAgentId: d.created_by_agent_id,
+      cards: (
+        await client.query<{
+          id: string;
+          question: string;
+          answer: string;
+          source_ref: string | null;
+          topic_label: string | null;
+        }>(
+          "select id,question,answer,source_ref,topic_label from deck_cards where owner_user_id=$1 and deck_id=$2 and deleted_at is null order by created_at,id",
+          [ownerUserId, d.id]
+        )
+      ).rows.map((c) => ({
+        id: c.id,
+        question: c.question,
+        answer: c.answer,
+        sourceRef: c.source_ref,
+        topicLabel: c.topic_label
+      }))
+    }))
+  );
 };
 
 // This runs inside the same transaction that removes the Personal Project's
@@ -407,10 +472,11 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         dueOn: string | null;
         doneAt: string | null;
       }>;
+      decks?: CopyBackDeck[];
     }
   ) {
     const payloadHash = createHash("sha256")
-      .update(canonicalJson(input.workItems))
+      .update(canonicalJson(copyBackPayload(input.workItems, input.decks)))
       .digest("hex");
     const row = (
       await pool.query<{ id: string; payload_hash: string }>(
@@ -419,8 +485,8 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         (id,owner_user_id,personal_project_id,team_backend_id,team_id,
          workspace_project_id,owner_team_member_id,reviewed_team_version,
          reviewed_member_version,reviewed_project_version,owned_set_hash,
-         payload_hash,work_items)
-      select $1,$2,project.id,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb
+         payload_hash,work_items,decks)
+      select $1,$2,project.id,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb
         from projects project
        where project.id=$3 and project.owner_user_id=$2
          and project.team_backend_id=$4 and project.workspace_project_id=$6
@@ -444,7 +510,8 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           input.reviewedProjectVersion,
           input.ownedSetHash,
           payloadHash,
-          JSON.stringify(input.workItems)
+          JSON.stringify(input.workItems),
+          JSON.stringify(input.decks ?? [])
         ]
       )
     ).rows[0];
@@ -468,6 +535,7 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         reviewed_project_version: number;
         owned_set_hash: string;
         work_items: unknown;
+        decks: unknown;
         state: string;
       }>(
         `select * from personal_workspace_project_copyback_stages
@@ -488,6 +556,7 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           reviewedProjectVersion: row.reviewed_project_version,
           ownedSetHash: row.owned_set_hash,
           workItems: row.work_items,
+          decks: row.decks,
           state: row.state
         }
       : null;
@@ -640,7 +709,8 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         status: source.status,
         personalNoteId: source.personal_note_id,
         personalNoteRevisionId: source.verified_revision_id
-      }))
+      })),
+      decks: await deckSnapshot(pool, ownerUserId, projectId)
     };
   },
 
@@ -654,6 +724,12 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
       teamId: string;
       workspaceId: string;
       workspaceProjectId: string;
+      deckCopyMap?: Array<{
+        sourceDeckId: string;
+        deckId: string;
+        sourceCardId: string;
+        cardId: string;
+      }>;
     }
   ) {
     const client = await pool.connect();
@@ -765,6 +841,7 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         throw new PersonalWorkspaceProjectConflictError(
           "Personal Note revision changed"
         );
+      const currentDecks = await deckSnapshot(client, ownerUserId, projectId);
       const currentManifestHash = workspaceProjectCopyManifestHash({
         personalProjectVersion: current.version,
         workItems: items.rows.map((item) => ({
@@ -784,11 +861,42 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           status: source.status,
           personalNoteId: source.personal_note_id,
           personalNoteRevisionId: source.verified_revision_id
-        }))
+        })),
+        decks: currentDecks
       });
       if (currentManifestHash !== input.expectedManifestHash)
         throw new PersonalWorkspaceProjectConflictError(
           "Personal Project changed after Team copy"
+        );
+      const expectedCards = currentDecks.flatMap((d) =>
+        d.cards.map((c) => `${d.id}:${c.id}`)
+      );
+      const copyMap = input.deckCopyMap ?? [];
+      const mapKeys = copyMap.map((m) => `${m.sourceDeckId}:${m.sourceCardId}`);
+      if (
+        copyMap.length !== expectedCards.length ||
+        new Set(mapKeys).size !== mapKeys.length ||
+        expectedCards.some((key) => !mapKeys.includes(key)) ||
+        new Set(copyMap.map((m) => m.cardId)).size !== copyMap.length
+      )
+        throw new PersonalWorkspaceProjectConflictError(
+          "Team Deck copy map changed"
+        );
+      for (const mapped of copyMap)
+        await client.query(
+          `update deck_card_progress
+        set team_backend_id=$3,workspace_project_id=$4,deck_id=$5,card_id=$6,updated_at=now()
+        where owner_user_id=$1 and personal_project_id=$2 and deck_id=$7 and card_id=$8`,
+          [
+            ownerUserId,
+            projectId,
+            input.teamBackendId,
+            input.workspaceProjectId,
+            mapped.deckId,
+            mapped.cardId,
+            mapped.sourceDeckId,
+            mapped.sourceCardId
+          ]
         );
       const updated = await client.query<{ version: number }>(
         `
@@ -842,6 +950,7 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         dueOn: string | null;
         doneAt: string | null;
       }>;
+      decks?: CopyBackDeck[];
     }
   ) {
     const client = await pool.connect();
@@ -870,7 +979,9 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           stage.rows[0]?.state !== "staged" ||
           stage.rows[0].payload_hash !==
             createHash("sha256")
-              .update(canonicalJson(input.workItems))
+              .update(
+                canonicalJson(copyBackPayload(input.workItems, input.decks))
+              )
               .digest("hex")
         )
           throw new PersonalWorkspaceProjectConflictError(
@@ -961,6 +1072,102 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
               item.dueOn,
               item.doneAt
             ]
+          );
+        }
+      }
+      // This Project had no Personal Deck writes while linked. Hide the old
+      // first-share set before replaying the reviewed active Team snapshot;
+      // Team-deleted Decks and Cards must not reappear when the link clears.
+      await client.query(
+        `update deck_cards set deleted_at=now(),version=version+1,updated_at=now()
+         where owner_user_id=$1 and deleted_at is null and deck_id in
+           (select id from project_decks where owner_user_id=$1 and project_id=$2)`,
+        [ownerUserId, projectId]
+      );
+      await client.query(
+        `update project_decks set deleted_at=now(),version=version+1,updated_at=now()
+         where owner_user_id=$1 and project_id=$2 and deleted_at is null`,
+        [ownerUserId, projectId]
+      );
+      for (const deck of input.decks ?? []) {
+        const ownSource =
+          deck.sourceOwnerTeamMemberId === input.ownerTeamMemberId;
+        const existing =
+          ownSource && deck.sourceDeckId
+            ? (
+                await client.query<{ id: string }>(
+                  "select id from project_decks where id=$1 and owner_user_id=$2 and project_id=$3 for update",
+                  [deck.sourceDeckId, ownerUserId, projectId]
+                )
+              ).rows[0]
+            : null;
+        const localDeckId = existing?.id ?? randomUUID();
+        if (existing)
+          await client.query(
+            `update project_decks set title=$4,scope=$5,made_from=$6,deleted_at=null,version=version+1,updated_at=now() where id=$1 and owner_user_id=$2 and project_id=$3`,
+            [
+              localDeckId,
+              ownerUserId,
+              projectId,
+              deck.title,
+              deck.scope,
+              deck.madeFrom
+            ]
+          );
+        else
+          await client.query(
+            `insert into project_decks(id,owner_user_id,project_id,title,scope,made_from,idempotency_key,creation_payload_hash) values($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [
+              localDeckId,
+              ownerUserId,
+              projectId,
+              deck.title,
+              deck.scope,
+              deck.madeFrom,
+              deck.id,
+              createHash("sha256").update(canonicalJson(deck)).digest("hex")
+            ]
+          );
+        for (const card of deck.cards) {
+          const ownCard =
+            ownSource && card.sourceCardId
+              ? (
+                  await client.query<{ id: string }>(
+                    "select id from deck_cards where id=$1 and owner_user_id=$2 and deck_id=$3 for update",
+                    [card.sourceCardId, ownerUserId, localDeckId]
+                  )
+                ).rows[0]
+              : null;
+          const localCardId = ownCard?.id ?? randomUUID();
+          if (ownCard)
+            await client.query(
+              `update deck_cards set question=$4,answer=$5,source_ref=$6,topic_label=$7,deleted_at=null,version=version+1,updated_at=now() where id=$1 and owner_user_id=$2 and deck_id=$3`,
+              [
+                localCardId,
+                ownerUserId,
+                localDeckId,
+                card.question,
+                card.answer,
+                card.sourceRef,
+                card.topicLabel
+              ]
+            );
+          else
+            await client.query(
+              `insert into deck_cards(id,owner_user_id,deck_id,question,answer,source_ref,topic_label) values($1,$2,$3,$4,$5,$6,$7)`,
+              [
+                localCardId,
+                ownerUserId,
+                localDeckId,
+                card.question,
+                card.answer,
+                card.sourceRef,
+                card.topicLabel
+              ]
+            );
+          await client.query(
+            `update deck_card_progress set deck_id=$5,card_id=$6,team_backend_id=null,workspace_project_id=null,updated_at=now() where owner_user_id=$1 and personal_project_id=$2 and deck_id=$3 and card_id=$4`,
+            [ownerUserId, projectId, deck.id, card.id, localDeckId, localCardId]
           );
         }
       }

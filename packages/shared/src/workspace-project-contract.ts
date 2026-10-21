@@ -142,9 +142,56 @@ export const workspaceProjectCopySchema = z
           })
           .strict()
       )
-      .max(500)
+      .max(500),
+    decks: z
+      .array(
+        z
+          .object({
+            id: z.uuid(),
+            title: z.string().trim().min(1).max(500),
+            scope: z.string().max(2000),
+            madeFrom: z.string().max(4000),
+            createdByAgentId: z.uuid().nullable(),
+            cards: z
+              .array(
+                z
+                  .object({
+                    id: z.uuid(),
+                    question: z.string().trim().min(1).max(4000),
+                    answer: z.string().trim().min(1).max(16000),
+                    sourceRef: z.string().max(2048).nullable(),
+                    topicLabel: z.string().max(240).nullable()
+                  })
+                  .strict()
+              )
+              .max(500)
+          })
+          .strict()
+      )
+      .max(100)
+      .optional()
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const deckIds = new Set<string>();
+    const cardIds = new Set<string>();
+    for (const deck of value.decks ?? []) {
+      if (deckIds.has(deck.id))
+        context.addIssue({
+          code: "custom",
+          message: "Duplicate source Deck ID"
+        });
+      deckIds.add(deck.id);
+      for (const card of deck.cards) {
+        if (cardIds.has(card.id))
+          context.addIssue({
+            code: "custom",
+            message: "Duplicate source Card ID"
+          });
+        cardIds.add(card.id);
+      }
+    }
+  });
 
 // Only safe progress reaches the Team backend. The renderer and runtime have
 // no field for Conversation identity, transcript, tool output or file content.

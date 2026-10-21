@@ -519,6 +519,13 @@
       "when": 1792574813375,
       "tag": "0073_chubby_psylocke",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1792578450382,
+      "tag": "0074_hot_albert_cleary",
+      "breakpoints": true
     }
   ]
 }

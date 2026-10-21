@@ -296,7 +296,8 @@ export const createWorkspaceProjectClient = (input: {
         expectedVersion: project.version,
         personalProjectVersion: personal.personalProjectVersion,
         workItems: personal.workItems,
-        sources: personal.sources
+        sources: personal.sources,
+        decks: personal.decks
       });
       const copied = projectSchema.parse(
         await input.sendTeam(
