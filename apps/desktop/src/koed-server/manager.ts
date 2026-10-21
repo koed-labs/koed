@@ -1673,6 +1673,10 @@ export const createKoedServerManager = ({
   lifecycle.subscribe((next) => {
     if (next.state === "stopped") stopGeneration += 1;
   });
+  const captureStartGeneration = () => {
+    lifecycle.refresh();
+    return stopGeneration;
+  };
   let serverProcess: ChildProcess | null = null;
   let desktopSupervisorProcess: ChildProcess | null = null;
   let desktopSupervisorNonce: string | null = null;
@@ -5100,8 +5104,7 @@ export const createKoedServerManager = ({
     };
   };
 
-  const requestDaemonStart = async () => {
-    const generation = stopGeneration;
+  const requestDaemonStart = async (generation = captureStartGeneration()) => {
     if (createSupervisorInvocation && !desktopSupervisorProcess) {
       const live = await inspectLiveInstance();
       if (generation !== stopGeneration) return stoppedStartResult();
@@ -5198,8 +5201,8 @@ export const createKoedServerManager = ({
   };
 
   const start = async () => {
-    const generation = stopGeneration;
-    const result = await requestDaemonStart();
+    const generation = captureStartGeneration();
+    const result = await requestDaemonStart(generation);
     if (generation !== stopGeneration) return stoppedStartResult();
     if (
       typeof result === "object" &&
@@ -5215,7 +5218,6 @@ export const createKoedServerManager = ({
   };
 
   const resume = async () => {
-    const generation = stopGeneration;
     const verificationPath = resolve(
       resolveKoedHome(environment),
       "run",
@@ -5229,8 +5231,9 @@ export const createKoedServerManager = ({
         message: "Fresh Desktop setup has not been verified yet."
       };
     }
+    const generation = captureStartGeneration();
     try {
-      const result = await requestDaemonStart();
+      const result = await requestDaemonStart(generation);
       if (generation !== stopGeneration) return stoppedStartResult();
       if (
         typeof result === "object" &&
@@ -6295,7 +6298,7 @@ export const createKoedServerManager = ({
         return await collaborationTransport.request(command, context);
       },
       start,
-      start_daemon: requestDaemonStart,
+      start_daemon: () => requestDaemonStart(),
       open_external: async (args) => {
         const url =
           typeof args?.url === "string" ? safeExternalUrl(args.url) : null;

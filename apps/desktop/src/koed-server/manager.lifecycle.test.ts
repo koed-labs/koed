@@ -200,6 +200,30 @@ describe("Desktop manager shared lifecycle", () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes a completed external stop before capturing the next start generation", async () => {
+    const home = verifiedHome();
+    observed.current = live(82);
+    let resolveLifecycle!: (value: Record<string, unknown>) => void;
+    const pendingLifecycle = new Promise<Record<string, unknown>>((resolve) => {
+      resolveLifecycle = resolve;
+    });
+    const { manager, spawn } = harness(home, () => pendingLifecycle);
+    manager.lifecycle.refresh();
+    observed.current = { ...stopped };
+    const starting = manager.handlers.start_daemon();
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1));
+
+    manager.lifecycle.refresh();
+    resolveLifecycle({ ...stopped, owned: false });
+
+    await expect(starting).resolves.toMatchObject({
+      ok: true,
+      state: "starting",
+      startedPid: 4001
+    });
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
   it("does not start after shutdown while CLI ownership inspection is pending", async () => {
     const home = verifiedHome();
     let resolveLifecycle!: (value: Record<string, unknown>) => void;
