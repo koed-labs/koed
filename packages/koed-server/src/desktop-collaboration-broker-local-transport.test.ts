@@ -213,6 +213,145 @@ const waitFor = async (predicate: () => boolean) => {
 };
 
 describe("Desktop collaboration local transport", () => {
+  it("streams only the authorized Project Thread v2 update over Desktop IPC", async () => {
+    const workspaceProjectId = "00000000-0000-4000-8000-000000007051";
+    const projectThreadId = "00000000-0000-4000-8000-000000007052";
+    const otherThreadId = "00000000-0000-4000-8000-000000007053";
+    const events: CollaborationRendererEvent[] = [];
+    const delivery = (threadId: string, eventId: string) => ({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      messageContractVersion: 2,
+      type: "update",
+      subscriptionId,
+      deliveryId: `delivery_id_${eventId.replaceAll("-", "")}`,
+      eventId,
+      occurredAt: timestamp,
+      family: "receipt_state_updated",
+      resource: {
+        scope: "team",
+        teamId,
+        workspaceId,
+        threadId,
+        messageId: null,
+        sharedSessionId: null,
+        shareGrantId: null
+      },
+      update: { type: "message_receipts_updated", threadId, receipts: [] }
+    });
+    const frames = [
+      delivery(otherThreadId, "00000000-0000-4000-8000-000000007054"),
+      delivery(projectThreadId, "00000000-0000-4000-8000-000000007055")
+    ];
+    let version = 1;
+    const requests: string[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      requests.push(path);
+      if (path === collaborationCommandPath) {
+        const body: unknown = JSON.parse(String(init?.body));
+        const command = collaborationRendererCommandSchema.parse(
+          (body as { command: unknown }).command
+        );
+        return Response.json({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: command.requestId,
+          command: command.command,
+          ok: true,
+          data: {
+            thread: {
+              id: projectThreadId,
+              teamId,
+              workspaceId,
+              workspaceProjectId,
+              version: 1,
+              lifecycle: "active",
+              latestSequence: 0,
+              lastReadSequence: 0,
+              unreadCount: 0,
+              people: []
+            }
+          }
+        });
+      }
+      if (
+        path === "/v2/local-edge/collaboration/realtime/subscriptions" &&
+        init?.method === "POST"
+      ) {
+        return Response.json({
+          ...brokerSnapshot("team"),
+          messageContractVersion: 2,
+          subscription: {
+            ...brokerSnapshot("team").subscription,
+            messageContractVersion: 2
+          }
+        });
+      }
+      if (path.endsWith("/ack")) {
+        version++;
+        return Response.json({
+          protocolVersion: COLLABORATION_CONTRACT_VERSION,
+          messageContractVersion: 2,
+          subscription: {
+            ...brokerSnapshot("team", version).subscription,
+            messageContractVersion: 2,
+            state: "active"
+          }
+        });
+      }
+      if (path.endsWith("/stream")) {
+        return new Response(
+          frames
+            .map(
+              (frame) =>
+                `event: collaboration\ndata: ${JSON.stringify(frame)}\n\n`
+            )
+            .join(""),
+          { headers: { "content-type": "text/event-stream" } }
+        );
+      }
+      throw new Error(`Unexpected request ${path}`);
+    });
+    const transport = createDesktopCollaborationBrokerLocalTransport({
+      fetch: fetchMock,
+      resolveConnection: async () => connection
+    });
+    const controller = new AbortController();
+    const command = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId,
+      command: "collaboration.subscribe_project_thread_v2",
+      input: { teamId, workspaceProjectId, threadId: projectThreadId }
+    });
+    const result = await transport.request(command, {
+      ownerId: "renderer-1",
+      signal: controller.signal,
+      emitCollaborationEvent: (event) => events.push(event)
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      command: "collaboration.subscribe_project_thread_v2"
+    });
+    await waitFor(() =>
+      events.some((event) => event.type === "project_thread_v2_update")
+    );
+    expect(
+      events.filter((event) => event.type === "project_thread_v2_update")
+    ).toHaveLength(1);
+    expect(
+      events.find((event) => event.type === "project_thread_v2_update")
+    ).toMatchObject({
+      threadId: projectThreadId,
+      update: { messageContractVersion: 2 }
+    });
+    expect(requests).toContain(
+      "/v2/local-edge/collaboration/realtime/subscriptions"
+    );
+    expect(requests).toContain(
+      `/v2/local-edge/collaboration/realtime/subscriptions/${subscriptionId}/stream`
+    );
+    expect(JSON.stringify(events)).not.toContain(otherThreadId);
+    controller.abort();
+  });
   it("revokes persisted local subscriptions for exactly one backend", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       Response.json({

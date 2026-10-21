@@ -689,6 +689,19 @@ const createClient = (initial = baseSnapshot()): MockClient => {
           : current.view
     });
   const client: MockClient = {
+    subscribeProjectThreadV2: vi.fn(async () => () => undefined),
+    openProjectThreadV2: vi.fn(async () => {
+      throw new Error("Project Thread unavailable in this fixture.");
+    }),
+    loadProjectThreadMessagesV2: vi.fn(async () => {
+      throw new Error("Project Thread unavailable in this fixture.");
+    }),
+    sendProjectThreadMessageV2: vi.fn(async () => {
+      throw new Error("Project Thread unavailable in this fixture.");
+    }),
+    markProjectThreadReadV2: vi.fn(async () => {
+      throw new Error("Project Thread unavailable in this fixture.");
+    }),
     load: vi.fn(async () => current),
     current: () => current,
     currentRemoteUrl: () => "https://team.koed.example",

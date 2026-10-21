@@ -1223,6 +1223,17 @@ const materializeEvent = async (
   );
   if (!parsedFamily.success) return { action: "requires_snapshot" };
   const family = parsedFamily.data;
+  if (
+    event.threadId &&
+    repository &&
+    (await repository.isProjectThreadId(event.threadId))
+  ) {
+    if (
+      client.messageContractVersion !== 2 ||
+      event.resourceType === "collaboration_thread"
+    )
+      return { action: "skip" };
+  }
   let update: RendererUpdate | RendererUpdateV2 | null = null;
   switch (family) {
     case "work_item_changed": {
@@ -1312,7 +1323,10 @@ const materializeEvent = async (
         const readState =
           await materializationRepository.getReceiptStateForRealtime(
             client.actor,
-            { threadId: event.threadId }
+            {
+              threadId: event.threadId,
+              projectThreadV2: client.messageContractVersion === 2
+            }
           );
         if (
           !readState ||
@@ -1328,7 +1342,8 @@ const materializeEvent = async (
             client.actor,
             {
               threadId: event.threadId,
-              throughMessageId: event.messageId
+              throughMessageId: event.messageId,
+              projectThreadV2: client.messageContractVersion === 2
             }
           );
         if (receipts === null) return { action: "requires_snapshot" };
@@ -1406,7 +1421,10 @@ const materializeEvent = async (
         const readState =
           await materializationRepository?.getReceiptStateForRealtime(
             client.actor,
-            { threadId: event.threadId }
+            {
+              threadId: event.threadId,
+              projectThreadV2: client.messageContractVersion === 2
+            }
           );
         update = readState ? rendererReceiptStateFromRecord(readState) : null;
       } else if (

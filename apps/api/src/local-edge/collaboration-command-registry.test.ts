@@ -133,6 +133,13 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     scope: "team",
     desktop: read
   },
+  "collaboration.open_project_thread_v2": { scope: "team", desktop: read },
+  "collaboration.mark_project_thread_read_v2": {
+    scope: "team",
+    desktop: read,
+    teamOperation: true,
+    teamResultMatcher: true
+  },
   "collaboration.load_shared_source_page": { scope: "team", desktop: read },
   "collaboration.create_invitation": { scope: "team", desktop: write },
   "collaboration.list_invitations": { scope: "team", desktop: read },
@@ -202,6 +209,14 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     teamOperation: true
   },
   "collaboration.subscribe": { scope: "dynamic", desktop: read },
+  "collaboration.subscribe_project_thread_v2": {
+    scope: "unsupported",
+    desktop: read
+  },
+  "collaboration.unsubscribe_project_thread_v2": {
+    scope: "unsupported",
+    desktop: write
+  },
   "collaboration.unsubscribe": { scope: "unsupported", desktop: write },
   "collaboration.acknowledge_delivery": {
     scope: "unsupported",

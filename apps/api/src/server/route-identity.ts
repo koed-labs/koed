@@ -2513,12 +2513,42 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
+    "GET",
+    "/v2/collaboration/teams/{teamId}/projects/{workspaceProjectId}/thread",
+    "session_or_device_credential",
+    "collaboration",
+    "Read the exact Project Thread under current Project membership.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v2/collaboration/teams/{teamId}/projects/{workspaceProjectId}/thread/open",
+    "session_or_device_credential",
+    "collaboration",
+    "Open the exact Project Thread under current Project membership.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "POST",
     "/v2/collaboration/teams/{teamId}/threads/{threadId}/messages",
     "session_or_device_credential",
     "collaboration",
     "Post an authorized Team collaboration message using the Team v2 message contract.",
     "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v2/collaboration/teams/{teamId}/projects/{workspaceProjectId}/threads/{threadId}/read",
+    "session_or_device_credential",
+    "collaboration",
+    "Advance a Project Thread receipt without exposing Team messages to agents.",
+    "request_time_team_workspace",
     "implemented",
     teamDeploymentModes
   ),

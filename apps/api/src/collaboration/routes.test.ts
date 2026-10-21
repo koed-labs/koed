@@ -43,6 +43,10 @@ type FixtureUser = {
 const jsonBody = <T>(response: { body: string }): T =>
   JSON.parse(response.body) as T;
 
+type ProjectThreadRecord = NonNullable<
+  Awaited<ReturnType<CollaborationRepository["getProjectThread"]>>
+>;
+
 const createCollaborationFixture = () => {
   const ids = {
     alice: randomUUID(),
@@ -323,6 +327,18 @@ const createCollaborationFixture = () => {
         baseUrl: null,
         upstreamBackendId: null
       };
+    },
+    async isProjectThreadId() {
+      return false;
+    },
+    async getOrCreateProjectThread() {
+      return null;
+    },
+    async getProjectThread() {
+      return null;
+    },
+    async markProjectThreadRead() {
+      return null;
     },
     async listTeamParticipants(actor, teamId) {
       if (!teamMember(actor.userId, teamId)) return null;
@@ -1140,6 +1156,172 @@ describe("collaboration HTTP routes", () => {
     ).toBe(403);
 
     await app.close();
+  });
+
+  it("fences Project Thread open, lookup, and read by scoped credential and current exact authority", async () => {
+    const fixture = createCollaborationFixture();
+    const workspaceProjectId = randomUUID();
+    const messageId = randomUUID();
+    const projectThread: ProjectThreadRecord = {
+      id: randomUUID(),
+      teamId: fixture.ids.teamA,
+      workspaceId: fixture.ids.workspaceA,
+      workspaceProjectId,
+      version: 1,
+      lifecycle: "active",
+      latestSequence: 1,
+      lastReadSequence: 0,
+      unreadCount: 1,
+      people: [{ userId: fixture.ids.alice, displayName: "Alice" }]
+    };
+    const threadForRead: CollaborationThreadRecord = {
+      ...fixture.workspaceThread,
+      id: projectThread.id,
+      kind: "project_thread",
+      workspaceProjectId
+    };
+    let currentAuthority = true;
+    const matchesProject = (
+      actor: ActorContext,
+      input: { teamId: string; workspaceProjectId: string }
+    ) =>
+      currentAuthority &&
+      actor.userId === fixture.ids.alice &&
+      input.teamId === fixture.ids.teamA &&
+      input.workspaceProjectId === workspaceProjectId;
+    fixture.repository.getOrCreateProjectThread = async (actor, input) =>
+      matchesProject(actor, input) ? projectThread : null;
+    fixture.repository.getProjectThread = async (actor, input) =>
+      matchesProject(actor, input) ? projectThread : null;
+    const getThread = fixture.repository.getThread.bind(fixture.repository);
+    fixture.repository.getThread = async (actor, input) =>
+      input.threadId === projectThread.id
+        ? currentAuthority &&
+          actor.userId === fixture.ids.alice &&
+          input.includeProjectThread
+          ? threadForRead
+          : null
+        : getThread(actor, input);
+    fixture.repository.markProjectThreadRead = async (actor, input) =>
+      currentAuthority &&
+      actor.userId === fixture.ids.alice &&
+      input.threadId === projectThread.id &&
+      input.messageId === messageId
+        ? {
+            threadId: projectThread.id,
+            userId: actor.userId,
+            lastDeliveredMessageId: messageId,
+            lastDeliveredSequence: 1,
+            lastDeliveredAt: iso,
+            lastReadMessageId: messageId,
+            lastReadSequence: 1,
+            lastReadAt: iso,
+            unreadCount: 0,
+            version: 1,
+            updatedAt: iso
+          }
+        : null;
+    const app = await buildTestServer(fixture);
+    const base = `/v2/collaboration/teams/${fixture.ids.teamA}/projects/${workspaceProjectId}`;
+    const openUrl = `${base}/thread/open`;
+    const getUrl = `${base}/thread`;
+    const readUrl = `${base}/threads/${projectThread.id}/read`;
+    const readPayload = { messageId };
+    const readCredential = deviceHeaders(fixture.ids.alice, ["team_chat_read"]);
+    const writeOnlyCredential = deviceHeaders(fixture.ids.alice, [
+      "team_chat_write"
+    ]);
+    try {
+      for (const [method, url, payload] of [
+        ["POST", openUrl, {}],
+        ["GET", getUrl, undefined],
+        ["POST", readUrl, readPayload]
+      ] as const) {
+        const permitted = await app.inject({
+          method,
+          url,
+          headers: readCredential,
+          payload
+        });
+        expect(permitted.statusCode, `${method} ${url} read credential`).toBe(
+          200
+        );
+        if (url !== readUrl) {
+          expect(
+            jsonBody<{ thread: ProjectThreadRecord }>(permitted).thread
+          ).toMatchObject({
+            id: projectThread.id,
+            teamId: fixture.ids.teamA,
+            workspaceProjectId
+          });
+        } else {
+          expect(
+            jsonBody<{
+              readState: { threadId: string; lastReadSequence: number };
+            }>(permitted).readState
+          ).toMatchObject({ threadId: projectThread.id, lastReadSequence: 1 });
+        }
+        expect(
+          (
+            await app.inject({
+              method,
+              url,
+              headers: writeOnlyCredential,
+              payload
+            })
+          ).statusCode,
+          `${method} ${url} write-only credential`
+        ).toBe(403);
+        expect(
+          (
+            await app.inject({
+              method,
+              url,
+              headers: { authorization: "Bearer personal-api-token" },
+              payload
+            })
+          ).statusCode,
+          `${method} ${url} API token`
+        ).toBe(403);
+      }
+      const wrongProject = randomUUID();
+      const wrongBase = `/v2/collaboration/teams/${fixture.ids.teamA}/projects/${wrongProject}`;
+      for (const [method, url, payload] of [
+        ["POST", `${wrongBase}/thread/open`, {}],
+        ["GET", `${wrongBase}/thread`, undefined],
+        ["POST", `${wrongBase}/threads/${projectThread.id}/read`, readPayload],
+        [
+          "POST",
+          `${base}/threads/${fixture.workspaceThread.id}/read`,
+          readPayload
+        ],
+        [
+          "POST",
+          `/v2/collaboration/teams/${fixture.ids.teamB}/projects/${workspaceProjectId}/threads/${projectThread.id}/read`,
+          readPayload
+        ]
+      ] as const) {
+        expect(
+          (await app.inject({ method, url, headers: readCredential, payload }))
+            .statusCode,
+          `${method} ${url} exact Project/thread`
+        ).toBe(403);
+      }
+      currentAuthority = false;
+      for (const [method, url, payload] of [
+        ["POST", openUrl, {}],
+        ["GET", getUrl, undefined],
+        ["POST", readUrl, readPayload]
+      ] as const) {
+        expect(
+          (await app.inject({ method, url, headers: readCredential, payload }))
+            .statusCode,
+          `${method} ${url} revoked current authority`
+        ).toBe(403);
+      }
+    } finally {
+      await app.close();
+    }
   });
 
   it("allows only explicitly scoped device credentials for Team collaboration", async () => {

@@ -157,7 +157,8 @@ export function HqShell({
   contextContent,
   actionsRef,
   route,
-  contextAvailable = true
+  contextAvailable = true,
+  onRightColumnVisibilityChange
 }: {
   children?: ReactNode;
   title?: string;
@@ -166,6 +167,7 @@ export function HqShell({
   contextContent?: ReactNode;
   actionsRef?: Ref<HqShellActions>;
   contextAvailable?: boolean;
+  onRightColumnVisibilityChange?: (visible: boolean) => void;
 } = {}) {
   const storeRef = useRef<HqLayoutPreferencesStore | null>(null);
   if (!storeRef.current) storeRef.current = new HqLayoutPreferencesStore();
@@ -198,6 +200,10 @@ export function HqShell({
 
   const modalOpen = narrow && mobileContextOpen && rightIsVisible;
   const sidebarDialogOpen = narrow && mobileSidebarOpen;
+  useEffect(
+    () => onRightColumnVisibilityChange?.(narrow ? modalOpen : rightIsVisible),
+    [onRightColumnVisibilityChange, narrow, modalOpen, rightIsVisible]
+  );
 
   useLayoutEffect(() => {
     if (modalOpen) {

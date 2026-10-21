@@ -23,6 +23,7 @@ import {
   collaborationRemoteBackendUrlSchema,
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema,
+  collaborationDesktopRendererEventSchema,
   collaborationSnapshotResultCommands,
   collaborationSnapshotSchema,
   collaborationTeamPresenceStatusCatalogueSchema,
@@ -2453,5 +2454,34 @@ describe("collaboration results and realtime", () => {
         }).success
       ).toBe(false);
     }
+  });
+
+  it("keeps the legacy renderer event parser closed to Project Thread v2", () => {
+    const projectControl = {
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "project_thread_v2_control" as const,
+      teamId: ids.team,
+      workspaceProjectId: ids.workspace,
+      threadId: ids.thread,
+      reason: "requires_snapshot" as const
+    };
+    expect(
+      collaborationRendererEventSchema.safeParse(projectControl).success
+    ).toBe(false);
+    expect(
+      collaborationDesktopRendererEventSchema.safeParse(projectControl).success
+    ).toBe(true);
+    expect(
+      collaborationDesktopRendererEventSchema.safeParse({
+        ...projectControl,
+        body: "private text"
+      }).success
+    ).toBe(false);
+    expect(
+      collaborationDesktopRendererEventSchema.safeParse({
+        ...projectControl,
+        reason: "unsupported"
+      }).success
+    ).toBe(false);
   });
 });

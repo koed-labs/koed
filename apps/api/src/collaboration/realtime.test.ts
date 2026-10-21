@@ -462,6 +462,18 @@ const createRepositoryFixture = () => {
   };
 
   const repository: CollaborationRepository = {
+    async isProjectThreadId() {
+      return false;
+    },
+    async getProjectThread() {
+      return null;
+    },
+    async getOrCreateProjectThread() {
+      return null;
+    },
+    async markProjectThreadRead() {
+      return null;
+    },
     async createPersonalNote() {
       throw new Error("unused");
     },

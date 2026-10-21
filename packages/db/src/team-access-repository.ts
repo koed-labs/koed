@@ -2795,9 +2795,9 @@ export const createTeamAccessRepository = (
               `
               update collaboration_threads
                  set lifecycle='archived',archived_at=now(),version=version+1,updated_at=now()
-               where team_workspace_id=$1 and scope='team'
-                 and kind='workspace_channel' and lifecycle='active'`,
-              [project.workspace_id]
+               where workspace_project_id=$1 and scope='team'
+                 and kind='project_thread' and lifecycle='active'`,
+              [project.id]
             );
           } else {
             await client.query(

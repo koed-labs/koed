@@ -7,7 +7,7 @@ import type {
 import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
-  collaborationRendererEventSchema
+  collaborationDesktopRendererEventSchema
 } from "@koed/shared/collaboration";
 import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js";
 import { createProjectsPreloadApi } from "./ipc/projects-preload.js";
@@ -177,7 +177,7 @@ contextBridge.exposeInMainWorld("koedDesktop", {
       let active = true;
       const wrapped = (_ipcEvent: unknown, value: unknown) => {
         if (!active) return;
-        const event = collaborationRendererEventSchema.safeParse(value);
+        const event = collaborationDesktopRendererEventSchema.safeParse(value);
         if (!event.success) return;
         listener(event.data);
       };

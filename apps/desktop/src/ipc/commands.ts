@@ -30,7 +30,7 @@ import {
 import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
-  collaborationRendererEventSchema,
+  collaborationDesktopRendererEventSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema
 } from "@koed/shared";
@@ -157,7 +157,7 @@ const contextForSender = (sender: WebContents): DesktopCommandContext => {
     ownerId: String(sender.id),
     signal: controller.signal,
     emitCollaborationEvent: (value) => {
-      const event = collaborationRendererEventSchema.parse(value);
+      const event = collaborationDesktopRendererEventSchema.parse(value);
       if (!sender.isDestroyed()) sender.send(collaborationEventChannel, event);
     },
     emitPersonalDevicePairingProgress: (value) => {

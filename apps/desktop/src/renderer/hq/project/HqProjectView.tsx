@@ -155,7 +155,10 @@ export function HqProjectView({
   sharedProjectStore,
   deleteSharedProjectSource,
   onShareProject,
-  sharedRefreshSignal = 0
+  sharedRefreshSignal = 0,
+  onOpenTeamTab,
+  teamUnreadCount = 0,
+  rightColumnVisible = true
 }: {
   project: Project;
   personalProjects: readonly Project[];
@@ -196,6 +199,9 @@ export function HqProjectView({
   deleteSharedProjectSource?: CollaborationRendererClient["deleteWorkspaceProjectSource"];
   onShareProject?: () => void;
   sharedRefreshSignal?: number;
+  onOpenTeamTab?: () => void;
+  teamUnreadCount?: number;
+  rightColumnVisible?: boolean;
 }) {
   const linked = Boolean(project.workspaceProjectId);
   const sharedIdentity =
@@ -1211,6 +1217,16 @@ export function HqProjectView({
         >
           {linked ? "HQ Shared" : "Share"}
         </button>
+        {linked && onOpenTeamTab && !rightColumnVisible ? (
+          <button
+            type="button"
+            className="hq-project-view__shared"
+            onClick={onOpenTeamTab}
+            aria-label={`Open Team tab${teamUnreadCount ? `, ${teamUnreadCount} unread` : ""}`}
+          >
+            Team{teamUnreadCount ? ` · ${teamUnreadCount}` : ""}
+          </button>
+        ) : null}
       </header>
       <div className="hq-project-view__keys">
         {linked && sharedIdentity && sharedProjectStore ? (

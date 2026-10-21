@@ -5,7 +5,7 @@ import {
   collaborationCommandResultSchema,
   collaborationRemoteBackendUrlSchema,
   collaborationRendererCommandSchema,
-  collaborationRendererEventSchema
+  collaborationDesktopRendererEventSchema
 } from "@koed/shared";
 
 export const DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION = 1;
@@ -111,7 +111,7 @@ export const desktopCollaborationBrokerChildMessageSchema =
     baseEnvelopeSchema.extend({
       type: z.literal("renderer_event"),
       ownerId: ownerIdSchema,
-      event: collaborationRendererEventSchema
+      event: collaborationDesktopRendererEventSchema
     }),
     baseEnvelopeSchema.extend({
       type: z.literal("open_external"),

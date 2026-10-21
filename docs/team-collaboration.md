@@ -139,17 +139,22 @@ Local Personal store       Remote koed-server
 
 Team Chat Threads express their scope and kind directly.
 
-| Kind                      | Scope    | Owner | Team | Workspace | Participants                   |
-| ------------------------- | -------- | ----- | ---- | --------- | ------------------------------ |
-| Personal channel          | Personal | yes   | no   | no        | owner                          |
-| Team channel              | Team     | no    | yes  | yes       | current Workspace audience     |
-| Direct message            | Team     | no    | yes  | no        | two enabled Team members       |
-| Group direct message      | Team     | no    | yes  | no        | immutable enabled member set   |
-| Shared-session discussion | Team     | no    | yes  | yes       | current shared-source audience |
+| Kind                      | Scope    | Owner | Team | Workspace | Participants                      |
+| ------------------------- | -------- | ----- | ---- | --------- | --------------------------------- |
+| Personal channel          | Personal | yes   | no   | no        | owner                             |
+| Team channel              | Team     | no    | yes  | yes       | current Workspace audience        |
+| Direct message            | Team     | no    | yes  | no        | two enabled Team members          |
+| Group direct message      | Team     | no    | yes  | no        | immutable enabled member set      |
+| Shared-session discussion | Team     | no    | yes  | yes       | current shared-source audience    |
+| Project Thread            | Team     | no    | yes  | yes       | current Workspace Project members |
 
-The accepted **Project Thread** target is a human-only **Team Chat Thread**
-bound to a **Workspace Project** in its backing **Workspace**; this binding is
-not implemented yet. Under the current policy in [ADR
+The **Project Thread** is a human-only **Team Chat Thread** bound to a
+**Workspace Project** in its backing **Workspace**. The v2 Desktop Team tab
+opens it on demand and uses the v2 message and durable realtime paths. Every
+history, send, read, and realtime operation checks current Team Membership,
+Workspace Access, and exact Project membership. The v1 Team Chat navigation,
+message payloads, and realtime streams do not include Project Threads. Under
+the current policy in [ADR
 0013](./adr/0013-team-collaboration-authority.md), Team Chat messages never
 become **Memory** or **Agent** input, and Agents do not read them for HQ
 catch-up. Any later opt-in policy that changes these boundaries requires a new
@@ -202,10 +207,9 @@ and v2 realtime uses the `/v2/collaboration/realtime/...` routes; the strict v1
 message and realtime payloads remain unchanged. A reply must reference a message
 in the same authorized thread. Mention IDs must be unique Users in the current
 message audience. The reply reference is a same-thread foreign key; mention IDs
-are stored in encrypted message metadata. The standard Desktop consumer remains
-on v1 until it adopts this contract. These fields do not change sender kinds,
-grant requirements, notifications, Memory, or Agent input; no Team Chat UI
-behavior is implied here.
+are stored in encrypted message metadata. The Project Thread Team tab opts into
+v2; other Desktop collaboration views continue to use v1. These fields do not
+change sender kinds, grant requirements, notifications, Memory, or Agent input.
 
 An upstream must also return a valid, available `/v2/capabilities` response
 before the local edge routes v2 messages or realtime. The local edge fetches and

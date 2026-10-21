@@ -748,6 +748,10 @@ const createPersonalRepository = (): CommandRepository => {
     listPendingPersonalNoteRevisions: async () => [],
     markPersonalNoteProjectionAvailable: async () => null,
     markPersonalNoteProjectionFailed: async () => undefined,
+    isProjectThreadId: async () => false,
+    getOrCreateProjectThread: async () => null,
+    getProjectThread: async () => null,
+    markProjectThreadRead: async () => null,
     listTeamParticipants: async () => null,
     createThread: async (actor, input) => {
       if (actor.userId !== ids.actor) return null;

@@ -562,6 +562,44 @@ try {
     }
   }
   if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-705", "HQ705.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq705-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq705.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ705_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ705.native", owner: "HQ-705", status: "pass" }
+        );
+        assert.equal(report.assertions.length, 4);
+        assert.ok(report.screenshots.includes("project-team-light.png"));
+        assert.ok(report.screenshots.includes("project-team-dark.png"));
+        assert.ok(
+          report.screenshots.includes("project-team-hidden-unread-light.png")
+        );
+        assert.ok(
+          report.screenshots.includes("project-team-hidden-unread-dark.png")
+        );
+        process.stdout.write(
+          "PASS HQ705.native [HQ-705]: human Project Thread, mention and send, hidden unread/read lifecycle, desktop light/dark.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
     const reportPath = resolve(scratchDir, "hq-712", "HQ712.native.json");
     await rm(reportPath, { force: true });
     const profile = await mkdtemp(

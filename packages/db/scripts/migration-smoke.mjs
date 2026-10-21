@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0069_talented_famine";
-const expectedLatestMigrationIndex = 69;
+const expectedLatestMigrationTag = "0071_conscious_harry_osborn";
+const expectedLatestMigrationIndex = 71;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -1925,6 +1925,26 @@ try {
   );
   temporaryFolders.add(preLocalRuntimeCutoverFolder);
   const fullRecords = await migrationRecords(migrationsFolder, journal.entries);
+  const preProjectThreadFolder = await createMigrationSlice(journal, 69, {
+    folderPrefix: "koed-pre-project-thread-"
+  });
+  temporaryFolders.add(preProjectThreadFolder);
+  const preProjectThreadRecords = await migrationRecords(
+    preProjectThreadFolder,
+    journal.entries.slice(0, 70)
+  );
+  const throughProjectThreadKindFolder = await createMigrationSlice(
+    journal,
+    70,
+    {
+      folderPrefix: "koed-project-thread-kind-"
+    }
+  );
+  temporaryFolders.add(throughProjectThreadKindFolder);
+  const throughProjectThreadKindRecords = await migrationRecords(
+    throughProjectThreadKindFolder,
+    journal.entries.slice(0, 71)
+  );
   const preWorkspaceProjectsFolder = await createMigrationSlice(journal, 65, {
     folderPrefix: "koed-pre-workspace-projects-"
   });
@@ -5438,6 +5458,134 @@ try {
       );
     });
   });
+
+  await runScenario(
+    "project-thread-0070-0071-upgrade-rollback-and-rerun",
+    async () => {
+      const target = await createDisposableDatabase("project_thread_upgrade");
+      const interrupted = await createMigrationSlice(journal, 71, {
+        folderPrefix: "koed-project-thread-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(interrupted);
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, {
+          migrationsFolder: preProjectThreadFolder
+        });
+        await assertMigrationLedger(pool, preProjectThreadRecords);
+        const owner = randomUUID(),
+          team = randomUUID(),
+          workspace = randomUUID(),
+          project = randomUUID(),
+          member = randomUUID();
+        await pool.query("insert into users(id,email) values($1,$2)", [
+          owner,
+          `${owner}@example.test`
+        ]);
+        await pool.query(
+          "insert into teams(id,name) values($1,'Project Thread Team')",
+          [team]
+        );
+        await pool.query(
+          "insert into team_memberships(id,team_id,user_id,role) values($1,$2,$3,'member')",
+          [member, team, owner]
+        );
+        await pool.query(
+          "insert into team_workspaces(id,team_id,name) values($1,$2,'Project Thread Workspace')",
+          [workspace, team]
+        );
+        await pool.query(
+          "insert into workspace_projects(id,team_id,workspace_id,owner_team_member_id,name,key,share_attempt_key) values($1,$2,$3,$4,'Project Thread','PT','pt-upgrade')",
+          [project, team, workspace, member]
+        );
+        const legacy = randomUUID();
+        await pool.query(
+          "insert into collaboration_threads(id,scope,kind,team_id,team_workspace_id,system_key) values($1,'team','workspace_channel',$2,$3,'workspace.general')",
+          [legacy, team, workspace]
+        );
+        await runDbMigrations(pool, {
+          migrationsFolder: throughProjectThreadKindFolder
+        });
+        await assertMigrationLedger(pool, throughProjectThreadKindRecords);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        if (!failed)
+          throw new Error("Interrupted 0071 migration unexpectedly succeeded");
+        const rolledBack = await pool.query(
+          "select count(*)::integer as retained from collaboration_threads where id=$1",
+          [legacy]
+        );
+        const addedColumn = await pool.query(
+          "select count(*)::integer as count from information_schema.columns where table_name='collaboration_threads' and column_name='workspace_project_id'"
+        );
+        if (
+          rolledBack.rows[0].retained !== 1 ||
+          addedColumn.rows[0].count !== 0
+        )
+          throw new Error("0071 rollback changed legacy Team channel");
+        const absent = await pool.query(
+          "select count(*)::integer as added from pg_enum e join pg_type t on t.oid=e.enumtypid where t.typname='collaboration_thread_kind' and e.enumlabel='project_thread'"
+        );
+        if (absent.rows[0].added !== 1)
+          throw new Error("0071 rollback lost committed 0070 enum value");
+        await assertMigrationLedger(pool, throughProjectThreadKindRecords);
+        await runDbMigrations(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        const thread = randomUUID();
+        await pool.query(
+          "insert into collaboration_threads(id,scope,kind,team_id,team_workspace_id,workspace_project_id) values($1,'team','project_thread',$2,$3,$4)",
+          [thread, team, workspace, project]
+        );
+        await expectSqlState(
+          pool,
+          "insert into collaboration_threads(id,scope,kind,team_id,team_workspace_id,workspace_project_id) values($1,'team','project_thread',$2,$3,$4)",
+          "23505",
+          "duplicate Project Thread",
+          [randomUUID(), team, workspace, project]
+        );
+        await expectSqlState(
+          pool,
+          "insert into collaboration_threads(id,scope,kind,team_id,team_workspace_id,workspace_project_id,system_key) values($1,'team','project_thread',$2,$3,$4,'workspace.general')",
+          "23514",
+          "malformed Project Thread shape",
+          [randomUUID(), team, workspace, null]
+        );
+        const otherProject = randomUUID(),
+          otherWorkspace = randomUUID();
+        await pool.query(
+          "insert into team_workspaces(id,team_id,name) values($1,$2,'Other Project Thread Workspace')",
+          [otherWorkspace, team]
+        );
+        await pool.query(
+          "insert into workspace_projects(id,team_id,workspace_id,owner_team_member_id,name,key,share_attempt_key) values($1,$2,$3,$4,'Other Project Thread','PT2','pt-upgrade-2')",
+          [otherProject, team, otherWorkspace, member]
+        );
+        await expectSqlState(
+          pool,
+          "insert into collaboration_threads(id,scope,kind,team_id,team_workspace_id,workspace_project_id) values($1,'team','project_thread',$2,$3,$4)",
+          "23503",
+          "cross-Workspace Project Thread",
+          [randomUUID(), team, workspace, otherProject]
+        );
+        const retained = await pool.query(
+          "select kind::text as kind,workspace_project_id from collaboration_threads where id=$1",
+          [legacy]
+        );
+        if (
+          !isDeepStrictEqual(retained.rows[0], {
+            kind: "workspace_channel",
+            workspace_project_id: null
+          })
+        )
+          throw new Error("0071 changed legacy Team channel after rerun");
+      });
+    }
+  );
 
   const latestMigration = await getLatestMigrationTimestamp();
   console.log(

@@ -453,9 +453,14 @@ describe.skipIf(!testUrl)("Workspace Project Team state", () => {
       [workspaceId, bob]
     );
     const threadId = randomUUID();
+    const workspaceThreadId = randomUUID();
+    await pool.query(
+      "insert into collaboration_threads (id,scope,kind,team_id,team_workspace_id,workspace_project_id) values ($1,'team','project_thread',$2,$3,$4)",
+      [threadId, teamId, workspaceId, project.id]
+    );
     await pool.query(
       "insert into collaboration_threads (id,scope,kind,team_id,team_workspace_id,system_key) values ($1,'team','workspace_channel',$2,$3,'workspace.general')",
-      [threadId, teamId, workspaceId]
+      [workspaceThreadId, teamId, workspaceId]
     );
     const accessRepo = createTeamAccessRepository(pool);
     const review = await accessRepo.getTeamLeaveReview(
@@ -516,9 +521,15 @@ describe.skipIf(!testUrl)("Workspace Project Team state", () => {
       [threadId]
     );
     expect(thread.rows[0]?.lifecycle).toBe("archived");
-    await pool.query("delete from collaboration_threads where id=$1", [
-      threadId
-    ]);
+    const workspaceThread = await pool.query<{ lifecycle: string }>(
+      "select lifecycle from collaboration_threads where id=$1",
+      [workspaceThreadId]
+    );
+    expect(workspaceThread.rows[0]?.lifecycle).toBe("active");
+    await pool.query(
+      "delete from collaboration_threads where id=any($1::uuid[])",
+      [[threadId, workspaceThreadId]]
+    );
   });
   it("preflights the last Team owner before access or membership mutation", async () => {
     const accessRepo = createTeamAccessRepository(pool);

@@ -2,7 +2,7 @@ import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
   collaborationRendererCommandSchema,
-  collaborationRendererEventSchema,
+  collaborationDesktopRendererEventSchema,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
   type CollaborationCommandResult,
@@ -40,6 +40,11 @@ import {
   type SharedMemoryRepresentation,
   type SharedMemorySourcePage,
   type SharedMemorySourceRef
+} from "@koed/shared/collaboration";
+import type { ProjectThreadV2 } from "@koed/shared/project-thread-contract";
+import type {
+  TeamCollaborationMessagePageV2,
+  TeamCollaborationMessageV2Renderer
 } from "@koed/shared/collaboration";
 import {
   CollaborationClientRuntime,
@@ -128,6 +133,45 @@ export class CollaborationClientError extends Error {
 class CollaborationAuthorityChangedError extends CollaborationClientError {}
 
 export interface CollaborationRendererClient {
+  subscribeProjectThreadV2(
+    input: {
+      teamId: string;
+      workspaceProjectId: string;
+      threadId: string;
+    },
+    listener: (
+      event: Extract<
+        CollaborationRendererEvent,
+        { type: "project_thread_v2_update" | "project_thread_v2_control" }
+      >
+    ) => void
+  ): Promise<() => void>;
+  openProjectThreadV2(input: {
+    teamId: string;
+    workspaceProjectId: string;
+  }): Promise<ProjectThreadV2>;
+  loadProjectThreadMessagesV2(input: {
+    teamId: string;
+    workspaceProjectId: string;
+    threadId: string;
+    direction: "older" | "newer";
+    cursor: string | null;
+  }): Promise<TeamCollaborationMessagePageV2>;
+  sendProjectThreadMessageV2(input: {
+    teamId: string;
+    workspaceProjectId: string;
+    threadId: string;
+    clientMessageId: string;
+    body: string;
+    replyToMessageId: string | null;
+    mentionsUserIds: string[];
+  }): Promise<TeamCollaborationMessageV2Renderer>;
+  markProjectThreadReadV2(input: {
+    teamId: string;
+    workspaceProjectId: string;
+    threadId: string;
+    messageId: string;
+  }): Promise<CollaborationReadState>;
   load(): Promise<CollaborationSnapshot>;
   current(): CollaborationSnapshot | null;
   currentRemoteUrl(): string | null;
@@ -1529,6 +1573,20 @@ export const createCollaborationRendererClient = (
     }
   >();
   const listeners = new Set<CollaborationClientListener>();
+  const projectThreadRealtimeListeners = new Map<
+    string,
+    {
+      teamId: string;
+      workspaceProjectId: string;
+      threadId: string;
+      listener: (
+        event: Extract<
+          CollaborationRendererEvent,
+          { type: "project_thread_v2_update" | "project_thread_v2_control" }
+        >
+      ) => void;
+    }
+  >();
   const actionGrantProjections = new CollaborationActionGrantProjectionStore();
   const sourceBackfills = new SharedSourceBackfillCoordinator();
   let selectionRequestGeneration = 0;
@@ -2766,6 +2824,11 @@ export const createCollaborationRendererClient = (
   };
 
   const applyEvent = async (event: CollaborationRendererEvent) => {
+    if (
+      event.type === "project_thread_v2_update" ||
+      event.type === "project_thread_v2_control"
+    )
+      return;
     if (event.type === "connection") {
       if (!snapshot) return;
       const becameLive =
@@ -3027,7 +3090,21 @@ export const createCollaborationRendererClient = (
 
   const enqueue = (raw: CollaborationRendererEvent) => {
     if (disposed) return;
-    const event = collaborationRendererEventSchema.parse(raw);
+    const event = collaborationDesktopRendererEventSchema.parse(raw);
+    if (
+      event.type === "project_thread_v2_update" ||
+      event.type === "project_thread_v2_control"
+    ) {
+      for (const registration of projectThreadRealtimeListeners.values()) {
+        if (
+          registration.teamId === event.teamId &&
+          registration.workspaceProjectId === event.workspaceProjectId &&
+          registration.threadId === event.threadId
+        )
+          registration.listener(event);
+      }
+      return;
+    }
     const authorityBoundary = eventChangesAuthority(event);
     if (authorityBoundary) advanceAuthority(event);
     const bytes = encoder.encode(JSON.stringify(event)).byteLength;
@@ -3331,6 +3408,88 @@ export const createCollaborationRendererClient = (
   };
 
   return {
+    async subscribeProjectThreadV2(input, listener) {
+      const result = await command(
+        "collaboration.subscribe_project_thread_v2",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.subscribe_project_thread_v2"
+      )
+        throw new Error("Project Thread realtime is unavailable.");
+      const subscriptionId = result.data.subscription.id;
+      projectThreadRealtimeListeners.set(subscriptionId, {
+        ...input,
+        listener
+      });
+      return () => {
+        projectThreadRealtimeListeners.delete(subscriptionId);
+        void command("collaboration.unsubscribe_project_thread_v2", {
+          subscriptionId
+        }).catch(() => undefined);
+      };
+    },
+    async openProjectThreadV2(input) {
+      const result = await command(
+        "collaboration.open_project_thread_v2",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.open_project_thread_v2"
+      )
+        throw new Error("Unexpected Project Thread result.");
+      return result.data.thread;
+    },
+    async loadProjectThreadMessagesV2(input) {
+      const result = await command("collaboration.load_team_message_page_v2", {
+        thread: {
+          scope: "team",
+          teamId: input.teamId,
+          threadId: input.threadId,
+          workspaceProjectId: input.workspaceProjectId
+        },
+        direction: input.direction,
+        cursor: input.cursor,
+        limit: COLLABORATION_DEFAULT_LIMITS.historyPageMaxItems
+      });
+      if (
+        !result.ok ||
+        result.command !== "collaboration.load_team_message_page_v2"
+      )
+        throw new Error("Unexpected Project Thread history result.");
+      return result.data.page;
+    },
+    async sendProjectThreadMessageV2(input) {
+      const result = await command("collaboration.send_team_message_v2", {
+        thread: {
+          scope: "team",
+          teamId: input.teamId,
+          threadId: input.threadId,
+          workspaceProjectId: input.workspaceProjectId
+        },
+        clientMessageId: input.clientMessageId,
+        body: input.body,
+        replyToMessageId: input.replyToMessageId,
+        mentionsUserIds: input.mentionsUserIds
+      });
+      if (!result.ok || result.command !== "collaboration.send_team_message_v2")
+        throw new Error("Unexpected Project Thread send result.");
+      return result.data.message;
+    },
+    async markProjectThreadReadV2(input) {
+      const result = await command(
+        "collaboration.mark_project_thread_read_v2",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.mark_project_thread_read_v2"
+      )
+        throw new Error("Unexpected Project Thread read result.");
+      return result.data.readState;
+    },
     load: loadSnapshot,
     current: () => snapshot,
     currentRemoteUrl: () => clientRuntime.binding()?.remoteUrl ?? null,
@@ -4322,6 +4481,12 @@ export const createCollaborationRendererClient = (
       eventQueue.dispose();
       removeBridgeListener();
       listeners.clear();
+      for (const subscriptionId of projectThreadRealtimeListeners.keys()) {
+        void command("collaboration.unsubscribe_project_thread_v2", {
+          subscriptionId
+        }).catch(() => undefined);
+      }
+      projectThreadRealtimeListeners.clear();
       actionGrantProjections.dispose();
       clientRuntime.dispose();
     }

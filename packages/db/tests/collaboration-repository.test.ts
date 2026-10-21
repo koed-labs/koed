@@ -176,6 +176,7 @@ describeDb("Collaboration repository", () => {
         entitlement_status text not null
       );
       create temp table team_memberships (
+        id uuid primary key default gen_random_uuid(),
         team_id uuid not null,
         user_id uuid not null,
         status text not null,
@@ -271,6 +272,7 @@ describeDb("Collaboration repository", () => {
         personal_owner_user_id uuid,
         team_id uuid,
         team_workspace_id uuid,
+        workspace_project_id uuid,
         shared_logical_memory_id uuid,
         share_grant_id uuid,
         system_key text,

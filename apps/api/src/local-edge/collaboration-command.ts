@@ -27,6 +27,7 @@ import {
   collaborationSafeErrorMessages,
   collaborationTeamPresenceStatusCatalogueSchema,
   collaborationThreadSchema,
+  projectThreadV2Schema,
   fetchBoundedJsonObject,
   isLoopbackHostname,
   readLocalEdgeClientCredentialAuthorization,
@@ -228,6 +229,8 @@ type SupportedCommand = Extract<
   | { command: "collaboration.mark_delivered" }
   | { command: "collaboration.load_message_page" }
   | { command: "collaboration.load_team_message_page_v2" }
+  | { command: "collaboration.open_project_thread_v2" }
+  | { command: "collaboration.mark_project_thread_read_v2" }
 >;
 
 interface PersonalRemoteContext {
@@ -3930,6 +3933,50 @@ export const registerCollaborationCommandRoute = (
           failureResult(input.command, safeError("temporarily_unavailable"))
         );
       }
+      if (input.command.command === "collaboration.open_project_thread_v2") {
+        const context = await resolveTeamReadContext(
+          "team_chat_read",
+          input.upstream_backend_id,
+          2
+        );
+        if (!context) {
+          return failureResult(
+            input.command,
+            safeError("temporarily_unavailable")
+          );
+        }
+        try {
+          const { teamId, workspaceProjectId } = input.command.input;
+          const payload = await requireRemoteJson(options.fetch, {
+            backend: context.backend,
+            upstreamAuthorization: context.upstreamAuthorization,
+            operationFamily: "team_chat_read",
+            method: "POST",
+            path: `/v2/collaboration/teams/${encodeURIComponent(teamId)}/projects/${encodeURIComponent(workspaceProjectId)}/thread/open`,
+            body: {}
+          });
+          const parsed = projectThreadV2Schema.safeParse(payload.thread);
+          if (
+            !parsed.success ||
+            parsed.data.teamId !== teamId ||
+            parsed.data.workspaceProjectId !== workspaceProjectId ||
+            !parsed.data.people.some(
+              (person) => person.userId === context.principal.id
+            )
+          ) {
+            return failureResult(input.command, safeError("not_available"));
+          }
+          return (
+            personalSuccessResult(input.command, { thread: parsed.data }) ??
+            failureResult(input.command, safeError("internal_error"))
+          );
+        } catch (error) {
+          return failureResult(
+            input.command,
+            safeErrorFromUnknown(error, "invalid_input")
+          );
+        }
+      }
       if (input.command.command === "collaboration.load_team_message_page_v2") {
         const threadRef = input.command.input.thread;
         const context = await resolveTeamReadContext(
@@ -3949,15 +3996,22 @@ export const registerCollaborationCommandRoute = (
             upstreamAuthorization: context.upstreamAuthorization,
             operationFamily: "team_chat_read",
             method: "GET",
-            path: `/v1/collaboration/teams/${encodeURIComponent(threadRef.teamId.toLowerCase())}/threads/${encodeURIComponent(threadRef.threadId.toLowerCase())}`
+            path: threadRef.workspaceProjectId
+              ? `/v2/collaboration/teams/${encodeURIComponent(threadRef.teamId.toLowerCase())}/projects/${encodeURIComponent(threadRef.workspaceProjectId.toLowerCase())}/thread`
+              : `/v1/collaboration/teams/${encodeURIComponent(threadRef.teamId.toLowerCase())}/threads/${encodeURIComponent(threadRef.threadId.toLowerCase())}`
           });
-          const thread = threadDtoFromRemote(threadPayload.thread);
+          const thread = threadRef.workspaceProjectId
+            ? projectThreadV2Schema.safeParse(threadPayload.thread).data
+            : threadDtoFromRemote(threadPayload.thread);
           if (
             !thread ||
             typeof thread.id !== "string" ||
             thread.id.toLowerCase() !== threadRef.threadId.toLowerCase() ||
             typeof thread.teamId !== "string" ||
-            thread.teamId.toLowerCase() !== threadRef.teamId.toLowerCase()
+            thread.teamId.toLowerCase() !== threadRef.teamId.toLowerCase() ||
+            (threadRef.workspaceProjectId &&
+              thread.workspaceProjectId !==
+                threadRef.workspaceProjectId.toLowerCase())
           ) {
             return failureResult(input.command, safeError("not_available"));
           }
@@ -3966,7 +4020,7 @@ export const registerCollaborationCommandRoute = (
             credential,
             context,
             teamId: threadRef.teamId,
-            thread,
+            thread: { ...thread, scope: "team" },
             direction: input.command.input.direction,
             cursor: input.command.input.cursor,
             limit: input.command.input.limit
@@ -4199,7 +4253,10 @@ export const registerCollaborationCommandRoute = (
         upstreamCredentialAvailable: Boolean(upstreamAuthorization)
       });
       const messageContractVersion =
-        input.command.command === "collaboration.send_team_message_v2" ? 2 : 1;
+        input.command.command === "collaboration.send_team_message_v2" ||
+        input.command.command === "collaboration.mark_project_thread_read_v2"
+          ? 2
+          : 1;
       if (
         decision.action !== "live_upstream_proxy" ||
         !upstreamAuthorization ||

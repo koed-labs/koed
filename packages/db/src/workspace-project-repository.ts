@@ -701,8 +701,8 @@ export const createWorkspaceProjectRepository = (
                  and grant_row.frozen_at is null
                  and binding.workspace_project_id=project.id) as grants_frozen,
              not exists(select 1 from collaboration_threads thread
-               where thread.team_workspace_id=project.workspace_id
-                 and thread.scope='team' and thread.kind='workspace_channel'
+               where thread.workspace_project_id=project.id
+                 and thread.scope='team' and thread.kind='project_thread'
                  and thread.lifecycle='active') as thread_archived
         from workspace_projects project
         join team_memberships owner_member
@@ -2325,9 +2325,9 @@ export const createWorkspaceProjectRepository = (
           `
         update collaboration_threads
            set lifecycle='archived',archived_at=now(),version=version+1,updated_at=now()
-         where team_workspace_id=$1 and scope='team' and kind='workspace_channel'
+         where workspace_project_id=$1 and scope='team' and kind='project_thread'
            and lifecycle='active'`,
-          [project.workspace_id]
+          [projectId]
         );
         await notifyProjectChange(client, {
           teamId: String(project.team_id),

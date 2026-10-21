@@ -12,6 +12,10 @@ import {
   collaborationSnapshotSchema
 } from "@koed/shared/collaboration";
 import type {
+  CollaborationRendererEvent,
+  TeamCollaborationMessageV2Renderer
+} from "@koed/shared/collaboration";
+import type {
   CollaborationClientListener,
   CollaborationClientUpdate,
   CollaborationRendererClient
@@ -71,9 +75,12 @@ const hq506Capture =
   new URLSearchParams(window.location.search).get("hq506Capture") === "yes";
 const hq701Linked =
   new URLSearchParams(window.location.search).get("hq701Linked") === "yes";
+const hq705Capture =
+  new URLSearchParams(window.location.search).get("hq705Capture") === "yes";
 const hq712Capture =
   new URLSearchParams(window.location.search).get("hq712Capture") === "yes" ||
-  hq701Linked;
+  hq701Linked ||
+  hq705Capture;
 const hq701Capture =
   new URLSearchParams(window.location.search).get("hq701Capture") === "yes";
 let hq701Pending =
@@ -90,6 +97,68 @@ const hq204Capture =
   hq502Capture ||
   hq407Capture ||
   hq503Capture;
+const hq705ThreadId = "00000000-0000-4000-8000-000000007051";
+const hq705TeamId = "00000000-0000-4000-8000-000000007120";
+const hq705ProjectId = "00000000-0000-4000-8000-000000007122";
+let hq705LastReadSequence = 0;
+let hq705RealtimeListener:
+  | ((
+      event: Extract<
+        CollaborationRendererEvent,
+        { type: "project_thread_v2_update" | "project_thread_v2_control" }
+      >
+    ) => void)
+  | null = null;
+const hq705Trace = {
+  opens: 0,
+  reads: 0,
+  sends: 0,
+  mentions: [] as string[],
+  publishIncoming: () => {
+    const message = {
+      ...hq705Messages[0]!,
+      id: crypto.randomUUID(),
+      sequence: hq705Messages.length + 1,
+      body: "The updated launch plan is ready.",
+      clientMessageId: null
+    };
+    hq705Messages = [...hq705Messages, message];
+    hq705RealtimeListener?.({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      type: "project_thread_v2_control",
+      teamId: hq705TeamId,
+      workspaceProjectId: hq705ProjectId,
+      threadId: hq705ThreadId,
+      reason: "requires_snapshot"
+    });
+  }
+};
+let hq705Messages: TeamCollaborationMessageV2Renderer[] = [
+  {
+    id: "00000000-0000-4000-8000-000000007052",
+    clientMessageId: null,
+    threadId: hq705ThreadId,
+    scope: "team" as const,
+    teamId: hq705TeamId,
+    sequence: 1,
+    sender: {
+      id: "00000000-0000-4000-8000-000000007127",
+      displayName: "Maya",
+      membershipState: "enabled" as const
+    },
+    senderKind: "user" as const,
+    body: "Can we review the launch plan this afternoon?",
+    createdAt: FIXTURE_TIME,
+    updatedAt: FIXTURE_TIME,
+    editedAt: null,
+    deletedAt: null,
+    delivery: "sent" as const,
+    recipientStatus: "sent" as const,
+    failure: null,
+    replyToMessageId: null,
+    mentionsUserIds: [] as string[]
+  }
+];
 const hq306Capture =
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
   hq307Capture ||
@@ -667,6 +736,119 @@ const publishHq105VisibilityUpdate = (update: CollaborationClientUpdate) => {
     void listener(settingsCollaborationSnapshot, update);
 };
 const settingsCollaborationClient = {
+  subscribeProjectThreadV2: async (
+    _input: unknown,
+    listener: NonNullable<typeof hq705RealtimeListener>
+  ) => {
+    void _input;
+    hq705RealtimeListener = listener;
+    return () => {
+      if (hq705RealtimeListener === listener) hq705RealtimeListener = null;
+    };
+  },
+  openProjectThreadV2: async ({
+    teamId,
+    workspaceProjectId
+  }: {
+    teamId: string;
+    workspaceProjectId: string;
+  }) => {
+    if (
+      !hq705Capture ||
+      teamId !== hq705TeamId ||
+      workspaceProjectId !== hq705ProjectId
+    )
+      throw new Error("Project Thread unavailable in fixture");
+    hq705Trace.opens++;
+    return {
+      id: hq705ThreadId,
+      teamId,
+      workspaceId: "00000000-0000-4000-8000-000000007121",
+      workspaceProjectId,
+      version: 1,
+      lifecycle: "active" as const,
+      latestSequence: hq705Messages.length,
+      lastReadSequence: hq705LastReadSequence,
+      unreadCount: hq705Messages.filter(
+        (message) =>
+          message.sequence > hq705LastReadSequence &&
+          message.sender.id !== "00000000-0000-4000-8000-000000007124"
+      ).length,
+      people: [
+        { userId: "00000000-0000-4000-8000-000000007124", displayName: "You" },
+        { userId: "00000000-0000-4000-8000-000000007127", displayName: "Maya" }
+      ]
+    };
+  },
+  loadProjectThreadMessagesV2: async ({ threadId }: { threadId: string }) => {
+    if (!hq705Capture || threadId !== hq705ThreadId)
+      throw new Error("Project Thread unavailable in fixture");
+    return {
+      snapshotRevision: "fixture",
+      olderCursor: null,
+      newerCursor: null,
+      hasOlder: false,
+      hasNewer: false,
+      threadId,
+      items: hq705Messages
+    };
+  },
+  sendProjectThreadMessageV2: async (input: {
+    threadId: string;
+    clientMessageId: string;
+    body: string;
+    mentionsUserIds: string[];
+  }) => {
+    if (!hq705Capture || input.threadId !== hq705ThreadId)
+      throw new Error("Project Thread unavailable in fixture");
+    hq705Trace.sends++;
+    hq705Trace.mentions = input.mentionsUserIds;
+    const message = {
+      ...hq705Messages[0]!,
+      id: crypto.randomUUID(),
+      clientMessageId: input.clientMessageId,
+      sequence: hq705Messages.length + 1,
+      body: input.body,
+      sender: {
+        id: "00000000-0000-4000-8000-000000007124",
+        displayName: "You",
+        membershipState: "enabled" as const
+      },
+      mentionsUserIds: input.mentionsUserIds
+    };
+    hq705Messages = [...hq705Messages, message];
+    return message;
+  },
+  markProjectThreadReadV2: async ({
+    threadId,
+    messageId
+  }: {
+    threadId: string;
+    messageId: string;
+  }) => {
+    if (
+      !hq705Capture ||
+      threadId !== hq705ThreadId ||
+      !hq705Messages.some((message) => message.id === messageId)
+    )
+      throw new Error("Project Thread unavailable in fixture");
+    hq705Trace.reads++;
+    hq705LastReadSequence = hq705Messages.find(
+      (message) => message.id === messageId
+    )!.sequence;
+    return {
+      threadId,
+      deliveredMessageId: messageId,
+      deliveredSequence: hq705Messages.length,
+      deliveredAt: FIXTURE_TIME,
+      messageId,
+      sequence: hq705Messages.length,
+      readAt: FIXTURE_TIME,
+      unreadCount: 0,
+      version: 1,
+      updatedAt: FIXTURE_TIME
+    };
+  },
   current: () => settingsCollaborationSnapshot,
   load: async () => settingsCollaborationSnapshot,
   currentSelection: () => settingsCollaborationSnapshot.selection,
@@ -3443,6 +3625,10 @@ export function HqValidationApp() {
       (
         window as Window & { __koedHq701Trace?: typeof hq701Trace }
       ).__koedHq701Trace = hq701Trace;
+    if (hq705Capture)
+      (
+        window as Window & { __koedHq705Trace?: typeof hq705Trace }
+      ).__koedHq705Trace = hq705Trace;
     document.documentElement.dataset.hqFixtureReady = "true";
     document.documentElement.dataset.browserValidationReady = "true";
     return () => {
@@ -3456,6 +3642,8 @@ export function HqValidationApp() {
       delete window.__koedHqFixture;
       delete (window as Window & { __koedHq701Trace?: typeof hq701Trace })
         .__koedHq701Trace;
+      delete (window as Window & { __koedHq705Trace?: typeof hq705Trace })
+        .__koedHq705Trace;
       delete (
         window as Window & {
           __koedHqVisibilityReads?: typeof hq105VisibilityReads;

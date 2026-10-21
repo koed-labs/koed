@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { workItemSchema } from "./work-item-contract.js";
 import { projectSchema } from "./project-contract.js";
+import { projectThreadV2Schema } from "./project-thread-contract.js";
 import {
   teamManualStatuses,
   teamPresenceStatusCatalogue
@@ -2720,7 +2721,8 @@ export const collaborationRendererCommandSchema = z
         .object({
           scope: z.literal("team"),
           teamId: z.uuid(),
-          threadId: z.uuid()
+          threadId: z.uuid(),
+          workspaceProjectId: z.uuid().optional()
         })
         .strict(),
       clientMessageId: z.uuid(),
@@ -2755,12 +2757,23 @@ export const collaborationRendererCommandSchema = z
         .object({
           scope: z.literal("team"),
           teamId: z.uuid(),
-          threadId: z.uuid()
+          threadId: z.uuid(),
+          workspaceProjectId: z.uuid().optional()
         })
         .strict(),
       direction: z.enum(["older", "newer"]),
       cursor: collaborationOpaqueCursorSchema.nullable(),
       limit: z.number().int().min(1).max(COLLABORATION_HISTORY_PAGE_MAX_ITEMS)
+    }),
+    command("collaboration.open_project_thread_v2", {
+      teamId: z.uuid(),
+      workspaceProjectId: z.uuid()
+    }),
+    command("collaboration.mark_project_thread_read_v2", {
+      teamId: z.uuid(),
+      workspaceProjectId: z.uuid(),
+      threadId: z.uuid(),
+      messageId: z.uuid()
     }),
     command("collaboration.load_shared_source_page", {
       sharedSession: sharedMemorySessionReferenceSchema,
@@ -2978,6 +2991,14 @@ export const collaborationRendererCommandSchema = z
           .strict()
       ])
     }),
+    command("collaboration.subscribe_project_thread_v2", {
+      teamId: z.uuid(),
+      workspaceProjectId: z.uuid(),
+      threadId: z.uuid()
+    }),
+    command("collaboration.unsubscribe_project_thread_v2", {
+      subscriptionId: z.uuid()
+    }),
     command("collaboration.unsubscribe", { subscriptionId: z.uuid() }),
     command("collaboration.acknowledge_delivery", {
       subscriptionId: z.uuid(),
@@ -3123,6 +3144,8 @@ const commandNameSchema = z.enum([
   "collaboration.mark_delivered",
   "collaboration.load_message_page",
   "collaboration.load_team_message_page_v2",
+  "collaboration.open_project_thread_v2",
+  "collaboration.mark_project_thread_read_v2",
   "collaboration.load_shared_source_page",
   "collaboration.create_invitation",
   "collaboration.list_invitations",
@@ -3153,6 +3176,8 @@ const commandNameSchema = z.enum([
   "collaboration.revoke_shared_memory",
   "collaboration.change_shared_memory_fidelity",
   "collaboration.subscribe",
+  "collaboration.subscribe_project_thread_v2",
+  "collaboration.unsubscribe_project_thread_v2",
   "collaboration.unsubscribe",
   "collaboration.acknowledge_delivery"
 ]);
@@ -3239,6 +3264,14 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.load_team_message_page_v2",
     z.object({ page: teamCollaborationMessagePageV2Schema }).strict()
+  ),
+  successResult(
+    "collaboration.open_project_thread_v2",
+    z.object({ thread: projectThreadV2Schema }).strict()
+  ),
+  successResult(
+    "collaboration.mark_project_thread_read_v2",
+    z.object({ readState: collaborationReadStateSchema }).strict()
   ),
   successResult(
     "collaboration.load_shared_source_page",
@@ -3379,6 +3412,14 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.subscribe",
     z.object({ subscription: collaborationSubscriptionSchema }).strict()
+  ),
+  successResult(
+    "collaboration.subscribe_project_thread_v2",
+    z.object({ subscription: collaborationSubscriptionSchema }).strict()
+  ),
+  successResult(
+    "collaboration.unsubscribe_project_thread_v2",
+    emptyResultDataSchema
   ),
   successResult("collaboration.unsubscribe", emptyResultDataSchema),
   successResult(
@@ -4218,6 +4259,46 @@ export const teamCollaborationRealtimeV2EventSchema = z
     }
   });
 
+/** Additive Desktop delivery. Legacy v1 event members remain strict and unchanged. */
+export const projectThreadRealtimeEventSchema = z
+  .object({
+    contractVersion: z.literal(COLLABORATION_CONTRACT_VERSION),
+    type: z.literal("project_thread_v2_update"),
+    teamId: z.uuid(),
+    workspaceProjectId: z.uuid(),
+    threadId: z.uuid(),
+    update: teamCollaborationRealtimeUpdateV2Schema
+  })
+  .strict()
+  .superRefine((event, context) => {
+    if (
+      event.update.resource.teamId !== event.teamId ||
+      event.update.resource.threadId !== event.threadId
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Project Thread update must match its subscription binding"
+      });
+    }
+  });
+
+export const projectThreadRealtimeControlSchema = z
+  .object({
+    contractVersion: z.literal(COLLABORATION_CONTRACT_VERSION),
+    type: z.literal("project_thread_v2_control"),
+    teamId: z.uuid(),
+    workspaceProjectId: z.uuid(),
+    threadId: z.uuid(),
+    reason: z.enum(["requires_snapshot", "access_revoked", "unavailable"])
+  })
+  .strict();
+
+export const collaborationDesktopRendererEventSchema = z.union([
+  collaborationRendererEventSchema,
+  projectThreadRealtimeEventSchema,
+  projectThreadRealtimeControlSchema
+]);
+
 export type CollaborationLimits = z.infer<typeof collaborationLimitsSchema>;
 export type CollaborationBackendIdentity = z.infer<
   typeof collaborationBackendIdentitySchema
@@ -4339,5 +4420,5 @@ export type CollaborationRealtimeSnapshot = z.infer<
   typeof collaborationRealtimeSnapshotSchema
 >;
 export type CollaborationRendererEvent = z.infer<
-  typeof collaborationRendererEventSchema
+  typeof collaborationDesktopRendererEventSchema
 >;

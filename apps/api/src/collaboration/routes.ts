@@ -4,7 +4,12 @@ import type {
   PersonalNoteRecord,
   SharedMemoryRepository
 } from "@koed/db";
-import { sharedMemoryGrantScopedSourceId } from "@koed/shared";
+import {
+  projectThreadV2OpenResponseSchema,
+  projectThreadV2ParamsSchema,
+  projectThreadV2ReadParamsSchema,
+  sharedMemoryGrantScopedSourceId
+} from "@koed/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ApiRouteContext } from "../server/context.js";
@@ -168,11 +173,12 @@ const requireTeamThread = async (
   userId: string,
   teamId: string,
   threadId: string,
-  includeArchived = false
+  includeArchived = false,
+  includeProjectThread = false
 ) => {
   const thread = await repository.getThread(
     { userId },
-    { threadId, includeArchived }
+    { threadId, includeArchived, includeProjectThread }
   );
   if (thread?.scope !== "team" || thread.teamId !== teamId) {
     throw forbidden();
@@ -941,6 +947,42 @@ export const registerCollaborationRoutes = (
   );
 
   app.get(
+    "/v2/collaboration/teams/:teamId/projects/:workspaceProjectId/thread",
+    { preHandler: readRateLimit },
+    async (request) => {
+      const user = await authenticateTeamCollaboration(
+        request,
+        context,
+        "team_chat_read"
+      );
+      const input = projectThreadV2ParamsSchema.parse(request.params);
+      const thread = await context
+        .requireCollaborationRepository()
+        .getProjectThread({ userId: user.id }, input);
+      if (!thread) throw forbidden();
+      return projectThreadV2OpenResponseSchema.parse({ thread });
+    }
+  );
+
+  app.post(
+    "/v2/collaboration/teams/:teamId/projects/:workspaceProjectId/thread/open",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const user = await authenticateTeamCollaboration(
+        request,
+        context,
+        "team_chat_read"
+      );
+      const input = projectThreadV2ParamsSchema.parse(request.params);
+      const thread = await context
+        .requireCollaborationRepository()
+        .getOrCreateProjectThread({ userId: user.id }, input);
+      if (!thread) throw forbidden();
+      return projectThreadV2OpenResponseSchema.parse({ thread });
+    }
+  );
+
+  app.get(
     "/v2/collaboration/teams/:teamId/threads/:threadId/messages",
     { preHandler: readRateLimit },
     async (request) => {
@@ -956,7 +998,14 @@ export const registerCollaborationRoutes = (
         request.query
       );
       const repository = context.requireCollaborationRepository();
-      await requireTeamThread(repository, user.id, teamId, threadId, true);
+      await requireTeamThread(
+        repository,
+        user.id,
+        teamId,
+        threadId,
+        true,
+        true
+      );
       const page = await repository.listTeamMessagesV2(
         { userId: user.id },
         { threadId, ...query }
@@ -980,7 +1029,14 @@ export const registerCollaborationRoutes = (
       );
       const input = createTeamCollaborationMessageV2Schema.parse(request.body);
       const repository = context.requireCollaborationRepository();
-      await requireTeamThread(repository, user.id, teamId, threadId);
+      await requireTeamThread(
+        repository,
+        user.id,
+        teamId,
+        threadId,
+        false,
+        true
+      );
       await enforceCollaborationAdmission(
         reply,
         context.admission.admitMessage({ userId: user.id, teamId })
@@ -997,6 +1053,43 @@ export const registerCollaborationRoutes = (
       return reply
         .status(201)
         .send({ message: teamCollaborationMessageV2ApiSchema.parse(message) });
+    }
+  );
+
+  app.post(
+    "/v2/collaboration/teams/:teamId/projects/:workspaceProjectId/threads/:threadId/read",
+    { preHandler: writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const user = await authenticateTeamCollaboration(
+        request,
+        context,
+        "team_chat_read"
+      );
+      const { teamId, workspaceProjectId, threadId } =
+        projectThreadV2ReadParamsSchema.parse(request.params);
+      const { messageId } = advanceCollaborationReadStateSchema.parse(
+        request.body
+      );
+      const repository = context.requireCollaborationRepository();
+      const thread = await requireTeamThread(
+        repository,
+        user.id,
+        teamId,
+        threadId,
+        false,
+        true
+      );
+      if (
+        thread.kind !== "project_thread" ||
+        thread.workspaceProjectId !== workspaceProjectId
+      )
+        throw forbidden();
+      const readState = await repository.markProjectThreadRead(
+        { userId: user.id },
+        { threadId, messageId }
+      );
+      if (!readState) throw forbidden();
+      return { readState };
     }
   );
 

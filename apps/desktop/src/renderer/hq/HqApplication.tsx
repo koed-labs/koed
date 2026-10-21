@@ -56,6 +56,10 @@ import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
 import { useProjectMenuActions } from "./useProjectMenuActions.js";
 import { NowView } from "./now/NowView.js";
 import { HqProjectConversation } from "./project/HqProjectConversation.js";
+import { HqProjectThread } from "./project/HqProjectThread.js";
+import { Pixelkin } from "./agents/Pixelkin.js";
+import type { ProjectThreadV2 } from "@koed/shared/project-thread-contract";
+import "./project/hq-project-context-tabs.css";
 import { HqProjectView } from "./project/HqProjectView.js";
 import { SharedProjectStore } from "./shared-project/shared-project-store.js";
 import { HqShareSheet } from "./share-project/HqShareSheet.js";
@@ -92,7 +96,9 @@ export function HqApplication({
   markdownAdapters,
   onResolveIndependent,
   authorizeManagedConversationTransfer,
-  localAiClients
+  localAiClients,
+  projectTeamTabRequest,
+  onProjectTeamUnreadChange
 }: {
   personalMemoryStore: PersonalMemoryStore | null;
   personalMemoryReady: boolean;
@@ -117,6 +123,20 @@ export function HqApplication({
   onResolveIndependent?: () => Promise<DesktopProject | null>;
   authorizeManagedConversationTransfer?: CollaborationRendererClient["authorizeManagedConversationTransfer"];
   localAiClients?: DesktopApi["localAiClients"];
+  projectTeamTabRequest?: {
+    personalProjectId: string;
+    workspaceProjectId: string;
+    teamBackendId: string;
+    nonce: string;
+  } | null;
+  onProjectTeamUnreadChange?: (value: {
+    personalProjectId: string;
+    workspaceProjectId: string;
+    teamBackendId: string;
+    unreadCount: number;
+    latestSequence: number;
+    lastReadSequence: number;
+  }) => void;
 }) {
   const [selection, setSelection] = useState<{
     route: HqRoute;
@@ -278,6 +298,29 @@ export function HqApplication({
   const [sourcesPanelHost, setSourcesPanelHost] =
     useState<HTMLDivElement | null>(null);
   const shellActions = useRef<HqShellActions>(null);
+  const [projectTab, setProjectTab] = useState<"hq" | "team">("hq");
+  const [rightColumnVisible, setRightColumnVisible] = useState(true);
+  const [documentVisible, setDocumentVisible] = useState(
+    () => document.visibilityState === "visible"
+  );
+  useEffect(() => {
+    const onVisibilityChange = () =>
+      setDocumentVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+  const [projectTeamUnread, setProjectTeamUnread] = useState({
+    unreadCount: 0,
+    latestSequence: 0,
+    lastReadSequence: 0
+  });
+  const [projectTeamPeople, setProjectTeamPeople] = useState<
+    ProjectThreadV2["people"]
+  >([]);
+  const [projectTeamHost, setProjectTeamHost] = useState<HTMLDivElement | null>(
+    null
+  );
   const [projectsStore] = useState(() =>
     projectsApi ? new ProjectsStore(projectsApi) : null
   );
@@ -1091,6 +1134,91 @@ export function HqApplication({
     route.kind === "project"
       ? personalProjects.find(({ id }) => id === route.projectId)
       : undefined;
+  const projectTeamIdentity =
+    visibilityOwnerId &&
+    visibilityProfileKey &&
+    personalProject?.workspaceProjectId &&
+    personalProject.teamBackendId
+      ? {
+          ownerId: visibilityOwnerId,
+          profileKey: visibilityProfileKey,
+          personalProjectId: personalProject.id,
+          workspaceProjectId: personalProject.workspaceProjectId,
+          teamBackendId: personalProject.teamBackendId
+        }
+      : null;
+  const projectTeamIdentityKey = projectTeamIdentity
+    ? `${projectTeamIdentity.ownerId}:${projectTeamIdentity.profileKey}:${projectTeamIdentity.personalProjectId}:${projectTeamIdentity.workspaceProjectId}:${projectTeamIdentity.teamBackendId}`
+    : "";
+  useEffect(() => {
+    setProjectTab("hq");
+    setProjectTeamPeople([]);
+    setProjectTeamUnread({
+      unreadCount: 0,
+      latestSequence: 0,
+      lastReadSequence: 0
+    });
+    if (projectTeamIdentity)
+      onProjectTeamUnreadChange?.({
+        personalProjectId: projectTeamIdentity.personalProjectId,
+        workspaceProjectId: projectTeamIdentity.workspaceProjectId,
+        teamBackendId: projectTeamIdentity.teamBackendId,
+        unreadCount: 0,
+        latestSequence: 0,
+        lastReadSequence: 0
+      });
+    return () => {
+      if (projectTeamIdentity)
+        onProjectTeamUnreadChange?.({
+          personalProjectId: projectTeamIdentity.personalProjectId,
+          workspaceProjectId: projectTeamIdentity.workspaceProjectId,
+          teamBackendId: projectTeamIdentity.teamBackendId,
+          unreadCount: 0,
+          latestSequence: 0,
+          lastReadSequence: 0
+        });
+    };
+  }, [projectTeamIdentityKey]);
+  useEffect(() => {
+    if (!projectTeamTabRequest || !visibilityOwnerId || !visibilityProfileKey)
+      return;
+    const linked = personalProjects.find(
+      (candidate) =>
+        candidate.id === projectTeamTabRequest.personalProjectId &&
+        candidate.workspaceProjectId ===
+          projectTeamTabRequest.workspaceProjectId &&
+        candidate.teamBackendId === projectTeamTabRequest.teamBackendId
+    );
+    if (!linked) return;
+    selectRoute({ kind: "project", projectId: linked.id });
+    setProjectTab("team");
+    shellActions.current?.showContext();
+  }, [
+    projectTeamTabRequest?.nonce,
+    visibilityOwnerId,
+    visibilityProfileKey,
+    personalProjects,
+    projectTeamIdentityKey
+  ]);
+  const projectTeamUnreadChange = useCallback(
+    (value: {
+      unreadCount: number;
+      latestSequence: number;
+      lastReadSequence: number;
+    }) => {
+      setProjectTeamUnread((previous) =>
+        value.latestSequence >= previous.latestSequence ? value : previous
+      );
+      if (projectTeamIdentity)
+        onProjectTeamUnreadChange?.({
+          personalProjectId: projectTeamIdentity.personalProjectId,
+          workspaceProjectId: projectTeamIdentity.workspaceProjectId,
+          teamBackendId: projectTeamIdentity.teamBackendId,
+          ...value
+        });
+    },
+    [projectTeamIdentityKey, onProjectTeamUnreadChange]
+  );
   const projectPresentation = useMemo<DesktopProject | undefined>(
     () =>
       personalProject
@@ -1381,6 +1509,69 @@ export function HqApplication({
         }}
       />
     ) : undefined;
+  const projectContextContent =
+    route.kind === "project" &&
+    projectTeamIdentity &&
+    visibilityClient &&
+    sharedProjectStore ? (
+      <div className="hq-project-context-tabs">
+        <div
+          className="hq-project-context-tabs__tabs"
+          role="tablist"
+          aria-label="Project conversation"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={projectTab === "hq"}
+            onClick={() => setProjectTab("hq")}
+          >
+            {chiefAgent ? <Pixelkin agent={chiefAgent} size={18} /> : null}
+            Just me
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={projectTab === "team"}
+            onClick={() => setProjectTab("team")}
+          >
+            <span
+              className="hq-project-context-tabs__avatars"
+              aria-hidden="true"
+            >
+              {projectTeamPeople.slice(0, 2).map((person) => (
+                <span
+                  key={person.userId}
+                  title={person.displayName ?? "Team member"}
+                >
+                  {(person.displayName ?? "T").slice(0, 1).toUpperCase()}
+                </span>
+              ))}
+            </span>
+            Team
+            {projectTeamUnread.unreadCount ? (
+              <i className="hq-project-context-tabs__unread">
+                {projectTeamUnread.unreadCount}
+              </i>
+            ) : null}
+          </button>
+        </div>
+        <div
+          hidden={projectTab !== "hq"}
+          className="hq-project-context-tabs__content"
+        >
+          {projectHqContent}
+        </div>
+        <div
+          hidden={projectTab !== "team"}
+          className="hq-project-context-tabs__content"
+        >
+          <div ref={setProjectTeamHost} className="hq-project-thread-host" />
+        </div>
+      </div>
+    ) : (
+      projectHqContent
+    );
   const assignPlacement = async (
     sessionId: string,
     fromProjectId: string | null,
@@ -1530,12 +1721,13 @@ export function HqApplication({
     <>
       <HqShell
         actionsRef={shellActions}
+        onRightColumnVisibilityChange={setRightColumnVisible}
         contextAvailable={contextAvailable}
         contextContent={
           route.kind === "home" && nowMemoryOpen ? (
             <div className="hq-now-memory-host" ref={setNowMemoryHost} />
           ) : (
-            projectHqContent
+            projectContextContent
           )
         }
         title={title}
@@ -1790,6 +1982,16 @@ export function HqApplication({
               graphProjects={projects}
               projectsApi={projectsApi}
               sharedProjectStore={sharedProjectStore}
+              onOpenTeamTab={
+                projectTeamIdentity && visibilityClient
+                  ? () => {
+                      setProjectTab("team");
+                      shellActions.current?.showContext();
+                    }
+                  : undefined
+              }
+              teamUnreadCount={projectTeamUnread.unreadCount}
+              rightColumnVisible={rightColumnVisible}
               deleteSharedProjectSource={
                 visibilityClient?.deleteWorkspaceProjectSource
               }
@@ -1924,6 +2126,20 @@ export function HqApplication({
           )}
         </section>
       </HqShell>
+      {projectTeamIdentity && visibilityClient && sharedProjectStore ? (
+        <HqProjectThread
+          key={projectTeamIdentityKey}
+          client={visibilityClient}
+          sharedProjectStore={sharedProjectStore}
+          identity={projectTeamIdentity}
+          active={
+            projectTab === "team" && rightColumnVisible && documentVisible
+          }
+          portalHost={projectTeamHost}
+          onUnread={projectTeamUnreadChange}
+          onPeople={setProjectTeamPeople}
+        />
+      ) : null}
       {projectMenu.ui}
       <HqSearch
         destinations={destinations}

@@ -12,9 +12,11 @@ import {
   collaborationDeliveryIdSchema,
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema,
+  collaborationDesktopRendererEventSchema,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
   collaborationSubscriptionSchema,
+  teamCollaborationRealtimeUpdateV2Schema,
   isTeamCollaborationSelection,
   readBoundedJsonObject,
   type CollaborationCommandResult,
@@ -34,6 +36,8 @@ import {
 export const collaborationCommandPath = "/v1/local-edge/collaboration/command";
 export const collaborationRealtimeSubscriptionsPath =
   "/v1/local-edge/collaboration/realtime/subscriptions";
+const projectThreadRealtimeSubscriptionsPath =
+  "/v2/local-edge/collaboration/realtime/subscriptions";
 export const collaborationRealtimeBackendSubscriptionsPath = (
   backendId: string
 ) =>
@@ -84,6 +88,11 @@ interface ActiveSubscription {
   controller: AbortController;
   emit: (event: CollaborationRendererEvent) => void;
   operationTail: Promise<void>;
+  projectThread: { workspaceProjectId: string; threadId: string } | null;
+  projectThreadTerminalReason?:
+    | "requires_snapshot"
+    | "access_revoked"
+    | "unavailable";
 }
 
 interface BrokerSnapshotResponse {
@@ -121,6 +130,9 @@ const commandRequiresTeamBackend = (
       return true;
     case "collaboration.subscribe":
       return command.input.scope.scope === "team";
+    case "collaboration.subscribe_project_thread_v2":
+    case "collaboration.unsubscribe_project_thread_v2":
+      return true;
     case "collaboration.unsubscribe":
     case "collaboration.acknowledge_delivery":
       return false;
@@ -360,6 +372,22 @@ const parseBrokerSnapshotResponse = (
   };
 };
 
+const stripV2BrokerEnvelope = (raw: unknown): unknown => {
+  if (
+    !isRecord(raw) ||
+    raw.messageContractVersion !== 2 ||
+    !isRecord(raw.subscription) ||
+    raw.subscription.messageContractVersion !== 2
+  ) {
+    throw new Error("Project Thread v2 subscription is invalid");
+  }
+  const root = { ...raw };
+  const subscription = { ...raw.subscription };
+  delete root.messageContractVersion;
+  delete subscription.messageContractVersion;
+  return { ...root, subscription };
+};
+
 const parseBrokerAckResponse = (
   raw: unknown,
   subscription: ActiveSubscription
@@ -451,7 +479,23 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     subscription: ActiveSubscription,
     event: CollaborationRendererEvent
   ) => {
-    const parsed = collaborationRendererEventSchema.parse(event);
+    const parsed = collaborationDesktopRendererEventSchema.parse(event);
+    if (
+      parsed.type === "project_thread_v2_update" ||
+      parsed.type === "project_thread_v2_control"
+    ) {
+      if (
+        !subscription.projectThread ||
+        parsed.teamId !== subscription.teamId ||
+        parsed.workspaceProjectId !==
+          subscription.projectThread.workspaceProjectId ||
+        parsed.threadId !== subscription.projectThread.threadId
+      ) {
+        throw new Error("Project Thread realtime binding is invalid");
+      }
+      subscription.emit(parsed);
+      return;
+    }
     const matchesSubscription =
       (parsed.type === "snapshot" &&
         parsed.subscription.id === subscription.id &&
@@ -636,6 +680,92 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     throw new Error("Collaboration broker event type is unsupported");
   };
 
+  const acknowledgeProjectDelivery = async (
+    subscription: ActiveSubscription,
+    deliveryId: string,
+    eventId: string | null
+  ): Promise<boolean> => {
+    if (
+      !subscription.projectThread ||
+      !subscription.connection.backendId ||
+      !subscription.teamId
+    )
+      return false;
+    const response = await options.fetch(
+      new URL(
+        `${projectThreadRealtimeSubscriptionsPath}/${encodeURIComponent(subscription.id)}/ack`,
+        subscription.connection.apiUrl
+      ),
+      {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          authorization: subscription.connection.authorization,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          scope: "team",
+          upstream_backend_id: subscription.connection.backendId,
+          team_id: subscription.teamId,
+          delivery_id: deliveryId,
+          event_id: eventId,
+          expected_version: subscription.brokerVersion
+        }),
+        redirect: "error",
+        signal: subscription.controller.signal
+      }
+    );
+    if (!response.ok) {
+      if ([401, 403, 410].includes(response.status))
+        subscription.projectThreadTerminalReason = "access_revoked";
+      await response.body?.cancel().catch(() => undefined);
+      return false;
+    }
+    const payload = await readBoundedJsonObject(response, 1024 * 1024);
+    const acknowledged = parseBrokerAckResponse(
+      stripV2BrokerEnvelope(payload),
+      subscription
+    );
+    subscription.brokerVersion = acknowledged.brokerVersion;
+    subscription.version = acknowledged.subscription.version;
+    return true;
+  };
+
+  const parseProjectThreadStreamFrame = async (
+    subscription: ActiveSubscription,
+    payload: unknown
+  ): Promise<"continue" | "terminal"> => {
+    const update = teamCollaborationRealtimeUpdateV2Schema.safeParse(payload);
+    if (!update.success || !subscription.projectThread || !subscription.teamId)
+      return "terminal";
+    if (
+      update.data.subscriptionId !== subscription.id ||
+      update.data.resource.teamId !== subscription.teamId
+    )
+      return "terminal";
+    const isBoundThread =
+      update.data.resource.threadId === subscription.projectThread.threadId;
+    if (isBoundThread) {
+      emit(subscription, {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        type: "project_thread_v2_update",
+        teamId: subscription.teamId,
+        workspaceProjectId: subscription.projectThread.workspaceProjectId,
+        threadId: subscription.projectThread.threadId,
+        update: update.data
+      });
+    }
+    if (
+      !(await acknowledgeProjectDelivery(
+        subscription,
+        update.data.deliveryId,
+        update.data.eventId
+      ))
+    )
+      return "terminal";
+    return "continue";
+  };
+
   const runStream = async (subscription: ActiveSubscription) => {
     await runDurableRealtime({
       signal: subscription.controller.signal,
@@ -650,6 +780,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
           calculateCollaborationReconnectDelay(attempt, random())
       },
       onState: (state) => {
+        if (subscription.projectThread) return;
         if (state.state === "connecting" || state.state === "live") {
           emitConnection(subscription, state.state, 0, null, null);
           return;
@@ -690,7 +821,7 @@ export const createDesktopCollaborationBrokerLocalTransport = (
           throw new Error("Collaboration realtime transport is unavailable");
         }
         const url = new URL(
-          `${collaborationRealtimeSubscriptionsPath}/${encodeURIComponent(subscription.id)}/stream`,
+          `${subscription.projectThread ? projectThreadRealtimeSubscriptionsPath : collaborationRealtimeSubscriptionsPath}/${encodeURIComponent(subscription.id)}/stream`,
           subscription.connection.apiUrl
         );
         if (subscription.connection.backendId) {
@@ -722,17 +853,22 @@ export const createDesktopCollaborationBrokerLocalTransport = (
         ) {
           await response.body?.cancel().catch(() => undefined);
           if ([401, 403, 410].includes(response.status)) {
-            emitConnection(
-              subscription,
-              "access_revoked",
-              0,
-              null,
-              safeError("access_revoked")
-            );
+            if (subscription.projectThread)
+              subscription.projectThreadTerminalReason = "access_revoked";
+            else
+              emitConnection(
+                subscription,
+                "access_revoked",
+                0,
+                null,
+                safeError("access_revoked")
+              );
             return "terminal";
           }
           if (response.status === 404 || response.status === 409) {
-            emitTerminalControl(subscription, "requires_snapshot");
+            if (subscription.projectThread)
+              subscription.projectThreadTerminalReason = "requires_snapshot";
+            else emitTerminalControl(subscription, "requires_snapshot");
             return "terminal";
           }
           throw new Error("Collaboration stream is unavailable");
@@ -742,13 +878,15 @@ export const createDesktopCollaborationBrokerLocalTransport = (
           body: response.body,
           signal,
           maxFrameBytes: COLLABORATION_RENDERER_MAX_PENDING_BYTES,
-          onFrame: ({ event, data }) => {
+          onFrame: async ({ event, data }) => {
             if (!isCurrent()) return "terminal";
             if (!data) {
               throw new Error("Collaboration stream frame has no payload");
             }
             const payload: unknown = JSON.parse(data);
-            return parseBrokerStreamFrame(subscription, event, payload);
+            return subscription.projectThread
+              ? parseProjectThreadStreamFrame(subscription, payload)
+              : parseBrokerStreamFrame(subscription, event, payload);
           }
         });
       }
@@ -852,6 +990,18 @@ export const createDesktopCollaborationBrokerLocalTransport = (
         subscription.streamStarted = true;
         void runStream(subscription).finally(() => {
           if (subscriptions.get(subscription.id) === subscription) {
+            if (subscription.projectThread)
+              emit(subscription, {
+                contractVersion: COLLABORATION_CONTRACT_VERSION,
+                type: "project_thread_v2_control",
+                teamId: subscription.teamId!,
+                workspaceProjectId:
+                  subscription.projectThread.workspaceProjectId,
+                threadId: subscription.projectThread.threadId,
+                reason:
+                  subscription.projectThreadTerminalReason ??
+                  "requires_snapshot"
+              });
             subscriptions.delete(subscription.id);
           }
         });
@@ -1138,7 +1288,8 @@ export const createDesktopCollaborationBrokerLocalTransport = (
         connection,
         controller: new AbortController(),
         emit: context.emitCollaborationEvent,
-        operationTail: Promise.resolve()
+        operationTail: Promise.resolve(),
+        projectThread: null
       };
       subscriptions.set(active.id, active);
       const abortForOwner = () => stopSubscription(active.id);
@@ -1165,6 +1316,161 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       });
     } catch {
       return failureResult(command, safeError("internal_error"));
+    } finally {
+      linked.dispose();
+    }
+  };
+
+  const subscribeProjectThreadV2 = async (
+    command: Extract<
+      CollaborationRendererCommand,
+      { command: "collaboration.subscribe_project_thread_v2" }
+    >,
+    connection: CollaborationLocalConnection,
+    context: CollaborationTransportContext,
+    expectedAuthorityGeneration: number
+  ): Promise<CollaborationCommandResult> => {
+    if (!connection.backendId)
+      return failureResult(command, safeError("not_available"));
+    const linked = linkedAbortController(context.signal, commandTimeoutMs);
+    try {
+      const proofCommand = collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: "collaboration.open_project_thread_v2",
+        input: {
+          teamId: command.input.teamId,
+          workspaceProjectId: command.input.workspaceProjectId
+        }
+      });
+      const proofResponse = await options.fetch(
+        new URL(collaborationCommandPath, connection.apiUrl),
+        {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            authorization: connection.authorization,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            upstream_backend_id: connection.backendId,
+            command: proofCommand
+          }),
+          redirect: "error",
+          signal: linked.controller.signal
+        }
+      );
+      const proofPayload = await readBoundedJsonObject(
+        proofResponse,
+        commandResponseMaxBytes
+      );
+      const proof = parseCorrelatedResult(proofPayload, proofCommand);
+      if (
+        !proofResponse.ok ||
+        !proof ||
+        !proof.ok ||
+        proof.command !== "collaboration.open_project_thread_v2" ||
+        proof.data.thread.id !== command.input.threadId ||
+        proof.data.thread.workspaceProjectId !==
+          command.input.workspaceProjectId ||
+        proof.data.thread.teamId !== command.input.teamId
+      ) {
+        return failureResult(command, safeError("access_revoked"));
+      }
+      if (authorityGeneration(context.ownerId) !== expectedAuthorityGeneration)
+        return failureResult(command, safeError("access_revoked"));
+      const response = await options.fetch(
+        new URL(projectThreadRealtimeSubscriptionsPath, connection.apiUrl),
+        {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            authorization: connection.authorization,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            scope: "team",
+            upstream_backend_id: connection.backendId,
+            team_id: command.input.teamId
+          }),
+          redirect: "error",
+          signal: linked.controller.signal
+        }
+      );
+      const payload = await readBoundedJsonObject(
+        response,
+        commandResponseMaxBytes
+      );
+      if (!response.ok) return failureResult(command, errorForStatus(response));
+      const broker = parseBrokerSnapshotResponse(
+        stripV2BrokerEnvelope(payload),
+        "team",
+        command.input.teamId
+      );
+      if (authorityGeneration(context.ownerId) !== expectedAuthorityGeneration)
+        return failureResult(command, safeError("access_revoked"));
+      for (const existing of subscriptions.values()) {
+        if (
+          existing.ownerId === context.ownerId &&
+          existing.projectThread?.workspaceProjectId ===
+            command.input.workspaceProjectId
+        )
+          stopSubscription(existing.id);
+      }
+      const active: ActiveSubscription = {
+        id: broker.subscription.id,
+        ownerId: context.ownerId,
+        scope: "team",
+        teamId: command.input.teamId,
+        version: broker.subscription.version,
+        brokerVersion: broker.brokerVersion,
+        initialDeliveryId: broker.deliveryId,
+        streamStarted: false,
+        connection,
+        controller: new AbortController(),
+        emit: context.emitCollaborationEvent,
+        operationTail: Promise.resolve(),
+        projectThread: {
+          workspaceProjectId: command.input.workspaceProjectId,
+          threadId: command.input.threadId
+        }
+      };
+      subscriptions.set(active.id, active);
+      context.signal.addEventListener(
+        "abort",
+        () => stopSubscription(active.id),
+        { once: true }
+      );
+      if (
+        !(await acknowledgeProjectDelivery(active, broker.deliveryId, null))
+      ) {
+        stopSubscription(active.id);
+        return failureResult(command, safeError("temporarily_unavailable"));
+      }
+      active.initialDeliveryId = null;
+      active.streamStarted = true;
+      void runStream(active).finally(() => {
+        if (subscriptions.get(active.id) === active) {
+          emit(active, {
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            type: "project_thread_v2_control",
+            teamId: active.teamId!,
+            workspaceProjectId: active.projectThread!.workspaceProjectId,
+            threadId: active.projectThread!.threadId,
+            reason: active.projectThreadTerminalReason ?? "requires_snapshot"
+          });
+          subscriptions.delete(active.id);
+        }
+      });
+      return collaborationCommandResultSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: command.requestId,
+        command: command.command,
+        ok: true,
+        data: { subscription: broker.subscription }
+      });
+    } catch {
+      return failureResult(command, safeError("offline"));
     } finally {
       linked.dispose();
     }
@@ -1219,8 +1525,61 @@ export const createDesktopCollaborationBrokerLocalTransport = (
           )
         : failureResult(command, safeError("not_available"));
     }
+    if (command.command === "collaboration.unsubscribe_project_thread_v2") {
+      if (
+        !existing?.projectThread ||
+        !existing.connection.backendId ||
+        !existing.teamId
+      )
+        return failureResult(command, safeError("not_available"));
+      stopSubscription(existing.id);
+      try {
+        const response = await options.fetch(
+          new URL(
+            `${projectThreadRealtimeSubscriptionsPath}/${encodeURIComponent(existing.id)}`,
+            existing.connection.apiUrl
+          ),
+          {
+            method: "DELETE",
+            headers: {
+              accept: "application/json",
+              authorization: existing.connection.authorization,
+              "content-type": "application/json"
+            },
+            body: JSON.stringify({
+              scope: "team",
+              upstream_backend_id: existing.connection.backendId,
+              team_id: existing.teamId,
+              expected_version: existing.brokerVersion
+            }),
+            redirect: "error",
+            signal: context.signal
+          }
+        );
+        await response.body?.cancel().catch(() => undefined);
+        return response.ok
+          ? collaborationCommandResultSchema.parse({
+              contractVersion: COLLABORATION_CONTRACT_VERSION,
+              requestId: command.requestId,
+              command: command.command,
+              ok: true,
+              data: {}
+            })
+          : failureResult(command, errorForStatus(response));
+      } catch {
+        return failureResult(command, safeError("offline"));
+      }
+    }
     if (command.command === "collaboration.subscribe") {
       return subscribeRealtime(
+        command,
+        connection,
+        context,
+        requestAuthorityGeneration
+      );
+    }
+    if (command.command === "collaboration.subscribe_project_thread_v2") {
+      return subscribeProjectThreadV2(
         command,
         connection,
         context,

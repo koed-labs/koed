@@ -589,6 +589,23 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: read
   },
+  "collaboration.open_project_thread_v2": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.mark_project_thread_read_v2": {
+    scope: "team",
+    desktopOperationFamily: read,
+    teamOperation: (command) => ({
+      operationFamily: "team_chat_read",
+      method: "POST",
+      path: `/v2/collaboration/teams/${encodeURIComponent(command.input.teamId)}/projects/${encodeURIComponent(command.input.workspaceProjectId)}/threads/${encodeURIComponent(command.input.threadId)}/read`,
+      body: { messageId: command.input.messageId },
+      resultKey: "readState"
+    }),
+    matchesTeamResult: (command, result) =>
+      result.threadId === command.input.threadId
+  },
   "collaboration.load_shared_source_page": {
     scope: "team",
     desktopOperationFamily: read
@@ -700,6 +717,14 @@ export const collaborationCommandRegistry = {
   "collaboration.subscribe": {
     scope: (command) => command.input.scope.scope,
     desktopOperationFamily: read
+  },
+  "collaboration.subscribe_project_thread_v2": {
+    scope: "unsupported",
+    desktopOperationFamily: read
+  },
+  "collaboration.unsubscribe_project_thread_v2": {
+    scope: "unsupported",
+    desktopOperationFamily: write
   },
   "collaboration.unsubscribe": {
     scope: "unsupported",

@@ -44,6 +44,7 @@ export type PersonalCollaborationThreadKind = "personal_channel";
 
 export type TeamCollaborationThreadKind =
   | "workspace_channel"
+  | "project_thread"
   | "dm"
   | "group_dm"
   | "shared_session_discussion";
@@ -95,6 +96,7 @@ export interface CollaborationThreadRecord {
   personalOwnerUserId: string | null;
   teamId: string | null;
   teamWorkspaceId: string | null;
+  workspaceProjectId?: string | null;
   sharedLogicalMemoryId: string | null;
   shareGrantId: string | null;
   systemKey: "workspace.general" | null;
@@ -112,6 +114,19 @@ export interface CollaborationThreadRecord {
   updatedAt: string;
   lastActivityAt: string;
   archivedAt: string | null;
+}
+
+export interface ProjectThreadRecord {
+  id: string;
+  teamId: string;
+  workspaceId: string;
+  workspaceProjectId: string;
+  version: number;
+  lifecycle: "active" | "archived";
+  latestSequence: number;
+  lastReadSequence: number;
+  unreadCount: number;
+  people: CollaborationParticipantRecord[];
 }
 
 export interface CollaborationMessageProvenance {
@@ -354,6 +369,19 @@ export type CreateCollaborationThreadInput =
     };
 
 export interface CollaborationRepository {
+  isProjectThreadId(threadId: string): Promise<boolean>;
+  getOrCreateProjectThread(
+    actor: ActorContext,
+    input: { teamId: string; workspaceProjectId: string }
+  ): Promise<ProjectThreadRecord | null>;
+  getProjectThread(
+    actor: ActorContext,
+    input: { teamId: string; workspaceProjectId: string }
+  ): Promise<ProjectThreadRecord | null>;
+  markProjectThreadRead(
+    actor: ActorContext,
+    input: { threadId: string; messageId: string }
+  ): Promise<CollaborationReadStateRecord | null>;
   listTeamParticipants(
     actor: ActorContext,
     teamId: string
@@ -364,7 +392,11 @@ export interface CollaborationRepository {
   ): Promise<CollaborationThreadRecord | null>;
   getThread(
     actor: ActorContext,
-    input: { threadId: string; includeArchived?: boolean }
+    input: {
+      threadId: string;
+      includeArchived?: boolean;
+      includeProjectThread?: boolean;
+    }
   ): Promise<CollaborationThreadRecord | null>;
   listThreads(
     actor: ActorContext,
@@ -542,11 +574,15 @@ export interface CollaborationRealtimeMaterializationRepository {
   ): Promise<TeamCollaborationMessageV2Record | null>;
   getReceiptStateForRealtime(
     actor: ActorContext,
-    input: { threadId: string }
+    input: { threadId: string; projectThreadV2?: boolean }
   ): Promise<CollaborationReadStateRecord | null>;
   listMessageReceiptsForRealtime(
     actor: ActorContext,
-    input: { threadId: string; throughMessageId: string }
+    input: {
+      threadId: string;
+      throughMessageId: string;
+      projectThreadV2?: boolean;
+    }
   ): Promise<CollaborationMessageReceiptRecord[] | null>;
   getPersonalMemoryForRealtime(
     actor: ActorContext,
@@ -589,6 +625,7 @@ type AuthorizedThreadRow = {
   personal_owner_user_id: string | null;
   team_id: string | null;
   team_workspace_id: string | null;
+  workspace_project_id: string | null;
   shared_logical_memory_id: string | null;
   share_grant_id: string | null;
   system_key: "workspace.general" | null;
@@ -1318,6 +1355,14 @@ const authorizedThreadJoinsSql = `
    and workspace_access.team_id = ct.team_id
    and workspace_access.user_id = $1
    and workspace_access.disabled_at is null
+  left join workspace_projects project
+    on project.id = ct.workspace_project_id
+   and project.workspace_id = ct.team_workspace_id
+   and project.team_id = ct.team_id
+  left join workspace_project_members project_member
+    on project_member.workspace_project_id = ct.workspace_project_id
+   and project_member.team_member_id = actor_membership.id
+   and project_member.disabled_at is null
   left join team_memory_share_grants share_grant
     on share_grant.id = ct.share_grant_id
    and share_grant.team_id = ct.team_id
@@ -1391,6 +1436,19 @@ const authorizedThreadPredicate = (required: "read" | "write"): string => `
           }
         )
         or (
+          ct.kind = 'project_thread'
+          and project.lifecycle = 'active'
+          and project.deleted_at is null
+          and workspace.lifecycle = 'active'
+          and workspace.archived_at is null
+          and workspace_access.access ${
+            required === "write" ? "= 'write'" : "in ('read', 'write')"
+          }
+          and project_member.access ${
+            required === "write" ? "= 'write'" : "in ('read', 'write')"
+          }
+        )
+        or (
           ct.kind = 'shared_session_discussion'
           and workspace.lifecycle = 'active'
           and workspace.archived_at is null
@@ -1425,6 +1483,7 @@ const selectThreadColumnsSql = `
   ct.personal_owner_user_id,
   ct.team_id,
   ct.team_workspace_id,
+  ct.workspace_project_id,
   ct.shared_logical_memory_id,
   ct.share_grant_id,
   ct.system_key,
@@ -1455,6 +1514,7 @@ const getAuthorizedThreadRow = async (
     includeArchived: boolean;
     forUpdate?: boolean;
     pendingShareActivation?: boolean;
+    includeProjectThread?: boolean;
   }
 ): Promise<AuthorizedThreadRow | null> => {
   const result = await client.query<AuthorizedThreadRow>(
@@ -1463,6 +1523,7 @@ const getAuthorizedThreadRow = async (
       from collaboration_threads ct
       ${authorizedThreadJoinsSql}
       where ct.id = $2
+        and ${options.includeProjectThread ? "true" : "ct.kind <> 'project_thread'"}
         and ct.lifecycle ${
           options.includeArchived ? "in ('active', 'archived')" : "= 'active'"
         }
@@ -1503,7 +1564,7 @@ const getAuthorizedThreadRow = async (
 };
 
 const currentThreadAudienceMembers = async (
-  client: pg.PoolClient,
+  client: pg.Pool | pg.PoolClient,
   thread: AuthorizedThreadRow
 ): Promise<string[]> => {
   if (thread.scope === "personal") {
@@ -1527,6 +1588,33 @@ const currentThreadAudienceMembers = async (
         order by participant.user_id
       `,
       [thread.id]
+    );
+    return result.rows.map((row) => row.user_id);
+  }
+  if (thread.kind === "project_thread") {
+    const result = await client.query<{ user_id: string }>(
+      `select membership.user_id
+         from workspace_project_members project_member
+         join team_memberships membership
+           on membership.id=project_member.team_member_id
+          and membership.team_id=$2
+          and membership.status='enabled'
+          and membership.disabled_at is null
+         join team_workspace_access_grants access
+           on access.team_workspace_id=$3
+          and access.team_id=$2
+          and access.user_id=membership.user_id
+          and access.access in ('read','write')
+          and access.disabled_at is null
+         join users participant_user
+           on participant_user.id=membership.user_id
+          and participant_user.disabled_at is null
+          and participant_user.deleted_at is null
+        where project_member.workspace_project_id=$1
+          and project_member.access in ('read','write')
+          and project_member.disabled_at is null
+        order by membership.user_id`,
+      [thread.workspace_project_id, thread.team_id, thread.team_workspace_id]
     );
     return result.rows.map((row) => row.user_id);
   }
@@ -1721,6 +1809,7 @@ const mapThreadRows = async (
       personalOwnerUserId: row.personal_owner_user_id,
       teamId: row.team_id,
       teamWorkspaceId: row.team_workspace_id,
+      workspaceProjectId: row.workspace_project_id,
       sharedLogicalMemoryId: row.shared_logical_memory_id,
       shareGrantId: row.share_grant_id,
       systemKey: row.system_key,
@@ -1741,6 +1830,67 @@ const mapThreadRows = async (
     } satisfies CollaborationThreadRecord);
   }
   return mapped;
+};
+
+const projectThreadFromRow = async (
+  client: pg.Pool | pg.PoolClient,
+  row: AuthorizedThreadRow
+): Promise<ProjectThreadRecord> => {
+  if (
+    row.kind !== "project_thread" ||
+    !row.team_id ||
+    !row.team_workspace_id ||
+    !row.workspace_project_id ||
+    (row.lifecycle !== "active" && row.lifecycle !== "archived")
+  ) {
+    throw new Error("Project Thread identity is unavailable");
+  }
+  const memberIds = await currentThreadAudienceMembers(client, row);
+  const people = await client.query<{
+    id: string;
+    display_name: string | null;
+  }>(
+    `select id, display_name from users where id = any($1::uuid[]) order by id`,
+    [memberIds]
+  );
+  return {
+    id: row.id,
+    teamId: row.team_id,
+    workspaceId: row.team_workspace_id,
+    workspaceProjectId: row.workspace_project_id,
+    version: row.version,
+    lifecycle: row.lifecycle,
+    latestSequence: Number(row.next_sequence) - 1,
+    lastReadSequence: Number(row.last_read_sequence),
+    unreadCount: Number(row.unread_count),
+    people: people.rows.map((person) => ({
+      userId: person.id,
+      displayName: person.display_name
+    }))
+  };
+};
+
+const readProjectThread = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  input: { teamId: string; workspaceProjectId: string }
+): Promise<ProjectThreadRecord | null> => {
+  const found = await client.query<{ id: string }>(
+    `select id from collaboration_threads where kind='project_thread'
+       and team_id=$1 and workspace_project_id=$2 limit 1`,
+    [input.teamId, input.workspaceProjectId]
+  );
+  if (!found.rows[0]) return null;
+  const row = await getAuthorizedThreadRow(client, actor, found.rows[0].id, {
+    required: "read",
+    includeArchived: true,
+    includeProjectThread: true
+  });
+  return row?.kind === "project_thread" &&
+    row.team_id === input.teamId &&
+    row.workspace_project_id === input.workspaceProjectId
+    ? projectThreadFromRow(client, row)
+    : null;
 };
 
 const listAuthorizedThreadRows = async (
@@ -1788,6 +1938,7 @@ const listAuthorizedThreadRows = async (
         and ($2::collaboration_scope = 'personal' or ct.team_id = $3::uuid)
         and ($4::uuid is null or ct.team_workspace_id = $4::uuid)
         and ($5::text[] is null or ct.kind::text = any($5::text[]))
+        and ct.kind <> 'project_thread'
         and ct.lifecycle ${
           input.includeArchived ? "in ('active', 'archived')" : "= 'active'"
         }
@@ -3772,7 +3923,8 @@ const sendCollaborationMessage = async (
   const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
     required: "write",
     includeArchived: false,
-    forUpdate: true
+    forUpdate: true,
+    includeProjectThread: teamMessageV2
   });
   if (!thread) return null;
   if (teamMessageV2 && thread.scope !== "team") {
@@ -4017,7 +4169,8 @@ const listTeamCollaborationMessagesV2 = async (
 ): Promise<TeamCollaborationMessageV2PageRecord | null> => {
   const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
     required: "read",
-    includeArchived: true
+    includeArchived: true,
+    includeProjectThread: true
   });
   if (!thread) return null;
   if (thread.scope !== "team") return null;
@@ -4159,7 +4312,8 @@ const getTeamCollaborationMessageV2ForRealtime = async (
 ): Promise<TeamCollaborationMessageV2Record | null> => {
   const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
     required: "read",
-    includeArchived: true
+    includeArchived: true,
+    includeProjectThread: true
   });
   if (!thread || thread.scope !== "team") return null;
   const result = await client.query<MessageRow>(
@@ -4181,11 +4335,16 @@ const getTeamCollaborationMessageV2ForRealtime = async (
 const listCollaborationMessageReceiptsForRealtime = async (
   client: pg.Pool | pg.PoolClient,
   actor: ActorContext,
-  input: { threadId: string; throughMessageId: string }
+  input: {
+    threadId: string;
+    throughMessageId: string;
+    projectThreadV2?: boolean;
+  }
 ): Promise<CollaborationMessageReceiptRecord[] | null> => {
   const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
     required: "read",
-    includeArchived: true
+    includeArchived: true,
+    includeProjectThread: input.projectThreadV2 === true
   });
   if (!thread) return null;
   const through = await client.query<{ thread_sequence: string | number }>(
@@ -4285,11 +4444,12 @@ const receiptStateRecord = async (
 const getCollaborationReceiptStateForRealtime = async (
   client: pg.Pool | pg.PoolClient,
   actor: ActorContext,
-  input: { threadId: string }
+  input: { threadId: string; projectThreadV2?: boolean }
 ): Promise<CollaborationReadStateRecord | null> => {
   const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
     required: "read",
-    includeArchived: true
+    includeArchived: true,
+    includeProjectThread: input.projectThreadV2 === true
   });
   if (!thread) return null;
   const result = await client.query<ReceiptStateRow>(
@@ -4320,14 +4480,17 @@ const advanceCollaborationReceiptState = async (
     threadId: string;
     messageId: string;
     state: "delivered" | "read";
+    projectThreadV2?: boolean;
   }
 ): Promise<CollaborationReadStateRecord | null> => {
   const thread = await getAuthorizedThreadRow(client, actor, input.threadId, {
     required: "read",
     includeArchived: true,
-    forUpdate: true
+    forUpdate: true,
+    includeProjectThread: input.projectThreadV2 === true
   });
   if (!thread) return null;
+  if (input.projectThreadV2 && thread.kind !== "project_thread") return null;
   const message = await client.query<{
     id: string;
     thread_sequence: string | number;
@@ -4817,6 +4980,107 @@ export const createCollaborationRepository = (
     return requireProvider(result.rows[0]?.scope);
   };
   return {
+    async isProjectThreadId(threadId) {
+      const found = await pool.query<{ kind: string }>(
+        "select kind::text as kind from collaboration_threads where id=$1 limit 1",
+        [threadId]
+      );
+      return found.rows[0]?.kind === "project_thread";
+    },
+    async getProjectThread(actor, input) {
+      return readProjectThread(pool, actor, input);
+    },
+
+    async markProjectThreadRead(actor, input) {
+      return withTransaction(pool, (client) =>
+        advanceCollaborationReceiptState(client, actor, {
+          ...input,
+          state: "read",
+          projectThreadV2: true
+        })
+      );
+    },
+
+    async getOrCreateProjectThread(actor, input) {
+      return withTransaction(pool, async (client) => {
+        const authorized = await client.query<{
+          team_id: string;
+          workspace_id: string;
+        }>(
+          `select project.team_id,project.workspace_id
+             from workspace_projects project
+             join teams team on team.id=project.team_id
+              and team.lifecycle='active'
+              and team.entitlement_status in ('active','grace')
+             join team_workspaces workspace on workspace.id=project.workspace_id
+              and workspace.team_id=project.team_id
+              and workspace.lifecycle='active'
+              and workspace.archived_at is null
+             join team_memberships membership on membership.team_id=project.team_id
+              and membership.user_id=$3
+              and membership.status='enabled'
+              and membership.disabled_at is null
+             join workspace_project_members project_member
+               on project_member.workspace_project_id=project.id
+              and project_member.team_member_id=membership.id
+              and project_member.access in ('read','write')
+              and project_member.disabled_at is null
+             join team_workspace_access_grants access
+               on access.team_workspace_id=project.workspace_id
+              and access.team_id=project.team_id
+              and access.user_id=$3
+              and access.access in ('read','write')
+              and access.disabled_at is null
+             join users actor_user on actor_user.id=$3
+              and actor_user.disabled_at is null
+              and actor_user.deleted_at is null
+            where project.id=$1 and project.team_id=$2
+              and project.lifecycle='active' and project.deleted_at is null
+            for share of project,project_member,workspace,access,membership,team`,
+          [input.workspaceProjectId, input.teamId, actor.userId]
+        );
+        const scope = authorized.rows[0];
+        if (!scope) return null;
+        const threadId = uuidFromHash(
+          `koed:collaboration:project-thread:v1\n${input.teamId}\n${input.workspaceProjectId}`
+        );
+        const inserted = await client.query<{ id: string }>(
+          `insert into collaboration_threads (
+             id,scope,kind,team_id,team_workspace_id,workspace_project_id,
+             created_by_user_id
+           ) values ($1,'team','project_thread',$2,$3,$4,$5)
+           on conflict (workspace_project_id) do nothing returning id`,
+          [
+            threadId,
+            input.teamId,
+            scope.workspace_id,
+            input.workspaceProjectId,
+            actor.userId
+          ]
+        );
+        if (inserted.rows[0]) {
+          await appendCollaborationOutboxEventWithClient(client, {
+            family: "thread_lifecycle",
+            scope: "team",
+            personalOwnerUserId: null,
+            teamId: input.teamId,
+            teamWorkspaceId: scope.workspace_id,
+            threadId,
+            messageId: null,
+            shareGrantId: null,
+            logicalMemoryId: null,
+            resourceType: "collaboration_thread",
+            resourceId: threadId,
+            actorPrincipalId: actor.userId,
+            mutationId: uuidFromHash(
+              `koed:project-thread-created:v1\n${threadId}`
+            )
+          });
+        }
+        return readProjectThread(client, actor, input);
+      });
+    },
+
     async listTeamParticipants(actor, teamId) {
       if (!(await activeTeamMember(pool, actor, teamId))) return null;
       const result = await pool.query<{
@@ -4859,7 +5123,8 @@ export const createCollaborationRepository = (
     async getThread(actor, input) {
       const row = await getAuthorizedThreadRow(pool, actor, input.threadId, {
         required: "read",
-        includeArchived: input.includeArchived === true
+        includeArchived: input.includeArchived === true,
+        includeProjectThread: input.includeProjectThread === true
       });
       return row
         ? (

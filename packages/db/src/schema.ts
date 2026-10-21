@@ -196,6 +196,7 @@ export const collaborationScope = pgEnum("collaboration_scope", [
 export const collaborationThreadKind = pgEnum("collaboration_thread_kind", [
   "personal_channel",
   "workspace_channel",
+  "project_thread",
   "dm",
   "group_dm",
   "shared_session_discussion"
@@ -1360,6 +1361,11 @@ export const workspaceProjects = pgTable(
       name: "workspace_projects_owner_team_fk"
     }),
     unique("workspace_projects_workspace_unique").on(table.workspaceId),
+    unique("workspace_projects_identity_scope_unique").on(
+      table.id,
+      table.workspaceId,
+      table.teamId
+    ),
     unique("workspace_projects_share_attempt_unique").on(
       table.teamId,
       table.ownerTeamMemberId,
@@ -10562,6 +10568,7 @@ export const collaborationThreads = pgTable(
       onDelete: "restrict"
     }),
     teamWorkspaceId: uuid("team_workspace_id"),
+    workspaceProjectId: uuid("workspace_project_id"),
     sharedLogicalMemoryId: uuid("shared_logical_memory_id").references(
       (): AnyPgColumn => logicalMemories.id,
       { onDelete: "restrict" }
@@ -10616,10 +10623,22 @@ export const collaborationThreads = pgTable(
       table.id,
       table.teamWorkspaceId
     ),
+    unique("collaboration_threads_project_thread_unique").on(
+      table.workspaceProjectId
+    ),
     foreignKey({
       columns: [table.teamWorkspaceId, table.teamId],
       foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
       name: "collaboration_threads_workspace_team_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.workspaceProjectId, table.teamWorkspaceId, table.teamId],
+      foreignColumns: [
+        workspaceProjects.id,
+        workspaceProjects.workspaceId,
+        workspaceProjects.teamId
+      ],
+      name: "collaboration_threads_project_scope_fk"
     }).onDelete("restrict"),
     foreignKey({
       columns: [
@@ -10671,6 +10690,7 @@ export const collaborationThreads = pgTable(
         and ${table.personalOwnerUserId} is not null
         and ${table.teamId} is null
         and ${table.teamWorkspaceId} is null
+        and ${table.workspaceProjectId} is null
         and ${table.systemKey} is null
         and ${table.nameMarker} = '[koed encrypted collaboration name]'
         and length(${table.normalizedNameHash}) = 64
@@ -10683,6 +10703,7 @@ export const collaborationThreads = pgTable(
         and ${table.personalOwnerUserId} is null
         and ${table.teamId} is not null
         and ${table.teamWorkspaceId} is not null
+        and ${table.workspaceProjectId} is null
         and (
           (
             ${table.systemKey} is null
@@ -10702,10 +10723,25 @@ export const collaborationThreads = pgTable(
         and ${table.shareGrantId} is null
       ) or (
         ${table.scope} = 'team'
+        and ${table.kind}::text = 'project_thread'
+        and ${table.personalOwnerUserId} is null
+        and ${table.teamId} is not null
+        and ${table.teamWorkspaceId} is not null
+        and ${table.workspaceProjectId} is not null
+        and ${table.systemKey} is null
+        and ${table.nameMarker} is null
+        and ${table.topicMarker} is null
+        and ${table.normalizedNameHash} is null
+        and ${table.participantKey} is null
+        and ${table.sharedLogicalMemoryId} is null
+        and ${table.shareGrantId} is null
+      ) or (
+        ${table.scope} = 'team'
         and ${table.kind} in ('dm', 'group_dm')
         and ${table.personalOwnerUserId} is null
         and ${table.teamId} is not null
         and ${table.teamWorkspaceId} is null
+        and ${table.workspaceProjectId} is null
         and ${table.systemKey} is null
         and ${table.nameMarker} is null
         and ${table.topicMarker} is null
@@ -10719,6 +10755,7 @@ export const collaborationThreads = pgTable(
         and ${table.personalOwnerUserId} is null
         and ${table.teamId} is not null
         and ${table.teamWorkspaceId} is not null
+        and ${table.workspaceProjectId} is null
         and ${table.systemKey} is null
         and ${table.nameMarker} is null
         and ${table.topicMarker} is null
