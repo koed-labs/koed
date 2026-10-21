@@ -608,6 +608,36 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
     teamDeploymentModes
   ),
   route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/work-items/text-action-effects/{actionId}",
+    "session_or_device_credential",
+    "projects",
+    "Current Team write access and the exact originating member/action receipt are rechecked.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/work-items/by-idempotency/{key}",
+    "session_or_device_credential",
+    "projects",
+    "Current Team write access and the exact originating Team member are rechecked before returning this Work Item receipt.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/work-items/{itemId}/proposal-proof",
+    "session_or_device_credential",
+    "projects",
+    "Current Team write access and exact Project, member, and Work Item versions are checked for this proposal.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "PATCH",
     "/v1/workspace-projects/{projectId}/work-items/{itemId}",
     "session_or_device_credential",
@@ -2037,6 +2067,16 @@ export const routeIdentityContracts = [
     "Advance or inspect an exact owner-only Conversation move batch; scoped local Desktop write credentials are also accepted on loopback."
   ),
   route(
+    "GET",
+    "/v1/memory/graph/sessions/{sessionId}/text-action-move/{actionId}",
+    "desktop_local_credential",
+    "personal_memory",
+    "Read only the existing owner-bound text-action move batch for uncertain response recovery; never prepares or advances a move.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
     "PATCH",
     "/v1/memory/graph/sessions/{sessionId}/presentation",
     "session_or_api_token",
@@ -2178,6 +2218,76 @@ export const routeIdentityContracts = [
     "session",
     "personal_memory",
     "Read owner-only durable memory action results; local Desktop read credentials are also accepted."
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/text-actions",
+    "desktop_local_credential",
+    "personal_memory",
+    "Record a leased AI Client text-action proposal for its current owner.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/text-actions",
+    "desktop_local_credential",
+    "personal_memory",
+    "List only the owner's durable text-action review records.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/text-actions/{actionId}",
+    "desktop_local_credential",
+    "personal_memory",
+    "Reconcile one exact owner text-action record without replaying its effect.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/text-actions/{actionId}/review",
+    "desktop_local_credential",
+    "personal_memory",
+    "Record one owner decision on an exact Ask first text action.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/text-actions/{actionId}/claim",
+    "desktop_local_credential",
+    "personal_memory",
+    "Claim one current approved text action before its owned effect.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/text-actions/{actionId}/complete",
+    "desktop_local_credential",
+    "personal_memory",
+    "Record a verified exact owned effect after the claimed text action.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/text-actions/{actionId}/apply-team-todo-add",
+    "desktop_local_credential",
+    "personal_memory",
+    "Apply a claimed owner action through the bound Team principal and exact shared Project versions.",
+    "request_time_team_workspace",
+    "implemented",
+    localEdgeDeploymentModes
   ),
   route(
     "POST",

@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0072_steady_killraven";
-const expectedLatestMigrationIndex = 72;
+const expectedLatestMigrationTag = "0073_chubby_psylocke";
+const expectedLatestMigrationIndex = 73;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -5698,6 +5698,64 @@ try {
           })
         )
           throw new Error("0071 changed legacy Team channel after rerun");
+      });
+    }
+  );
+
+  await runScenario(
+    "koed-text-actions-0073-upgrade-rollback-and-rerun",
+    async () => {
+      const target = await createDisposableDatabase("text_actions_upgrade");
+      const predecessor = await createMigrationSlice(journal, 72, {
+        folderPrefix: "koed-text-actions-predecessor-"
+      });
+      const interrupted = await createMigrationSlice(journal, 73, {
+        folderPrefix: "koed-text-actions-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(predecessor);
+      temporaryFolders.add(interrupted);
+      const priorRecords = await migrationRecords(
+        predecessor,
+        journal.entries.slice(0, 73)
+      );
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: predecessor });
+        const before = await schemaFingerprint(pool);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        const absent = await pool.query(
+          "select to_regclass('public.managed_conversation_text_actions')::text as action, to_regclass('public.workspace_project_text_action_create_effects')::text as team_effect"
+        );
+        if (
+          !failed ||
+          (await schemaFingerprint(pool)) !== before ||
+          absent.rows[0]?.action !== null ||
+          absent.rows[0]?.team_effect !== null
+        )
+          throw new Error(
+            "Interrupted 0073 migration leaked text-action authority"
+          );
+        await assertMigrationLedger(pool, priorRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+        const guards =
+          await pool.query(`select tgname from pg_trigger where tgname in
+          ('managed_text_human_origin_guard_trigger','managed_text_action_guard_trigger',
+           'managed_text_action_team_nonces_immutable','managed_text_chat_native_terminal',
+           'managed_text_project_native_terminal','workspace_project_text_action_create_effects_immutable')`);
+        if (guards.rowCount !== 6)
+          throw new Error("0073 text-action guards missing");
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== stable)
+          throw new Error("0073 migration rerun changed schema");
       });
     }
   );

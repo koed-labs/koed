@@ -21,6 +21,12 @@ const textValue = (value: unknown): string => {
 };
 const nullableText = (value: unknown): string | null =>
   value == null ? null : textValue(value);
+const textEffectHash = (nonce: string | undefined): string | null => {
+  if (!nonce || !/^[A-Za-z0-9_-]{43}$/.test(nonce)) return null;
+  const bytes = Buffer.from(nonce, "base64url");
+  if (bytes.length !== 32 || bytes.toString("base64url") !== nonce) return null;
+  return createHash("sha256").update(bytes).digest("hex");
+};
 const dueDate = (value: unknown): string | null =>
   value == null
     ? null
@@ -1462,6 +1468,79 @@ export const createWorkspaceProjectRepository = (
       });
     },
 
+    async workItemByIdempotencyKey(
+      actorUserId: string,
+      projectId: string,
+      idempotencyKey: string
+    ) {
+      const project = await currentMember(pool, actorUserId, projectId);
+      requireWrite(project);
+      const row = await one(
+        pool,
+        `select * from workspace_project_work_items
+          where workspace_project_id=$1 and source_owner_team_member_id=$2
+            and idempotency_key=$3 and deleted_at is null`,
+        [projectId, project.actor_team_member_id, idempotencyKey]
+      );
+      return row ? workItemRecord(row) : null;
+    },
+    async workItemTextActionEffect(
+      actorUserId: string,
+      projectId: string,
+      actionId: string
+    ) {
+      const project = await currentMember(pool, actorUserId, projectId);
+      requireWrite(project);
+      const row = await one(
+        pool,
+        `select item.*,effect.effect_nonce_hash from workspace_project_text_action_create_effects effect
+           join workspace_project_work_items item
+             on item.id=effect.work_item_id
+            and item.workspace_project_id=effect.workspace_project_id
+          where effect.workspace_project_id=$1
+            and effect.source_owner_team_member_id=$2
+            and effect.action_id=$3 and item.deleted_at is null`,
+        [projectId, project.actor_team_member_id, actionId]
+      );
+      return row
+        ? {
+            item: workItemRecord(row),
+            effectNonceHash: String(row.effect_nonce_hash)
+          }
+        : null;
+    },
+    async workItemProposalProof(
+      actorUserId: string,
+      projectId: string,
+      itemId: string
+    ) {
+      return transaction(pool, async (client) => {
+        const project = await currentMember(
+          client,
+          actorUserId,
+          projectId,
+          true
+        );
+        requireWrite(project);
+        const item = await one(
+          client,
+          `select id,version,status,title from workspace_project_work_items
+            where workspace_project_id=$1 and id=$2 and deleted_at is null
+            for update`,
+          [projectId, itemId]
+        );
+        if (!item || !["todo", "blocked"].includes(String(item.status)))
+          throw new WorkspaceProjectUnavailableError("Work Item unavailable");
+        return {
+          projectId,
+          itemId,
+          projectVersion: Number(project.version),
+          memberVersion: Number(project.project_member_version),
+          workItemVersion: Number(item.version),
+          workItemTitle: String(item.title)
+        };
+      });
+    },
     async createWorkItem(
       actorUserId: string,
       projectId: string,
@@ -1473,6 +1552,10 @@ export const createWorkspaceProjectRepository = (
         goal: string;
         status: "todo" | "doing" | "review" | "blocked" | "done";
         dueOn?: string | null;
+        expectedProjectVersion?: number;
+        expectedMemberVersion?: number;
+        textActionId?: string;
+        textActionNonce?: string;
       }
     ) {
       return transaction(pool, async (client) => {
@@ -1483,6 +1566,31 @@ export const createWorkspaceProjectRepository = (
           true
         );
         requireWrite(project);
+        const effectNonceHash = textEffectHash(input.textActionNonce);
+        if (
+          input.textActionId &&
+          (input.idempotencyKey !== input.textActionId ||
+            !effectNonceHash ||
+            input.kind !== "todo" ||
+            input.key != null ||
+            input.status !== "todo" ||
+            input.expectedProjectVersion === undefined ||
+            input.expectedMemberVersion === undefined)
+        )
+          throw new WorkspaceProjectUnavailableError(
+            "Text action request is invalid"
+          );
+        if (!input.textActionId && input.textActionNonce)
+          throw new WorkspaceProjectUnavailableError(
+            "Text action nonce requires an action"
+          );
+        if (
+          input.textActionId &&
+          (Number(project.version) !== input.expectedProjectVersion ||
+            Number(project.project_member_version) !==
+              input.expectedMemberVersion)
+        )
+          throw new WorkspaceProjectConflictError(projectRecord(project));
         const existing = await one(
           client,
           `select * from workspace_project_work_items
@@ -1491,6 +1599,23 @@ export const createWorkspaceProjectRepository = (
           [projectId, project.actor_team_member_id, input.idempotencyKey]
         );
         if (existing) {
+          if (input.textActionId) {
+            const effect = await one(
+              client,
+              `select effect_nonce_hash from workspace_project_text_action_create_effects
+                where workspace_project_id=$1
+                  and source_owner_team_member_id=$2 and action_id=$3
+                  and work_item_id=$4`,
+              [
+                projectId,
+                project.actor_team_member_id,
+                input.textActionId,
+                existing.id
+              ]
+            );
+            if (!effect || effect.effect_nonce_hash !== effectNonceHash)
+              throw new WorkspaceProjectConflictError(workItemRecord(existing));
+          }
           if (
             existing.kind !== input.kind ||
             existing.key !== (input.key ?? null) ||
@@ -1502,6 +1627,27 @@ export const createWorkspaceProjectRepository = (
             throw new WorkspaceProjectConflictError(workItemRecord(existing));
           return workItemRecord(existing);
         }
+        if (effectNonceHash) {
+          const reusedNonce = await one(
+            client,
+            `select 1 from workspace_project_text_action_create_effects
+              where source_owner_team_member_id=$1 and effect_nonce_hash=$2`,
+            [project.actor_team_member_id, effectNonceHash]
+          );
+          if (reusedNonce)
+            throw new WorkspaceProjectUnavailableError(
+              "Text action nonce was already consumed"
+            );
+        }
+        if (
+          (input.expectedProjectVersion === undefined) !==
+            (input.expectedMemberVersion === undefined) ||
+          (input.expectedProjectVersion !== undefined &&
+            (Number(project.version) !== input.expectedProjectVersion ||
+              Number(project.project_member_version) !==
+                input.expectedMemberVersion))
+        )
+          throw new WorkspaceProjectConflictError(projectRecord(project));
         const item = await one(
           client,
           `insert into workspace_project_work_items
@@ -1522,6 +1668,19 @@ export const createWorkspaceProjectRepository = (
             input.dueOn ?? null
           ]
         );
+        if (input.textActionId)
+          await client.query(
+            `insert into workspace_project_text_action_create_effects
+              (workspace_project_id,source_owner_team_member_id,action_id,work_item_id,effect_nonce_hash)
+             values ($1,$2,$3,$4,$5)`,
+            [
+              projectId,
+              project.actor_team_member_id,
+              input.textActionId,
+              item!.id,
+              effectNonceHash
+            ]
+          );
         await appendActivity(
           client,
           projectId,

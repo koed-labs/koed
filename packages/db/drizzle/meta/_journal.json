@@ -512,6 +512,13 @@
       "when": 1792565462091,
       "tag": "0072_steady_killraven",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1792574813375,
+      "tag": "0073_chubby_psylocke",
+      "breakpoints": true
     }
   ]
 }

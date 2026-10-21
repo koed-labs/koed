@@ -41,6 +41,34 @@ describe("Conversation placement request schema", () => {
     ).toBe(true);
   });
 
+  it("allows a bounded text-action placement identity only on move or loose", () => {
+    expect(
+      graphSessionProjectPatchSchema.parse({
+        action: "move",
+        project: { id: projectId, name: "Writing" },
+        expectedProjectId: null,
+        textActionId: batchId
+      })
+    ).toMatchObject({
+      action: "move",
+      textActionId: batchId
+    });
+    expect(
+      graphSessionProjectPatchSchema.safeParse({
+        action: "reset",
+        textActionId: batchId
+      }).success
+    ).toBe(false);
+    expect(
+      graphSessionProjectPatchSchema.safeParse({
+        action: "undo_move",
+        batchId,
+        expectedProjectId: null,
+        textActionId: batchId
+      }).success
+    ).toBe(false);
+  });
+
   it("requires a move batch and explicit destination placement for Undo", () => {
     expect(
       graphSessionProjectPatchSchema.parse({

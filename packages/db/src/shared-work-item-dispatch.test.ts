@@ -170,7 +170,8 @@ describe.skipIf(!testUrl)("private shared Work Item dispatch binding", () => {
       teamWorkItemId,
       teamWorkItemVersion: 7,
       expectedProjectVersion: 9,
-      expectedMemberVersion: 4
+      expectedMemberVersion: 4,
+      textActionId: null
     });
     expect(
       await managed.getSharedWorkItemDispatch(

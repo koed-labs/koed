@@ -31,6 +31,8 @@ import type {
   WorkspaceProjectWorkItemPatch
 } from "@koed/shared";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
+import type { ManagedTextActionDesktopApi } from "./ipc/managed-text-action-protocol.js";
+import type { KoedTextActionProjection } from "@koed/shared";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type {
   ManagedMemoryAction,
@@ -78,6 +80,8 @@ const hq505Capture =
 const hq505Outcome = new URLSearchParams(window.location.search).get(
   "hq505Outcome"
 );
+const hq504Capture =
+  new URLSearchParams(window.location.search).get("hq504Capture") === "yes";
 const hq701Linked =
   new URLSearchParams(window.location.search).get("hq701Linked") === "yes";
 const hq705Capture =
@@ -929,11 +933,97 @@ const settingsCollaborationClient = {
 } as unknown as CollaborationRendererClient;
 let startupEnabled = false;
 let accelerationEnabled = true;
+const hq504Trace = { claims: 0, applications: 0, nativeOpens: 0 };
+const hq504OwnerId = "00000000-0000-4000-8000-000000000109";
+const hq504ActionBase: KoedTextActionProjection = {
+  id: "00000000-0000-4000-8000-000000005041",
+  effectKey: "00000000-0000-4000-8000-000000005041",
+  ownerUserId: hq504OwnerId,
+  logicalSessionId: hq204SessionId,
+  executionId: hq204ExecutionId,
+  commandId: "00000000-0000-4000-8000-000000005049",
+  executionGeneration: 1,
+  providerTurnId: "fixture-turn",
+  toolCallId: "fixture-tool",
+  name: "koed_project_create",
+  arguments: { name: "Launch planning" },
+  snapshot: {},
+  state: "awaiting_review",
+  revision: 1,
+  reviewKind: "ask_first",
+  createdAt: FIXTURE_TIME,
+  decidedAt: null
+};
+const hq504Actions: KoedTextActionProjection[] = [
+  hq504ActionBase,
+  {
+    ...hq504ActionBase,
+    id: "00000000-0000-4000-8000-000000005042",
+    effectKey: "00000000-0000-4000-8000-000000005042",
+    toolCallId: "fixture-delete",
+    name: "koed_project_delete",
+    arguments: { projectId: hq204ProjectId },
+    snapshot: {
+      projectId: hq204ProjectId,
+      projectName: "New empty Project",
+      projectVersion: 1,
+      executionSetHash: "b".repeat(64),
+      activeExecutionCount: 1
+    },
+    reviewKind: "native"
+  },
+  {
+    ...hq504ActionBase,
+    id: "00000000-0000-4000-8000-000000005043",
+    effectKey: "00000000-0000-4000-8000-000000005043",
+    toolCallId: "fixture-move",
+    name: "koed_chat_move",
+    arguments: { sessionId: hq204SessionId, projectId: hq204ProjectId },
+    snapshot: {
+      chatTitle: "Planning chat",
+      sourceProjectName: "Chats",
+      projectName: "New empty Project"
+    },
+    state: "claimed",
+    revision: 3,
+    reviewKind: "ask_first"
+  }
+];
+const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
+  list: async () => structuredClone(hq504Actions),
+  get: async (_executionId, actionId) => {
+    const action = hq504Actions.find((row) => row.id === actionId);
+    if (!action) throw new Error("Unknown fixture text action");
+    return structuredClone(action);
+  },
+  review: async (_executionId, actionId, _revision, decision) => {
+    const index = hq504Actions.findIndex((row) => row.id === actionId);
+    if (index < 0) throw new Error("Unknown fixture text action");
+    hq504Actions[index] = {
+      ...hq504Actions[index]!,
+      state: decision === "decline" ? "declined" : "ready",
+      revision: 2
+    };
+    return structuredClone(hq504Actions[index]!);
+  },
+  claim: async () => {
+    hq504Trace.claims++;
+    throw new Error("Fixture never auto-claims");
+  },
+  complete: async () => {
+    hq504Trace.applications++;
+    throw new Error("No fixture effect receipt");
+  },
+  applyTeamTodoAdd: async () => {
+    throw new Error("No Team effect fixture");
+  }
+};
 const installSettingsDesktop = () => {
   const originalDesktop = window.koedDesktop;
   window.koedDesktop = {
     ...originalDesktop,
     ...(hq307Capture ? { managedMemoryActions: hq307MemoryActionsApi } : {}),
+    ...(hq504Capture ? { managedTextActions: hq504ManagedTextActions } : {}),
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
     ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
     ...(hq106Capture ? { personalMemory: sidebarPersonalMemoryApi } : {}),
@@ -3649,6 +3739,14 @@ export function HqValidationApp() {
     hq505PendingUntil = 0;
     hq503Trace.calls.length = 0;
     hq503Trace.delegations.length = 0;
+    if (hq504Capture) {
+      hq504Trace.claims = 0;
+      hq504Trace.applications = 0;
+      hq504Trace.nativeOpens = 0;
+      (
+        window as Window & { __koedHq504Trace?: typeof hq504Trace }
+      ).__koedHq504Trace = hq504Trace;
+    }
     (
       window as Window & { __koedHq503Trace?: typeof hq503Trace }
     ).__koedHq503Trace = hq503Trace;
@@ -3761,6 +3859,8 @@ export function HqValidationApp() {
         .__koedHq705Trace;
       delete (window as Window & { __koedHq505Trace?: typeof hq505Trace })
         .__koedHq505Trace;
+      delete (window as Window & { __koedHq504Trace?: typeof hq504Trace })
+        .__koedHq504Trace;
       delete (
         window as Window & {
           __koedHqVisibilityReads?: typeof hq105VisibilityReads;

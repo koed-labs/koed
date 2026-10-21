@@ -402,6 +402,22 @@ export const registerGraphRoutes = (
       const user = await authenticateChatMove(request, true);
       const params = graphSessionParamsSchema.parse(request.params);
       const input = graphSessionProjectPatchSchema.parse(request.body);
+      if (
+        "textActionId" in input &&
+        input.textActionId &&
+        !request.headers.authorization?.trim().startsWith("Koed-Desktop")
+      )
+        return reply
+          .status(403)
+          .send({ error: "Text action requires Desktop authority" });
+      if (
+        "textActionId" in input &&
+        input.textActionId &&
+        input.expectedProjectId === undefined
+      )
+        return reply
+          .status(409)
+          .send({ error: "Text action requires exact placement" });
       const before = await repo.getCapturedSession(
         { userId: user.id },
         params.sessionId
@@ -453,7 +469,8 @@ export const registerGraphRoutes = (
             user.id,
             params.sessionId,
             oldProjectId,
-            targetProjectId
+            targetProjectId,
+            "textActionId" in input ? input.textActionId : undefined
           );
       } catch (error) {
         if (error instanceof ChatMoveConflictError)
@@ -509,13 +526,15 @@ export const registerGraphRoutes = (
               { userId: user.id },
               params.sessionId,
               input.project,
-              input.expectedProjectId
+              input.expectedProjectId,
+              input.textActionId
             )
           : input.action === "loose"
             ? await repo.moveCapturedSessionToLooseChats(
                 { userId: user.id },
                 params.sessionId,
-                input.expectedProjectId
+                input.expectedProjectId,
+                input.textActionId
               )
             : await repo.resetCapturedSessionProject(
                 { userId: user.id },
@@ -636,6 +655,47 @@ export const registerGraphRoutes = (
         projectId: operation.oldProjectId,
         pendingReviews: latest ? pendingMoveReviews(latest) : []
       });
+    }
+  );
+
+  // A claimed text action may outlive the Desktop response or a Native review.
+  // Resolve only its already prepared batch; this never prepares or advances a
+  // grant freeze and therefore cannot repeat an uncertain placement.
+  app.get(
+    "/v1/memory/graph/sessions/:sessionId/text-action-move/:actionId",
+    { preHandler: memoryReadRateLimit },
+    async (request, reply) => {
+      if (!request.headers.authorization?.trim().startsWith("Koed-Desktop"))
+        return reply.status(403).send({ error: "Desktop authority required" });
+      const user = await authenticateChatMove(request, false);
+      const { sessionId, actionId } = z
+        .object({
+          sessionId: z.uuid(),
+          actionId: z.uuid()
+        })
+        .strict()
+        .parse(request.params);
+      if (!move?.repository)
+        return reply.status(503).send({ error: "Move journal is unavailable" });
+      const operation = await move.repository.getByTextAction(
+        user.id,
+        sessionId,
+        actionId
+      );
+      if (!operation) return { status: null };
+      return {
+        status: {
+          sessionId,
+          batchId: operation.batchId,
+          pending: operation.state !== "complete",
+          complete: operation.state === "complete",
+          projectId:
+            operation.state === "complete"
+              ? operation.targetProjectId
+              : operation.oldProjectId,
+          pendingReviews: pendingMoveReviews(operation)
+        }
+      };
     }
   );
 

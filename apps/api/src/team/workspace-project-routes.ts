@@ -29,6 +29,10 @@ import {
 
 const projectParams = z.object({ projectId: z.uuid() }).strict();
 const itemParams = z.object({ projectId: z.uuid(), itemId: z.uuid() }).strict();
+const itemKeyParams = z.object({ projectId: z.uuid(), key: z.uuid() }).strict();
+const textActionEffectParams = z
+  .object({ projectId: z.uuid(), actionId: z.uuid() })
+  .strict();
 const memberParams = z
   .object({ projectId: z.uuid(), targetUserId: z.uuid() })
   .strict();
@@ -521,10 +525,78 @@ export const registerWorkspaceProjectRoutes = (
       const actor = await authenticate(request, true);
       const { projectId } = projectParams.parse(request.params);
       const body = workspaceProjectWorkItemCreateSchema.parse(request.body);
+      if (
+        (body.textActionId || body.textActionNonce) &&
+        !request.headers.authorization?.trim().startsWith("Koed-Device ")
+      )
+        return reply
+          .code(403)
+          .send({ message: "Team device credential required" });
       try {
         return reply
           .code(201)
           .send(await repository().createWorkItem(actor.id, projectId, body));
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
+    "/v1/workspace-projects/:projectId/work-items/text-action-effects/:actionId",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { projectId, actionId } = textActionEffectParams.parse(
+        request.params
+      );
+      try {
+        const item = await repository().workItemTextActionEffect(
+          actor.id,
+          projectId,
+          actionId
+        );
+        if (!item)
+          return reply
+            .code(404)
+            .send({ message: "Text action effect not found" });
+        return item;
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
+    "/v1/workspace-projects/:projectId/work-items/by-idempotency/:key",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { projectId, key } = itemKeyParams.parse(request.params);
+      try {
+        const item = await repository().workItemByIdempotencyKey(
+          actor.id,
+          projectId,
+          key
+        );
+        if (!item)
+          return reply.code(404).send({ message: "Work Item not found" });
+        return item;
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
+    "/v1/workspace-projects/:projectId/work-items/:itemId/proposal-proof",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { projectId, itemId } = itemParams.parse(request.params);
+      try {
+        return await repository().workItemProposalProof(
+          actor.id,
+          projectId,
+          itemId
+        );
       } catch (error) {
         return reply.code(handle(error).statusCode).send(handle(error));
       }

@@ -1,6 +1,7 @@
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import { createPortal } from "react-dom";
 import type { ManagedConversationSettings } from "@koed/shared/ai-client-contract";
+import type { KoedTextActionProjection } from "@koed/shared";
 import type { ManagedConversationFileRevision } from "@koed/shared/managed-conversation-files";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 import {
@@ -73,6 +74,7 @@ import type { DesktopApi } from "../../../types.js";
 import { assignmentFrom } from "../../views/preferences/local-ai-client-settings-helpers.js";
 import { HqRuntimeItem } from "./HqRuntimeItem.js";
 import { ManagedMemoryActions } from "./ManagedMemoryActions.js";
+import { ManagedTextActions } from "./ManagedTextActions.js";
 import { CitedAnswer, CitationDetail } from "./Citations.js";
 import { citationAliasBatches } from "./citation-alias-batches.js";
 import { HqVisibilityLine } from "./HqVisibilityLine.js";
@@ -1047,6 +1049,7 @@ export function HqActiveConversation({
   authorizeTransfer,
   visibilityClient,
   visibilityOwnerId,
+  visibilityProfileKey,
   visibilityRevision,
   visibilityConnected = false,
   openFilePickerOnReady = false,
@@ -1059,6 +1062,9 @@ export function HqActiveConversation({
   panelHostRef,
   onOpenCitationMessage,
   onOfferChatForget,
+  onTextActionApply,
+  onTextActionNativeReview,
+  onTextActionResumeMove,
   focusEventId,
   agentsApi,
   helperAgents = []
@@ -1077,6 +1083,7 @@ export function HqActiveConversation({
   authorizeTransfer?: CollaborationRendererClient["authorizeManagedConversationTransfer"];
   visibilityClient?: CollaborationRendererClient;
   visibilityOwnerId?: string | null;
+  visibilityProfileKey?: string;
   visibilityRevision?: string | null;
   visibilityConnected?: boolean;
   openFilePickerOnReady?: boolean;
@@ -1098,6 +1105,11 @@ export function HqActiveConversation({
     threadId: string;
   }) => Promise<boolean>;
   onOfferChatForget?: (sourceSessionId: string) => Promise<boolean>;
+  onTextActionApply?: (action: KoedTextActionProjection) => Promise<boolean>;
+  onTextActionNativeReview?: (action: KoedTextActionProjection) => void;
+  onTextActionResumeMove?: (
+    action: KoedTextActionProjection
+  ) => Promise<boolean>;
   focusEventId?: string | null;
   agentsApi?: AgentsDesktopApi | null;
   helperAgents?: readonly Agent[];
@@ -2721,9 +2733,23 @@ export function HqActiveConversation({
                 api={window.koedDesktop.managedMemoryActions}
                 executionId={executionId}
                 ownerId={visibilityOwnerId ?? undefined}
-                profileKey={identityKey}
+                profileKey={`${visibilityProfileKey ?? ""}:${identityKey}`}
                 onOfferChatForget={onOfferChatForget}
                 onChanged={() => void refresh()}
+              />
+            ) : null}
+            {executionId &&
+            visibilityOwnerId &&
+            window.koedDesktop?.managedTextActions ? (
+              <ManagedTextActions
+                key={`text-actions:${identityKey}:${executionId}`}
+                api={window.koedDesktop.managedTextActions}
+                executionId={executionId}
+                ownerId={visibilityOwnerId}
+                profileKey={identityKey}
+                onApply={onTextActionApply}
+                onNativeReview={onTextActionNativeReview}
+                onResumeMove={onTextActionResumeMove}
               />
             ) : null}
             {visibleOptimistic.map((item) => (

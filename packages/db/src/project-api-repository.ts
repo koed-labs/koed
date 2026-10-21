@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
 import type {
   CreateProject,
+  EnvelopeEncryptionProvider,
   PatchProject,
   Project,
   ProjectHqConversation
@@ -9,6 +10,7 @@ import type {
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 import { createProjectActivityRepository } from "./project-activity-repository.js";
 import { pauseScheduledJobsWithClient } from "./scheduled-job-repository.js";
+import { claimedManagedTextCreateWithClient } from "./managed-text-action-repository.js";
 
 type Row = Record<string, unknown>;
 const textValue = (value: unknown): string => {
@@ -474,7 +476,10 @@ const sourceManifest = async (
 
 export const createProjectApiRepository = (
   pool: pg.Pool,
-  options: { configuredBackendIds?: () => string[] } = {}
+  options: {
+    configuredBackendIds?: () => string[];
+    envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  } = {}
 ) => ({
   async readHqConversation(ownerUserId: string, projectId: string) {
     const project = await pool.query(
@@ -646,6 +651,26 @@ export const createProjectApiRepository = (
   },
   async create(ownerUserId: string, input: CreateProject) {
     return inTransaction(pool, async (client) => {
+      if (input.textActionId) {
+        if (
+          input.idempotencyKey !== input.textActionId ||
+          !(await claimedManagedTextCreateWithClient(
+            client,
+            options.envelopeEncryptionProvider,
+            {
+              ownerUserId,
+              actionId: input.textActionId,
+              name: "koed_project_create",
+              matches: (args) =>
+                args.name === input.name &&
+                (args.folderPath ?? null) === (input.folderPath ?? null)
+            }
+          ))
+        )
+          throw new ProjectCapabilityError(
+            "Text action creation authority changed"
+          );
+      }
       await client.query(
         "select pg_advisory_xact_lock(hashtextextended($1,0))",
         [`personal-project-owner-key:${ownerUserId}`]
@@ -661,6 +686,18 @@ export const createProjectApiRepository = (
             "Project idempotency key was reused",
             mapProject(existing.rows[0])
           );
+        if (input.textActionId) {
+          const effect = await client.query(
+            `select 1 from managed_conversation_text_action_create_effects
+              where owner_user_id=$1 and action_id=$2 and project_id=$3
+                and work_item_id is null`,
+            [ownerUserId, input.textActionId, existing.rows[0].id]
+          );
+          if (!effect.rowCount)
+            throw new ProjectCapabilityError(
+              "Text action creation receipt is absent"
+            );
+        }
         return mapProject(existing.rows[0]);
       }
       const base = shortKey(input.name);
@@ -683,6 +720,13 @@ export const createProjectApiRepository = (
           hash
         ]
       );
+      if (input.textActionId)
+        await client.query(
+          `insert into managed_conversation_text_action_create_effects
+            (owner_user_id,action_id,project_id,work_item_id)
+           values ($1,$2,$3,null)`,
+          [ownerUserId, input.textActionId, created.rows[0]!.id]
+        );
       await changed(client, ownerUserId, String(created.rows[0]!.id));
       return mapProject(created.rows[0]!);
     });

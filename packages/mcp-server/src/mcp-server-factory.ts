@@ -34,6 +34,7 @@ import { registerWorkItemCompletionTool } from "./work-item-completion-tool.js";
 import { registerWorkItemsFromDocTool } from "./work-items-from-doc-tool.js";
 import { registerReviewRequestMergeProposalTool } from "./review-request-merge-proposal-tool.js";
 import { registerMemoryActionTools } from "./memory-action-tools.js";
+import { registerKoedTextActionTools } from "./koed-text-action-tools.js";
 import {
   allTools,
   exposedTools,
@@ -556,6 +557,8 @@ export const createKoedMcpServer = async (
     registerWorkItemsFromDocTool(server, environment);
   if (environment.KOED_MANAGED_MERGE_PROPOSAL === "1")
     registerReviewRequestMergeProposalTool(server);
+  if (environment.KOED_MANAGED_TEXT_ACTIONS === "1")
+    registerKoedTextActionTools(server);
 
   return server;
 };

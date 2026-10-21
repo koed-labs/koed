@@ -682,6 +682,8 @@ export const createManagedConversationService = (options: {
       child.KOED_MANAGED_MEMORY_ACTIONS = "1";
     else delete child.KOED_MANAGED_MEMORY_ACTIONS;
     if (options.onKoedToolCompleted) child[managedMergeProposalFlag] = "1";
+    if (options.onKoedToolCompleted) child.KOED_MANAGED_TEXT_ACTIONS = "1";
+    else delete child.KOED_MANAGED_TEXT_ACTIONS;
     delete child.KOED_MANAGED_DOC_EXECUTION_ID;
     delete child.KOED_MANAGED_DOC_EXECUTION_GENERATION;
     delete child.KOED_MANAGED_DOC_API_URL;

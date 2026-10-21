@@ -5,6 +5,13 @@ import {
   type ManagedMemoryActionRequest,
   type ManagedMemoryActionResult
 } from "./managed-memory-action-protocol.js";
+import {
+  managedTextActionChannel,
+  managedTextActionRequestSchema,
+  managedTextActionResultSchema,
+  type ManagedTextActionRequest,
+  type ManagedTextActionResult
+} from "./managed-text-action-protocol.js";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
   curatedMemoryCommandChannel,
@@ -219,6 +226,9 @@ export const registerDesktopCommandHandlers = (
     managedMemoryActions?: (
       request: ManagedMemoryActionRequest
     ) => Promise<ManagedMemoryActionResult>;
+    managedTextActions?: (
+      request: ManagedTextActionRequest
+    ) => Promise<ManagedTextActionResult>;
     curatedMemory?: (
       request: CuratedMemoryRequest
     ) => Promise<CuratedMemoryResult>;
@@ -590,6 +600,26 @@ export const registerDesktopCommandHandlers = (
       result.executionId !== request.executionId
     )
       throw new Error("Invalid memory action correlation.");
+    return result;
+  });
+
+  ipcMain.handle(managedTextActionChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (
+      process.env.KOED_DESKTOP_HQ_ENABLED !== "true" ||
+      !options.managedTextActions
+    )
+      throw new Error("Koed text actions are unavailable.");
+    const request = managedTextActionRequestSchema.parse(value);
+    const result = managedTextActionResultSchema.parse(
+      await options.managedTextActions(request)
+    );
+    if (
+      result.operation !== request.operation ||
+      result.executionId !== request.executionId
+    )
+      throw new Error("Invalid Koed text action correlation.");
     return result;
   });
 

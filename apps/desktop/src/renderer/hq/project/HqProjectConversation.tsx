@@ -1,4 +1,5 @@
 import type { Agent } from "@koed/shared/agent-contract";
+import type { KoedTextActionProjection } from "@koed/shared";
 import { Pixelkin } from "../agents/Pixelkin.js";
 import { ArrowUp, Paperclip, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -49,6 +50,11 @@ export function HqProjectConversation({
   documentWorkItemIntent,
   onDocumentWorkItemIntentConsumed,
   onOfferChatForget,
+  onTextActionApply,
+  onTextActionNativeReview,
+  onTextActionResumeMove,
+  ownerId,
+  profileKey,
   onClearContext,
   agentsApi,
   helperAgents,
@@ -80,6 +86,13 @@ export function HqProjectConversation({
   onDocumentWorkItemIntentConsumed?: (id: string) => void;
   onClearContext?: () => void;
   onOfferChatForget?: (sourceSessionId: string) => Promise<boolean>;
+  onTextActionApply?: (action: KoedTextActionProjection) => Promise<boolean>;
+  onTextActionNativeReview?: (action: KoedTextActionProjection) => void;
+  onTextActionResumeMove?: (
+    action: KoedTextActionProjection
+  ) => Promise<boolean>;
+  ownerId?: string;
+  profileKey?: string;
   agentsApi?: AgentsDesktopApi | null;
   helperAgents?: readonly Agent[];
   ownerIdentity?: string;
@@ -732,6 +745,11 @@ export function HqProjectConversation({
           onDocumentWorkItemIntentConsumed={onDocumentWorkItemIntentConsumed}
           onClearContext={onClearContext}
           onOfferChatForget={onOfferChatForget}
+          onTextActionApply={onTextActionApply}
+          onTextActionNativeReview={onTextActionNativeReview}
+          onTextActionResumeMove={onTextActionResumeMove}
+          visibilityOwnerId={ownerId}
+          visibilityProfileKey={profileKey}
           agentsApi={agentsApi}
           helperAgents={helperAgents}
           inspectorOpen={inspectorOpen}

@@ -110,6 +110,7 @@ export const createWorkspaceProjectDesktopService = (input: {
       expectedProjectVersion: number;
       expectedMemberVersion: number;
       expectedWorkItemVersion: number;
+      textActionId?: string;
     },
     teamBackendId: string
   ): Promise<unknown>;
@@ -299,7 +300,10 @@ export const createWorkspaceProjectDesktopService = (input: {
               agentId: request.agentId,
               expectedProjectVersion: request.expectedProjectVersion,
               expectedMemberVersion: request.expectedMemberVersion,
-              expectedWorkItemVersion: request.expectedWorkItemVersion
+              expectedWorkItemVersion: request.expectedWorkItemVersion,
+              ...(request.textActionId
+                ? { textActionId: request.textActionId }
+                : {})
             },
             link.teamBackendId
           )

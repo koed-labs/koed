@@ -319,6 +319,21 @@ describe("Pi managed RPC conversation", () => {
     await normal.session.closeAndWait();
   });
 
+  it("forwards explicit managed text and existing action flags to Pi child", async () => {
+    const normal = fixture(0, true);
+    normal.config.env.KOED_MANAGED_TEXT_ACTIONS = "1";
+    normal.config.env.KOED_MANAGED_MEMORY_ACTIONS = "1";
+    normal.config.env.KOED_MANAGED_MERGE_PROPOSAL = "1";
+    await normal.session.start();
+    const env = (
+      mocks.spawn.mock.calls.at(-1)?.[2] as { env: NodeJS.ProcessEnv }
+    ).env;
+    expect(env.KOED_MANAGED_TEXT_ACTIONS).toBe("1");
+    expect(env.KOED_MANAGED_MEMORY_ACTIONS).toBe("1");
+    expect(env.KOED_MANAGED_MERGE_PROPOSAL).toBe("1");
+    await normal.session.closeAndWait();
+  });
+
   it("resolves the public SDK for a bundled native launcher", async () => {
     const { session } = fixture(0, true);
     await expect(session.start()).resolves.toMatchObject({

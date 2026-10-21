@@ -1036,7 +1036,7 @@ export function HqSidebar({
               className="hq-account"
               aria-label={`${accountIdentity.displayName}: settings and account`}
               disabled={!onOpenSettings}
-              onClick={onOpenSettings}
+              onClick={() => onOpenSettings?.()}
             >
               <span className="hq-account__avatar" aria-hidden="true">
                 {accountIdentity.avatarInitials ||

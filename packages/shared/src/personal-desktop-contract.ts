@@ -452,14 +452,16 @@ export const personalDesktopSessionProjectInputSchema = z.discriminatedUnion(
         action: z.literal("move"),
         sessionId: z.uuid(),
         targetProjectId: identifierSchema,
-        expectedProjectId: z.uuid().nullable().optional()
+        expectedProjectId: z.uuid().nullable().optional(),
+        textActionId: z.uuid().optional()
       })
       .strict(),
     z
       .object({
         action: z.literal("loose"),
         sessionId: z.uuid(),
-        expectedProjectId: z.uuid().nullable().optional()
+        expectedProjectId: z.uuid().nullable().optional(),
+        textActionId: z.uuid().optional()
       })
       .strict(),
     z
@@ -485,6 +487,19 @@ export const personalDesktopChatMoveReviewInputSchema = z
     sessionId: z.uuid(),
     batchId: z.uuid(),
     actionGrantId: z.uuid()
+  })
+  .strict();
+export const personalDesktopTextActionMoveLookupInputSchema = z
+  .object({
+    sessionId: z.uuid(),
+    actionId: z.uuid()
+  })
+  .strict();
+export const personalDesktopTextActionMoveResumeInputSchema = z
+  .object({
+    sessionId: z.uuid(),
+    actionId: z.uuid(),
+    batchId: z.uuid()
   })
   .strict();
 export const personalDesktopChatMoveReviewReservationSchema = z
@@ -868,6 +883,20 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.move_lookup"),
+      input: personalDesktopTextActionMoveLookupInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.sessions.move_resume"),
+      input: personalDesktopTextActionMoveResumeInputSchema
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.sessions.update_title"),
       input: personalDesktopSessionTitleInputSchema
     })
@@ -1209,6 +1238,26 @@ export const personalDesktopResultSchema = z.union([
   z
     .object({
       ...resultBase,
+      operation: z.literal("personal.sessions.move_lookup"),
+      ok: z.literal(true),
+      data: z
+        .object({ status: personalDesktopChatMoveStatusSchema.nullable() })
+        .strict()
+    })
+    .strict(),
+  failedResult("personal.sessions.move_lookup"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.sessions.move_resume"),
+      ok: z.literal(true),
+      data: z.object({ status: personalDesktopChatMoveStatusSchema }).strict()
+    })
+    .strict(),
+  failedResult("personal.sessions.move_resume"),
+  z
+    .object({
+      ...resultBase,
       operation: z.literal("personal.sessions.update_title"),
       ok: z.literal(true),
       data: personalDesktopSessionTitleDataSchema
@@ -1495,6 +1544,12 @@ export interface PersonalDesktopApi {
   ) => Promise<z.infer<typeof personalDesktopSessionProjectDataSchema>>;
   reviewSessionMove?: (
     input: z.infer<typeof personalDesktopChatMoveReviewInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopChatMoveStatusSchema>>;
+  lookupTextActionMove?: (
+    input: z.infer<typeof personalDesktopTextActionMoveLookupInputSchema>
+  ) => Promise<z.infer<typeof personalDesktopChatMoveStatusSchema> | null>;
+  resumeTextActionMove?: (
+    input: z.infer<typeof personalDesktopTextActionMoveResumeInputSchema>
   ) => Promise<z.infer<typeof personalDesktopChatMoveStatusSchema>>;
   updateSessionTitle: (
     input: PersonalDesktopSessionTitleInput

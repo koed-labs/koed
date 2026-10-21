@@ -431,6 +431,35 @@ describe("ClaudeManagedConversationSession", () => {
     session.close();
   });
 
+  it("forwards only explicit managed action flags to normal Claude Koed MCP", async () => {
+    const { config, cwd } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([successResult(options?.sessionId as string, "hello")])
+    );
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      env: {
+        ...config.env,
+        KOED_HOME: cwd,
+        KOED_MANAGED_TEXT_ACTIONS: "1",
+        KOED_MANAGED_MEMORY_ACTIONS: "1",
+        KOED_MANAGED_MERGE_PROPOSAL: "1",
+        UNRELATED_SECRET: "never-forward"
+      }
+    });
+    await session.start("Plan this Project");
+    const koedServer = queryOptions().mcpServers?.koed;
+    if (!koedServer || !("command" in koedServer))
+      throw new Error("Expected a stdio Koed MCP server");
+    expect(koedServer.env).toEqual({
+      KOED_HOME: cwd,
+      KOED_MANAGED_MEMORY_ACTIONS: "1",
+      KOED_MANAGED_MERGE_PROPOSAL: "1",
+      KOED_MANAGED_TEXT_ACTIONS: "1"
+    });
+    session.close();
+  });
+
   it("resumes and forks only within the exact configured Claude home", async () => {
     const { config, cwd, managedHome } = fixture();
     const sourceSessionId = randomUUID();

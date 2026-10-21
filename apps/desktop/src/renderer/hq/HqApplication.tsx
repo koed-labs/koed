@@ -1,4 +1,6 @@
 import {
+  cloneElement,
+  isValidElement,
   useCallback,
   useEffect,
   useMemo,
@@ -16,6 +18,10 @@ import type { ManagedConversationLifecycle } from "../state/use-managed-conversa
 import type { ManagedConversationDesktopApi } from "../../ipc/managed-conversation-protocol.js";
 import type { ProjectHqConversationDesktopApi } from "../../ipc/project-hq-conversation-protocol.js";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import {
+  parseKoedTextActionArguments,
+  type KoedTextActionProjection
+} from "@koed/shared/koed-text-action-contract";
 import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
 import type { ManagedProjectDesktopApi } from "../../ipc/managed-project-protocol.js";
 import type { ProjectsDesktopApi } from "../../ipc/projects-protocol.js";
@@ -50,7 +56,11 @@ import {
 } from "./HqChatDeleteControls.js";
 import { HqSearch } from "./HqSearch.js";
 import { hqLayoutCommands, type HqCommand } from "./hq-command-palette.js";
-import { hqSettingsShortcut } from "./settings/HqSettings.js";
+import { HqSettings, hqSettingsShortcut } from "./settings/HqSettings.js";
+import type {
+  HqSettingsProps,
+  HqSettingsSection
+} from "./settings/HqSettings.js";
 import { reconcileHqRoute, type HqRoute } from "./hq-navigation.js";
 import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
 import { useProjectMenuActions } from "./useProjectMenuActions.js";
@@ -113,7 +123,8 @@ export function HqApplication({
   visibilityConnected?: boolean;
   renderSettings?: (
     onClose: () => void,
-    onChatRestored?: (sessionId: string, batchId: string | null) => void
+    onChatRestored?: (sessionId: string, batchId: string | null) => void,
+    initialSection?: HqSettingsSection
   ) => ReactNode;
   accountIdentity?: HqAccountIdentity;
   managedConversations?: ManagedConversationDesktopApi | null;
@@ -161,6 +172,8 @@ export function HqApplication({
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [onboardingRevision, setOnboardingRevision] = useState(0);
+  const [settingsSection, setSettingsSection] =
+    useState<HqSettingsSection>("general");
   const [chatDeleteRequest, setChatDeleteRequest] =
     useState<ChatDeleteRequest | null>(null);
   const [chatDeleteNotice, setChatDeleteNotice] =
@@ -737,13 +750,21 @@ export function HqApplication({
     projectId: string,
     sessionId: string,
     title: string,
-    mode: "delete" | "forget"
+    mode: "delete" | "forget",
+    textActionId?: string
   ) => {
     if (!visibilityOwnerId || !visibilityProfileKey || chatBusyRef.current)
       return;
     chatIntentEpoch.current++;
     const token = chatToken();
-    setChatDeleteRequest({ projectId, sessionId, title, mode, running: null });
+    setChatDeleteRequest({
+      projectId,
+      sessionId,
+      title,
+      mode,
+      running: null,
+      ...(textActionId ? { textActionId } : {})
+    });
     if (!managedConversations?.list) {
       setChatDeleteRequest(null);
       setChatDeleteNotice({
@@ -874,7 +895,7 @@ export function HqApplication({
         return;
       }
       if (!personalMemoryApi?.trashSession) return;
-      const requestedBatchId = crypto.randomUUID();
+      const requestedBatchId = target.textActionId ?? crypto.randomUUID();
       submittedBatchId = requestedBatchId;
       let result = await personalMemoryApi.trashSession({
         sessionId: target.sessionId,
@@ -1387,24 +1408,29 @@ export function HqApplication({
   destinations.push(
     ...hqLayoutCommands(Boolean(renderSettings), contextAvailable)
   );
-  const openSettings = useCallback(() => {
-    if (!renderSettings || settingsOpen) return;
-    const active = document.activeElement;
-    settingsReturnFocus.current =
-      active instanceof HTMLElement &&
-      active !== document.body &&
-      active !== document.documentElement &&
-      active.tabIndex >= 0 &&
-      !active.closest('[role="dialog"]')
-        ? active
-        : (document.querySelector<HTMLElement>("button.hq-account") ??
-          document.querySelector<HTMLElement>(
-            'button[aria-label="Search and commands"]'
-          ));
-    shellActions.current?.dismissOverlays();
-    setSearchOpen(false);
-    setSettingsOpen(true);
-  }, [renderSettings, settingsOpen]);
+  const openSettings = useCallback(
+    (section: HqSettingsSection = "general") => {
+      if (!renderSettings) return;
+      setSettingsSection(section);
+      if (settingsOpen) return;
+      const active = document.activeElement;
+      settingsReturnFocus.current =
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        active !== document.documentElement &&
+        active.tabIndex >= 0 &&
+        !active.closest('[role="dialog"]')
+          ? active
+          : (document.querySelector<HTMLElement>("button.hq-account") ??
+            document.querySelector<HTMLElement>(
+              'button[aria-label="Search and commands"]'
+            ));
+      shellActions.current?.dismissOverlays();
+      setSearchOpen(false);
+      setSettingsOpen(true);
+    },
+    [renderSettings, settingsOpen]
+  );
   const closeSettings = useCallback(() => {
     setSettingsOpen(false);
     requestAnimationFrame(() => {
@@ -1424,6 +1450,350 @@ export function HqApplication({
       )?.focus();
     });
   }, []);
+  const applyTextAction = async (action: KoedTextActionProjection) => {
+    if (
+      !visibilityOwnerId ||
+      action.ownerUserId !== visibilityOwnerId ||
+      !visibilityProfileKey ||
+      action.state !== "claimed"
+    )
+      return false;
+    const owner = visibilityOwnerId;
+    const profile = visibilityProfileKey;
+    const stillCurrent = () =>
+      chatAuthority.current.ownerId === owner &&
+      chatAuthority.current.profileKey === profile;
+    const args = parseKoedTextActionArguments(action.name, action.arguments);
+    if (!stillCurrent()) return false;
+    const moveOne = async (
+      sessionId: string,
+      fromProjectId: string | null,
+      toProjectId: string | null
+    ): Promise<boolean> => {
+      if (!personalMemoryApi?.assignSessionProject || !stillCurrent())
+        return false;
+      let result = await personalMemoryApi.assignSessionProject(
+        toProjectId
+          ? {
+              action: "move",
+              sessionId,
+              targetProjectId: toProjectId,
+              expectedProjectId: fromProjectId,
+              textActionId: action.id
+            }
+          : {
+              action: "loose",
+              sessionId,
+              expectedProjectId: fromProjectId,
+              textActionId: action.id
+            }
+      );
+      if (!stillCurrent()) return false;
+      if (result.pending && result.batchId && result.pendingReviews?.length) {
+        if (!personalMemoryApi.reviewSessionMove) return false;
+        const reviewed = new Set<string>();
+        for (let attempt = 0; attempt < 16 && result.pending; attempt++) {
+          const next = result.pendingReviews?.find(
+            (item) => !reviewed.has(item.actionGrantId)
+          );
+          if (!next || !stillCurrent()) break;
+          reviewed.add(next.actionGrantId);
+          const status = await personalMemoryApi.reviewSessionMove({
+            sessionId,
+            batchId: result.batchId!,
+            actionGrantId: next.actionGrantId
+          });
+          if (!stillCurrent()) return false;
+          result = {
+            projectId: status.projectId,
+            pending: status.pending,
+            batchId: status.batchId,
+            pendingReviews: status.pendingReviews
+          };
+        }
+      }
+      return (
+        !result.pending && result.projectId === toProjectId && stillCurrent()
+      );
+    };
+    switch (action.name) {
+      case "koed_project_create": {
+        if (!projectsApi) return false;
+        const project = await projectsApi.create({
+          name: String(args.name),
+          folderPath:
+            typeof args.folderPath === "string" ? args.folderPath : null,
+          idempotencyKey: action.effectKey,
+          textActionId: action.id
+        });
+        if (!stillCurrent()) return false;
+        projectsStore?.projectChanged(owner, profile, project.id, project);
+        await projectsStore?.refresh();
+        if (!stillCurrent()) return false;
+        selectRoute({ kind: "project", projectId: project.id });
+        return true;
+      }
+      case "koed_todo_add": {
+        if (
+          typeof action.snapshot.workspaceProjectId === "string" &&
+          typeof action.snapshot.teamBackendId === "string"
+        ) {
+          if (!window.koedDesktop?.managedTextActions) return false;
+          await window.koedDesktop.managedTextActions.applyTeamTodoAdd(
+            action.executionId,
+            action.id,
+            action.revision
+          );
+          return stillCurrent();
+        }
+        if (!projectsApi?.workItemCreate) return false;
+        const title = String(args.title);
+        await projectsApi.workItemCreate(String(args.projectId), {
+          kind: "todo",
+          title,
+          goal: typeof args.goal === "string" ? args.goal : title,
+          origin: "koed_text_action",
+          idempotencyKey: action.effectKey,
+          dueOn: typeof args.dueOn === "string" ? args.dueOn : null,
+          textActionId: action.id
+        });
+        return stillCurrent();
+      }
+      case "koed_todo_send": {
+        if (
+          typeof action.snapshot.workspaceProjectId === "string" &&
+          typeof action.snapshot.teamBackendId === "string"
+        ) {
+          if (
+            !projectsApi?.sharedDispatchWorkItem ||
+            typeof action.snapshot.teamProjectVersion !== "number" ||
+            typeof action.snapshot.teamMemberVersion !== "number" ||
+            typeof action.snapshot.workItemVersion !== "number"
+          )
+            return false;
+          await projectsApi.sharedDispatchWorkItem(
+            String(args.projectId),
+            String(args.workItemId),
+            String(args.agentId),
+            action.snapshot.teamProjectVersion,
+            action.snapshot.teamMemberVersion,
+            action.snapshot.workItemVersion,
+            action.id
+          );
+          return stillCurrent();
+        }
+        if (
+          !projectsApi?.workItemDispatch ||
+          typeof action.snapshot.workItemVersion !== "number"
+        )
+          return false;
+        await projectsApi.workItemDispatch(
+          String(args.projectId),
+          String(args.workItemId),
+          String(args.agentId),
+          action.snapshot.workItemVersion,
+          undefined,
+          action.id
+        );
+        return stillCurrent();
+      }
+      case "koed_chat_move": {
+        return moveOne(
+          String(args.sessionId),
+          (action.snapshot.currentProjectId as string | null) ?? null,
+          typeof args.projectId === "string" ? args.projectId : null
+        );
+      }
+      case "koed_project_move_chats": {
+        if (
+          !Array.isArray(action.snapshot.chats) ||
+          !Array.isArray(args.sessionIds)
+        )
+          return false;
+        let allComplete = true;
+        for (const sessionId of args.sessionIds) {
+          const pinned = action.snapshot.chats.find(
+            (entry) =>
+              entry &&
+              typeof entry === "object" &&
+              (entry as { sessionId?: unknown }).sessionId === sessionId
+          );
+          if (!pinned || typeof pinned !== "object" || !stillCurrent())
+            return false;
+          // Prepare every exact session once even if an earlier batch needs
+          // Native review. A restart then resumes existing batches only.
+          const complete = await moveOne(
+            String(sessionId),
+            (pinned as { currentProjectId?: string | null }).currentProjectId ??
+              null,
+            String(args.projectId)
+          );
+          if (!stillCurrent()) return false;
+          allComplete &&= complete;
+        }
+        await personalMemoryStore?.loadProjects({ silent: true });
+        return allComplete && stillCurrent();
+      }
+      case "koed_hq_open":
+        selectRoute({ kind: "project", projectId: String(args.projectId) });
+        return stillCurrent();
+      case "koed_settings_open":
+        if (!renderSettings) return false;
+        openSettings((args.section ?? "general") as HqSettingsSection);
+        return stillCurrent();
+      case "koed_settings_set_theme":
+        if (!renderSettings || !window.koedDesktop?.theme) return false;
+        {
+          const view = renderSettings(() => undefined);
+          if (
+            !isValidElement<HqSettingsProps>(view) ||
+            view.type !== HqSettings
+          )
+            return false;
+          const requested = args.theme as "system" | "light" | "dark";
+          view.props.onThemeChange(requested);
+          // The button callback schedules a ThemeStore write. Confirm the
+          // persisted Desktop preference before recording the text effect.
+          for (let attempt = 0; attempt < 12 && stillCurrent(); attempt++) {
+            if ((await window.koedDesktop.theme.get()) === requested)
+              return true;
+            await new Promise((resolve) => window.setTimeout(resolve, 100));
+          }
+          return false;
+        }
+      case "koed_chat_create": {
+        if (
+          !onResolveIndependent ||
+          !managedConversations ||
+          !managedConversationLifecycle ||
+          (blankOpen && blankLaunchPending)
+        )
+          return false;
+        const selectedProjectId =
+          typeof args.projectId === "string" ? args.projectId : null;
+        if (
+          selectedProjectId &&
+          !projects.some(
+            (item) =>
+              item.id === selectedProjectId && item.contextKind === "project"
+          )
+        )
+          return false;
+        setBlankOpen(true);
+        setBlankIntent((value) => value + 1);
+        setBlankProjectId(selectedProjectId);
+        setSelection({ route: { kind: "home" } });
+        if (!selectedProjectId) resolveBlankProject();
+        return stillCurrent();
+      }
+      default:
+        return false;
+    }
+  };
+  const resumeTextActionMove = async (action: KoedTextActionProjection) => {
+    if (
+      !personalMemoryApi?.lookupTextActionMove ||
+      !personalMemoryApi.resumeTextActionMove ||
+      !personalMemoryApi.reviewSessionMove
+    )
+      return false;
+    const owner = visibilityOwnerId;
+    const profile = visibilityProfileKey;
+    const stillCurrent = () =>
+      chatAuthority.current.ownerId === owner &&
+      chatAuthority.current.profileKey === profile;
+    const args = parseKoedTextActionArguments(action.name, action.arguments);
+    const sessionIds =
+      action.name === "koed_chat_move"
+        ? [String(args.sessionId)]
+        : action.name === "koed_project_move_chats" &&
+            Array.isArray(args.sessionIds)
+          ? args.sessionIds.map(String)
+          : [];
+    if (!sessionIds.length || !stillCurrent()) return false;
+    let allComplete = true;
+    for (const sessionId of sessionIds) {
+      let status = await personalMemoryApi.lookupTextActionMove({
+        sessionId,
+        actionId: action.id
+      });
+      if (!stillCurrent() || !status) return false;
+      const batchId = status.batchId;
+      const reviewed = new Set<string>();
+      for (let attempt = 0; attempt < 16 && status.pending; attempt++) {
+        const next = status.pendingReviews.find(
+          (item) => !reviewed.has(item.actionGrantId)
+        );
+        if (next) {
+          reviewed.add(next.actionGrantId);
+          status = await personalMemoryApi.reviewSessionMove({
+            sessionId,
+            batchId,
+            actionGrantId: next.actionGrantId
+          });
+        } else {
+          status = await personalMemoryApi.resumeTextActionMove({
+            sessionId,
+            actionId: action.id,
+            batchId
+          });
+          if (!status.pendingReviews.length && status.pending) break;
+        }
+        if (!stillCurrent() || status.batchId !== batchId) return false;
+      }
+      allComplete &&= status.complete;
+    }
+    if (allComplete && stillCurrent())
+      await personalMemoryStore?.loadProjects({ silent: true });
+    return allComplete && stillCurrent();
+  };
+  const reviewTextActionNative = (action: KoedTextActionProjection) => {
+    if (
+      action.ownerUserId !== visibilityOwnerId ||
+      action.state !== "awaiting_review" ||
+      action.reviewKind !== "native"
+    )
+      return;
+    if (
+      action.name === "koed_project_delete" &&
+      typeof action.snapshot.projectId === "string" &&
+      typeof action.snapshot.projectVersion === "number" &&
+      typeof action.snapshot.executionSetHash === "string"
+    ) {
+      projectMenu.openDelete(action.snapshot.projectId, {
+        actionId: action.effectKey,
+        expectedVersion: action.snapshot.projectVersion,
+        expectedExecutionSetHash: action.snapshot.executionSetHash
+      });
+      return;
+    }
+    if (
+      action.name === "koed_chat_delete" &&
+      typeof action.snapshot.sessionId === "string" &&
+      personalMemoryStore
+    ) {
+      const matches = [
+        ...personalMemoryStore.current().projectsById.values()
+      ].flatMap((sourceProject) =>
+        sourceProject.threads
+          .filter(
+            (sourceThread) =>
+              sourceThread.sessionId === action.snapshot.sessionId &&
+              !sourceThread.conversationTrashedAt
+          )
+          .map((sourceThread) => ({ sourceProject, sourceThread }))
+      );
+      if (matches.length !== 1) return;
+      const { sourceProject, sourceThread } = matches[0]!;
+      openChatDeleteRequest(
+        sourceProject.id,
+        action.snapshot.sessionId,
+        sourceThread.name,
+        "delete",
+        action.effectKey
+      );
+    }
+  };
   useEffect(() => {
     if (!renderSettings) return;
     const keyDown = (event: KeyboardEvent) => {
@@ -1511,6 +1881,11 @@ export function HqApplication({
           }
         }
         onOfferChatForget={offerMemorySourceChatForget}
+        onTextActionApply={applyTextAction}
+        onTextActionNativeReview={reviewTextActionNative}
+        onTextActionResumeMove={resumeTextActionMove}
+        ownerId={visibilityOwnerId ?? undefined}
+        profileKey={visibilityProfileKey ?? undefined}
         inspectorOpen={sourcesOpen}
         panelHostRef={setSourcesPanelHost}
         contextLabel={artifactContext}
@@ -1762,7 +2137,7 @@ export function HqApplication({
             conversationAgents={conversationAgents}
             revealProject={revealProject}
             accountIdentity={accountIdentity}
-            onOpenSettings={renderSettings ? openSettings : undefined}
+            onOpenSettings={renderSettings ? () => openSettings() : undefined}
             groupsReady={
               projectsStore
                 ? firstClassLoaded
@@ -2101,6 +2476,10 @@ export function HqApplication({
               thread={conversationThread}
               onOpenCitationMessage={openCitationMessage}
               onOfferChatForget={offerMemorySourceChatForget}
+              onTextActionApply={applyTextAction}
+              onTextActionNativeReview={reviewTextActionNative}
+              onTextActionResumeMove={resumeTextActionMove}
+              visibilityProfileKey={visibilityProfileKey ?? undefined}
               focusEventId={
                 citationFocus?.generation ===
                   citationNavigationRef.current.generation &&
@@ -2184,19 +2563,25 @@ export function HqApplication({
             void projectsStore?.refresh();
             setSharedRefreshSignal((value) => value + 1);
           }}
-          onOpenSettings={renderSettings ? openSettings : undefined}
+          onOpenSettings={renderSettings ? () => openSettings() : undefined}
         />
       ) : null}
       {settingsOpen && renderSettings
-        ? renderSettings(closeSettings, (sessionId, batchId) => {
-            setChatDeleteNotice((notice) =>
-              notice?.kind === "deleted" &&
-              notice.sessionId === sessionId &&
-              notice.batchId === batchId
-                ? null
-                : notice
-            );
-          })
+        ? (() => {
+            const view = renderSettings(closeSettings, (sessionId, batchId) => {
+              setChatDeleteNotice((notice) =>
+                notice?.kind === "deleted" &&
+                notice.sessionId === sessionId &&
+                notice.batchId === batchId
+                  ? null
+                  : notice
+              );
+            });
+            return isValidElement<HqSettingsProps>(view) &&
+              view.type === HqSettings
+              ? cloneElement(view, { initialSection: settingsSection })
+              : view;
+          })()
         : null}
       <HqChatDeleteControls
         request={chatDeleteRequest}

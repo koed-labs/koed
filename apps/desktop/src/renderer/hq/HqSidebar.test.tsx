@@ -568,6 +568,7 @@ describe("HQ sidebar", () => {
     );
     await act(async () => account?.click());
     expect(onOpenSettings).toHaveBeenCalledOnce();
+    expect(onOpenSettings).toHaveBeenCalledWith();
   });
 
   it("opens the Personal Project menu by ellipsis and right click, without offering Leave", async () => {

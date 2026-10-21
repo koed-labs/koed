@@ -119,6 +119,14 @@ export function registerProjectRoutes(
     async (request, reply) => {
       const user = await authenticate(request, true);
       const body = createProjectSchema.parse(request.body);
+      if (
+        body.textActionId &&
+        !request.headers.authorization?.trim().startsWith("Koed-Desktop ")
+      )
+        throw Object.assign(
+          new Error("Text action requires Desktop authority"),
+          { statusCode: 403 }
+        );
       try {
         return reply
           .code(201)

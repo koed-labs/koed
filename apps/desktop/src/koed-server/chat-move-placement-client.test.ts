@@ -48,6 +48,55 @@ const session = (
 });
 
 describe("chat move owner-bound placement client", () => {
+  it("resumes only the exact already prepared text-action batch", async () => {
+    const actionId = uuid(8),
+      batchId = uuid(9);
+    const pending = {
+      sessionId,
+      batchId,
+      pending: true,
+      complete: false,
+      projectId: oldProjectId,
+      pendingReviews: []
+    };
+    const complete = {
+      ...pending,
+      pending: false,
+      complete: true,
+      projectId: targetProjectId
+    };
+    const requestJson = vi.fn(async (_path: string, init: RequestInit) =>
+      init.method === "GET" ? { status: pending } : complete
+    );
+    const client = createChatMovePlacementClient({
+      authority: async () => authority,
+      requestJson
+    });
+    expect(await client.lookupTextActionMove({ sessionId, actionId })).toEqual(
+      pending
+    );
+    await expect(
+      client.resumeTextActionMove({ sessionId, actionId, batchId })
+    ).resolves.toEqual(complete);
+    expect(requestJson.mock.calls.at(-1)?.[0]).toBe(
+      `/v1/memory/graph/sessions/${sessionId}/move-progress`
+    );
+    expect(
+      requestJson.mock.calls.every(([path]) => !path.endsWith("/project"))
+    ).toBe(true);
+    const wrong = createChatMovePlacementClient({
+      authority: async () => authority,
+      requestJson: vi.fn(async () => ({
+        status: {
+          ...pending,
+          batchId: uuid(10)
+        }
+      }))
+    });
+    await expect(
+      wrong.resumeTextActionMove({ sessionId, actionId, batchId })
+    ).rejects.toThrow("batch changed");
+  });
   it("resolves a UUID Project with zero chats and PATCHes its authoritative details once", async () => {
     const requestJson = vi.fn(
       async (path: string, _init: RequestInit, _bound: ProjectsAuthority) => {
@@ -80,6 +129,29 @@ describe("chat move owner-bound placement client", () => {
       }
     });
     expect(patch?.[2]).toBe(authority);
+  });
+
+  it("passes one exact text action ID through the owner-bound placement request", async () => {
+    const requestJson = vi.fn(async (path: string, init: RequestInit) => {
+      if (path.startsWith("/v1/projects?")) {
+        expect(init.method).toBe("GET");
+        return { projects: [target], nextCursor: null };
+      }
+      expect(init.method).toBe("PATCH");
+      return session(targetProjectId);
+    });
+    const client = createChatMovePlacementClient({
+      authority: async () => authority,
+      requestJson
+    });
+    await client.assign({ ...move, textActionId: uuid(9) });
+    expect(
+      JSON.parse(String(requestJson.mock.calls[1]?.[1]?.body))
+    ).toMatchObject({
+      textActionId: uuid(9),
+      expectedProjectId: oldProjectId,
+      project: { id: targetProjectId }
+    });
   });
 
   it("preserves exact expected placement and pending batch without promoting a local move", async () => {

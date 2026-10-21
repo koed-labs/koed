@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -8,6 +11,10 @@ import {
   WorkItemTransitionError
 } from "@koed/db";
 import type { WorkItem } from "@koed/shared";
+import {
+  deleteDesktopLocalCredential,
+  storeDesktopLocalCredential
+} from "@koed/shared";
 import { registerWorkItemRoutes } from "./routes.js";
 
 const owner = randomUUID(),
@@ -42,7 +49,7 @@ const item: WorkItem = {
   version: 1
 };
 
-const fixture = () => {
+const fixture = (koedHome?: string) => {
   const app = Fastify();
   const repository = {
     list: vi.fn(async () => ({
@@ -74,6 +81,8 @@ const fixture = () => {
   );
   registerWorkItemRoutes(app, {
     repository: repository as never,
+    deploymentProfile: "local_personal",
+    koedHome,
     auth: { authenticateSessionOrDeviceCredential: authenticate } as never,
     readRateLimit: async () => undefined,
     writeRateLimit: async () => undefined
@@ -82,6 +91,56 @@ const fixture = () => {
 };
 
 describe("Work Item routes", () => {
+  it("requires a scoped local Desktop credential for exact text-action creation", async () => {
+    const home = mkdtempSync(join(tmpdir(), "koed-work-item-action-"));
+    const credential = storeDesktopLocalCredential(home, {
+      ownerUserId: owner,
+      operationFamilies: ["personal_collaboration_write"]
+    });
+    const { app, repository } = fixture(home);
+    const actionId = randomUUID();
+    const payload = {
+      kind: "todo",
+      title: "Call",
+      goal: "Call Sam",
+      origin: "koed_text_action",
+      idempotencyKey: actionId,
+      textActionId: actionId
+    };
+    try {
+      const denied = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${project}/work-items`,
+        payload
+      });
+      expect(denied.statusCode).toBe(403);
+      const token = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${project}/work-items`,
+        payload,
+        headers: { authorization: "Bearer fake" }
+      });
+      expect(token.statusCode).toBe(403);
+      const created = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${project}/work-items`,
+        payload,
+        headers: { authorization: credential.authorization },
+        remoteAddress: "127.0.0.1"
+      });
+      expect(created.statusCode).toBe(201);
+      expect(repository.create).toHaveBeenCalledTimes(1);
+      expect(repository.create).toHaveBeenCalledWith(
+        owner,
+        project,
+        expect.objectContaining({ textActionId: actionId })
+      );
+    } finally {
+      await app.close();
+      deleteDesktopLocalCredential(home);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
   it("uses scoped auth and passes the authenticated owner to list/create", async () => {
     const { app, repository, authenticate } = fixture();
     try {

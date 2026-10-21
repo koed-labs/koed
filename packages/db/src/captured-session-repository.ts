@@ -78,12 +78,14 @@ export interface CapturedSessionRepository {
     actor: ActorContext,
     sessionId: string,
     project: PersonalProjectReference,
-    expectedProjectId?: string | null
+    expectedProjectId?: string | null,
+    textActionId?: string
   ): Promise<CapturedSessionRecord | null>;
   moveCapturedSessionToLooseChats(
     actor: ActorContext,
     sessionId: string,
-    expectedProjectId?: string | null
+    expectedProjectId?: string | null,
+    textActionId?: string
   ): Promise<CapturedSessionRecord | null>;
   resetCapturedSessionProject(
     actor: ActorContext,
@@ -1017,12 +1019,73 @@ export const createCapturedSessionRepository = (
     actor,
     sessionId,
     input,
-    expectedProjectId
+    expectedProjectId,
+    textActionId
   ) {
     const project = normalizedProjectReference(input);
     if (!project) return null;
-    const result = await pool.query<CapturedSessionRow>(
-      `
+    // Text-command effects use an owner-private immutable placement intent.
+    // Lock it before updating the Session, then insert the exact effect receipt
+    // in the same transaction. A button request takes the existing path.
+    const client = textActionId ? await pool.connect() : null;
+    try {
+      if (client) {
+        await client.query("begin");
+        if (expectedProjectId === undefined) {
+          await client.query("rollback");
+          return null;
+        }
+        const intent = await client.query<{
+          expected_assignment_version: number;
+        }>(
+          `select intent.expected_assignment_version
+             from managed_conversation_text_action_move_authorities intent
+             join managed_conversation_text_actions action
+               on action.id=intent.action_id and action.owner_user_id=intent.owner_user_id
+             join managed_conversation_executions execution
+               on execution.id=action.execution_id
+              and execution.owner_user_id=action.owner_user_id
+             join managed_conversation_commands command
+               on command.id=action.command_id
+              and command.owner_user_id=action.owner_user_id
+              and command.execution_id=action.execution_id
+             join managed_conversation_text_human_origins origin
+               on origin.owner_user_id=command.owner_user_id
+              and origin.command_id=command.id
+              and origin.execution_id=command.execution_id
+              and origin.execution_generation=command.execution_generation
+              and origin.request_digest=command.request_digest
+            where intent.action_id=$1 and intent.owner_user_id=$2
+              and intent.session_id=$3
+              and intent.source_project_id is not distinct from $4::uuid
+              and intent.target_project_id is not distinct from $5::uuid
+              and action.state='claimed'
+              and action.action_name in ('koed_chat_move','koed_project_move_chats')
+              and execution.execution_generation=action.execution_generation
+              and execution.state in ('running','reconciling')
+              and command.execution_generation=action.execution_generation
+              and ((command.command_kind='start' and origin.source_kind='hq_first_message')
+                or (command.command_kind='prompt' and origin.source_kind='human_prompt'
+                  and command.client_user_message_id is not null))
+              and ((command.state='completed' and command.completed_at is not null)
+                or (command.state='dispatching' and command.lease_expires_at>now()
+                  and execution.runner_lease_expires_at>now()))
+            for share of intent,action,execution`,
+          [
+            textActionId,
+            actor.userId,
+            sessionId,
+            expectedProjectId,
+            project.id === "lp_chats" ? null : project.id
+          ]
+        );
+        if (!intent.rows[0]) {
+          await client.query("rollback");
+          return null;
+        }
+      }
+      const result = await (client ?? pool).query<CapturedSessionRow>(
+        `
         with canonical_target as materialized (
           select coalesce(
             (select id from projects where owner_user_id=$1 and id::text=$3),
@@ -1060,6 +1123,10 @@ export const createCapturedSessionRepository = (
           and ($6::boolean = false or
             (case when project_override_id is not null then project_override_personal_project_id
               else automatic_personal_project_id end) is not distinct from $7::uuid)
+          and ($8::uuid is null or sessions.project_assignment_version =
+            (select expected_assignment_version
+               from managed_conversation_text_action_move_authorities
+              where owner_user_id=$1 and action_id=$8 and session_id=$2))
           and not exists (select 1 from projects old_project
             where old_project.id = (case when sessions.project_override_id is not null
               then sessions.project_override_personal_project_id else sessions.automatic_personal_project_id end)
@@ -1075,28 +1142,73 @@ export const createCapturedSessionRepository = (
             where new_project.owner_user_id=$1 and new_project.id=canonical_target.canonical_project_id
               and new_project.lifecycle='active' and new_project.deletion_phase is null
               and new_project.team_backend_id is null and new_project.team_workspace_id is null
-              and new_project.workspace_project_id is null))
+              and new_project.workspace_project_id is null
+              and ($8::uuid is null or new_project.version =
+                (select target_project_version
+                   from managed_conversation_text_action_move_authorities
+                  where owner_user_id=$1 and action_id=$8 and session_id=$2))))
         returning ${capturedSessionColumns}
       `,
-      [
-        actor.userId,
-        sessionId,
-        project.id,
-        project.name,
-        project.path,
-        expectedProjectId !== undefined,
-        expectedProjectId ?? null
-      ]
-    );
-    return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+        [
+          actor.userId,
+          sessionId,
+          project.id,
+          project.name,
+          project.path,
+          expectedProjectId !== undefined,
+          expectedProjectId ?? null,
+          textActionId ?? null
+        ]
+      );
+      if (client) {
+        if (!result.rows[0]) {
+          await client.query("rollback");
+          return null;
+        }
+        const receipt = await client.query(
+          `insert into managed_conversation_text_action_move_effects
+             (action_id,owner_user_id,session_id,source_project_id,
+              target_project_id,assignment_version)
+           select intent.action_id,intent.owner_user_id,intent.session_id,
+                  intent.source_project_id,intent.target_project_id,
+                  sessions.project_assignment_version
+             from managed_conversation_text_action_move_authorities intent
+             join sessions on sessions.id=intent.session_id
+               and sessions.owner_user_id=intent.owner_user_id
+            where intent.action_id=$1 and intent.owner_user_id=$2
+              and intent.session_id=$3
+              and sessions.project_assignment_version=intent.expected_assignment_version+1
+              and (case when sessions.project_override_id is not null
+                then sessions.project_override_personal_project_id
+                else sessions.automatic_personal_project_id end)
+                  is not distinct from intent.target_project_id`,
+          [textActionId, actor.userId, sessionId]
+        );
+        if (receipt.rowCount !== 1)
+          throw new Error("Text action placement receipt changed");
+        await client.query("commit");
+      }
+      return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+    } catch (error) {
+      if (client) await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client?.release();
+    }
   },
 
-  async moveCapturedSessionToLooseChats(actor, sessionId, expectedProjectId) {
+  async moveCapturedSessionToLooseChats(
+    actor,
+    sessionId,
+    expectedProjectId,
+    textActionId
+  ) {
     return this.moveCapturedSessionToProject(
       actor,
       sessionId,
       { id: "lp_chats", name: "Chats", path: null },
-      expectedProjectId
+      expectedProjectId,
+      textActionId
     );
   },
 

@@ -7,6 +7,10 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
+    "./managed-text-action-contract": {
+      "types": "./dist/managed-text-action-contract.d.ts",
+      "import": "./dist/managed-text-action-contract.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

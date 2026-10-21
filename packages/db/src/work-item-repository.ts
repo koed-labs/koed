@@ -1,8 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
-import type { CreateWorkItem, PatchWorkItem, WorkItem } from "@koed/shared";
+import type {
+  CreateWorkItem,
+  EnvelopeEncryptionProvider,
+  PatchWorkItem,
+  WorkItem
+} from "@koed/shared";
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 import { appendProjectActivityWithClient } from "./project-activity-repository.js";
+import { claimedManagedTextCreateWithClient } from "./managed-text-action-repository.js";
 
 export class WorkItemUnavailableError extends Error {}
 export class WorkItemConflictError extends Error {
@@ -200,14 +206,15 @@ const lockActiveProject = async (
   projectId: string,
   lock: "share" | "update" = "update"
 ) => {
-  const result = await client.query(
-    `select id from projects where id=$1 and owner_user_id=$2 and lifecycle='active' and deletion_phase is null
+  const result = await client.query<{ version: number }>(
+    `select version from projects where id=$1 and owner_user_id=$2 and lifecycle='active' and deletion_phase is null
        and team_backend_id is null and team_workspace_id is null and workspace_project_id is null
        for ${lock}`,
     [projectId, ownerUserId]
   );
   if (!result.rowCount)
     throw new WorkItemUnavailableError("Project is unavailable");
+  return result.rows[0]!.version;
 };
 
 const emitChanged = async (
@@ -267,7 +274,10 @@ const creationPayloadHash = (input: CreateWorkItem) =>
 
 export const createWorkItemRepository = (
   pool: pg.Pool,
-  options: { verifyTrustedTransition?: VerifyTrustedWorkItemTransition } = {}
+  options: {
+    verifyTrustedTransition?: VerifyTrustedWorkItemTransition;
+    envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  } = {}
 ) => ({
   async getSharedDispatchLink(ownerUserId: string, personalProjectId: string) {
     const result = await pool.query<{
@@ -977,7 +987,45 @@ export const createWorkItemRepository = (
     input: CreateWorkItem
   ): Promise<WorkItem> {
     return inTransaction(pool, async (client) => {
-      await lockActiveProject(client, ownerUserId, projectId);
+      let pinnedProjectVersion: number | null = null;
+      if (input.textActionId) {
+        const authorized =
+          input.kind === "todo" &&
+          input.key == null &&
+          input.origin === "koed_text_action" &&
+          input.originRef == null &&
+          input.idempotencyKey === input.textActionId &&
+          (await claimedManagedTextCreateWithClient(
+            client,
+            options.envelopeEncryptionProvider,
+            {
+              ownerUserId,
+              actionId: input.textActionId,
+              name: "koed_todo_add",
+              matches: (args, snapshot) => {
+                pinnedProjectVersion = Number(snapshot.projectVersion);
+                return (
+                  args.projectId === projectId &&
+                  args.title === input.title &&
+                  (args.goal ?? args.title) === input.goal &&
+                  (args.dueOn ?? null) === (input.dueOn ?? null) &&
+                  snapshot.projectId === projectId &&
+                  Number.isSafeInteger(pinnedProjectVersion)
+                );
+              }
+            }
+          ));
+        if (!authorized)
+          throw new WorkItemConflictError(
+            "Text action creation authority changed",
+            null
+          );
+      }
+      const projectVersion = await lockActiveProject(
+        client,
+        ownerUserId,
+        projectId
+      );
       if (input.idempotencyKey)
         await client.query(
           `select pg_advisory_xact_lock(hashtextextended($1,0))`,
@@ -1002,8 +1050,26 @@ export const createWorkItemRepository = (
             deleted ? null : publicRecord(existing.rows[0])
           );
         if (deleted) throw new WorkItemGoneError("Work Item was deleted");
+        if (input.textActionId) {
+          const effect = await client.query(
+            `select 1 from managed_conversation_text_action_create_effects
+              where owner_user_id=$1 and action_id=$2 and project_id=$3
+                and work_item_id=$4`,
+            [ownerUserId, input.textActionId, projectId, existing.rows[0].id]
+          );
+          if (!effect.rowCount)
+            throw new WorkItemConflictError(
+              "Text action creation receipt is absent",
+              null
+            );
+        }
         return publicRecord(existing.rows[0]);
       }
+      if (
+        pinnedProjectVersion !== null &&
+        projectVersion !== pinnedProjectVersion
+      )
+        throw new WorkItemConflictError("Project version changed", null);
       const result = await client.query<Row>(
         `insert into project_work_items
          (owner_user_id,project_id,kind,key,title,goal,origin,origin_ref,idempotency_key,creation_payload_hash,due_on,created_by)
@@ -1022,6 +1088,13 @@ export const createWorkItemRepository = (
           input.dueOn ?? null
         ]
       );
+      if (input.textActionId)
+        await client.query(
+          `insert into managed_conversation_text_action_create_effects
+            (owner_user_id,action_id,project_id,work_item_id)
+           values ($1,$2,$3,$4)`,
+          [ownerUserId, input.textActionId, projectId, result.rows[0]!.id]
+        );
       const item = publicRecord(result.rows[0]!);
       await appendProjectActivityWithClient(client, {
         ownerUserId,

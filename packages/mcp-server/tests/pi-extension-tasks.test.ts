@@ -26,6 +26,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.KOED_HOME;
   delete process.env.KOED_MANAGED_MEMORY_ACTIONS;
+  delete process.env.KOED_MANAGED_TEXT_ACTIONS;
   delete process.env.KOED_MANAGED_DOC_EXECUTION_ID;
   delete process.env.KOED_MANAGED_DOC_EXECUTION_GENERATION;
   delete process.env.KOED_MANAGED_DOC_API_URL;
@@ -245,6 +246,27 @@ describe("Pi installed document Work Item tool", () => {
 });
 
 describe("Pi explicit Memory Answer tasks", () => {
+  it("gates typed Koed text actions and emits only request receipts", async () => {
+    const ordinary = await setup();
+    expect(ordinary.tools.has("koed_todo_add")).toBe(false);
+    process.env.KOED_MANAGED_TEXT_ACTIONS = "1";
+    const managed = await setup();
+    expect(managed.tools.has("koed_todo_add")).toBe(true);
+    expect(managed.tools.has("koed_job_create")).toBe(false);
+    expect(
+      await managed.invoke("koed_hq_open", {
+        projectId: "90fd9cee-d5b1-4dda-9675-c044e4613ed7"
+      })
+    ).toEqual({
+      content: [
+        {
+          type: "text",
+          text: 'Koed koed_hq_open request v1: {"status":"requested"}'
+        }
+      ],
+      details: { status: "requested" }
+    });
+  });
   it("gates native managed memory tools and emits request-only receipts", async () => {
     const ordinary = await setup();
     expect(ordinary.tools.has("memory_forget")).toBe(false);

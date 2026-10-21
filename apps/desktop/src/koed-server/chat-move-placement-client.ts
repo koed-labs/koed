@@ -1,6 +1,9 @@
 import {
   personalDesktopSessionProjectDataSchema,
   personalDesktopSessionProjectInputSchema,
+  personalDesktopChatMoveStatusSchema,
+  personalDesktopTextActionMoveLookupInputSchema,
+  personalDesktopTextActionMoveResumeInputSchema,
   type PersonalDesktopSessionProjectInput
 } from "@koed/shared/personal-desktop";
 import { projectListSchema } from "@koed/shared/project-contract";
@@ -49,6 +52,75 @@ export const createChatMovePlacementClient = (input: {
     a.key === b.key && a.ownerId === b.ownerId;
 
   return {
+    async lookupTextActionMove(raw: { sessionId: string; actionId: string }) {
+      const request = personalDesktopTextActionMoveLookupInputSchema.parse(raw);
+      const bound = await input.authority();
+      if (!bound.canWrite || !sameAuthority(bound, await input.authority()))
+        throw new Error("Conversation move authority is unavailable.");
+      const payload = await input.requestJson(
+        `/v1/memory/graph/sessions/${encodeURIComponent(request.sessionId)}/text-action-move/${encodeURIComponent(request.actionId)}`,
+        { method: "GET" },
+        bound
+      );
+      if (!sameAuthority(bound, await input.authority()))
+        throw new Error("Conversation move owner profile changed.");
+      const result = z
+        .object({
+          status: personalDesktopChatMoveStatusSchema.nullable()
+        })
+        .strict()
+        .parse(payload);
+      if (result.status && result.status.sessionId !== request.sessionId)
+        throw new Error("Conversation move batch changed.");
+      return result.status;
+    },
+    async resumeTextActionMove(raw: {
+      sessionId: string;
+      actionId: string;
+      batchId: string;
+    }) {
+      const request = personalDesktopTextActionMoveResumeInputSchema.parse(raw);
+      const bound = await input.authority();
+      if (!bound.canWrite || !sameAuthority(bound, await input.authority()))
+        throw new Error("Conversation move authority is unavailable.");
+      const lookup = z
+        .object({
+          status: personalDesktopChatMoveStatusSchema.nullable()
+        })
+        .strict()
+        .parse(
+          await input.requestJson(
+            `/v1/memory/graph/sessions/${encodeURIComponent(request.sessionId)}/text-action-move/${encodeURIComponent(request.actionId)}`,
+            { method: "GET" },
+            bound
+          )
+        );
+      if (
+        !sameAuthority(bound, await input.authority()) ||
+        lookup.status?.batchId !== request.batchId ||
+        lookup.status.sessionId !== request.sessionId
+      )
+        throw new Error("Exact conversation move batch changed.");
+      if (lookup.status.complete) return lookup.status;
+      const status = personalDesktopChatMoveStatusSchema.parse(
+        await input.requestJson(
+          `/v1/memory/graph/sessions/${encodeURIComponent(request.sessionId)}/move-progress`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ batchId: request.batchId })
+          },
+          bound
+        )
+      );
+      if (
+        !sameAuthority(bound, await input.authority()) ||
+        status.batchId !== request.batchId ||
+        status.sessionId !== request.sessionId
+      )
+        throw new Error("Exact conversation move identity changed.");
+      return status;
+    },
     async assign(raw: PersonalDesktopSessionProjectInput) {
       const request = personalDesktopSessionProjectInputSchema.parse(raw);
       if (request.expectedProjectId === undefined)
@@ -103,6 +175,9 @@ export const createChatMovePlacementClient = (input: {
         body = {
           action: "move",
           expectedProjectId: request.expectedProjectId,
+          ...(request.textActionId
+            ? { textActionId: request.textActionId }
+            : {}),
           project: {
             id: target.id,
             name: target.name,
@@ -118,7 +193,10 @@ export const createChatMovePlacementClient = (input: {
       } else {
         body = {
           action: request.action,
-          expectedProjectId: request.expectedProjectId
+          expectedProjectId: request.expectedProjectId,
+          ...(request.action === "loose" && request.textActionId
+            ? { textActionId: request.textActionId }
+            : {})
         };
       }
 

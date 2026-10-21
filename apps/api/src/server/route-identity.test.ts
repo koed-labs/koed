@@ -100,6 +100,32 @@ describe("route identity contract", () => {
       deploymentModes: ["developer", "local_personal"]
     });
   });
+  it("inventories every text-action route as local Desktop or current Team authority", () => {
+    const base = "/v1/managed-conversations/{executionId}/text-actions";
+    for (const [method, path] of [
+      ["POST", base],
+      ["GET", base],
+      ["GET", `${base}/{actionId}`],
+      ["POST", `${base}/{actionId}/review`],
+      ["POST", `${base}/{actionId}/claim`],
+      ["POST", `${base}/{actionId}/complete`],
+      ["POST", `${base}/{actionId}/apply-team-todo-add`]
+    ] as const) {
+      expect(routeIdentityFor(method, path)).toMatchObject({
+        identity: "desktop_local_credential",
+        deploymentModes: ["developer", "local_personal"]
+      });
+    }
+    expect(
+      routeIdentityFor(
+        "GET",
+        "/v1/workspace-projects/{projectId}/work-items/text-action-effects/{actionId}"
+      )
+    ).toMatchObject({
+      identity: "session_or_device_credential",
+      teamAuthority: "request_time_team_workspace"
+    });
+  });
 
   it("inventories both exact Conversation move review routes", () => {
     for (const [method, path] of [
@@ -116,6 +142,17 @@ describe("route identity contract", () => {
       });
       expect(openApiPaths[path]?.[method.toLowerCase()]).toBeDefined();
     }
+  });
+
+  it("keeps text-action move recovery local and read-only", () => {
+    const path =
+      "/v1/memory/graph/sessions/{sessionId}/text-action-move/{actionId}";
+    expect(routeIdentityFor("GET", path)).toMatchObject({
+      identity: "desktop_local_credential",
+      domain: "personal_memory",
+      status: "implemented"
+    });
+    expect(openApiPaths[path]?.get).toBeDefined();
   });
   it("advertises Personal Project activity only on local edge deployments", () => {
     for (const [method, path] of [

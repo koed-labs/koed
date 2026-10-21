@@ -259,6 +259,12 @@ export class PiManagedConversationSession {
       ...(this.config.env.KOED_MANAGED_MEMORY_ACTIONS === "1"
         ? { KOED_MANAGED_MEMORY_ACTIONS: "1" }
         : {}),
+      ...(this.config.env.KOED_MANAGED_MERGE_PROPOSAL === "1"
+        ? { KOED_MANAGED_MERGE_PROPOSAL: "1" }
+        : {}),
+      ...(this.config.env.KOED_MANAGED_TEXT_ACTIONS === "1"
+        ? { KOED_MANAGED_TEXT_ACTIONS: "1" }
+        : {}),
       ...(this.config.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1"
         ? { KOED_MANAGED_WORK_ITEM_COMPLETION: "1" }
         : {}),
@@ -588,7 +594,18 @@ export class PiManagedConversationSession {
             "memory_correct",
             "work_item_complete",
             "work_items_from_doc",
-            "review_request_merge_propose"
+            "review_request_merge_propose",
+            "koed_project_create",
+            "koed_project_move_chats",
+            "koed_project_delete",
+            "koed_chat_create",
+            "koed_chat_move",
+            "koed_chat_delete",
+            "koed_todo_add",
+            "koed_todo_send",
+            "koed_hq_open",
+            "koed_settings_open",
+            "koed_settings_set_theme"
           ].includes(toolName)
         )
           this.active.koedCalls.set(event.toolCallId, {

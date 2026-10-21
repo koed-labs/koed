@@ -103,6 +103,7 @@ describe("Koed MCP 2026-07-28 protocol", () => {
         KOED_MANAGED_MEMORY_ACTIONS: "1",
         KOED_MANAGED_WORK_ITEM_COMPLETION: "1",
         KOED_MANAGED_MERGE_PROPOSAL: "1",
+        KOED_MANAGED_TEXT_ACTIONS: "1",
         KOED_MANAGED_DOC_EXECUTION_ID: "00000000-0000-4000-8000-000000000001",
         KOED_MANAGED_DOC_EXECUTION_GENERATION: "1",
         KOED_MANAGED_DOC_API_URL: "http://127.0.0.1:9"
@@ -116,6 +117,30 @@ describe("Koed MCP 2026-07-28 protocol", () => {
       "memory_answer_result",
       "work_items_from_doc"
     ]);
+  });
+  it("advertises request-only Koed text actions only in managed sessions", async () => {
+    const ordinary = await connect();
+    expect(
+      (await ordinary.client.listTools()).tools.map((tool) => tool.name)
+    ).not.toContain("koed_todo_add");
+    const managed = await connect({
+      environment: { KOED_MANAGED_TEXT_ACTIONS: "1" }
+    });
+    const names = (await managed.client.listTools()).tools.map(
+      (tool) => tool.name
+    );
+    expect(names).toContain("koed_todo_add");
+    expect(names).toContain("koed_project_delete");
+    expect(names).not.toContain("koed_job_create");
+    const result = await managed.client.callTool({
+      name: "koed_todo_add",
+      arguments: {
+        projectId: "90fd9cee-d5b1-4dda-9675-c044e4613ed7",
+        title: "Problem set 4",
+        dueOn: "2026-10-23"
+      }
+    });
+    expect(result.structuredContent).toEqual({ status: "requested" });
   });
   it("only advertises managed memory action requests for a bound managed client", async () => {
     const ordinary = await connect();

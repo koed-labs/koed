@@ -219,7 +219,8 @@ export const createProjectsPreloadApi = (
       agentId,
       expectedProjectVersion,
       expectedMemberVersion,
-      expectedWorkItemVersion
+      expectedWorkItemVersion,
+      textActionId
     ) => {
       const result = await command({
         operation: "sharedDispatchWorkItem",
@@ -228,7 +229,8 @@ export const createProjectsPreloadApi = (
         agentId,
         expectedProjectVersion,
         expectedMemberVersion,
-        expectedWorkItemVersion
+        expectedWorkItemVersion,
+        ...(textActionId ? { textActionId } : {})
       });
       if (result.operation !== "sharedDispatchWorkItem")
         throw new Error("Invalid shared Work Item dispatch result.");
@@ -344,14 +346,22 @@ export const createProjectsPreloadApi = (
         throw new Error("Invalid Work Item patch identity.");
       return result.value;
     },
-    workItemDispatch: async (projectId, itemId, agentId, version, replace) => {
+    workItemDispatch: async (
+      projectId,
+      itemId,
+      agentId,
+      version,
+      replace,
+      textActionId
+    ) => {
       const result = await command({
         operation: "workItemDispatch",
         projectId,
         itemId,
         agentId,
         version,
-        replace
+        replace,
+        ...(textActionId ? { textActionId } : {})
       });
       if (
         result.operation !== "workItemDispatch" ||

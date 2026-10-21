@@ -363,6 +363,7 @@ export interface ManagedConversationRepository {
     teamWorkItemVersion: number;
     expectedProjectVersion: number;
     expectedMemberVersion: number;
+    textActionId: string | null;
   } | null>;
   getManagedAgentDelegationByRequest(
     actor: ActorContext,
@@ -402,6 +403,8 @@ export interface ManagedConversationRepository {
       runnerDeviceId: string;
       idempotencyKey: string;
       initialPrompt?: string;
+      /** Set only by the authenticated Desktop User-message route. */
+      textActionHumanOrigin?: "hq_first_message";
       selectedDocumentSourceId?: string;
       deferUntilRuntimeBinding?: boolean;
       hqProjectId?: string;
@@ -410,6 +413,7 @@ export interface ManagedConversationRepository {
         itemId: string;
         agentId: string;
         version: number;
+        textActionId?: string;
         sources?: Array<{ id: string; currentRevisionId: string | null }>;
       };
       sharedWorkItemDispatch?: {
@@ -421,6 +425,7 @@ export interface ManagedConversationRepository {
         expectedProjectVersion: number;
         expectedMemberVersion: number;
         agentId: string;
+        textActionId?: string;
       };
       agentDelegation?: {
         parentExecutionId: string | null;
@@ -454,6 +459,8 @@ export interface ManagedConversationRepository {
       idempotencyKey: string;
       clientUserMessageId: string;
       prompt: string;
+      /** Set only by the authenticated Desktop User-message route. */
+      textActionHumanOrigin?: "human_prompt";
       selectedDocumentSourceId?: string;
       fileMentionCommandIds?: string[];
       settingsChange?: ManagedConversationSettingsChange;
@@ -1570,6 +1577,7 @@ export const createManagedConversationRepository = (
       expectedProjectVersion: number;
       expectedMemberVersion: number;
       agentId: string;
+      textActionId?: string;
     };
     settings: ManagedConversationSettings;
   }) =>
@@ -2254,7 +2262,9 @@ export const createManagedConversationRepository = (
         teamWorkItemId: value.teamWorkItemId,
         teamWorkItemVersion: value.teamWorkItemVersion,
         expectedProjectVersion: value.expectedProjectVersion,
-        expectedMemberVersion: value.expectedMemberVersion
+        expectedMemberVersion: value.expectedMemberVersion,
+        textActionId:
+          typeof value.textActionId === "string" ? value.textActionId : null
       };
     },
     async getManagedAgentDelegationByRequest(actor, requestId) {
@@ -2329,6 +2339,13 @@ export const createManagedConversationRepository = (
       if (input.hqProjectId && !input.hqPrivatePath?.startsWith("/"))
         throw statusError("Project HQ private path is invalid", 400);
       if (
+        input.textActionHumanOrigin &&
+        (input.textActionHumanOrigin !== "hq_first_message" ||
+          !input.hqProjectId ||
+          !input.initialPrompt?.trim())
+      )
+        throw statusError("Koed text action origin is invalid", 400);
+      if (
         input.agentDelegation &&
         (input.hqProjectId ||
           input.workItemDispatch ||
@@ -2340,6 +2357,95 @@ export const createManagedConversationRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        const textDispatch = input.workItemDispatch?.textActionId
+          ? {
+              id: input.workItemDispatch.textActionId,
+              itemId: input.workItemDispatch.itemId,
+              agentId: input.workItemDispatch.agentId,
+              version: input.workItemDispatch.version,
+              teamBackendId: null,
+              workspaceProjectId: null,
+              teamProjectVersion: null,
+              teamMemberVersion: null
+            }
+          : input.sharedWorkItemDispatch?.textActionId
+            ? {
+                id: input.sharedWorkItemDispatch.textActionId,
+                itemId: input.sharedWorkItemDispatch.teamWorkItemId,
+                agentId: input.sharedWorkItemDispatch.agentId,
+                version: input.sharedWorkItemDispatch.teamWorkItemVersion,
+                teamBackendId: input.sharedWorkItemDispatch.teamBackendId,
+                workspaceProjectId:
+                  input.sharedWorkItemDispatch.workspaceProjectId,
+                teamProjectVersion:
+                  input.sharedWorkItemDispatch.expectedProjectVersion,
+                teamMemberVersion:
+                  input.sharedWorkItemDispatch.expectedMemberVersion
+              }
+            : null;
+        if (textDispatch) {
+          const bound = await client.query(
+            `select 1 from managed_conversation_text_action_dispatch_authorities intent
+               join managed_conversation_text_actions action
+                 on action.id=intent.action_id and action.owner_user_id=intent.owner_user_id
+               join managed_conversation_executions origin_execution
+                 on origin_execution.id=action.execution_id
+                and origin_execution.owner_user_id=action.owner_user_id
+               join managed_conversation_commands origin_command
+                 on origin_command.id=action.command_id
+                and origin_command.owner_user_id=action.owner_user_id
+                and origin_command.execution_id=action.execution_id
+               join managed_conversation_text_human_origins origin
+                 on origin.owner_user_id=origin_command.owner_user_id
+                and origin.command_id=origin_command.id
+                and origin.execution_id=origin_command.execution_id
+                and origin.execution_generation=origin_command.execution_generation
+                and origin.request_digest=origin_command.request_digest
+               join managed_conversation_runtime_bindings origin_binding
+                 on origin_binding.execution_id=origin_execution.id
+                and origin_binding.owner_user_id=origin_execution.owner_user_id
+               join sessions origin_session
+                 on origin_session.id=origin_binding.local_session_id
+                and origin_session.owner_user_id=origin_execution.owner_user_id
+              where intent.action_id=$1 and intent.owner_user_id=$2
+                and intent.project_id=$3 and intent.work_item_id=$4
+                and intent.agent_id=$5 and intent.work_item_version=$6
+                and intent.team_backend_id is not distinct from $7::text
+                and intent.workspace_project_id is not distinct from $8::uuid
+                and intent.team_project_version is not distinct from $9::int
+                and intent.team_member_version is not distinct from $10::int
+                and action.state='claimed' and action.action_name='koed_todo_send'
+                and origin_execution.execution_generation=action.execution_generation
+                and origin_execution.state in ('running','reconciling')
+                and origin_command.execution_generation=action.execution_generation
+                and ((origin_command.command_kind='start' and origin.source_kind='hq_first_message')
+                  or (origin_command.command_kind='prompt' and origin.source_kind='human_prompt'
+                    and origin_command.client_user_message_id is not null))
+                and ((origin_command.state='completed' and origin_command.completed_at is not null)
+                  or (origin_command.state='dispatching' and origin_command.lease_expires_at>now()
+                    and origin_execution.runner_lease_expires_at>now()))
+                and origin_session.invalidated_at is null
+                and origin_session.personal_deleted_at is null
+                and origin_session.trashed_at is null
+                and origin_session.delete_batch_id is null
+                and origin_session.forget_batch_id is null
+              for share of intent,action,origin_execution,origin_session`,
+            [
+              textDispatch.id,
+              actor.userId,
+              projectId,
+              textDispatch.itemId,
+              textDispatch.agentId,
+              textDispatch.version,
+              textDispatch.teamBackendId,
+              textDispatch.workspaceProjectId,
+              textDispatch.teamProjectVersion,
+              textDispatch.teamMemberVersion
+            ]
+          );
+          if (bound.rowCount !== 1)
+            throw statusError("Text action dispatch authority changed", 409);
+        }
         // Lock the item before creating the command. The link and the start
         // command commit together, so a crash cannot leave an orphan launch.
         type DispatchItemRow = {
@@ -2377,6 +2483,28 @@ export const createManagedConversationRepository = (
             dispatch.sources ?? []
           );
           if (dispatchItem.execution_id) {
+            if (textDispatch) {
+              const priorEffect = await client.query<{ execution_id: string }>(
+                `select execution_id from managed_conversation_text_action_dispatch_effects
+                  where action_id=$1 and owner_user_id=$2 and project_id=$3
+                    and work_item_id=$4 and agent_id=$5 and work_item_version=$6`,
+                [
+                  textDispatch.id,
+                  actor.userId,
+                  projectId,
+                  textDispatch.itemId,
+                  textDispatch.agentId,
+                  textDispatch.version
+                ]
+              );
+              if (
+                priorEffect.rows[0]?.execution_id !== dispatchItem.execution_id
+              )
+                throw statusError(
+                  "Another action dispatched this Work Item",
+                  409
+                );
+            }
             if (
               dispatchItem.status === "blocked" &&
               dispatchItem.assignee_agent_id !== dispatch.agentId &&
@@ -2918,6 +3046,15 @@ export const createManagedConversationRepository = (
             input.deferUntilRuntimeBinding === true ? executionId : null
           ]
         );
+        if (input.textActionHumanOrigin) {
+          await client.query(
+            `insert into managed_conversation_text_human_origins
+              (owner_user_id,command_id,execution_id,execution_generation,
+               request_digest,source_kind)
+             values($1,$2,$3,1,$4,'hq_first_message')`,
+            [actor.userId, commandId, executionId, requestDigest]
+          );
+        }
         await appendManagedConversationEvent(client, {
           ownerUserId: actor.userId,
           executionId,
@@ -2952,6 +3089,23 @@ export const createManagedConversationRepository = (
           );
           if (changed.rowCount !== 1)
             throw statusError("Work Item version changed", 409);
+          if (textDispatch)
+            await client.query(
+              `insert into managed_conversation_text_action_dispatch_effects
+               (action_id,owner_user_id,project_id,work_item_id,agent_id,
+                work_item_version,execution_id,command_id)
+             values($1,$2,$3,$4,$5,$6,$7,$8)`,
+              [
+                textDispatch.id,
+                actor.userId,
+                projectId,
+                textDispatch.itemId,
+                textDispatch.agentId,
+                textDispatch.version,
+                executionId,
+                commandId
+              ]
+            );
           await appendProjectActivityWithClient(client, {
             ownerUserId: actor.userId,
             projectId,
@@ -2975,6 +3129,23 @@ export const createManagedConversationRepository = (
             mutationId: randomUUID()
           });
         }
+        if (input.sharedWorkItemDispatch && textDispatch)
+          await client.query(
+            `insert into managed_conversation_text_action_dispatch_effects
+               (action_id,owner_user_id,project_id,work_item_id,agent_id,
+                work_item_version,execution_id,command_id)
+             values($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [
+              textDispatch.id,
+              actor.userId,
+              projectId,
+              textDispatch.itemId,
+              textDispatch.agentId,
+              textDispatch.version,
+              executionId,
+              commandId
+            ]
+          );
         if (input.agentDelegation && delegationRequestDigest) {
           await client.query(
             `insert into managed_agent_delegations
@@ -3301,6 +3472,16 @@ export const createManagedConversationRepository = (
     },
 
     async enqueueManagedConversationPrompt(actor, input) {
+      if (input.scheduledDispatch && input.textActionHumanOrigin)
+        throw statusError(
+          "Scheduled dispatch cannot claim human text authority",
+          400
+        );
+      if (
+        input.textActionHumanOrigin &&
+        input.textActionHumanOrigin !== "human_prompt"
+      )
+        throw statusError("Koed text action origin is invalid", 400);
       const prompt = input.prompt.trim();
       const settingsChange = input.settingsChange
         ? {
@@ -3520,6 +3701,21 @@ export const createManagedConversationRepository = (
         );
         if (input.scheduledDispatch)
           await input.scheduledDispatch.bind(client, commandId);
+        if (input.textActionHumanOrigin) {
+          await client.query(
+            `insert into managed_conversation_text_human_origins
+              (owner_user_id,command_id,execution_id,execution_generation,
+               request_digest,source_kind)
+             values($1,$2,$3,$4,$5,'human_prompt')`,
+            [
+              actor.userId,
+              commandId,
+              input.executionId,
+              input.executionGeneration,
+              requestDigest
+            ]
+          );
+        }
         await notifyManagedConversationCommand(client, input.executionId);
         await client.query("commit");
         return mapCommand(result.rows[0]!, {

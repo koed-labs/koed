@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
+import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import { pauseScheduledJobsWithClient } from "./scheduled-job-repository.js";
+import { claimedManagedTextMoveWithClient } from "./managed-text-action-repository.js";
 
 export type ProjectPolicyGrantBinding = {
   id: string;
@@ -25,6 +27,7 @@ export type ChatMoveFreezeAck = {
 };
 export type ChatMoveOperation = {
   batchId: string;
+  textActionId: string | null;
   ownerUserId: string;
   sessionId: string;
   oldProjectId: string;
@@ -65,6 +68,7 @@ const mapBinding = (
 });
 const mapOperation = (row: Record<string, unknown>): ChatMoveOperation => ({
   batchId: String(row.batch_id),
+  textActionId: nullableProjectId(row.text_action_id),
   ownerUserId: String(row.owner_user_id),
   sessionId: String(row.session_id),
   oldProjectId: String(row.old_project_id),
@@ -96,12 +100,16 @@ const transaction = async <T>(
 };
 
 /** Local authority journal; the Team backend never receives a Personal Project ID. */
-export const createChatMoveRepository = (pool: pg.Pool) => ({
+export const createChatMoveRepository = (
+  pool: pg.Pool,
+  options: { textActionEncryptionProvider?: EnvelopeEncryptionProvider } = {}
+) => ({
   async prepare(
     ownerUserId: string,
     sessionId: string,
     expectedProjectId: string | null,
-    targetProjectId: string | null
+    targetProjectId: string | null,
+    textActionId?: string
   ): Promise<ChatMoveOperation | null> {
     return transaction(pool, async (client) => {
       // Project lifecycle also locks the Project before its sessions. Read the
@@ -161,10 +169,22 @@ export const createChatMoveRepository = (pool: pg.Pool) => ({
         const operation = mapOperation(existing);
         if (
           operation.oldProjectId !== currentId ||
-          operation.targetProjectId !== targetProjectId
+          operation.targetProjectId !== targetProjectId ||
+          operation.textActionId !== (textActionId ?? null)
         )
           throw new ChatMoveConflictError("A different move is pending");
         return operation;
+      }
+      if (textActionId) {
+        const previous = await client.query(
+          `select 1 from chat_move_operations where owner_user_id=$1
+            and session_id=$2 and text_action_id=$3 limit 1`,
+          [ownerUserId, sessionId, textActionId]
+        );
+        if (previous.rowCount)
+          throw new ChatMoveConflictError(
+            "This reviewed move already has a terminal batch"
+          );
       }
       const linked =
         currentId &&
@@ -179,7 +199,8 @@ export const createChatMoveRepository = (pool: pg.Pool) => ({
         !linked ||
         !linked.team_backend_id ||
         !linked.team_workspace_id ||
-        !linked.workspace_project_id
+        typeof linked.workspace_project_id !== "string" ||
+        typeof linked.team_backend_id !== "string"
       )
         return null;
       if (targetProjectId) {
@@ -200,6 +221,37 @@ export const createChatMoveRepository = (pool: pg.Pool) => ({
           throw new ChatMoveConflictError(
             "Destination is unavailable or requires confirmation"
           );
+      }
+      if (textActionId) {
+        const targetVersion = targetProjectId
+          ? ((
+              await client.query<{ version: number }>(
+                `select version from projects where id=$2 and owner_user_id=$1`,
+                [ownerUserId, targetProjectId]
+              )
+            ).rows[0]?.version ?? null)
+          : null;
+        if (
+          !(await claimedManagedTextMoveWithClient(
+            client,
+            options.textActionEncryptionProvider,
+            {
+              ownerUserId,
+              actionId: textActionId,
+              sessionId,
+              sourceProjectId: String(currentId),
+              targetProjectId,
+              expectedAssignmentVersion: Number(
+                source.project_assignment_version
+              ),
+              sourceProjectVersion: Number(linked.version),
+              sourceWorkspaceProjectId: linked.workspace_project_id,
+              sourceTeamBackendId: linked.team_backend_id,
+              targetProjectVersion: targetVersion
+            }
+          ))
+        )
+          throw new ChatMoveConflictError("Reviewed move action changed");
       }
       const bindings = (
         await client.query<Record<string, unknown>>(
@@ -225,7 +277,7 @@ export const createChatMoveRepository = (pool: pg.Pool) => ({
         await client.query<Record<string, unknown>>(
           `insert into chat_move_operations(batch_id,owner_user_id,session_id,old_project_id,
            old_workspace_project_id,old_project_version,target_project_id,source_mapping_version,
-           binding_manifest,binding_manifest_hash) values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) returning *`,
+           binding_manifest,binding_manifest_hash,text_action_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11) returning *`,
           [
             batchId,
             ownerUserId,
@@ -236,7 +288,8 @@ export const createChatMoveRepository = (pool: pg.Pool) => ({
             targetProjectId,
             Number(source.project_assignment_version),
             JSON.stringify(bindings),
-            manifestHash
+            manifestHash,
+            textActionId ?? null
           ]
         )
       ).rows[0]!;
@@ -252,6 +305,21 @@ export const createChatMoveRepository = (pool: pg.Pool) => ({
       await pool.query<Record<string, unknown>>(
         `select * from chat_move_operations where owner_user_id=$1 and session_id=$2 and batch_id=$3`,
         [ownerUserId, sessionId, batchId]
+      )
+    ).rows[0];
+    return row ? mapOperation(row) : null;
+  },
+  /** Read an already prepared exact batch; never starts or repeats a freeze. */
+  async getByTextAction(
+    ownerUserId: string,
+    sessionId: string,
+    textActionId: string
+  ): Promise<ChatMoveOperation | null> {
+    const row = (
+      await pool.query<Record<string, unknown>>(
+        `select * from chat_move_operations where owner_user_id=$1
+          and session_id=$2 and text_action_id=$3`,
+        [ownerUserId, sessionId, textActionId]
       )
     ).rows[0];
     return row ? mapOperation(row) : null;
@@ -626,7 +694,30 @@ export const createChatMoveRepository = (pool: pg.Pool) => ({
         operation.targetProjectId !== (pendingTarget?.target_project_id ?? null)
       )
         throw new ChatMoveConflictError("Move operation changed");
-      if (operation.state === "complete") return operation.targetProjectId;
+      if (operation.state === "complete") {
+        if (operation.textActionId) {
+          const receipt = await client.query(
+            `select 1 from managed_conversation_text_action_move_effects
+              where owner_user_id=$1 and action_id=$2 and session_id=$3
+                and source_project_id=$4 and target_project_id is not distinct from $5::uuid
+                and assignment_version=$6 and move_batch_id=$7`,
+            [
+              ownerUserId,
+              operation.textActionId,
+              sessionId,
+              operation.oldProjectId,
+              operation.targetProjectId,
+              operation.sourceMappingVersion + 1,
+              batchId
+            ]
+          );
+          if (receipt.rowCount !== 1)
+            throw new ChatMoveConflictError(
+              "Exact move receipt is unavailable"
+            );
+        }
+        return operation.targetProjectId;
+      }
       if (
         operation.state !== "freezing" ||
         operation.acks.length !== operation.bindings.length ||
@@ -697,6 +788,26 @@ export const createChatMoveRepository = (pool: pg.Pool) => ({
         throw new ChatMoveConflictError(
           "Destination changed or requires confirmation"
         );
+      if (
+        operation.textActionId &&
+        !(await claimedManagedTextMoveWithClient(
+          client,
+          options.textActionEncryptionProvider,
+          {
+            ownerUserId,
+            actionId: operation.textActionId,
+            sessionId,
+            sourceProjectId: operation.oldProjectId,
+            targetProjectId: operation.targetProjectId,
+            expectedAssignmentVersion: operation.sourceMappingVersion,
+            sourceProjectVersion: operation.oldProjectVersion,
+            sourceWorkspaceProjectId: operation.oldWorkspaceProjectId,
+            sourceTeamBackendId: String(oldProject.team_backend_id),
+            targetProjectVersion: target ? Number(target.version) : null
+          }
+        ))
+      )
+        throw new ChatMoveConflictError("Reviewed move action changed");
       await client.query(
         `update sessions set project_override_id=$3::text,project_override_name=$4,
         project_override_path=$5,project_override_personal_project_id=$6,
@@ -711,6 +822,30 @@ export const createChatMoveRepository = (pool: pg.Pool) => ({
           target ? String(target.id) : null
         ]
       );
+      if (operation.textActionId) {
+        const receipt = await client.query(
+          `insert into managed_conversation_text_action_move_effects
+             (action_id,owner_user_id,session_id,source_project_id,
+              target_project_id,assignment_version,move_batch_id)
+           select $1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,s.project_assignment_version,$7::uuid
+             from sessions s where s.id=$3 and s.owner_user_id=$2
+               and s.project_assignment_version=$6
+               and (case when s.project_override_id is not null
+                 then s.project_override_personal_project_id
+                 else s.automatic_personal_project_id end) is not distinct from $5::uuid`,
+          [
+            operation.textActionId,
+            ownerUserId,
+            sessionId,
+            operation.oldProjectId,
+            operation.targetProjectId,
+            operation.sourceMappingVersion + 1,
+            batchId
+          ]
+        );
+        if (receipt.rowCount !== 1)
+          throw new ChatMoveConflictError("Exact move receipt changed");
+      }
       await pauseScheduledJobsWithClient(client, ownerUserId, {
         conversationSessionId: sessionId,
         reason: "conversation_project_changed"

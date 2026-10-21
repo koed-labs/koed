@@ -124,7 +124,10 @@ export const createProjectWorkItemClient =
             json("POST", {
               agentId: request.agentId,
               version: request.version,
-              ...(request.replace ? { replace: true } : {})
+              ...(request.replace ? { replace: true } : {}),
+              ...(request.textActionId
+                ? { textActionId: request.textActionId }
+                : {})
             })
           )
         );

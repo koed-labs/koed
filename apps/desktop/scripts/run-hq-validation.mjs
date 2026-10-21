@@ -775,6 +775,49 @@ try {
     }
   }
   if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-504", "report.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq504-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq504.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ504_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ504.native", owner: "HQ-504", status: "pass" }
+        );
+        assert.deepEqual(
+          report.themes.map((entry) => entry.theme),
+          ["light", "dark"]
+        );
+        for (const entry of report.themes) {
+          assert.equal(entry.cards, 3);
+          assert.equal(entry.declinedWithoutEffect, true);
+          assert.equal(entry.nativeReviewVisible, true);
+          assert.equal(entry.claimedRecoveryVisible, true);
+        }
+        assert.equal(report.coverage.compactApprovalCards, true);
+        assert.equal(report.coverage.askFirstDeclineHasNoEffect, true);
+        assert.equal(report.coverage.claimedReadOnlyRecoveryVisible, true);
+        assert.equal(report.coverage.nativeDeleteReviewVisible, true);
+        process.stdout.write(
+          "PASS HQ504.native [HQ-504]: new HQ light/dark compact Ask First controls, decline without claim/effect, claimed read-only recovery, and exact Native delete review. Real mutation authority is proved by separate PostgreSQL tests; compound S18.3/N12.U remains pending.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
     const reportPath = resolve(scratchDir, "hq-701", "HQ701.native.json");
     await rm(reportPath, { force: true });
     const profile = await mkdtemp(

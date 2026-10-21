@@ -30,7 +30,7 @@ import {
   workspaceProjectRecordSchema,
   workspaceProjectSourceSchema,
   workspaceProjectSourceMetadataPatchSchema,
-  workspaceProjectWorkItemCreateSchema,
+  workspaceProjectHumanWorkItemCreateSchema,
   workspaceProjectHumanWorkItemPatchSchema,
   workspaceProjectWorkItemSchema
 } from "@koed/shared/workspace-project-contract";
@@ -139,7 +139,8 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
       agentId: z.uuid(),
       expectedProjectVersion: z.number().int().positive(),
       expectedMemberVersion: z.number().int().positive(),
-      expectedWorkItemVersion: z.number().int().positive()
+      expectedWorkItemVersion: z.number().int().positive(),
+      textActionId: z.uuid().optional()
     })
     .strict(),
   z
@@ -160,7 +161,7 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("sharedCreateWorkItem"),
       workspaceProjectId: z.uuid(),
       teamBackendId: z.string().min(1),
-      value: workspaceProjectWorkItemCreateSchema
+      value: workspaceProjectHumanWorkItemCreateSchema
     })
     .strict(),
   z
@@ -224,7 +225,8 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
       itemId: z.uuid(),
       agentId: z.uuid(),
       version: z.number().int().positive(),
-      replace: z.boolean().optional()
+      replace: z.boolean().optional(),
+      textActionId: z.uuid().optional()
     })
     .strict(),
   z
@@ -758,7 +760,8 @@ export interface ProjectsDesktopApi {
     agentId: string,
     expectedProjectVersion: number,
     expectedMemberVersion: number,
-    expectedWorkItemVersion: number
+    expectedWorkItemVersion: number,
+    textActionId?: string
   ): Promise<{
     executionId: string;
     reused: boolean;
@@ -779,7 +782,7 @@ export interface ProjectsDesktopApi {
   sharedCreateWorkItem?(
     workspaceProjectId: string,
     teamBackendId: string,
-    value: z.infer<typeof workspaceProjectWorkItemCreateSchema>
+    value: z.infer<typeof workspaceProjectHumanWorkItemCreateSchema>
   ): Promise<
     | { status: "ok"; item: z.infer<typeof workspaceProjectWorkItemSchema> }
     | { status: "conflict"; state: z.infer<typeof workspaceProjectStateSchema> }
@@ -812,7 +815,8 @@ export interface ProjectsDesktopApi {
     itemId: string,
     agentId: string,
     version: number,
-    replace?: boolean
+    replace?: boolean,
+    textActionId?: string
   ): Promise<{
     item: z.infer<typeof workItemSchema>;
     executionId: string;

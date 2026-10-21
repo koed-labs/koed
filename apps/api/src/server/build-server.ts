@@ -3,6 +3,7 @@ import { registerMergeProposalDecisionRoutes } from "../work-items/merge-proposa
 import { registerWorkItemPrReconciliationRoutes } from "../work-items/pr-reconciliation-routes.js";
 import { registerManagedMemoryActionRoutes } from "../managed-conversations/memory-action-routes.js";
 import { registerOnboardingPreferenceRoutes } from "../memory/onboarding-preference-routes.js";
+import { registerManagedTextActionRoutes } from "../managed-conversations/text-action-routes.js";
 import { resolveTerminalExecutionAuthority } from "../managed-conversations/terminal-execution-authority.js";
 import { publishSharedWorkItemProgress } from "../managed-conversations/shared-work-item-dispatch.js";
 import cors from "@fastify/cors";
@@ -25,6 +26,7 @@ import {
   createRemoteMcpOAuthRepository,
   createRetentionLifecycleRepository,
   createWorkItemRepository,
+  createManagedTextActionRepository,
   createAgentsRepository,
   createProjectActivityRepository,
   createProjectApiRepository,
@@ -65,6 +67,7 @@ import { registerAgentRoutes } from "../agents/routes.js";
 import { registerProjectRoutes } from "../projects/routes.js";
 import { registerScheduledJobRoutes } from "../scheduled-jobs/routes.js";
 import { createScheduledJobTeamAuthority } from "../scheduled-jobs/team-authority.js";
+import { createManagedTextActionTeamAdapter } from "../managed-conversations/text-action-team-authority.js";
 import { registerProjectSourceRoutes } from "../projects/source-routes.js";
 import { createProjectSourceIngestionService } from "../projects/source-ingestion-service.js";
 import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
@@ -365,6 +368,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             "req.body.refresh_token",
             "req.body.code_verifier",
             "req.body.client_secret",
+            "req.body.textActionNonce",
             "req.body.csrfToken",
             "request.body.code",
             "request.body.token",
@@ -372,6 +376,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             "request.body.refresh_token",
             "request.body.code_verifier",
             "request.body.client_secret",
+            "request.body.textActionNonce",
             "request.body.csrfToken",
             "req.query.request",
             "request.query.request",
@@ -501,7 +506,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           teamEnvelopeEncryptionProvider
         })
       : null);
-  const workItemRepository = pool ? createWorkItemRepository(pool) : null;
+  const workItemRepository = pool
+    ? createWorkItemRepository(pool, {
+        envelopeEncryptionProvider
+      })
+    : null;
   const agentsRepository = pool ? createAgentsRepository(pool) : null;
   const projectActivityRepository = pool
     ? createProjectActivityRepository(pool)
@@ -514,6 +523,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     : null;
   const projectApiRepository = pool
     ? createProjectApiRepository(pool, {
+        envelopeEncryptionProvider,
         configuredBackendIds: () =>
           readLocalEdgeUpstreamRegistry(
             localEdgeUpstreamBackendsPath
@@ -538,7 +548,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           ).backends.map((backend) => backend.id)
       })
     : null;
-  const chatMoveRepository = pool ? createChatMoveRepository(pool) : null;
+  const chatMoveRepository = pool
+    ? createChatMoveRepository(pool, {
+        textActionEncryptionProvider: envelopeEncryptionProvider
+      })
+    : null;
   const chatForgetRepository = pool
     ? createChatForgetRepository(pool, { envelopeEncryptionProvider })
     : null;
@@ -2049,6 +2063,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerApiTokenRoutes(app, routeContext);
   registerWorkItemRoutes(app, {
     repository: workItemRepository,
+    deploymentProfile: config.deploymentProfile,
+    koedHome: config.koedHome,
     auth: authHelpers,
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite
@@ -2296,6 +2312,35 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerPersonalDeviceSyncRelayRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
   registerManagedMemoryActionRoutes(app, routeContext);
+  const textActionTeam =
+    personalWorkspaceProjectRepository && scheduledJobTeamAuthority
+      ? createManagedTextActionTeamAdapter(
+          routeContext,
+          personalWorkspaceProjectRepository,
+          scheduledJobTeamAuthority
+        )
+      : null;
+  registerManagedTextActionRoutes(app, {
+    repository:
+      pool && envelopeEncryptionProvider
+        ? createManagedTextActionRepository(
+            pool,
+            envelopeEncryptionProvider,
+            textActionTeam
+              ? {
+                  teamAuthority: textActionTeam.authority,
+                  teamReceipt: textActionTeam.receipt
+                }
+              : {}
+          )
+        : null,
+    applyTeamTodoAdd: textActionTeam?.applyTodoAdd,
+    auth: routeContext.auth,
+    deploymentProfile: config.deploymentProfile,
+    koedHome: config.koedHome,
+    readRateLimit: routeContext.rateLimit.memoryRead,
+    writeRateLimit: routeContext.rateLimit.memoryWrite
+  });
   registerCuratedMemoryRoutes(
     app,
     routeContext,

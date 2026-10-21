@@ -785,6 +785,7 @@ export const chatMoveOperations = pgTable(
     sourceMappingVersion: integer("source_mapping_version").notNull(),
     bindingManifest: jsonb("binding_manifest").$type<unknown[]>().notNull(),
     bindingManifestHash: text("binding_manifest_hash").notNull(),
+    textActionId: uuid("text_action_id"),
     grantFreezeAcks: jsonb("grant_freeze_acks")
       .$type<unknown[]>()
       .notNull()
@@ -794,6 +795,11 @@ export const chatMoveOperations = pgTable(
     updatedAt: updatedNow()
   },
   (table) => [
+    unique("chat_move_operations_text_action_session_unique").on(
+      table.ownerUserId,
+      table.textActionId,
+      table.sessionId
+    ),
     foreignKey({
       columns: [table.sessionId, table.ownerUserId],
       foreignColumns: [sessions.id, sessions.ownerUserId],
@@ -16690,6 +16696,333 @@ export const managedSharedDispatchDetachments = pgTable(
     check(
       "managed_shared_dispatch_detachments_generation_check",
       sql`${table.detachedGeneration} > 0`
+    )
+  ]
+);
+
+// A first-party User prompt is recorded in the same transaction as its
+// command. A tool call can cite this receipt, never mint one itself.
+export const managedConversationTextHumanOrigins = pgTable(
+  "managed_conversation_text_human_origins",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    commandId: uuid("command_id").notNull(),
+    executionId: uuid("execution_id").notNull(),
+    executionGeneration: integer("execution_generation").notNull(),
+    requestDigest: text("request_digest").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      name: "managed_text_human_origins_pk",
+      columns: [table.ownerUserId, table.commandId]
+    }),
+    foreignKey({
+      columns: [table.ownerUserId, table.executionId, table.commandId],
+      foreignColumns: [
+        managedConversationCommands.ownerUserId,
+        managedConversationCommands.executionId,
+        managedConversationCommands.id
+      ],
+      name: "managed_text_human_origins_command_fk"
+    }).onDelete("cascade"),
+    check(
+      "managed_text_human_origins_shape_check",
+      sql`${table.executionGeneration}>0 and ${table.requestDigest} ~ '^[0-9a-f]{64}$' and ${table.sourceKind} in ('hq_first_message','human_prompt')`
+    )
+  ]
+);
+
+export const managedConversationTextActions = pgTable(
+  "managed_conversation_text_actions",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    logicalSessionId: uuid("logical_session_id").notNull(),
+    executionId: uuid("execution_id").notNull(),
+    commandId: uuid("command_id").notNull(),
+    executionGeneration: integer("execution_generation").notNull(),
+    providerTurnId: text("provider_turn_id").notNull(),
+    toolCallId: text("tool_call_id").notNull(),
+    actionName: text("action_name").notNull(),
+    nativeTargetId: uuid("native_target_id"),
+    nativeExecutionSetHash: text("native_execution_set_hash"),
+    argumentsDigest: text("arguments_digest").notNull(),
+    encryptedArguments: jsonb("encrypted_arguments")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    encryptedSnapshot: jsonb("encrypted_snapshot")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    state: text("state").notNull(),
+    revision: integer("revision").notNull().default(1),
+    reviewKind: text("review_kind").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("managed_text_actions_owner_id_unique").on(
+      table.ownerUserId,
+      table.id
+    ),
+    unique("managed_text_actions_tool_call_unique").on(
+      table.ownerUserId,
+      table.executionId,
+      table.commandId,
+      table.providerTurnId,
+      table.toolCallId
+    ),
+    foreignKey({
+      columns: [table.ownerUserId, table.executionId, table.commandId],
+      foreignColumns: [
+        managedConversationCommands.ownerUserId,
+        managedConversationCommands.executionId,
+        managedConversationCommands.id
+      ],
+      name: "managed_text_actions_command_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.logicalSessionId],
+      foreignColumns: [sessions.ownerUserId, sessions.logicalSessionId],
+      name: "managed_text_actions_session_fk"
+    }).onDelete("cascade"),
+    index("managed_text_actions_owner_state_idx").on(
+      table.ownerUserId,
+      table.executionId,
+      table.state
+    ),
+    check(
+      "managed_text_actions_shape_check",
+      sql`${table.executionGeneration}>0 and ${table.revision}>0 and ${table.argumentsDigest} ~ '^[0-9a-f]{64}$' and length(${table.providerTurnId}) between 1 and 512 and length(${table.toolCallId}) between 1 and 512 and ${table.state} in ('unavailable','awaiting_review','ready','claimed','applied','declined') and ${table.reviewKind} in ('none','ask_first','native') and ((${table.reviewKind}='native' and ${table.nativeTargetId} is not null) or (${table.reviewKind}<>'native' and ${table.nativeTargetId} is null and ${table.nativeExecutionSetHash} is null)) and (${table.nativeExecutionSetHash} is null or ${table.nativeExecutionSetHash} ~ '^[0-9a-f]{64}$')`
+    )
+  ]
+);
+
+export const managedConversationTextActionTeamNonces = pgTable(
+  "managed_conversation_text_action_team_nonces",
+  {
+    actionId: uuid("action_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    encryptedNonce: jsonb("encrypted_nonce")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.actionId],
+      foreignColumns: [
+        managedConversationTextActions.ownerUserId,
+        managedConversationTextActions.id
+      ],
+      name: "managed_text_action_team_nonce_action_fk"
+    }).onDelete("cascade")
+  ]
+);
+
+export const managedConversationTextActionMoveAuthorities = pgTable(
+  "managed_conversation_text_action_move_authorities",
+  {
+    actionId: uuid("action_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    sourceProjectId: uuid("source_project_id"),
+    targetProjectId: uuid("target_project_id"),
+    expectedAssignmentVersion: integer("expected_assignment_version").notNull(),
+    targetProjectVersion: integer("target_project_version"),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      name: "managed_text_action_move_authorities_pk",
+      columns: [table.actionId, table.sessionId]
+    }),
+    foreignKey({
+      columns: [table.ownerUserId, table.actionId],
+      foreignColumns: [
+        managedConversationTextActions.ownerUserId,
+        managedConversationTextActions.id
+      ],
+      name: "managed_text_action_move_authorities_action_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.sessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId],
+      name: "managed_text_action_move_authorities_session_fk"
+    }).onDelete("cascade"),
+    check(
+      "managed_text_action_move_authorities_version_check",
+      sql`${table.expectedAssignmentVersion}>0 and (${table.targetProjectVersion} is null or ${table.targetProjectVersion}>0)`
+    )
+  ]
+);
+
+export const managedConversationTextActionDispatchAuthorities = pgTable(
+  "managed_conversation_text_action_dispatch_authorities",
+  {
+    actionId: uuid("action_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    workItemId: uuid("work_item_id").notNull(),
+    agentId: uuid("agent_id").notNull(),
+    workItemVersion: integer("work_item_version").notNull(),
+    teamBackendId: text("team_backend_id"),
+    workspaceProjectId: uuid("workspace_project_id"),
+    teamProjectVersion: integer("team_project_version"),
+    teamMemberVersion: integer("team_member_version"),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.actionId],
+      foreignColumns: [
+        managedConversationTextActions.ownerUserId,
+        managedConversationTextActions.id
+      ],
+      name: "managed_text_action_dispatch_authorities_action_fk"
+    }).onDelete("cascade"),
+    check(
+      "managed_text_action_dispatch_authorities_version_check",
+      sql`${table.workItemVersion}>0 and ((${table.teamBackendId} is null and ${table.workspaceProjectId} is null and ${table.teamProjectVersion} is null and ${table.teamMemberVersion} is null) or (${table.teamBackendId} is not null and ${table.workspaceProjectId} is not null and ${table.teamProjectVersion}>0 and ${table.teamMemberVersion}>0))`
+    )
+  ]
+);
+
+export const managedConversationTextActionCreateEffects = pgTable(
+  "managed_conversation_text_action_create_effects",
+  {
+    actionId: uuid("action_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    workItemId: uuid("work_item_id"),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.actionId],
+      foreignColumns: [
+        managedConversationTextActions.ownerUserId,
+        managedConversationTextActions.id
+      ],
+      name: "managed_text_action_create_effects_action_fk"
+    }).onDelete("cascade")
+  ]
+);
+
+export const managedConversationTextActionDispatchEffects = pgTable(
+  "managed_conversation_text_action_dispatch_effects",
+  {
+    actionId: uuid("action_id").primaryKey(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    workItemId: uuid("work_item_id").notNull(),
+    agentId: uuid("agent_id").notNull(),
+    workItemVersion: integer("work_item_version").notNull(),
+    executionId: uuid("execution_id").notNull(),
+    commandId: uuid("command_id").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.actionId],
+      foreignColumns: [
+        managedConversationTextActions.ownerUserId,
+        managedConversationTextActions.id
+      ],
+      name: "managed_text_action_dispatch_effects_action_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.ownerUserId, table.executionId, table.commandId],
+      foreignColumns: [
+        managedConversationCommands.ownerUserId,
+        managedConversationCommands.executionId,
+        managedConversationCommands.id
+      ],
+      name: "managed_text_action_dispatch_effects_command_fk"
+    }).onDelete("cascade"),
+    check(
+      "managed_text_action_dispatch_effects_version_check",
+      sql`${table.workItemVersion}>0`
+    )
+  ]
+);
+
+export const managedConversationTextActionMoveEffects = pgTable(
+  "managed_conversation_text_action_move_effects",
+  {
+    actionId: uuid("action_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    sourceProjectId: uuid("source_project_id"),
+    targetProjectId: uuid("target_project_id"),
+    assignmentVersion: integer("assignment_version").notNull(),
+    moveBatchId: uuid("move_batch_id"),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      name: "managed_text_action_move_effects_pk",
+      columns: [table.actionId, table.sessionId]
+    }),
+    foreignKey({
+      columns: [table.ownerUserId, table.actionId],
+      foreignColumns: [
+        managedConversationTextActions.ownerUserId,
+        managedConversationTextActions.id
+      ],
+      name: "managed_text_action_move_effects_action_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.sessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId],
+      name: "managed_text_action_move_effects_session_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.moveBatchId],
+      foreignColumns: [chatMoveOperations.batchId],
+      name: "managed_text_action_move_effects_batch_fk"
+    }).onDelete("cascade"),
+    check(
+      "managed_text_action_move_effects_version_check",
+      sql`${table.assignmentVersion}>0`
+    )
+  ]
+);
+
+export const workspaceProjectTextActionCreateEffects = pgTable(
+  "workspace_project_text_action_create_effects",
+  {
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    sourceOwnerTeamMemberId: uuid("source_owner_team_member_id").notNull(),
+    actionId: uuid("action_id").notNull(),
+    workItemId: uuid("work_item_id").notNull(),
+    effectNonceHash: text("effect_nonce_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({
+      name: "workspace_project_text_action_create_effects_pk",
+      columns: [
+        table.workspaceProjectId,
+        table.sourceOwnerTeamMemberId,
+        table.actionId
+      ]
+    }),
+    unique("workspace_project_text_action_nonce_unique").on(
+      table.sourceOwnerTeamMemberId,
+      table.effectNonceHash
+    ),
+    unique("workspace_project_text_action_item_unique").on(table.workItemId),
+    foreignKey({
+      columns: [table.workItemId],
+      foreignColumns: [workspaceProjectWorkItems.id],
+      name: "workspace_project_text_action_create_effects_item_fk"
+    }).onDelete("cascade"),
+    check(
+      "workspace_project_text_action_create_effects_hash_check",
+      sql`${table.effectNonceHash} ~ '^[0-9a-f]{64}$'`
     )
   ]
 );

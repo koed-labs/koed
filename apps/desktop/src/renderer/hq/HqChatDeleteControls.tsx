@@ -8,6 +8,7 @@ export type ChatDeleteRequest = {
   title: string;
   mode: "delete" | "forget";
   running: boolean | null;
+  textActionId?: string;
 };
 export type ChatDeleteNotice = {
   kind: "deleted" | "pending" | "forget_pending" | "forgotten" | "error";

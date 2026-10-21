@@ -29,7 +29,8 @@ export const createProjectSchema = z
   .object({
     name: projectName,
     folderPath: folderPath.optional(),
-    idempotencyKey: z.string().min(1).max(200)
+    idempotencyKey: z.string().min(1).max(200),
+    textActionId: z.uuid().optional()
   })
   .strict();
 

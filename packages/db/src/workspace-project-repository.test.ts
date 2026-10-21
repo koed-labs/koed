@@ -224,6 +224,70 @@ describe.skipIf(!testUrl)("Workspace Project Team state", () => {
     );
     await pool.query("delete from users where id=$1", [stranger]);
   });
+  it("keeps button creation compatible while text creation fences exact Team versions", async () => {
+    const project = (await repo.list(alice, teamId))[0]!;
+    const before = await repo.lifecycle(bob, project.id);
+    const oldButton = await repo.createWorkItem(bob, project.id, {
+      idempotencyKey: `button-${randomUUID()}`,
+      kind: "todo",
+      title: "Existing button",
+      goal: "Existing button",
+      status: "todo"
+    });
+    expect(oldButton.title).toBe("Existing button");
+    const key = randomUUID();
+    await expect(
+      repo.createWorkItem(bob, project.id, {
+        idempotencyKey: key,
+        kind: "todo",
+        title: "Stale text",
+        goal: "Stale text",
+        status: "todo",
+        expectedProjectVersion: before.version,
+        expectedMemberVersion: before.memberVersion
+      })
+    ).rejects.toHaveProperty("current");
+    expect(
+      await repo.workItemByIdempotencyKey(bob, project.id, key)
+    ).toBeNull();
+    const current = await repo.lifecycle(bob, project.id);
+    const item = await repo.createWorkItem(bob, project.id, {
+      idempotencyKey: key,
+      kind: "todo",
+      title: "Current text",
+      goal: "Current text",
+      status: "todo",
+      expectedProjectVersion: current.version,
+      expectedMemberVersion: current.memberVersion
+    });
+    expect(
+      await repo.workItemByIdempotencyKey(bob, project.id, key)
+    ).toMatchObject({ id: item.id, title: "Current text" });
+    expect(
+      await repo.createWorkItem(bob, project.id, {
+        idempotencyKey: key,
+        kind: "todo",
+        title: "Current text",
+        goal: "Current text",
+        status: "todo",
+        expectedProjectVersion: current.version,
+        expectedMemberVersion: current.memberVersion
+      })
+    ).toEqual(item);
+    await expect(
+      repo.workItemByIdempotencyKey(alice, project.id, key)
+    ).resolves.toBeNull();
+    expect(
+      await repo.workItemProposalProof(bob, project.id, item.id)
+    ).toMatchObject({
+      projectId: project.id,
+      itemId: item.id,
+      workItemVersion: item.version
+    });
+    await expect(
+      repo.workItemProposalProof(alice, project.id, item.id)
+    ).resolves.toMatchObject({ itemId: item.id });
+  });
   it("keeps Source metadata shared while only uploader or Project owner may edit", async () => {
     const project = (await repo.list(alice, teamId))[0]!;
     await expect(

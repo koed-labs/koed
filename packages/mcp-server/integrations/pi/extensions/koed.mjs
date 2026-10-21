@@ -430,6 +430,68 @@ export default function koedExtension(pi) {
       }
     });
   }
+  if (process.env.KOED_MANAGED_TEXT_ACTIONS === "1") {
+    const uuid = Type.String({ format: "uuid" });
+    const label = Type.String({ minLength: 1, maxLength: 160 });
+    const fields = {
+      koed_project_create: {
+        name: label,
+        folderPath: Type.Optional(
+          Type.String({ minLength: 1, maxLength: 2048 })
+        )
+      },
+      koed_project_move_chats: {
+        projectId: uuid,
+        sessionIds: Type.Array(uuid, { minItems: 1, maxItems: 50 })
+      },
+      koed_project_delete: { projectId: uuid },
+      koed_chat_create: { projectId: Type.Optional(uuid) },
+      koed_chat_move: { sessionId: uuid, projectId: Type.Optional(uuid) },
+      koed_chat_delete: { sessionId: uuid },
+      koed_todo_add: {
+        projectId: uuid,
+        title: label,
+        goal: Type.Optional(Type.String({ maxLength: 20000 })),
+        dueOn: Type.Optional(Type.String({ format: "date" }))
+      },
+      koed_todo_send: { projectId: uuid, workItemId: uuid, agentId: uuid },
+      koed_hq_open: { projectId: uuid },
+      koed_settings_open: {
+        section: Type.Optional(
+          Type.Union(
+            ["general", "agents", "models", "devices"].map((value) =>
+              Type.Literal(value)
+            )
+          )
+        )
+      },
+      koed_settings_set_theme: {
+        theme: Type.Union(
+          ["light", "dark", "system"].map((value) => Type.Literal(value))
+        )
+      }
+    };
+    for (const [name, parameters] of Object.entries(fields)) {
+      pi.registerTool({
+        name,
+        label: name.replace(/^koed_/, "").replaceAll("_", " "),
+        description:
+          "Request this Koed action for the current User turn. Koed verifies current ownership and shows the required approval. This tool does not perform the action.",
+        parameters: Type.Object(parameters, { additionalProperties: false }),
+        async execute() {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Koed ${name} request v1: {"status":"requested"}`
+              }
+            ],
+            details: { status: "requested" }
+          };
+        }
+      });
+    }
+  }
   if (
     process.env.KOED_MANAGED_DOC_EXECUTION_ID &&
     process.env.KOED_MANAGED_DOC_EXECUTION_GENERATION &&

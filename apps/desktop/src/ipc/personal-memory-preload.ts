@@ -19,6 +19,8 @@ import {
   personalDesktopChatDeleteProgressInputSchema,
   personalDesktopChatDeleteReviewInputSchema,
   personalDesktopChatMoveReviewInputSchema,
+  personalDesktopTextActionMoveLookupInputSchema,
+  personalDesktopTextActionMoveResumeInputSchema,
   personalDesktopChatRestoreInputSchema,
   personalDesktopChatForgetInputSchema,
   personalDesktopChatForgetUndoInputSchema,
@@ -421,6 +423,38 @@ export const createPersonalMemoryPreloadApi = (
       );
       if (result.operation !== "personal.sessions.move_review")
         throw new Error("Invalid move review result.");
+      return result.data.status;
+    },
+    lookupTextActionMove: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["lookupTextActionMove"]>
+      >[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.move_lookup",
+          input: personalDesktopTextActionMoveLookupInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.sessions.move_lookup")
+        throw new Error("Invalid move lookup result.");
+      return result.data.status;
+    },
+    resumeTextActionMove: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["resumeTextActionMove"]>
+      >[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.sessions.move_resume",
+          input: personalDesktopTextActionMoveResumeInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.sessions.move_resume")
+        throw new Error("Invalid move resume result.");
       return result.data.status;
     },
     updateSessionTitle: async (

@@ -115,6 +115,15 @@ export {
   type ManagedMemoryActionRecord,
   type ManagedMemoryActionResult
 } from "./managed-memory-action-repository.js";
+export { createManagedTextActionRepository } from "./managed-text-action-repository.js";
+export type {
+  ManagedTextActionTeamAuthority,
+  ManagedTextActionTeamReceipt
+} from "./managed-text-action-repository.js";
+export type {
+  ManagedTextActionRecord,
+  ManagedTextActionRepository
+} from "./managed-text-action-contract.js";
 export {
   createManagedConversationCitationRepository,
   type ManagedConversationCitationRepository,

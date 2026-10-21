@@ -114,6 +114,10 @@
     "./managed-memory-actions": {
       "types": "./dist/managed-memory-action-contract.d.ts",
       "import": "./dist/managed-memory-action-contract.js"
+    },
+    "./koed-text-action-contract": {
+      "types": "./dist/koed-text-action-contract.d.ts",
+      "import": "./dist/koed-text-action-contract.js"
     }
   },
   "files": [

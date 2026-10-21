@@ -34,6 +34,7 @@ type DispatchResult =
 
 const operation = (): ChatMoveOperation => ({
   batchId,
+  textActionId: null,
   ownerUserId: owner,
   sessionId,
   oldProjectId: randomUUID(),

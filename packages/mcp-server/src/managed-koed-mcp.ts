@@ -14,6 +14,15 @@ export const managedKoedMcpServer = (
     env: {
       KOED_HOME: koedHome,
       ...(catchUpReadOnly ? { KOED_MANAGED_CATCH_UP_READ_ONLY: "1" } : {}),
+      ...(environment.KOED_MANAGED_MEMORY_ACTIONS === "1"
+        ? { KOED_MANAGED_MEMORY_ACTIONS: "1" }
+        : {}),
+      ...(environment.KOED_MANAGED_MERGE_PROPOSAL === "1"
+        ? { KOED_MANAGED_MERGE_PROPOSAL: "1" }
+        : {}),
+      ...(environment.KOED_MANAGED_TEXT_ACTIONS === "1"
+        ? { KOED_MANAGED_TEXT_ACTIONS: "1" }
+        : {}),
       ...(environment.KOED_MANAGED_WORK_ITEM_COMPLETION === "1"
         ? { KOED_MANAGED_WORK_ITEM_COMPLETION: "1" }
         : {}),

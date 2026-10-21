@@ -47,7 +47,14 @@ export function useProjectMenuActions({
   onOpenProject: (projectId: string) => void;
 }): {
   openCreate: () => void;
-  openDelete: (projectId: string) => void;
+  openDelete: (
+    projectId: string,
+    textAction?: {
+      actionId: string;
+      expectedVersion: number;
+      expectedExecutionSetHash: string;
+    }
+  ) => void;
   ui: ReactNode;
 } {
   const [create, setCreate] = useState<{
@@ -138,7 +145,14 @@ export function useProjectMenuActions({
         );
     }
   };
-  const openDelete = (projectId: string) => {
+  const openDelete = (
+    projectId: string,
+    textAction?: {
+      actionId: string;
+      expectedVersion: number;
+      expectedExecutionSetHash: string;
+    }
+  ) => {
     if (!api || !store || !ownerId || !profileKey || busy.current) return;
     intentEpoch.current++;
     const expected = capture();
@@ -154,9 +168,17 @@ export function useProjectMenuActions({
         if (!current(expected)) return;
         if (preview.project.lifecycle !== "active")
           throw new Error("Project is unavailable for deletion.");
+        if (
+          textAction &&
+          (preview.project.version !== textAction.expectedVersion ||
+            preview.executionSetHash !== textAction.expectedExecutionSetHash)
+        )
+          throw new Error(
+            "Project changed since the Koed action was proposed."
+          );
         setDeleting({
           preview,
-          batchId: crypto.randomUUID(),
+          batchId: textAction?.actionId ?? crypto.randomUUID(),
           submitted: false,
           status: null,
           error: null

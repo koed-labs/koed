@@ -239,7 +239,7 @@ export const workspaceProjectDispatchProgressSchema = z.union([
     .strict()
 ]);
 
-export const workspaceProjectWorkItemCreateSchema = z
+const workspaceProjectWorkItemCreateBaseSchema = z
   .object({
     idempotencyKey: z.string().trim().min(8).max(200),
     kind: z.enum(["todo", "ticket"]),
@@ -249,9 +249,45 @@ export const workspaceProjectWorkItemCreateSchema = z
     status: z
       .enum(["todo", "doing", "review", "blocked", "done"])
       .default("todo"),
-    dueOn: z.iso.date().nullable().optional()
+    dueOn: z.iso.date().nullable().optional(),
+    expectedProjectVersion: z.number().int().positive().optional(),
+    expectedMemberVersion: z.number().int().positive().optional(),
+    textActionId: z.uuid().optional(),
+    textActionNonce: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{43}$/)
+      .optional()
   })
   .strict();
+const hasPairedVersions = (value: {
+  expectedProjectVersion?: number;
+  expectedMemberVersion?: number;
+}) =>
+  (value.expectedProjectVersion === undefined) ===
+  (value.expectedMemberVersion === undefined);
+export const workspaceProjectWorkItemCreateSchema =
+  workspaceProjectWorkItemCreateBaseSchema
+    .refine(hasPairedVersions, {
+      message: "Project and member versions must be supplied together"
+    })
+    .refine(
+      (value) => Boolean(value.textActionId) === Boolean(value.textActionNonce),
+      {
+        message: "Text action ID and nonce must be supplied together"
+      }
+    );
+/** Normal renderer input cannot mint a managed text-action Team receipt. */
+export const workspaceProjectHumanWorkItemCreateSchema =
+  workspaceProjectWorkItemCreateBaseSchema
+    .omit({ textActionId: true, textActionNonce: true })
+    .refine(
+      (value) =>
+        (value.expectedProjectVersion === undefined) ===
+        (value.expectedMemberVersion === undefined),
+      {
+        message: "Project and member versions must be supplied together"
+      }
+    );
 
 export const workspaceProjectWorkItemSchema = z
   .object({

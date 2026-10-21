@@ -214,13 +214,15 @@ export const graphSessionProjectPatchSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("move"),
       project: personalProjectReferenceSchema,
-      expectedProjectId: z.uuid().nullable().optional()
+      expectedProjectId: z.uuid().nullable().optional(),
+      textActionId: z.uuid().optional()
     })
     .strict(),
   z
     .object({
       action: z.literal("loose"),
-      expectedProjectId: z.uuid().nullable().optional()
+      expectedProjectId: z.uuid().nullable().optional(),
+      textActionId: z.uuid().optional()
     })
     .strict(),
   z

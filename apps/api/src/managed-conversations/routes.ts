@@ -2383,7 +2383,8 @@ export const registerManagedConversationRoutes = (
           agentId: z.uuid(),
           expectedProjectVersion: z.number().int().positive(),
           expectedMemberVersion: z.number().int().positive(),
-          expectedWorkItemVersion: z.number().int().positive()
+          expectedWorkItemVersion: z.number().int().positive(),
+          textActionId: z.uuid().optional()
         })
         .strict()
         .parse(request.body);
@@ -2436,6 +2437,13 @@ export const registerManagedConversationRoutes = (
         expectedWorkItemVersion: body.expectedWorkItemVersion
       };
       if (prior) {
+        if (body.textActionId && prior.textActionId !== body.textActionId)
+          throw Object.assign(
+            new Error("Another action dispatched this Work Item"),
+            {
+              statusCode: 409
+            }
+          );
         if (
           prior.agentId !== body.agentId ||
           prior.teamBackendId !== link.teamBackendId ||
@@ -2590,7 +2598,8 @@ export const registerManagedConversationRoutes = (
             teamWorkItemVersion: authority.proof.workItemVersion,
             expectedProjectVersion: authority.proof.projectVersion,
             expectedMemberVersion: authority.proof.memberVersion,
-            agentId: body.agentId
+            agentId: body.agentId,
+            ...(body.textActionId ? { textActionId: body.textActionId } : {})
           }
         }
       );
@@ -2655,7 +2664,8 @@ export const registerManagedConversationRoutes = (
         .object({
           agentId: z.uuid(),
           version: z.number().int().positive(),
-          replace: z.boolean().optional()
+          replace: z.boolean().optional(),
+          textActionId: z.uuid().optional()
         })
         .strict()
         .parse(request.body);
@@ -2664,6 +2674,13 @@ export const registerManagedConversationRoutes = (
         throw Object.assign(new Error("Work Item is unavailable"), {
           statusCode: 404
         });
+      if (body.textActionId && item.executionId)
+        throw Object.assign(
+          new Error("Text action dispatch already has an execution"),
+          {
+            statusCode: 409
+          }
+        );
       const reconcileBinding = async (executionId: string) => {
         const repository = context.requireRepository();
         const runner = await runnerIdentity(request);
@@ -2917,6 +2934,7 @@ export const registerManagedConversationRoutes = (
             itemId: item.id,
             agentId: agent.id,
             version: item.version,
+            ...(body.textActionId ? { textActionId: body.textActionId } : {}),
             sources: sources.map((source) => ({
               id: source.id,
               currentRevisionId: source.currentRevisionId
@@ -3565,6 +3583,9 @@ export const registerManagedConversationRoutes = (
           hqProjectId: params.id,
           hqPrivatePath: canonicalPrivatePath,
           initialPrompt: firstMessage.prompt,
+          ...(request.headers.authorization?.trim().startsWith("Koed-Desktop ")
+            ? { textActionHumanOrigin: "hq_first_message" as const }
+            : {}),
           selectedDocumentSourceId: firstMessage.selectedDocumentSourceId,
           runnerDeploymentId: runner.deploymentId,
           runnerDeviceId: runner.deviceId,
@@ -4089,6 +4110,15 @@ export const registerManagedConversationRoutes = (
       const user = await authenticateManaged(request);
       const { executionId } = executionParamsSchema.parse(request.params);
       const input = promptSchema.parse(request.body);
+      const desktopHuman = request.headers.authorization
+        ?.trim()
+        .startsWith("Koed-Desktop ")
+        ? await authenticateHqManagedWrite(request, context)
+        : null;
+      if (desktopHuman && desktopHuman.id !== user.id)
+        throw Object.assign(new Error("Prompt owner changed"), {
+          statusCode: 403
+        });
       if (input.selectedDocumentSourceId) {
         // A document selection adds Project Source authority to this prompt.
         // Generic managed-execution credentials alone cannot read its contents.
@@ -4206,6 +4236,9 @@ export const registerManagedConversationRoutes = (
             idempotencyKey: input.idempotencyKey,
             clientUserMessageId: input.clientUserMessageId,
             prompt,
+            ...(desktopHuman
+              ? { textActionHumanOrigin: "human_prompt" as const }
+              : {}),
             selectedDocumentSourceId: input.selectedDocumentSourceId,
             fileMentionCommandIds: input.fileMentionCommandIds,
             settingsChange: input.settingsChange

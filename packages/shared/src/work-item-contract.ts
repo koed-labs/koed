@@ -49,7 +49,8 @@ export const createWorkItemSchema = z
     origin: z.string().trim().min(1).max(120),
     originRef: z.string().trim().min(1).max(500).nullable().optional(),
     idempotencyKey: z.string().trim().min(1).max(500).nullable().optional(),
-    dueOn: workItemDateSchema.nullable().optional()
+    dueOn: workItemDateSchema.nullable().optional(),
+    textActionId: z.uuid().optional()
   })
   .strict()
   .superRefine((value, context) => {

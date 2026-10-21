@@ -955,6 +955,17 @@ describe("Codex managed conversation coordinator", () => {
         KOED_MANAGED_CATCH_UP_READ_ONLY: "1"
       })
     ).toThrow("Restricted Codex Koed MCP configuration is unavailable");
+    const actions = managedConversationKoedMcpConfigOverrides({
+      KOED_HOME: "/tmp/koed home",
+      KOED_MANAGED_TEXT_ACTIONS: "1",
+      KOED_MANAGED_MEMORY_ACTIONS: "1",
+      KOED_MANAGED_MERGE_PROPOSAL: "1",
+      UNRELATED_SECRET: "never-forward"
+    });
+    expect(actions[0]).toContain('KOED_MANAGED_TEXT_ACTIONS="1"');
+    expect(actions[0]).toContain('KOED_MANAGED_MEMORY_ACTIONS="1"');
+    expect(actions[0]).toContain('KOED_MANAGED_MERGE_PROPOSAL="1"');
+    expect(actions[0]).not.toContain("UNRELATED_SECRET");
   });
 
   it.each([false, true])(

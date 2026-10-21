@@ -14,6 +14,7 @@ import {
 } from "@koed/shared";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
+import { authenticateProjectOperation } from "../projects/desktop-read-auth.js";
 
 const projectParams = z.object({ id: z.uuid() });
 const itemParams = z.object({ id: z.uuid() });
@@ -28,6 +29,8 @@ export function registerWorkItemRoutes(
   app: FastifyInstance,
   input: {
     repository: WorkItemRepository | null;
+    deploymentProfile?: string;
+    koedHome?: string;
     auth: ApiRouteContext["auth"];
     readRateLimit: ApiRouteContext["rateLimit"]["memoryRead"];
     writeRateLimit: ApiRouteContext["rateLimit"]["memoryWrite"];
@@ -91,10 +94,34 @@ export function registerWorkItemRoutes(
     "/v1/projects/:id/work-items",
     { preHandler: input.writeRateLimit },
     async (request, reply) => {
-      const user = await authenticate(request, true);
       const { id } = projectParams.parse(request.params);
       const body = createWorkItemSchema.parse(request.body);
-      if (body.origin !== "manual" || body.originRef != null) {
+      const textAction = Boolean(body.textActionId);
+      const user = textAction
+        ? await authenticateProjectOperation(
+            request,
+            {
+              deploymentProfile: input.deploymentProfile ?? "",
+              koedHome: input.koedHome,
+              auth: input.auth
+            },
+            true
+          )
+        : await authenticate(request, true);
+      if (
+        textAction &&
+        !request.headers.authorization?.trim().startsWith("Koed-Desktop ")
+      )
+        return reply
+          .code(403)
+          .send({ message: "Text action requires Desktop authority" });
+      if (
+        textAction
+          ? body.origin !== "koed_text_action" ||
+            body.originRef != null ||
+            body.idempotencyKey !== body.textActionId
+          : body.origin !== "manual" || body.originRef != null
+      ) {
         return reply
           .code(400)
           .send({ message: "Interactive creation requires a manual origin" });

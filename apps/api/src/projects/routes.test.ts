@@ -80,6 +80,45 @@ const fixture = (deploymentProfile = "local_personal", koedHome?: string) => {
 };
 
 describe("Personal Project routes", () => {
+  it("passes an exact text-action create only through Desktop write authority", async () => {
+    const home = mkdtempSync(join(tmpdir(), "koed-project-action-"));
+    const credential = storeDesktopLocalCredential(home, {
+      ownerUserId: owner,
+      operationFamilies: ["personal_collaboration_write"]
+    });
+    const { app, repository } = fixture("local_personal", home);
+    const actionId = randomUUID();
+    const payload = {
+      name: "Atlas",
+      idempotencyKey: actionId,
+      textActionId: actionId
+    };
+    try {
+      const denied = await app.inject({
+        method: "POST",
+        url: "/v1/projects",
+        payload
+      });
+      expect(denied.statusCode).toBe(403);
+      const created = await app.inject({
+        method: "POST",
+        url: "/v1/projects",
+        payload,
+        headers: { authorization: credential.authorization },
+        remoteAddress: "127.0.0.1"
+      });
+      expect(created.statusCode).toBe(201);
+      expect(repository.create).toHaveBeenCalledTimes(1);
+      expect(repository.create).toHaveBeenCalledWith(
+        owner,
+        expect.objectContaining({ textActionId: actionId })
+      );
+    } finally {
+      await app.close();
+      deleteDesktopLocalCredential(home);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
   it("accepts only the current owner Desktop read credential on loopback for list and HQ", async () => {
     const home = mkdtempSync(join(tmpdir(), "koed-project-read-"));
     const credential = storeDesktopLocalCredential(home, {

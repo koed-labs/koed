@@ -285,6 +285,7 @@ export const createWorkspaceProjectPersonalClient = (
       expectedProjectVersion: number;
       expectedMemberVersion: number;
       expectedWorkItemVersion: number;
+      textActionId?: string;
     },
     teamBackendId: string
   ) {

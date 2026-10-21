@@ -21,10 +21,15 @@ import {
   type ProjectsAuthority
 } from "./projects-client.js";
 import { createBoundManagedMemoryActionClient } from "./managed-memory-action-client.js";
+import { createBoundManagedTextActionClient } from "./managed-text-action-client.js";
 import type {
   ManagedMemoryActionRequest,
   ManagedMemoryActionResult
 } from "../ipc/managed-memory-action-protocol.js";
+import type {
+  ManagedTextActionRequest,
+  ManagedTextActionResult
+} from "../ipc/managed-text-action-protocol.js";
 import { createProjectSourceNativeClient } from "./project-source-native-client.js";
 import { createAgentsClient, type AgentsAuthority } from "./agents-client.js";
 import { resolveChiefDefaultInstance } from "./agent-default-instance.js";
@@ -303,6 +308,9 @@ export interface KoedServerManager {
   managedMemoryActions: (
     request: ManagedMemoryActionRequest
   ) => Promise<ManagedMemoryActionResult>;
+  managedTextActions: (
+    request: ManagedTextActionRequest
+  ) => Promise<ManagedTextActionResult>;
   curatedMemory: (
     request: CuratedMemoryRequest
   ) => Promise<CuratedMemoryResult>;
@@ -4300,6 +4308,10 @@ export const createKoedServerManager = ({
     personalMemoryFetch,
     projectsAuthority
   );
+  const managedTextActions = createBoundManagedTextActionClient(
+    personalMemoryFetch,
+    projectsAuthority
+  );
 
   const curatedMemory = createCuratedMemoryClient(async (path, init, bound) => {
     const remote = await fetchBoundedJsonObject(
@@ -5456,23 +5468,39 @@ export const createKoedServerManager = ({
                                                     environment
                                                   )
                                                 : request.operation ===
-                                                    "personal.events.load_page"
-                                                  ? await loadPersonalEventPage(
-                                                      request.input
-                                                    )
-                                                  : request.operation ===
-                                                      "personal.sessions.assign_project"
-                                                    ? await assignPersonalSessionProject(
-                                                        request.input
-                                                      )
-                                                    : request.operation ===
-                                                        "personal.sessions.update_presentation"
-                                                      ? await updatePersonalSessionPresentation(
+                                                    "personal.sessions.move_lookup"
+                                                  ? {
+                                                      status:
+                                                        await chatMovePlacement.lookupTextActionMove(
                                                           request.input
                                                         )
-                                                      : await updatePersonalSessionTitle(
+                                                    }
+                                                  : request.operation ===
+                                                      "personal.sessions.move_resume"
+                                                    ? {
+                                                        status:
+                                                          await chatMovePlacement.resumeTextActionMove(
+                                                            request.input
+                                                          )
+                                                      }
+                                                    : request.operation ===
+                                                        "personal.events.load_page"
+                                                      ? await loadPersonalEventPage(
                                                           request.input
-                                                        );
+                                                        )
+                                                      : request.operation ===
+                                                          "personal.sessions.assign_project"
+                                                        ? await assignPersonalSessionProject(
+                                                            request.input
+                                                          )
+                                                        : request.operation ===
+                                                            "personal.sessions.update_presentation"
+                                                          ? await updatePersonalSessionPresentation(
+                                                              request.input
+                                                            )
+                                                          : await updatePersonalSessionTitle(
+                                                              request.input
+                                                            );
       return personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: request.operation,
@@ -6240,6 +6268,7 @@ export const createKoedServerManager = ({
     projects: projectsWithShared,
     curatedMemory,
     managedMemoryActions,
+    managedTextActions,
     projectSourceNative,
     chatDeleteNative,
     chatMoveNative,

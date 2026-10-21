@@ -615,6 +615,7 @@ const bootstrap = async () => {
     projects: server.projects,
     curatedMemory: server.curatedMemory,
     managedMemoryActions: server.managedMemoryActions,
+    managedTextActions: server.managedTextActions,
     projectHqConversation: server.projectHqConversation,
     agents: server.agents,
     managedConversation: server.managedConversation,

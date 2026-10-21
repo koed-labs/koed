@@ -1,0 +1,131 @@
+import { z } from "zod";
+import { koedTextActionProjectionSchema } from "@koed/shared/koed-text-action-contract";
+
+export const managedTextActionChannel = "koed:managed-text-action:command";
+export const managedTextActionRequestSchema = z.discriminatedUnion(
+  "operation",
+  [
+    z.object({ operation: z.literal("list"), executionId: z.uuid() }).strict(),
+    z
+      .object({
+        operation: z.literal("get"),
+        executionId: z.uuid(),
+        actionId: z.uuid()
+      })
+      .strict(),
+    z
+      .object({
+        operation: z.literal("review"),
+        executionId: z.uuid(),
+        actionId: z.uuid(),
+        expectedRevision: z.number().int().positive(),
+        decision: z.enum(["approve", "decline"])
+      })
+      .strict(),
+    z
+      .object({
+        operation: z.literal("claim"),
+        executionId: z.uuid(),
+        actionId: z.uuid(),
+        expectedRevision: z.number().int().positive()
+      })
+      .strict(),
+    z
+      .object({
+        operation: z.literal("complete"),
+        executionId: z.uuid(),
+        actionId: z.uuid(),
+        expectedRevision: z.number().int().positive()
+      })
+      .strict(),
+    z
+      .object({
+        operation: z.literal("apply-team-todo-add"),
+        executionId: z.uuid(),
+        actionId: z.uuid(),
+        expectedRevision: z.number().int().positive()
+      })
+      .strict()
+  ]
+);
+export type ManagedTextActionRequest = z.infer<
+  typeof managedTextActionRequestSchema
+>;
+export const managedTextActionResultSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("list"),
+      executionId: z.uuid(),
+      actions: z.array(koedTextActionProjectionSchema).max(100)
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("get"),
+      executionId: z.uuid(),
+      action: koedTextActionProjectionSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("review"),
+      executionId: z.uuid(),
+      action: koedTextActionProjectionSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("claim"),
+      executionId: z.uuid(),
+      action: koedTextActionProjectionSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("complete"),
+      executionId: z.uuid(),
+      action: koedTextActionProjectionSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("apply-team-todo-add"),
+      executionId: z.uuid(),
+      action: koedTextActionProjectionSchema
+    })
+    .strict()
+]);
+export type ManagedTextActionResult = z.infer<
+  typeof managedTextActionResultSchema
+>;
+
+export interface ManagedTextActionDesktopApi {
+  list(
+    executionId: string
+  ): Promise<z.infer<typeof koedTextActionProjectionSchema>[]>;
+  get(
+    executionId: string,
+    actionId: string
+  ): Promise<z.infer<typeof koedTextActionProjectionSchema>>;
+  review(
+    executionId: string,
+    actionId: string,
+    expectedRevision: number,
+    decision: "approve" | "decline"
+  ): Promise<z.infer<typeof koedTextActionProjectionSchema>>;
+  claim(
+    executionId: string,
+    actionId: string,
+    expectedRevision: number
+  ): Promise<z.infer<typeof koedTextActionProjectionSchema>>;
+  complete(
+    executionId: string,
+    actionId: string,
+    expectedRevision: number
+  ): Promise<z.infer<typeof koedTextActionProjectionSchema>>;
+  applyTeamTodoAdd(
+    executionId: string,
+    actionId: string,
+    expectedRevision: number
+  ): Promise<z.infer<typeof koedTextActionProjectionSchema>>;
+}
