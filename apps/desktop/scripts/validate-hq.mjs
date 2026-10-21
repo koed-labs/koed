@@ -1,5 +1,6 @@
 import { validateHqSettings } from "./validate-hq-settings.mjs";
 import { validateHqNow } from "./validate-hq-now.mjs";
+import { validateHq711 } from "./validate-hq711-core.mjs";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -2722,6 +2723,7 @@ const runValidation = async () => {
     assert.equal(hq208Created.row, hq208Created.routeId);
     assert.equal(hq208Created.dialogClosed, true);
 
+    await validateHq711(window);
     process.stdout.write(
       `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length - Number(delegatedS09) - (delegatedProjectHq ? 2 : 0) - Number(delegatedMemoryScope) - Number(delegatedMemoryCitations) - Number(delegatedMemoryActions) - Number(delegatedRowMemoryChips) - Number(delegatedSummarySharingS15)} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report${delegatedS09 ? "; S09.1 is delegated to the dedicated native Sources proof" : ""}${delegatedProjectHq ? "; S01.1 and S11.1 are delegated to the dedicated native Project HQ proof" : ""}${delegatedMemoryScope ? "; S18.2 is delegated to the dedicated native Memory scope proof" : ""}${delegatedMemoryCitations ? "; S07.1 is delegated to the dedicated native citation proof" : ""}${delegatedMemoryActions ? "; S18.1 is delegated to the dedicated native Memory actions proof" : ""}${delegatedRowMemoryChips ? "; S19.1 is delegated to the dedicated native row memory-chip proof" : ""}${delegatedSummarySharingS15 ? "; S15.2 UI wording and Native decision are delegated to HQ702.ui.native, with real no-CSA publication verified separately in PostgreSQL" : ""}${delegatedScheduledS12 ? "; the Scheduled subset of S12.1 is delegated to HQ603.native while the compound case remains SKIP" : ""}. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
     );

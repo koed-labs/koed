@@ -11,6 +11,7 @@ import { HqVisibilityLine } from "./HqVisibilityLine.js";
 import {
   hqVisibilityIdentity,
   readHqConversationVisibility,
+  readHqPublishedVisibility,
   useHqConversationVisibility
 } from "./hq-visibility.js";
 
@@ -90,6 +91,360 @@ const shareChanged: CollaborationClientUpdate = {
 };
 
 describe("HQ Conversation visibility", () => {
+  const teamId = "00000000-0000-4000-8000-000000000201";
+  const workspaceId = "00000000-0000-4000-8000-000000000202";
+  const projectId = "00000000-0000-4000-8000-000000000203";
+  const grantId = "00000000-0000-4000-8000-000000000204";
+  const person = (
+    id: string,
+    displayName: string,
+    access: "read" | "disabled" = "read"
+  ) => ({
+    id,
+    displayName,
+    membershipState: "enabled",
+    management: { workspaceAccess: [{ workspaceId, access }] }
+  });
+  const snapshot = (revision = "r1") => ({
+    snapshotRevision: revision,
+    connection: { state: "live", backendId: "team-backend" },
+    navigation: {
+      personalOwner: { id: "owner" },
+      teamPrincipal: { id: "owner" },
+      teams: [
+        {
+          id: teamId,
+          name: "Koed team",
+          lifecycle: "active",
+          workspaces: [
+            { id: workspaceId, name: "Koed project", lifecycle: "active" }
+          ],
+          people: [
+            person("owner", "Me"),
+            person("lena", "Lena"),
+            person("omar", "Omar")
+          ]
+        }
+      ]
+    }
+  });
+  const publishedGrant = {
+    id: grantId,
+    source,
+    lifecycle: "active",
+    mode: "continuous" as const,
+    frozenAt: null,
+    audience: [
+      { userId: "owner", displayName: "Me" },
+      { userId: "lena", displayName: "Lena" },
+      { userId: "omar", displayName: "Omar" }
+    ],
+    teamId,
+    workspaceId,
+    activationRepresentation: "lcm_leaves",
+    maximumFidelity: "lcm_leaves"
+  };
+  const publishedShare = {
+    kind: "grant",
+    grant: publishedGrant,
+    sourceAccess: null,
+    summary: {
+      sourceSessionId: sessionId,
+      workspaceContentAccess: "available",
+      lastReadyRevision: 1
+    }
+  };
+  const linked = {
+    personalProjectId: projectId,
+    teamBackendId: "team-backend",
+    workspaceProjectId: projectId,
+    teamWorkspaceId: workspaceId,
+    version: 1
+  };
+  const publishedReader = (
+    grant: Record<string, unknown> = publishedGrant,
+    share: Record<string, unknown> = publishedShare
+  ) => {
+    let current = snapshot();
+    const client = {
+      current: () => current,
+      listOwnedSharedMemoryGrants: vi.fn(async () => [grant]),
+      listOwnedShares: vi.fn(async () => ({
+        shares: [share],
+        nextCursor: null
+      })),
+      subscribe: () => () => undefined
+    } as unknown as CollaborationRendererClient;
+    return {
+      client,
+      setSnapshot: (value: ReturnType<typeof snapshot>) => {
+        current = value;
+      }
+    };
+  };
+
+  it("shows only a published exact summary grant and current Project audience", async () => {
+    const { client } = publishedReader();
+    const projectsApi = {
+      sharedChatStatus: vi.fn(async () => "shared" as const),
+      sharedMembers: vi.fn(async () => ({
+        projectId,
+        version: 1,
+        people: [
+          {
+            teamMemberId: "owner-member",
+            displayName: "Me",
+            access: "write" as const
+          },
+          {
+            teamMemberId: "lena-member",
+            displayName: "Lena",
+            access: "read" as const
+          },
+          {
+            teamMemberId: "omar-member",
+            displayName: "Omar",
+            access: "read" as const
+          }
+        ]
+      }))
+    };
+    expect(
+      await readHqPublishedVisibility(
+        client,
+        logicalMemoryId,
+        sessionId,
+        linked,
+        projectsApi
+      )
+    ).toEqual({
+      kind: "shared-summary",
+      label: "Visible to Koed team (summaries)",
+      people: ["Lena", "Omar"],
+      destination: "Koed project"
+    });
+    expect(projectsApi.sharedChatStatus).toHaveBeenCalledWith(
+      projectId,
+      sessionId
+    );
+    expect(projectsApi.sharedMembers).not.toHaveBeenCalled();
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    await act(async () =>
+      root.render(
+        <HqVisibilityLine
+          visibility={{
+            kind: "shared-summary",
+            label: "Visible to Koed team (summaries)",
+            people: ["Lena", "Omar"],
+            destination: "Koed project"
+          }}
+        />
+      )
+    );
+    expect(
+      host.querySelector(".hq-composer__visibility")?.getAttribute("title")
+    ).toBe("Lena, Omar");
+    await act(async () => root.unmount());
+  });
+
+  it("uses the exact Workspace audience for an ordinary owner, including readers outside the Project roster", async () => {
+    const exactGrant = {
+      ...publishedGrant,
+      audience: [
+        { userId: "owner", displayName: "Me" },
+        { userId: "lena", displayName: "Lena" },
+        { userId: "outsider", displayName: "Maya" }
+      ]
+    };
+    const { client, setSnapshot } = publishedReader(exactGrant);
+    const ordinary = snapshot();
+    ordinary.navigation.teams[0]!.people =
+      ordinary.navigation.teams[0]!.people.map(({ management, ...person }) => {
+        void management;
+        return person;
+      }) as (typeof ordinary.navigation.teams)[0]["people"];
+    setSnapshot(ordinary);
+    const result = await readHqPublishedVisibility(
+      client,
+      logicalMemoryId,
+      sessionId,
+      linked,
+      {
+        sharedChatStatus: async () => "shared"
+      }
+    );
+    expect(result).toMatchObject({
+      label: "Visible to Koed team (summaries)",
+      people: ["Lena", "Maya"]
+    });
+  });
+
+  it("names only the enabled members of a limited direct audience", async () => {
+    const { client, setSnapshot } = publishedReader({
+      ...publishedGrant,
+      audience: [
+        { userId: "owner", displayName: "Me" },
+        { userId: "lena", displayName: "Lena" }
+      ]
+    });
+    const next = snapshot();
+    next.navigation.teams[0]!.people[2] = person("omar", "Omar", "disabled");
+    setSnapshot(next);
+    expect(
+      await readHqPublishedVisibility(client, logicalMemoryId, sessionId)
+    ).toMatchObject({ label: "Visible to Lena (summaries)", people: ["Lena"] });
+    expect(
+      await readHqPublishedVisibility(
+        client,
+        logicalMemoryId,
+        sessionId,
+        linked,
+        {
+          sharedChatStatus: async () => "private"
+        }
+      )
+    ).toMatchObject({ label: "Visible to Lena (summaries)", people: ["Lena"] });
+  });
+
+  it("uses coarse wording when a complete audience contains an unnamed reader", async () => {
+    const { client } = publishedReader({
+      ...publishedGrant,
+      audience: [
+        { userId: "owner", displayName: "Me" },
+        { userId: "lena", displayName: "Lena" },
+        { userId: "unnamed", displayName: "Team member" }
+      ]
+    });
+    expect(
+      await readHqPublishedVisibility(client, logicalMemoryId, sessionId)
+    ).toMatchObject({
+      label: "Summary shared with Koed project",
+      people: []
+    });
+  });
+
+  it("does not replace an explicitly unavailable owner audience with the management roster", async () => {
+    const { client } = publishedReader({ ...publishedGrant, audience: null });
+    expect(
+      await readHqPublishedVisibility(client, logicalMemoryId, sessionId)
+    ).toMatchObject({
+      label: "Summary shared with Koed project",
+      people: []
+    });
+  });
+
+  it("withholds names and Team claims while staged, revoked or changing", async () => {
+    const policyOnly = publishedReader(
+      { ...publishedGrant, lifecycle: "revoked" },
+      { ...publishedShare, grant: { ...publishedGrant, lifecycle: "revoked" } }
+    );
+    expect(
+      await readHqPublishedVisibility(
+        policyOnly.client,
+        logicalMemoryId,
+        sessionId,
+        linked,
+        { sharedChatStatus: async () => "shared" }
+      )
+    ).toBe("unverified");
+    const staged = publishedReader();
+    expect(
+      await readHqPublishedVisibility(
+        staged.client,
+        logicalMemoryId,
+        sessionId,
+        linked,
+        { sharedChatStatus: async () => "pending" }
+      )
+    ).toBe("unverified");
+    const revoked = publishedReader(
+      { ...publishedGrant, lifecycle: "revoked" },
+      { ...publishedShare, grant: { ...publishedGrant, lifecycle: "revoked" } }
+    );
+    expect(
+      await readHqPublishedVisibility(
+        revoked.client,
+        logicalMemoryId,
+        sessionId,
+        linked,
+        { sharedChatStatus: async () => "private" }
+      )
+    ).toEqual({ kind: "private-project", teamName: "Koed team" });
+    const changing = publishedReader();
+    changing.client.listOwnedShares = vi.fn(async () => {
+      changing.setSnapshot(snapshot("r2"));
+      return { shares: [publishedShare], nextCursor: null };
+    }) as unknown as CollaborationRendererClient["listOwnedShares"];
+    expect(
+      await readHqPublishedVisibility(
+        changing.client,
+        logicalMemoryId,
+        sessionId
+      )
+    ).toBe("unverified");
+    const switchedBackend = publishedReader();
+    switchedBackend.client.listOwnedShares = vi.fn(async () => {
+      switchedBackend.setSnapshot({
+        ...snapshot(),
+        connection: { state: "live", backendId: "other-backend" }
+      });
+      return { shares: [publishedShare], nextCursor: null };
+    }) as unknown as CollaborationRendererClient["listOwnedShares"];
+    expect(
+      await readHqPublishedVisibility(
+        switchedBackend.client,
+        logicalMemoryId,
+        sessionId
+      )
+    ).toBe("unverified");
+    const wrongProfile = publishedReader();
+    wrongProfile.setSnapshot({
+      ...snapshot(),
+      connection: { state: "live", backendId: "another-backend" }
+    });
+    expect(
+      await readHqPublishedVisibility(
+        wrongProfile.client,
+        logicalMemoryId,
+        sessionId,
+        linked,
+        { sharedChatStatus: async () => "shared" }
+      )
+    ).toBe("unverified");
+    const sourceAccessible = publishedReader();
+    sourceAccessible.client.listOwnedShares = vi.fn(async () => ({
+      shares: [{ ...publishedShare, sourceAccess: { lifecycle: "active" } }],
+      nextCursor: null
+    })) as unknown as CollaborationRendererClient["listOwnedShares"];
+    expect(
+      await readHqPublishedVisibility(
+        sourceAccessible.client,
+        logicalMemoryId,
+        sessionId
+      )
+    ).toBe("unverified");
+    for (const retained of [
+      { mode: "snapshot" as const, frozenAt: null },
+      { mode: "continuous" as const, frozenAt: "2026-10-21T09:00:00.000Z" },
+      { mode: "continuous" as const, frozenAt: undefined }
+    ]) {
+      const old = { ...publishedGrant, ...retained };
+      const retainedReader = publishedReader(old, {
+        ...publishedShare,
+        grant: old
+      });
+      expect(
+        await readHqPublishedVisibility(
+          retainedReader.client,
+          logicalMemoryId,
+          sessionId,
+          linked,
+          { sharedChatStatus: async () => "shared" }
+        )
+      ).toBe("unverified");
+    }
+  });
   it("requires one coherent route, detail and runtime source identity", () => {
     const current = { sessionId, logicalMemoryId };
     expect(hqVisibilityIdentity(current, current, sessionId)).toEqual(current);

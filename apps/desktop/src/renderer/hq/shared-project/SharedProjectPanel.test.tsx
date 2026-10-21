@@ -87,6 +87,38 @@ describe("SharedProjectPanel", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows safe colleague progress with a privacy note and no private chat link", async () => {
+    const teammate = state("Review landing page");
+    teammate.workItems[0] = {
+      ...teammate.workItems[0]!,
+      status: "doing",
+      dispatchKey: "team-dispatch",
+      assigneeDisplayName: "Lena",
+      stepLabel: "Checking tests",
+      prUrl: "https://github.example/team/landing/pull/12"
+    };
+    const store = new SharedProjectStore({
+      sharedRefresh: vi.fn(async () => teammate),
+      sharedDispatches: vi.fn(async () => [])
+    });
+    await act(async () =>
+      root.render(
+        <SharedProjectPanel
+          store={store}
+          identity={identity}
+          refreshSignal={0}
+          agents={[]}
+        />
+      )
+    );
+    expect(container.textContent).toContain("Checking tests");
+    expect(container.textContent).toContain(
+      "This Agent Conversation is private to its owner."
+    );
+    expect(container.querySelector('a[href*="/chat/"]')).toBeNull();
+    expect(container.querySelector('a[href*="/pull/12"]')).not.toBeNull();
+  });
+
   it("keeps the local title draft after a Team version conflict", async () => {
     const patch = vi.fn(async () => ({
       status: "conflict" as const,

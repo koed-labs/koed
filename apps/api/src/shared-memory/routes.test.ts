@@ -2004,6 +2004,20 @@ describe("Shared Memory HTTP routes", () => {
 
   it("lists every current grant state only for the source owner", async () => {
     const fixture = createFixture();
+    const audienceRead = ((
+      fixture.repository as SharedMemoryRepository
+    ).listOwnerGrantAudience = async (actor, input) => {
+      expect(actor.userId).toBe(fixture.ids.alice);
+      expect(input).toEqual({
+        logicalMemoryId: fixture.ids.logicalMemory,
+        grantId: fixture.ids.grant
+      });
+      return [
+        { userId: fixture.ids.alice, displayName: "Alice" },
+        { userId: fixture.ids.bob, displayName: "Bob" },
+        { userId: fixture.ids.carol, displayName: "Carol" }
+      ];
+    });
     const app = await buildTestServer(fixture);
     const owner = await app.inject({
       method: "GET",
@@ -2034,12 +2048,19 @@ describe("Shared Memory HTTP routes", () => {
           id: fixture.ids.grant,
           logicalMemoryId: fixture.ids.logicalMemory,
           ownerUserId: fixture.ids.alice,
-          grantVersion: 1
+          grantVersion: 1,
+          audience: [
+            { userId: fixture.ids.alice, displayName: "Alice" },
+            { userId: fixture.ids.bob, displayName: "Bob" },
+            { userId: fixture.ids.carol, displayName: "Carol" }
+          ]
         }
       ]
     });
     expect(owner.body).not.toContain("remoteReplicaId");
     expect(owner.body).not.toContain("creatorAuthority");
+    expect(ownerDevice.body).toContain('"displayName":"Carol"');
+    expect(audienceRead).toBeDefined();
     expect(fixture.lastOwnerListInput).toEqual({
       logicalMemoryId: fixture.ids.logicalMemory,
       limit: 50,

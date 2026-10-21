@@ -1569,6 +1569,11 @@ export interface SharedMemoryRepository {
       offset: number;
     }
   ): Promise<SharedMemoryOwnerGrantPage>;
+  /** Complete current Workspace Access readers for an exact owned grant. */
+  listOwnerGrantAudience?(
+    actor: ActorContext,
+    input: { logicalMemoryId: string; grantId: string }
+  ): Promise<Array<{ userId: string; displayName: string }> | null>;
   listOwnerShares(
     actor: ActorContext,
     input: {
@@ -20040,6 +20045,49 @@ export const createSharedMemoryRepository = (
           offset: input.offset,
           hasMore: result.rows.length > input.limit
         };
+      });
+    },
+
+    async listOwnerGrantAudience(actor, input) {
+      assertUuid(input.logicalMemoryId, "logicalMemoryId");
+      assertUuid(input.grantId, "grantId");
+      return withTransaction(pool, async (client) => {
+        await client.query(
+          "set transaction isolation level repeatable read read only"
+        );
+        const grant = await client.query<Row>(
+          `select g.id from team_memory_share_grant_records g
+            join teams t on t.id=g.team_id and t.lifecycle='active' and t.entitlement_status in ('active','grace')
+            join team_workspaces w on w.id=g.team_workspace_id and w.team_id=g.team_id and w.lifecycle='active'
+            join team_memberships owner_member on owner_member.team_id=g.team_id and owner_member.user_id=g.owner_user_id
+            join users owner_user on owner_user.id=g.owner_user_id
+            join team_workspace_access_grants owner_access on owner_access.team_workspace_id=g.team_workspace_id and owner_access.team_id=g.team_id and owner_access.user_id=g.owner_user_id
+           where g.id=$1 and g.logical_memory_id=$2 and g.owner_user_id=$3 and g.lifecycle='active'
+             and owner_member.status='enabled' and owner_member.disabled_at is null
+             and owner_user.disabled_at is null and owner_user.deleted_at is null
+             and owner_access.access in ('read','write') and owner_access.disabled_at is null and owner_access.version>0`,
+          [input.grantId, input.logicalMemoryId, actor.userId]
+        );
+        if (grant.rows.length !== 1) return null;
+        const readers = await client.query<Row>(
+          `select wa.user_id,
+                  coalesce(nullif(left(trim(u.display_name),80),''),'Team member') as display_name
+             from team_memory_share_grant_records g
+             join team_workspace_access_grants wa on wa.team_workspace_id=g.team_workspace_id and wa.team_id=g.team_id
+             join team_memberships m on m.team_id=wa.team_id and m.user_id=wa.user_id
+             join users u on u.id=wa.user_id
+            where g.id=$1 and g.logical_memory_id=$2 and g.owner_user_id=$3
+              and wa.access in ('read','write') and wa.disabled_at is null and wa.version>0
+              and m.status='enabled' and m.disabled_at is null
+              and u.disabled_at is null and u.deleted_at is null
+            order by u.display_name,u.id limit 251`,
+          [input.grantId, input.logicalMemoryId, actor.userId]
+        );
+        if (readers.rows.length > 250) return null;
+        return readers.rows.map((row) => ({
+          userId: stringValue(row.user_id),
+          displayName: stringValue(row.display_name)
+        }));
       });
     },
 

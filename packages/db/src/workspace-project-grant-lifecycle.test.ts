@@ -1162,6 +1162,135 @@ describe.skipIf(!testUrl)("Workspace Project grant-bearing lifecycle", () => {
     });
   };
 
+  it("projects the complete owned grant audience from Workspace Access, including non-Project readers", async () => {
+    const grant = await seedGrant(bob, "captured_session");
+    const shared = createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: () => provider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => provider
+    });
+    const read = (userId: string) =>
+      shared.listOwnerGrantAudience!(
+        { userId },
+        {
+          logicalMemoryId: grant.memoryId,
+          grantId: grant.id
+        }
+      );
+    await pool.query(
+      `update workspace_project_members set access='disabled',disabled_at=now(),version=version+1
+       where workspace_project_id=$1 and team_member_id=$2`,
+      [project.id, members[carol]!.id]
+    );
+    try {
+      const audience = await read(bob);
+      expect(audience?.map((person) => person.userId)).toContain(carol);
+      expect(
+        audience?.find((person) => person.userId === carol)?.displayName
+      ).toBe("Team member");
+      expect(await read(alice)).toBeNull();
+      await pool.query(
+        `update team_workspace_access_grants set access='disabled',can_share_owned_memory=false,version=version+1
+         where team_workspace_id=$1 and user_id=$2`,
+        [workspaceId, carol]
+      );
+      expect((await read(bob))?.map((person) => person.userId)).not.toContain(
+        carol
+      );
+      await pool.query(
+        `update team_workspace_access_grants set access='read',can_share_owned_memory=false,version=version+1
+         where team_workspace_id=$1 and user_id=$2`,
+        [workspaceId, carol]
+      );
+      await pool.query(
+        `update team_memberships set status='disabled',disabled_at=now()
+         where team_id=$1 and user_id=$2`,
+        [teamId, carol]
+      );
+      expect((await read(bob))?.map((person) => person.userId)).not.toContain(
+        carol
+      );
+      await pool.query(
+        `update team_memberships set status='enabled',disabled_at=null
+         where team_id=$1 and user_id=$2`,
+        [teamId, carol]
+      );
+      await pool.query(`update users set disabled_at=now() where id=$1`, [
+        carol
+      ]);
+      expect((await read(bob))?.map((person) => person.userId)).not.toContain(
+        carol
+      );
+      await pool.query(`update users set disabled_at=null where id=$1`, [
+        carol
+      ]);
+      await pool.query(
+        `update team_workspace_access_grants set access='disabled',can_share_owned_memory=false,version=version+1
+         where team_workspace_id=$1 and user_id=$2`,
+        [workspaceId, bob]
+      );
+      expect(await read(bob)).toBeNull();
+      await pool.query(
+        `update team_workspace_access_grants set access='write',can_share_owned_memory=true,version=version+1
+         where team_workspace_id=$1 and user_id=$2`,
+        [workspaceId, bob]
+      );
+      await pool.query(
+        `update team_memberships set status='disabled',disabled_at=now()
+         where team_id=$1 and user_id=$2`,
+        [teamId, bob]
+      );
+      expect(await read(bob)).toBeNull();
+      await pool.query(
+        `update team_memberships set status='enabled',disabled_at=null
+         where team_id=$1 and user_id=$2`,
+        [teamId, bob]
+      );
+      await pool.query(
+        `update teams set entitlement_status='suspended' where id=$1`,
+        [teamId]
+      );
+      expect(await read(bob)).toBeNull();
+      await pool.query(
+        `update teams set entitlement_status='active' where id=$1`,
+        [teamId]
+      );
+    } finally {
+      await pool.query(
+        `update teams set entitlement_status='active' where id=$1`,
+        [teamId]
+      );
+      await pool.query(
+        `update workspace_project_members set access='write',disabled_at=null,version=version+1
+         where workspace_project_id=$1 and team_member_id=$2`,
+        [project.id, members[carol]!.id]
+      );
+      await pool.query(
+        `update team_workspace_access_grants set access='write',can_share_owned_memory=true,version=version+1
+         where team_workspace_id=$1 and user_id=$2`,
+        [workspaceId, carol]
+      );
+      await pool.query(
+        `update team_memberships set status='enabled',disabled_at=null
+         where team_id=$1 and user_id=$2`,
+        [teamId, carol]
+      );
+      await pool.query(`update users set disabled_at=null where id=$1`, [
+        carol
+      ]);
+      await pool.query(
+        `update team_workspace_access_grants set access='write',can_share_owned_memory=true,version=version+1
+         where team_workspace_id=$1 and user_id=$2`,
+        [workspaceId, bob]
+      );
+      await pool.query(
+        `update team_memberships set status='enabled',disabled_at=null
+         where team_id=$1 and user_id=$2`,
+        [teamId, bob]
+      );
+    }
+  });
+
   it("freezes only the bound member grant in a verified self-leave", async () => {
     const bound = await seedGrant(bob, "personal_note");
     const independent = await seedGrant(bob, "captured_session");

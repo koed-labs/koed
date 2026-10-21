@@ -460,7 +460,12 @@ const createFixture = (
       CollaborationSharedMemoryControlOptions["readUpstreamRegistry"]
     >;
     remoteRead?: RemoteReadResponse;
-    remoteOwnerGrants?: ReturnType<typeof grantResponse>[];
+    remoteOwnerGrants?: Array<
+      ReturnType<typeof grantResponse> & {
+        frozenAt?: string | null;
+        audience?: Array<{ userId: string; displayName: string }> | null;
+      }
+    >;
     remoteOwnedShares?: Record<string, unknown>[];
     remotePendingShareControl?: Record<string, unknown>;
     deniedDiscussionLogicalMemoryIds?: string[];
@@ -1894,7 +1899,18 @@ describe("collaboration Shared Memory control", () => {
   });
 
   it("reconciles authoritative remote owner grants before listing them", async () => {
-    const fixture = createFixture();
+    const fixture = createFixture({
+      remoteOwnerGrants: [
+        {
+          ...grantResponse(),
+          frozenAt: null,
+          audience: [
+            { userId: ids.upstreamUser, displayName: "Owner" },
+            { userId: ids.localOwner, displayName: "Reader" }
+          ]
+        }
+      ]
+    });
     const result = await fixture.control.dispatch(
       {
         ...commandBase("collaboration.list_owned_shared_memory_grants"),
@@ -1909,7 +1925,12 @@ describe("collaboration Shared Memory control", () => {
           {
             id: ids.grant,
             logicalMemoryId: ids.logicalMemory,
-            lifecycle: "active"
+            lifecycle: "active",
+            frozenAt: null,
+            audience: [
+              { userId: ids.upstreamUser, displayName: "Owner" },
+              { userId: ids.localOwner, displayName: "Reader" }
+            ]
           }
         ]
       }
@@ -2123,6 +2144,7 @@ describe("collaboration Shared Memory control", () => {
         ...grantResponse(),
         source: { ...capturedSource, logicalMemoryId },
         id: shareGrantId,
+        frozenAt: index === 0 ? null : index === 1 ? iso : undefined,
         logicalGrantId: uuidFor(1_400 + index),
         logicalMemoryId,
         companionScope: {
@@ -2180,6 +2202,14 @@ describe("collaboration Shared Memory control", () => {
       throw new Error("Expected a batched owned-share page");
     }
     expect(result.data.shares).toHaveLength(100);
+    expect(result.data.shares[0]).toMatchObject({
+      kind: "grant",
+      grant: { frozenAt: null }
+    });
+    expect(result.data.shares[1]).toMatchObject({
+      kind: "grant",
+      grant: { frozenAt: iso }
+    });
     expect(fixture.resolvePreviewTargets).toHaveBeenCalledTimes(1);
     expect(fixture.readAuthoritativeGrants).toHaveBeenCalledTimes(1);
     expect(fixture.requests.map((request) => request.pathname)).toEqual([

@@ -1552,8 +1552,27 @@ export const registerSharedMemoryRoutes = (
       ) {
         throw forbidden();
       }
+      const audiences = await Promise.all(
+        page.entries.map(async (grant) => {
+          try {
+            return (
+              (await context
+                .requireSharedMemoryRepository()
+                .listOwnerGrantAudience?.(
+                  { userId: actor.id },
+                  { logicalMemoryId: params.logicalMemoryId, grantId: grant.id }
+                )) ?? null
+            );
+          } catch {
+            return null;
+          }
+        })
+      );
       return {
-        shareGrants: page.entries.map(ownedShareGrantDto),
+        shareGrants: page.entries.map((grant, index) => ({
+          ...ownedShareGrantDto(grant),
+          audience: audiences[index] ?? null
+        })),
         pagination: {
           limit: page.limit,
           offset: page.offset,

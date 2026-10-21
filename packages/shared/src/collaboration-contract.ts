@@ -2450,6 +2450,19 @@ const sharedMemoryGrantBaseSchema = z
     createdAt: collaborationTimestampSchema,
     updatedAt: collaborationTimestampSchema,
     revokedAt: collaborationTimestampSchema.nullable(),
+    frozenAt: collaborationTimestampSchema.nullable().optional(),
+    audience: z
+      .array(
+        z
+          .object({
+            userId: z.uuid(),
+            displayName: collaborationDisplayNameSchema
+          })
+          .strict()
+      )
+      .max(250)
+      .nullable()
+      .optional(),
     companionThreadId: z.uuid()
   })
   .strict();

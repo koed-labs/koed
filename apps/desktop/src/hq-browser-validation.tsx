@@ -109,6 +109,8 @@ const hq701Capture =
   new URLSearchParams(window.location.search).get("hq701Capture") === "yes";
 const hq702Capture =
   new URLSearchParams(window.location.search).get("hq702Capture") === "yes";
+const hq711Capture =
+  new URLSearchParams(window.location.search).get("hq711Capture") === "yes";
 let hq702PolicyStatus: "absent" | "active" | "revoked" = "absent";
 const hq702Trace = {
   statusReads: 0,
@@ -807,12 +809,91 @@ let settingsCollaborationSnapshot = collaborationSnapshotSchema.parse({
   selection: { kind: "personal_memory" },
   view: { kind: "empty" }
 });
+if (hq711Capture) {
+  const teamId = "00000000-0000-4000-8000-000000007120";
+  const workspaceId = "00000000-0000-4000-8000-000000007121";
+  const person = (id: string, displayName: string) => ({
+    id,
+    displayName,
+    presence: "available" as const,
+    membershipState: "enabled" as const,
+    teamPresence: {
+      mode: "manual" as const,
+      manualStatus: "available" as const,
+      activityLevel: null,
+      lastActivityAt: null,
+      nextTransitionAt: null,
+      preferenceVersion: 1
+    },
+    management: {
+      membershipId: id,
+      email: `${displayName.toLowerCase()}@fixture.test`,
+      role: "member" as const,
+      status: "enabled" as const,
+      version: 1,
+      workspaceAccess: [
+        {
+          workspaceId,
+          userId: id,
+          access: "read" as const,
+          version: 1
+        }
+      ]
+    }
+  });
+  const owner = person("00000000-0000-4000-8000-000000007110", "You");
+  settingsCollaborationSnapshot = collaborationSnapshotSchema.parse({
+    ...settingsCollaborationSnapshot,
+    connection: {
+      ...settingsCollaborationSnapshot.connection,
+      backendId: "fixture-team-backend"
+    },
+    navigation: {
+      ...settingsCollaborationSnapshot.navigation,
+      teamPrincipal: {
+        id: owner.id,
+        displayName: owner.displayName,
+        presence: owner.presence,
+        membershipState: owner.membershipState
+      },
+      teams: [
+        {
+          id: teamId,
+          name: "Koed team",
+          role: "member",
+          lifecycle: "active",
+          unreadCount: 0,
+          membershipVersion: 1,
+          people: [
+            owner,
+            person("00000000-0000-4000-8000-000000007127", "Maya")
+          ],
+          directMessages: [],
+          workspaces: [
+            {
+              id: workspaceId,
+              name: "New empty Project",
+              description: null,
+              access: "write",
+              lifecycle: "active",
+              version: 1,
+              channels: [],
+              sharedMemory: []
+            }
+          ],
+          version: 1
+        }
+      ]
+    }
+  });
+}
 const hq105VisibilityListeners = new Set<CollaborationClientListener>();
 const publishHq105VisibilityUpdate = (update: CollaborationClientUpdate) => {
   for (const listener of hq105VisibilityListeners)
     void listener(settingsCollaborationSnapshot, update);
 };
 const settingsCollaborationClient = {
+  reportTeamActivity: async () => [],
   subscribeProjectThreadV2: async (
     _input: unknown,
     listener: NonNullable<typeof hq705RealtimeListener>
@@ -943,6 +1024,16 @@ const settingsCollaborationClient = {
     logicalMemoryId: string;
   }) => {
     hq105VisibilityReads.grants += 1;
+    hq105VisibilityReads.logicalMemoryId = logicalMemoryId;
+    if (hq711Capture) {
+      if (hq711VisibilityMode === "unknown")
+        throw new Error("Owner share read unavailable");
+      return (hq711VisibilityMode === "shared" ||
+        hq711VisibilityMode === "direct") &&
+        logicalMemoryId === hq711Grant().source.logicalMemoryId
+        ? [hq711Grant()]
+        : [];
+    }
     if (logicalMemoryId !== hq105LogicalMemoryId)
       throw new Error("Unknown HQ visibility fixture identity");
     return hq105ShareActive
@@ -961,6 +1052,38 @@ const settingsCollaborationClient = {
   listOwnedShares: async ({ cursor }: { cursor: string | null }) => {
     hq105VisibilityReads.shares += 1;
     if (cursor !== null) throw new Error("Unexpected HQ visibility page");
+    if (hq711Capture) {
+      const grant = hq711Grant();
+      return {
+        shares:
+          hq711VisibilityMode === "shared" || hq711VisibilityMode === "direct"
+            ? [
+                {
+                  kind: "grant" as const,
+                  grant,
+                  sourceAccess: null,
+                  summary: {
+                    sourceSessionId: grant.source.sessionId,
+                    workspaceContentAccess: "available" as const,
+                    lastReadyRevision: 1
+                  }
+                }
+              ]
+            : hq711VisibilityMode === "pending"
+              ? [
+                  {
+                    kind: "pending" as const,
+                    pendingShare: {
+                      source: grant.source,
+                      state: "needs_attention" as const
+                    },
+                    summary: { sourceSessionId: grant.source.sessionId }
+                  }
+                ]
+              : [],
+        nextCursor: null
+      };
+    }
     return { shares: [], nextCursor: null };
   },
   connectRemote: async () => {
@@ -1767,8 +1890,34 @@ const installSettingsDesktop = () => {
 let hq104SentPrompt = "";
 const hq105LogicalMemoryId = "00000000-0000-4000-8000-000000000105";
 const hq105CapturedSessionId = "00000000-0000-4000-8000-000000000091";
-const hq105VisibilityReads = { grants: 0, shares: 0 };
+const hq105VisibilityReads = { grants: 0, shares: 0, logicalMemoryId: "" };
 let hq105ShareActive = false;
+let hq711VisibilityMode:
+  | "shared"
+  | "private"
+  | "pending"
+  | "direct"
+  | "unknown" = "shared";
+const hq711LogicalMemoryId = "00000000-0000-4000-8000-000000007118";
+const hq711Grant = () => ({
+  id: "00000000-0000-4000-8000-000000007119",
+  source: {
+    kind: "captured_session" as const,
+    logicalMemoryId: hq711LogicalMemoryId,
+    sessionId: hq204SessionId
+  },
+  lifecycle: "active" as const,
+  mode: "continuous" as const,
+  frozenAt: null,
+  audience: [
+    { userId: "00000000-0000-4000-8000-000000007110", displayName: "You" },
+    { userId: "00000000-0000-4000-8000-000000007127", displayName: "Maya" }
+  ],
+  teamId: "00000000-0000-4000-8000-000000007120",
+  workspaceId: "00000000-0000-4000-8000-000000007121",
+  activationRepresentation: "lcm_leaves" as const,
+  maximumFidelity: "lcm_leaves" as const
+});
 const hq105VisibilityFixture = {
   setShared(active: boolean) {
     hq105ShareActive = active;
@@ -1784,6 +1933,17 @@ const hq105VisibilityFixture = {
         sourceUpdateState: active ? "active" : "stopped",
         redactedFailureCode: null
       }
+    });
+  }
+};
+const hq711VisibilityFixture = {
+  setMode(mode: typeof hq711VisibilityMode) {
+    hq711VisibilityMode = mode;
+    hq702ChatStatus =
+      mode === "private" || mode === "direct" ? "private" : "shared";
+    publishHq105VisibilityUpdate({
+      kind: "realtime",
+      authoritativeRecovery: true
     });
   }
 };
@@ -2666,6 +2826,9 @@ let sidebarProjectGroups: PersonalDesktopProject[] = [
                     ),
                     id: "hq204-fixture-thread",
                     sessionId: hq204SessionId,
+                    ...(hq711Capture
+                      ? { logicalMemoryId: hq711LogicalMemoryId }
+                      : {}),
                     personalProjectId: hq204ProjectId,
                     name: "Plan next week"
                   }
@@ -3129,6 +3292,7 @@ const hq712OtherReview: WorkspaceProjectWorkItem = {
   id: "00000000-0000-4000-8000-000000007128",
   sourceOwnerTeamMemberId: "00000000-0000-4000-8000-000000007129",
   title: "Teammate's private PR",
+  dispatchKey: hq711Capture ? "colleague-private-execution" : null,
   prUrl: hq405Review(213).webUrl
 };
 let hq712Items: WorkspaceProjectWorkItem[] = [
@@ -3262,7 +3426,9 @@ const sidebarProjectsApi = {
       throw new Error("Chat sharing fixture unavailable");
     hq702Trace.chatStatusReads++;
     return sessionId === hq204SessionId
-      ? hq702ChatStatus
+      ? hq711Capture && hq711VisibilityMode === "pending"
+        ? ("pending" as const)
+        : hq702ChatStatus
       : sessionId === hq702MovedSessionId
         ? hq702MovedStatus
         : ("shared" as const);
@@ -4261,7 +4427,7 @@ export function HqValidationApp() {
     ])
       writeHqOnboarding(
         ownerId,
-        "hq-renderer-fixture|fixture-epoch|https://fixture.example.test",
+        `${hq711Capture ? "fixture-team-backend" : "hq-renderer-fixture"}|fixture-epoch|https://fixture.example.test`,
         { ...initialHqOnboarding, completed: true }
       );
   }, []);
@@ -4422,6 +4588,12 @@ export function HqValidationApp() {
         __koedHqVisibilityFixture?: typeof hq105VisibilityFixture;
       }
     ).__koedHqVisibilityFixture = hq105VisibilityFixture;
+    if (hq711Capture)
+      (
+        window as Window & {
+          __koedHq711VisibilityFixture?: typeof hq711VisibilityFixture;
+        }
+      ).__koedHq711VisibilityFixture = hq711VisibilityFixture;
     window.__koedHqFixture = fixture;
     if (hq701Capture)
       (

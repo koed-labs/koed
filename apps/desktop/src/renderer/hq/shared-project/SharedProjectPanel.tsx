@@ -568,6 +568,13 @@ export function SharedProjectPanel({
                                         item.assigneeDisplayName ||
                                         statusLabel(item.status)}
                                     </small>
+                                    {item.dispatchKey &&
+                                    !dispatchByItem.has(item.id) ? (
+                                      <small className="hq-shared-project__privacy">
+                                        This Agent Conversation is private to
+                                        its owner.
+                                      </small>
+                                    ) : null}
                                   </span>
                                 </span>
                               )}

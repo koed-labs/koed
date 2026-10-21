@@ -47,6 +47,7 @@ import type {
   ManagedConversationTurnCitation
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
+import type { ProjectsDesktopApi } from "../../../ipc/projects-protocol.js";
 import type { AgentsDesktopApi } from "../../../ipc/agents-protocol.js";
 import type { Agent } from "@koed/shared/agent-contract";
 import {
@@ -81,6 +82,7 @@ import { HqVisibilityLine } from "./HqVisibilityLine.js";
 import {
   hqVisibilityIdentity,
   useHqConversationVisibility,
+  type HqVisibilityProject,
   type HqVisibility
 } from "./hq-visibility.js";
 import {
@@ -1037,6 +1039,7 @@ export function HqBlankConversation({
 export function HqActiveConversation({
   api,
   privateProjectHq = false,
+  privateProjectHqTeamName,
   privateProjectHqIdentity,
   managedProject,
   store,
@@ -1052,6 +1055,8 @@ export function HqActiveConversation({
   visibilityProfileKey,
   visibilityRevision,
   visibilityConnected = false,
+  visibilityProject,
+  visibilityProjectsApi,
   openFilePickerOnReady = false,
   inventoryOnly = false,
   contextLabel,
@@ -1072,6 +1077,7 @@ export function HqActiveConversation({
 }: {
   api: ManagedConversationDesktopApi | null;
   privateProjectHq?: boolean;
+  privateProjectHqTeamName?: string | null;
   privateProjectHqIdentity?: ManagedConversationIdentity;
   managedProject: ManagedProjectDesktopApi | null;
   store: PersonalMemoryStore;
@@ -1087,6 +1093,11 @@ export function HqActiveConversation({
   visibilityProfileKey?: string;
   visibilityRevision?: string | null;
   visibilityConnected?: boolean;
+  visibilityProject?: HqVisibilityProject | null;
+  visibilityProjectsApi?: Pick<
+    ProjectsDesktopApi,
+    "sharedChatStatus" | "sharedMembers"
+  > | null;
   openFilePickerOnReady?: boolean;
   inventoryOnly?: boolean;
   contextLabel?: string | null;
@@ -1153,7 +1164,9 @@ export function HqActiveConversation({
     sessionId: visibilityIdentity?.sessionId,
     ownerId: visibilityOwnerId,
     revision: visibilityRevision,
-    connected: visibilityConnected
+    connected: visibilityConnected,
+    project: visibilityProject,
+    projectsApi: visibilityProjectsApi
   });
   const [runtimeState, setRuntimeState] = useState<{
     key: string;
@@ -2869,7 +2882,16 @@ export function HqActiveConversation({
           </p>
         ) : null}
         <Composer
-          visibility={privateProjectHq ? "personal-private" : visibility}
+          visibility={
+            privateProjectHq
+              ? privateProjectHqTeamName
+                ? {
+                    kind: "private-project",
+                    teamName: privateProjectHqTeamName
+                  }
+                : "personal-private"
+              : visibility
+          }
           privateProjectHq={privateProjectHq}
           contextLabel={contextLabel}
           onClearContext={onClearContext}

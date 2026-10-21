@@ -328,6 +328,19 @@ const remoteGrantSchema = z
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
     revokedAt: timestampSchema.nullable(),
+    frozenAt: timestampSchema.nullable().optional(),
+    audience: z
+      .array(
+        z
+          .object({
+            userId: uuidSchema,
+            displayName: z.string().min(1).max(120)
+          })
+          .strict()
+      )
+      .max(250)
+      .nullable()
+      .optional(),
     companionScope: companionScopeSchema
   })
   .passthrough();
@@ -478,6 +491,11 @@ const ownerSafeGrant = (
   return safeGrant;
 };
 
+const ownerSafeGrantWithRemoteCoverage = (
+  grant: CollaborationPersistedSharedMemoryGrant["grant"],
+  remote: z.infer<typeof remoteOwnedShareGrantSchema>
+) => ({ ...ownerSafeGrant(grant), frozenAt: remote.frozenAt });
+
 const remoteOwnedGrantDto = (
   grant: z.infer<typeof remoteOwnedShareGrantSchema>
 ) => ({
@@ -500,7 +518,8 @@ const remoteOwnedGrantDto = (
   lifecycle: grant.lifecycle,
   createdAt: grant.createdAt,
   updatedAt: grant.updatedAt,
-  revokedAt: grant.revokedAt
+  revokedAt: grant.revokedAt,
+  frozenAt: grant.frozenAt
 });
 
 const remoteOwnedGrantWithCompanion = (
@@ -2664,6 +2683,14 @@ const dispatchListOwnedGrants = async (
   );
   if (!local) throw new ControlFailure("not_available");
   const localById = new Map(local.map((grant) => [grant.grant.id, grant]));
+  const frozenAtByGrantId = new Map<
+    string,
+    z.infer<typeof remoteGrantSchema>["frozenAt"]
+  >();
+  const audiencesByGrantId = new Map<
+    string,
+    z.infer<typeof remoteGrantSchema>["audience"]
+  >();
   const reconciled: CollaborationPersistedSharedMemoryGrant[] = [];
   const seen = new Set<string>();
   let offset = 0;
@@ -2690,7 +2717,11 @@ const dispatchListOwnedGrants = async (
     ) {
       throw new ControlFailure("permission_denied");
     }
-    for (const grant of page.data.shareGrants) seen.add(grant.id);
+    for (const grant of page.data.shareGrants) {
+      seen.add(grant.id);
+      frozenAtByGrantId.set(grant.id, grant.frozenAt);
+      audiencesByGrantId.set(grant.id, grant.audience ?? null);
+    }
     if (seen.size > 250) throw new ControlFailure("not_available");
 
     for (const remote of page.data.shareGrants) {
@@ -2767,7 +2798,11 @@ const dispatchListOwnedGrants = async (
   }
 
   const result = success(command, {
-    grants: reconciled.map((grant) => grant.grant)
+    grants: reconciled.map((grant) => ({
+      ...grant.grant,
+      frozenAt: frozenAtByGrantId.get(grant.grant.id),
+      audience: audiencesByGrantId.get(grant.grant.id) ?? null
+    }))
   });
   if (!result) throw new ControlFailure("internal_error");
   return result;
@@ -2947,7 +2982,7 @@ const dispatchListOwnedShares = async (
         return {
           kind: "grant" as const,
           grant: prior
-            ? ownerSafeGrant(prior.grant)
+            ? ownerSafeGrantWithRemoteCoverage(prior.grant, remote)
             : remoteOwnedGrantDto(remote),
           sourceAccess: entry.sourceAccess,
           summary
@@ -2974,7 +3009,7 @@ const dispatchListOwnedShares = async (
             );
       return {
         kind: "grant" as const,
-        grant: ownerSafeGrant(persisted.grant),
+        grant: ownerSafeGrantWithRemoteCoverage(persisted.grant, remote),
         sourceAccess: entry.sourceAccess,
         summary
       };
@@ -3165,7 +3200,7 @@ const dispatchGetOwnedShare = async (
       share: {
         ...entry,
         grant: prior
-          ? ownerSafeGrant(prior.grant)
+          ? ownerSafeGrantWithRemoteCoverage(prior.grant, entry.grant)
           : remoteOwnedGrantDto(entry.grant),
         summary,
         preview: null
@@ -3191,7 +3226,7 @@ const dispatchGetOwnedShare = async (
   const result = success(command, {
     share: {
       ...entry,
-      grant: ownerSafeGrant(persisted.grant),
+      grant: ownerSafeGrantWithRemoteCoverage(persisted.grant, entry.grant),
       summary,
       preview
     }

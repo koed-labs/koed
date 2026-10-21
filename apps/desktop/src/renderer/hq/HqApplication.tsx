@@ -2120,6 +2120,20 @@ export function HqApplication({
             ? projectTeamUnread.unreadCount
             : 0
         }
+        privateVisibilityTeamName={
+          projectTeamIdentity &&
+          visibilityClient?.current()?.connection.backendId ===
+            projectTeamIdentity.teamBackendId
+            ? (visibilityClient
+                ?.current()
+                ?.navigation.teams.find((team) =>
+                  team.workspaces.some(
+                    (workspace) =>
+                      workspace.id === personalProject?.teamWorkspaceId
+                  )
+                )?.name ?? null)
+            : null
+        }
         onOpenTeam={
           projectTeamIdentity?.personalProjectId === project.id
             ? () => {
@@ -2887,6 +2901,27 @@ export function HqApplication({
               visibilityOwnerId={visibilityOwnerId}
               visibilityRevision={visibilityRevision}
               visibilityConnected={visibilityConnected ?? false}
+              visibilityProject={(() => {
+                const linked = personalProjects.find(
+                  (candidate) =>
+                    candidate.id === route.projectId &&
+                    candidate.lifecycle === "active" &&
+                    candidate.teamBackendId &&
+                    candidate.teamWorkspaceId &&
+                    candidate.workspaceProjectId &&
+                    conversationThread.personalProjectId === candidate.id
+                );
+                return linked?.teamBackendId && linked.workspaceProjectId
+                  ? {
+                      personalProjectId: linked.id,
+                      teamBackendId: linked.teamBackendId,
+                      workspaceProjectId: linked.workspaceProjectId,
+                      teamWorkspaceId: linked.teamWorkspaceId ?? null,
+                      version: linked.version
+                    }
+                  : null;
+              })()}
+              visibilityProjectsApi={projectsApi}
               api={managedConversations ?? null}
               managedProject={managedProject ?? null}
               store={personalMemoryStore}

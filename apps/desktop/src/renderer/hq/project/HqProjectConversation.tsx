@@ -64,7 +64,8 @@ export function HqProjectConversation({
   activityRevision = "",
   foreground = true,
   teamUnreadCount = 0,
-  onOpenTeam
+  onOpenTeam,
+  privateVisibilityTeamName
 }: {
   project: DesktopProject;
   chiefName: string;
@@ -104,6 +105,7 @@ export function HqProjectConversation({
   foreground?: boolean;
   teamUnreadCount?: number;
   onOpenTeam?: () => void;
+  privateVisibilityTeamName?: string | null;
 }) {
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [conversation, setConversation] =
@@ -728,6 +730,7 @@ export function HqProjectConversation({
         <HqActiveConversation
           key={conversation.executionId}
           privateProjectHq
+          privateProjectHqTeamName={privateVisibilityTeamName}
           privateProjectHqIdentity={conversation}
           api={managedConversations}
           managedProject={managedProject}
@@ -855,7 +858,16 @@ export function HqProjectConversation({
           />
           <div className="hq-conversation__dock">
             <div className="hq-composer-wrap">
-              <HqVisibilityLine visibility="personal-private" />
+              <HqVisibilityLine
+                visibility={
+                  privateVisibilityTeamName
+                    ? {
+                        kind: "private-project",
+                        teamName: privateVisibilityTeamName
+                      }
+                    : "personal-private"
+                }
+              />
               {contextLabel ? (
                 <div className="hq-project-conversation__context">
                   About <strong>{contextLabel}</strong>
