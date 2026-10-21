@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -26,6 +27,8 @@ import {
   it,
   vi
 } from "vitest";
+import { resolveKoedRuntimeOwner } from "./app-runtime.js";
+import type { RuntimeOwner } from "./component-contract.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import {
   provisionDesktopApiToken,
@@ -96,6 +99,55 @@ const spawnResult = () =>
     pid: 1,
     output: []
   }) satisfies SpawnSyncReturns<string>;
+
+const writeDesktopBundleOwner = (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  owner: RuntimeOwner
+): void => {
+  const generationId = "c".repeat(64);
+  const generationPath = resolve(paths.generationsDir, generationId);
+  mkdirSync(paths.componentsDir, { recursive: true, mode: 0o700 });
+  mkdirSync(generationPath, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    resolve(paths.componentsDir, "current.json"),
+    JSON.stringify({ schemaVersion: 1, generationId })
+  );
+  writeFileSync(
+    resolve(generationPath, "desktop-bundle.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      kind: "desktop-bundle",
+      id: generationId,
+      productVersion: "0.8.1",
+      owner,
+      bundleDigest: "e".repeat(64),
+      resourcesPath: "/test/Koed.app/Contents/Resources"
+    })
+  );
+};
+
+const writeActiveRuntimeOwner = (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  lock: ReturnType<typeof acquireKoedServerSupervisorLock>,
+  owner: RuntimeOwner
+): void => {
+  if (!lock.ownerPid || !lock.processIdentity)
+    throw new Error("Test supervisor lock is missing process identity.");
+  writeFileSync(
+    paths.generationStatePath ??
+      resolve(paths.runDir, "runtime-generation.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      generationId: "a".repeat(64),
+      pid: lock.ownerPid,
+      processIdentity: lock.processIdentity,
+      startedAt: new Date().toISOString(),
+      owner,
+      pinToken: "b".repeat(64)
+    })
+  );
+  writeFileSync(paths.runtimeStatePath, JSON.stringify({ pid: lock.ownerPid }));
+};
 
 const healthyStatus = (root: string): KoedServerStatus => ({
   ok: true,
@@ -1649,10 +1701,13 @@ describe("start supervisor", () => {
 
   it("does not allocate ports when a live supervisor owns KOED_HOME", async () => {
     const root = tempDir();
-    const lock = acquireKoedServerSupervisorLock(
-      resolveKoedServerPaths({ KOED_HOME: root, KOED_REPO_ROOT: root })
-    );
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root
+    });
+    const lock = acquireKoedServerSupervisorLock(paths);
     expect(lock.acquired).toBe(true);
+    writeActiveRuntimeOwner(paths, lock, resolveKoedRuntimeOwner());
     const commands: string[] = [];
 
     await startKoedServer({
@@ -1673,6 +1728,75 @@ describe("start supervisor", () => {
     expect(() =>
       readFileSync(resolve(root, "config/local-ports.json"), "utf8")
     ).toThrow();
+    expect(releaseKoedServerSupervisorLock(lock)).toBe(true);
+  });
+
+  it("rejects a stopped generation owned by another control plane", async () => {
+    const root = realpathSync(tempDir());
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root
+    });
+    writeDesktopBundleOwner(paths, {
+      kind: "desktop",
+      installationId: "d".repeat(32)
+    });
+    const spawnSync = vi.fn(() => spawnResult());
+    const spawn = vi.fn(() => child(1));
+
+    await expect(
+      startKoedServer({
+        signal: cleanShutdownSignal(),
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "bundled-local"
+        },
+        spawnSync,
+        spawn
+      })
+    ).rejects.toThrow(
+      "Packaged runtime owner does not match this standalone control plane."
+    );
+
+    expect(spawnSync).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(existsSync(resolve(paths.runDir, "koed-server.lock"))).toBe(false);
+  });
+
+  it("rejects a supervisor owned by another control plane", async () => {
+    const root = realpathSync(tempDir());
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root
+    });
+    const lock = acquireKoedServerSupervisorLock(paths);
+    expect(lock.acquired).toBe(true);
+    writeActiveRuntimeOwner(paths, lock, {
+      kind: "desktop",
+      installationId: "d".repeat(32)
+    });
+    const spawnSync = vi.fn(() => spawnResult());
+    const spawn = vi.fn(() => child(1));
+
+    await expect(
+      startKoedServer({
+        signal: cleanShutdownSignal(),
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "bundled-local"
+        },
+        spawnSync,
+        spawn
+      })
+    ).rejects.toThrow(
+      "Packaged runtime owner does not match this standalone control plane."
+    );
+
+    expect(spawnSync).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(releaseKoedServerSupervisorLock(lock)).toBe(true);
   });
 
   it("ignores packaged environment flags during source execution", async () => {

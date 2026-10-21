@@ -24,6 +24,7 @@ export interface MenuBarServiceStatus {
 }
 
 export interface MenuBarStatusSnapshot {
+  stopped?: boolean;
   summary: string;
   tooltip: string;
   services: MenuBarServiceStatus[];
@@ -56,6 +57,7 @@ interface DesktopMenuBarOptions<TMenu> {
   buildMenu: (template: MenuBarMenuItem[]) => TMenu;
   getStatus: () => unknown | Promise<unknown>;
   openDesktop: () => void | Promise<void>;
+  startKoed?: () => void;
   quit: () => void;
   pollIntervalMs?: number;
   now?: () => Date;
@@ -115,6 +117,15 @@ export const createMenuBarStatusSnapshot = (
   value: unknown
 ): MenuBarStatusSnapshot => {
   const record = statusRecord(value);
+  if (statusRecord(record?.lifecycle)?.state === "stopped") {
+    return {
+      stopped: true,
+      summary: "Koed is stopped",
+      tooltip: "Koed — stopped",
+      services: [],
+      updatedAt: statusUpdatedAt(value)
+    };
+  }
   const services = trayServiceDefinitions
     .filter(({ key }) => key !== "redis" || !isBypassedRedis(record?.redis))
     .map(({ key, label }) => {
@@ -168,6 +179,7 @@ export const createMenuBarMenuTemplate = (
   actions: {
     openDesktop: () => void;
     refresh: () => void;
+    startKoed?: () => void;
     quit: () => void;
   }
 ): MenuBarMenuItem[] => {
@@ -194,6 +206,9 @@ export const createMenuBarMenuTemplate = (
         ]
       : []),
     { type: "separator" },
+    ...(snapshot.stopped && actions.startKoed
+      ? [{ label: "Start Koed", click: actions.startKoed }]
+      : []),
     { label: "Open Koed", click: actions.openDesktop },
     { label: "Refresh Status", click: actions.refresh },
     { type: "separator" },
@@ -216,6 +231,7 @@ export const createDesktopMenuBar = <TMenu>({
   buildMenu,
   getStatus,
   openDesktop,
+  startKoed,
   quit,
   pollIntervalMs = 30_000,
   now = () => new Date()
@@ -262,6 +278,7 @@ export const createDesktopMenuBar = <TMenu>({
       createMenuBarMenuTemplate(snapshot, {
         openDesktop: showDesktop,
         refresh: refreshStatus,
+        ...(startKoed ? { startKoed } : {}),
         quit
       })
     );

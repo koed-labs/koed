@@ -172,6 +172,42 @@ other clients. No backend synthesis or parallel queue is added.
    detached supervisor, and returns machine-readable JSON without streaming
    startup logs. Packaged Desktop restart keeps ownership in its Electron main
    manager and restarts its inherited-IPC child.
+
+   The CLI launcher installed from Desktop shares that same instance. It runs
+   the packaged `desktop-cli-entrypoint.js`, which derives authority only from
+   its own real location, the running Electron executable in the same
+   installation, and full bundle verification (never from argv or environment
+   resource paths), binds `KOED_HOME` to Desktop's instance, and injects the
+   verified capability into the shared `status`, `doctor`, `setup`, repair,
+   `start`, `stop`, and `restart` functions. `start --daemon` and `restart`
+   re-enter this entrypoint, so a detached supervisor survives the launcher and
+   remains the Desktop-owned generation. A standalone npm installation keeps its
+   own signed standalone owner and never manages a Desktop-owned instance. The
+   persisted generation owner remains checked after shutdown, so a standalone
+   `start` cannot claim a stopped Desktop generation when the lock is free. The
+   persisted bundle record identifies its owner but never grants Desktop authority.
+   Packaged `stop` and `restart` require the expected generation owner and
+   matching supervisor process identity before they signal services or clear
+   runtime state. Missing, stale, or foreign proof fails closed; restart does not
+   start a replacement after a rejected stop.
+
+   Ownership is the live supervisor pin: the singleton supervisor lock, the
+   generation pin, process identity, and the Desktop runtime owner. A healthy
+   API alone proves nothing. When Desktop finds a live supervisor it opens a
+   short-lived management session (no process-exclusive ownership and no pointer
+   rewrite under the live pin), and adopts the instance only when the pin owner
+   and process identity match; a different owner or an unpinned starting
+   supervisor is refused. Simultaneous starts converge on the single lock
+   holder. Desktop quit stops only a supervisor it spawned; an adopted instance
+   keeps running. An explicit stop fences any older start or resume still in
+   flight.
+
+   One cheap local observer (lock, pin, runtime state and process identity only;
+   no service probes, bundle verification, model hashing or access checks) feeds
+   the window and the tray. An external stop is shown as explicit **Stopped**
+   with a Start action, and a status response collected for an older supervisor
+   epoch is discarded rather than shown as healthy.
+
 9. `koed status --json` and `koed doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker and Local AI Runtime process state, local API Token configuration, MCP

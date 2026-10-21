@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { stopKoedServer } from "./stop.js";
+import {
+  resolveDesktopRuntimeOwner,
+  verifyDesktopRuntimeBundle
+} from "./desktop-runtime-capability.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
 const makeHome = () => {
@@ -30,6 +34,42 @@ const writeSupervisorLock = (
       pid,
       acquiredAt: "2026-01-01T00:00:00.000Z",
       ...(includeProcessIdentity ? { processIdentity: "test-supervisor" } : {})
+    })
+  );
+};
+
+const makeDesktopCapability = () => {
+  const resourcesPath = mkdtempSync(resolve(tmpdir(), "koed-desktop-test-"));
+  const runtimeDirectory = resolve(resourcesPath, "koed-runtime");
+  mkdirSync(runtimeDirectory, { recursive: true });
+  writeFileSync(
+    resolve(runtimeDirectory, "desktop-bundle-manifest.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      productVersion: "1.0.0",
+      component: "base",
+      target: { platform: "macos", architecture: "arm64" },
+      files: []
+    })
+  );
+  return verifyDesktopRuntimeBundle(resourcesPath);
+};
+
+const writeRuntimeGeneration = (
+  koedHome: string,
+  owner: ReturnType<typeof resolveDesktopRuntimeOwner>
+) => {
+  writeFileSync(
+    resolve(koedHome, "run", "runtime-generation.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      generationId: "a".repeat(64),
+      pid: 100,
+      processIdentity: "test-supervisor",
+      startedAt: runtime().startedAt,
+      owner,
+      pinToken: "b".repeat(64),
+      source: "desktop-bundle"
     })
   );
 };
@@ -79,6 +119,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: (pid, signal) => signals.push([pid, signal]),
       checkPid: () => false
     });
@@ -98,6 +139,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: (pid, signal) => signals.push([pid, signal]),
       checkPid: () => false
     });
@@ -119,6 +161,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: (pid, signal) => {
         signals.push([pid, signal]);
         running.delete(pid);
@@ -135,23 +178,161 @@ describe("stopKoedServer", () => {
     expect(result.stoppedServices).toContain("supervisor");
   });
 
-  it("stops a supervisor referenced by a released-shape lock", () => {
+  it("does not stop a supervisor when lock omits process identity", () => {
     const koedHome = makeHome();
     writeRuntime(koedHome, runtime({ processes: {} }));
     writeSupervisorLock(koedHome, 100, false);
+    const signals: Array<[number, NodeJS.Signals]> = [];
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
+      kill: (pid, signal) => signals.push([pid, signal]),
+      checkPid: (pid) => pid === 100,
+      waitForExitMs: 0,
+      sleepSync: () => undefined
+    });
+
+    expect(result.ok).toBe(false);
+    expect(signals).toEqual([]);
+    expect(
+      readFileSync(resolve(koedHome, "run", "koed-server.json"), "utf8")
+    ).toBeTruthy();
+  });
+
+  it("refuses to stop a pinned Desktop runtime owned by another installation", () => {
+    const koedHome = makeHome();
+    const capability = makeDesktopCapability();
+    const foreignCapability = makeDesktopCapability();
+    writeRuntime(koedHome, runtime({ processes: {} }));
+    writeSupervisorLock(koedHome, 100);
+    writeRuntimeGeneration(
+      koedHome,
+      resolveDesktopRuntimeOwner(foreignCapability, koedHome)
+    );
+    const signals: Array<[number, NodeJS.Signals]> = [];
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      desktopRuntimeCapability: capability,
+      resolveProcessIdentity: () => "test-supervisor",
+      kill: (pid, signal) => signals.push([pid, signal]),
+      checkPid: (pid) => pid === 100,
+      waitForExitMs: 0,
+      sleepSync: () => undefined
+    });
+
+    expect(result.ok).toBe(false);
+    expect(signals).toEqual([]);
+    expect(
+      readFileSync(resolve(koedHome, "run", "koed-server.json"), "utf8")
+    ).toBeTruthy();
+  });
+
+  it("refuses source stop of a Desktop-owned runtime without its capability", () => {
+    const koedHome = makeHome();
+    const foreignCapability = makeDesktopCapability();
+    writeRuntime(koedHome, runtime({ processes: {} }));
+    writeSupervisorLock(koedHome, 100);
+    writeRuntimeGeneration(
+      koedHome,
+      resolveDesktopRuntimeOwner(foreignCapability, koedHome)
+    );
+    const signals: Array<[number, NodeJS.Signals]> = [];
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
+      kill: (pid, signal) => signals.push([pid, signal]),
+      checkPid: (pid) => pid === 100,
+      waitForExitMs: 0,
+      sleepSync: () => undefined
+    });
+
+    expect(result.ok).toBe(false);
+    expect(signals).toEqual([]);
+    expect(
+      readFileSync(resolve(koedHome, "run", "koed-server.json"), "utf8")
+    ).toBeTruthy();
+  });
+
+  it("stops a Desktop runtime pinned to the invoking installation", () => {
+    const koedHome = makeHome();
+    const capability = makeDesktopCapability();
+    const current = runtime({ processes: {} });
+    writeRuntime(koedHome, current);
+    writeSupervisorLock(koedHome, current.pid);
+    writeRuntimeGeneration(
+      koedHome,
+      resolveDesktopRuntimeOwner(capability, koedHome)
+    );
     let supervisorRunning = true;
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
-      checkPid: (pid) => pid === 100 && supervisorRunning,
+      desktopRuntimeCapability: capability,
+      resolveProcessIdentity: () => "test-supervisor",
+      checkPid: (pid) => pid === current.pid && supervisorRunning,
       sleepSync: () => {
         supervisorRunning = false;
       }
     });
 
     expect(result.ok).toBe(true);
-    expect(result.stoppedPids).toContain(100);
     expect(result.stoppedServices).toContain("supervisor");
+  });
+
+  it("refuses Desktop stop when pin belongs to another home", () => {
+    const koedHome = makeHome();
+    const foreignHome = makeHome();
+    const capability = makeDesktopCapability();
+    writeRuntime(koedHome, runtime({ processes: {} }));
+    writeSupervisorLock(koedHome, 100);
+    writeRuntimeGeneration(
+      koedHome,
+      resolveDesktopRuntimeOwner(capability, foreignHome)
+    );
+    const signals: Array<[number, NodeJS.Signals]> = [];
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      desktopRuntimeCapability: capability,
+      resolveProcessIdentity: () => "test-supervisor",
+      kill: (pid, signal) => signals.push([pid, signal]),
+      checkPid: (pid) => pid === 100,
+      waitForExitMs: 0,
+      sleepSync: () => undefined
+    });
+
+    expect(result.ok).toBe(false);
+    expect(signals).toEqual([]);
+    expect(
+      readFileSync(resolve(koedHome, "run", "koed-server.json"), "utf8")
+    ).toBeTruthy();
+  });
+
+  it("refuses Desktop stop when runtime owner pin is missing", () => {
+    const koedHome = makeHome();
+    const capability = makeDesktopCapability();
+    writeRuntime(koedHome, runtime({ processes: {} }));
+    writeSupervisorLock(koedHome, 100);
+    const signals: Array<[number, NodeJS.Signals]> = [];
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      desktopRuntimeCapability: capability,
+      resolveProcessIdentity: () => "test-supervisor",
+      kill: (pid, signal) => signals.push([pid, signal]),
+      checkPid: (pid) => pid === 100,
+      waitForExitMs: 0,
+      sleepSync: () => undefined
+    });
+
+    expect(result.ok).toBe(false);
+    expect(signals).toEqual([]);
+    expect(
+      readFileSync(resolve(koedHome, "run", "koed-server.json"), "utf8")
+    ).toBeTruthy();
   });
 
   it("does not signal a supervisor when runtime state and lock disagree", () => {
@@ -162,6 +343,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: (pid, signal) => signals.push([pid, signal]),
       checkPid: (pid) => pid === 100
     });
@@ -177,6 +359,54 @@ describe("stopKoedServer", () => {
     ).toBeTruthy();
   });
 
+  it("does not signal a reused supervisor PID or delete its runtime files", () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome, runtime());
+    writeSupervisorLock(koedHome, 100);
+    const signals: Array<[number, NodeJS.Signals]> = [];
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "unrelated-process",
+      kill: (pid, signal) => signals.push([pid, signal]),
+      checkPid: () => true
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContainEqual({
+      target: "supervisor (100)",
+      error: "Supervisor process identity does not match its lock"
+    });
+    expect(signals).toEqual([]);
+    expect(
+      readFileSync(resolve(koedHome, "run", "koed-server.json"), "utf8")
+    ).toBeTruthy();
+  });
+
+  it("does not stop services after supervisor PID is reused during shutdown", () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome, runtime());
+    writeSupervisorLock(koedHome, 100);
+    const signals: Array<[number, NodeJS.Signals]> = [];
+    let identityLookups = 0;
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () =>
+        identityLookups++ === 0 ? "test-supervisor" : "reused-process",
+      kill: (pid, signal) => signals.push([pid, signal]),
+      checkPid: (pid) => [100, 10, 11].includes(pid),
+      waitForExitMs: 0,
+      sleepSync: () => undefined
+    });
+
+    expect(result.ok).toBe(false);
+    expect(signals).toEqual([]);
+    expect(
+      readFileSync(resolve(koedHome, "run", "koed-server.json"), "utf8")
+    ).toBeTruthy();
+  });
+
   it("escalates a supervisor that fails to exit naturally", () => {
     const koedHome = makeHome();
     writeRuntime(koedHome, runtime({ processes: {} }));
@@ -186,6 +416,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: (pid, signal) => {
         signals.push([pid, signal]);
         if (signal === "SIGKILL") running = false;
@@ -215,6 +446,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       checkPid: (pid) => pid === 100 && supervisorRunning,
       sleepSync: () => {
         supervisorRunning = false;
@@ -245,6 +477,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: (pid, signal) => {
         signals.push([pid, signal]);
         if (signal === "SIGKILL") running = false;
@@ -271,6 +504,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: () => undefined,
       checkPid: (pid) => pid === 10,
       waitForExitMs: 1,
@@ -291,6 +525,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: (pid) => {
         const error = new Error(`missing ${pid}`) as Error & { code: string };
         error.code = "ESRCH";
@@ -405,6 +640,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: (pid) => pids.push(pid),
       checkPid: () => false
     });
@@ -427,6 +663,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: () => undefined,
       checkPid: () => false,
       spawnSync: (command) => {
@@ -457,6 +694,7 @@ describe("stopKoedServer", () => {
 
     const result = stopKoedServer({
       environment: { KOED_HOME: koedHome },
+      resolveProcessIdentity: () => "test-supervisor",
       kill: () => undefined,
       checkPid: () => false,
       spawnSync: (_command, args) => {

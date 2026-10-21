@@ -131,6 +131,41 @@ describe("Desktop menu-bar status", () => {
     );
   });
 
+  it("shows an externally stopped instance as Stopped with a Start action, not service faults", () => {
+    const snapshot = createMenuBarStatusSnapshot({
+      ...healthyStatus(),
+      api: { state: "needs_attention" },
+      database: { state: "needs_attention" },
+      lifecycle: { state: "stopped", message: "Koed is not running." }
+    });
+    expect(snapshot).toMatchObject({
+      stopped: true,
+      summary: "Koed is stopped",
+      tooltip: "Koed — stopped",
+      services: []
+    });
+    const startKoed = vi.fn();
+    const template = createMenuBarMenuTemplate(snapshot, {
+      openDesktop: vi.fn(),
+      refresh: vi.fn(),
+      startKoed,
+      quit: vi.fn()
+    });
+    expect(
+      template.some((item) => item.label?.includes("needs attention"))
+    ).toBe(false);
+    template.find((item) => item.label === "Start Koed")?.click?.();
+    expect(startKoed).toHaveBeenCalledOnce();
+    expect(
+      createMenuBarMenuTemplate(createMenuBarStatusSnapshot(healthyStatus()), {
+        openDesktop: vi.fn(),
+        refresh: vi.fn(),
+        startKoed,
+        quit: vi.fn()
+      }).some((item) => item.label === "Start Koed")
+    ).toBe(false);
+  });
+
   it("only lists services that are not running normally", () => {
     const status = healthyStatus();
     status.redis.state = "starting";

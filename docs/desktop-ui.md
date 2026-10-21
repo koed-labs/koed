@@ -21,9 +21,14 @@ on Linux and Windows for its managed local services. Activating the Koed mark
 opens or focuses the Desktop window. The indicator's context menu shows the
 current running-service count and lists only services that are starting,
 stopped, unconfigured, unavailable, or need attention. Healthy services are
-omitted. It also provides explicit refresh, open, and quit actions. Closing the
+omitted. It also provides explicit refresh, open, and quit actions. When Koed
+was stopped from outside Desktop (for example `koed stop`), the indicator and
+the Desktop health affordance show **Koed is stopped** with a **Start Koed**
+action instead of stale healthy status or a list of service faults. Closing the
 Desktop window leaves Koed running; select **Quit Koed** from the indicator menu
-to terminate it. Setup and AI-client integration diagnostics remain in the full
+to terminate an instance Desktop started. Quitting Desktop leaves a running
+instance that Desktop adopted (for example one started by the installed CLI)
+running. Setup and AI-client integration diagnostics remain in the full
 Desktop status surface. On Linux, the exact activation gesture and indicator
 location depend on the desktop environment and its StatusNotifierItem or legacy
 tray support.

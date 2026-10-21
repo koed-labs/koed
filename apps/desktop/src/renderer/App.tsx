@@ -946,7 +946,7 @@ export function App({
   useEffect(() => {
     if (statusReadyOverride !== undefined) return;
     return window.koedDesktop?.status?.subscribe(() => {
-      void activeStatusStore.refresh();
+      activeStatusStore.invalidate();
     });
   }, [activeStatusStore, statusReadyOverride]);
 

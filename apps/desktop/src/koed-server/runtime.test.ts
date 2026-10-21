@@ -32,7 +32,9 @@ describe("Koed Desktop Node entrypoint runtime", () => {
     ).toEqual({
       repoRoot: "/Applications/Koed.app/Contents/Resources",
       cliPath:
-        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/cli.js"
+        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/cli.js",
+      desktopCliPath:
+        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed-labs/server/dist/desktop-cli-entrypoint.js"
     });
   });
 

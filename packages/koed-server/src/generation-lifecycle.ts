@@ -44,6 +44,12 @@ const lockPath = (paths: KoedServerPaths): string =>
   resolve(paths.runDir, "generation-lifecycle.lock");
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+const isRuntimeOwnerRecord = (value: unknown): value is RuntimeOwner =>
+  isRecord(value) &&
+  Object.keys(value).length === 2 &&
+  ["cli", "desktop", "standalone"].includes(String(value.kind)) &&
+  typeof value.installationId === "string" &&
+  /^[A-Za-z0-9._-]{1,128}$/.test(value.installationId);
 const readRegularFile = (path: string): string => {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink())
@@ -385,6 +391,37 @@ export async function readCurrentGenerationForOwner(
   const generation = await readCurrentGeneration(paths);
   assertOwner(generation, requester);
   return generation;
+}
+
+export async function readCurrentRuntimeOwner(
+  paths: KoedServerPaths
+): Promise<RuntimeOwner | null> {
+  if (!existsSync(resolve(paths.componentsDir, "current.json"))) return null;
+  const id = readCurrentId(paths);
+  if (!id) return null;
+  const bundlePath = desktopBundleRecordPath(paths, id);
+  if (!existsSync(bundlePath))
+    return (await readStagedGeneration(paths, id)).owner;
+
+  const parsed: unknown = JSON.parse(readRegularFile(bundlePath));
+  if (
+    !isRecord(parsed) ||
+    Object.keys(parsed).length !== 7 ||
+    parsed.schemaVersion !== 1 ||
+    parsed.kind !== "desktop-bundle" ||
+    parsed.id !== id ||
+    typeof parsed.productVersion !== "string" ||
+    parsed.productVersion.length === 0 ||
+    !isRuntimeOwnerRecord(parsed.owner) ||
+    parsed.owner.kind !== "desktop" ||
+    typeof parsed.bundleDigest !== "string" ||
+    !/^[a-f0-9]{64}$/.test(parsed.bundleDigest) ||
+    typeof parsed.resourcesPath !== "string" ||
+    parsed.resourcesPath.length === 0
+  )
+    throw new Error("private Desktop bundle generation record is invalid");
+  // This record identifies a generation owner; it does not grant Desktop authority.
+  return parsed.owner;
 }
 
 const persistPinState = (

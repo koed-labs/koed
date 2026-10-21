@@ -44,6 +44,8 @@ export const createDesktopCliInstallManager = (input: {
   appPath: string;
   helperPath: string;
   cliPath: string;
+  koedHome: string;
+  legacyCliPath?: string;
   expectedVersion: string;
   currentPath: string;
   homePath?: string;
@@ -72,6 +74,8 @@ export const createDesktopCliInstallManager = (input: {
     appPath: input.appPath,
     helperPath: input.helperPath,
     cliPath: input.cliPath,
+    koedHome: input.koedHome,
+    ...(input.legacyCliPath ? { legacyCliPath: input.legacyCliPath } : {}),
     expectedVersion: input.expectedVersion,
     currentPath: input.currentPath,
     destination

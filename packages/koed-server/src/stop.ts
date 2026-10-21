@@ -9,10 +9,26 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { resolve } from "node:path";
+import {
+  resolveKoedAppRuntimeExecution,
+  resolveKoedRuntimeOwner
+} from "./app-runtime.js";
+import type { RuntimeOwner } from "./component-contract.js";
+import {
+  resolveDesktopRuntimeOwner,
+  type DesktopRuntimeCapability
+} from "./desktop-runtime-capability.js";
 import { environmentWithRepoEnv } from "./env-file.js";
 import { stopLocalPostgresRuntime } from "./local-postgres-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
-import { readSupervisorLock } from "./supervisor-lock.js";
+import {
+  isRuntimeGenerationState,
+  type RuntimeGenerationState
+} from "./runtime-state.js";
+import {
+  readSupervisorLock,
+  resolveProcessIdentity as defaultResolveProcessIdentity
+} from "./supervisor-lock.js";
 import { requestSupervisorExit } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
@@ -46,6 +62,8 @@ export interface KoedServerStopOptions {
   pollIntervalMs?: number;
   sleepSync?: (ms: number) => void;
   readSupervisorLock?: typeof readSupervisorLock;
+  resolveProcessIdentity?: (pid: number) => string | null;
+  desktopRuntimeCapability?: DesktopRuntimeCapability;
 }
 
 const APP_PROCESS_ORDER = [
@@ -71,6 +89,30 @@ const readRuntimeState = (
     return null;
   }
 };
+
+const readRuntimeGeneration = (
+  path: string,
+  deps: Pick<Required<KoedServerStopOptions>, "existsSync" | "readFileSync">
+): RuntimeGenerationState | null => {
+  if (!deps.existsSync(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(String(deps.readFileSync(path, "utf8")));
+    return isRuntimeGenerationState(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const expectedRuntimeOwner = (
+  capability: DesktopRuntimeCapability | undefined,
+  koedHome: string
+): RuntimeOwner =>
+  capability
+    ? resolveDesktopRuntimeOwner(capability, koedHome)
+    : resolveKoedRuntimeOwner();
+
+const ownersMatch = (left: RuntimeOwner, right: RuntimeOwner): boolean =>
+  left.kind === right.kind && left.installationId === right.installationId;
 
 const defaultCheckPid = (pid: number): boolean => {
   try {
@@ -118,7 +160,10 @@ const stopPid = (
   deps: Pick<
     Required<KoedServerStopOptions>,
     "kill" | "checkPid" | "waitForExitMs" | "pollIntervalMs" | "sleepSync"
-  >
+  > & {
+    expectedProcessIdentity?: string;
+    resolveProcessIdentity?: (pid: number) => string | null;
+  }
 ): {
   stoppedPids: number[];
   missingPids: number[];
@@ -127,11 +172,28 @@ const stopPid = (
   if (!pid || pid <= 0) {
     return { stoppedPids: [], missingPids: [], errors: [] };
   }
+  const identityMatches = (): boolean =>
+    !deps.expectedProcessIdentity ||
+    deps.resolveProcessIdentity?.(pid) === deps.expectedProcessIdentity;
+  const identityError = () => ({
+    stoppedPids: [],
+    missingPids: [],
+    errors: [
+      {
+        target: `${label} (${pid})`,
+        error: "Process identity changed before signaling"
+      }
+    ]
+  });
+  if (deps.expectedProcessIdentity && !deps.checkPid(pid))
+    return { stoppedPids: [], missingPids: [pid], errors: [] };
+  if (!identityMatches()) return identityError();
   try {
     deps.kill(pid, "SIGTERM");
     if (waitForPidExit(pid, deps)) {
       return { stoppedPids: [pid], missingPids: [], errors: [] };
     }
+    if (!identityMatches()) return identityError();
     deps.kill(pid, "SIGKILL");
     if (waitForPidExit(pid, deps)) {
       return { stoppedPids: [pid], missingPids: [], errors: [] };
@@ -175,7 +237,9 @@ export const stopKoedServer = ({
   waitForExitMs = 5_000,
   pollIntervalMs = 100,
   sleepSync = defaultSleepSync,
-  readSupervisorLock: readLock = readSupervisorLock
+  readSupervisorLock: readLock = readSupervisorLock,
+  resolveProcessIdentity = defaultResolveProcessIdentity,
+  desktopRuntimeCapability
 }: KoedServerStopOptions = {}): KoedServerStopResult => {
   const paths = resolveKoedServerPaths(environment);
   const runtimeEnvironment = environmentWithRepoEnv(
@@ -207,16 +271,100 @@ export const stopKoedServer = ({
   const errors: Array<{ target: string; error: string }> = [];
   let supervisorStoppedGracefully = false;
   let supervisorLockMatches = true;
+  let expectedSupervisorIdentity: string | undefined;
+  const supervisorLockPath = resolve(paths.runDir, "koed-server.lock");
+  const owner = expectedRuntimeOwner(desktopRuntimeCapability, paths.koedHome);
+  const ownerPinRequired =
+    desktopRuntimeCapability !== undefined ||
+    resolveKoedAppRuntimeExecution() === "packaged";
+  const isExpectedSupervisorRunning = (identity: string): boolean => {
+    const lock = readLock(supervisorLockPath);
+    return (
+      lock?.pid === runtime.pid &&
+      lock.processIdentity === identity &&
+      checkPid(runtime.pid) &&
+      resolveProcessIdentity(runtime.pid) === identity
+    );
+  };
+  const markSupervisorIdentityUnverified = (): void => {
+    if (!supervisorLockMatches) return;
+    supervisorLockMatches = false;
+    errors.push({
+      target: `supervisor (${runtime.pid})`,
+      error:
+        "Supervisor identity changed during stop; refusing fallback signals"
+    });
+  };
+  const canSignalFallbackProcesses = (): boolean => {
+    if (!supervisorLockMatches) return false;
+    if (
+      expectedSupervisorIdentity &&
+      !isExpectedSupervisorRunning(expectedSupervisorIdentity)
+    ) {
+      markSupervisorIdentityUnverified();
+      return false;
+    }
+    return true;
+  };
+  const pinPath =
+    paths.generationStatePath ??
+    resolve(paths.runDir, "runtime-generation.json");
+  const pinExists = pathExists(pinPath);
+  const pin = readRuntimeGeneration(pinPath, {
+    existsSync: pathExists,
+    readFileSync: readFile
+  });
+  const lock = readLock(supervisorLockPath);
+  const supervisorRunning = runtime.pid > 0 && checkPid(runtime.pid);
+  const processIdentity = supervisorRunning
+    ? resolveProcessIdentity(runtime.pid)
+    : null;
+  if (
+    (ownerPinRequired && !pin) ||
+    (pinExists && !pin) ||
+    (pin !== null &&
+      (pin.pid !== runtime.pid ||
+        !ownersMatch(pin.owner, owner) ||
+        lock?.pid !== runtime.pid ||
+        !lock.processIdentity ||
+        pin.processIdentity !== lock.processIdentity ||
+        (supervisorRunning && processIdentity !== pin.processIdentity)))
+  ) {
+    supervisorLockMatches = false;
+    errors.push({
+      target: `supervisor (${runtime.pid})`,
+      error:
+        "Runtime owner and process identity could not be verified; refusing to stop"
+    });
+  } else if (pin) {
+    expectedSupervisorIdentity = pin.processIdentity;
+  }
 
   if (runtime.pid > 0 && runtime.pid !== process.pid && checkPid(runtime.pid)) {
-    const lock = readLock(resolve(paths.runDir, "koed-server.lock"));
-    if (lock?.pid !== runtime.pid) {
+    const lock = readLock(supervisorLockPath);
+    if (!supervisorLockMatches) {
+      // Owner verification already failed; preserve uncertain runtime state.
+    } else if (lock?.pid !== runtime.pid) {
       supervisorLockMatches = false;
       errors.push({
         target: `supervisor (${runtime.pid})`,
         error: "Runtime state does not match the active supervisor lock"
       });
+    } else if (!lock.processIdentity) {
+      supervisorLockMatches = false;
+      errors.push({
+        target: `supervisor (${runtime.pid})`,
+        error: "Supervisor process identity is missing from its lock"
+      });
+    } else if (resolveProcessIdentity(runtime.pid) !== lock.processIdentity) {
+      // A reused PID is not the supervisor that wrote these files.
+      supervisorLockMatches = false;
+      errors.push({
+        target: `supervisor (${runtime.pid})`,
+        error: "Supervisor process identity does not match its lock"
+      });
     } else {
+      expectedSupervisorIdentity = lock.processIdentity;
       requestSupervisorExit(paths, {
         pid: runtime.pid,
         startedAt: runtime.startedAt
@@ -239,8 +387,11 @@ export const stopKoedServer = ({
     }
   }
 
+  if (!supervisorStoppedGracefully) canSignalFallbackProcesses();
+
   if (!supervisorStoppedGracefully && supervisorLockMatches) {
     for (const { processName, serviceName } of APP_PROCESS_ORDER) {
+      if (!canSignalFallbackProcesses()) break;
       const pid = runtime.processes?.[processName];
       if (!pid || pid <= 0) {
         if (runtime.services.includes(serviceName)) {
@@ -267,7 +418,10 @@ export const stopKoedServer = ({
 
     if (runtime.dependencyMode === "bundled-local") {
       const embeddingPid = runtime.processes?.embeddingService;
-      if (runtime.services.includes("embedding-service-native")) {
+      if (
+        canSignalFallbackProcesses() &&
+        runtime.services.includes("embedding-service-native")
+      ) {
         if (!embeddingPid || embeddingPid <= 0) {
           missingServices.push("embedding-service-native");
         } else {
@@ -289,7 +443,7 @@ export const stopKoedServer = ({
         }
       }
 
-      if (shouldStopNativePostgres(runtime)) {
+      if (canSignalFallbackProcesses() && shouldStopNativePostgres(runtime)) {
         const stopped = stopLocalPostgresRuntime(paths, runtimeEnvironment, {
           existsSync: pathExists,
           spawnSync
@@ -308,7 +462,7 @@ export const stopKoedServer = ({
 
   if (
     !supervisorStoppedGracefully &&
-    supervisorLockMatches &&
+    canSignalFallbackProcesses() &&
     runtime.pid > 0 &&
     runtime.pid !== process.pid &&
     checkPid(runtime.pid)
@@ -318,7 +472,9 @@ export const stopKoedServer = ({
       checkPid,
       waitForExitMs,
       pollIntervalMs,
-      sleepSync
+      sleepSync,
+      expectedProcessIdentity: expectedSupervisorIdentity,
+      resolveProcessIdentity
     });
     stoppedPids.push(...stopped.stoppedPids);
     missingPids.push(...stopped.missingPids);

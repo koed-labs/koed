@@ -27,6 +27,8 @@ export interface KoedServerPathOptions {
 export interface KoedServerPaths {
   repoRoot: string;
   cliPath: string;
+  // Packaged only: the verified entrypoint that carries Desktop authority.
+  desktopCliPath?: string;
 }
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -67,17 +69,18 @@ export const resolveKoedServerPaths = ({
       throw new Error("Packaged Desktop runtime overrides are not allowed.");
     }
     const packagedResourcesPath = resourcesPath ?? resolve(appDir, "..");
+    const serverDist = resolve(
+      packagedResourcesPath,
+      "app.asar",
+      "node_modules",
+      "@koed-labs",
+      "server",
+      "dist"
+    );
     return {
       repoRoot: packagedResourcesPath,
-      cliPath: resolve(
-        packagedResourcesPath,
-        "app.asar",
-        "node_modules",
-        "@koed-labs",
-        "server",
-        "dist",
-        "cli.js"
-      )
+      cliPath: resolve(serverDist, "cli.js"),
+      desktopCliPath: resolve(serverDist, "desktop-cli-entrypoint.js")
     };
   }
 

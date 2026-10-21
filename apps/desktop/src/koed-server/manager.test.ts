@@ -17,7 +17,44 @@ import {
   createPdsApplicationSecretStore,
   storeDesktopLocalCredential
 } from "@koed/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Never observe the developer's real KOED_HOME; tests steer lifecycle here.
+const lifecycleControl = vi.hoisted(() => ({
+  current: {
+    state: "running",
+    epoch: "1:test",
+    message: "Koed is running.",
+    pid: 1
+  } as Record<string, unknown>
+}));
+vi.mock("@koed-labs/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@koed-labs/server")>()),
+  observeRuntimeLifecycle: () => lifecycleControl.current
+}));
+const runningLifecycle = {
+  state: "running",
+  epoch: "1:test",
+  message: "Koed is running.",
+  pid: 1
+};
+const stoppedManagedLifecycle = {
+  state: "stopped",
+  epoch: "stopped",
+  message: "Koed is not running.",
+  owned: false
+};
+const liveManagedLifecycle = (owned: boolean) => ({
+  ...runningLifecycle,
+  owner: {
+    kind: owned ? "desktop" : "standalone",
+    installationId: "a".repeat(32)
+  },
+  owned
+});
+beforeEach(() => {
+  lifecycleControl.current = { ...runningLifecycle };
+});
 import * as capabilityRefresh from "./local-ai-client-refresh.js";
 afterEach(() => vi.restoreAllMocks());
 import {
@@ -439,14 +476,14 @@ describe("Koed server desktop manager", () => {
     });
     await manager.handlers.status();
     expect(statusRequests).toHaveLength(2);
-    expect(statusRequests[0]).toMatchObject({ startup: true });
+    expect(statusRequests[0]).toMatchObject({ action: "lifecycle" });
     expect(statusRequests[1]).toMatchObject({ startup: false });
     await manager.handlers.setup_core();
     await manager.handlers.setup_codex();
     await manager.handlers.repair_codex();
     await manager.handlers.doctor();
     expect(statusRequests.map((request) => request.action)).toEqual([
-      "status",
+      "lifecycle",
       "status",
       "setup-core",
       "setup-codex",
@@ -484,8 +521,8 @@ describe("Koed server desktop manager", () => {
               ...message,
               type: "koed.desktop.status.response",
               result:
-                message.action === "status"
-                  ? { ok: true, api: { state: "stopped" } }
+                message.action === "lifecycle"
+                  ? stoppedManagedLifecycle
                   : { ok: true, state: "complete" }
             })
           );
@@ -525,7 +562,7 @@ describe("Koed server desktop manager", () => {
       state: "complete"
     });
     expect(requests).toHaveLength(2);
-    expect(requests[0]).toMatchObject({ action: "status", startup: true });
+    expect(requests[0]).toMatchObject({ action: "lifecycle" });
     expect(requests[1]).toMatchObject({
       action: "setup-core",
       startup: false
@@ -558,7 +595,7 @@ describe("Koed server desktop manager", () => {
             child.emit("message", {
               ...message,
               type: "koed.desktop.status.response",
-              result: { ok: true, api: { state: "healthy" } }
+              result: liveManagedLifecycle(false)
             })
           );
         }
@@ -588,7 +625,7 @@ describe("Koed server desktop manager", () => {
       "A running Koed supervisor is not owned by this Desktop manager."
     );
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ action: "status", startup: true });
+    expect(requests[0]).toMatchObject({ action: "lifecycle" });
     expect(execFile).not.toHaveBeenCalled();
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
@@ -616,11 +653,11 @@ describe("Koed server desktop manager", () => {
           queueMicrotask(() =>
             child.emit(
               "message",
-              message.action === "status"
+              message.action === "lifecycle"
                 ? {
                     ...message,
                     type: "koed.desktop.status.response",
-                    result: { ok: true, api: { state: "stopped" } }
+                    result: stoppedManagedLifecycle
                   }
                 : {
                     ...message,
@@ -656,7 +693,7 @@ describe("Koed server desktop manager", () => {
       "Private doctor failed."
     );
     expect(requests.map((request) => request.action)).toEqual([
-      "status",
+      "lifecycle",
       "doctor"
     ]);
     expect(execFile).not.toHaveBeenCalled();
@@ -691,7 +728,7 @@ describe("Koed server desktop manager", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("keeps the healthy unowned supervisor refusal after private status preflight", async () => {
+  it("keeps the live unowned supervisor refusal after private lifecycle preflight", async () => {
     const child = Object.assign(new EventEmitter(), {
       killed: false,
       connected: true,
@@ -713,7 +750,7 @@ describe("Koed server desktop manager", () => {
             child.emit("message", {
               ...message,
               type: "koed.desktop.status.response",
-              result: healthyLocalServiceStatus()
+              result: liveManagedLifecycle(false)
             })
           );
         }
@@ -743,7 +780,7 @@ describe("Koed server desktop manager", () => {
       ok: false,
       state: "needs_attention",
       error:
-        "A running Koed supervisor is not owned by this Desktop manager. Stop it before starting Desktop."
+        "A running Koed supervisor is not owned by this Desktop installation. Stop it before starting Desktop."
     });
     expect(execFile).not.toHaveBeenCalled();
     expect(child.kill).toHaveBeenCalledTimes(1);

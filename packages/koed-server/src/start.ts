@@ -20,7 +20,8 @@ import { dirname, resolve } from "node:path";
 import {
   assertKoedAppRuntimeAvailable,
   resolveKoedAppRuntime,
-  resolveKoedAppRuntimeExecution
+  resolveKoedAppRuntimeExecution,
+  resolveKoedRuntimeOwner
 } from "./app-runtime.js";
 import type { KoedAppRuntime } from "./app-runtime.js";
 import {
@@ -28,10 +29,16 @@ import {
   resolveEffectiveRuntimeConfig
 } from "./effective-runtime-config.js";
 import { pinAndResolvePackagedRuntime } from "./service-runtime-selection.js";
+import { readCurrentRuntimeOwner } from "./generation-lifecycle.js";
 import {
+  resolveDesktopRuntimeOwner,
   validateDesktopRuntimeCapability,
   type DesktopRuntimeCapability
 } from "./desktop-runtime-capability.js";
+import {
+  observeRuntimeLifecycle,
+  runtimeOwnedBy
+} from "./runtime-lifecycle.js";
 import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import {
   resolveActiveIntegrationApiToken,
@@ -858,9 +865,37 @@ export const startKoedServer = async ({
       ? environmentWithRepoEnv(bootstrapPaths.repoRoot, environment)
       : environment;
   const paths = resolveKoedServerPaths(bootstrapEnvironment);
+  const owner =
+    desktopRuntimeCapability === undefined
+      ? resolveKoedRuntimeOwner()
+      : resolveDesktopRuntimeOwner(desktopRuntimeCapability, paths.koedHome);
+  const ownerMismatchMessage =
+    desktopRuntimeCapability === undefined
+      ? "Packaged runtime owner does not match this standalone control plane."
+      : "Packaged runtime owner does not match this Desktop installation.";
+  const persistedOwner = await readCurrentRuntimeOwner(paths);
+  if (
+    persistedOwner &&
+    (persistedOwner.kind !== owner.kind ||
+      persistedOwner.installationId !== owner.installationId)
+  )
+    throw new Error(ownerMismatchMessage);
+  const assertObservedOwner = (
+    existing: ReturnType<typeof observeRuntimeLifecycle>
+  ): void => {
+    if (existing.state === "stopped") return;
+    if (!existing.owner)
+      throw new Error(
+        "Runtime owner could not be verified; refusing to share this KOED_HOME."
+      );
+    if (!runtimeOwnedBy(existing, owner)) throw new Error(ownerMismatchMessage);
+  };
+  assertObservedOwner(observeRuntimeLifecycle(paths));
+
   ensureKoedHome(paths);
   const supervisorLock = acquireKoedServerSupervisorLock(paths);
   if (!supervisorLock.acquired) {
+    assertObservedOwner(observeRuntimeLifecycle(paths));
     console.log(
       JSON.stringify(
         {

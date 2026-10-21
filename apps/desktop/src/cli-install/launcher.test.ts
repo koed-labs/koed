@@ -6,6 +6,7 @@ import {
   symlinkSync,
   writeFileSync
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -34,6 +35,7 @@ describe("Desktop CLI launcher", () => {
       appPath: root,
       helperPath: join(root, "Koed"),
       cliPath: join(root, "cli.js"),
+      koedHome: join(root, "Koed Home"),
       expectedVersion: "0.8.1",
       currentPath: root,
       probeHelper: async () => true
@@ -58,6 +60,7 @@ describe("Desktop CLI launcher", () => {
       appPath: root,
       helperPath: join(root, "Koed"),
       cliPath: join(root, "cli.js"),
+      koedHome: join(root, "Koed Home"),
       expectedVersion: "0.8.1",
       currentPath: root,
       probeHelper: async () => true
@@ -98,6 +101,7 @@ describe("Desktop CLI launcher", () => {
       appPath: join(root, "Koed App.app"),
       helperPath: join(root, "Koed App.app", "Contents", "MacOS", "Koed"),
       cliPath: join(root, "Koed App.app", "Resources", "server", "cli.js"),
+      koedHome: join(root, "Koed Home"),
       expectedVersion: "0.8.1",
       currentPath: "/usr/bin"
     };
@@ -123,6 +127,7 @@ describe("Desktop CLI launcher", () => {
       appPath: root,
       helperPath: join(root, "Koed"),
       cliPath: join(root, "cli.js"),
+      koedHome: join(root, "Koed Home"),
       expectedVersion: "0.8.1",
       currentPath: "/usr/bin"
     };
@@ -149,6 +154,7 @@ describe("Desktop CLI launcher", () => {
       appPath: root,
       helperPath: join(root, "Koed"),
       cliPath: join(root, "cli.js"),
+      koedHome: join(root, "Koed Home"),
       expectedVersion: "0.8.1",
       currentPath: "/usr/bin"
     };
@@ -173,6 +179,7 @@ describe("Desktop CLI launcher", () => {
       appPath: root,
       helperPath: join(root, "Koed"),
       cliPath: join(root, "cli.js"),
+      koedHome: join(root, "Koed Home"),
       expectedVersion: "0.8.1",
       currentPath: "/usr/bin"
     };
@@ -189,7 +196,7 @@ describe("Desktop CLI launcher", () => {
           rmSync(input.destination);
           writeFileSync(
             input.destination,
-            "# koed-desktop-launcher:v1\\nreplacement"
+            "#!/bin/sh\\n# koed-desktop-launcher:v2\\nreplacement"
           );
           return true;
         }
@@ -207,6 +214,7 @@ describe("Desktop CLI launcher", () => {
       appPath: root,
       helperPath: join(root, "Koed"),
       cliPath: join(root, "cli.js"),
+      koedHome: join(root, "Koed Home"),
       expectedVersion: "0.8.1",
       currentPath: "/usr/bin"
     };
@@ -225,5 +233,90 @@ describe("Desktop CLI launcher", () => {
       })
     ).rejects.toThrow(/conflict/);
     expect(readFileSync(destination, "utf8")).toBe("unrelated launcher");
+  });
+
+  it("binds the quoted Desktop KOED_HOME and runs the verified Desktop entrypoint", async () => {
+    const root = fixture();
+    const input = {
+      destination: join(root, "bin", "koed"),
+      appPath: join(root, "Koed's Apps", "Koed.app"),
+      helperPath: join(
+        root,
+        "Koed's Apps",
+        "Koed.app",
+        "Contents",
+        "MacOS",
+        "Koed"
+      ),
+      cliPath: join(root, "Koed's Apps", "entry.js"),
+      koedHome: join(root, "Desktop Home's state"),
+      expectedVersion: "0.9.0",
+      currentPath: "/usr/bin",
+      probeHelper: async () => true
+    };
+    mkdirSync(dirname(input.cliPath), { recursive: true });
+    writeFileSync(input.cliPath, "// entry\n");
+    await installLauncher({ ...input, consent: true });
+    const contents = readFileSync(input.destination, "utf8");
+    expect(contents).toBe(
+      [
+        "#!/bin/sh",
+        "# koed-desktop-launcher:v2",
+        "# version:0.9.0",
+        "export ELECTRON_RUN_AS_NODE=1",
+        `export KOED_HOME='${input.koedHome.replace("'", "'\\''")}'`,
+        `exec '${input.helperPath.replace("'", "'\\''")}' '${input.cliPath.replace("'", "'\\''")}' "$@"`,
+        ""
+      ].join("\n")
+    );
+    const shell = spawnSync("/bin/sh", [
+      "-c",
+      `${contents.split("\n").slice(4, 5).join("")}; printf %s "$KOED_HOME"`
+    ]);
+    expect(shell.stdout.toString()).toBe(input.koedHome);
+    await expect(
+      inspectLauncher({ ...input, koedHome: join(root, "other") })
+    ).resolves.toMatchObject({ ownership: "changed" });
+    await expect(
+      installLauncher({ ...input, consent: true, koedHome: "relative" })
+    ).rejects.toThrow(/absolute/);
+  });
+
+  it("migrates an unchanged v1 launcher but never overwrites an edited one", async () => {
+    const root = fixture();
+    const input = {
+      destination: join(root, "koed"),
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "entry.js"),
+      legacyCliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: root,
+      probeHelper: async () => true
+    };
+    writeFileSync(input.cliPath, "// entry\n");
+    const legacy = `# koed-desktop-launcher:v1\n# version:0.8.1\nexport ELECTRON_RUN_AS_NODE=1\nexec '${input.helperPath}' '${input.legacyCliPath}' "$@"\n`;
+    writeFileSync(input.destination, legacy);
+    await expect(inspectLauncher(input)).resolves.toMatchObject({
+      ownership: "koed",
+      template: "legacy",
+      version: "0.8.1"
+    });
+    await expect(
+      installLauncher({ ...input, consent: true })
+    ).resolves.toMatchObject({ ownership: "koed", template: "current" });
+    expect(readFileSync(input.destination, "utf8")).toContain("KOED_HOME");
+    writeFileSync(input.destination, `${legacy}echo edited\n`);
+    await expect(inspectLauncher(input)).resolves.toMatchObject({
+      ownership: "changed"
+    });
+    await expect(installLauncher({ ...input, consent: true })).rejects.toThrow(
+      /conflict/
+    );
+    expect(readFileSync(input.destination, "utf8")).toContain("echo edited");
+    await expect(
+      inspectLauncher({ ...input, legacyCliPath: undefined })
+    ).resolves.toMatchObject({ ownership: "changed" });
   });
 });

@@ -95,6 +95,8 @@ import {
 } from "./app-runtime.js";
 import type { ArtifactTarget } from "./component-contract.js";
 import type { ComponentSource } from "./component-store.js";
+import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
+import { observeRuntimeLifecycle } from "./runtime-lifecycle.js";
 
 import {
   personalSyncAdvancedUsageText,
@@ -157,7 +159,24 @@ export interface KoedServerCliDependencies {
   resolvePaths?: typeof resolveKoedServerPaths;
   stdout?: Pick<NodeJS.WriteStream, "write">;
   stderr?: Pick<NodeJS.WriteStream, "write">;
+  /** Issued only by the verified packaged Desktop CLI entrypoint. */
+  desktopRuntimeCapability?: DesktopRuntimeCapability;
+  /** Verified supervisor command for detached starts; never taken from argv. */
+  supervisorInvocation?: { startCommand: string; cwd: string };
 }
+
+// Lifecycle is advisory context on status output; it must never fail the command.
+const safeLifecycle = (paths: ReturnType<typeof resolveKoedServerPaths>) => {
+  try {
+    return observeRuntimeLifecycle(paths);
+  } catch {
+    return {
+      state: "unavailable" as const,
+      epoch: "unavailable",
+      message: "Koed state could not be read."
+    };
+  }
+};
 
 const printJson = (
   stdout: Pick<NodeJS.WriteStream, "write">,
@@ -415,9 +434,62 @@ export const runKoedServerCli = async (
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
-    stderr = process.stderr
+    stderr = process.stderr,
+    desktopRuntimeCapability,
+    supervisorInvocation
   }: KoedServerCliDependencies = {}
 ): Promise<number> => {
+  if (desktopRuntimeCapability) {
+    // Desktop authority selects the Desktop-owned generation for the same
+    // shared lifecycle and setup functions used by standalone installations.
+    const authority = { desktopRuntimeCapability };
+    const [
+      status,
+      startupStatus,
+      doctor,
+      foreground,
+      restartServer,
+      stopServer
+    ] = [
+      collectStatus,
+      collectStartupStatus,
+      collectDoctor,
+      start,
+      restart,
+      stop
+    ];
+    const [core, codex, claude, pi, codexRepair] = [
+      setupCoreIntegration,
+      setup,
+      setupClaudeIntegration,
+      setupPiIntegration,
+      repairCodex
+    ];
+    const daemon = startDaemon;
+    collectStatus = (environment, dependencies, options) =>
+      status(environment, { ...dependencies, ...authority }, options);
+    collectStartupStatus = (environment, dependencies) =>
+      startupStatus(environment, { ...dependencies, ...authority });
+    collectDoctor = (environment, dependencies) =>
+      doctor(environment, { ...dependencies, ...authority });
+    start = (options) => foreground({ ...options, ...authority });
+    stop = (options = {}) => stopServer({ ...options, ...authority });
+    restart = (options) =>
+      restartServer({ ...options, ...authority, ...supervisorStart() });
+    startDaemon = (options) => daemon({ ...options, ...supervisorStart() });
+    setupCoreIntegration = (options) => core({ ...options, ...authority });
+    setup = (options) => codex({ ...options, ...authority });
+    repairCodex = (options) => codexRepair({ ...options, ...authority });
+    setupClaudeIntegration = (environment, spawnSync, options) =>
+      claude(environment, spawnSync, { ...options, ...authority });
+    setupPiIntegration = (environment, spawnSync, options) =>
+      pi(environment, spawnSync, { ...options, ...authority });
+  }
+  function supervisorStart() {
+    if (!supervisorInvocation)
+      throw new Error("Verified Desktop supervisor command is unavailable.");
+    return supervisorInvocation;
+  }
   const command = args[0];
   const subcommand = args[1];
   const wantsHelp = args.includes("--help") || args.includes("-h");
@@ -448,6 +520,10 @@ export const runKoedServerCli = async (
     }
 
     if (command === "components") {
+      if (desktopRuntimeCapability)
+        throw new Error(
+          "Koed Desktop manages components for its bundled runtime. Use Koed Desktop to install or update components."
+        );
       const optionsByCommand: Record<string, ReadonlySet<string>> = {
         status: new Set(["--json"]),
         install: new Set([
@@ -577,7 +653,10 @@ export const runKoedServerCli = async (
         ? await collectStartupStatus()
         : await collectStatus();
       if (wantsJson) {
-        printJson(stdout, status);
+        printJson(
+          stdout,
+          isStartup ? status : { ...status, lifecycle: safeLifecycle(paths) }
+        );
       } else {
         stdout.write(`${status.state}\n`);
         if (!isStartup && "codex" in status) {

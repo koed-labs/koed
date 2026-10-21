@@ -8,7 +8,14 @@ import {
 } from "./desktop-component-manager.js";
 import { discoverActualRuntimeIdentity } from "./component-runtime-identity.js";
 import { resolveKoedServerPaths } from "./paths.js";
-import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
+import {
+  resolveDesktopRuntimeOwner,
+  verifyDesktopRuntimeBundle
+} from "./desktop-runtime-capability.js";
+import {
+  observeRuntimeLifecycle,
+  runtimeOwnedBy
+} from "./runtime-lifecycle.js";
 
 interface InitMessage {
   type: "koed.desktop.supervisor.init";
@@ -99,12 +106,20 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
   if (typeof process.send !== "function")
     throw new Error("Desktop supervisor IPC channel is unavailable");
   const supervisorEnvironment = createDesktopSupervisorEnvironment(process.env);
+  const paths = resolveKoedServerPaths(supervisorEnvironment);
+  const live =
+    handshake.mode === "privacy-management"
+      ? observeRuntimeLifecycle(paths)
+      : null;
   const privacyManager = createDesktopComponentManagerBridge({
     capability,
-    paths: resolveKoedServerPaths(supervisorEnvironment),
+    paths,
     environment: supervisorEnvironment,
     runtime: discoverActualRuntimeIdentity(),
-    isRunning: handshake.mode === undefined || handshake.mode === "runtime",
+    isRunning:
+      handshake.mode === undefined ||
+      handshake.mode === "runtime" ||
+      (live !== null && live.state !== "stopped"),
     target: capability.target,
     controlPlaneVersion: capability.productVersion
   });
@@ -126,12 +141,21 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
     handshake.mode === "privacy-activation" ||
     handshake.mode === "privacy-management"
   ) {
-    if (handshake.mode === "privacy-management") {
-      const pin = await pinDesktopBundleGenerationForStart(
-        resolveKoedServerPaths(supervisorEnvironment),
-        capability
-      );
-      await pin.release();
+    if (live) {
+      if (live.state === "stopped") {
+        const pin = await pinDesktopBundleGenerationForStart(paths, capability);
+        await pin.release();
+      } else if (
+        live.owner &&
+        !runtimeOwnedBy(
+          live,
+          resolveDesktopRuntimeOwner(capability, paths.koedHome)
+        )
+      ) {
+        // A live supervisor keeps its pin; management never rewrites the
+        // generation pointer underneath it and never manages another owner.
+        throw new Error("runtime owner mismatch");
+      }
     }
     process.on("message", (message: unknown) => {
       if (handshake.mode === "privacy-management" && handleStatusRpc(message))
