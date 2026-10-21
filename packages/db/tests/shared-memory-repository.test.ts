@@ -1,3 +1,4 @@
+import { createSavepointPool } from "../src/savepoint-pool.js";
 import { createMemorySourceRepository } from "../src/repository.js";
 import { personalSourceDeviceFixture } from "./fixtures/personal-source-device.js";
 import { preparePersonalSourceContextSnapshot } from "../src/personal-source-context-export.js";
@@ -13,7 +14,8 @@ import {
 } from "@koed/shared";
 import { createPersonalSourceCorrectionRepository } from "../src/personal-source-correction-repository.js";
 import { unresolvedTeamRepositorySnapshot } from "@koed/shared";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, randomBytes } from "node:crypto";
+import { createHighRiskActionRepository } from "../src/high-risk-action-repository.js";
 import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import {
@@ -21,8 +23,18 @@ import {
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,
   PRIVACY_REPLACEMENT_CONTRACT_VERSION,
+  teamSemanticEmbeddingGeneration,
   createLocalTestKeyEnvelopeEncryptionProvider,
   crossIdentitySyncDigest,
+  highRiskActionGrantCommitment,
+  sharedMemoryCandidatePreviewActionGrantBinding,
+  sharedMemoryConversationRuleCreationActionGrantBinding,
+  sharedMemoryRuleControlActionGrantBinding,
+  sharedMemoryRuleDetailActionGrantBinding,
+  sharedMemoryRuleContentPolicyActionGrantBinding,
+  sharedMemoryRepositoryRuleCreationActionGrantBinding,
+  sharedMemoryRepositoryRuleControlActionGrantBinding,
+  type SharedMemoryActionGrantBinding,
   noPrivacyLabelsPolicy,
   privacyContentPolicyHash,
   privacyClassificationExpectedManifestHash,
@@ -66,7 +78,7 @@ import {
   correctApprovalActivity,
   inventoryApprovalActivity
 } from "../src/approval-activity-remediation.js";
-import { createDbPool } from "../src/connection.js";
+import { createDb, createDbPool } from "../src/connection.js";
 import { upsertEncryptedFieldPayloadWithClient } from "../src/encrypted-payload-repository.js";
 import {
   createCrossIdentitySyncRepository,
@@ -88,6 +100,7 @@ import {
 } from "../src/retention-lifecycle-repository.js";
 import {
   createSharedMemoryRepository,
+  composeSharedMemorySemanticText,
   requireReadySharedMemorySemanticDerivative,
   sharedMemoryDeviceProvenanceHash,
   sharedMemorySanitizedSemanticSourceRevisionHash,
@@ -209,6 +222,7 @@ interface GrantFixture extends SourceFixture {
 }
 
 interface SourceRevisionOptions {
+  repositorySnapshot?: CapturedSessionSyncPackageV2["session"]["repositorySnapshot"];
   distinctTargetSession?: boolean;
   groupedAssistantSources?: boolean;
   assistantActor?: string;
@@ -220,6 +234,7 @@ interface SourceRevisionOptions {
   assistantMemoryExcludedAt?: string | null;
   assistantMemoryExclusionReason?: string | null;
   includeSummarySnapshot?: boolean;
+  summaryOnly?: boolean;
 }
 
 describe("Shared Memory source-content policy", () => {
@@ -785,7 +800,7 @@ class SemanticLifecyclePool {
         {
           source_current: this.current.sourceCurrent,
           classifier_current: this.current.classifierCurrent,
-          authorization_current: this.current.authorizationCurrent
+          authorized_rule_ids: this.current.authorizationCurrent ? [null] : []
         }
       ];
       rowCount = 1;
@@ -1172,6 +1187,14 @@ describeDb("Shared Memory repository", () => {
     const sourceSessionId = options?.distinctTargetSession
       ? randomUUID()
       : session.rows[0]!.id;
+    if (options?.repositorySnapshot) {
+      // Real target registration marks receiving Sessions before sync applies
+      // the signed repository snapshot. Keep explicit-context fixtures faithful.
+      await pool.query(
+        "update sessions set metadata=metadata || '{\"syncReplica\":true}'::jsonb where id=$1",
+        [session.rows[0]!.id]
+      );
+    }
     const ownerPrincipalId = fixture.sourceOwnerPrincipalId;
     const logicalMemoryId = crossIdentitySyncDeterministicUuid({
       protocol: "koed.captured-session-sync/v2",
@@ -1358,9 +1381,11 @@ describeDb("Shared Memory repository", () => {
     if (revision < source.currentRevision) {
       throw new Error("seedAuthoritativeSourceRevision cannot move backwards");
     }
-    if (revision === source.currentRevision) {
+    if (revision === source.currentRevision && !options?.summaryOnly) {
       return;
     }
+    if (options?.summaryOnly && revision !== source.currentRevision)
+      throw new Error("A summary-only package must retain the event cursor");
     const userText = `${label} user source`;
     const assistantText = options?.assistantText ?? `${label} assistant source`;
     const assistantPrimaryText = options?.groupedAssistantSources
@@ -1632,7 +1657,8 @@ describeDb("Shared Memory repository", () => {
       policyDigest: hash(`policy:${source.logicalMemoryId}`),
       summaryRevisionHash: crossIdentitySyncDigest(summaryNodes),
       session: {
-        repositorySnapshot: unresolvedTeamRepositorySnapshot(),
+        repositorySnapshot:
+          options?.repositorySnapshot ?? unresolvedTeamRepositorySnapshot(),
         originSessionId: source.sessionId,
         externalSessionId: `external-${source.sessionId}`,
         sourceRuntime: "codex",
@@ -1641,15 +1667,17 @@ describeDb("Shared Memory repository", () => {
         title: `${label} session`,
         sourceAdapterVersion: "1"
       },
-      changes: [
-        {
-          cursor: revision,
-          operation: "upsert",
-          originEventId: source.originEventId,
-          revisionHash: event.revisionHash,
-          event
-        }
-      ],
+      changes: options?.summaryOnly
+        ? []
+        : [
+            {
+              cursor: revision,
+              operation: "upsert",
+              originEventId: source.originEventId,
+              revisionHash: event.revisionHash,
+              event
+            }
+          ],
       summaryNodes
     };
     const applied = await applySyncPackage(
@@ -1657,7 +1685,9 @@ describeDb("Shared Memory repository", () => {
       syncPackage,
       options?.includeSummarySnapshot !== false
     );
-    const eventId = applied.eventIds[0];
+    const eventId = options?.summaryOnly
+      ? source.seededEvents[0]?.eventId
+      : applied.eventIds[0];
     if (!eventId) {
       throw new Error("expected synchronized event to materialize");
     }
@@ -2184,10 +2214,8 @@ describeDb("Shared Memory repository", () => {
       grant.representation,
       sourceRevision,
       label,
-      [
-        ...sharedMemoryRepresentationsForCeiling(grant.maximumFidelity),
-        ...(grant.includeCuratedMemory ? (["curated_assertions"] as const) : [])
-      ]
+      grant.preview.sourceCapabilities,
+      grant.preview.mode
     );
     return repository.materializeGrantRepresentation(
       actor(fixture.ownerUserId),
@@ -2220,10 +2248,8 @@ describeDb("Shared Memory repository", () => {
       grant.representation,
       sourceRevision,
       label,
-      [
-        ...sharedMemoryRepresentationsForCeiling(grant.maximumFidelity),
-        ...(grant.includeCuratedMemory ? (["curated_assertions"] as const) : [])
-      ]
+      grant.preview.sourceCapabilities,
+      grant.preview.mode
     );
     const representation = await repository.materializeGrantRepresentation(
       actor(fixture.ownerUserId),
@@ -2324,7 +2350,8 @@ describeDb("Shared Memory repository", () => {
     repository = createSharedMemoryRepository(pool, {
       resolvePersonalEncryptionProvider: () => privacyProvider,
       resolveTeamEncryptionProvider: () => provider,
-      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider,
+      resolveSharingRuleEncryptionProvider: () => ownerProvider
     });
     collaboration = createCollaborationRepository(pool, {
       envelopeEncryptionProvider: provider
@@ -2343,6 +2370,88 @@ describeDb("Shared Memory repository", () => {
 
   afterAll(async () => {
     await pool.end();
+  });
+
+  it("explains durable direct reasons without restoring removed owner content access", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      mode: "snapshot",
+      label: "reason-snapshot"
+    });
+    await materialize(fixture, grant);
+    const target = { kind: "grant" as const, id: grant.shareGrantId };
+    const initial = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      target
+    );
+    expect(initial?.sourceAccess).toBeNull();
+    expect(initial?.summary.sharingReasons).toEqual([
+      expect.objectContaining({
+        kind: "direct",
+        consentId: grant.consentId,
+        mode: "snapshot",
+        updateState: "fixed_snapshot",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        maximumAuthorizedSourceRevision: 1,
+        repositorySnapshotSourceRevision: 1
+      })
+    ]);
+    expect(
+      initial!.summary.sharingReasons[0]!.permittedRepresentations
+    ).toEqual(expect.arrayContaining(allRepresentations));
+    expect(
+      initial!.summary.sharingReasons[0]!.publishedRepresentations
+    ).toContainEqual(
+      expect.objectContaining({
+        representation: "memory_events",
+        sourceRevision: 1,
+        state: "available"
+      })
+    );
+    const reasonId = initial!.summary.sharingReasons[0]!.id;
+    await expect(
+      repository.getOwnerShare(actor(fixture.readerUserId), target)
+    ).resolves.toBeNull();
+    await expect(
+      repository.getOwnerShare(actor(fixture.outsiderUserId), target)
+    ).resolves.toBeNull();
+    await pool.query(
+      `update team_workspace_access_grants set disabled_at=now()
+        where user_id=$1 and team_workspace_id=$2`,
+      [fixture.ownerUserId, fixture.teamWorkspaceId]
+    );
+    const removed = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      target
+    );
+    expect(removed?.summary).toMatchObject({
+      workspaceContentAccess: "unavailable",
+      authorizedPreview: null,
+      sharingReasons: [
+        expect.objectContaining({ id: reasonId, updateState: "fixed_snapshot" })
+      ]
+    });
+    await expect(
+      repository.readOwnerSharePreview(actor(fixture.ownerUserId), target)
+    ).resolves.toBeNull();
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.ownerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.not.toBeNull();
+    const durable = await pool.query(
+      `select id from team_memory_share_reasons where share_grant_id=$1`,
+      [grant.shareGrantId]
+    );
+    expect(durable.rows).toEqual([{ id: reasonId }]);
   });
 
   it("materializes and reads every cumulative layer authorized by a memory-events ceiling", async () => {
@@ -4867,6 +4976,23 @@ describeDb("Shared Memory repository", () => {
     if (!activated || activated.kind !== "pending") {
       throw new Error("expected activated Pending Share");
     }
+    const activatedGrantId = activated.pendingShare.grantId!;
+    await expect(
+      repository.getOwnerShare(actor(fixture.ownerUserId), {
+        kind: "grant",
+        id: activatedGrantId
+      })
+    ).resolves.toMatchObject({
+      kind: "grant",
+      grant: { id: activatedGrantId, ownerUserId: fixture.ownerUserId },
+      summary: activated.summary
+    });
+    await expect(
+      repository.getOwnerShare(actor(fixture.outsiderUserId), {
+        kind: "grant",
+        id: activatedGrantId
+      })
+    ).resolves.toBeNull();
     const read = await repository.readGrantRepresentation(
       actor(fixture.readerUserId),
       {
@@ -5105,6 +5231,12 @@ describeDb("Shared Memory repository", () => {
     const activatedOperationVersion = activated.pendingShare.operationVersion;
     const shareGrantId = activated.pendingShare.grantId!;
     const activatedGrantVersion = activated.pendingShare.grantVersion!;
+    const directReason = activated.summary.sharingReasons[0]!;
+    expect(directReason).toMatchObject({
+      kind: "direct",
+      updateState: "active",
+      mode: "continuous"
+    });
     const publicationCounts = await pool.query<{
       grants: string;
       representations: string;
@@ -5151,6 +5283,17 @@ describeDb("Shared Memory repository", () => {
       workspaceAccessState: "active",
       sourceUpdateState: "paused"
     });
+    const pausedExplanation = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      { kind: "pending", id: pending.id }
+    );
+    expect(pausedExplanation?.summary.sharingReasons).toEqual([
+      expect.objectContaining({
+        id: directReason.id,
+        updateState: "paused",
+        consentId: directReason.consentId
+      })
+    ]);
     await expect(
       repository.controlPendingShare(actor(fixture.ownerUserId), {
         pendingShareId: pending.id,
@@ -5339,6 +5482,14 @@ describeDb("Shared Memory repository", () => {
         state: "revoked",
         workspaceAccessState: "revoked",
         sourceUpdateState: "stopped"
+      },
+      summary: {
+        sharingReasons: [
+          expect.objectContaining({
+            id: directReason.id,
+            updateState: "stopped"
+          })
+        ]
       }
     });
     await expect(
@@ -6338,6 +6489,55 @@ describeDb("Shared Memory repository", () => {
     ).rejects.toBeInstanceOf(SharedMemoryAuthorizationError);
   });
 
+  it.each([
+    { code: "40001", alwaysFail: false, expectedCalls: 2 },
+    { code: "40P01", alwaysFail: false, expectedCalls: 2 },
+    { code: "42501", alwaysFail: false, expectedCalls: 1 },
+    { code: "40001", alwaysFail: true, expectedCalls: 3 }
+  ])(
+    "bounds authoritative preview retries for $code (alwaysFail=$alwaysFail)",
+    async ({ code, alwaysFail, expectedCalls }) => {
+      const fixture = await createWorkspaceFixture();
+      const source = await createSource(fixture, 1, "preview-retry");
+      await putOwnerPolicy(fixture, source);
+      let decryptCalls = 0;
+      const injectedError = Object.assign(
+        new Error("injected preview failure"),
+        { code }
+      );
+      const retryRepository = createSharedMemoryRepository(pool, {
+        resolvePersonalEncryptionProvider: () => privacyProvider,
+        resolveTeamEncryptionProvider: () => provider,
+        resolveOwnerPrivateReplicaEncryptionProvider: (input) => {
+          if (input.purpose === "decrypt") {
+            decryptCalls += 1;
+            if (alwaysFail || decryptCalls === 1) throw injectedError;
+          }
+          return ownerProvider;
+        }
+      });
+      const result = retryRepository.createAuthoritativeSourcePreview(
+        actor(fixture.ownerUserId),
+        {
+          ...capturedSourceBinding(source, "memory_events"),
+          logicalMemoryId: source.logicalMemoryId,
+          remoteReplicaId: source.remoteReplicaId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          mode: "continuous",
+          ...fidelityConsent(allRepresentations),
+          authority: authority(fixture)
+        }
+      );
+      if (alwaysFail || code === "42501") {
+        await expect(result).rejects.toBe(injectedError);
+      } else {
+        await expect(result).resolves.toMatchObject({ sourceRevision: 1 });
+      }
+      expect(decryptCalls).toBe(expectedCalls);
+    }
+  );
+
   it("holds one repeatable-read snapshot while authoritative previews load sync context and source rows", async () => {
     const fixture = await createWorkspaceFixture();
     const source = await createSource(fixture, 1, "repeatable-read");
@@ -7269,6 +7469,7 @@ describeDb("Shared Memory repository", () => {
       label: "snapshot-initial"
     });
     await materialize(fixture, snapshot);
+
     await seedAuthoritativeSourceRevision(
       fixture,
       snapshot,
@@ -8146,6 +8347,1572 @@ describeDb("Shared Memory repository", () => {
         representation: "memory_events"
       })
     ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+  });
+
+  it.each([
+    "workspace_disabled",
+    "read_only",
+    "sharing_disabled",
+    "membership_disabled",
+    "owner_disabled"
+  ])(
+    "embeds retained Team content without Personal reuse after %s",
+    async (change) => {
+      const fixture = await createWorkspaceFixture();
+      const grant = await createGrant(fixture, { label: `retained-${change}` });
+      await materialize(fixture, grant);
+      const model = "retained-reuse-model";
+      const version = teamSemanticEmbeddingGeneration({
+        model,
+        tokenizer: "test",
+        inputTransform: "test",
+        pooling: "last",
+        normalization: "l2"
+      });
+      const text = composeSharedMemorySemanticText(grant.preview.items[0]!);
+      const personal = await pool.query<{ id: string }>(
+        `insert into memory_embeddings (
+          memory_event_id,owner_user_id,visibility,embedding_model,embedding_dimensions,
+          embedding_version,source_hash,source_text,embedding_source_content_hash,
+          embedding_input_hash,tokenizer,input_transform,pooling,normalization
+        ) values ($1,$2,'personal',$3,384,$4,$5,$6,$5,$5,'test','test','last','l2') returning id`,
+        [
+          grant.seededEvents[0]!.eventId,
+          fixture.ownerUserId,
+          model,
+          version,
+          hash(text),
+          text
+        ]
+      );
+      const vector = [1, ...Array.from({ length: 383 }, () => 0)];
+      await pool.query(
+        `insert into memory_embeddings_384 (memory_embedding_id,embedding) values ($1,$2::vector)`,
+        [personal.rows[0]!.id, JSON.stringify(vector)]
+      );
+      // Prove this exact Personal artifact was eligible before access changed.
+      const active = await repository.listPendingSharedMemorySemanticItems({
+        model,
+        dimensions: 384,
+        version
+      });
+      expect(
+        active.find((item) => item.shareGrantId === grant.shareGrantId)
+          ?.personalEmbeddingReuse?.memoryEmbeddingId
+      ).toBe(personal.rows[0]!.id);
+      if (change === "owner_disabled") {
+        await pool.query(`update users set disabled_at=now() where id=$1`, [
+          fixture.ownerUserId
+        ]);
+      } else if (change === "membership_disabled") {
+        await pool.query(
+          `update team_memberships set status='disabled',disabled_at=now() where team_id=$1 and user_id=$2`,
+          [fixture.teamId, fixture.ownerUserId]
+        );
+      } else {
+        const mutation =
+          change === "workspace_disabled"
+            ? "disabled_at=now()"
+            : change === "read_only"
+              ? "access='read',can_share_owned_memory=false"
+              : "can_share_owned_memory=false";
+        await pool.query(
+          `update team_workspace_access_grants set ${mutation} where team_workspace_id=$1 and user_id=$2`,
+          [fixture.teamWorkspaceId, fixture.ownerUserId]
+        );
+      }
+      const personalKey = vi.fn(() => privacyProvider);
+      const retainedRepository = createSharedMemoryRepository(pool, {
+        resolvePersonalEncryptionProvider: personalKey,
+        resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider,
+        resolveTeamEncryptionProvider: () => provider
+      });
+      const activeItem = active.find(
+        (item) => item.shareGrantId === grant.shareGrantId
+      )!;
+      // A queued reuse hint must also fail after the permission change.
+      await expect(
+        retainedRepository.reusePersonalSharedMemorySemanticEmbedding({
+          semanticItemId: activeItem.semanticItemId,
+          contentHash: activeItem.contentHash,
+          ...activeItem.personalEmbeddingReuse!
+        })
+      ).resolves.toBe(false);
+      await pool.query(
+        `update team_memory_semantic_items set embedding_state='pending' where share_grant_id=$1`,
+        [grant.shareGrantId]
+      );
+      let handedOff = false;
+      const pending =
+        await retainedRepository.listPendingSharedMemorySemanticItems({
+          model,
+          dimensions: 384,
+          version,
+          duringAuthorizedLease: async (items) => {
+            const retained = items.find(
+              (item) =>
+                item.shareGrantId === grant.shareGrantId &&
+                item.sourceItemIndex === 0
+            );
+            if (!retained) return;
+            expect(retained.text).toBe(text);
+            expect(retained.personalEmbeddingReuse).toBeNull();
+            handedOff = true;
+          }
+        });
+      expect(handedOff).toBe(true);
+      expect(personalKey).not.toHaveBeenCalled();
+      const item = pending.find(
+        (item) => item.shareGrantId === grant.shareGrantId
+      )!;
+      await expect(
+        retainedRepository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: item.semanticItemId,
+          contentHash: item.contentHash,
+          model,
+          dimensions: 384,
+          version,
+          vector
+        })
+      ).resolves.toBe(true);
+      await expect(
+        retainedRepository.readGrantRepresentation(
+          actor(fixture.readerUserId),
+          { shareGrantId: grant.shareGrantId, representation: "memory_events" }
+        )
+      ).resolves.not.toBeNull();
+      const ownerRead = await retainedRepository.readGrantRepresentation(
+        actor(fixture.ownerUserId),
+        {
+          shareGrantId: grant.shareGrantId,
+          representation: "memory_events"
+        }
+      );
+      if (change === "read_only" || change === "sharing_disabled") {
+        expect(ownerRead).not.toBeNull();
+      } else {
+        expect(ownerRead).toBeNull();
+      }
+      const untouched = await pool.query(
+        `select invalidated_at,personal_deleted_at from memory_embeddings where id=$1`,
+        [personal.rows[0]!.id]
+      );
+      expect(untouched.rows[0]).toEqual({
+        invalidated_at: null,
+        personal_deleted_at: null
+      });
+      const personalVector = await pool.query<{ embedding: string }>(
+        `select embedding::text from memory_embeddings_384 where memory_embedding_id=$1`,
+        [personal.rows[0]!.id]
+      );
+      expect(JSON.parse(personalVector.rows[0]!.embedding)).toEqual(vector);
+    }
+  );
+
+  it.each([
+    {
+      oldMode: "snapshot",
+      oldRepresentation: "memory_events",
+      newRepresentation: "lcm_rollups"
+    },
+    {
+      oldMode: "snapshot",
+      oldRepresentation: "lcm_rollups",
+      newRepresentation: "memory_events"
+    },
+    {
+      oldMode: "continuous",
+      oldRepresentation: "lcm_rollups",
+      newRepresentation: "memory_events"
+    }
+  ] as const)(
+    "preserves independently selected detail through policy expansion and direct replacement %j",
+    async (scenario) => {
+      const fixture = await createWorkspaceFixture();
+      const oldRepresentations =
+        scenario.oldRepresentation === "memory_events"
+          ? allRepresentations
+          : ["lcm_rollups" as const];
+      const original = await createGrant(fixture, {
+        mode: scenario.oldMode,
+        representation: scenario.oldRepresentation,
+        ownerAllowed: oldRepresentations,
+        label: "independent-selected-detail"
+      });
+      await materialize(fixture, original);
+      const root = (
+        await pool.query<{ logical_grant_id: string; grant_version: number }>(
+          `select logical_grant_id,grant_version from team_memory_share_grants where id=$1`,
+          [original.shareGrantId]
+        )
+      ).rows[0]!;
+      const approvedBefore = (
+        await pool.query<{
+          consent_version: number;
+          state: string;
+          maximum_fidelity: string;
+          source_owner_policy_version: number;
+        }>(
+          `select consent_version,state,maximum_fidelity,source_owner_policy_version from source_owner_representation_consents where id=$1`,
+          [original.consentId]
+        )
+      ).rows[0]!;
+      const newRepresentations =
+        scenario.newRepresentation === "memory_events"
+          ? allRepresentations
+          : ["lcm_rollups" as const];
+      const independent = await createConsent(fixture, original, {
+        representation: scenario.newRepresentation,
+        representations: newRepresentations,
+        mode: "continuous",
+        label: "independent-selected-detail"
+      });
+      expect(
+        (
+          await pool.query(
+            `select consent_version,state,maximum_fidelity,source_owner_policy_version from source_owner_representation_consents where id=$1`,
+            [original.consentId]
+          )
+        ).rows[0]
+      ).toEqual(approvedBefore);
+      const cap = (
+        await pool.query<{ version: number; maximum_fidelity: string }>(
+          `select version,maximum_fidelity from source_owner_representation_policies where logical_memory_id=$1 and superseded_at is null`,
+          [original.logicalMemoryId]
+        )
+      ).rows[0]!;
+      expect(cap).toEqual({
+        version: scenario.oldRepresentation === "lcm_rollups" ? 2 : 1,
+        maximum_fidelity: "memory_events"
+      });
+      await expect(
+        repository.readGrantRepresentation(actor(fixture.readerUserId), {
+          shareGrantId: original.shareGrantId,
+          representation: scenario.oldRepresentation
+        })
+      ).resolves.toMatchObject({ representation: { sourceRevision: 1 } });
+      const effectivePrivacyPolicyHash = (
+        await pool.query<{ effective_privacy_policy_hash: string }>(
+          `select effective_privacy_policy_hash from team_memory_representations where share_grant_id=$1 limit 1`,
+          [original.shareGrantId]
+        )
+      ).rows[0]!.effective_privacy_policy_hash;
+      const rule = await repository.createConversationSharingRule(
+        actor(fixture.ownerUserId),
+        {
+          ruleId: randomUUID(),
+          mutationId: randomUUID(),
+          logicalGrantId: root.logical_grant_id,
+          consentId: independent.consentId,
+          expectedConsentVersion: independent.consent.consentVersion,
+          expectedGrantVersion: root.grant_version,
+          publisherCredentialId: fixture.deviceCredentialId,
+          effectivePrivacyPolicyHash,
+          authority: authority(fixture)
+        }
+      );
+      const grantVersion = root.grant_version + 1;
+      const ruleAuthority = {
+        reasonId: rule.reasonId,
+        ruleId: rule.ruleId,
+        authorityVersion: rule.authorityVersion,
+        consentVersion: independent.consent.consentVersion,
+        publisherCredentialId: fixture.deviceCredentialId,
+        publisherFence: rule.publisherFence,
+        effectivePrivacyPolicyHash
+      };
+      await repository.prepareSharingRuleMember(actor(fixture.ownerUserId), {
+        shareGrantId: original.shareGrantId,
+        expectedGrantVersion: grantVersion,
+        ruleAuthority
+      });
+      await flushSanitizedSemanticPublication();
+      await ensureSourceRevision(
+        fixture,
+        original,
+        2,
+        "independent-detail-later"
+      );
+      const advance = await repository.advanceContinuousGrantRepresentations({
+        remoteReplicaId: original.remoteReplicaId,
+        sourceRevision: 2
+      });
+      expect(advance.advanced).toBe(
+        newRepresentations.length + (scenario.oldMode === "continuous" ? 1 : 0)
+      );
+      await flushSanitizedSemanticPublication();
+      const retainedOriginal = (
+        await pool.query<{ source_revision: string }>(
+          `select representation.source_revision::text
+      from team_memory_reason_publications publication join team_memory_share_reasons reason on reason.id=publication.reason_id
+      join team_memory_representations representation on representation.id=publication.representation_id
+      where reason.share_grant_id=$1 and reason.kind='direct' order by representation.source_revision`,
+          [original.shareGrantId]
+        )
+      ).rows.map((row) => row.source_revision);
+      expect(retainedOriginal).toEqual(
+        scenario.oldMode === "continuous" ? ["1", "2"] : ["1"]
+      );
+      // Replacing the direct reason must preserve the rule's content and its
+      // semantic work, including a broader rule beside a narrower snapshot.
+      const ruleRows = await pool.query(
+        `select representation.id,representation.record_version,representation.state,item.id as semantic_item_id
+      from team_memory_representations representation left join team_memory_semantic_items item on item.representation_id=representation.id
+      where representation.share_grant_id=$1 and representation.consent_id=$2 order by representation.id,item.id`,
+        [original.shareGrantId, independent.consentId]
+      );
+      expect(ruleRows.rows.length).toBeGreaterThan(0);
+      const replacement = await createConsent(fixture, original, {
+        representation: "lcm_rollups",
+        representations: ["lcm_rollups"],
+        mode: "snapshot",
+        label: "independent-detail-later"
+      });
+      expect(replacement.preview.mode).toBe("snapshot");
+      expect(replacement.preview.maximumFidelity).toBe("lcm_rollups");
+      expect(replacement.preview.sourceCapabilities).toEqual(["lcm_rollups"]);
+      const changed = await repository.selectGrantFidelity(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          shareGrantId: original.shareGrantId,
+          consentId: replacement.consentId,
+          maximumFidelity: "lcm_rollups",
+          includeCuratedMemory: false,
+          expectedGrantVersion: grantVersion,
+          authority: authority(fixture)
+        }
+      );
+      expect(
+        (
+          await pool.query(
+            `select representation.id,representation.record_version,representation.state,item.id as semantic_item_id
+      from team_memory_representations representation left join team_memory_semantic_items item on item.representation_id=representation.id
+      where representation.share_grant_id=$1 and representation.consent_id=$2 order by representation.id,item.id`,
+            [original.shareGrantId, independent.consentId]
+          )
+        ).rows
+      ).toEqual(ruleRows.rows);
+      await prepareSanitizedSemanticPreview(
+        fixture.ownerUserId,
+        replacement.preview
+      );
+      await repository.materializeGrantRepresentation(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          shareGrantId: original.shareGrantId,
+          consentId: replacement.consentId,
+          expectedGrantVersion: changed.grantVersion,
+          preview: replacement.preview
+        }
+      );
+      await expect(
+        repository.readGrantRepresentation(actor(fixture.readerUserId), {
+          shareGrantId: original.shareGrantId,
+          representation: scenario.newRepresentation
+        })
+      ).resolves.toMatchObject({ representation: { sourceRevision: 2 } });
+      if (scenario.oldMode === "continuous") {
+        // An explicit global restriction still invalidates every affected reason
+        // and rejects old queued publication before source decryption.
+        await ensureSourceRevision(
+          fixture,
+          original,
+          3,
+          "independent-detail-restricted"
+        );
+        const queued = await repository.prepareSharingRuleMember(
+          actor(fixture.ownerUserId),
+          {
+            shareGrantId: original.shareGrantId,
+            expectedGrantVersion: changed.grantVersion,
+            ruleAuthority
+          }
+        );
+        await repository.putSourceOwnerPolicy(actor(fixture.ownerUserId), {
+          mutationId: randomUUID(),
+          logicalMemoryId: original.logicalMemoryId,
+          expectedCurrentVersion: cap.version,
+          maximumFidelity: "lcm_rollups",
+          includeCuratedMemory: false
+        });
+        const decryptsBeforeRestriction = ownerDecryptSpy.mock.calls.length;
+        await expect(
+          repository.materializeGrantRepresentation(
+            actor(fixture.ownerUserId),
+            {
+              mutationId: randomUUID(),
+              shareGrantId: original.shareGrantId,
+              consentId: independent.consentId,
+              expectedGrantVersion: changed.grantVersion,
+              ruleAuthority,
+              preview: queued.previews[0]!
+            }
+          )
+        ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+        expect(ownerDecryptSpy.mock.calls.length).toBe(
+          decryptsBeforeRestriction
+        );
+        await expect(
+          repository.readGrantRepresentation(actor(fixture.readerUserId), {
+            shareGrantId: original.shareGrantId,
+            representation: "lcm_rollups"
+          })
+        ).resolves.toBeNull();
+      } else {
+        await repository.controlConversationSharingRule(
+          actor(fixture.ownerUserId),
+          {
+            mutationId: randomUUID(),
+            ruleId: rule.ruleId,
+            reasonId: rule.reasonId,
+            shareGrantId: original.shareGrantId,
+            expectedAuthorityVersion: rule.authorityVersion,
+            expectedGrantVersion: changed.grantVersion,
+            action: "stop",
+            authority: authority(fixture)
+          }
+        );
+        await expect(
+          repository.readGrantRepresentation(actor(fixture.readerUserId), {
+            shareGrantId: original.shareGrantId,
+            representation: "memory_events"
+          })
+        ).resolves.toBeNull();
+        await expect(
+          repository.readGrantRepresentation(actor(fixture.readerUserId), {
+            shareGrantId: original.shareGrantId,
+            representation: "lcm_rollups"
+          })
+        ).resolves.toMatchObject({ representation: { sourceRevision: 2 } });
+      }
+    }
+  );
+
+  it("reviews exact rule controls without publication and rejects a mismatched destination before mutation", async () => {
+    const fixture = await createWorkspaceFixture();
+    const snapshot = await createGrant(fixture, {
+      mode: "snapshot",
+      representation: "lcm_rollups",
+      ownerAllowed: ["lcm_rollups"],
+      label: "review-rule-control"
+    });
+    await materialize(fixture, snapshot);
+    const root = (
+      await pool.query<{ logical_grant_id: string; grant_version: number }>(
+        `select logical_grant_id,grant_version from team_memory_share_grants where id=$1`,
+        [snapshot.shareGrantId]
+      )
+    ).rows[0]!;
+    const consent = await createConsent(fixture, snapshot, {
+      mode: "continuous",
+      representation: "lcm_rollups",
+      representations: ["lcm_rollups"],
+      label: "review-rule-control"
+    });
+    const effectivePrivacyPolicyHash = (
+      await pool.query<{ effective_privacy_policy_hash: string }>(
+        `select effective_privacy_policy_hash from team_memory_representations where share_grant_id=$1 limit 1`,
+        [snapshot.shareGrantId]
+      )
+    ).rows[0]!.effective_privacy_policy_hash;
+    const rule = await repository.createConversationSharingRule(
+      actor(fixture.ownerUserId),
+      {
+        ruleId: randomUUID(),
+        mutationId: randomUUID(),
+        logicalGrantId: root.logical_grant_id,
+        consentId: consent.consentId,
+        expectedConsentVersion: consent.consent.consentVersion,
+        expectedGrantVersion: root.grant_version,
+        publisherCredentialId: fixture.deviceCredentialId,
+        effectivePrivacyPolicyHash,
+        authority: authority(fixture)
+      }
+    );
+    const input = {
+      ruleId: rule.ruleId,
+      reasonId: rule.reasonId,
+      shareGrantId: snapshot.shareGrantId,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      expectedAuthorityVersion: rule.authorityVersion,
+      expectedGrantVersion: root.grant_version + 1
+    };
+    const decryptsBefore = ownerDecryptSpy.mock.calls.length;
+    for (const action of ["pause", "stop", "retry"] as const) {
+      await expect(
+        repository.getConversationSharingRuleControlReview(
+          actor(fixture.ownerUserId),
+          { ...input, action }
+        )
+      ).resolves.toMatchObject({
+        logicalMemoryId: snapshot.logicalMemoryId,
+        ruleId: rule.ruleId,
+        reasonId: rule.reasonId,
+        state: "active",
+        authorityVersion: rule.authorityVersion,
+        grantVersion: input.expectedGrantVersion,
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: false
+      });
+    }
+    for (const invalid of [
+      { teamWorkspaceId: randomUUID() },
+      { teamId: randomUUID() },
+      { reasonId: randomUUID() },
+      { expectedAuthorityVersion: input.expectedAuthorityVersion + 1 },
+      { expectedGrantVersion: input.expectedGrantVersion + 1 }
+    ]) {
+      await expect(
+        repository.getConversationSharingRuleControlReview(
+          actor(fixture.ownerUserId),
+          { ...input, ...invalid, action: "pause" }
+        )
+      ).resolves.toBeNull();
+    }
+    await expect(
+      repository.getConversationSharingRuleControlReview(
+        actor(fixture.readerUserId),
+        { ...input, action: "pause" }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repository.getConversationSharingRuleControlReview(
+        actor(fixture.ownerUserId),
+        { ...input, action: "resume" }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repository.controlConversationSharingRule(actor(fixture.ownerUserId), {
+        ...input,
+        mutationId: randomUUID(),
+        action: "stop",
+        authority: authority(fixture),
+        destination: { teamId: fixture.teamId, teamWorkspaceId: randomUUID() }
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryAuthorizationError);
+    const paused = await repository.controlConversationSharingRule(
+      actor(fixture.ownerUserId),
+      {
+        ...input,
+        mutationId: randomUUID(),
+        action: "pause",
+        authority: authority(fixture),
+        destination: {
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId
+        }
+      }
+    );
+    const pausedInput = {
+      ...input,
+      expectedAuthorityVersion: paused.authorityVersion,
+      expectedGrantVersion: paused.grantVersion
+    };
+    await expect(
+      repository.getConversationSharingRuleControlReview(
+        actor(fixture.ownerUserId),
+        { ...pausedInput, action: "resume" }
+      )
+    ).resolves.toMatchObject({ state: "paused" });
+    await pool.query(
+      `update team_workspace_access_grants set access='read',can_share_owned_memory=false where team_workspace_id=$1 and user_id=$2`,
+      [fixture.teamWorkspaceId, fixture.ownerUserId]
+    );
+    await expect(
+      repository.getConversationSharingRuleControlReview(
+        actor(fixture.ownerUserId),
+        { ...pausedInput, action: "stop" }
+      )
+    ).resolves.toMatchObject({ state: "paused" });
+    await expect(
+      repository.getConversationSharingRuleControlReview(
+        actor(fixture.ownerUserId),
+        { ...pausedInput, action: "resume" }
+      )
+    ).resolves.toBeNull();
+    for (const action of ["pause", "retry"] as const) {
+      await expect(
+        repository.getConversationSharingRuleControlReview(
+          actor(fixture.ownerUserId),
+          { ...pausedInput, action }
+        )
+      ).resolves.toBeNull();
+    }
+    expect(ownerDecryptSpy.mock.calls.length).toBe(decryptsBefore);
+    expect(
+      (
+        await pool.query(
+          `select 1 from team_memory_reason_publications where reason_id=$1`,
+          [rule.reasonId]
+        )
+      ).rowCount
+    ).toBe(0);
+  });
+
+  it.each(["active", "paused"] as const)(
+    "keeps a %s rule stopped after whole-grant revocation and direct restoration",
+    async (initialState) => {
+      const fixture = await createWorkspaceFixture();
+      const direct = await createGrant(fixture, {
+        mode: "snapshot",
+        representation: "lcm_rollups",
+        ownerAllowed: ["lcm_rollups"],
+        label: "whole-grant-rule-revocation"
+      });
+      await materialize(fixture, direct);
+      const root = (
+        await pool.query<{ logical_grant_id: string; grant_version: number }>(
+          `select logical_grant_id,grant_version from team_memory_share_grants where id=$1`,
+          [direct.shareGrantId]
+        )
+      ).rows[0]!;
+      const independent = await createConsent(fixture, direct, {
+        representation: "lcm_rollups",
+        representations: ["lcm_rollups"],
+        mode: "continuous",
+        label: "whole-grant-rule-revocation"
+      });
+      const effectivePrivacyPolicyHash = (
+        await pool.query<{ effective_privacy_policy_hash: string }>(
+          `select effective_privacy_policy_hash from team_memory_representations where share_grant_id=$1 limit 1`,
+          [direct.shareGrantId]
+        )
+      ).rows[0]!.effective_privacy_policy_hash;
+      const rule = await repository.createConversationSharingRule(
+        actor(fixture.ownerUserId),
+        {
+          ruleId: randomUUID(),
+          mutationId: randomUUID(),
+          logicalGrantId: root.logical_grant_id,
+          consentId: independent.consentId,
+          expectedConsentVersion: independent.consent.consentVersion,
+          expectedGrantVersion: root.grant_version,
+          publisherCredentialId: fixture.deviceCredentialId,
+          effectivePrivacyPolicyHash,
+          authority: authority(fixture)
+        }
+      );
+      let grantVersion = root.grant_version + 1;
+      const ruleAuthority = {
+        reasonId: rule.reasonId,
+        ruleId: rule.ruleId,
+        authorityVersion: rule.authorityVersion,
+        consentVersion: independent.consent.consentVersion,
+        publisherCredentialId: fixture.deviceCredentialId,
+        publisherFence: rule.publisherFence,
+        effectivePrivacyPolicyHash
+      };
+      await repository.prepareSharingRuleMember(actor(fixture.ownerUserId), {
+        shareGrantId: direct.shareGrantId,
+        expectedGrantVersion: grantVersion,
+        ruleAuthority
+      });
+      await flushSanitizedSemanticPublication();
+      await ensureSourceRevision(fixture, direct, 2, "whole-grant-later");
+      const queued = await repository.prepareSharingRuleMember(
+        actor(fixture.ownerUserId),
+        {
+          shareGrantId: direct.shareGrantId,
+          expectedGrantVersion: grantVersion,
+          ruleAuthority
+        }
+      );
+      if (initialState === "paused") {
+        const paused = await repository.controlConversationSharingRule(
+          actor(fixture.ownerUserId),
+          {
+            mutationId: randomUUID(),
+            ruleId: rule.ruleId,
+            reasonId: rule.reasonId,
+            shareGrantId: direct.shareGrantId,
+            expectedAuthorityVersion: rule.authorityVersion,
+            expectedGrantVersion: grantVersion,
+            action: "pause",
+            authority: authority(fixture)
+          }
+        );
+        grantVersion = paused.grantVersion;
+      }
+      const revocation = {
+        mutationId: randomUUID(),
+        shareGrantId: direct.shareGrantId,
+        expectedGrantVersion: grantVersion,
+        reasonCode: "owner_revoked_all_reasons",
+        authority: authority(fixture)
+      };
+      const revoked = await repository.revokeShareGrant(
+        actor(fixture.ownerUserId),
+        revocation
+      );
+      const loadAuthority = () =>
+        pool.query<{
+          state: string;
+          authority_version: number;
+          publisher_fence: string;
+          reconciliation_requested_at: Date | null;
+          next_reconciliation_at: Date | null;
+          consent_state: string;
+          consent_version: number;
+        }>(
+          `select rule.state,rule.authority_version,rule.publisher_fence,
+                member.reconciliation_requested_at,member.next_reconciliation_at,
+                consent.state as consent_state,consent.consent_version
+           from team_memory_sharing_rules rule
+           join team_memory_share_reasons reason on reason.rule_id=rule.id
+           join team_memory_sharing_rule_members member on member.id=reason.membership_id
+           join source_owner_representation_consents consent on consent.id=reason.consent_id
+          where rule.id=$1`,
+          [rule.ruleId]
+        );
+      const stopped = (await loadAuthority()).rows[0]!;
+      expect(stopped).toMatchObject({
+        state: "stopped",
+        consent_state: "revoked",
+        authority_version:
+          rule.authorityVersion + (initialState === "paused" ? 2 : 1),
+        publisher_fence: String(rule.publisherFence + 1),
+        reconciliation_requested_at: null,
+        next_reconciliation_at: null
+      });
+      await expect(
+        repository.revokeShareGrant(actor(fixture.ownerUserId), revocation)
+      ).resolves.toEqual(revoked);
+      expect((await loadAuthority()).rows[0]).toEqual(stopped);
+      await expect(
+        repository.selectGrantFidelity(actor(fixture.ownerUserId), {
+          mutationId: randomUUID(),
+          shareGrantId: direct.shareGrantId,
+          consentId: independent.consentId,
+          maximumFidelity: "lcm_rollups",
+          includeCuratedMemory: false,
+          expectedGrantVersion: revoked.grantVersion,
+          authority: authority(fixture)
+        })
+      ).rejects.toThrow("Replacement consent is not active");
+      const replacement = await createConsent(fixture, direct, {
+        representation: "lcm_rollups",
+        representations: ["lcm_rollups"],
+        mode: "snapshot",
+        label: "whole-grant-later"
+      });
+      const restored = await repository.selectGrantFidelity(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          shareGrantId: direct.shareGrantId,
+          consentId: replacement.consentId,
+          maximumFidelity: "lcm_rollups",
+          includeCuratedMemory: false,
+          expectedGrantVersion: revoked.grantVersion,
+          authority: authority(fixture)
+        }
+      );
+      await prepareSanitizedSemanticPreview(
+        fixture.ownerUserId,
+        replacement.preview
+      );
+      await repository.materializeGrantRepresentation(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          shareGrantId: direct.shareGrantId,
+          consentId: replacement.consentId,
+          expectedGrantVersion: restored.grantVersion,
+          preview: replacement.preview
+        }
+      );
+      await expect(
+        repository.readGrantRepresentation(actor(fixture.readerUserId), {
+          shareGrantId: direct.shareGrantId,
+          representation: "lcm_rollups"
+        })
+      ).resolves.toMatchObject({ representation: { sourceRevision: 2 } });
+      const decryptsBefore = ownerDecryptSpy.mock.calls.length;
+      // Even a caller supplying the new root and rule versions cannot reuse
+      // a stopped rule or its revoked consent to publish old queued work.
+      const stoppedAuthority = {
+        ...ruleAuthority,
+        authorityVersion: stopped.authority_version,
+        publisherFence: Number(stopped.publisher_fence),
+        consentVersion: stopped.consent_version
+      };
+      await expect(
+        repository.materializeGrantRepresentation(actor(fixture.ownerUserId), {
+          mutationId: randomUUID(),
+          shareGrantId: direct.shareGrantId,
+          consentId: independent.consentId,
+          expectedGrantVersion: restored.grantVersion,
+          ruleAuthority: stoppedAuthority,
+          preview: queued.previews[0]!
+        })
+      ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+      await expect(
+        repository.controlConversationSharingRule(actor(fixture.ownerUserId), {
+          mutationId: randomUUID(),
+          ruleId: rule.ruleId,
+          reasonId: rule.reasonId,
+          shareGrantId: direct.shareGrantId,
+          expectedAuthorityVersion: stopped.authority_version,
+          expectedGrantVersion: restored.grantVersion,
+          action: "resume",
+          authority: authority(fixture)
+        })
+      ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+      expect(ownerDecryptSpy.mock.calls.length).toBe(decryptsBefore);
+      expect((await loadAuthority()).rows[0]).toEqual(stopped);
+      expect(
+        (
+          await pool.query(
+            `select 1 from team_memory_representations where share_grant_id=$1 and consent_id=$2 and invalidated_at is null`,
+            [direct.shareGrantId, independent.consentId]
+          )
+        ).rowCount
+      ).toBe(0);
+      expect(
+        (
+          await pool.query(
+            `select 1 from audit_events where target_table='team_memory_sharing_rules' and target_id=$1 and action='shared_memory.rule.parent_share_revoked'`,
+            [rule.ruleId]
+          )
+        ).rowCount
+      ).toBe(1);
+    }
+  );
+
+  it("creates independent continuous rule authority beside a snapshot with one grant", async () => {
+    const fixture = await createWorkspaceFixture();
+    const snapshot = await createGrant(fixture, {
+      mode: "snapshot",
+      label: "rule-and-snapshot"
+    });
+    await materialize(fixture, snapshot);
+    const discussion = await collaboration.createThread(
+      actor(fixture.ownerUserId),
+      {
+        kind: "shared_session_discussion",
+        idempotencyKey: "rule-snapshot-discussion",
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        sharedLogicalMemoryId: snapshot.logicalMemoryId,
+        shareGrantId: snapshot.shareGrantId
+      }
+    );
+    if (!discussion) throw new Error("Expected published snapshot companion");
+    const historicalMessage = await collaboration.sendMessage(
+      actor(fixture.ownerUserId),
+      {
+        threadId: discussion.id,
+        idempotencyKey: "rule-snapshot-history",
+        bodyText: "Retained discussion history"
+      }
+    );
+    expect(historicalMessage).not.toBeNull();
+    const checkCompanion = async () => {
+      await expect(
+        collaboration.getThread(actor(fixture.readerUserId), {
+          threadId: discussion.id
+        })
+      ).resolves.toMatchObject({ id: discussion.id });
+      const history = await collaboration.listMessages(
+        actor(fixture.readerUserId),
+        { threadId: discussion.id }
+      );
+      expect(history?.messages[0]?.bodyText).toBe(
+        "Retained discussion history"
+      );
+      const threads = await collaboration.listThreads(
+        actor(fixture.readerUserId),
+        {
+          scope: "team",
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          kinds: ["shared_session_discussion"],
+          limit: 1
+        }
+      );
+      expect(threads?.map((thread) => thread.id)).toEqual([discussion.id]);
+    };
+    const publicationEvent = async (
+      consentId: string,
+      sourceRevision: number
+    ) => {
+      const event = (
+        await pool.query<{ id: string; cursor: string }>(
+          `select event.id,event.cursor::text
+        from collaboration_outbox event join team_memory_representations representation
+          on representation.id=event.resource_id and event.resource_type='team_memory_representation'
+        where representation.share_grant_id=$1 and representation.consent_id=$2
+          and representation.source_revision=$3 and representation.representation='memory_events'
+          and event.family='memory_event_available' order by event.cursor desc limit 1`,
+          [snapshot.shareGrantId, consentId, sourceRevision]
+        )
+      ).rows[0];
+      if (!event) throw new Error("Expected exact representation event");
+      return event;
+    };
+    const eventAuthorized = (event: { id: string; cursor: string }) =>
+      collaboration.isEventAuthorized(actor(fixture.readerUserId), {
+        eventId: event.id,
+        cursor: Number(event.cursor),
+        scope: "team",
+        teamId: fixture.teamId
+      });
+    const snapshotEvent = await publicationEvent(snapshot.consentId, 1);
+    const retainedTitle = (await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId: snapshot.shareGrantId, representation: "memory_events" }
+    ))!.grant.displayTitle;
+    const root = (
+      await pool.query<{ logical_grant_id: string }>(
+        `select logical_grant_id from team_memory_share_grants where id=$1`,
+        [snapshot.shareGrantId]
+      )
+    ).rows[0]!;
+    const privacy = (
+      await pool.query<{ effective_privacy_policy_hash: string }>(
+        `select effective_privacy_policy_hash from team_memory_representations where share_grant_id=$1`,
+        [snapshot.shareGrantId]
+      )
+    ).rows[0]!;
+    const continuous = await createConsent(fixture, snapshot, {
+      representation: "memory_events",
+      mode: "continuous",
+      label: "rule-and-snapshot"
+    });
+    const input = {
+      ruleId: randomUUID(),
+      mutationId: randomUUID(),
+      logicalGrantId: root.logical_grant_id,
+      consentId: continuous.consentId,
+      expectedConsentVersion: continuous.consent.consentVersion,
+      expectedGrantVersion: snapshot.grantVersion,
+      publisherCredentialId: fixture.deviceCredentialId,
+      effectivePrivacyPolicyHash: privacy.effective_privacy_policy_hash,
+      authority: authority(fixture)
+    };
+    const rule = await repository.createConversationSharingRule(
+      actor(fixture.ownerUserId),
+      input
+    );
+    expect(rule).toMatchObject({
+      shareGrantId: snapshot.shareGrantId,
+      ruleId: input.ruleId,
+      authorityVersion: 1,
+      publisherFence: 1
+    });
+    await expect(
+      repository.createConversationSharingRule(
+        actor(fixture.ownerUserId),
+        input
+      )
+    ).resolves.toEqual(rule);
+    await expect(
+      repository.createConversationSharingRule(actor(fixture.ownerUserId), {
+        ...input,
+        publisherCredentialId: randomUUID()
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    const grants = await pool.query<{ consent_id: string }>(
+      `select consent_id from team_memory_share_grants where logical_memory_id=$1 and team_workspace_id=$2`,
+      [snapshot.logicalMemoryId, fixture.teamWorkspaceId]
+    );
+    expect(grants.rows).toEqual([{ consent_id: snapshot.consentId }]);
+    const reasons = await pool.query(
+      `select kind,consent_id from team_memory_share_reasons where share_grant_id=$1 order by kind`,
+      [snapshot.shareGrantId]
+    );
+    expect(reasons.rows).toEqual([
+      { kind: "direct", consent_id: snapshot.consentId },
+      { kind: "rule", consent_id: continuous.consentId }
+    ]);
+    const ownerView = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      { kind: "grant", id: snapshot.shareGrantId }
+    );
+    expect(ownerView?.summary.sharingReasons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "direct",
+          rule: null,
+          consentId: snapshot.consentId,
+          mode: "snapshot",
+          updateState: "fixed_snapshot"
+        }),
+        expect.objectContaining({
+          kind: "rule",
+          rule: {
+            id: input.ruleId,
+            selectorKind: "captured_session",
+            authorityVersion: 1,
+            publisherFence: 1,
+            state: "active",
+            catchUpState: "queued",
+            failureCode: null
+          },
+          consentId: continuous.consentId,
+          mode: "continuous",
+          updateState: "pending",
+          publishedRepresentations: []
+        })
+      ])
+    );
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: snapshot.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.not.toBeNull();
+    const grantVersion = (
+      await pool.query<{ grant_version: number }>(
+        `select grant_version from team_memory_share_grants where id=$1`,
+        [snapshot.shareGrantId]
+      )
+    ).rows[0]!.grant_version;
+    const ruleAuthority = {
+      reasonId: rule.reasonId,
+      ruleId: rule.ruleId,
+      authorityVersion: rule.authorityVersion,
+      consentVersion: continuous.consent.consentVersion,
+      publisherCredentialId: fixture.deviceCredentialId,
+      publisherFence: rule.publisherFence,
+      effectivePrivacyPolicyHash: privacy.effective_privacy_policy_hash
+    };
+    const preparation = {
+      shareGrantId: snapshot.shareGrantId,
+      expectedGrantVersion: grantVersion,
+      ruleAuthority
+    };
+    const ownerDecrypts = ownerDecryptSpy.mock.calls.length;
+    await expect(
+      repository.prepareSharingRuleMember(actor(fixture.ownerUserId), {
+        ...preparation,
+        ruleAuthority: { ...ruleAuthority, publisherFence: 2 }
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    expect(ownerDecryptSpy.mock.calls.length).toBe(ownerDecrypts);
+    const initial = await repository.prepareSharingRuleMember(
+      actor(fixture.ownerUserId),
+      preparation
+    );
+    expect(initial.previews).toHaveLength(3);
+    expect(initial.unresolvedRepresentations).toEqual([]);
+    await flushSanitizedSemanticPublication();
+    await checkCompanion();
+    const index = await repository.listWorkspaceGrants(
+      actor(fixture.readerUserId),
+      {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        limit: 50,
+        offset: 0
+      }
+    );
+    expect(
+      index.entries.filter(
+        (entry) => entry.shareGrantId === snapshot.shareGrantId
+      )
+    ).toHaveLength(1);
+    expect(
+      index.entries.find(
+        (entry) => entry.shareGrantId === snapshot.shareGrantId
+      )?.title
+    ).toBe(retainedTitle);
+    const titleRouting = await pool.query<{ raw: string }>(
+      `select string_agg(row_to_json(r)::text,E'\n') as raw from team_memory_representations r where share_grant_id=$1`,
+      [snapshot.shareGrantId]
+    );
+    expect(titleRouting.rows[0]!.raw).not.toContain(
+      "rule-and-snapshot user source"
+    );
+    expect(titleRouting.rows[0]!.raw).toContain(
+      "[koed encrypted Shared Memory title]"
+    );
+    await ensureSourceRevision(
+      fixture,
+      snapshot,
+      2,
+      "rule-later-turn-and-summary"
+    );
+    await expect(
+      repository.advanceContinuousGrantRepresentations({
+        remoteReplicaId: snapshot.remoteReplicaId,
+        sourceRevision: 2
+      })
+    ).resolves.toMatchObject({ advanced: 3 });
+    await flushSanitizedSemanticPublication();
+    for (const representation of allRepresentations) {
+      await expect(
+        repository.readGrantRepresentation(actor(fixture.readerUserId), {
+          shareGrantId: snapshot.shareGrantId,
+          representation
+        })
+      ).resolves.toMatchObject({ representation: { sourceRevision: 2 } });
+    }
+    const snapshotPublications = await pool.query<{ source_revision: string }>(
+      `select representation.source_revision::text from team_memory_reason_publications publication join team_memory_share_reasons reason on reason.id=publication.reason_id join team_memory_representations representation on representation.id=publication.representation_id where reason.share_grant_id=$1 and reason.kind='direct'`,
+      [snapshot.shareGrantId]
+    );
+    expect(snapshotPublications.rows).toEqual([{ source_revision: "1" }]);
+    await ensureSourceRevision(
+      fixture,
+      snapshot,
+      3,
+      "rule-obsolete-preparation"
+    );
+    const queued = await repository.prepareSharingRuleMember(
+      actor(fixture.ownerUserId),
+      preparation
+    );
+    for (const preview of queued.previews)
+      await prepareSanitizedSemanticPreview(fixture.ownerUserId, preview);
+    const pauseIntent = {
+      ruleId: rule.ruleId,
+      reasonId: rule.reasonId,
+      shareGrantId: snapshot.shareGrantId,
+      mutationId: randomUUID(),
+      expectedAuthorityVersion: rule.authorityVersion,
+      expectedGrantVersion: grantVersion,
+      action: "pause" as const,
+      authority: authority(fixture)
+    };
+    await pool.query(
+      `update team_workspace_access_grants set disabled_at=now() where team_workspace_id=$1 and user_id=$2`,
+      [fixture.teamWorkspaceId, fixture.ownerUserId]
+    );
+    const decryptsBeforeDeniedControl = ownerDecryptSpy.mock.calls.length;
+    await expect(
+      repository.controlConversationSharingRule(
+        actor(fixture.readerUserId),
+        pauseIntent
+      )
+    ).rejects.toBeInstanceOf(SharedMemoryAuthorizationError);
+    await expect(
+      repository.controlConversationSharingRule(actor(fixture.ownerUserId), {
+        ...pauseIntent,
+        action: "unexpected" as never
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    await expect(
+      repository.controlConversationSharingRule(actor(fixture.ownerUserId), {
+        ...pauseIntent,
+        expectedAuthorityVersion: 99
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    expect(ownerDecryptSpy.mock.calls.length).toBe(decryptsBeforeDeniedControl);
+    const paused = await repository.controlConversationSharingRule(
+      actor(fixture.ownerUserId),
+      pauseIntent
+    );
+    expect(paused).toMatchObject({
+      state: "paused",
+      authorityVersion: 2,
+      catchUpState: "idle"
+    });
+    await expect(
+      repository.controlConversationSharingRule(
+        actor(fixture.ownerUserId),
+        pauseIntent
+      )
+    ).resolves.toEqual(paused);
+    await expect(
+      repository.controlConversationSharingRule(actor(fixture.ownerUserId), {
+        ...pauseIntent,
+        action: "stop"
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    const stalePublication = {
+      mutationId: randomUUID(),
+      shareGrantId: snapshot.shareGrantId,
+      consentId: continuous.consentId,
+      expectedGrantVersion: grantVersion,
+      ruleAuthority,
+      preview: queued.previews[0]!
+    };
+    await expect(
+      repository.materializeGrantRepresentation(
+        actor(fixture.ownerUserId),
+        stalePublication
+      )
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    await repository.reconcileReadySemanticRepresentations({ limit: 100 });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: snapshot.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.toMatchObject({ representation: { sourceRevision: 2 } });
+    // Temporarily remove the snapshot's authority in this fixture to prove that
+    // the paused rule independently preserves the discussion and exact events.
+    await pool.query(
+      `update source_owner_representation_consents set state='revoked',revoked_at=now() where id=$1`,
+      [snapshot.consentId]
+    );
+    await checkCompanion();
+    const retainedRuleEvent = await publicationEvent(continuous.consentId, 2);
+    await expect(eventAuthorized(retainedRuleEvent)).resolves.toBe(true);
+    await expect(eventAuthorized(snapshotEvent)).resolves.toBe(false);
+    const pausedLifecycle = (
+      await pool.query<{ id: string; cursor: string }>(
+        `select id,cursor::text from collaboration_outbox where mutation_id=$1 and family='share_grant_lifecycle'`,
+        [pauseIntent.mutationId]
+      )
+    ).rows[0]!;
+    await expect(eventAuthorized(pausedLifecycle)).resolves.toBe(true);
+    const resumeIntent = {
+      ...pauseIntent,
+      mutationId: randomUUID(),
+      action: "resume" as const,
+      expectedAuthorityVersion: paused.authorityVersion,
+      expectedGrantVersion: paused.grantVersion
+    };
+    const decryptsBeforeDeniedResume = ownerDecryptSpy.mock.calls.length;
+    await expect(
+      repository.controlConversationSharingRule(
+        actor(fixture.ownerUserId),
+        resumeIntent
+      )
+    ).rejects.toBeInstanceOf(SharedMemoryAuthorizationError);
+    expect(ownerDecryptSpy.mock.calls.length).toBe(decryptsBeforeDeniedResume);
+    await pool.query(
+      `update team_workspace_access_grants set disabled_at=null where team_workspace_id=$1 and user_id=$2`,
+      [fixture.teamWorkspaceId, fixture.ownerUserId]
+    );
+    // Publisher expiry also rolls back the tentative versions and active state.
+    await pool.query(
+      `update device_credentials set expires_at=now()-interval '1 second' where id=$1`,
+      [fixture.deviceCredentialId]
+    );
+    await expect(
+      repository.controlConversationSharingRule(
+        actor(fixture.ownerUserId),
+        resumeIntent
+      )
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    await pool.query(
+      `update device_credentials set expires_at=null where id=$1`,
+      [fixture.deviceCredentialId]
+    );
+    // Resume has to catch up durable work even if no further source-sync arrives.
+    const resumed = await repository.controlConversationSharingRule(
+      actor(fixture.ownerUserId),
+      {
+        ...pauseIntent,
+        mutationId: randomUUID(),
+        action: "resume",
+        expectedAuthorityVersion: paused.authorityVersion,
+        expectedGrantVersion: paused.grantVersion
+      }
+    );
+    expect(resumed).toMatchObject({
+      state: "active",
+      authorityVersion: 3,
+      catchUpState: "queued"
+    });
+    // A delayed replay reports current state; it cannot put the rule back on pause.
+    await expect(
+      repository.controlConversationSharingRule(
+        actor(fixture.ownerUserId),
+        pauseIntent
+      )
+    ).resolves.toEqual(resumed);
+    const restartedRepository = createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => privacyProvider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider
+    });
+    expect(
+      await restartedRepository.getNextSemanticPrivacyWorkAt()
+    ).not.toBeNull();
+    await pool.query(
+      `update device_credentials set expires_at=now()-interval '1 second' where id=$1`,
+      [fixture.deviceCredentialId]
+    );
+    await pool.query(
+      `update team_memory_sharing_rule_members set reconciliation_attempt_count=4 where rule_id=$1`,
+      [rule.ruleId]
+    );
+    const decryptsBeforeFailedCatchUp = ownerDecryptSpy.mock.calls.length;
+    await expect(
+      restartedRepository.reconcileSharingRuleMembers({ limit: 100 })
+    ).resolves.toMatchObject({ processed: 1, prepared: 0, failed: 1 });
+    expect(ownerDecryptSpy.mock.calls.length).toBe(decryptsBeforeFailedCatchUp);
+    const failedCatchUp = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      { kind: "grant", id: snapshot.shareGrantId }
+    );
+    expect(
+      failedCatchUp?.summary.sharingReasons.find(
+        (reason) => reason.id === rule.reasonId
+      )?.rule
+    ).toMatchObject({
+      catchUpState: "needs_attention",
+      failureCode: "authority_unavailable"
+    });
+    const retryTime = (
+      await pool.query<{ due: boolean }>(
+        `select next_reconciliation_at>now() as due from team_memory_sharing_rule_members where rule_id=$1`,
+        [rule.ruleId]
+      )
+    ).rows[0]!;
+    expect(retryTime.due).toBe(true);
+    await pool.query(
+      `update device_credentials set expires_at=null where id=$1`,
+      [fixture.deviceCredentialId]
+    );
+    // Advance the durable deadline without waiting in real time.
+    await pool.query(
+      `update team_memory_sharing_rule_members set next_reconciliation_at=now() where rule_id=$1`,
+      [rule.ruleId]
+    );
+    await expect(
+      restartedRepository.reconcileSharingRuleMembers({ limit: 100 })
+    ).resolves.toMatchObject({ processed: 1, prepared: 3, failed: 0 });
+    await flushSanitizedSemanticPublication();
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: snapshot.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.toMatchObject({ representation: { sourceRevision: 3 } });
+    const retryIntent = {
+      ...pauseIntent,
+      mutationId: randomUUID(),
+      action: "retry" as const,
+      expectedAuthorityVersion: resumed.authorityVersion,
+      expectedGrantVersion: resumed.grantVersion
+    };
+    const retryQueued = await repository.controlConversationSharingRule(
+      actor(fixture.ownerUserId),
+      retryIntent
+    );
+    expect(retryQueued).toMatchObject({
+      state: "active",
+      authorityVersion: 4,
+      catchUpState: "queued"
+    });
+    const stopMutationId = randomUUID();
+    const stopped = await repository.controlConversationSharingRule(
+      actor(fixture.ownerUserId),
+      {
+        ...pauseIntent,
+        mutationId: stopMutationId,
+        action: "stop",
+        expectedAuthorityVersion: retryQueued.authorityVersion,
+        expectedGrantVersion: retryQueued.grantVersion
+      }
+    );
+    await expect(
+      repository.controlConversationSharingRule(
+        actor(fixture.ownerUserId),
+        retryIntent
+      )
+    ).resolves.toEqual(stopped);
+    expect(stopped).toMatchObject({ state: "stopped", catchUpState: "idle" });
+    const decryptsBeforeDeniedCompanion = decryptSpy.mock.calls.length;
+    await expect(
+      collaboration.getThread(actor(fixture.readerUserId), {
+        threadId: discussion.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      collaboration.listMessages(actor(fixture.readerUserId), {
+        threadId: discussion.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      collaboration.sendMessage(actor(fixture.ownerUserId), {
+        threadId: discussion.id,
+        idempotencyKey: "stopped-rule-denial",
+        bodyText: "must not be stored"
+      })
+    ).resolves.toBeNull();
+    await expect(eventAuthorized(retainedRuleEvent)).resolves.toBe(false);
+    expect(decryptSpy.mock.calls.length).toBe(decryptsBeforeDeniedCompanion);
+    const lastReasonStop = (
+      await pool.query<{ id: string; cursor: string; family: string }>(
+        `select id,cursor::text,family from collaboration_outbox where mutation_id=$1`,
+        [stopMutationId]
+      )
+    ).rows;
+    expect(lastReasonStop).toHaveLength(1);
+    expect(lastReasonStop[0]?.family).toBe("access_revoked");
+    await expect(eventAuthorized(lastReasonStop[0]!)).resolves.toBe(true);
+    // Restore the fixture's independent snapshot to verify that stopping the
+    // rule never destroys the snapshot or its existing discussion history.
+    await pool.query(
+      `update source_owner_representation_consents set state='active',revoked_at=null where id=$1`,
+      [snapshot.consentId]
+    );
+    await checkCompanion();
+    await expect(eventAuthorized(snapshotEvent)).resolves.toBe(true);
+    await expect(eventAuthorized(retainedRuleEvent)).resolves.toBe(false);
+    const replay = await collaboration.replayEvents(
+      actor(fixture.readerUserId),
+      { scope: "team", teamId: fixture.teamId, afterCursor: 0 }
+    );
+    expect(
+      replay?.events.some((event) => event.id === retainedRuleEvent.id)
+    ).toBe(false);
+    expect(replay?.events.some((event) => event.id === snapshotEvent.id)).toBe(
+      true
+    );
+
+    await expect(
+      repository.controlConversationSharingRule(actor(fixture.ownerUserId), {
+        ...pauseIntent,
+        mutationId: randomUUID(),
+        action: "resume",
+        expectedAuthorityVersion: stopped.authorityVersion,
+        expectedGrantVersion: stopped.grantVersion
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    await expect(
+      repository.reconcileSharingRuleMembers({ limit: 100 })
+    ).resolves.toMatchObject({ processed: 0, prepared: 0 });
+    await expect(
+      repository.materializeGrantRepresentation(actor(fixture.ownerUserId), {
+        ...stalePublication,
+        mutationId: randomUUID()
+      })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: snapshot.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.toMatchObject({ representation: { sourceRevision: 1 } });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: snapshot.shareGrantId,
+        representation: "lcm_leaves"
+      })
+    ).resolves.toBeNull();
+    const obsolete = await pool.query(
+      `select id from team_memory_representations where share_grant_id=$1 and consent_id=$2 and source_revision=3`,
+      [snapshot.shareGrantId, continuous.consentId]
+    );
+    expect(obsolete.rows).toHaveLength(3);
+    const retainedRead = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId: snapshot.shareGrantId, representation: "memory_events" }
+    );
+    expect(retainedRead?.grant.displayTitle).toBe(retainedTitle);
+  });
+
+  it("retains paused semantic access only through exact reason publications on every read", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      label: "reason-publication-boundary"
+    });
+    await materialize(fixture, grant);
+    const model = "reason-boundary-model";
+    const version = "reason-boundary-v1";
+    const vector = [1, ...Array.from({ length: 383 }, () => 0)];
+    const pending = await repository.listPendingSharedMemorySemanticItems();
+    for (const item of pending.filter(
+      (item) => item.shareGrantId === grant.shareGrantId
+    )) {
+      await repository.storeSharedMemorySemanticEmbedding({
+        semanticItemId: item.semanticItemId,
+        contentHash: item.contentHash,
+        model,
+        dimensions: 384,
+        version,
+        vector
+      });
+    }
+    await pool.query(
+      `update source_owner_representation_consents set state='paused',paused_at=now() where id=$1`,
+      [grant.consentId]
+    );
+    const search = {
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      queryVector: vector,
+      model,
+      dimensions: 384 as const,
+      version,
+      limit: 50,
+      searchDomain: "global" as const
+    };
+    const boundary = await repository.freezeSharedMemorySemanticRecallBoundary(
+      actor(fixture.readerUserId),
+      { teamWorkspaceId: fixture.teamWorkspaceId, maximumGrantCount: 1024 }
+    );
+    expect(boundary.shareGrantIds).toContain(grant.shareGrantId);
+    const hits = await repository.searchAuthorizedSharedMemorySemanticItems(
+      actor(fixture.readerUserId),
+      search
+    );
+    const hit = hits.find((item) => item.shareGrantId === grant.shareGrantId)!;
+    expect(hit).toBeDefined();
+    await expect(
+      repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: hit.candidateId,
+          searchDomain: "global"
+        }
+      )
+    ).resolves.not.toBeNull();
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.not.toBeNull();
+    await pool.query(
+      `delete from team_memory_reason_publications where share_grant_id=$1`,
+      [grant.shareGrantId]
+    );
+    const decrypts = decryptSpy.mock.calls.length;
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: grant.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repository.listWorkspaceGrants(actor(fixture.readerUserId), {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        limit: 50,
+        offset: 0
+      })
+    ).resolves.toMatchObject({ entries: [] });
+    await expect(
+      repository.searchAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        { ...search, authorizationBoundary: boundary }
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      repository.scanAuthorizedSharedMemorySemanticItems(
+        actor(fixture.readerUserId),
+        { ...search, authorizationBoundary: boundary }
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      repository.expandAuthorizedSharedMemorySemanticItem(
+        actor(fixture.readerUserId),
+        {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: hit.candidateId,
+          searchDomain: "global",
+          authorizationBoundary: boundary
+        }
+      )
+    ).resolves.toBeNull();
+    expect(decryptSpy.mock.calls.length).toBe(decrypts);
+    const currentBoundary =
+      await repository.freezeSharedMemorySemanticRecallBoundary(
+        actor(fixture.readerUserId),
+        { teamWorkspaceId: fixture.teamWorkspaceId, maximumGrantCount: 1024 }
+      );
+    expect(currentBoundary.shareGrantIds).not.toContain(grant.shareGrantId);
   });
 
   it("reauthorizes an exact claimed semantic row after revocation and before Team key resolution", async () => {
@@ -9745,114 +11512,70 @@ describeDb("Shared Memory repository", () => {
     });
   });
 
-  it("materializes opted-in Curated assertions independently of rollup-only fidelity and purges them on source invalidation", async () => {
-    const personalBase = createLocalTestKeyEnvelopeEncryptionProvider(
-      Buffer.alloc(32, 61).toString("base64")
-    );
-    const ownerBase = createLocalTestKeyEnvelopeEncryptionProvider(
-      Buffer.alloc(32, 62).toString("base64")
-    );
-    const teamBase = createLocalTestKeyEnvelopeEncryptionProvider(
-      Buffer.alloc(32, 63).toString("base64")
-    );
-    const personalDecrypt = vi.fn(personalBase.decrypt.bind(personalBase));
-    const ownerEncrypt = vi.fn(ownerBase.encrypt.bind(ownerBase));
-    const teamEncrypt = vi.fn(teamBase.encrypt.bind(teamBase));
-    const personal = { ...personalBase, decrypt: personalDecrypt };
-    const ownerPrivate = { ...ownerBase, encrypt: ownerEncrypt };
-    const team = { ...teamBase, encrypt: teamEncrypt };
-    privacyProvider = personal;
-    const allowed: SharedMemoryRepresentation[] = [
-      "lcm_rollups",
-      "curated_assertions"
-    ];
-    const fixture = await createWorkspaceFixture({
-      teamAllowed: allowed,
-      workspaceAllowed: allowed
-    });
-    const curatedRepository = createSharedMemoryRepository(pool, {
-      resolvePersonalEncryptionProvider: () => personal,
-      resolveOwnerPrivateReplicaEncryptionProvider: ({ teamId }) =>
-        teamId === fixture.teamId ? ownerPrivate : ownerProvider,
-      resolveTeamEncryptionProvider: ({ teamId }) =>
-        teamId === fixture.teamId ? team : provider
-    });
-    repository = curatedRepository;
-    syncRepository = createCrossIdentitySyncRepository(pool, {
-      ownerPrivateReplicaEnvelopeEncryptionProvider: ownerPrivate
-    });
-    const source = await createSource(fixture, 1, "curated-three-key");
-    await putOwnerPolicy(fixture, source, allowed);
+  it.each([false, true])(
+    "materializes opted-in Curated assertions independently of rollup-only fidelity and purges them on source invalidation (rule: %s)",
+    async (ruleReason) => {
+      const personalBase = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 61).toString("base64")
+      );
+      const ownerBase = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 62).toString("base64")
+      );
+      const teamBase = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 63).toString("base64")
+      );
+      const personalDecrypt = vi.fn(personalBase.decrypt.bind(personalBase));
+      const ownerEncrypt = vi.fn(ownerBase.encrypt.bind(ownerBase));
+      const teamEncrypt = vi.fn(teamBase.encrypt.bind(teamBase));
+      const personal = { ...personalBase, decrypt: personalDecrypt };
+      const ownerPrivate = { ...ownerBase, encrypt: ownerEncrypt };
+      const team = { ...teamBase, encrypt: teamEncrypt };
+      privacyProvider = personal;
+      const allowed: SharedMemoryRepresentation[] = [
+        "lcm_rollups",
+        "curated_assertions"
+      ];
+      const fixture = await createWorkspaceFixture({
+        teamAllowed: allowed,
+        workspaceAllowed: allowed
+      });
+      const curatedRepository = createSharedMemoryRepository(pool, {
+        resolvePersonalEncryptionProvider: () => personal,
+        resolveOwnerPrivateReplicaEncryptionProvider: ({ teamId }) =>
+          teamId === fixture.teamId ? ownerPrivate : ownerProvider,
+        resolveTeamEncryptionProvider: ({ teamId }) =>
+          teamId === fixture.teamId ? team : provider
+      });
+      repository = curatedRepository;
+      syncRepository = createCrossIdentitySyncRepository(pool, {
+        ownerPrivateReplicaEnvelopeEncryptionProvider: ownerPrivate
+      });
+      const source = await createSource(fixture, 1, "curated-three-key");
+      await putOwnerPolicy(fixture, source, allowed);
 
-    const assertionId = randomUUID();
-    const sourceId = source.seededEvents[0]!.contributorIds[0]!;
-    await upsertEncryptedFieldPayloadWithClient(
-      pool,
-      actor(fixture.ownerUserId),
-      personal,
-      {
-        sourceTable: "conversation_items",
-        sourceId,
-        sourceColumn: "raw_text",
-        plaintext: "Owner-approved exact-session evidence.",
-        visibility: "personal",
-        rowFamily: "conversation_item",
-        aad: { conversationItemId: sourceId }
-      }
-    );
-    await pool.query(
-      `insert into curated_memory_assertions (
+      const assertionId = randomUUID();
+      const sourceId = source.seededEvents[0]!.contributorIds[0]!;
+      await upsertEncryptedFieldPayloadWithClient(
+        pool,
+        actor(fixture.ownerUserId),
+        personal,
+        {
+          sourceTable: "conversation_items",
+          sourceId,
+          sourceColumn: "raw_text",
+          plaintext: "Owner-approved exact-session evidence.",
+          visibility: "personal",
+          rowFamily: "conversation_item",
+          aad: { conversationItemId: sourceId }
+        }
+      );
+      await pool.query(
+        `insert into curated_memory_assertions (
          id,owner_user_id,visibility,assertion_text,normalized_assertion,
          sensitivity,confidence,tags,metadata,status,observed_at
        ) values ($1,$2,'personal','[koed encrypted curated memory]',
          $3,'normal',95,'{}','{}','current',now())`,
-      [assertionId, fixture.ownerUserId, `encrypted:${randomUUID()}`]
-    );
-    await upsertEncryptedFieldPayloadWithClient(
-      pool,
-      actor(fixture.ownerUserId),
-      personal,
-      {
-        sourceTable: "curated_memory_assertions",
-        sourceId: assertionId,
-        sourceColumn: "payload",
-        plaintext: {
-          assertionText: "The exact-session deployment decision is durable.",
-          normalizedAssertion:
-            "the exact-session deployment decision is durable.",
-          tags: ["decision"],
-          metadata: {},
-          suppressionReason: null
-        },
-        visibility: "personal",
-        rowFamily: "curated_memory",
-        aad: { curatedMemoryId: assertionId }
-      }
-    );
-    await pool.query(
-      `insert into curated_memory_sources (
-         assertion_id,source_type,source_role,conversation_item_id,metadata
-       ) values ($1,'conversation_item','primary_evidence',$2,'{}')`,
-      [assertionId, sourceId]
-    );
-
-    const addAssertion = async (
-      claim: string,
-      role:
-        | "supporting_evidence"
-        | "superseding_evidence"
-        | "conflicting_evidence",
-      evidenceId: string,
-      expiresAt: string | null = null
-    ) => {
-      const id = randomUUID();
-      await pool.query(
-        `insert into curated_memory_assertions (
-           id,owner_user_id,visibility,assertion_text,normalized_assertion,
-           sensitivity,confidence,tags,metadata,status,observed_at,expires_at
-         ) values ($1,$2,'personal','[koed encrypted curated memory]',
-           $3,'normal',90,'{}','{}','current',now(),$4)`,
-        [id, fixture.ownerUserId, `encrypted:${randomUUID()}`, expiresAt]
+        [assertionId, fixture.ownerUserId, `encrypted:${randomUUID()}`]
       );
       await upsertEncryptedFieldPayloadWithClient(
         pool,
@@ -9860,176 +11583,226 @@ describeDb("Shared Memory repository", () => {
         personal,
         {
           sourceTable: "curated_memory_assertions",
-          sourceId: id,
+          sourceId: assertionId,
           sourceColumn: "payload",
           plaintext: {
-            assertionText: claim,
-            normalizedAssertion: claim.toLowerCase(),
-            tags: [role],
+            assertionText: "The exact-session deployment decision is durable.",
+            normalizedAssertion:
+              "the exact-session deployment decision is durable.",
+            tags: ["decision"],
             metadata: {},
             suppressionReason: null
           },
           visibility: "personal",
           rowFamily: "curated_memory",
-          aad: { curatedMemoryId: id }
+          aad: { curatedMemoryId: assertionId }
         }
       );
       await pool.query(
         `insert into curated_memory_sources (
+         assertion_id,source_type,source_role,conversation_item_id,metadata
+       ) values ($1,'conversation_item','primary_evidence',$2,'{}')`,
+        [assertionId, sourceId]
+      );
+
+      const addAssertion = async (
+        claim: string,
+        role:
+          | "supporting_evidence"
+          | "superseding_evidence"
+          | "conflicting_evidence",
+        evidenceId: string,
+        expiresAt: string | null = null
+      ) => {
+        const id = randomUUID();
+        await pool.query(
+          `insert into curated_memory_assertions (
+           id,owner_user_id,visibility,assertion_text,normalized_assertion,
+           sensitivity,confidence,tags,metadata,status,observed_at,expires_at
+         ) values ($1,$2,'personal','[koed encrypted curated memory]',
+           $3,'normal',90,'{}','{}','current',now(),$4)`,
+          [id, fixture.ownerUserId, `encrypted:${randomUUID()}`, expiresAt]
+        );
+        await upsertEncryptedFieldPayloadWithClient(
+          pool,
+          actor(fixture.ownerUserId),
+          personal,
+          {
+            sourceTable: "curated_memory_assertions",
+            sourceId: id,
+            sourceColumn: "payload",
+            plaintext: {
+              assertionText: claim,
+              normalizedAssertion: claim.toLowerCase(),
+              tags: [role],
+              metadata: {},
+              suppressionReason: null
+            },
+            visibility: "personal",
+            rowFamily: "curated_memory",
+            aad: { curatedMemoryId: id }
+          }
+        );
+        await pool.query(
+          `insert into curated_memory_sources (
            assertion_id,source_type,source_role,conversation_item_id,metadata
          ) values ($1,'conversation_item',$2,$3,'{}')`,
-        [id, role, evidenceId]
+          [id, role, evidenceId]
+        );
+      };
+      await addAssertion(
+        "Supporting exact-session assertion.",
+        "supporting_evidence",
+        sourceId,
+        "2099-01-02T03:04:05.000Z"
       );
-    };
-    await addAssertion(
-      "Supporting exact-session assertion.",
-      "supporting_evidence",
-      sourceId,
-      "2099-01-02T03:04:05.000Z"
-    );
-    await addAssertion(
-      "Superseding exact-session assertion.",
-      "superseding_evidence",
-      sourceId
-    );
-    await addAssertion(
-      "Conflicting exact-session assertion.",
-      "conflicting_evidence",
-      sourceId
-    );
-    const otherSource = await createSource(fixture, 1, "curated-mixed-session");
-    await addAssertion(
-      "MIXED_SESSION_CURATED_SENTINEL",
-      "supporting_evidence",
-      otherSource.seededEvents[0]!.contributorIds[0]!
-    );
+      await addAssertion(
+        "Superseding exact-session assertion.",
+        "superseding_evidence",
+        sourceId
+      );
+      await addAssertion(
+        "Conflicting exact-session assertion.",
+        "conflicting_evidence",
+        sourceId
+      );
+      const otherSource = await createSource(
+        fixture,
+        1,
+        "curated-mixed-session"
+      );
+      await addAssertion(
+        "MIXED_SESSION_CURATED_SENTINEL",
+        "supporting_evidence",
+        otherSource.seededEvents[0]!.contributorIds[0]!
+      );
 
-    const created = await createConsent(fixture, source, {
-      representation: "curated_assertions",
-      mode: "continuous",
-      representations: allowed,
-      label: "curated-three-key"
-    });
-    const ownerPrivatePayloads = await pool.query<{ key_id: string }>(
-      `select key_id from encrypted_field_payloads
-        where source_id in ($1,$2)`,
-      [created.preview.artifactId, created.preview.previewId]
-    );
-    expect(ownerPrivatePayloads.rows).toHaveLength(2);
-    expect(
-      ownerPrivatePayloads.rows.every(
-        ({ key_id }) => key_id === ownerPrivate.keyId
-      )
-    ).toBe(true);
-    const grant = await repository.createShareGrant(
-      actor(fixture.ownerUserId),
-      {
-        mutationId: randomUUID(),
-        logicalGrantId: randomUUID(),
-        consentId: created.consentId,
-        authority: authority(fixture)
-      }
-    );
-    expect(grant).toMatchObject({
-      maximumFidelity: "lcm_rollups",
-      includeCuratedMemory: true
-    });
-    await prepareSanitizedSemanticPreview(
-      fixture.ownerUserId,
-      created.preview,
-      curatedRepository
-    );
-    const materialized = await repository.materializeGrantRepresentation(
-      actor(fixture.ownerUserId),
-      {
-        mutationId: randomUUID(),
-        shareGrantId: grant.id,
-        consentId: created.consentId,
-        expectedGrantVersion: grant.grantVersion,
-        preview: created.preview
-      }
-    );
-    expect(materialized.representation).toBe("curated_assertions");
-    const materializedExpiry = await pool.query<{ expires_at: Date | null }>(
-      `select curated_expires_at as expires_at
-         from team_memory_representations where id=$1`,
-      [materialized.id]
-    );
-    expect(materializedExpiry.rows[0]?.expires_at?.toISOString()).toBe(
-      "2099-01-02T03:04:05.000Z"
-    );
-    expect(personalDecrypt).toHaveBeenCalled();
-    expect(ownerEncrypt).toHaveBeenCalled();
-    expect(teamEncrypt).toHaveBeenCalled();
-    expect(new Set([personal.keyId, ownerPrivate.keyId, team.keyId]).size).toBe(
-      3
-    );
-    const read = await repository.readGrantRepresentation(
-      actor(fixture.readerUserId),
-      { shareGrantId: grant.id, representation: "curated_assertions" }
-    );
-    expect(read?.items).toHaveLength(4);
-    expect(
-      read?.items.some(
-        (item) =>
-          item.content.assertionText === "MIXED_SESSION_CURATED_SENTINEL"
-      )
-    ).toBe(false);
-    expect(
-      read?.items.every((item) => item.content.expansionItems === undefined)
-    ).toBe(true);
-    const curatedSemanticItems = (
-      await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
-    ).filter((item) => item.shareGrantId === grant.id);
-    const curatedVector = [1, ...Array.from({ length: 383 }, () => 0)];
-    for (const semanticItem of curatedSemanticItems) {
-      await repository.storeSharedMemorySemanticEmbedding({
-        semanticItemId: semanticItem.semanticItemId,
-        contentHash: semanticItem.contentHash,
-        model: "curated-expansion-model",
-        dimensions: 384,
-        version: "curated-expansion-v1",
-        vector: curatedVector
+      const created = await createConsent(fixture, source, {
+        representation: "curated_assertions",
+        mode: ruleReason ? "snapshot" : "continuous",
+        representations: allowed,
+        label: "curated-three-key"
       });
-    }
-    const [curatedCandidate] =
-      await repository.searchAuthorizedSharedMemorySemanticItems(
-        actor(fixture.readerUserId),
+      const ownerPrivatePayloads = await pool.query<{ key_id: string }>(
+        `select key_id from encrypted_field_payloads
+        where source_id in ($1,$2)`,
+        [created.preview.artifactId, created.preview.previewId]
+      );
+      expect(ownerPrivatePayloads.rows).toHaveLength(2);
+      expect(
+        ownerPrivatePayloads.rows.every(
+          ({ key_id }) => key_id === ownerPrivate.keyId
+        )
+      ).toBe(true);
+      const grant = await repository.createShareGrant(
+        actor(fixture.ownerUserId),
         {
-          teamWorkspaceId: fixture.teamWorkspaceId,
-          queryVector: curatedVector,
+          mutationId: randomUUID(),
+          logicalGrantId: randomUUID(),
+          consentId: created.consentId,
+          authority: authority(fixture)
+        }
+      );
+      expect(grant).toMatchObject({
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: true
+      });
+      await prepareSanitizedSemanticPreview(
+        fixture.ownerUserId,
+        created.preview,
+        curatedRepository
+      );
+      const materialized = await repository.materializeGrantRepresentation(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          shareGrantId: grant.id,
+          consentId: created.consentId,
+          expectedGrantVersion: grant.grantVersion,
+          preview: created.preview
+        }
+      );
+      expect(materialized.representation).toBe("curated_assertions");
+      const materializedExpiry = await pool.query<{ expires_at: Date | null }>(
+        `select curated_expires_at as expires_at
+         from team_memory_representations where id=$1`,
+        [materialized.id]
+      );
+      expect(materializedExpiry.rows[0]?.expires_at?.toISOString()).toBe(
+        "2099-01-02T03:04:05.000Z"
+      );
+      expect(personalDecrypt).toHaveBeenCalled();
+      expect(ownerEncrypt).toHaveBeenCalled();
+      expect(teamEncrypt).toHaveBeenCalled();
+      expect(
+        new Set([personal.keyId, ownerPrivate.keyId, team.keyId]).size
+      ).toBe(3);
+      const read = await repository.readGrantRepresentation(
+        actor(fixture.readerUserId),
+        { shareGrantId: grant.id, representation: "curated_assertions" }
+      );
+      expect(read?.items).toHaveLength(4);
+      expect(
+        read?.items.some(
+          (item) =>
+            item.content.assertionText === "MIXED_SESSION_CURATED_SENTINEL"
+        )
+      ).toBe(false);
+      expect(
+        read?.items.every((item) => item.content.expansionItems === undefined)
+      ).toBe(true);
+      const curatedSemanticItems = (
+        await repository.listPendingSharedMemorySemanticItems({ limit: 100 })
+      ).filter((item) => item.shareGrantId === grant.id);
+      const curatedVector = [1, ...Array.from({ length: 383 }, () => 0)];
+      for (const semanticItem of curatedSemanticItems) {
+        await repository.storeSharedMemorySemanticEmbedding({
+          semanticItemId: semanticItem.semanticItemId,
+          contentHash: semanticItem.contentHash,
           model: "curated-expansion-model",
           dimensions: 384,
           version: "curated-expansion-v1",
-          limit: 1,
-          searchDomain: "global",
-          representations: ["curated_assertions"]
-        }
+          vector: curatedVector
+        });
+      }
+      const [curatedCandidate] =
+        await repository.searchAuthorizedSharedMemorySemanticItems(
+          actor(fixture.readerUserId),
+          {
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            queryVector: curatedVector,
+            model: "curated-expansion-model",
+            dimensions: 384,
+            version: "curated-expansion-v1",
+            limit: 1,
+            searchDomain: "global",
+            representations: ["curated_assertions"]
+          }
+        );
+      const curatedExpansion =
+        await repository.expandAuthorizedSharedMemorySemanticItem(
+          actor(fixture.readerUserId),
+          {
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            candidateId: curatedCandidate!.candidateId,
+            searchDomain: "global"
+          }
+        );
+      expect(curatedExpansion?.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            itemType: "user_message",
+            text: "Owner-approved exact-session evidence."
+          })
+        ])
       );
-    const curatedExpansion =
-      await repository.expandAuthorizedSharedMemorySemanticItem(
-        actor(fixture.readerUserId),
-        {
-          teamWorkspaceId: fixture.teamWorkspaceId,
-          candidateId: curatedCandidate!.candidateId,
-          searchDomain: "global"
-        }
-      );
-    expect(curatedExpansion?.items).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          itemType: "user_message",
-          text: "Owner-approved exact-session evidence."
-        })
-      ])
-    );
-    expect(
-      curatedExpansion?.items.every(
-        (item) => item.candidateId !== curatedCandidate!.candidateId
-      )
-    ).toBe(true);
-    const storage = await pool.query<{ storage: string }>(
-      `select concat_ws('|',
+      expect(
+        curatedExpansion?.items.every(
+          (item) => item.candidateId !== curatedCandidate!.candidateId
+        )
+      ).toBe(true);
+      const storage = await pool.query<{ storage: string }>(
+        `select concat_ws('|',
          coalesce((select string_agg(row_to_json(row_data)::text,'|')
            from (select * from curated_memory_assertions where owner_user_id=$1) row_data),''),
          coalesce((select string_agg(row_to_json(row_data)::text,'|')
@@ -10042,179 +11815,247 @@ describeDb("Shared Memory repository", () => {
            from (select * from team_memory_representation_chunks where representation_id=$4) row_data),''),
          coalesce((select string_agg(row_to_json(row_data)::text,'|')
            from (select * from team_memory_semantic_items where representation_id=$4) row_data),'')) as storage`,
-      [
-        fixture.ownerUserId,
-        assertionId,
-        source.logicalMemoryId,
-        materialized.id
-      ]
-    );
-    expect(storage.rows[0]!.storage).not.toContain(
-      "The exact-session deployment decision is durable."
-    );
-    expect(storage.rows[0]!.storage).not.toContain(
-      "MIXED_SESSION_CURATED_SENTINEL"
-    );
+        [
+          fixture.ownerUserId,
+          assertionId,
+          source.logicalMemoryId,
+          materialized.id
+        ]
+      );
+      expect(storage.rows[0]!.storage).not.toContain(
+        "The exact-session deployment decision is durable."
+      );
+      expect(storage.rows[0]!.storage).not.toContain(
+        "MIXED_SESSION_CURATED_SENTINEL"
+      );
 
-    await pool.query(
-      `update team_memory_representations
+      await pool.query(
+        `update team_memory_representations
           set curated_expires_at=now()-interval '1 second'
         where id=$1`,
-      [materialized.id]
-    );
-    await expect(
-      repository.readGrantRepresentation(actor(fixture.readerUserId), {
-        shareGrantId: grant.id,
-        representation: "curated_assertions"
-      })
-    ).resolves.toBeNull();
-    await expect(
-      repository.expandAuthorizedSharedMemorySemanticItem(
-        actor(fixture.readerUserId),
-        {
-          teamWorkspaceId: fixture.teamWorkspaceId,
-          candidateId: curatedCandidate!.candidateId,
-          searchDomain: "global"
-        }
-      )
-    ).resolves.toBeNull();
-    await pool.query(
-      `update team_memory_representations
+        [materialized.id]
+      );
+      await expect(
+        repository.readGrantRepresentation(actor(fixture.readerUserId), {
+          shareGrantId: grant.id,
+          representation: "curated_assertions"
+        })
+      ).resolves.toBeNull();
+      await expect(
+        repository.expandAuthorizedSharedMemorySemanticItem(
+          actor(fixture.readerUserId),
+          {
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            candidateId: curatedCandidate!.candidateId,
+            searchDomain: "global"
+          }
+        )
+      ).resolves.toBeNull();
+      await pool.query(
+        `update team_memory_representations
           set curated_expires_at=$2
         where id=$1`,
-      [materialized.id, "2099-01-02T03:04:05.000Z"]
-    );
+        [materialized.id, "2099-01-02T03:04:05.000Z"]
+      );
 
-    const failureClient = await pool.connect();
-    try {
-      await failureClient.query(`
-        create function pg_temp.fail_curated_invalidation_test()
+      const failureClient = await pool.connect();
+      try {
+        await failureClient.query(`
+        create or replace function pg_temp.fail_curated_invalidation_test()
         returns trigger language plpgsql as $$
         begin
           raise exception 'injected curated invalidation failure';
         end $$
       `);
-      await failureClient.query(`
+        await failureClient.query(`
         create trigger zz_injected_curated_invalidation_failure
         after update of confidence on curated_memory_assertions
         for each row when (new.id = '${assertionId}'::uuid)
         execute function pg_temp.fail_curated_invalidation_test()
       `);
-      await expect(
-        failureClient.query(
-          "update curated_memory_assertions set confidence=94 where id=$1",
-          [assertionId]
-        )
-      ).rejects.toThrow("injected curated invalidation failure");
-      const rolledBackAssertion = await failureClient.query<{
-        confidence: number;
-        state: string;
-        semantic_count: string;
-      }>(
-        `select assertion.confidence,representation.state,
+        await expect(
+          failureClient.query(
+            "update curated_memory_assertions set confidence=94 where id=$1",
+            [assertionId]
+          )
+        ).rejects.toThrow("injected curated invalidation failure");
+        const rolledBackAssertion = await failureClient.query<{
+          confidence: number;
+          state: string;
+          semantic_count: string;
+        }>(
+          `select assertion.confidence,representation.state,
                 (select count(*)::text from team_memory_semantic_items item
                   where item.representation_id=representation.id) semantic_count
            from curated_memory_assertions assertion
            join team_memory_representations representation on representation.id=$2
           where assertion.id=$1`,
-        [assertionId, materialized.id]
-      );
-      expect(rolledBackAssertion.rows[0]).toEqual({
-        confidence: 95,
-        state: "available",
-        semantic_count: "4"
-      });
-      await failureClient.query(
-        "drop trigger zz_injected_curated_invalidation_failure on curated_memory_assertions"
-      );
-    } finally {
-      failureClient.release();
-    }
+          [assertionId, materialized.id]
+        );
+        expect(rolledBackAssertion.rows[0]).toEqual({
+          confidence: 95,
+          state: "available",
+          semantic_count: "4"
+        });
+        await failureClient.query(
+          "drop trigger zz_injected_curated_invalidation_failure on curated_memory_assertions"
+        );
+      } finally {
+        failureClient.release();
+      }
 
-    await pool.query(
-      "update curated_memory_assertions set confidence=94 where id=$1",
-      [assertionId]
-    );
-    await expect(
-      repository.reconcileCuratedGrantRepresentations(
-        actor(fixture.ownerUserId)
-      )
-    ).resolves.toMatchObject({ rematerialized: 1 });
-    await flushSanitizedSemanticPublication();
-    const rematerialized = await pool.query<{ id: string; state: string }>(
-      `select id,state from team_memory_representations
+      if (ruleReason) {
+        const continuous = await createConsent(fixture, source, {
+          representation: "curated_assertions",
+          mode: "continuous",
+          representations: allowed,
+          label: "curated-independent-rule"
+        });
+        const root = (
+          await pool.query<{ logical_grant_id: string; grant_version: number }>(
+            "select logical_grant_id,grant_version from team_memory_share_grants where id=$1",
+            [grant.id]
+          )
+        ).rows[0]!;
+        await repository.createConversationSharingRule(
+          actor(fixture.ownerUserId),
+          {
+            ruleId: randomUUID(),
+            mutationId: randomUUID(),
+            logicalGrantId: root.logical_grant_id,
+            consentId: continuous.consentId,
+            expectedConsentVersion: continuous.consent.consentVersion,
+            expectedGrantVersion: root.grant_version,
+            publisherCredentialId: fixture.deviceCredentialId,
+            effectivePrivacyPolicyHash: materialized.effectivePrivacyPolicyHash,
+            authority: authority(fixture)
+          }
+        );
+      }
+      const invalidKeys = createSharedMemoryRepository(pool, {
+        resolvePersonalEncryptionProvider: () => ownerPrivate,
+        resolveOwnerPrivateReplicaEncryptionProvider: () => ownerPrivate,
+        resolveTeamEncryptionProvider: () => team
+      });
+      await expect(
+        invalidKeys.reconcileCuratedGrantRepresentations(
+          actor(fixture.ownerUserId)
+        )
+      ).resolves.toEqual({ rematerialized: 0, invalidated: 0 });
+      expect(
+        (
+          await pool.query<{ state: string }>(
+            "select state from team_memory_representations where id=$1",
+            [materialized.id]
+          )
+        ).rows[0]?.state
+      ).toBe("available");
+
+      await pool.query(
+        "update curated_memory_assertions set confidence=94 where id=$1",
+        [assertionId]
+      );
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query("select 1");
+        const transactional = createSharedMemoryRepository(
+          createSavepointPool(client, "curated_memory"),
+          {
+            inheritTransactionIsolation: true,
+            resolvePersonalEncryptionProvider: () => personal,
+            resolveOwnerPrivateReplicaEncryptionProvider: () => ownerPrivate,
+            resolveTeamEncryptionProvider: () => team
+          }
+        );
+        await expect(
+          transactional.reconcileCuratedGrantRepresentations(
+            actor(fixture.ownerUserId)
+          )
+        ).resolves.toMatchObject({ rematerialized: 1 });
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+      await flushSanitizedSemanticPublication();
+      const rematerialized = await pool.query<{ id: string; state: string }>(
+        `select id,state from team_memory_representations
         where share_grant_id=$1 and representation='curated_assertions'
         order by created_at desc,id desc limit 1`,
-      [grant.id]
-    );
-    expect(rematerialized.rows[0]?.state).toBe("available");
+        [grant.id]
+      );
+      expect(rematerialized.rows[0]?.state).toBe("available");
 
-    const sourceFailureClient = await pool.connect();
-    try {
-      await sourceFailureClient.query(`
-        create function pg_temp.fail_curated_source_invalidation_test()
+      const sourceFailureClient = await pool.connect();
+      try {
+        await sourceFailureClient.query(`
+        create or replace function pg_temp.fail_curated_source_invalidation_test()
         returns trigger language plpgsql as $$
         begin
           raise exception 'injected curated source invalidation failure';
         end $$
       `);
-      await sourceFailureClient.query(`
+        await sourceFailureClient.query(`
         create trigger zz_injected_curated_source_invalidation_failure
         after update of memory_excluded_at on conversation_items
         for each row when (new.id = '${sourceId}'::uuid)
         execute function pg_temp.fail_curated_source_invalidation_test()
       `);
-      await expect(
-        sourceFailureClient.query(
-          "update conversation_items set memory_excluded_at=now() where id=$1",
-          [sourceId]
-        )
-      ).rejects.toThrow("injected curated source invalidation failure");
-      const rolledBackSource = await sourceFailureClient.query<{
-        memory_excluded_at: Date | null;
-        state: string;
-      }>(
-        `select item.memory_excluded_at,representation.state
+        await expect(
+          sourceFailureClient.query(
+            "update conversation_items set memory_excluded_at=now() where id=$1",
+            [sourceId]
+          )
+        ).rejects.toThrow("injected curated source invalidation failure");
+        const rolledBackSource = await sourceFailureClient.query<{
+          memory_excluded_at: Date | null;
+          state: string;
+        }>(
+          `select item.memory_excluded_at,representation.state
            from conversation_items item
            join team_memory_representations representation on representation.id=$2
           where item.id=$1`,
-        [sourceId, rematerialized.rows[0]!.id]
-      );
-      expect(rolledBackSource.rows[0]).toEqual({
-        memory_excluded_at: null,
-        state: "available"
-      });
-      await sourceFailureClient.query(
-        "drop trigger zz_injected_curated_source_invalidation_failure on conversation_items"
-      );
-    } finally {
-      sourceFailureClient.release();
-    }
+          [sourceId, rematerialized.rows[0]!.id]
+        );
+        expect(rolledBackSource.rows[0]).toEqual({
+          memory_excluded_at: null,
+          state: "available"
+        });
+        await sourceFailureClient.query(
+          "drop trigger zz_injected_curated_source_invalidation_failure on conversation_items"
+        );
+      } finally {
+        sourceFailureClient.release();
+      }
 
-    await pool.query(
-      "update conversation_items set memory_excluded_at=now() where id=$1",
-      [sourceId]
-    );
-    await expect(
-      repository.reconcileCuratedGrantRepresentations(
-        actor(fixture.ownerUserId)
-      )
-    ).resolves.toMatchObject({ invalidated: 1 });
-    const invalidated = await pool.query<{
-      state: string;
-      semantic_count: string;
-    }>(
-      `select r.state,
+      await pool.query(
+        "update conversation_items set memory_excluded_at=now() where id=$1",
+        [sourceId]
+      );
+      await expect(
+        repository.reconcileCuratedGrantRepresentations(
+          actor(fixture.ownerUserId)
+        )
+      ).resolves.toMatchObject({ invalidated: 0 });
+      const invalidated = await pool.query<{
+        state: string;
+        semantic_count: string;
+      }>(
+        `select r.state,
               (select count(*)::text from team_memory_semantic_items smi
                 where smi.representation_id=r.id) as semantic_count
          from team_memory_representations r where r.id=$1`,
-      [rematerialized.rows[0]!.id]
-    );
-    expect(invalidated.rows[0]).toEqual({
-      state: "invalidated",
-      semantic_count: "0"
-    });
-  });
+        [rematerialized.rows[0]!.id]
+      );
+      expect(invalidated.rows[0]).toEqual({
+        state: "invalidated",
+        semantic_count: "0"
+      });
+    }
+  );
 
   it("rewraps Team representation DEKs without decrypting or changing ciphertext", async () => {
     const fixture = await createWorkspaceFixture();
@@ -11011,12 +12852,24 @@ describeDb("Shared Memory repository", () => {
           shareGrantId: grant.shareGrantId,
           consentId: restoredConsent.consentId,
           expectedGrantVersion: restored.grantVersion,
-          expectedRepresentationVersion:
-            initialRepresentation.recordVersion + 1,
+          expectedRepresentationVersion: 0,
           preview: restoredConsent.preview
         }
       );
-    expect(restoredRepresentation.id).toBe(initialRepresentation.id);
+    expect(restoredRepresentation.id).not.toBe(initialRepresentation.id);
+    await expect(
+      pool.query(
+        `select state,record_version from team_memory_representations where id=$1`,
+        [initialRepresentation.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "invalidated",
+          record_version: initialRepresentation.recordVersion + 1
+        }
+      ]
+    });
     expect(restoredRepresentation.state).toBe("available");
     expect(
       await repository.readGrantRepresentation(actor(fixture.readerUserId), {
@@ -12022,4 +13875,3171 @@ describeDb("Shared Memory repository", () => {
     );
     expect(stored.rows[0]?.count).toBe("1");
   });
+  const executeNativeRuleOperation = async <T>(
+    fixture: WorkspaceFixture,
+    bind: (referenceId: string) => SharedMemoryActionGrantBinding,
+    run: (
+      scoped: SharedMemoryRepository,
+      approved: SharedMemoryAuthorityContext
+    ) => Promise<T>,
+    approvalTier: "native_review" | "direct" = "native_review"
+  ) => {
+    const highRisk = createHighRiskActionRepository(createDb(pool), {
+      pool,
+      envelopeEncryptionProvider: privacyProvider,
+      teamEnvelopeEncryptionProvider: provider,
+      ownerPrivateReplicaEnvelopeEncryptionProvider: ownerProvider
+    });
+    const upstreamBackendId = (
+      await pool.query<{ upstream_backend_id: string }>(
+        "select upstream_backend_id from device_credentials where id=$1",
+        [fixture.deviceCredentialId]
+      )
+    ).rows[0]!.upstream_backend_id;
+    const requestId = randomUUID(),
+      secret = `hrg_${randomBytes(32).toString("base64url")}`;
+    const binding = bind(requestId);
+    const context = {
+      ownerUserId: fixture.ownerUserId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId
+    };
+    const operation = {
+      ...context,
+      operationFamily: binding.operationFamily,
+      action: binding.action,
+      teamId: binding.teamId,
+      targetId: binding.targetId,
+      scopeHash: binding.scopeHash,
+      requestHash: binding.requestHash
+    };
+    await highRisk.createActionGrant({
+      ...operation,
+      clientRequestId: requestId,
+      grantCommitment: highRiskActionGrantCommitment(secret),
+      credentialOperationFamily: "share_grant_management",
+      approvalTier,
+      review:
+        approvalTier === "native_review"
+          ? {
+              version: 1,
+              title: "Change rule detail",
+              description: "Review the exact rule detail.",
+              consequence: "Apply this rule's reviewed cap.",
+              confirmLabel: "Approve",
+              details: []
+            }
+          : null
+    });
+    if (approvalTier === "native_review")
+      await highRisk.decideNativeActionReview({
+        ...context,
+        clientRequestId: requestId,
+        decision: "approve"
+      });
+    const result = await highRisk.executeActionGrant({
+      ...operation,
+      actionGrant: secret,
+      execute: async ({ sharedMemory }) => ({
+        statusCode: 200,
+        body: await run(sharedMemory, {
+          action: SHARED_MEMORY_AUTHORITY,
+          source: "device_action_grant",
+          referenceId: requestId
+        })
+      })
+    });
+    expect(result).toMatchObject({ statusCode: 200 });
+    return result!.body;
+  };
+
+  const executeDetailAmendment = (
+    fixture: WorkspaceFixture,
+    intent: import("@koed/shared").SharingRuleDetailIntent
+  ) =>
+    executeNativeRuleOperation(
+      fixture,
+      (referenceId) =>
+        sharedMemoryRuleDetailActionGrantBinding({ ...intent, referenceId }),
+      (scoped, approved) =>
+        scoped.amendSharingRuleDetail(actor(fixture.ownerUserId), {
+          ...intent,
+          authority: approved
+        })
+    );
+
+  const verifyPausedPolicyHistory = async (
+    capScope: "none" | "owner" | "team" | "workspace"
+  ) => {
+    const fixture = await createWorkspaceFixture();
+    const owner = actor(fixture.ownerUserId),
+      reader = actor(fixture.readerUserId);
+    const source = await createSource(fixture, 1, "rule-policy-history");
+    await putOwnerPolicy(fixture, source);
+    const consent = await createConsent(fixture, source, {
+      representation: "memory_events",
+      mode: "continuous",
+      label: "rule-policy-history"
+    });
+    const deploymentIdentityId = (
+      await pool.query<{ id: string }>(
+        "select id from deployment_identities where locality='local' and disabled_at is null"
+      )
+    ).rows[0]!.id;
+    const globalPolicy = await privacyRepository.resolveEffectiveContentPolicy({
+      deploymentIdentityId,
+      sourceOwnerUserId: fixture.ownerUserId,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId
+    });
+    const rule = await repository.createConversationSharingRule(owner, {
+      ruleId: randomUUID(),
+      mutationId: randomUUID(),
+      logicalGrantId: randomUUID(),
+      consentId: consent.consentId,
+      expectedConsentVersion: consent.consent.consentVersion,
+      expectedGrantVersion: null,
+      publisherCredentialId: fixture.deviceCredentialId,
+      effectivePrivacyPolicyHash: globalPolicy.effectivePolicyHash,
+      authority: authority(fixture)
+    });
+    const state = async () =>
+      (
+        await pool.query<{
+          authority_version: number;
+          publisher_fence: string;
+          grant_version: number;
+          consent_version: number;
+        }>(
+          `select rule.authority_version,rule.publisher_fence,g.grant_version,c.consent_version
+      from team_memory_sharing_rules rule join team_memory_share_grants g on g.id=$2
+      join source_owner_representation_consents c on c.id=$3 where rule.id=$1`,
+          [rule.ruleId, rule.shareGrantId, consent.consentId]
+        )
+      ).rows[0]!;
+    const initial = await state();
+    await repository.prepareSharingRuleMember(owner, {
+      shareGrantId: rule.shareGrantId,
+      expectedGrantVersion: initial.grant_version,
+      ruleAuthority: {
+        ruleId: rule.ruleId,
+        reasonId: rule.reasonId,
+        authorityVersion: initial.authority_version,
+        consentVersion: initial.consent_version,
+        publisherCredentialId: fixture.deviceCredentialId,
+        publisherFence: Number(initial.publisher_fence),
+        effectivePrivacyPolicyHash: globalPolicy.effectivePolicyHash
+      }
+    });
+    await flushSanitizedSemanticPublication();
+    const read = (
+      representation: SharedMemoryRepresentation = "memory_events"
+    ) =>
+      repository.readGrantRepresentation(reader, {
+        shareGrantId: rule.shareGrantId,
+        representation
+      });
+    expect(await read()).toMatchObject({
+      representation: { sourceRevision: 1 }
+    });
+    const beforePause = await state();
+    await repository.controlConversationSharingRule(owner, {
+      ruleId: rule.ruleId,
+      reasonId: rule.reasonId,
+      shareGrantId: rule.shareGrantId,
+      mutationId: randomUUID(),
+      expectedAuthorityVersion: beforePause.authority_version,
+      expectedGrantVersion: beforePause.grant_version,
+      action: "pause",
+      authority: authority(fixture),
+      destination: {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId
+      }
+    });
+    await ensureSourceRevision(fixture, source, 2, "unpublished-while-paused");
+    if (capScope !== "none") {
+      const table =
+        capScope === "owner"
+          ? "source_owner_representation_policies"
+          : capScope === "team"
+            ? "team_representation_policies"
+            : "workspace_representation_policies";
+      const identity =
+        capScope === "owner"
+          ? source.logicalMemoryId
+          : capScope === "team"
+            ? fixture.teamId
+            : fixture.teamWorkspaceId;
+      const column =
+        capScope === "owner"
+          ? "logical_memory_id"
+          : capScope === "team"
+            ? "team_id"
+            : "team_workspace_id";
+      const current = (
+        await pool.query<{ version: number }>(
+          `select version from ${table} where ${column}=$1 and superseded_at is null`,
+          [identity]
+        )
+      ).rows[0]!;
+      const policy = {
+        mutationId: randomUUID(),
+        expectedCurrentVersion: current.version,
+        maximumFidelity: "lcm_rollups" as const,
+        includeCuratedMemory: false
+      };
+      if (capScope === "owner")
+        await repository.putSourceOwnerPolicy(owner, {
+          ...policy,
+          logicalMemoryId: source.logicalMemoryId
+        });
+      else if (capScope === "team")
+        await repository.putTeamPolicy(owner, {
+          ...policy,
+          teamId: fixture.teamId
+        });
+      else
+        await repository.putWorkspacePolicy(owner, {
+          ...policy,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId
+        });
+      expect(await read()).toBeNull();
+    }
+    const retainedKind = capScope === "none" ? "memory_events" : "lcm_rollups";
+    const ownerPolicies = async () =>
+      (
+        await pool.query<Record<string, unknown>>(
+          "select policy_id,version,policy_hash,maximum_fidelity,include_curated_memory from source_owner_representation_policies where logical_memory_id=$1 order by version",
+          [source.logicalMemoryId]
+        )
+      ).rows;
+    const retainedPolicies = await ownerPolicies();
+    const review = async (labels: ReturnType<typeof noPrivacyLabelsPolicy>) => {
+      const value = await repository.getSharingRuleContentPolicyReview(owner, {
+        ruleId: rule.ruleId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        labels
+      });
+      expect(value).not.toBeNull();
+      return value!;
+    };
+    const execute = (
+      intent: import("@koed/shared").SharingRuleContentPolicyIntent
+    ) =>
+      executeNativeRuleOperation(
+        fixture,
+        (referenceId) =>
+          sharedMemoryRuleContentPolicyActionGrantBinding({
+            ...intent,
+            referenceId
+          }),
+        (scoped, approved) =>
+          scoped.amendSharingRuleContentPolicy(owner, {
+            ...intent,
+            authority: approved
+          })
+      );
+    const restrictive = {
+      mutationId: randomUUID(),
+      review: await review({ ...noPrivacyLabelsPolicy(), private_email: true })
+    };
+    expect(restrictive.review.disclosureIncrease).toBe(false);
+    const restricted = await execute(restrictive);
+    expect(restricted).toMatchObject({
+      state: "paused",
+      contentPolicyVersion: 1
+    });
+    expect(await read(retainedKind)).toBeNull();
+    expect(await execute(restrictive)).toEqual(restricted);
+    await expect(
+      execute({ ...restrictive, mutationId: randomUUID() })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    const reprocess = async () => {
+      await repository.invalidateStaleSemanticPreviews({ limit: 500 });
+      const prepared = await repository.reconcileSharingRuleMembers({
+        limit: 100
+      });
+      expect(prepared.failed).toBe(0);
+      expect(prepared.prepared).toBeGreaterThan(0);
+      await flushSanitizedSemanticPublication();
+    };
+    await reprocess();
+    expect(await read(retainedKind)).toMatchObject({
+      representation: {
+        sourceRevision: 1,
+        effectivePrivacyPolicyHash: restricted.effectivePrivacyPolicyHash
+      }
+    });
+    const broader = {
+      mutationId: randomUUID(),
+      review: await review(noPrivacyLabelsPolicy())
+    };
+    expect(broader.review.disclosureIncrease).toBe(
+      !globalPolicy.labels.private_email
+    );
+    const restored = await execute(broader);
+    expect(restored).toMatchObject({
+      state: "paused",
+      contentPolicyVersion: 2,
+      effectivePrivacyPolicyHash: globalPolicy.effectivePolicyHash
+    });
+    await reprocess();
+    expect(await read(retainedKind)).toMatchObject({
+      representation: {
+        sourceRevision: 1,
+        effectivePrivacyPolicyHash: globalPolicy.effectivePolicyHash
+      }
+    });
+    if (capScope !== "none") expect(await read("memory_events")).toBeNull();
+    expect(await ownerPolicies()).toEqual(retainedPolicies);
+    expect(
+      (
+        await pool.query(
+          "select state from team_memory_sharing_rules where id=$1",
+          [rule.ruleId]
+        )
+      ).rows[0]
+    ).toEqual({ state: "paused" });
+    expect(
+      (
+        await pool.query(
+          "select count(*)::integer count from team_memory_reason_publications publication join team_memory_representations representation on representation.id=publication.representation_id where publication.reason_id=$1 and representation.source_revision>1",
+          [rule.reasonId]
+        )
+      ).rows[0]
+    ).toEqual({ count: 0 });
+  };
+
+  it("reprocesses paused rule policy from exact published history and restores its prior policy", async () => {
+    await verifyPausedPolicyHistory("none");
+  });
+  it.each(["owner", "team", "workspace"] as const)(
+    "reprocesses paused rule policy under a reduced current %s detail limit",
+    async (scope) => {
+      await verifyPausedPolicyHistory(scope);
+    }
+  );
+
+  it("amends rule detail with immediate read restrictions, exact retained revisions and unchanged lifecycle", async () => {
+    const fixture = await createWorkspaceFixture();
+    const owner = actor(fixture.ownerUserId),
+      reader = actor(fixture.readerUserId);
+    const source = await createSource(fixture, 1, "rule-detail");
+    await putOwnerPolicy(fixture, source);
+    const consent = await createConsent(fixture, source, {
+      representation: "memory_events",
+      mode: "continuous",
+      label: "rule-detail"
+    });
+    const deploymentIdentityId = (
+      await pool.query<{ id: string }>(
+        "select id from deployment_identities where locality='local' and disabled_at is null"
+      )
+    ).rows[0]!.id;
+    const effectivePrivacyPolicyHash = (
+      await privacyRepository.resolveEffectiveContentPolicy({
+        deploymentIdentityId,
+        sourceOwnerUserId: fixture.ownerUserId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId
+      })
+    ).effectivePolicyHash;
+    const rule = await repository.createConversationSharingRule(owner, {
+      ruleId: randomUUID(),
+      mutationId: randomUUID(),
+      logicalGrantId: randomUUID(),
+      consentId: consent.consentId,
+      expectedConsentVersion: consent.consent.consentVersion,
+      expectedGrantVersion: null,
+      publisherCredentialId: fixture.deviceCredentialId,
+      effectivePrivacyPolicyHash: effectivePrivacyPolicyHash,
+      authority: authority(fixture)
+    });
+    const current = async () =>
+      (
+        await pool.query<{
+          authority_version: number;
+          publisher_fence: string;
+          grant_version: number;
+          consent_version: number;
+        }>(
+          `select rule.authority_version,rule.publisher_fence,g.grant_version,c.consent_version
+      from team_memory_sharing_rules rule join team_memory_share_grants g on g.id=$2
+      join source_owner_representation_consents c on c.id=$3 where rule.id=$1`,
+          [rule.ruleId, rule.shareGrantId, consent.consentId]
+        )
+      ).rows[0]!;
+    const prepare = async () => {
+      const state = await current();
+      await repository.prepareSharingRuleMember(owner, {
+        shareGrantId: rule.shareGrantId,
+        expectedGrantVersion: state.grant_version,
+        ruleAuthority: {
+          reasonId: rule.reasonId,
+          ruleId: rule.ruleId,
+          authorityVersion: state.authority_version,
+          consentVersion: state.consent_version,
+          publisherCredentialId: fixture.deviceCredentialId,
+          publisherFence: Number(state.publisher_fence),
+          effectivePrivacyPolicyHash: effectivePrivacyPolicyHash
+        }
+      });
+      await flushSanitizedSemanticPublication();
+    };
+    const read = (representation: SharedMemoryRepresentation) =>
+      repository.readGrantRepresentation(reader, {
+        shareGrantId: rule.shareGrantId,
+        representation
+      });
+    await prepare();
+    expect(await read("memory_events")).toMatchObject({
+      representation: { sourceRevision: 1 }
+    });
+    const execute = (intent: import("@koed/shared").SharingRuleDetailIntent) =>
+      executeDetailAmendment(fixture, intent);
+    const review = async (maximumFidelity: SharedMemoryFidelityCeiling) => {
+      const value = await repository.getSharingRuleDetailReview(owner, {
+        ruleId: rule.ruleId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        maximumFidelity,
+        includeCuratedMemory: false
+      });
+      expect(value).not.toBeNull();
+      return value!;
+    };
+    const reducedIntent = {
+      mutationId: randomUUID(),
+      review: await review("lcm_rollups")
+    };
+    const reduced = await execute(reducedIntent);
+    expect(reduced).toMatchObject({
+      state: "active",
+      authorityVersion: 2,
+      maximumFidelity: "lcm_rollups"
+    });
+    // No replacement preparation has run: the accepted cap must close reads now.
+    expect(await read("memory_events")).toBeNull();
+    expect(await read("lcm_rollups")).toMatchObject({
+      representation: { sourceRevision: 1 }
+    });
+    expect(await execute(reducedIntent)).toEqual(reduced);
+    await expect(
+      execute({ ...reducedIntent, mutationId: randomUUID() })
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    await execute({
+      mutationId: randomUUID(),
+      review: await review("memory_events")
+    });
+    await ensureSourceRevision(fixture, source, 2, "rule-detail-later");
+    await prepare();
+    expect(await read("memory_events")).toMatchObject({
+      representation: { sourceRevision: 2 }
+    });
+    const control = async (action: "pause" | "stop") => {
+      const state = await current();
+      return repository.controlConversationSharingRule(owner, {
+        mutationId: randomUUID(),
+        ruleId: rule.ruleId,
+        reasonId: rule.reasonId,
+        shareGrantId: rule.shareGrantId,
+        expectedAuthorityVersion: state.authority_version,
+        expectedGrantVersion: state.grant_version,
+        action,
+        authority: authority(fixture),
+        destination: {
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId
+        }
+      });
+    };
+    await control("pause");
+    await ensureSourceRevision(fixture, source, 3, "rule-detail-paused");
+    await execute({
+      mutationId: randomUUID(),
+      review: await review("lcm_rollups")
+    });
+    expect(await read("memory_events")).toBeNull();
+    expect(await read("lcm_rollups")).toMatchObject({
+      representation: { sourceRevision: 2 }
+    });
+    const paused = await execute({
+      mutationId: randomUUID(),
+      review: await review("memory_events")
+    });
+    expect(paused).toMatchObject({ state: "paused" });
+    expect(await read("memory_events")).toMatchObject({
+      representation: { sourceRevision: 2 }
+    });
+    await control("stop");
+    expect(
+      await execute({
+        mutationId: randomUUID(),
+        review: await review("lcm_rollups")
+      })
+    ).toMatchObject({ state: "stopped" });
+    expect(await read("memory_events")).toBeNull();
+    expect(await read("lcm_rollups")).toBeNull();
+  });
+
+  it("recovers a completed detail receipt after an independent rule expands owner permission", async () => {
+    const fixture = await createWorkspaceFixture();
+    const owner = actor(fixture.ownerUserId),
+      reader = actor(fixture.readerUserId);
+    const original = await createGrant(fixture, {
+      representation: "lcm_rollups",
+      mode: "snapshot",
+      ownerAllowed: ["lcm_rollups"],
+      label: "detail-receipt"
+    });
+    await materialize(fixture, original);
+    const privacyHash = (
+      await pool.query<{ effective_privacy_policy_hash: string }>(
+        "select effective_privacy_policy_hash from team_memory_representations where share_grant_id=$1 limit 1",
+        [original.shareGrantId]
+      )
+    ).rows[0]!.effective_privacy_policy_hash;
+    const grantState = async () =>
+      (
+        await pool.query<{ logical_grant_id: string; grant_version: number }>(
+          "select logical_grant_id,grant_version from team_memory_share_grants where id=$1",
+          [original.shareGrantId]
+        )
+      ).rows[0]!;
+    const startRule = async (
+      representation: "lcm_rollups" | "memory_events"
+    ) => {
+      const selected = await createConsent(fixture, original, {
+        representation,
+        representations:
+          representation === "memory_events"
+            ? allRepresentations
+            : ["lcm_rollups"],
+        mode: "continuous",
+        label: "detail-receipt"
+      });
+      const root = await grantState();
+      const rule = await repository.createConversationSharingRule(owner, {
+        ruleId: randomUUID(),
+        mutationId: randomUUID(),
+        logicalGrantId: root.logical_grant_id,
+        consentId: selected.consentId,
+        expectedConsentVersion: selected.consent.consentVersion,
+        expectedGrantVersion: root.grant_version,
+        publisherCredentialId: fixture.deviceCredentialId,
+        effectivePrivacyPolicyHash: privacyHash,
+        authority: authority(fixture)
+      });
+      return {
+        ...rule,
+        consentId: selected.consentId,
+        consentVersion: selected.consent.consentVersion
+      };
+    };
+    const narrow = await startRule("lcm_rollups");
+    const review = async (maximumFidelity: "lcm_leaves" | "lcm_rollups") => {
+      const current = await repository.getSharingRuleDetailReview(owner, {
+        ruleId: narrow.ruleId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        maximumFidelity,
+        includeCuratedMemory: false
+      });
+      expect(current).not.toBeNull();
+      return current!;
+    };
+    const intent = {
+      mutationId: randomUUID(),
+      review: await review("lcm_leaves")
+    };
+    expect(intent.review).toMatchObject({
+      disclosureIncrease: true,
+      ownerPolicyExpansionCount: 1
+    });
+    const accepted = await executeDetailAmendment(fixture, intent);
+    const staleReduction = {
+      mutationId: randomUUID(),
+      review: await review("lcm_rollups")
+    };
+    const broader = await startRule("memory_events");
+    const currentOwnerPolicy = async () =>
+      (
+        await pool.query<{ version: number; maximum_fidelity: string }>(
+          "select version,maximum_fidelity from source_owner_representation_policies where logical_memory_id=$1 and superseded_at is null",
+          [original.logicalMemoryId]
+        )
+      ).rows[0]!;
+    const expanded = await currentOwnerPolicy();
+    expect(expanded).toEqual({ version: 3, maximum_fidelity: "memory_events" });
+    await expect(
+      executeDetailAmendment(fixture, staleReduction)
+    ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+    expect(await executeDetailAmendment(fixture, intent)).toEqual(accepted);
+    expect(await currentOwnerPolicy()).toEqual(expanded);
+    expect((await review("lcm_rollups")).previousMaximumFidelity).toBe(
+      "lcm_leaves"
+    );
+    const root = await grantState();
+    await repository.prepareSharingRuleMember(owner, {
+      shareGrantId: original.shareGrantId,
+      expectedGrantVersion: root.grant_version,
+      ruleAuthority: {
+        ruleId: broader.ruleId,
+        reasonId: broader.reasonId,
+        authorityVersion: broader.authorityVersion,
+        consentVersion: broader.consentVersion,
+        publisherCredentialId: fixture.deviceCredentialId,
+        publisherFence: broader.publisherFence,
+        effectivePrivacyPolicyHash: privacyHash
+      }
+    });
+    await flushSanitizedSemanticPublication();
+    expect(
+      await repository.readGrantRepresentation(reader, {
+        shareGrantId: original.shareGrantId,
+        representation: "memory_events"
+      })
+    ).toMatchObject({ representation: { sourceRevision: 1 } });
+    const retained = (
+      await pool.query<{ maximum_fidelity: string; consent_version: number }>(
+        "select maximum_fidelity,consent_version from source_owner_representation_consents where id=$1",
+        [original.consentId]
+      )
+    ).rows[0]!;
+    expect(retained).toEqual({
+      maximum_fidelity: "lcm_rollups",
+      consent_version: 1
+    });
+    const deploymentIdentityId = (
+      await pool.query<{ id: string }>(
+        "select id from deployment_identities where locality='local' and disabled_at is null"
+      )
+    ).rows[0]!.id;
+    await privacyRepository.createContentPolicyVersion({
+      scope: "workspace",
+      subject: {
+        deploymentIdentityId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId
+      },
+      labels: noPrivacyLabelsPolicy(),
+      expectedPreviousVersion: 0
+    });
+    await expect(review("lcm_rollups")).rejects.toThrow(
+      "Review its content policy before changing detail"
+    );
+    expect(
+      (
+        await pool.query<{
+          effective_privacy_policy_hash: string;
+          authority_version: number;
+        }>(
+          "select effective_privacy_policy_hash,authority_version from team_memory_sharing_rules where id=$1",
+          [narrow.ruleId]
+        )
+      ).rows[0]
+    ).toEqual({
+      effective_privacy_policy_hash: privacyHash,
+      authority_version: 2
+    });
+    // This case deliberately made these rules' policy bindings stale. End their
+    // work through owner controls before later cases run the global worker.
+    for (const rule of [narrow, broader]) {
+      const root = await grantState();
+      const currentRule = (
+        await pool.query<{ authority_version: number }>(
+          "select authority_version from team_memory_sharing_rules where id=$1",
+          [rule.ruleId]
+        )
+      ).rows[0]!;
+      expect(
+        await repository.controlConversationSharingRule(owner, {
+          mutationId: randomUUID(),
+          ruleId: rule.ruleId,
+          reasonId: rule.reasonId,
+          shareGrantId: original.shareGrantId,
+          expectedAuthorityVersion: currentRule.authority_version,
+          expectedGrantVersion: root.grant_version,
+          action: "stop",
+          authority: authority(fixture),
+          destination: {
+            teamId: fixture.teamId,
+            teamWorkspaceId: fixture.teamWorkspaceId
+          }
+        })
+      ).toMatchObject({ state: "stopped" });
+    }
+    // The production Privacy worker invalidates stale derivatives before it
+    // reconciles ready representations. Run that phase after the policy edit.
+    expect(
+      (await repository.invalidateStaleSemanticPreviews({ limit: 100 }))
+        .invalidated
+    ).toBeGreaterThan(0);
+  });
+
+  it.each(["repository", "folder", "project"] as const)(
+    "replaces an unresolved %s admission under the amended detail without reviving its old request",
+    async (selectorKind) => {
+      const fixture = await createWorkspaceFixture();
+      const owner = actor(fixture.ownerUserId),
+        reader = actor(fixture.readerUserId);
+      const selector =
+        selectorKind === "repository"
+          ? {
+              kind: "portable_repository" as const,
+              key: "gr_unresolved_detail"
+            }
+          : { kind: selectorKind, key: hash(`unresolved-${selectorKind}`) };
+      const creationReview =
+        await repository.getRepositorySharingRuleCreationReview(owner, {
+          selector,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          maximumFidelity: "lcm_leaves",
+          includeCuratedMemory: false,
+          includesFutureConversations: true,
+          completedReviewHash: hash("unresolved-review"),
+          selectionSnapshotVersion: randomUUID()
+        });
+      expect(creationReview).not.toBeNull();
+      const creation = {
+        ...creationReview!.scope,
+        mutationId: randomUUID(),
+        ruleId: randomUUID()
+      };
+      await executeNativeRuleOperation(
+        fixture,
+        (referenceId) =>
+          sharedMemoryRepositoryRuleCreationActionGrantBinding({
+            ...creation,
+            referenceId
+          }),
+        (scoped, approved) =>
+          scoped.createRepositorySharingRule(owner, {
+            ...creation,
+            publisherCredentialId: fixture.deviceCredentialId,
+            authority: approved
+          })
+      );
+      const source = await createSource(
+        fixture,
+        1,
+        `unresolved-${selectorKind}`
+      );
+      await putOwnerPolicy(fixture, source, ["lcm_leaves", "lcm_rollups"]);
+      const inspect = () =>
+        repository.inspectRepositorySharingRuleMembers(owner, {
+          ruleId: creation.ruleId,
+          publisherCredentialId: fixture.deviceCredentialId,
+          logicalMemoryIds: [source.logicalMemoryId]
+        });
+      const admit = async (maximumFidelity: "lcm_leaves" | "lcm_rollups") => {
+        const state = await inspect(),
+          entry = state.entries[0]!;
+        const candidateInput = {
+          ...capturedSourceBinding(source, maximumFidelity, [
+            "lcm_leaves",
+            "lcm_rollups"
+          ]),
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateHash: hash(`unresolved:${maximumFidelity}`),
+          sourceRevision: 1,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(source, maximumFidelity),
+          byteCount: 128,
+          mode: "continuous" as const,
+          maximumFidelity,
+          includeCuratedMemory: false
+        };
+        const candidate = await executeNativeRuleOperation(
+          fixture,
+          (referenceId) =>
+            sharedMemoryCandidatePreviewActionGrantBinding({
+              ...candidateInput,
+              referenceId
+            }),
+          (scoped, approved) =>
+            scoped.createSharedMemoryCandidatePreview(owner, {
+              ...candidateInput,
+              authority: approved
+            }),
+          "direct"
+        );
+        expect(candidate).not.toBeNull();
+        const input = {
+          mutationId: randomUUID(),
+          logicalGrantId: entry.grant?.logicalGrantId ?? randomUUID(),
+          consentId: randomUUID(),
+          source: {
+            kind: "captured_session" as const,
+            sessionId: source.sessionId,
+            logicalMemoryId: source.logicalMemoryId
+          },
+          sourceCapabilities: [
+            "lcm_leaves",
+            "lcm_rollups"
+          ] as SharedMemoryRepresentation[],
+          activationRepresentation: maximumFidelity,
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          mode: "continuous" as const,
+          maximumFidelity,
+          includeCuratedMemory: false,
+          expiresAt: null,
+          preview: {
+            previewId: candidate!.previewId,
+            previewHash: candidate!.previewHash
+          },
+          previewRevision: candidate!.previewRevision,
+          publisherCredentialId: fixture.deviceCredentialId,
+          membership: {
+            ruleId: creation.ruleId,
+            selectionSnapshotVersion: randomUUID(),
+            sourceContextHash: hash("unresolved-context"),
+            selectorBindingHash: state.selectorBindingHash,
+            gitContextVersion: 1,
+            folderContextVersion: 1,
+            expectedAuthorityVersion: state.authorityVersion,
+            expectedMembershipVersion: entry.member?.version ?? 0,
+            expectedGrantVersion: entry.grant?.version ?? null,
+            publisherFence: state.publisherFence
+          }
+        };
+        return {
+          input,
+          accepted: await repository.createPendingRepositoryRuleMember(
+            owner,
+            input
+          )
+        };
+      };
+      const original = await admit("lcm_leaves");
+      expect((await inspect()).entries[0]!.member?.state).toBe("unresolved");
+      const review = await repository.getSharingRuleDetailReview(owner, {
+        ruleId: creation.ruleId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: false
+      });
+      expect(review).toMatchObject({ memberCount: 0 });
+      await executeDetailAmendment(fixture, {
+        mutationId: randomUUID(),
+        review: review!
+      });
+      expect(
+        await repository.processPendingShares({
+          ensureCompanion: ensurePendingShareCompanion
+        })
+      ).toMatchObject({ failed: 1, activated: 0 });
+      expect((await inspect()).entries[0]!.grant).toBeNull();
+      expect(
+        (
+          await pool.query(
+            "select id from source_owner_representation_consents where id=$1",
+            [original.input.consentId]
+          )
+        ).rowCount
+      ).toBe(0);
+      const replacement = await admit("lcm_rollups");
+      expect(replacement.accepted.pendingShareId).not.toBe(
+        original.accepted.pendingShareId
+      );
+      expect(
+        (
+          await pool.query<{ state: string }>(
+            "select state from pending_share_operations where id=$1",
+            [original.accepted.pendingShareId]
+          )
+        ).rows[0]!.state
+      ).toBe("revoked");
+      // Exact old retries recover their immutable receipt without restoring work.
+      expect(
+        await repository.createPendingRepositoryRuleMember(
+          owner,
+          original.input
+        )
+      ).toEqual(original.accepted);
+      expect(
+        await repository.processPendingShares({
+          ensureCompanion: ensurePendingShareCompanion
+        })
+      ).toMatchObject({ failed: 0 });
+      await flushSanitizedSemanticPublication();
+      await pool.query(
+        "update pending_share_outbox set available_at=now() where pending_share_id=$1 and state='pending'",
+        [replacement.accepted.pendingShareId]
+      );
+      expect(
+        await repository.processPendingShares({
+          ensureCompanion: ensurePendingShareCompanion
+        })
+      ).toMatchObject({ failed: 0, activated: 1 });
+      const current = await inspect(),
+        shareGrantId = current.entries[0]!.grant!.id;
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId,
+          representation: "lcm_rollups"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 1 } });
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId,
+          representation: "lcm_leaves"
+        })
+      ).toBeNull();
+      expect(
+        (
+          await pool.query<{ state: string }>(
+            "select state from pending_share_operations where id=$1",
+            [original.accepted.pendingShareId]
+          )
+        ).rows[0]!.state
+      ).toBe("revoked");
+    }
+  );
+
+  it("shares one Conversation independently with Engineering and Design while isolating destination denial", async () => {
+    const fixture = await createWorkspaceFixture();
+    const owner = actor(fixture.ownerUserId),
+      reader = actor(fixture.readerUserId);
+    await pool.query(
+      "update team_workspaces set name='Engineering' where id=$1",
+      [fixture.teamWorkspaceId]
+    );
+    const designId = (
+      await pool.query<{ id: string }>(
+        "insert into team_workspaces(team_id,name) values($1,'Design') returning id",
+        [fixture.teamId]
+      )
+    ).rows[0]!.id;
+    await pool.query(
+      `insert into team_workspace_access_grants(team_workspace_id,team_id,user_id,access,can_share_owned_memory,granted_by_user_id)
+      values($1,$2,$3,'write',true,$3),($1,$2,$4,'read',false,$3)`,
+      [designId, fixture.teamId, fixture.ownerUserId, fixture.readerUserId]
+    );
+    await repository.putWorkspacePolicy(owner, {
+      mutationId: randomUUID(),
+      teamId: fixture.teamId,
+      teamWorkspaceId: designId,
+      expectedCurrentVersion: 0,
+      ...fidelityConsent(allRepresentations)
+    });
+    const source = await createSource(fixture, 1, "two-destination");
+    await putOwnerPolicy(fixture, source);
+    const snapshot = await createConsent(fixture, source, {
+      representation: "lcm_rollups",
+      representations: ["lcm_rollups"],
+      mode: "snapshot",
+      label: "retained-engineering-snapshot"
+    });
+    const retainedGrant = await repository.createShareGrant(owner, {
+      mutationId: randomUUID(),
+      logicalGrantId: randomUUID(),
+      consentId: snapshot.consentId,
+      authority: authority(fixture)
+    });
+    await prepareSanitizedSemanticPreview(
+      fixture.ownerUserId,
+      snapshot.preview
+    );
+    await repository.materializeGrantRepresentation(owner, {
+      mutationId: randomUUID(),
+      shareGrantId: retainedGrant.id,
+      consentId: snapshot.consentId,
+      expectedGrantVersion: retainedGrant.grantVersion,
+      preview: snapshot.preview
+    });
+    const highRisk = createHighRiskActionRepository(createDb(pool), {
+      pool,
+      envelopeEncryptionProvider: privacyProvider,
+      teamEnvelopeEncryptionProvider: provider,
+      ownerPrivateReplicaEnvelopeEncryptionProvider: ownerProvider
+    });
+    const upstreamBackendId = (
+      await pool.query<{ upstream_backend_id: string }>(
+        "select upstream_backend_id from device_credentials where id=$1",
+        [fixture.deviceCredentialId]
+      )
+    ).rows[0]!.upstream_backend_id;
+    const executeNative = async <T>(
+      bind: (referenceId: string) => SharedMemoryActionGrantBinding,
+      execute: (
+        scoped: SharedMemoryRepository,
+        approved: SharedMemoryAuthorityContext
+      ) => Promise<T>,
+      approvalTier: "native_review" | "direct" = "native_review"
+    ): Promise<T> => {
+      const requestId = randomUUID(),
+        secret = `hrg_${randomBytes(32).toString("base64url")}`,
+        binding = bind(requestId);
+      const context = {
+        ownerUserId: fixture.ownerUserId,
+        deviceCredentialId: fixture.deviceCredentialId,
+        upstreamBackendId
+      };
+      const operation = {
+        ...context,
+        operationFamily: binding.operationFamily,
+        action: binding.action,
+        teamId: binding.teamId,
+        targetId: binding.targetId,
+        scopeHash: binding.scopeHash,
+        requestHash: binding.requestHash
+      };
+      await highRisk.createActionGrant({
+        ...operation,
+        clientRequestId: requestId,
+        grantCommitment: highRiskActionGrantCommitment(secret),
+        credentialOperationFamily: "share_grant_management",
+        approvalTier,
+        review:
+          approvalTier === "native_review"
+            ? {
+                version: 1,
+                title: "Review Workspace sharing",
+                description: "Share only with the reviewed destination.",
+                consequence: "Apply this destination's rule operation.",
+                confirmLabel: "Approve",
+                details: []
+              }
+            : null
+      });
+      if (approvalTier === "native_review") {
+        expect(
+          await highRisk.decideNativeActionReview({
+            ...context,
+            clientRequestId: requestId,
+            decision: "approve"
+          })
+        ).toMatchObject({ state: "approved" });
+      }
+      const result = await highRisk.executeActionGrant({
+        ...operation,
+        actionGrant: secret,
+        execute: async ({ sharedMemory }) => ({
+          statusCode: 200,
+          body: await execute(sharedMemory, {
+            action: SHARED_MEMORY_AUTHORITY,
+            source: "device_action_grant",
+            referenceId: requestId
+          })
+        })
+      });
+      expect(result).toMatchObject({ statusCode: 200, replayed: false });
+      return result!.body;
+    };
+    const startRule = async (
+      workspaceId: string,
+      representation: "lcm_rollups" | "memory_events"
+    ) => {
+      const candidateInput = {
+        ...capturedSourceBinding(source, representation),
+        logicalMemoryId: source.logicalMemoryId,
+        candidateHash: hash(
+          `destination:${workspaceId}:${source.currentRevision}`
+        ),
+        sourceRevision: source.currentRevision,
+        itemCount: 1,
+        excludedItemCount: 0,
+        manifest: candidateManifest(source, representation),
+        byteCount: 128,
+        teamId: fixture.teamId,
+        teamWorkspaceId: workspaceId,
+        ...fidelityConsent([representation]),
+        mode: "continuous" as const
+      };
+      const candidate = await executeNative(
+        (referenceId) =>
+          sharedMemoryCandidatePreviewActionGrantBinding({
+            ...candidateInput,
+            referenceId
+          }),
+        (scoped, approved) =>
+          scoped.createSharedMemoryCandidatePreview(owner, {
+            ...candidateInput,
+            authority: approved
+          }),
+        "direct"
+      );
+      expect(candidate).not.toBeNull();
+      const review = await repository.getConversationSharingRuleCreationReview(
+        owner,
+        {
+          previewId: candidate!.previewId,
+          previewHash: candidate!.previewHash,
+          previewRevision: candidate!.previewRevision,
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: workspaceId
+        }
+      );
+      expect(review?.teamWorkspaceId).toBe(workspaceId);
+      expect(review?.expectedGrantVersion).toBe(
+        workspaceId === fixture.teamWorkspaceId
+          ? retainedGrant.grantVersion
+          : null
+      );
+      const intent = {
+        ...review!,
+        mutationId: randomUUID(),
+        ruleId: randomUUID(),
+        consentId: randomUUID(),
+        mode: "continuous" as const
+      };
+      const pending = await executeNative(
+        (referenceId) =>
+          sharedMemoryConversationRuleCreationActionGrantBinding({
+            ...intent,
+            referenceId
+          }),
+        (scoped, approved) =>
+          scoped.createPendingConversationSharingRule(owner, {
+            ...intent,
+            preview: candidate!,
+            authority: approved,
+            ruleCreation: {
+              ruleId: intent.ruleId,
+              publisherCredentialId: fixture.deviceCredentialId,
+              expectedGrantVersion: intent.expectedGrantVersion,
+              effectivePrivacyPolicyHash: intent.effectivePrivacyPolicyHash
+            }
+          })
+      );
+      expect(
+        await repository.processPendingShares({
+          ensureCompanion: ensurePendingShareCompanion
+        })
+      ).toMatchObject({ failed: 0 });
+      await flushSanitizedSemanticPublication();
+      await pool.query(
+        "update pending_share_outbox set available_at=now() where pending_share_id=$1 and state='pending'",
+        [pending.id]
+      );
+      expect(
+        await repository.processPendingShares({
+          ensureCompanion: ensurePendingShareCompanion
+        })
+      ).toMatchObject({ failed: 0 });
+      const bound = (
+        await pool.query<{ reason_id: string; share_grant_id: string }>(
+          "select id as reason_id,share_grant_id from team_memory_share_reasons where rule_id=$1",
+          [intent.ruleId]
+        )
+      ).rows[0]!;
+      expect(
+        (
+          await repository.getOwnerShare(owner, {
+            kind: "pending",
+            id: pending.id
+          })
+        )?.summary.lastReadyRevision
+      ).toBe(1);
+      return {
+        ...bound,
+        ruleId: intent.ruleId,
+        workspaceId,
+        pendingId: pending.id,
+        representation
+      };
+    };
+    type Destination = Awaited<ReturnType<typeof startRule>>;
+    const control = async (
+      destination: Destination,
+      controlAction: "pause" | "resume" | "stop" | "retry"
+    ) => {
+      const state = (
+        await pool.query<{ authority_version: number; grant_version: number }>(
+          `select rule.authority_version,g.grant_version from team_memory_sharing_rules rule
+         join team_memory_share_grants g on g.id=$2 where rule.id=$1`,
+          [destination.ruleId, destination.share_grant_id]
+        )
+      ).rows[0]!;
+      const intent = {
+        mutationId: randomUUID(),
+        ruleId: destination.ruleId,
+        reasonId: destination.reason_id,
+        shareGrantId: destination.share_grant_id,
+        teamId: fixture.teamId,
+        teamWorkspaceId: destination.workspaceId,
+        expectedAuthorityVersion: state.authority_version,
+        expectedGrantVersion: state.grant_version,
+        controlAction
+      };
+      expect(
+        await repository.getConversationSharingRuleControlReview(owner, {
+          ...intent,
+          action: controlAction
+        })
+      ).not.toBeNull();
+      return executeNative(
+        (referenceId) =>
+          sharedMemoryRuleControlActionGrantBinding({ ...intent, referenceId }),
+        (scoped, approved) =>
+          scoped.controlConversationSharingRule(owner, {
+            ...intent,
+            action: controlAction,
+            destination: {
+              teamId: fixture.teamId,
+              teamWorkspaceId: destination.workspaceId
+            },
+            authority: approved
+          })
+      );
+    };
+    const read = (destination: Destination) =>
+      repository.readGrantRepresentation(reader, {
+        shareGrantId: destination.share_grant_id,
+        representation: destination.representation
+      });
+    const stableState = async (destination: Destination) =>
+      (
+        await pool.query<{ state: string }>(
+          `select rule.state,rule.authority_version,rule.maximum_fidelity,rule.publisher_fence,
+       g.grant_version,g.maximum_fidelity as grant_fidelity,c.consent_version,c.state as consent_state,
+       c.source_owner_policy_id,c.source_owner_policy_version,c.team_policy_id,c.team_policy_version,c.workspace_policy_id,c.workspace_policy_version,
+       (select jsonb_agg(jsonb_build_array(p.representation_id,r.source_revision) order by p.representation_id)
+        from team_memory_reason_publications p join team_memory_representations r on r.id=p.representation_id
+        where p.reason_id=reason.id) publications
+       from team_memory_sharing_rules rule join team_memory_share_reasons reason on reason.rule_id=rule.id
+       join team_memory_share_grants g on g.id=reason.share_grant_id join source_owner_representation_consents c on c.id=reason.consent_id
+       where rule.id=$1`,
+          [destination.ruleId]
+        )
+      ).rows[0];
+    const engineering = await startRule(fixture.teamWorkspaceId, "lcm_rollups");
+    expect(await control(engineering, "pause")).toMatchObject({
+      state: "paused"
+    });
+    const engineeringBefore = await stableState(engineering);
+    const design = await startRule(designId, "memory_events");
+    expect(design.share_grant_id).not.toBe(engineering.share_grant_id);
+    expect(await stableState(engineering)).toEqual(engineeringBefore);
+    expect(await read(engineering)).toMatchObject({
+      representation: { sourceRevision: 1, representation: "lcm_rollups" }
+    });
+    expect(await read(design)).toMatchObject({
+      representation: { sourceRevision: 1, representation: "memory_events" }
+    });
+    await seedAuthoritativeSourceRevision(
+      fixture,
+      source,
+      2,
+      "two-destination-later"
+    );
+    await repository.advanceContinuousGrantRepresentations({
+      remoteReplicaId: source.remoteReplicaId,
+      sourceRevision: 2
+    });
+    await flushSanitizedSemanticPublication();
+    expect(await read(engineering)).toMatchObject({
+      representation: { sourceRevision: 1 }
+    });
+    expect(await read(design)).toMatchObject({
+      representation: { sourceRevision: 2 }
+    });
+    expect(await stableState(engineering)).toEqual(engineeringBefore);
+
+    // Withdraw only Design's publication permission. Existing Team reads remain
+    // authorized; Engineering must resume and publish despite Design's failure.
+    await pool.query(
+      "update team_workspace_access_grants set can_share_owned_memory=false where team_workspace_id=$1 and user_id=$2",
+      [designId, fixture.ownerUserId]
+    );
+    expect(await control(engineering, "resume")).toMatchObject({
+      state: "active"
+    });
+    await seedAuthoritativeSourceRevision(
+      fixture,
+      source,
+      3,
+      "two-destination-denial"
+    );
+    await repository.advanceContinuousGrantRepresentations({
+      remoteReplicaId: source.remoteReplicaId,
+      sourceRevision: 3
+    });
+    await repository.reconcileSharingRuleMembers({ limit: 100 });
+    await flushSanitizedSemanticPublication();
+    expect(await read(engineering)).toMatchObject({
+      representation: { sourceRevision: 3 }
+    });
+    expect(await read(design)).toMatchObject({
+      representation: { sourceRevision: 2 }
+    });
+    expect(await control(engineering, "stop")).toMatchObject({
+      state: "stopped"
+    });
+    expect(await read(engineering)).toMatchObject({
+      representation: { sourceRevision: 1 }
+    });
+    expect(await read(design)).toMatchObject({
+      representation: { sourceRevision: 2 }
+    });
+
+    await pool.query(
+      "update team_workspace_access_grants set can_share_owned_memory=true where team_workspace_id=$1 and user_id=$2",
+      [designId, fixture.ownerUserId]
+    );
+    expect(await control(design, "retry")).toMatchObject({ state: "active" });
+    await repository.reconcileSharingRuleMembers({ limit: 100 });
+    await flushSanitizedSemanticPublication();
+    expect(await read(design)).toMatchObject({
+      representation: { sourceRevision: 3 }
+    });
+    expect(await read(engineering)).toMatchObject({
+      representation: { sourceRevision: 1 }
+    });
+    expect((await stableState(engineering))?.state).toBe("stopped");
+    const owned = await repository.listOwnerShares(owner, {
+      limit: 100,
+      history: false
+    });
+    expect(
+      owned.entries
+        .filter(
+          (item) =>
+            item.summary.source.logicalMemoryId === source.logicalMemoryId
+        )
+        .map((item) => item.summary.workspaceName)
+        .sort()
+    ).toEqual(["Design", "Engineering"]);
+  });
+
+  it("keeps a Privacy failure isolated from another pending sharing reason", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "reason-privacy-isolation");
+    await putOwnerPolicy(fixture, source);
+    const createRule = async (
+      representation: "lcm_rollups" | "memory_events"
+    ) => {
+      const candidate = await repository.createSharedMemoryCandidatePreview(
+        actor(fixture.ownerUserId),
+        {
+          ...capturedSourceBinding(source, representation),
+          logicalMemoryId: source.logicalMemoryId,
+          candidateHash: hash(`reason-privacy-${representation}`),
+          sourceRevision: source.currentRevision,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(source, representation),
+          byteCount: 128,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          ...fidelityConsent([representation]),
+          mode: "continuous",
+          authority: authority(fixture)
+        }
+      );
+      expect(candidate).not.toBeNull();
+      const review = await repository.getConversationSharingRuleCreationReview(
+        actor(fixture.ownerUserId),
+        {
+          previewId: candidate!.previewId,
+          previewHash: candidate!.previewHash,
+          previewRevision: candidate!.previewRevision,
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId
+        }
+      );
+      expect(review).not.toBeNull();
+      const pending = await repository.createPendingConversationSharingRule(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          logicalGrantId: review!.logicalGrantId,
+          consentId: randomUUID(),
+          ...capturedSourceBinding(source, representation),
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          preview: candidate!,
+          previewRevision: candidate!.previewRevision,
+          mode: "continuous",
+          ...fidelityConsent([representation]),
+          authority: authority(fixture),
+          ruleCreation: {
+            ruleId: randomUUID(),
+            publisherCredentialId: fixture.deviceCredentialId,
+            expectedGrantVersion: review!.expectedGrantVersion,
+            effectivePrivacyPolicyHash: review!.effectivePrivacyPolicyHash
+          }
+        }
+      );
+      expect(await repository.processPendingShares()).toMatchObject({
+        failed: 0,
+        waiting: 1
+      });
+      return pending;
+    };
+    const retained = await createRule("lcm_rollups");
+    const failing = await createRule("memory_events");
+    await repository.reconcileSharingRuleMembers();
+    const targets = await repository.listPendingSemanticPrivacyTargets({
+      limit: 100
+    });
+    const target = targets.find(
+      (target) =>
+        target.logicalMemoryId === source.logicalMemoryId &&
+        target.representation === "memory_events"
+    );
+    expect(target).toBeDefined();
+    const loaded = await repository.readPendingSemanticPrivacyTarget(
+      actor(fixture.ownerUserId),
+      {
+        semanticPreviewId: target!.id,
+        expectedSourcePreviewHash: target!.sourcePreviewHash,
+        expectedSourceArtifactHash: target!.sourceArtifactHash,
+        expectedSourceManifestHash: target!.sourceManifestHash,
+        expectedClassifierHash: target!.classifierHash,
+        expectedEffectivePrivacyPolicyHash: target!.effectivePrivacyPolicyHash
+      }
+    );
+    expect(loaded).not.toBeNull();
+    expect(
+      await repository.markSemanticPrivacyTargetFailed(
+        actor(fixture.ownerUserId),
+        {
+          semanticPreviewId: target!.id,
+          expectedSourcePreviewHash: target!.sourcePreviewHash,
+          expectedSourceArtifactHash: target!.sourceArtifactHash,
+          expectedSourceManifestHash: target!.sourceManifestHash,
+          expectedClassifierHash: target!.classifierHash,
+          expectedEffectivePrivacyPolicyHash:
+            target!.effectivePrivacyPolicyHash,
+          expectedSourceItemIdentityHash: loaded!.sourceItemIdentityHash,
+          failureCode: "classification_failed"
+        }
+      )
+    ).toBe(true);
+    const pending = await pool.query<{
+      id: string;
+      state: string;
+      outbox_state: string;
+    }>(
+      `select pending.id,pending.state,outbox.state as outbox_state
+         from pending_share_operations pending join pending_share_outbox outbox on outbox.pending_share_id=pending.id
+        where pending.id=any($1::uuid[])`,
+      [[retained.id, failing.id]]
+    );
+    expect(pending.rows.find((row) => row.id === retained.id)).toMatchObject({
+      state: "preparing",
+      outbox_state: "pending"
+    });
+    expect(pending.rows.find((row) => row.id === failing.id)).toMatchObject({
+      state: "needs_attention",
+      outbox_state: "completed"
+    });
+  });
+  it.each([
+    ["source_owner", "grant"],
+    ["source_owner", "consent"],
+    ["team", "grant"],
+    ["team", "consent"],
+    ["workspace", "grant"],
+    ["workspace", "consent"]
+  ] as const)(
+    "rolls back a busy %s policy edit without waiting on a held %s",
+    async (scope, held) => {
+      const fixture = await createWorkspaceFixture();
+      const grant = await createGrant(fixture, {
+        label: "policy-authority-contention"
+      });
+      const mutationId = randomUUID();
+      const edit = (target: SharedMemoryRepository) => {
+        const input = {
+          mutationId,
+          expectedCurrentVersion: 1,
+          maximumFidelity: "lcm_rollups" as const,
+          includeCuratedMemory: false
+        };
+        return scope === "source_owner"
+          ? target.putSourceOwnerPolicy(actor(fixture.ownerUserId), {
+              ...input,
+              logicalMemoryId: grant.logicalMemoryId
+            })
+          : scope === "team"
+            ? target.putTeamPolicy(actor(fixture.ownerUserId), {
+                ...input,
+                teamId: fixture.teamId
+              })
+            : target.putWorkspacePolicy(actor(fixture.ownerUserId), {
+                ...input,
+                teamId: fixture.teamId,
+                teamWorkspaceId: fixture.teamWorkspaceId
+              });
+      };
+      const holder = await pool.connect();
+      const writer = await pool.connect();
+      try {
+        await holder.query("begin");
+        await holder.query(
+          held === "grant"
+            ? "select id from team_memory_share_grants where id=$1 for update"
+            : "select id from source_owner_representation_consents where id=$1 for update",
+          [held === "grant" ? grant.shareGrantId : grant.consentId]
+        );
+        await writer.query("begin");
+        // This bounds an accidental regression to waiting on the other session.
+        // NOWAIT must produce the repository conflict before that timeout fires.
+        await writer.query("set local lock_timeout='1s'");
+        const transactional = createSharedMemoryRepository(
+          createSavepointPool(writer, "high_risk"),
+          {
+            inheritTransactionIsolation: true,
+            resolvePersonalEncryptionProvider: () => privacyProvider,
+            resolveOwnerPrivateReplicaEncryptionProvider: () => ownerProvider,
+            resolveTeamEncryptionProvider: () => provider
+          }
+        );
+        await expect(edit(transactional)).rejects.toThrow(
+          "Sharing authority is busy"
+        );
+        expect(
+          (
+            await pool.query<{
+              lifecycle: string;
+              grant_version: number;
+              state: string;
+            }>(
+              `select g.lifecycle,g.grant_version,c.state from team_memory_share_grants g
+           join source_owner_representation_consents c on c.id=g.consent_id where g.id=$1`,
+              [grant.shareGrantId]
+            )
+          ).rows[0]
+        ).toEqual({ lifecycle: "active", grant_version: 1, state: "active" });
+        expect(
+          (
+            await pool.query(
+              "select 1 from audit_events where metadata->>'mutationId'=$1",
+              [mutationId]
+            )
+          ).rowCount
+        ).toBe(0);
+      } finally {
+        await writer.query("rollback");
+        writer.release();
+        await holder.query("rollback");
+        holder.release();
+      }
+      expect(await edit(repository)).toMatchObject({
+        version: 2,
+        maximumFidelity: "lcm_rollups"
+      });
+      expect(
+        (
+          await pool.query<{ lifecycle: string; state: string }>(
+            `select g.lifecycle,c.state from team_memory_share_grants g
+         join source_owner_representation_consents c on c.id=g.consent_id where g.id=$1`,
+            [grant.shareGrantId]
+          )
+        ).rows[0]
+      ).toEqual({ lifecycle: "unavailable", state: "paused" });
+    }
+  );
+
+  it.each([
+    "repository",
+    "folder",
+    "project",
+    "revoked_repository",
+    "revoked_during_admission",
+    "preview_revision",
+    "project_retry",
+    "project_retry_exhausted",
+    "project_retry_denied"
+  ] as const)(
+    "publishes existing and future %s members with independent pause and stop authority",
+    async (scenario) => {
+      const selectionKind =
+        scenario === "project_retry" ||
+        scenario === "project_retry_exhausted" ||
+        scenario === "project_retry_denied"
+          ? "project"
+          : scenario === "revoked_repository" ||
+              scenario === "revoked_during_admission" ||
+              scenario === "preview_revision"
+            ? "repository"
+            : scenario;
+      const fixture = await createWorkspaceFixture();
+      const owner = actor(fixture.ownerUserId),
+        reader = actor(fixture.readerUserId);
+      const sharedAnchor = {
+        version: 1 as const,
+        classification: "portable_repository" as const,
+        fingerprint: "gr_dynamic_member_proof",
+        label: "Shared anchor",
+        branchObservation: null
+      };
+      const representations = ["lcm_leaves", "lcm_rollups"] as const;
+      // Deterministic vectors exercise the real Team retrieval and expansion
+      // boundary without loading a model or forging a Team snapshot after sharing.
+      const vector = [1, ...Array.from({ length: 383 }, () => 0)],
+        model = "git-member-authorization",
+        version = "team-semantic-v1:git-member-authorization";
+      const query = {
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        queryVector: vector,
+        model,
+        dimensions: 384 as const,
+        version,
+        limit: 50,
+        searchDomain:
+          selectionKind === "project"
+            ? ("global" as const)
+            : ("project" as const),
+        projectId:
+          selectionKind === "project"
+            ? undefined
+            : `repository:${JSON.stringify({ kind: "portable_repository", key: sharedAnchor.fingerprint, device: null })}`
+      };
+      const indexAndRecall = async (lowerRankedRepresentationId?: string) => {
+        const lowerRankedItems = new Set(
+          lowerRankedRepresentationId
+            ? (
+                await pool.query<{ id: string }>(
+                  "select id from team_memory_semantic_items where representation_id=$1",
+                  [lowerRankedRepresentationId]
+                )
+              ).rows.map((row) => row.id)
+            : []
+        );
+        const items = await repository.listPendingSharedMemorySemanticItems({
+          limit: 100
+        });
+        for (const item of items)
+          await repository.storeSharedMemorySemanticEmbedding({
+            semanticItemId: item.semanticItemId,
+            contentHash: item.contentHash,
+            model,
+            dimensions: 384,
+            version,
+            vector: lowerRankedItems.has(item.semanticItemId)
+              ? [0, 1, ...Array.from({ length: 382 }, () => 0)]
+              : vector
+          });
+        return repository.searchAuthorizedSharedMemorySemanticItems(
+          reader,
+          query
+        );
+      };
+      const existing = await createSource(fixture, 1, "git-existing", {
+        repositorySnapshot:
+          selectionKind === "project"
+            ? unresolvedTeamRepositorySnapshot()
+            : sharedAnchor
+      });
+      await putOwnerPolicy(fixture, existing, [...representations]);
+      const snapshot = await createConsent(fixture, existing, {
+        representation: "lcm_rollups",
+        representations: ["lcm_rollups"],
+        mode: "snapshot",
+        label: "git-existing-snapshot"
+      });
+      const direct = await repository.createShareGrant(owner, {
+        mutationId: randomUUID(),
+        logicalGrantId: randomUUID(),
+        consentId: snapshot.consentId,
+        authority: authority(fixture)
+      });
+      await prepareSanitizedSemanticPreview(
+        fixture.ownerUserId,
+        snapshot.preview
+      );
+      await repository.materializeGrantRepresentation(owner, {
+        mutationId: randomUUID(),
+        shareGrantId: direct.id,
+        consentId: snapshot.consentId,
+        expectedGrantVersion: direct.grantVersion,
+        preview: snapshot.preview
+      });
+      expect(direct.repositorySnapshot?.fingerprint).toBe(
+        selectionKind === "project" ? null : sharedAnchor.fingerprint
+      );
+
+      const highRisk = createHighRiskActionRepository(createDb(pool), {
+        pool,
+        envelopeEncryptionProvider: privacyProvider,
+        teamEnvelopeEncryptionProvider: provider,
+        ownerPrivateReplicaEnvelopeEncryptionProvider: ownerProvider
+      });
+      const executeNative = async <T>(
+        build: (referenceId: string) => SharedMemoryActionGrantBinding,
+        execute: (
+          scoped: SharedMemoryRepository,
+          approved: SharedMemoryAuthorityContext
+        ) => Promise<T>,
+        deviceCredentialId = fixture.deviceCredentialId,
+        approvalTier: "native_review" | "direct" = "native_review"
+      ): Promise<T> => {
+        const requestId = randomUUID(),
+          secret = `hrg_${randomBytes(32).toString("base64url")}`,
+          bound = build(requestId);
+        const credential = await pool.query<{ upstream_backend_id: string }>(
+          "select upstream_backend_id from device_credentials where id=$1 and owner_user_id=$2",
+          [deviceCredentialId, fixture.ownerUserId]
+        );
+        const context = {
+          ownerUserId: fixture.ownerUserId,
+          deviceCredentialId,
+          upstreamBackendId: credential.rows[0]!.upstream_backend_id
+        };
+        const operation = {
+          ...context,
+          operationFamily: bound.operationFamily,
+          action: bound.action,
+          teamId: bound.teamId,
+          targetId: bound.targetId,
+          scopeHash: bound.scopeHash,
+          requestHash: bound.requestHash
+        };
+        expect(
+          await highRisk.createActionGrant({
+            ...operation,
+            clientRequestId: requestId,
+            grantCommitment: highRiskActionGrantCommitment(secret),
+            credentialOperationFamily: "share_grant_management",
+            approvalTier,
+            review:
+              approvalTier === "native_review"
+                ? {
+                    version: 1,
+                    title: "Review Git Anchor sharing",
+                    description:
+                      "Existing and future matching Conversations in this Workspace.",
+                    consequence: "Apply only the bound rule operation.",
+                    confirmLabel: "Approve",
+                    details: []
+                  }
+                : null
+          })
+        ).toMatchObject({ approvalTier });
+        if (approvalTier === "native_review") {
+          expect(
+            await highRisk.decideNativeActionReview({
+              ...context,
+              clientRequestId: requestId,
+              decision: "approve"
+            })
+          ).toMatchObject({ state: "approved" });
+        }
+        const result = await highRisk.executeActionGrant({
+          ...operation,
+          actionGrant: secret,
+          execute: async ({ sharedMemory }) => ({
+            statusCode: 200,
+            body: await execute(sharedMemory, {
+              action: SHARED_MEMORY_AUTHORITY,
+              source: "device_action_grant",
+              referenceId: requestId
+            })
+          })
+        });
+        expect(result).toMatchObject({ statusCode: 200, replayed: false });
+        return result!.body;
+      };
+      const ruleReview =
+        await repository.getRepositorySharingRuleCreationReview(owner, {
+          selector:
+            selectionKind === "folder"
+              ? { kind: "folder", key: hash("exact-folder-private-identity") }
+              : selectionKind === "project"
+                ? { kind: "project", key: hash("private-project-identity") }
+                : {
+                    kind: "portable_repository",
+                    key: "github.com/example/dynamic-member-proof"
+                  },
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          maximumFidelity: "lcm_leaves",
+          includeCuratedMemory: false,
+          includesFutureConversations: true,
+          selectionSnapshotVersion: randomUUID(),
+          completedReviewHash: hash("git-complete-review")
+        });
+      expect(ruleReview).not.toBeNull();
+      const ruleId = randomUUID();
+      const createRule = async (
+        id: string,
+        selector = ruleReview!.scope.selector
+      ) => {
+        const review = await repository.getRepositorySharingRuleCreationReview(
+          owner,
+          {
+            selector,
+            teamId: fixture.teamId,
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            maximumFidelity: ruleReview!.scope.maximumFidelity,
+            includeCuratedMemory: false,
+            includesFutureConversations: true,
+            completedReviewHash: hash("complete-independent-review"),
+            selectionSnapshotVersion: randomUUID()
+          }
+        );
+        const intent = {
+          ...review!.scope,
+          ruleId: id,
+          mutationId: randomUUID()
+        };
+        return executeNative(
+          (referenceId) =>
+            sharedMemoryRepositoryRuleCreationActionGrantBinding({
+              ...intent,
+              referenceId
+            }),
+          (scoped, approved) =>
+            scoped.createRepositorySharingRule(owner, {
+              ...intent,
+              publisherCredentialId: fixture.deviceCredentialId,
+              authority: approved
+            })
+        );
+      };
+      expect(await createRule(ruleId)).toMatchObject({
+        ruleId,
+        state: "active",
+        authorityVersion: 1
+      });
+      const inspect = (source: SourceFixture, targetRuleId = ruleId) =>
+        repository.inspectRepositorySharingRuleMembers(owner, {
+          ruleId: targetRuleId,
+          publisherCredentialId: fixture.deviceCredentialId,
+          logicalMemoryIds: [source.logicalMemoryId]
+        });
+      const control = async (
+        controlAction: "pause" | "resume" | "stop" | "retry",
+        id: string = ruleId,
+        credentialId = fixture.deviceCredentialId
+      ) => {
+        const current = (
+          await pool.query<{
+            authority_version: number;
+            publisher_fence: number;
+          }>(
+            "select authority_version,publisher_fence::integer as publisher_fence from team_memory_sharing_rules where id=$1",
+            [id]
+          )
+        ).rows[0]!;
+        const intent = {
+          selectorKind: "selection" as const,
+          mutationId: randomUUID(),
+          ruleId: id,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          expectedAuthorityVersion: current.authority_version,
+          publisherFence: current.publisher_fence,
+          controlAction
+        };
+        return executeNative(
+          (referenceId) =>
+            sharedMemoryRepositoryRuleControlActionGrantBinding({
+              ...intent,
+              referenceId
+            }),
+          (scoped, approved) =>
+            scoped.controlRepositorySharingRule(owner, {
+              ...intent,
+              authority: approved
+            }),
+          credentialId
+        );
+      };
+      const amendDetail = async (
+        maximumFidelity: "lcm_leaves" | "lcm_rollups",
+        id = ruleId
+      ) => {
+        const review = await repository.getSharingRuleDetailReview(owner, {
+          ruleId: id,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          maximumFidelity,
+          includeCuratedMemory: false
+        });
+        expect(review).not.toBeNull();
+        const intent = { mutationId: randomUUID(), review: review! };
+        return executeNative(
+          (referenceId) =>
+            sharedMemoryRuleDetailActionGrantBinding({
+              ...intent,
+              referenceId
+            }),
+          (scoped, approved) =>
+            scoped.amendSharingRuleDetail(owner, {
+              ...intent,
+              authority: approved
+            })
+        );
+      };
+      const admission = async (
+        source: SourceFixture,
+        targetRuleId = ruleId
+      ) => {
+        const current = await inspect(source, targetRuleId),
+          entry = current.entries[0]!;
+        const candidateInput = {
+          ...capturedSourceBinding(source, "lcm_leaves", [...representations]),
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateHash: hash(
+            `git-candidate:${source.logicalMemoryId}:${source.currentRevision}`
+          ),
+          sourceRevision: source.currentRevision,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(source, "lcm_leaves"),
+          byteCount: 128,
+          mode: "continuous" as const,
+          ...fidelityConsent([...representations])
+        };
+        const candidate = await executeNative(
+          (referenceId) =>
+            sharedMemoryCandidatePreviewActionGrantBinding({
+              ...candidateInput,
+              referenceId
+            }),
+          (scoped, approved) =>
+            scoped.createSharedMemoryCandidatePreview(owner, {
+              ...candidateInput,
+              authority: approved
+            }),
+          fixture.deviceCredentialId,
+          "direct"
+        );
+        expect(candidate).not.toBeNull();
+        const wire = {
+          source: {
+            kind: "captured_session" as const,
+            sessionId: source.sessionId,
+            logicalMemoryId: source.logicalMemoryId
+          },
+          sourceCapabilities: [...representations],
+          activationRepresentation: "lcm_leaves" as const,
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          mutationId: randomUUID(),
+          logicalGrantId: entry.grant?.logicalGrantId ?? randomUUID(),
+          consentId: randomUUID(),
+          mode: "continuous" as const,
+          maximumFidelity: "lcm_leaves" as const,
+          includeCuratedMemory: false,
+          expiresAt: null,
+          preview: {
+            previewId: candidate!.previewId,
+            previewHash: candidate!.previewHash
+          },
+          previewRevision: candidate!.previewRevision,
+          membership: {
+            selectionSnapshotVersion: randomUUID(),
+            sourceContextHash: hash(`git-member:${source.logicalMemoryId}`),
+            selectorBindingHash: current.selectorBindingHash,
+            gitContextVersion: 1,
+            folderContextVersion: 1,
+            expectedAuthorityVersion: current.authorityVersion,
+            expectedMembershipVersion: entry.member?.version ?? 0,
+            expectedGrantVersion: entry.grant?.version ?? null,
+            publisherFence: current.publisherFence
+          }
+        };
+        const membershipId = crossIdentitySyncDeterministicUuid({
+          kind: "sharing_rule_member",
+          ruleId: targetRuleId,
+          logicalMemoryId: source.logicalMemoryId
+        });
+        return {
+          wire,
+          membershipId,
+          input: {
+            ...wire,
+            publisherCredentialId: fixture.deviceCredentialId,
+            membership: { ...wire.membership, ruleId: targetRuleId }
+          },
+          cancellation: {
+            ruleId: targetRuleId,
+            publisherCredentialId: fixture.deviceCredentialId,
+            mutationId: wire.mutationId,
+            kind: "admit" as const,
+            logicalMemoryId: source.logicalMemoryId,
+            membershipId,
+            requestHash: crossIdentitySyncDigest({
+              kind: "admit",
+              logicalMemoryId: source.logicalMemoryId,
+              membershipId,
+              body: wire
+            })
+          }
+        };
+      };
+      const retryCodes = ["40001", "40P01"];
+      let companionAttempts = 0;
+      const ensureMemberCompanion: typeof ensurePendingShareCompanion = async (
+        input
+      ) => {
+        companionAttempts += 1;
+        if (scenario === "project_retry_denied")
+          throw new SharedMemoryAuthorizationError("Owner access ended");
+        const code =
+          scenario === "project_retry_exhausted"
+            ? "40001"
+            : scenario === "project_retry"
+              ? retryCodes.shift()
+              : undefined;
+        if (code)
+          throw Object.assign(new Error("Concurrent sharing transaction"), {
+            code
+          });
+        return ensurePendingShareCompanion(input);
+      };
+      const publishMember = async (pendingShareId: string) => {
+        const preparing = await repository.processPendingShares({
+          ensureCompanion: ensureMemberCompanion
+        });
+        expect(preparing).toMatchObject({ claimed: 1, failed: 0 });
+        if (preparing.activated) return preparing;
+        await flushSanitizedSemanticPublication();
+        await pool.query(
+          "update pending_share_outbox set available_at=now() where pending_share_id=$1 and state='pending'",
+          [pendingShareId]
+        );
+        return repository.processPendingShares({
+          ensureCompanion: ensureMemberCompanion
+        });
+      };
+      let targetRuleId = ruleId;
+      if (scenario === "revoked_repository") {
+        await repository.revokeShareGrant(owner, {
+          mutationId: randomUUID(),
+          shareGrantId: direct.id,
+          expectedGrantVersion: direct.grantVersion,
+          reasonCode: "owner_withdrawal",
+          authority: authority(fixture)
+        });
+        // A previously approved rule must not undo a later destination revoke.
+        const stale = await admission(existing);
+        await expect(
+          repository.createPendingRepositoryRuleMember(owner, stale.input)
+        ).rejects.toThrow("The rule destination changed after review");
+        targetRuleId = randomUUID();
+        await createRule(targetRuleId);
+      }
+      const first = await admission(existing, targetRuleId);
+      const accepted = await repository.createPendingRepositoryRuleMember(
+        owner,
+        first.input
+      );
+      expect(accepted.membershipId).toBe(first.membershipId);
+      if (
+        scenario === "project_retry_exhausted" ||
+        scenario === "project_retry_denied"
+      ) {
+        expect(
+          await repository.processPendingShares({
+            ensureCompanion: ensureMemberCompanion
+          })
+        ).toMatchObject({ failed: 1, activated: 0 });
+        expect(companionAttempts).toBe(
+          scenario === "project_retry_exhausted" ? 3 : 1
+        );
+        expect(
+          await repository.getOwnerShare(owner, {
+            kind: "pending",
+            id: accepted.pendingShareId
+          })
+        ).toMatchObject({
+          kind: "pending",
+          pendingShare: { state: "needs_attention" }
+        });
+        return;
+      }
+      if (scenario === "revoked_during_admission") {
+        await repository.revokeShareGrant(owner, {
+          mutationId: randomUUID(),
+          shareGrantId: direct.id,
+          expectedGrantVersion: direct.grantVersion,
+          reasonCode: "owner_withdrawal",
+          authority: authority(fixture)
+        });
+        expect(
+          await repository.processPendingShares({
+            ensureCompanion: ensurePendingShareCompanion
+          })
+        ).toMatchObject({ activated: 0, failed: 1 });
+        expect((await inspect(existing)).entries[0]!.grant).toMatchObject({
+          id: direct.id,
+          lifecycle: "revoked"
+        });
+        expect(
+          await repository.readGrantRepresentation(reader, {
+            shareGrantId: direct.id,
+            representation: "lcm_leaves"
+          })
+        ).toBeNull();
+        return;
+      }
+      expect(
+        await repository.cancelRepositorySharingRuleMutation(
+          owner,
+          first.cancellation
+        )
+      ).toMatchObject({ state: "accepted", receipt: accepted });
+      expect(await publishMember(accepted.pendingShareId)).toMatchObject({
+        activated: 1,
+        failed: 0
+      });
+      if (scenario === "project_retry") {
+        expect(retryCodes).toHaveLength(0);
+        expect(companionAttempts).toBeGreaterThanOrEqual(3);
+        expect(
+          await repository.getOwnerShare(owner, {
+            kind: "pending",
+            id: accepted.pendingShareId
+          })
+        ).toMatchObject({
+          kind: "pending",
+          pendingShare: { state: "activated" }
+        });
+        expect(
+          await repository.readGrantRepresentation(reader, {
+            shareGrantId: direct.id,
+            representation: "lcm_leaves"
+          })
+        ).toMatchObject({ representation: { sourceRevision: 1 } });
+        return;
+      }
+      if (scenario === "preview_revision") {
+        const target = {
+          kind: "pending" as const,
+          id: accepted.pendingShareId
+        };
+        expect(
+          await repository.readOwnerSharePreview(owner, target)
+        ).toMatchObject({ sourceRevision: 1 });
+        await seedAuthoritativeSourceRevision(
+          fixture,
+          existing,
+          2,
+          "latest-owner-preview",
+          {
+            repositorySnapshot: sharedAnchor
+          }
+        );
+        await repository.advanceContinuousGrantRepresentations({
+          remoteReplicaId: existing.remoteReplicaId,
+          sourceRevision: 2
+        });
+        await pool.query(
+          "update team_memory_sharing_rule_members set next_reconciliation_at=now() where id=$1",
+          [first.membershipId]
+        );
+        expect(
+          await repository.reconcileSharingRuleMembers({ limit: 100 })
+        ).toMatchObject({ failed: 0 });
+        await flushSanitizedSemanticPublication();
+        expect(
+          await repository.readGrantRepresentation(reader, {
+            shareGrantId: direct.id,
+            representation: "lcm_leaves"
+          })
+        ).toMatchObject({ representation: { sourceRevision: 2 } });
+        expect(
+          (await repository.getOwnerShare(owner, target))?.summary
+            .authorizedPreview
+        ).toMatchObject({ sourceRevision: 2 });
+        expect(
+          await repository.readOwnerSharePreview(owner, target)
+        ).toMatchObject({ sourceRevision: 2 });
+        // A separate fixed snapshot still previews only its approved revision.
+        const fixed = await createGrant(fixture, {
+          label: "fixed-owner-preview",
+          mode: "snapshot"
+        });
+        await materialize(fixture, fixed);
+        await seedAuthoritativeSourceRevision(
+          fixture,
+          fixed,
+          2,
+          "unshared-later-source"
+        );
+        expect(
+          await repository.readOwnerSharePreview(owner, {
+            kind: "grant",
+            id: fixed.shareGrantId
+          })
+        ).toMatchObject({ sourceRevision: 1 });
+        await pool.query(
+          "update team_workspace_access_grants set disabled_at=now() where user_id=$1 and team_workspace_id=$2",
+          [fixture.ownerUserId, fixture.teamWorkspaceId]
+        );
+        expect(
+          await repository.readOwnerSharePreview(owner, target)
+        ).toBeNull();
+        return;
+      }
+      if (scenario === "revoked_repository") {
+        expect(
+          (await inspect(existing, targetRuleId)).entries[0]
+        ).toMatchObject({
+          grant: { id: direct.id, lifecycle: "active" },
+          member: { state: "present" }
+        });
+        expect(
+          await repository.readGrantRepresentation(reader, {
+            shareGrantId: direct.id,
+            representation: "lcm_leaves"
+          })
+        ).toMatchObject({ representation: { sourceRevision: 1 } });
+        // The old snapshot and its publication remain stopped after root reuse.
+        expect(
+          (
+            await pool.query(
+              "select consent_id from team_memory_share_reasons where share_grant_id=$1 and kind='direct'",
+              [direct.id]
+            )
+          ).rows
+        ).toEqual([{ consent_id: snapshot.consentId }]);
+        expect(
+          (
+            await pool.query(
+              "select state,revoked_at is not null as revoked from source_owner_representation_consents where id=$1",
+              [snapshot.consentId]
+            )
+          ).rows[0]
+        ).toMatchObject({ state: "revoked", revoked: true });
+        expect(
+          (
+            await pool.query(
+              "select state,invalidated_at is not null as invalidated from team_memory_representations where share_grant_id=$1 and consent_id=$2",
+              [direct.id, snapshot.consentId]
+            )
+          ).rows
+        ).toEqual([
+          expect.objectContaining({ state: "invalidated", invalidated: true })
+        ]);
+        const rollup = await repository.readGrantRepresentation(reader, {
+          shareGrantId: direct.id,
+          representation: "lcm_rollups"
+        });
+        expect(rollup?.grant.consentId).toBe(first.input.consentId);
+        expect(
+          (
+            await pool.query(
+              "select state from purge_jobs where share_grant_id=$1",
+              [direct.id]
+            )
+          ).rows
+        ).toEqual([expect.objectContaining({ state: "canceled" })]);
+        return;
+      }
+      const ownerExplanation = await repository.getOwnerShare(owner, {
+        kind: "pending",
+        id: accepted.pendingShareId
+      });
+      expect(
+        ownerExplanation?.kind === "pending" &&
+          ownerExplanation.pendingShare.grantId
+      ).toBe(direct.id);
+      expect(
+        ownerExplanation?.summary.sharingReasons.find(
+          (reason) => reason.kind === "rule"
+        )?.rule?.selectorKind
+      ).toBe(selectionKind);
+      expect((await inspect(existing)).entries[0]!.grant?.id).toBe(direct.id);
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: direct.id,
+          representation: "lcm_leaves"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 1 } });
+      const independentRuleIds: string[] = [];
+      if (selectionKind === "project") {
+        for (const selector of [
+          {
+            kind: "portable_repository" as const,
+            key: "gr_independent_git_reason"
+          },
+          { kind: "folder" as const, key: hash("independent-folder-reason") },
+          {
+            kind: "project" as const,
+            key: hash("other-private-project-reason")
+          }
+        ]) {
+          const independentId = randomUUID();
+          await createRule(independentId, selector);
+          const source = await admission(existing, independentId);
+          const accepted = await repository.createPendingRepositoryRuleMember(
+            owner,
+            source.input
+          );
+          expect(await publishMember(accepted.pendingShareId)).toMatchObject({
+            activated: 1,
+            failed: 0
+          });
+          expect(await control("pause", independentId)).toMatchObject({
+            state: "paused"
+          });
+          independentRuleIds.push(independentId);
+        }
+      }
+      expect(await control("pause")).toMatchObject({ state: "paused" });
+      await seedAuthoritativeSourceRevision(
+        fixture,
+        existing,
+        2,
+        "git-existing-later-summary",
+        {
+          repositorySnapshot:
+            selectionKind === "project"
+              ? unresolvedTeamRepositorySnapshot()
+              : sharedAnchor
+        }
+      );
+      expect(
+        await repository.advanceContinuousGrantRepresentations({
+          remoteReplicaId: existing.remoteReplicaId,
+          sourceRevision: 2
+        })
+      ).toMatchObject({ advanced: 0 });
+      const later = await createConsent(fixture, existing, {
+        representation: "lcm_rollups",
+        representations: ["lcm_rollups"],
+        mode: "snapshot",
+        sourceRevision: 2,
+        label: "git-existing-later-summary"
+      });
+      const laterGrant = await repository.selectGrantFidelity(owner, {
+        mutationId: randomUUID(),
+        shareGrantId: direct.id,
+        expectedGrantVersion: (await inspect(existing)).entries[0]!.grant!
+          .version,
+        consentId: later.consentId,
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: false,
+        authority: authority(fixture)
+      });
+      await prepareSanitizedSemanticPreview(fixture.ownerUserId, later.preview);
+      await repository.materializeGrantRepresentation(owner, {
+        mutationId: randomUUID(),
+        shareGrantId: laterGrant.id,
+        consentId: later.consentId,
+        expectedGrantVersion: laterGrant.grantVersion,
+        preview: later.preview
+      });
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: direct.id,
+          representation: "lcm_leaves"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 1 } });
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: direct.id,
+          representation: "lcm_rollups"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 2 } });
+
+      const selectedDetail = await repository.readGrantRepresentation(reader, {
+        shareGrantId: direct.id,
+        representation: "lcm_leaves"
+      });
+      // Competing publications rank higher deliberately. Recall must still
+      // retain the exact currently selected record rather than mask it during
+      // source deduplication; this must not depend on random candidate UUIDs.
+      const pausedCandidates = await indexAndRecall(
+        selectionKind === "project"
+          ? selectedDetail!.representation.id
+          : undefined
+      );
+      const pausedLeaf = pausedCandidates.find(
+        (item) =>
+          item.shareGrantId === direct.id &&
+          item.representation === "lcm_leaves"
+      );
+      expect(pausedLeaf).toBeDefined();
+      expect(
+        (
+          await repository.expandAuthorizedSharedMemorySemanticItem(reader, {
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            candidateId: pausedLeaf!.candidateId,
+            searchDomain: query.searchDomain,
+            projectId: query.projectId
+          })
+        )?.items.length
+      ).toBeGreaterThan(0);
+      const independentState = async () =>
+        (
+          await pool.query<{
+            id: string;
+            authority_version: number;
+            state: string;
+            consent_id: string;
+            consent_version: number;
+            maximum_fidelity: string;
+            consent_state: string;
+          }>(
+            `select rule.id,rule.authority_version,rule.state,c.id consent_id,c.consent_version,c.maximum_fidelity,c.state consent_state
+        from team_memory_sharing_rules rule join team_memory_share_reasons reason on reason.rule_id=rule.id
+        join source_owner_representation_consents c on c.id=reason.consent_id
+        where rule.id=any($1::uuid[]) order by rule.id,c.id`,
+            [independentRuleIds]
+          )
+        ).rows;
+      const retainedIndependent = await independentState();
+      expect(await amendDetail("lcm_rollups")).toMatchObject({
+        state: "paused",
+        maximumFidelity: "lcm_rollups"
+      });
+      const reducedState = await inspect(existing);
+      expect(reducedState.detailAmendment?.result.maximumFidelity).toBe(
+        "lcm_rollups"
+      );
+      expect(await independentState()).toEqual(retainedIndependent);
+      const reducedDetail = await repository.readGrantRepresentation(reader, {
+        shareGrantId: direct.id,
+        representation: "lcm_leaves"
+      });
+      if (selectionKind === "project") {
+        expect(reducedDetail).toMatchObject({
+          representation: { sourceRevision: 1 }
+        });
+      } else {
+        expect(reducedDetail).toBeNull();
+        expect(
+          await repository.expandAuthorizedSharedMemorySemanticItem(reader, {
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            candidateId: pausedLeaf!.candidateId,
+            searchDomain: query.searchDomain,
+            projectId: query.projectId
+          })
+        ).toBeNull();
+        expect(
+          (await indexAndRecall()).some(
+            (item) =>
+              item.shareGrantId === direct.id &&
+              item.representation === "lcm_leaves"
+          )
+        ).toBe(false);
+      }
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: direct.id,
+          representation: "lcm_rollups"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 2 } });
+      expect(await amendDetail("lcm_leaves")).toMatchObject({
+        state: "paused",
+        maximumFidelity: "lcm_leaves"
+      });
+      expect(await independentState()).toEqual(retainedIndependent);
+      // An increase restores only the exact older detailed publication. The newer
+      // summary cannot lend this paused reason authority for detailed revision 2.
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: direct.id,
+          representation: "lcm_leaves"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 1 } });
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: direct.id,
+          representation: "lcm_rollups"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 2 } });
+
+      const known = await inspect(existing);
+      expect(
+        await repository.removeSharingRuleMember(owner, {
+          ruleId,
+          membershipId: first.membershipId,
+          mutationId: randomUUID(),
+          publisherCredentialId: fixture.deviceCredentialId,
+          expectedAuthorityVersion: known.authorityVersion,
+          expectedMembershipVersion: known.entries[0]!.member!.version,
+          publisherFence: known.publisherFence,
+          selectionSnapshotVersion: randomUUID(),
+          sourceContextHash: hash("git-corrected-no-longer-matching")
+        })
+      ).toMatchObject({ state: "removed" });
+      const remainingDetail = await repository.readGrantRepresentation(reader, {
+        shareGrantId: direct.id,
+        representation: "lcm_leaves"
+      });
+      if (selectionKind === "project") {
+        expect(remainingDetail).toMatchObject({
+          representation: { sourceRevision: 1 }
+        });
+        expect(
+          (
+            await repository.expandAuthorizedSharedMemorySemanticItem(reader, {
+              teamWorkspaceId: fixture.teamWorkspaceId,
+              candidateId: pausedLeaf!.candidateId,
+              searchDomain: query.searchDomain,
+              projectId: query.projectId
+            })
+          )?.items.length
+        ).toBeGreaterThan(0);
+        for (const id of independentRuleIds)
+          expect(await control("stop", id)).toMatchObject({ state: "stopped" });
+        expect(
+          await repository.reconcileSharingRuleMembers({ limit: 100 })
+        ).toMatchObject({ failed: 0 });
+        expect(
+          await repository.readGrantRepresentation(reader, {
+            shareGrantId: direct.id,
+            representation: "lcm_leaves"
+          })
+        ).toBeNull();
+      } else expect(remainingDetail).toBeNull();
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: direct.id,
+          representation: "lcm_rollups"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 2 } });
+      expect(
+        await repository.expandAuthorizedSharedMemorySemanticItem(reader, {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: pausedLeaf!.candidateId,
+          searchDomain: query.searchDomain,
+          projectId: query.projectId
+        })
+      ).toBeNull();
+      expect(await control("resume")).toMatchObject({ state: "active" });
+      expect(await control("retry")).toMatchObject({ state: "active" });
+      const future = await createSource(fixture, 1, "git-future", {
+        repositorySnapshot:
+          selectionKind === "project"
+            ? unresolvedTeamRepositorySnapshot()
+            : sharedAnchor
+      });
+      await putOwnerPolicy(fixture, future, [...representations]);
+      const second = await admission(future);
+      const futurePending = await repository.createPendingRepositoryRuleMember(
+        owner,
+        second.input
+      );
+      // Initialize the member and queue its original detail, then amend before
+      // Privacy finishes. The pending creation evidence remains immutable.
+      expect(
+        await repository.processPendingShares({
+          ensureCompanion: ensurePendingShareCompanion
+        })
+      ).toMatchObject({ claimed: 1, failed: 0 });
+      const futureState = await inspect(future),
+        futureGrantId = futureState.entries[0]!.grant!.id;
+      const oldTargets = await repository.listPendingSemanticPrivacyTargets({
+        shareGrantId: futureGrantId,
+        limit: 100
+      });
+      expect(
+        oldTargets.some((target) => target.representation === "lcm_leaves")
+      ).toBe(true);
+      expect(await amendDetail("lcm_rollups")).toMatchObject({
+        state: "active"
+      });
+      for (const target of oldTargets.filter(
+        (item) => item.representation === "lcm_leaves"
+      )) {
+        expect(
+          await repository.claimSemanticPrivacyTarget(owner, {
+            semanticPreviewId: target.id,
+            claimantId: "stale-detail-worker",
+            leaseMs: 120_000,
+            expectedWorkIdentity:
+              sharedMemorySemanticPrivacyWorkIdentity(target)
+          })
+        ).toBeNull();
+      }
+      expect(
+        await repository.reconcileSharingRuleMembers({ limit: 100 })
+      ).toMatchObject({ failed: 0 });
+      await flushSanitizedSemanticPublication();
+      await pool.query(
+        "update pending_share_outbox set available_at=now() where pending_share_id=$1 and state='pending'",
+        [futurePending.pendingShareId]
+      );
+      expect(
+        await repository.processPendingShares({
+          ensureCompanion: ensurePendingShareCompanion
+        })
+      ).toMatchObject({ activated: 1, failed: 0 });
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: futureGrantId,
+          representation: "lcm_leaves"
+        })
+      ).toBeNull();
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: futureGrantId,
+          representation: "lcm_rollups"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 1 } });
+      expect(await amendDetail("lcm_leaves")).toMatchObject({
+        state: "active"
+      });
+      expect(
+        await repository.reconcileSharingRuleMembers({ limit: 100 })
+      ).toMatchObject({ failed: 0 });
+      await flushSanitizedSemanticPublication();
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: futureGrantId,
+          representation: "lcm_leaves"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 1 } });
+      const beforeContext = await inspect(future);
+      const contextRefresh = {
+        ruleId,
+        membershipId: second.membershipId,
+        publisherCredentialId: fixture.deviceCredentialId,
+        mutationId: randomUUID(),
+        selectionSnapshotVersion: randomUUID(),
+        sourceContextHash: hash(`corrected-${selectionKind}-context`),
+        selectorBindingHash: beforeContext.selectorBindingHash,
+        gitContextVersion: selectionKind === "repository" ? 2 : 1,
+        folderContextVersion: selectionKind === "folder" ? 2 : 1,
+        expectedAuthorityVersion: beforeContext.authorityVersion,
+        expectedMembershipVersion: beforeContext.entries[0]!.member!.version,
+        publisherFence: beforeContext.publisherFence
+      };
+      const contextReceipt =
+        await repository.refreshRepositorySharingRuleMemberContext(
+          owner,
+          contextRefresh
+        );
+      expect(contextReceipt.membershipVersion).toBe(
+        contextRefresh.expectedMembershipVersion + 1
+      );
+      expect(
+        await repository.refreshRepositorySharingRuleMemberContext(
+          owner,
+          contextRefresh
+        )
+      ).toEqual(contextReceipt);
+      expect((await inspect(future)).entries[0]!.member).toMatchObject({
+        gitContextVersion: contextRefresh.gitContextVersion,
+        folderContextVersion: contextRefresh.folderContextVersion
+      });
+      await expect(
+        repository.createPendingRepositoryRuleMember(
+          actor(fixture.readerUserId),
+          second.input
+        )
+      ).rejects.toBeInstanceOf(SharedMemoryAuthorizationError);
+
+      const recalled = await indexAndRecall();
+      expect(new Set(recalled.map((item) => item.shareGrantId))).toEqual(
+        new Set([direct.id, futureGrantId])
+      );
+      const futureLeaf = recalled.find(
+        (item) =>
+          item.shareGrantId === futureGrantId &&
+          item.representation === "lcm_leaves"
+      );
+      expect(futureLeaf).toBeDefined();
+      expect(
+        (
+          await repository.expandAuthorizedSharedMemorySemanticItem(reader, {
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            candidateId: futureLeaf!.candidateId,
+            searchDomain: query.searchDomain,
+            projectId: query.projectId
+          })
+        )?.items.length
+      ).toBeGreaterThan(0);
+      expect(
+        await repository.searchAuthorizedSharedMemorySemanticItems(
+          actor(fixture.outsiderUserId),
+          query
+        )
+      ).toEqual([]);
+
+      // A retained cancellation prevents an original admission arriving late.
+      const notYet = await createSource(fixture, 1, "git-canceled", {
+        repositorySnapshot:
+          selectionKind === "project"
+            ? unresolvedTeamRepositorySnapshot()
+            : sharedAnchor
+      });
+      await putOwnerPolicy(fixture, notYet, [...representations]);
+      const canceled = await admission(notYet),
+        versionBeforeCancel = (await inspect(notYet)).authorityVersion;
+      expect(
+        await repository.cancelRepositorySharingRuleMutation(
+          owner,
+          canceled.cancellation
+        )
+      ).toMatchObject({ state: "canceled" });
+      await expect(
+        repository.createPendingRepositoryRuleMember(owner, canceled.input)
+      ).rejects.toBeInstanceOf(SharedMemoryConflictError);
+      expect((await inspect(notYet)).authorityVersion).toBe(
+        versionBeforeCancel
+      );
+      expect((await inspect(notYet)).entries[0]!.member).toBeNull();
+
+      await seedAuthoritativeSourceRevision(
+        fixture,
+        future,
+        2,
+        "git-future-queued-before-stop",
+        {
+          repositorySnapshot:
+            selectionKind === "project"
+              ? unresolvedTeamRepositorySnapshot()
+              : sharedAnchor
+        }
+      );
+      await pool.query(
+        "update team_memory_sharing_rule_members set next_reconciliation_at=now() where id=$1",
+        [second.membershipId]
+      );
+      expect(
+        await repository.reconcileSharingRuleMembers({ limit: 100 })
+      ).toMatchObject({ failed: 0 });
+      const prepared = await repository.listPendingSemanticPrivacyTargets({
+        shareGrantId: futureGrantId,
+        limit: 100
+      });
+      expect(prepared.length).toBeGreaterThan(0);
+      for (const target of prepared)
+        await prepareSanitizedSemanticPreview(fixture.ownerUserId, {
+          previewId: target.sourcePreviewId
+        });
+      const personalBefore = await pool.query(
+        "select event.id,row_to_json(event)::text as retained from memory_events event where event.session_id=$1 order by event.id",
+        [future.localSessionId]
+      );
+      expect(await control("stop")).toMatchObject({ state: "stopped" });
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: futureGrantId,
+          representation: "lcm_leaves"
+        })
+      ).toBeNull();
+      expect(
+        await repository.expandAuthorizedSharedMemorySemanticItem(reader, {
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          candidateId: futureLeaf!.candidateId,
+          searchDomain: query.searchDomain,
+          projectId: query.projectId
+        })
+      ).toBeNull();
+      await repository.reconcileReadySemanticRepresentations({ limit: 100 });
+      expect(
+        (
+          await pool.query(
+            "select 1 from team_memory_reason_publications p join team_memory_representations r on r.id=p.representation_id where p.reason_id in (select id from team_memory_share_reasons where membership_id=$1) and r.source_revision=2",
+            [second.membershipId]
+          )
+        ).rowCount
+      ).toBe(0);
+      expect(
+        await repository.reconcileSharingRuleMembers({ limit: 100 })
+      ).toMatchObject({ failed: 0 });
+      expect(
+        (
+          await pool.query<{ state: string }>(
+            "select state from source_owner_representation_consents where id=$1",
+            [second.wire.consentId]
+          )
+        ).rows[0]!.state
+      ).toBe("revoked");
+      expect(
+        await repository.readGrantRepresentation(reader, {
+          shareGrantId: direct.id,
+          representation: "lcm_rollups"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 2 } });
+      expect(
+        (
+          await pool.query(
+            "select event.id,row_to_json(event)::text as retained from memory_events event where event.session_id=$1 order by event.id",
+            [future.localSessionId]
+          )
+        ).rows
+      ).toEqual(personalBefore.rows);
+
+      // Empty rules still support negative owner controls after publisher expiry.
+      const emptyRuleId = randomUUID();
+      await createRule(emptyRuleId);
+      const originalCredential = (
+        await pool.query<{ upstream_backend_id: string }>(
+          "select upstream_backend_id from device_credentials where id=$1",
+          [fixture.deviceCredentialId]
+        )
+      ).rows[0]!;
+      const controller = (
+        await pool.query<{ id: string }>(
+          `insert into device_credentials(owner_user_id,credential_key_id,upstream_backend_id,device_instance_id,verifier_kind,verifier_hash,operation_families)
+      values($1,$2,$3,$4,'secret_hash',$5,ARRAY['share_grant_management']::text[]) returning id`,
+          [
+            fixture.ownerUserId,
+            randomUUID(),
+            originalCredential.upstream_backend_id,
+            randomUUID(),
+            hash("git-owner-controller")
+          ]
+        )
+      ).rows[0]!.id;
+      await pool.query(
+        "update device_credentials set expires_at=now()-interval '1 second' where id=$1",
+        [fixture.deviceCredentialId]
+      );
+      const owned = await repository.listOwnedRepositorySharingRules(owner, {
+        selector: ruleReview!.scope.selector,
+        afterRuleId: null,
+        limit: 100
+      });
+      expect(owned.rules).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ruleId: emptyRuleId,
+            publisherAvailable: false,
+            state: "active"
+          })
+        ])
+      );
+      expect(await control("pause", emptyRuleId, controller)).toMatchObject({
+        state: "paused"
+      });
+      const empty = (
+        await pool.query<{
+          authority_version: number;
+          publisher_fence: number;
+        }>(
+          "select authority_version,publisher_fence::integer as publisher_fence from team_memory_sharing_rules where id=$1",
+          [emptyRuleId]
+        )
+      ).rows[0]!;
+      expect(
+        await repository.getRepositorySharingRuleControlReview(owner, {
+          ruleId: emptyRuleId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          expectedAuthorityVersion: empty.authority_version,
+          publisherFence: empty.publisher_fence,
+          controlAction: "resume"
+        })
+      ).toBeNull();
+      expect(await control("stop", emptyRuleId, controller)).toMatchObject({
+        state: "stopped"
+      });
+    }
+  );
+
+  it.each([false, true])(
+    "publishes a reviewed pending Conversation rule while preserving an existing snapshot: %s",
+    async (overlap) => {
+      const fixture = await createWorkspaceFixture();
+      const direct = overlap
+        ? await createGrant(fixture, {
+            mode: "snapshot",
+            representation: "lcm_rollups",
+            ownerAllowed: ["lcm_rollups"],
+            label: "pending-rule-overlap"
+          })
+        : null;
+      if (direct) await materialize(fixture, direct);
+      const source =
+        direct ?? (await createSource(fixture, 1, "pending-rule-new"));
+      if (!direct) await putOwnerPolicy(fixture, source, ["lcm_rollups"]);
+      const shareAuthority = authority(fixture);
+      const candidate = await repository.createSharedMemoryCandidatePreview(
+        actor(fixture.ownerUserId),
+        {
+          ...capturedSourceBinding(source, "lcm_rollups"),
+          logicalMemoryId: source.logicalMemoryId,
+          candidateHash: hash("pending-rule-review"),
+          sourceRevision: source.currentRevision,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(source, "lcm_rollups"),
+          byteCount: 128,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          ...fidelityConsent(["lcm_rollups"]),
+          mode: "continuous",
+          authority: shareAuthority
+        }
+      );
+      expect(candidate).not.toBeNull();
+      const review = await repository.getConversationSharingRuleCreationReview(
+        actor(fixture.ownerUserId),
+        {
+          previewId: candidate!.previewId,
+          previewHash: candidate!.previewHash,
+          previewRevision: candidate!.previewRevision,
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId
+        }
+      );
+      expect(review).not.toBeNull();
+      const ruleId = randomUUID();
+      const input = {
+        mutationId: randomUUID(),
+        logicalGrantId: review!.logicalGrantId,
+        consentId: randomUUID(),
+        ...capturedSourceBinding(source, "lcm_rollups"),
+        logicalMemoryId: source.logicalMemoryId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        preview: candidate!,
+        previewRevision: candidate!.previewRevision,
+        mode: "continuous" as const,
+        ...fidelityConsent(["lcm_rollups"]),
+        authority: shareAuthority,
+        ruleCreation: {
+          ruleId,
+          publisherCredentialId: fixture.deviceCredentialId,
+          expectedGrantVersion: review!.expectedGrantVersion,
+          effectivePrivacyPolicyHash: review!.effectivePrivacyPolicyHash
+        }
+      };
+      const pending = await repository.createPendingConversationSharingRule(
+        actor(fixture.ownerUserId),
+        input
+      );
+      expect(
+        await repository.createPendingConversationSharingRule(
+          actor(fixture.ownerUserId),
+          input
+        )
+      ).toMatchObject({ id: pending.id });
+      await expect(
+        repository.createPendingConversationSharingRule(
+          actor(fixture.ownerUserId),
+          {
+            ...input,
+            ruleCreation: { ...input.ruleCreation, ruleId: randomUUID() }
+          }
+        )
+      ).rejects.toThrow();
+      expect(
+        (
+          await pool.query(
+            `select id from team_memory_sharing_rules where id=$1`,
+            [ruleId]
+          )
+        ).rowCount
+      ).toBe(0);
+      const failures: unknown[] = [];
+      const initial = await repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion,
+        reportActivationFailure: (failure) => failures.push(failure)
+      });
+      if (initial.failed) {
+        throw new Error(
+          `Pending rule activation failed: ${JSON.stringify(failures)}`
+        );
+      }
+      expect(initial).toMatchObject({
+        claimed: 1,
+        activated: 0,
+        waiting: 1,
+        failed: 0
+      });
+      const rule = (
+        await pool.query<{ reason_id: string; share_grant_id: string }>(
+          `select reason.id as reason_id,reason.share_grant_id from team_memory_share_reasons reason where reason.rule_id=$1`,
+          [ruleId]
+        )
+      ).rows[0]!;
+      expect(rule).toBeDefined();
+      const discussion = (
+        await pool.query<{ id: string }>(
+          `select id from collaboration_threads where share_grant_id=$1`,
+          [rule.share_grant_id]
+        )
+      ).rows[0];
+      expect(discussion).toBeDefined();
+      if (!overlap)
+        await expect(
+          collaboration.getThread(actor(fixture.readerUserId), {
+            threadId: discussion!.id
+          })
+        ).resolves.toBeNull();
+      if (direct) expect(rule.share_grant_id).toBe(direct.shareGrantId);
+      const control = async (action: "pause" | "resume" | "stop") => {
+        const state = (
+          await pool.query<{
+            authority_version: number;
+            grant_version: number;
+          }>(
+            `select rule.authority_version,g.grant_version from team_memory_sharing_rules rule join team_memory_share_grants g on g.id=$2 where rule.id=$1`,
+            [ruleId, rule.share_grant_id]
+          )
+        ).rows[0]!;
+        return repository.controlConversationSharingRule(
+          actor(fixture.ownerUserId),
+          {
+            mutationId: randomUUID(),
+            ruleId,
+            reasonId: rule.reason_id,
+            shareGrantId: rule.share_grant_id,
+            expectedAuthorityVersion: state.authority_version,
+            expectedGrantVersion: state.grant_version,
+            action,
+            authority: shareAuthority
+          }
+        );
+      };
+      await control("pause");
+      await flushSanitizedSemanticPublication();
+      expect(
+        (
+          await pool.query(
+            `select 1 from team_memory_reason_publications where reason_id=$1`,
+            [rule.reason_id]
+          )
+        ).rowCount
+      ).toBe(0);
+      await control("resume");
+      await repository.reconcileSharingRuleMembers();
+      await flushSanitizedSemanticPublication();
+      await pool.query(
+        `update pending_share_outbox set available_at=now() where pending_share_id=$1`,
+        [pending.id]
+      );
+      expect(
+        await repository.processPendingShares({
+          ensureCompanion: ensurePendingShareCompanion
+        })
+      ).toMatchObject({ claimed: 1, activated: 1, failed: 0 });
+      expect(
+        await repository.readGrantRepresentation(actor(fixture.readerUserId), {
+          shareGrantId: rule.share_grant_id,
+          representation: "lcm_rollups"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 1 } });
+      const owner = await repository.getOwnerShare(actor(fixture.ownerUserId), {
+        kind: "pending",
+        id: pending.id
+      });
+      const reason = owner?.summary.sharingReasons.find(
+        (reason) => reason.id === rule.reason_id
+      );
+      expect(reason).toMatchObject({
+        kind: "rule",
+        maximumFidelity: "lcm_rollups",
+        permittedRepresentations: ["lcm_rollups"]
+      });
+      await seedAuthoritativeSourceRevision(
+        fixture,
+        source,
+        2,
+        "pending-rule-later",
+        { includeSummarySnapshot: false }
+      );
+      await repository.advanceContinuousGrantRepresentations({
+        remoteReplicaId: source.remoteReplicaId,
+        sourceRevision: 2
+      });
+      expect(
+        (
+          await pool.query(
+            `select 1 from team_memory_reason_publications publication
+           join team_memory_representations representation on representation.id=publication.representation_id
+          where publication.reason_id=$1 and representation.source_revision=2
+            and representation.state='available' and representation.invalidated_at is null`,
+            [rule.reason_id]
+          )
+        ).rowCount
+      ).toBe(0);
+      const eventIdBeforeSummary = source.seededEvents[0]!.eventId;
+      await seedAuthoritativeSourceRevision(
+        fixture,
+        source,
+        2,
+        "pending-rule-later",
+        { summaryOnly: true }
+      );
+      expect(source.lastSyncPackage).toMatchObject({
+        fromCursor: 2,
+        toCursor: 2,
+        changes: []
+      });
+      expect(source.seededEvents[0]!.eventId).toBe(eventIdBeforeSummary);
+      await pool.query(
+        "update team_memory_sharing_rule_members set next_reconciliation_at=now() where rule_id=$1",
+        [ruleId]
+      );
+      expect(await repository.reconcileSharingRuleMembers()).toMatchObject({
+        processed: 1,
+        prepared: 1,
+        failed: 0
+      });
+      await flushSanitizedSemanticPublication();
+      expect(
+        await repository.readGrantRepresentation(actor(fixture.readerUserId), {
+          shareGrantId: rule.share_grant_id,
+          representation: "lcm_rollups"
+        })
+      ).toMatchObject({ representation: { sourceRevision: 2 } });
+      await ensureSourceRevision(
+        fixture,
+        source,
+        3,
+        "pending-rule-stop-queued"
+      );
+      await repository.advanceContinuousGrantRepresentations({
+        remoteReplicaId: source.remoteReplicaId,
+        sourceRevision: 3
+      });
+      await control("stop");
+      await flushSanitizedSemanticPublication();
+      const retained = await repository.readGrantRepresentation(
+        actor(fixture.readerUserId),
+        { shareGrantId: rule.share_grant_id, representation: "lcm_rollups" }
+      );
+      if (direct) {
+        expect(retained).toMatchObject({
+          representation: { sourceRevision: 1 }
+        });
+        const snapshot = (
+          await pool.query<{
+            state: string;
+            mode: string;
+            maximum_authorized_source_revision: string;
+          }>(
+            `select state,mode,maximum_authorized_source_revision from source_owner_representation_consents where id=$1`,
+            [direct.consentId]
+          )
+        ).rows[0];
+        expect(snapshot).toMatchObject({
+          state: "active",
+          mode: "snapshot",
+          maximum_authorized_source_revision: "1"
+        });
+      } else expect(retained).toBeNull();
+      expect(
+        (
+          await pool.query(
+            `select 1 from team_memory_reason_publications publication join team_memory_representations representation on representation.id=publication.representation_id
+             where publication.reason_id=$1 and representation.source_revision=3 and representation.state in ('available','stale') and representation.invalidated_at is null`,
+            [rule.reason_id]
+          )
+        ).rowCount
+      ).toBe(0);
+      expect(
+        (
+          await pool.query(
+            `select personal_deleted_at,invalidated_at from sessions where id=$1`,
+            [source.sessionId]
+          )
+        ).rows[0]
+      ).toEqual({ personal_deleted_at: null, invalidated_at: null });
+    }
+  );
 });

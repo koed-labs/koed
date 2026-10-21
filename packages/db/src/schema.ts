@@ -1,3 +1,4 @@
+import { noPrivacyLabelsPolicy, privacyLabels } from "@koed/shared";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -33,6 +34,20 @@ import type {
   PersonalFolderObservation,
   SyncProfileTransitionReceipt
 } from "@koed/shared";
+
+const privacyLabelPolicyCheck = (column: AnyPgColumn) => {
+  const keys = sql.raw(
+    `ARRAY[${privacyLabels.map((label) => `'${label}'`).join(",")}]::text[]`
+  );
+  return sql`jsonb_typeof(${column})='object' and ${column} ?& ${keys}
+    and (${column}-${keys})='{}'::jsonb and ${sql.join(
+      privacyLabels.map(
+        (label) =>
+          sql`jsonb_typeof(${column}->${sql.raw(`'${label}'`)})='boolean'`
+      ),
+      sql` and `
+    )}`;
+};
 
 const id = () =>
   uuid("id")
@@ -7338,7 +7353,7 @@ export const pendingShareOperations = pgTable(
     }).onDelete("restrict"),
     unique("pending_share_operations_mutation_unique").on(table.mutationId),
     unique("pending_share_operations_consent_unique").on(table.consentId),
-    unique("pending_share_operations_logical_grant_unique").on(
+    index("pending_share_operations_logical_grant_idx").on(
       table.logicalGrantId
     ),
     unique("pending_share_operations_control_mutation_unique").on(
@@ -7374,7 +7389,7 @@ export const pendingShareOperations = pgTable(
       "pending_share_operations_values_check",
       sql`${table.previewRevision} > 0 and ${table.sourceRevision} >= 0
         and ${table.operationVersion} > 0 and ${table.attemptCount} >= 0
-        and ${table.authoritySource} in ('browser_session','device_action_grant')
+        and ${table.authoritySource} in ('browser_session','device_action_grant','sharing_rule')
         and ((${table.lastControlMutationId} is null and ${table.lastControlAction} is null)
           or (${table.lastControlMutationId} is not null and
               ${table.lastControlAction} in ('retry','pause','resume','revoke')))
@@ -7424,6 +7439,60 @@ export const pendingShareOperations = pgTable(
           or (${table.activationRepresentation} = 'lcm_leaves' and ${table.maximumFidelity} in ('memory_events','lcm_leaves'))
           or (${table.activationRepresentation} = 'lcm_rollups')
           or (${table.activationRepresentation}::text = 'curated_assertions' and ${table.includeCuratedMemory} = true))`
+    )
+  ]
+);
+
+// A reviewed rule creation uses the existing Pending Share source workflow.
+// This record keeps its publisher and destination versions distinct from a direct share.
+export const pendingSharingRuleAdmissions = pgTable(
+  "pending_sharing_rule_admissions",
+  {
+    pendingShareId: uuid("pending_share_id")
+      .primaryKey()
+      .references(() => pendingShareOperations.id, { onDelete: "cascade" }),
+    ruleId: uuid("rule_id").notNull(),
+    admissionKind: text("admission_kind")
+      .notNull()
+      .default("conversation_create"),
+    membershipId: uuid("membership_id"),
+    expectedAuthorityVersion: integer("expected_authority_version"),
+    expectedMembershipVersion: integer("expected_membership_version"),
+    publisherFence: bigint("publisher_fence", { mode: "number" }),
+    membershipRequestHash: text("membership_request_hash"),
+    publisherCredentialId: uuid("publisher_credential_id")
+      .notNull()
+      .references(() => deviceCredentials.id, { onDelete: "restrict" }),
+    expectedGrantVersion: integer("expected_grant_version"),
+    effectivePrivacyPolicyHash: text("effective_privacy_policy_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    uniqueIndex("pending_sharing_rule_creation_unique")
+      .on(table.ruleId)
+      .where(sql`${table.admissionKind}='conversation_create'`),
+    foreignKey({
+      columns: [table.membershipId, table.ruleId],
+      foreignColumns: [
+        teamMemorySharingRuleMembers.id,
+        teamMemorySharingRuleMembers.ruleId
+      ],
+      name: "pending_sharing_rule_member_fk"
+    }).onDelete("restrict"),
+    check(
+      "pending_sharing_rule_admission_check",
+      sql`
+      (${table.admissionKind}='conversation_create' and ${table.membershipId} is null and ${table.expectedAuthorityVersion} is null and ${table.expectedMembershipVersion} is null and ${table.publisherFence} is null and ${table.membershipRequestHash} is null)
+      or (${table.admissionKind}='repository_member' and ${table.membershipId} is not null and ${table.expectedAuthorityVersion} is not null and ${table.expectedAuthorityVersion}>0 and ${table.expectedMembershipVersion} is not null and ${table.expectedMembershipVersion}>0 and ${table.publisherFence} is not null and ${table.publisherFence}>0 and ${table.membershipRequestHash} is not null and ${table.membershipRequestHash} ~ '^[a-f0-9]{64}$')
+    `
+    ),
+    check(
+      "pending_conversation_rule_version_check",
+      sql`${table.expectedGrantVersion} is null or ${table.expectedGrantVersion}>0`
+    ),
+    check(
+      "pending_conversation_rule_privacy_check",
+      sql`${table.effectivePrivacyPolicyHash} ~ '^[a-f0-9]{64}$'`
     )
   ]
 );
@@ -7942,6 +8011,250 @@ export const teamMemoryShareGrants = pgTable(
   ]
 );
 
+export const teamMemorySharingRules = pgTable(
+  "team_memory_sharing_rules",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    logicalMemoryId: uuid("logical_memory_id"),
+    selectorKind: text("selector_kind").notNull().default("captured_session"),
+    selectorBindingHash: text("selector_binding_hash"),
+    selectorPayload:
+      jsonb("selector_payload").$type<EncryptedPayloadEnvelope>(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
+    includeCuratedMemory: boolean("include_curated_memory")
+      .notNull()
+      .default(false),
+    contentPrivacyLabels: jsonb("content_privacy_labels")
+      .$type<PrivacyLabelPolicy>()
+      .notNull()
+      .default(noPrivacyLabelsPolicy()),
+    contentPolicyVersion: integer("content_policy_version")
+      .notNull()
+      .default(0),
+    approvedGlobalPrivacyPolicyHash: text(
+      "approved_global_privacy_policy_hash"
+    ),
+    approvedEffectivePrivacyLabels: jsonb(
+      "approved_effective_privacy_labels"
+    ).$type<PrivacyLabelPolicy>(),
+    effectivePrivacyPolicyHash: text("effective_privacy_policy_hash").notNull(),
+    state: text("state").notNull().default("active"),
+    authorityVersion: integer("authority_version").notNull().default(1),
+    publisherCredentialId: uuid("publisher_credential_id").notNull(),
+    publisherFence: bigint("publisher_fence", { mode: "number" })
+      .notNull()
+      .default(1),
+    creationMutationId: uuid("creation_mutation_id").notNull().unique(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    stoppedAt: timestamp("stopped_at", { withTimezone: true })
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.logicalMemoryId, table.ownerUserId],
+      foreignColumns: [logicalMemories.id, logicalMemories.ownerUserId],
+      name: "team_memory_sharing_rules_source_owner_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.publisherCredentialId, table.ownerUserId],
+      foreignColumns: [deviceCredentials.id, deviceCredentials.ownerUserId],
+      name: "team_memory_sharing_rules_publisher_owner_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "team_memory_sharing_rules_workspace_fk"
+    }).onDelete("restrict"),
+    unique("team_memory_sharing_rules_owner_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    check(
+      "team_memory_sharing_rules_selector_check",
+      sql`
+      (${table.selectorKind}='captured_session' and ${table.logicalMemoryId} is not null
+        and ${table.selectorBindingHash} is null and ${table.selectorPayload} is null)
+      or (${table.selectorKind} in ('repository','folder','project') and ${table.logicalMemoryId} is null
+        and ${table.selectorBindingHash} is not null and ${table.selectorBindingHash} ~ '^[a-f0-9]{64}$' and ${table.selectorPayload} is not null)
+    `
+    ),
+    index("team_memory_sharing_rules_owner_idx").on(
+      table.ownerUserId,
+      table.updatedAt.desc()
+    ),
+    check(
+      "team_memory_sharing_rules_authority_check",
+      sql`${table.authorityVersion}>0 and ${table.publisherFence}>0`
+    ),
+    check(
+      "team_memory_sharing_rules_fidelity_check",
+      sql`${table.maximumFidelity} in ('memory_events','lcm_leaves','lcm_rollups')`
+    ),
+    check(
+      "team_memory_sharing_rules_privacy_hash_check",
+      sql`${table.effectivePrivacyPolicyHash} ~ '^[a-f0-9]{64}$'`
+    ),
+    check(
+      "team_memory_sharing_rules_content_labels_check",
+      privacyLabelPolicyCheck(table.contentPrivacyLabels)
+    ),
+    check(
+      "team_memory_sharing_rules_approved_labels_check",
+      sql`${table.approvedEffectivePrivacyLabels} is null or (${privacyLabelPolicyCheck(table.approvedEffectivePrivacyLabels)})`
+    ),
+    check(
+      "team_memory_sharing_rules_content_policy_check",
+      sql`(${table.contentPolicyVersion}=0 and ${table.contentPrivacyLabels}=${sql.raw(`'${JSON.stringify(noPrivacyLabelsPolicy())}'::jsonb`)}
+        and ${table.approvedGlobalPrivacyPolicyHash} is null and ${table.approvedEffectivePrivacyLabels} is null)
+      or (${table.contentPolicyVersion}>0 and ${table.approvedGlobalPrivacyPolicyHash} is not null
+        and ${table.approvedGlobalPrivacyPolicyHash} ~ '^[a-f0-9]{64}$' and ${table.approvedEffectivePrivacyLabels} is not null)`
+    ),
+    check(
+      "team_memory_sharing_rules_lifecycle_check",
+      sql`(${table.state} in ('active','paused') and ${table.stoppedAt} is null) or (${table.state}='stopped' and ${table.stoppedAt} is not null)`
+    )
+  ]
+);
+
+// Membership records authorize one source under a rule. Their state is distinct
+// from Pending Share preparation and from the lifecycle of the shared grant.
+export const teamMemorySharingRuleMembers = pgTable(
+  "team_memory_sharing_rule_members",
+  {
+    id: id(),
+    ruleId: uuid("rule_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    state: text("state").notNull().default("present"),
+    membershipVersion: integer("membership_version").notNull().default(1),
+    selectionSnapshotVersion: uuid("selection_snapshot_version"),
+    sourceContextHash: text("source_context_hash"),
+    gitContextVersion: integer("git_context_version"),
+    folderContextVersion: integer("folder_context_version"),
+    lastMutationId: uuid("last_mutation_id").notNull(),
+    reconciliationRequestedAt: timestamp("reconciliation_requested_at", {
+      withTimezone: true
+    }).defaultNow(),
+    nextReconciliationAt: timestamp("next_reconciliation_at", {
+      withTimezone: true
+    }).defaultNow(),
+    reconciliationAttemptCount: integer("reconciliation_attempt_count")
+      .notNull()
+      .default(0),
+    reconciliationFailureCode: text("reconciliation_failure_code"),
+
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ruleId, table.ownerUserId],
+      foreignColumns: [
+        teamMemorySharingRules.id,
+        teamMemorySharingRules.ownerUserId
+      ],
+      name: "team_memory_rule_members_rule_owner_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.logicalMemoryId, table.ownerUserId],
+      foreignColumns: [logicalMemories.id, logicalMemories.ownerUserId],
+      name: "team_memory_rule_members_source_owner_fk"
+    }).onDelete("restrict"),
+    unique("team_memory_rule_members_source_unique").on(
+      table.ruleId,
+      table.logicalMemoryId
+    ),
+    unique("team_memory_rule_members_rule_unique").on(table.id, table.ruleId),
+    check(
+      "team_memory_rule_members_state_check",
+      sql`${table.state} in ('present','removed','revoked','unresolved')`
+    ),
+    check(
+      "team_memory_rule_members_version_check",
+      sql`${table.membershipVersion}>0
+      and (${table.gitContextVersion} is null or ${table.gitContextVersion}>0)
+      and (${table.folderContextVersion} is null or ${table.folderContextVersion}>0)
+      and (${table.sourceContextHash} is null or ${table.sourceContextHash} ~ '^[a-f0-9]{64}$')`
+    ),
+    check(
+      "team_memory_rule_members_reconciliation_check",
+      sql`${table.reconciliationAttemptCount}>=0
+      and (${table.reconciliationFailureCode} is null or ${table.reconciliationFailureCode} in ('source_not_ready','authority_unavailable','preparation_failed'))
+      and (${table.state}='present' or (${table.reconciliationRequestedAt} is null and ${table.nextReconciliationAt} is null
+        and ${table.reconciliationAttemptCount}=0 and ${table.reconciliationFailureCode} is null))`
+    ),
+    index("team_memory_rule_members_reconciliation_idx")
+      .on(table.nextReconciliationAt, table.id)
+      .where(
+        sql`${table.state}='present' and ${table.nextReconciliationAt} is not null`
+      ),
+    index("team_memory_rule_members_active_idx")
+      .on(table.ruleId, table.id)
+      .where(sql`${table.state}='present'`)
+  ]
+);
+
+// A direct reason keeps its identity when the owner explicitly replaces consent.
+// Authority, lifecycle and publication remain owned by the grant transaction.
+export const teamMemoryShareReasons = pgTable(
+  "team_memory_share_reasons",
+  {
+    id: id(),
+    shareGrantId: uuid("share_grant_id")
+      .notNull()
+      .references(() => teamMemoryShareGrants.id, { onDelete: "cascade" }),
+    consentId: uuid("consent_id")
+      .notNull()
+      .references(() => sourceOwnerRepresentationConsents.id, {
+        onDelete: "cascade"
+      }),
+    kind: text("kind").notNull().default("direct"),
+    ruleId: uuid("rule_id").references(() => teamMemorySharingRules.id, {
+      onDelete: "restrict"
+    }),
+    membershipId: uuid("membership_id"),
+    repositorySnapshot: jsonb("repository_snapshot")
+      .$type<TeamRepositorySnapshot>()
+      .notNull(),
+    repositorySnapshotSourceRevision: bigint(
+      "repository_snapshot_source_revision",
+      { mode: "number" }
+    ),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    uniqueIndex("team_memory_share_reasons_direct_unique")
+      .on(table.shareGrantId)
+      .where(sql`${table.kind} = 'direct'`),
+    uniqueIndex("team_memory_share_reasons_rule_unique")
+      .on(table.shareGrantId, table.ruleId)
+      .where(sql`${table.kind}='rule'`),
+    unique("team_memory_share_reasons_scope_unique").on(
+      table.id,
+      table.shareGrantId
+    ),
+    foreignKey({
+      columns: [table.membershipId, table.ruleId],
+      foreignColumns: [
+        teamMemorySharingRuleMembers.id,
+        teamMemorySharingRuleMembers.ruleId
+      ],
+      name: "team_memory_share_reasons_membership_fk"
+    }).onDelete("restrict"),
+    check(
+      "team_memory_share_reasons_kind_check",
+      sql`(${table.kind}='direct' and ${table.ruleId} is null and ${table.membershipId} is null)
+        or (${table.kind}='rule' and ${table.ruleId} is not null and ${table.membershipId} is not null)`
+    )
+  ]
+);
+
 export const teamConversationSourceGrants = pgTable(
   "team_conversation_source_grants",
   {
@@ -8058,6 +8371,7 @@ export const teamMemoryRepresentations = pgTable(
   "team_memory_representations",
   {
     id: id(),
+    displayTitle: text("display_title"),
     shareGrantId: uuid("share_grant_id").notNull(),
     consentId: uuid("consent_id").notNull(),
     sourcePreviewId: uuid("source_preview_id")
@@ -8223,6 +8537,7 @@ export const teamMemoryRepresentations = pgTable(
     }).onDelete("restrict"),
     unique("team_memory_representations_revision_unique").on(
       table.shareGrantId,
+      table.consentId,
       table.representation,
       table.sourceRevision,
       table.fidelityPolicyRevision,
@@ -8236,6 +8551,15 @@ export const teamMemoryRepresentations = pgTable(
       table.teamId,
       table.teamWorkspaceId,
       table.logicalMemoryId
+    ),
+    unique("team_memory_representations_consent_unique").on(
+      table.id,
+      table.shareGrantId,
+      table.consentId
+    ),
+    check(
+      "team_memory_representations_title_marker_check",
+      sql`${table.displayTitle} is null or ${table.displayTitle}='[koed encrypted Shared Memory title]'`
     ),
     unique("team_memory_representations_exact_scope_unique").on(
       table.id,
@@ -8312,6 +8636,107 @@ export const teamMemoryRepresentations = pgTable(
         and ${table.tombstonedAt} is not null
         and ${table.purgeCompletedAt} is not null
       )`
+    )
+  ]
+);
+
+// A reason authorizes an exact persisted representation, never the grant's
+// latest revision at another fidelity. Lifecycle changes retain this ledger.
+export const teamMemoryReasonPublications = pgTable(
+  "team_memory_reason_publications",
+  {
+    reasonId: uuid("reason_id").notNull(),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    consentId: uuid("consent_id").notNull(),
+    representationId: uuid("representation_id").notNull(),
+    ruleVersion: integer("rule_version"),
+    publisherFence: bigint("publisher_fence", { mode: "number" }),
+    createdAt: now()
+  },
+  (table) => [
+    primaryKey({ columns: [table.reasonId, table.representationId] }),
+    foreignKey({
+      columns: [table.reasonId, table.shareGrantId],
+      foreignColumns: [
+        teamMemoryShareReasons.id,
+        teamMemoryShareReasons.shareGrantId
+      ],
+      name: "team_memory_reason_publications_reason_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.representationId, table.shareGrantId, table.consentId],
+      foreignColumns: [
+        teamMemoryRepresentations.id,
+        teamMemoryRepresentations.shareGrantId,
+        teamMemoryRepresentations.consentId
+      ],
+      name: "team_memory_reason_publications_representation_fk"
+    }).onDelete("cascade"),
+    check(
+      "team_memory_reason_publications_fence_check",
+      sql`(${table.ruleVersion} is null and ${table.publisherFence} is null) or (${table.ruleVersion} is not null and ${table.publisherFence} is not null and ${table.ruleVersion}>0 and ${table.publisherFence}>0)`
+    )
+  ]
+);
+
+// Captured authority for the existing preview/privacy pipeline. This is not a
+// second processing queue: semantic preview readiness remains its work state.
+export const teamMemoryReasonPreparations = pgTable(
+  "team_memory_reason_preparations",
+  {
+    reasonId: uuid("reason_id").notNull(),
+    shareGrantId: uuid("share_grant_id").notNull(),
+    consentId: uuid("consent_id")
+      .notNull()
+      .references(() => sourceOwnerRepresentationConsents.id, {
+        onDelete: "restrict"
+      }),
+    previewId: uuid("preview_id")
+      .notNull()
+      .references(() => sharedSourcePreviews.id, { onDelete: "restrict" }),
+    retainedRepresentationId: uuid("retained_representation_id"),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    ruleVersion: integer("rule_version").notNull(),
+    consentVersion: integer("consent_version").notNull(),
+    grantVersion: integer("grant_version").notNull(),
+    publisherCredentialId: uuid("publisher_credential_id")
+      .notNull()
+      .references(() => deviceCredentials.id, { onDelete: "restrict" }),
+    publisherFence: bigint("publisher_fence", { mode: "number" }).notNull(),
+    effectivePrivacyPolicyHash: text("effective_privacy_policy_hash").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.reasonId, table.previewId] }),
+    foreignKey({
+      columns: [table.reasonId, table.shareGrantId],
+      foreignColumns: [
+        teamMemoryShareReasons.id,
+        teamMemoryShareReasons.shareGrantId
+      ],
+      name: "team_memory_reason_preparations_reason_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [
+        table.retainedRepresentationId,
+        table.shareGrantId,
+        table.consentId
+      ],
+      foreignColumns: [
+        teamMemoryRepresentations.id,
+        teamMemoryRepresentations.shareGrantId,
+        teamMemoryRepresentations.consentId
+      ],
+      name: "team_memory_reason_preparations_retained_fk"
+    }).onDelete("restrict"),
+    check(
+      "team_memory_reason_preparations_versions_check",
+      sql`${table.sourceRevision}>=0 and ${table.ruleVersion}>0 and ${table.consentVersion}>0 and ${table.grantVersion}>0 and ${table.publisherFence}>0`
+    ),
+    check(
+      "team_memory_reason_preparations_privacy_hash_check",
+      sql`${table.effectivePrivacyPolicyHash} ~ '^[a-f0-9]{64}$'`
     )
   ]
 );
@@ -12479,6 +12904,225 @@ export const collaborationSharedMemoryGrants = pgTable(
     check(
       "csm_grants_protected_dto_hash_check",
       sql`length(${table.protectedDtoHash}) = 64`
+    )
+  ]
+);
+
+export const collaborationSharingRuleDeliveries = pgTable(
+  "collaboration_sharing_rule_deliveries",
+  {
+    id: id(),
+    enrollmentId: uuid("enrollment_id")
+      .notNull()
+      .references(() => collaborationSharedMemoryEnrollments.id, {
+        onDelete: "cascade"
+      }),
+    mutationId: uuid("mutation_id").notNull(),
+    ruleId: uuid("rule_id").notNull(),
+    operationKind: text("operation_kind")
+      .notNull()
+      .default("conversation_create"),
+    shareGrantId: uuid("share_grant_id"),
+    logicalGrantId: uuid("logical_grant_id"),
+    intentHash: text("intent_hash").notNull(),
+    state: text("state").notNull().default("queued"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    leaseVersion: integer("lease_version").notNull().default(0),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    failureCode: text("failure_code"),
+    protectedDto: jsonb("protected_dto").$type<EncryptedPayloadEnvelope>(),
+    protectedDtoHash: text("protected_dto_hash"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("csm_rule_delivery_progress_scope_unique").on(
+      table.id,
+      table.enrollmentId,
+      table.ruleId
+    ),
+    unique("csm_rule_delivery_mutation_unique").on(
+      table.enrollmentId,
+      table.mutationId
+    ),
+    uniqueIndex("csm_rule_delivery_pending_rule_unique")
+      .on(table.enrollmentId, table.ruleId)
+      .where(
+        sql`${table.state}='queued' and ${table.shareGrantId} is not null`
+      ),
+    uniqueIndex("csm_rule_delivery_pending_creation_unique")
+      .on(table.enrollmentId, table.ruleId)
+      .where(sql`${table.state}='queued' and ${table.shareGrantId} is null`),
+    index("csm_rule_delivery_claim_idx").on(
+      table.state,
+      table.availableAt,
+      table.id
+    ),
+    index("csm_rule_delivery_owner_grant_idx").on(
+      table.enrollmentId,
+      table.shareGrantId,
+      table.createdAt.desc()
+    ),
+    check(
+      "csm_rule_delivery_destination_check",
+      sql`(${table.operationKind}='control' and ${table.shareGrantId} is not null and ${table.logicalGrantId} is null)
+        or (${table.operationKind}='conversation_create' and ${table.shareGrantId} is null and ${table.logicalGrantId} is not null)
+        or (${table.operationKind} in ('repository_create','repository_control','detail','content_policy') and ${table.shareGrantId} is null and ${table.logicalGrantId} is null)`
+    ),
+    check(
+      "csm_rule_delivery_state_check",
+      sql`${table.state} in ('queued','acknowledged','needs_review') and ${table.attemptCount}>=0 and ${table.leaseVersion}>=0`
+    ),
+    check(
+      "csm_rule_delivery_failure_check",
+      sql`${table.failureCode} is null or ${table.failureCode} in ('offline','remote_unavailable','authority_unavailable','conflict','response_invalid')`
+    ),
+    check(
+      "csm_rule_delivery_payload_check",
+      sql`length(${table.intentHash})=64 and ((${table.protectedDto} is not null and ${table.protectedDtoHash} is not null and length(${table.protectedDtoHash})=64) or (${table.state}='needs_review' and ${table.protectedDto} is null and ${table.protectedDtoHash} is null))`
+    )
+  ]
+);
+
+// Local reconciliation state follows an acknowledged rule. It is progress and
+// delivery data, not a second source of Team sharing authority.
+export const collaborationSharingSelectionProgress = pgTable(
+  "collaboration_sharing_selection_progress",
+  {
+    id: id(),
+    enrollmentId: uuid("enrollment_id")
+      .notNull()
+      .references(() => collaborationSharedMemoryEnrollments.id, {
+        onDelete: "cascade"
+      }),
+    ruleId: uuid("rule_id").notNull(),
+    creationDeliveryId: uuid("creation_delivery_id").notNull(),
+    deliveryEpoch: integer("delivery_epoch").notNull().default(0),
+    currentGeneration: uuid("current_generation"),
+    proposalGeneration: uuid("proposal_generation"),
+    state: text("state").notNull().default("active"),
+    leaseVersion: integer("lease_version").notNull().default(0),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    sourceWorkAt: timestamp("source_work_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    protectedDto: jsonb("protected_dto").$type<EncryptedPayloadEnvelope>(),
+    protectedDtoHash: text("protected_dto_hash"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("csm_selection_progress_rule_unique").on(
+      table.enrollmentId,
+      table.ruleId
+    ),
+    foreignKey({
+      columns: [table.creationDeliveryId, table.enrollmentId, table.ruleId],
+      foreignColumns: [
+        collaborationSharingRuleDeliveries.id,
+        collaborationSharingRuleDeliveries.enrollmentId,
+        collaborationSharingRuleDeliveries.ruleId
+      ],
+      name: "csm_selection_progress_creation_fk"
+    }).onDelete("cascade"),
+    index("csm_selection_progress_work_idx").on(
+      table.state,
+      table.availableAt,
+      table.id
+    ),
+    check(
+      "csm_selection_progress_state_check",
+      sql`${table.state} in ('active','stopped','revoked','needs_attention') and ${table.leaseVersion}>=0 and ${table.attemptCount}>=0 and ${table.deliveryEpoch}>=0`
+    ),
+    check(
+      "csm_selection_progress_payload_check",
+      sql`(${table.protectedDto} is not null and ${table.protectedDtoHash} is not null and ${table.protectedDtoHash} ~ '^[a-f0-9]{64}$') or (${table.state}='revoked' and ${table.protectedDto} is null and ${table.protectedDtoHash} is null)`
+    )
+  ]
+);
+export const collaborationSharingSelectionPages = pgTable(
+  "collaboration_sharing_selection_pages",
+  {
+    id: id(),
+    progressId: uuid("progress_id")
+      .notNull()
+      .references(() => collaborationSharingSelectionProgress.id, {
+        onDelete: "cascade"
+      }),
+    generation: uuid("generation").notNull(),
+    pageNumber: integer("page_number").notNull(),
+    protectedDto: jsonb("protected_dto")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    protectedDtoHash: text("protected_dto_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("csm_selection_pages_generation_unique").on(
+      table.progressId,
+      table.generation,
+      table.pageNumber
+    ),
+    check(
+      "csm_selection_pages_payload_check",
+      sql`${table.pageNumber}>=0 and ${table.protectedDtoHash} ~ '^[a-f0-9]{64}$'`
+    )
+  ]
+);
+export const collaborationSharingSelectionSources = pgTable(
+  "collaboration_sharing_selection_sources",
+  {
+    id: id(),
+    progressId: uuid("progress_id")
+      .notNull()
+      .references(() => collaborationSharingSelectionProgress.id, {
+        onDelete: "cascade"
+      }),
+    sourceKey: text("source_key").notNull(),
+    currentGeneration: uuid("current_generation"),
+    currentGoalHash: text("current_goal_hash"),
+    proposedGeneration: uuid("proposed_generation"),
+    proposedGoalHash: text("proposed_goal_hash"),
+    doneGoalHash: text("done_goal_hash"),
+    doneDeliveryEpoch: integer("done_delivery_epoch"),
+    attemptMutationId: uuid("attempt_mutation_id"),
+    leaseVersion: integer("lease_version").notNull().default(0),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    protectedDto: jsonb("protected_dto")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    protectedDtoHash: text("protected_dto_hash").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("csm_selection_sources_key_unique").on(
+      table.progressId,
+      table.sourceKey
+    ),
+    index("csm_selection_sources_work_idx").on(table.availableAt, table.id),
+    index("csm_selection_sources_generation_idx").on(
+      table.progressId,
+      table.proposedGeneration,
+      table.id
+    ),
+    check(
+      "csm_selection_sources_payload_check",
+      sql`${table.sourceKey} ~ '^[a-f0-9]{64}$' and ${table.protectedDtoHash} ~ '^[a-f0-9]{64}$' and ${table.leaseVersion}>=0 and ${table.attemptCount}>=0
+    and ((${table.currentGeneration} is null and ${table.currentGoalHash} is null) or (${table.currentGeneration} is not null and ${table.currentGoalHash} is not null and ${table.currentGoalHash} ~ '^[a-f0-9]{64}$'))
+    and ((${table.proposedGeneration} is null and ${table.proposedGoalHash} is null) or (${table.proposedGeneration} is not null and ${table.proposedGoalHash} is not null and ${table.proposedGoalHash} ~ '^[a-f0-9]{64}$'))
+    and (${table.doneGoalHash} is null or ${table.doneGoalHash} ~ '^[a-f0-9]{64}$') and (${table.doneDeliveryEpoch} is null or ${table.doneDeliveryEpoch}>=0)`
     )
   ]
 );

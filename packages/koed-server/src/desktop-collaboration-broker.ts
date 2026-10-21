@@ -851,9 +851,14 @@ export const createDesktopCollaborationBroker = (
       random: dependencies.random,
       now: dependencies.now,
       sleep: dependencies.sleep,
-      resolveConnection: async (requiresTeamBackend, preferredBackendId) => {
+      resolveConnection: async (
+        requiresTeamBackend,
+        preferredBackendId,
+        localDeliveryOnly
+      ) => {
         if (
           requiresTeamBackend &&
+          !localDeliveryOnly &&
           !(await ensureBackendCapabilities(preferredBackendId))
         ) {
           return null;

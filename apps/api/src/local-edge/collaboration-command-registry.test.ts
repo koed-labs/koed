@@ -31,6 +31,18 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   "collaboration.connect_backend": { scope: "unsupported", desktop: write },
   "collaboration.reconnect_backend": { scope: "unsupported", desktop: write },
   "collaboration.disconnect_backend": { scope: "unsupported", desktop: write },
+  "collaboration.review_conversation_rule_creation": {
+    scope: "team",
+    desktop: read
+  },
+  "collaboration.create_conversation_rule": { scope: "team", desktop: write },
+  "collaboration.control_sharing_rule": { scope: "team", desktop: write },
+  "collaboration.control_repository_rule": { scope: "team", desktop: write },
+  "collaboration.list_repository_rules": { scope: "team", desktop: read },
+  "collaboration.list_sharing_rule_deliveries": {
+    scope: "team",
+    desktop: read
+  },
   "collaboration.request_action_grant": { scope: "team", desktop: write },
   "collaboration.await_action_grant": { scope: "team", desktop: read },
   "collaboration.confirm_action_grant": { scope: "team", desktop: write },
@@ -139,6 +151,7 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   },
   "collaboration.list_owned_shares": { scope: "team", desktop: read },
   "collaboration.get_owned_share": { scope: "team", desktop: read },
+  "collaboration.review_git_anchor_sharing": { scope: "team", desktop: read },
   "collaboration.control_pending_share": { scope: "team", desktop: write },
   "collaboration.share_conversation_source": {
     scope: "team",
@@ -174,6 +187,15 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     desktop: read
   },
   "collaboration.share_memory": { scope: "team", desktop: write },
+  "collaboration.review_repository_rule_creation": {
+    scope: "team",
+    desktop: read
+  },
+  "collaboration.create_repository_rule": { scope: "team", desktop: write },
+  "collaboration.review_rule_detail": { scope: "team", desktop: read },
+  "collaboration.amend_rule_detail": { scope: "team", desktop: write },
+  "collaboration.review_rule_content_policy": { scope: "team", desktop: read },
+  "collaboration.amend_rule_content_policy": { scope: "team", desktop: write },
   "collaboration.revoke_shared_memory": { scope: "team", desktop: write },
   "collaboration.review_shared_project_snapshot": {
     scope: "team",

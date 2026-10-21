@@ -8,7 +8,11 @@ The [agreed model](recall-and-continuous-sharing-model.md#work-package-2-team-co
 defines the scope.
 The [Package 1 validation record](personal-project-validation.md#package-1-verification-fixes)
 records the prerequisite fixes and their acceptance.
-The User confirmed every policy in the decision register on 20 October 2026.
+The User confirmed the policies and implementation scope recorded below.
+
+On 21 October 2026, the User changed the next delivery milestone to an operational
+internal alpha. The [current tickets](../tickets.md) govern active work.
+The full Package 2 decisions below remain the design for deferred capabilities.
 
 ## Settled behavior
 
@@ -34,11 +38,14 @@ Team recall uses authorized Workspace contributions and Git Anchor filtering.
 
 ## Policy decisions
 
-Access removal, exclusions, overlapping detail, snapshot compatibility, and private Project boundaries are settled.
+Access removal, exclusions, overlapping detail, snapshot consent, and private Project boundaries are settled.
 Changes to shared detail and content policy are also settled.
 Removing an exclusion resumes eligible sharing and catches up through active rules.
 Destinations are independent. Adding one leaves every existing destination unchanged.
 The decisions govern the acceptance criteria for the implementation work.
+Package 2 targets the current alpha build. The User removed backward
+compatibility requirements, so affected callers, services, and schemas can
+change together without support for previous versions.
 
 | Decision                                      | Behavior                                                                                                                                               | Status                                   |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- |
@@ -46,16 +53,19 @@ The decisions govern the acceptance criteria for the implementation work.
 | Excluding a source from a Workspace           | Revoke the owner's source access there and block all sharing routes until the owner removes the exclusion.                                             | Confirmed by the User on 20 October 2026 |
 | Personal Project privacy and Team collections | Keep Personal Projects private and use them to select Memory for a Team Workspace. Defer Team collections.                                             | Confirmed by the User on 20 October 2026 |
 | Changing shared detail or content policy      | Apply changes to existing and future Memory. Require explicit confirmation before sharing more. Preserve independently authorized access.              | Confirmed by the User on 20 October 2026 |
-| Independent destinations | Adding a Workspace creates independent sharing. Existing destinations remain unchanged until the owner explicitly stops their rules. | Confirmed by the User on 20 October 2026 |
+| Independent destinations                      | Adding a Workspace creates independent sharing. Existing destinations remain unchanged until the owner explicitly stops their rules.                   | Confirmed by the User on 20 October 2026 |
 | Removing a Workspace exclusion                | After explicit removal, reconcile currently active continuous rules and catch up eligible Memory. Leave paused and stopped rules unchanged.            | Confirmed by the User on 20 October 2026 |
 | Overlapping detail levels                     | Permit the highest detail supported by a remaining sharing reason and current content policy. Removing a broader reason removes its additional detail. | Confirmed by the User on 20 October 2026 |
 | Existing snapshot shares                      | Preserve existing snapshots. Require an explicit owner action to adopt continuous sharing or admit future sources.                                     | Confirmed by the User on 20 October 2026 |
+| Alpha implementation                          | Permit breaking contract and schema changes. No compatibility adapters, old-format support, mixed-version operation, or historical upgrade tests.      | Confirmed by the User                    |
 
 Project removal and destination exclusion have different scopes.
 A Project exclusion changes membership in that Project only.
 A destination exclusion concerns one owner's source in one Workspace.
 It does not exclude another owner's independent contribution.
 Neither action deletes Personal Memory.
+Snapshot consent and retention remain product rules for the current model;
+they do not require preserving old APIs or storage formats.
 
 Changes to a continuous rule's detail or content policy apply to existing and future Memory.
 A reduction removes unsupported access while preserving access supplied by other reasons.
@@ -127,38 +137,42 @@ An active summary reason can publish later summaries.
 Combining the highest detail and newest revision across those reasons would expose unauthorized detail.
 The contracts and read path must preserve which reason authorizes each representation.
 
-| Boundary                      | Current implementation                                                | Package 2 responsibility                                                                        |
-| ----------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Personal selection            | `packages/db/src/personal-selection-consumer-repository.ts`           | Consume membership and source changes without creating sharing authority from membership alone. |
-| Local sharing adapter         | `apps/api/src/local-edge/collaboration-shared-memory-control.ts`      | Persist rule intent, reconciliation progress, and destination acknowledgments.                  |
-| Team authority and visibility | `packages/db/src/shared-memory-repository.ts`                         | Bind each source's access to current consent and all applicable sharing reasons.                |
-| Pending preparation           | `packages/db/src/pending-share-processing-workflow.ts`                | Prepare eligible source revisions before visibility and reject obsolete work.                   |
-| Team API                      | `apps/api/src/shared-memory/routes.ts`                                | Expose authorized rule lifecycle and contribution operations.                                   |
-| Desktop sharing               | `apps/desktop/src/renderer/collaboration/CollaborationRoutesImpl.tsx` | Show scope, destination, progress, exclusions, and remaining reasons.                           |
+| Boundary                      | Current implementation                                                | Package 2 responsibility                                                                                             |
+| ----------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Personal selection            | `packages/db/src/personal-selection-consumer-repository.ts`           | Consume membership and source changes without creating sharing authority from membership alone.                      |
+| Local sharing adapter         | `apps/api/src/local-edge/collaboration-shared-memory-control.ts`      | Persist rule intent, reconciliation progress, and destination acknowledgments.                                       |
+| Team authority and visibility | `packages/db/src/shared-memory-repository.ts`                         | Bind each source's access to current consent and all applicable sharing reasons.                                     |
+| Processing readiness          | `packages/db/src/pending-share-processing-workflow.ts`                | Evaluate readiness for the repository-owned publication transaction; reuse existing workers for content preparation. |
+| Team API                      | `apps/api/src/shared-memory/routes.ts`                                | Expose authorized rule lifecycle and contribution operations.                                                        |
+| Desktop sharing               | `apps/desktop/src/renderer/collaboration/CollaborationRoutesImpl.tsx` | Show scope, destination, progress, exclusions, and remaining reasons.                                                |
 
-## Proposed implementation sequence
+## Implementation sequence
 
-These are preparation workstreams, not approved implementation tickets.
-Policy decisions can change their boundaries.
-Create the detailed tickets after the access rules are resolved.
+The [archived implementation plan](archive/2026-10-21-package-2/implementation-plan.md)
+defines current contracts, responsibilities, recovery, consent, and validation.
+The User approved the [fourteen vertical tickets](archive/2026-10-21-package-2/tickets.md#package-2-team-continuous-sharing-implementation-tickets)
+with their blocking dependencies and acceptance criteria.
+Each ticket delivers a user flow through its required storage, API, Desktop,
+and access tests. The User authorized implementation on 20 October 2026.
 
-| Order | Workstream                           | Required result                                                                                                                                            |
-| ----- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | Rule and contribution contracts      | Define owner, source selection, destination, versions, lifecycle, and independent reasons. Preserve private Project selection and existing consent limits. |
-| 2     | Team authority and reason accounting | Authorize rules and per-source contributions. Apply exclusions, reductions, and revocation without removing independent access.                            |
-| 3     | Personal selection reconciliation    | Enumerate existing members, follow changes, recover expired cursors, and reconcile across restart and Personal sync.                                       |
-| 4     | Admission and source publication     | Admit new sources and later revisions through existing privacy and Pending Share processing. Prevent duplicate contributions.                              |
-| 5     | Pause, resume, and stop              | Block queued publication after pause or stop. Resume automatically reconciles eligible membership and content.                                             |
-| 6     | Team recall and private selection    | Filter authorized Workspace contributions by Git Anchor without exposing Personal Project names, membership, or local paths.                               |
-| 7     | Desktop controls and compatibility   | Explain access reasons and pending state. Apply the approved policy for existing shares and changes to active rules.                                       |
-| 8     | Integrated acceptance                | Exercise two owners, offline recovery, authority changes during work, and Personal regressions. Update current behavior documentation.                     |
+| Tickets      | Required result                                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| P2-01–P2-02  | Explain existing sharing reasons and deliver continuous sharing for one Conversation, including lifecycle controls. |
+| P2-03–P2-04  | Review a Git Anchor's sharing scope, then share its existing and future matching Conversations.                     |
+| P2-05, P2-06 | Add exact Folder and private Project sharing independently using the dynamic workflow.                              |
+| P2-07        | Add independent destinations without changing existing sharing.                                                     |
+| P2-08–P2-09  | Review and apply detail and content-policy changes to existing and future Memory.                                   |
+| P2-10–P2-11  | Apply Workspace exclusions, then support explicit removal with eligible catch-up.                                   |
+| P2-12        | Convert existing snapshots explicitly without expanding consent to other sources.                                   |
+| P2-13–P2-14  | Recover after extended interruptions, then continue rules from another authorized Personal device.                  |
 
-Rule authority precedes automatic source admission.
-Admission precedes a complete continuous publication journey.
-Team recall and Desktop work consume the agreed contracts.
-Compatibility tests accompany storage and authority changes.
+P2-01 and P2-03 have no ticket prerequisites. Subsequent work follows the
+blocking edges in the implementation plan, rather than a single numeric chain.
+Every slice includes its own controls, current-contract validation, and read enforcement.
+The separate package completion checklist verifies the combined flows and
+complete selector/control matrix.
 
-## Acceptance scenarios to refine
+## Acceptance scenarios
 
 Retain the existing Team authorization tests.
 Extend the deterministic Team fixture with the approved rule behavior.
@@ -178,12 +192,17 @@ Test each operation through both its API and the resulting recall boundary.
 - Change Personal membership on another device and reconcile the resulting sharing reasons.
 - Recover from an expired cursor and make sure that removed members cannot remain authorized through a stale baseline.
 - Share matching Git Anchors from two owners and expose only their authorized contributions.
-- Share a Personal Project and make sure that Team responses reveal no private Project name, membership structure, or local folder path.
-- Apply the approved snapshot compatibility policy without expanding existing consent silently.
+- Share a Personal Project and make sure that Team responses do not serialize private Project names, membership structure, or local Folder metadata.
+- Add a destination, interrupt its publication, and stop one destination's rule without changing sharing to another Workspace.
+- Apply the approved snapshot conversion policy without expanding consent silently.
 
 ## Preparation completion
 
-Preparation completes when each policy decision has a recorded outcome and example.
-The implementation plan must map those outcomes to contracts, ownership boundaries, and acceptance tests.
-The tickets must identify dependencies and the tests that establish completion.
-The Package 1 fixes remain a separate checkpoint before Package 2 implementation starts.
+Preparation is complete: every identified product decision has a recorded outcome.
+The archived implementation plan maps those outcomes to contracts and ownership boundaries.
+The User approved the fourteen vertical slices on 20 October 2026.
+On 21 October 2026, the User deferred P2-09 through P2-14 for the first alpha.
+The [current tickets](../tickets.md) identify evidence for that milestone.
+P2-01 through P2-08 are locally complete. See
+[Package 2 validation](team-continuous-sharing-validation.md).
+The verified Package 1 fixes are recorded in checkpoint `e5c2116b`.

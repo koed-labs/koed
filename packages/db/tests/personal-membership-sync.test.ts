@@ -14,6 +14,7 @@ import {
   runDbMigrations
 } from "../src/index.js";
 import { personalSourceSelectionSql } from "../src/personal-selection-sql.js";
+import { preparePersonalSourceContextSnapshot } from "../src/personal-source-context-export.js";
 import { personalSourceDeviceFixture } from "./fixtures/personal-source-device.js";
 import { createPdsConfigurationRuntime } from "../../../apps/worker/src/personal-device-sync-configuration.js";
 
@@ -455,6 +456,75 @@ describe.skipIf(!originUrl || !receiverUrl)(
         { expectedVersion: directReview.preview.expectedVersion }
       );
       expect((await selected()).rows.map((row) => row.id)).toContain(source.id);
+      // Sharing observes actual signed membership receipt, without treating an
+      // unavailable source body as proof that an existing contribution left.
+      const probe = await receiverRepo.createCapturedSession(receiver, {
+        externalSessionId: randomUUID()
+      });
+      const probeIdentity = (
+        await receiverPool.query<{ logical_session_id: string }>(
+          "select logical_session_id from sessions where id=$1",
+          [probe.id]
+        )
+      ).rows[0]!.logical_session_id;
+      const probeTarget = {
+        kind: "project" as const,
+        project: { ownerUserId: receiver.userId, projectId: project.projectId }
+      };
+      const probeEvaluation = async () => {
+        const baseline = await receiverRepo.startPersonalSelectionEnumeration(
+          receiver,
+          { target: probeTarget }
+        );
+        return receiverRepo.evaluatePersonalSelectionMembers(receiver, {
+          cursor: baseline.changeCursor!,
+          sources: [
+            { localSessionId: probe.id, localLogicalSessionId: probeIdentity }
+          ]
+        });
+      };
+      await receiverRuntime.retainVerified(
+        record(await direct(), fixture.origin)
+      );
+      expect((await probeEvaluation()).entries[0]!.state).toBe("unresolved");
+      const probeClient = await receiverPool.connect();
+      try {
+        await probeClient.query("begin");
+        await preparePersonalSourceContextSnapshot(probeClient, {
+          ownerUserId: receiver.userId,
+          localSessionId: probe.id,
+          originatingDeploymentId: fixture.receiver.deploymentId,
+          originatingDeviceId: fixture.receiver.deviceId
+        });
+        await probeClient.query("commit");
+      } catch (error) {
+        await probeClient.query("rollback");
+        throw error;
+      } finally {
+        probeClient.release();
+      }
+      // This is a verified different source. The other device's missing body
+      // must not retain this source's Project contribution indefinitely.
+      expect((await probeEvaluation()).entries[0]!.state).toBe("not_matching");
+      const latestProject = (
+        await originRepo.listNamedPersonalProjects(origin)
+      ).find((item) => item.projectId === project.projectId)!;
+      const activeMembership = (
+        await originRepo.listPersonalProjectMemberships(
+          origin,
+          project.projectId
+        )
+      ).find((item) => item.removedAt === null)!;
+      await originRepo.removePersonalProjectInclusion(
+        origin,
+        project.projectId,
+        activeMembership.inclusionId,
+        { expectedVersion: latestProject.version }
+      );
+      await receiverRuntime.retainVerified(
+        record(await direct(), fixture.origin)
+      );
+      expect((await probeEvaluation()).entries[0]!.state).toBe("not_matching");
     }, 60_000);
   }
 );

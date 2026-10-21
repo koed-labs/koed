@@ -93,6 +93,13 @@ export interface SharedSourceArtifactV1 {
   /** Present only for Captured Session sources. Personal Note revisions are standalone. */
   sync?: SharedSourceArtifactSyncBindingV1;
   policies: SharedSourceArtifactPolicyBindingV1;
+  selection: {
+    maximumFidelity: "memory_events" | "lcm_leaves" | "lcm_rollups";
+    includeCuratedMemory: boolean;
+    sourceCapabilities: SharedSourceArtifactRepresentation[];
+    activationRepresentation: SharedSourceArtifactRepresentation;
+    mode: "snapshot" | "continuous";
+  };
   manifest: SharedSourceArtifactManifestEntryV1[];
   manifestHash: string;
   items: SharedSourceArtifactItemV1[];
@@ -123,33 +130,26 @@ export interface SharedSourcePreviewReference {
   previewHash: string;
 }
 
-const digestWithoutHash = <
-  T extends {
-    artifactId?: string;
-    artifactHash?: string;
-    previewId?: string;
-    previewHash?: string;
-  }
->(
-  value: T
-): string => {
-  const rest = { ...value } as Record<string, unknown>;
-  delete rest.artifactId;
-  delete rest.artifactHash;
-  delete rest.previewId;
-  delete rest.previewHash;
-  return crossIdentitySyncDigest(rest);
-};
-
 export const sharedSourceArtifactHash = (
   artifact:
     | Omit<SharedSourceArtifactV1, "artifactHash">
     | SharedSourceArtifactV1
-): string => digestWithoutHash(artifact);
+): string => {
+  const body = { ...artifact } as Record<string, unknown>;
+  delete body.artifactId;
+  delete body.artifactHash;
+  return crossIdentitySyncDigest(body);
+};
 
 export const sharedSourcePreviewHash = (
   preview: Omit<SharedSourcePreviewV1, "previewHash"> | SharedSourcePreviewV1
-): string => digestWithoutHash(preview);
+): string => {
+  const body = { ...preview } as Record<string, unknown>;
+  delete body.previewId;
+  delete body.previewHash;
+  // artifactId is a foreign binding, not this preview's self identity.
+  return crossIdentitySyncDigest(body);
+};
 
 export const sharedSourceArtifactId = (artifactHash: string): string =>
   crossIdentitySyncDeterministicUuid({

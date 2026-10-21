@@ -242,7 +242,9 @@ source lineage, and the existing AI Client synthesis boundary.
 Replace the organization behavior in
 [`ProjectActions.tsx`](../apps/desktop/src/renderer/views/personal/ProjectActions.tsx)
 and
-[`MoveConversationDialog.tsx`](../apps/desktop/src/renderer/views/personal/MoveConversationDialog.tsx).
+the original `MoveConversationDialog.tsx`.
+The current inclusion dialog is
+[`ConversationProjectsDialog.tsx`](../apps/desktop/src/renderer/views/personal/ConversationProjectsDialog.tsx).
 Show Project inclusion separately from original Git and Folder context.
 Keep correction of source context as a distinct action.
 
@@ -268,7 +270,7 @@ Existing retained provenance remains evidence rather than automatic authority.
 Preserve existing Team grant repository snapshots during the transition.
 Changing Personal organization must not silently retarget Team filtering.
 Keep existing sharing consent and source access unchanged.
-Compatibility for existing sharing modes and disclosed Team metadata belongs in Package 2.
+Consent limits for sharing modes and disclosed Team metadata belong in Package 2.
 
 Update the repository recall, Personal Desktop, client integration, and Personal
 Device Sync documentation with the implementation.
@@ -303,6 +305,11 @@ It includes Team backend authority, local publication work, and the local
 Desktop sharing controls. It also includes Team recall of authorized Workspace
 contributions and Git Anchors. Team collections are deferred.
 Personal membership design remains owned by Package 1.
+
+Package 2 targets the current alpha build. Backward compatibility is out of
+scope: breaking API, protocol, and schema changes can ship together across the
+affected components. Do not add old-format adapters, deprecated routes,
+mixed-version support, or historical upgrade tests.
 
 ### Sharing authority and processing
 
@@ -349,24 +356,24 @@ Preserve Git Anchor filtering across authorized contributions from different Use
 Do not expose Personal Project names, private membership structure, local folder paths,
 or unshared source metadata through counts, summaries, or evidence expansion.
 
-### Sharing migration and completion
+### Sharing consent and completion
 
-Existing snapshot shares require a compatibility policy.
+Existing snapshot shares retain their content and consent limits until explicit conversion.
 Do not expand their consent into continuous or future-source sharing silently.
-Migrate existing grants and disclosed metadata only through the approved policy.
+Preserve independent reasons when existing grants overlap with new rules.
 Conversation Source Access remains separately authorized.
 
 Update Team mapping, sharing, local publication, and operation documentation.
 Complete acceptance scenarios 5 through 10, plus the Team parts of 11 and 12.
 Repeat Personal regression coverage where shared contracts change.
 The package is complete when the two-User flow, queued-work races, catch-up,
-revocation, and migration tests pass without widening unauthorized access.
+revocation, consent, and current-schema tests pass without widening unauthorized access.
 
 ## Implementation decisions
 
 The core membership and continuous sharing behavior is settled.
 Package 1 preparation separates confirmed choices from engineering defaults.
-Package 2 still requires the product decisions listed below.
+Package 2 product decisions are confirmed below; its implementation remains planned.
 
 ### Package 1 decisions
 
@@ -418,11 +425,18 @@ Changing destinations uses separate start and stop actions.
 
 These policies preserve Personal ownership and current Workspace Access requirements.
 The [Package 2 preparation](team-continuous-sharing-preparation.md) records
-the confirmed decisions and implementation sequence.
+the confirmed decisions and examples. The
+[implementation plan](team-continuous-sharing-implementation-plan.md) and
+[local tickets](../tickets.md)
+define the operational alpha milestone approved on 21 October 2026.
+The [archived tickets](archive/2026-10-21-package-2/tickets.md) retain the full
+Package 2 criteria. Deferred capabilities preserve the product rules above.
 
 ## Acceptance scenarios
 
 These scenarios define the required behavior for implementation validation.
+The current alpha tickets select the scenarios required for the first trial.
+The remaining full-package scenarios apply when deferred work returns to scope.
 Use the existing deterministic recall and Team authorization fixtures where
 they cover the boundary. Extend them for membership and continuous selection.
 The existing [Project cutover results](project-cutover-validation.md) cover the

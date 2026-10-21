@@ -427,6 +427,15 @@ describe("route identity contract", () => {
   });
 
   it("documents Team authority and scoped device credential access", () => {
+    const ruleControlPath = "/v1/shared-memory/sharing-rules/{ruleId}/control";
+    expect(routeIdentityFor("POST", ruleControlPath)).toMatchObject({
+      identity: "session_or_device_credential",
+      domain: "shared_memory",
+      teamAuthority: "request_time_shared_memory_owner"
+    });
+    expect(openApiPaths[ruleControlPath]?.post).toMatchObject({
+      security: [{ sessionCookie: [] }, { deviceCredential: [] }]
+    });
     expect(
       routeIdentityFor("POST", "/v1/teams/{teamId}/invites")
     ).toMatchObject({
@@ -574,12 +583,16 @@ describe("route identity contract", () => {
         "PUT /v1/shared-memory/teams/{teamId}/policy",
         "PUT /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/policy",
         "POST /v1/shared-memory/previews",
+        "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/sharing-review",
         "POST /v1/shared-memory/candidate-previews",
         "POST /v1/shared-memory/pending-shares",
+        "POST /v1/shared-memory/conversation-rules/review",
+        "POST /v1/shared-memory/conversation-rules",
         "PUT /v1/shared-memory/pending-shares/{pendingShareId}/personal-note-source",
         "POST /v1/shared-memory/personal-note-revisions/advance",
         "PUT /v1/shared-memory/share-grants/{shareGrantId}/fidelity-bundle",
         "POST /v1/shared-memory/share-grants/{shareGrantId}/revoke",
+        "POST /v1/shared-memory/sharing-rules/{ruleId}/control",
         "PUT /v1/shared-memory/share-grants/{shareGrantId}/transcript-access",
         "POST /v1/shared-memory/share-grants/{shareGrantId}/transcript-access/revoke",
         "GET /v1/shared-memory/owned-shares",

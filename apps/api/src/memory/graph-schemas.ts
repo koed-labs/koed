@@ -3,6 +3,7 @@ import {
   repositoryIdentitySchema,
   personalSelectionSnapshotSchema,
   personalNamedProjectSchema,
+  personalProjectReferenceSchema as ownedPersonalProjectReferenceSchema,
   personalDirectMembershipSchema,
   personalProjectRuleSchema,
   personalFolderContextSchema,
@@ -29,6 +30,7 @@ export const graphThreadIndexResponseSchema = z.object({
     z.object({
       id: z.string(),
       namedProject: personalNamedProjectSchema.optional(),
+      projectReference: ownedPersonalProjectReferenceSchema.optional(),
       inclusionRules: z.array(personalProjectRuleSchema).optional(),
       directInclusions: z.array(personalDirectMembershipSchema).optional(),
       folder: personalFolderContextSchema.optional(),

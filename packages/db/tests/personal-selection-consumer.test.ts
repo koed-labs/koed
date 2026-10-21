@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
+import { createPersonalSelectionConsumerRepository } from "../src/personal-selection-consumer-repository.js";
 import {
   afterAll,
   afterEach,
@@ -39,6 +40,397 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
         email: `consumer-${randomUUID()}@example.test`
       })
     ).id
+  });
+  it("requires conclusive owner-bound evidence before removing a known Git Anchor member", async () => {
+    const repo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: encryption
+    });
+    const actor = await user(),
+      other = await user();
+    const git: PersonalGitContext = {
+      kind: "portable_repository",
+      key: `gr_${randomUUID()}`,
+      root: "/private/member-evaluation",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "member-checkout",
+      originatingDeviceId: "member-device",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/members"
+    };
+    const sessions = [];
+    for (let i = 0; i < 6; i++)
+      sessions.push(
+        await repo.createCapturedSession(i === 5 ? other : actor, {
+          externalSessionId: randomUUID(),
+          repositoryIdentity:
+            i === 1 ? { ...git, key: `gr_${randomUUID()}` } : git
+        })
+      );
+    await pool.query("update sessions set invalidated_at=now() where id=$1", [
+      sessions[2]!.id
+    ]);
+    await pool.query(
+      "update sessions set personal_deleted_at=now() where id=$1",
+      [sessions[3]!.id]
+    );
+    await pool.query(
+      "update sessions set repository_automatic_identity=null,repository_override_identity=null where id=$1",
+      [sessions[4]!.id]
+    );
+    const identities = await pool.query<{
+      id: string;
+      logical_session_id: string;
+    }>("select id,logical_session_id from sessions where id=any($1::uuid[])", [
+      sessions.map((session) => session.id)
+    ]);
+    const byId = new Map(
+      identities.rows.map((row) => [row.id, row.logical_session_id])
+    );
+    const sources = sessions.map((session) => ({
+      localSessionId: session.id,
+      localLogicalSessionId: byId.get(session.id)!
+    }));
+    const baseline = await repo.startPersonalSelectionEnumeration(actor, {
+      target: { kind: "repository", repository: git }
+    });
+    const input = { cursor: baseline.changeCursor!, sources };
+    const evaluation = await repo.evaluatePersonalSelectionMembers(
+      actor,
+      input
+    );
+    expect(evaluation.entries.map((entry) => entry.state)).toEqual([
+      "matching",
+      "not_matching",
+      "unresolved",
+      "deleted",
+      "unresolved",
+      "unresolved"
+    ]);
+    expect(evaluation.snapshotVersion).toBe(baseline.snapshotVersion);
+    expect(
+      evaluation.entries
+        .filter((entry) => entry.state === "unresolved")
+        .every(
+          (entry) =>
+            entry.sourceContextHash === null && entry.contextVersion === null
+        )
+    ).toBe(true);
+    expect(JSON.stringify(evaluation)).not.toContain(git.root);
+    await expect(
+      repo.evaluatePersonalSelectionMembers(other, input)
+    ).rejects.toMatchObject({ statusCode: 404 });
+    const wrongIdentity = await repo.evaluatePersonalSelectionMembers(actor, {
+      ...input,
+      sources: [{ ...sources[0]!, localLogicalSessionId: randomUUID() }]
+    });
+    expect(wrongIdentity.entries[0]!.state).toBe("unresolved");
+    await pool.query(
+      "update sessions set repository_assignment_version=repository_assignment_version+1 where id=$1",
+      [sessions[0]!.id]
+    );
+    await expect(
+      repo.evaluatePersonalSelectionMembers(actor, input)
+    ).rejects.toMatchObject({ code: "selection_enumeration_stale" });
+  });
+  it("evaluates exact Folder membership without using path equality or Git context", async () => {
+    const repo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: encryption
+    });
+    const actor = await user();
+    const folder: PersonalFolderObservation = {
+      identity: {
+        folderId: randomUUID(),
+        originatingDeploymentId: "folder-proof-deployment",
+        originatingDeviceId: "folder-proof-device",
+        originatingProfileId: "folder-proof-profile",
+        directoryIncarnationId: randomUUID()
+      },
+      normalizedPath: "/private/folder-proof/exact",
+      capturedPath: "/private/folder-proof/exact",
+      observedAt: new Date().toISOString()
+    };
+    const distinct = (
+      path: string,
+      device = folder.identity.originatingDeviceId
+    ): PersonalFolderObservation => ({
+      ...folder,
+      identity: {
+        ...folder.identity,
+        folderId: randomUUID(),
+        originatingDeviceId: device,
+        directoryIncarnationId: randomUUID()
+      },
+      normalizedPath: path,
+      capturedPath: path
+    });
+    const observations = [
+      folder,
+      distinct(`${folder.normalizedPath}/child`),
+      distinct("/private/folder-proof"),
+      distinct(folder.normalizedPath, "another-device"),
+      {
+        ...folder,
+        identity: { ...folder.identity, directoryIncarnationId: randomUUID() }
+      },
+      undefined,
+      folder,
+      folder
+    ];
+    const sessions = [];
+    for (const folderObservation of observations)
+      sessions.push(
+        await repo.createCapturedSession(actor, {
+          externalSessionId: randomUUID(),
+          folderObservation
+        })
+      );
+    await pool.query("update sessions set invalidated_at=now() where id=$1", [
+      sessions[6]!.id
+    ]);
+    await pool.query(
+      "update sessions set personal_deleted_at=now() where id=$1",
+      [sessions[7]!.id]
+    );
+    const sources = await pool.query<{
+      id: string;
+      logical_session_id: string;
+    }>("select id,logical_session_id from sessions where id=any($1::uuid[])", [
+      sessions.map((session) => session.id)
+    ]);
+    const identities = new Map(
+      sources.rows.map((row) => [row.id, row.logical_session_id])
+    );
+    const baseline = await repo.startPersonalSelectionEnumeration(actor, {
+      target: {
+        kind: "folder",
+        folder: { ownerUserId: actor.userId, ...folder.identity }
+      }
+    });
+    expect(
+      baseline.entries.map((entry) => entry.source.localSessionId)
+    ).toEqual([sessions[0]!.id]);
+    const evaluation = await repo.evaluatePersonalSelectionMembers(actor, {
+      cursor: baseline.changeCursor!,
+      sources: sessions.map((session) => ({
+        localSessionId: session.id,
+        localLogicalSessionId: identities.get(session.id)!
+      }))
+    });
+    expect(evaluation.entries.map((entry) => entry.state)).toEqual([
+      "matching",
+      "not_matching",
+      "not_matching",
+      "not_matching",
+      "not_matching",
+      "unresolved",
+      "unresolved",
+      "deleted"
+    ]);
+    expect(
+      evaluation.entries
+        .filter((entry) => entry.state !== "unresolved")
+        .every(
+          (entry) =>
+            entry.contextVersion?.git === 1 &&
+            entry.contextVersion.folder === 1 &&
+            entry.sourceContextHash !== null
+        )
+    ).toBe(true);
+    expect(JSON.stringify(evaluation)).not.toContain(folder.normalizedPath);
+    expect(JSON.stringify(evaluation)).not.toContain(
+      folder.identity.originatingDeviceId
+    );
+  });
+  it("retains Project membership across overlapping inclusions and separates exclusion, unknown context and deletion", async () => {
+    const repo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: encryption
+    });
+    const actor = await user();
+    const git: PersonalGitContext = {
+      kind: "portable_repository",
+      key: `gr_${randomUUID()}`,
+      root: "/private/project-proof",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "checkout",
+      originatingDeviceId: "device",
+      selectedRemote: "origin",
+      anchorDisplay: "Private repository"
+    };
+    const folder: PersonalFolderObservation = {
+      identity: {
+        folderId: randomUUID(),
+        originatingDeploymentId: "deployment",
+        originatingDeviceId: "device",
+        originatingProfileId: "profile",
+        directoryIncarnationId: randomUUID()
+      },
+      normalizedPath: "/private/project-proof",
+      capturedPath: "/private/project-proof",
+      observedAt: new Date().toISOString()
+    };
+    const shared = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID(),
+      repositoryIdentity: git,
+      folderObservation: folder
+    });
+    const directOnly = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID()
+    });
+    const unresolved = await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID()
+    });
+    const project = await repo.createNamedPersonalProject(actor, {
+      name: "PRIVATE PROJECT ORGANIZATION"
+    });
+    const direct = await repo.addPersonalProjectSession(
+      actor,
+      project.projectId,
+      { sessionId: shared.id, expectedVersion: project.version }
+    );
+    const byGit = await repo.addPersonalProjectRepositoryRule(
+      actor,
+      project.projectId,
+      { repository: git, expectedVersion: direct.project.version }
+    );
+    const byFolder = await repo.addPersonalProjectFolderRule(
+      actor,
+      project.projectId,
+      {
+        folder: { ownerUserId: actor.userId, ...folder.identity },
+        expectedVersion: byGit.project.version
+      }
+    );
+    const explicit = await repo.addPersonalProjectSession(
+      actor,
+      project.projectId,
+      { sessionId: directOnly.id, expectedVersion: byFolder.project.version }
+    );
+    let version = explicit.project.version;
+    const sources = await pool.query<{
+      id: string;
+      logical_session_id: string;
+    }>("select id,logical_session_id from sessions where id=any($1::uuid[])", [
+      [shared.id, directOnly.id, unresolved.id]
+    ]);
+    const identities = new Map(
+      sources.rows.map((row) => [row.id, row.logical_session_id])
+    );
+    const target = {
+      kind: "project" as const,
+      project: { ownerUserId: actor.userId, projectId: project.projectId }
+    };
+    const evaluate = async () => {
+      const baseline = await repo.startPersonalSelectionEnumeration(actor, {
+        target
+      });
+      return {
+        baseline,
+        result: await repo.evaluatePersonalSelectionMembers(actor, {
+          cursor: baseline.changeCursor!,
+          sources: [shared, directOnly, unresolved].map((session) => ({
+            localSessionId: session.id,
+            localLogicalSessionId: identities.get(session.id)!
+          }))
+        })
+      };
+    };
+    const initial = await evaluate();
+    expect(
+      initial.baseline.entries.filter(
+        (entry) => entry.source.localSessionId === shared.id
+      )
+    ).toHaveLength(3);
+    expect(initial.result.entries.map((entry) => entry.state)).toEqual([
+      "matching",
+      "matching",
+      "unresolved"
+    ]);
+    const contextBefore = await pool.query(
+      "select repository_assignment_version,repository_automatic_identity,repository_override_identity,folder_assignment from sessions where id=$1",
+      [shared.id]
+    );
+    version = (
+      await repo.removePersonalProjectInclusion(
+        actor,
+        project.projectId,
+        direct.membership.inclusionId,
+        { expectedVersion: version }
+      )
+    ).project.version;
+    expect((await evaluate()).result.entries[0]!.state).toBe("matching");
+    expect(
+      (
+        await pool.query(
+          "select repository_assignment_version,repository_automatic_identity,repository_override_identity,folder_assignment from sessions where id=$1",
+          [shared.id]
+        )
+      ).rows
+    ).toEqual(contextBefore.rows);
+    version = (
+      await repo.removePersonalProjectRule(
+        actor,
+        project.projectId,
+        byGit.rule.inclusionId,
+        { expectedVersion: version }
+      )
+    ).project.version;
+    expect((await evaluate()).result.entries[0]!.state).toBe("matching");
+    version = (
+      await repo.removePersonalProjectRule(
+        actor,
+        project.projectId,
+        byFolder.rule.inclusionId,
+        { expectedVersion: version }
+      )
+    ).project.version;
+    expect(
+      (await evaluate()).result.entries.map((entry) => entry.state)
+    ).toEqual(["not_matching", "matching", "not_matching"]);
+    const exclusion = await repo.excludePersonalProjectSession(
+      actor,
+      project.projectId,
+      { sessionId: directOnly.id, expectedVersion: version }
+    );
+    version = exclusion.project.version;
+    expect((await evaluate()).result.entries[1]!.state).toBe("not_matching");
+    version = (
+      await repo.restorePersonalProjectSession(actor, project.projectId, {
+        sessionId: directOnly.id,
+        expectedVersion: version,
+        exclusionId: exclusion.explanation.exclusion!.exclusionId,
+        expectedExclusionRevisionId:
+          exclusion.explanation.exclusion!.headRevisionId
+      })
+    ).project.version;
+    expect((await evaluate()).result.entries[1]!.state).toBe("matching");
+    await repo.deleteNamedPersonalProject(actor, project.projectId, {
+      expectedVersion: version
+    });
+    await expect(
+      repo.startPersonalSelectionEnumeration(actor, { target })
+    ).rejects.toMatchObject({ code: "selection_unavailable" });
+    const sharing = createPersonalSelectionConsumerRepository(pool, {
+      includeDeletedProjects: true
+    });
+    const deleted = await sharing.startPersonalSelectionEnumeration(actor, {
+      target
+    });
+    expect(deleted.entries).toEqual([]);
+    const removed = await sharing.evaluatePersonalSelectionMembers(actor, {
+      cursor: deleted.changeCursor!,
+      sources: [shared, directOnly].map((session) => ({
+        localSessionId: session.id,
+        localLogicalSessionId: identities.get(session.id)!
+      }))
+    });
+    expect(removed.entries.map((entry) => entry.state)).toEqual([
+      "not_matching",
+      "not_matching"
+    ]);
+    expect(JSON.stringify(removed)).not.toContain(project.name);
+    expect(JSON.stringify(removed)).not.toContain(git.root!);
   });
   it("takes a bounded baseline, detects stale pages, reconciles missed source/membership/context edits, and preserves owner checks across restart and expiry", async () => {
     let repo = createMemorySourceRepository(pool, {
@@ -485,7 +877,7 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
           "select metadata->>'threadName' name from sessions where id=$1",
           [session.id]
         )
-      ).rows[0].name
+      ).rows[0]!.name
     ).toBe("Manual title");
     expect(
       (

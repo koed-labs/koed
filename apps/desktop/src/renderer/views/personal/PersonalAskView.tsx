@@ -377,7 +377,9 @@ export function PersonalAskView({
                 ? "Ask a question or start a conversation…"
                 : `Ask about ${selectedProject?.name ?? "this Project"}…`
             }
-            projectId={selectedProject?.id ?? null}
+            projectId={
+              selectedProject?.localProjectId ?? selectedProject?.id ?? null
+            }
             projectRoot={
               selectedProjectId === null
                 ? null

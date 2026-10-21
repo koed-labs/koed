@@ -1,3 +1,31 @@
+import { sharingRuleContentPolicyReviewSchema } from "./sharing-rule-content-policy-contract.js";
+export { canonicalJsonDigest } from "./canonical-json-digest.js";
+import { privacyLabelPolicySchema } from "./privacy-filter-contract.js";
+import { sharingRuleDetailReviewSchema } from "./sharing-rule-detail-contract.js";
+import {
+  conversationSharingRuleControlIntentSchema,
+  repositorySharingRuleControlIntentSchema,
+  ownedRepositorySharingRulesInputSchema,
+  ownedRepositorySharingRulesPageSchema,
+  conversationSharingRuleCreationIntentSchema,
+  conversationSharingRuleCreationReviewSchema,
+  conversationSharingRuleCreationReviewInputSchema,
+  repositorySharingRuleCreationLocalIntentSchema,
+  repositorySharingRuleCreationReviewRequestSchema,
+  repositorySharingRuleCreationReviewSchema,
+  sharingRuleDeliverySchema
+} from "./team-sharing-review-contract.js";
+export {
+  sharingSelectionDescriptor,
+  sharingRuleDeliverySchema,
+  conversationSharingRuleCreationReviewSchema
+} from "./team-sharing-review-contract.js";
+export type {
+  SharingRuleDelivery,
+  ConversationSharingRuleControlIntent,
+  ConversationSharingRuleCreationReview,
+  ConversationSharingRuleCreationReviewInput
+} from "./team-sharing-review-contract.js";
 import { z } from "zod";
 import {
   teamRepositorySnapshotSchema,
@@ -25,6 +53,20 @@ import { aiClientIdentifierPattern } from "./ai-client-contract.js";
 import { sharedMemorySourceRefSchema } from "./shared-memory-source.js";
 export type { SharedMemorySourceRef } from "./shared-memory-source.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
+import {
+  gitAnchorSharingReviewInputSchema,
+  gitAnchorSharingReviewPageSchema
+} from "./team-sharing-review-contract.js";
+export {
+  gitAnchorSharingReviewInputSchema,
+  gitAnchorSharingReviewPageSchema,
+  sharingDestinationReviewSchema
+} from "./team-sharing-review-contract.js";
+export type {
+  GitAnchorSharingReviewInput,
+  GitAnchorSharingReviewPage,
+  SharingDestinationReview
+} from "./team-sharing-review-contract.js";
 
 export const COLLABORATION_CONTRACT_VERSION = 5;
 export const COLLABORATION_NAME_MAX_CODE_POINTS = 80;
@@ -1624,6 +1666,44 @@ const normalizedEmailSchema = z
   .max(320)
   .transform((value) => value.trim().toLowerCase());
 
+const sharingRuleCreationInputShape =
+  conversationSharingRuleCreationIntentSchema
+    .omit({ teamWorkspaceId: true })
+    .extend({ workspaceId: z.uuid() }).shape;
+const sharingRuleCreationReviewInputShape =
+  conversationSharingRuleCreationReviewInputSchema
+    .omit({ teamWorkspaceId: true, previewId: true })
+    .extend({ workspaceId: z.uuid() }).shape;
+const repositoryRuleCreationInputShape =
+  repositorySharingRuleCreationLocalIntentSchema
+    .omit({ teamWorkspaceId: true })
+    .extend({ workspaceId: z.uuid() }).shape;
+
+const sharingRuleControlInputShape = conversationSharingRuleControlIntentSchema
+  .omit({ teamWorkspaceId: true })
+  .extend({ workspaceId: z.uuid() }).shape;
+const repositoryRuleControlInputShape = repositorySharingRuleControlIntentSchema
+  .omit({ teamWorkspaceId: true })
+  .extend({ workspaceId: z.uuid() }).shape;
+
+const ruleDetailInputShape = {
+  operationKind: z.literal("detail"),
+  mutationId: z.uuid(),
+  ruleId: z.uuid(),
+  teamId: z.uuid(),
+  workspaceId: z.uuid(),
+  review: sharingRuleDetailReviewSchema
+};
+
+const ruleContentPolicyInputShape = {
+  operationKind: z.literal("content_policy"),
+  mutationId: z.uuid(),
+  ruleId: z.uuid(),
+  teamId: z.uuid(),
+  workspaceId: z.uuid(),
+  review: sharingRuleContentPolicyReviewSchema
+};
+
 const actionGrantIntent = <const TName extends string, T extends z.ZodRawShape>(
   intent: TName,
   inputShape: T
@@ -1762,6 +1842,27 @@ export const collaborationActionGrantIntentSchema = z
       shareGrantId: z.uuid(),
       expected: teamRepositorySnapshotReviewSchema
     }),
+    actionGrantIntent(
+      "collaboration.create_conversation_rule",
+      sharingRuleCreationInputShape
+    ),
+    actionGrantIntent(
+      "collaboration.create_repository_rule",
+      repositoryRuleCreationInputShape
+    ),
+    actionGrantIntent(
+      "collaboration.control_sharing_rule",
+      sharingRuleControlInputShape
+    ),
+    actionGrantIntent("collaboration.amend_rule_detail", ruleDetailInputShape),
+    actionGrantIntent(
+      "collaboration.amend_rule_content_policy",
+      ruleContentPolicyInputShape
+    ),
+    actionGrantIntent(
+      "collaboration.control_repository_rule",
+      repositoryRuleControlInputShape
+    ),
     actionGrantIntent("collaboration.revoke_shared_memory", {
       mutationId: z.uuid(),
       teamId: z.uuid(),
@@ -2370,6 +2471,82 @@ export const pendingShareSchema = z
     }
   });
 
+// Owner management metadata. Never serialize reasons through Team read DTOs.
+export const ownedSharingReasonSchema = z
+  .object({
+    id: z.uuid(),
+    kind: z.enum(["direct", "rule"]),
+    rule: z
+      .object({
+        id: z.uuid(),
+        selectorKind: z.enum([
+          "captured_session",
+          "repository",
+          "folder",
+          "project"
+        ]),
+        authorityVersion: positiveVersionSchema,
+        publisherFence: positiveVersionSchema,
+        state: z.enum(["active", "paused", "stopped"]),
+        catchUpState: z.enum(["idle", "queued", "needs_attention"]),
+        failureCode: z
+          .enum([
+            "source_not_ready",
+            "authority_unavailable",
+            "preparation_failed"
+          ])
+          .nullable()
+      })
+      .strict()
+      .nullable(),
+    consentId: z.uuid(),
+    consentVersion: positiveVersionSchema,
+    mode: z.enum(["snapshot", "continuous"]),
+    updateState: z.enum([
+      "fixed_snapshot",
+      "active",
+      "paused",
+      "stopped",
+      "expired",
+      "pending"
+    ]),
+    maximumFidelity: z.enum(sharedMemoryFidelityCeilings),
+    includeCuratedMemory: z.boolean(),
+    permittedRepresentations: z.array(sharedMemoryRepresentationSchema),
+    maximumAuthorizedSourceRevision: nonNegativeSequenceSchema.nullable(),
+    expiresAt: collaborationTimestampSchema.nullable(),
+    repositorySnapshot: teamRepositorySnapshotSchema,
+    repositorySnapshotSourceRevision: nonNegativeSequenceSchema.nullable(),
+    publishedRepresentations: z.array(
+      z
+        .object({
+          representation: sharedMemoryRepresentationSchema,
+          sourceRevision: nonNegativeSequenceSchema,
+          recordVersion: positiveVersionSchema,
+          state: z.enum(["available", "stale"])
+        })
+        .strict()
+    )
+  })
+  .strict()
+  .superRefine((reason, context) => {
+    if ((reason.kind === "rule") !== (reason.rule !== null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["rule"],
+        message: "Only a rule reason carries continuous rule authority"
+      });
+    }
+    if (reason.kind === "rule" && reason.mode !== "continuous") {
+      context.addIssue({
+        code: "custom",
+        path: ["mode"],
+        message: "A sharing rule requires continuous consent"
+      });
+    }
+  });
+export type OwnedSharingReason = z.infer<typeof ownedSharingReasonSchema>;
+
 export const ownedShareSummarySchema = z
   .object({
     source: sharedMemorySourceRefSchema,
@@ -2390,7 +2567,8 @@ export const ownedShareSummarySchema = z
       .strict()
       .nullable(),
     lastReadyRevision: nonNegativeSequenceSchema.nullable(),
-    lastSuccessfulUpdateAt: collaborationTimestampSchema.nullable()
+    lastSuccessfulUpdateAt: collaborationTimestampSchema.nullable(),
+    sharingReasons: z.array(ownedSharingReasonSchema)
   })
   .strict();
 
@@ -2650,6 +2828,10 @@ export const collaborationRendererCommandSchema = z
       limit: z.number().int().min(1).max(100).default(50),
       history: z.boolean().default(false)
     }),
+    command(
+      "collaboration.review_git_anchor_sharing",
+      gitAnchorSharingReviewInputSchema.shape
+    ),
     command("collaboration.get_owned_share", {
       kind: z.enum(["pending", "grant"]),
       id: z.uuid()
@@ -2746,6 +2928,59 @@ export const collaborationRendererCommandSchema = z
       shareGrantId: z.uuid(),
       expected: teamRepositorySnapshotReviewSchema,
       actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command(
+      "collaboration.review_conversation_rule_creation",
+      sharingRuleCreationReviewInputShape
+    ),
+    command("collaboration.create_conversation_rule", {
+      ...sharingRuleCreationInputShape,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command(
+      "collaboration.review_repository_rule_creation",
+      repositorySharingRuleCreationReviewRequestSchema.shape
+    ),
+    command("collaboration.create_repository_rule", {
+      ...repositoryRuleCreationInputShape,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.control_sharing_rule", {
+      ...sharingRuleControlInputShape,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.review_rule_detail", {
+      ruleId: z.uuid(),
+      teamId: z.uuid(),
+      workspaceId: z.uuid(),
+      maximumFidelity: sharedMemoryFidelityCeilingSchema,
+      includeCuratedMemory: z.boolean()
+    }),
+    command("collaboration.amend_rule_detail", {
+      ...ruleDetailInputShape,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.review_rule_content_policy", {
+      ruleId: z.uuid(),
+      teamId: z.uuid(),
+      workspaceId: z.uuid(),
+      labels: privacyLabelPolicySchema
+    }),
+    command("collaboration.amend_rule_content_policy", {
+      ...ruleContentPolicyInputShape,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.control_repository_rule", {
+      ...repositoryRuleControlInputShape,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command(
+      "collaboration.list_repository_rules",
+      ownedRepositorySharingRulesInputSchema.shape
+    ),
+    command("collaboration.list_sharing_rule_deliveries", {
+      shareGrantId: z.uuid().optional(),
+      mutationId: z.uuid().optional()
     }),
     command("collaboration.revoke_shared_memory", {
       mutationId: z.uuid(),
@@ -2948,6 +3183,9 @@ const commandNameSchema = z.enum([
   "collaboration.list_owned_shared_memory_grants",
   "collaboration.list_owned_shares",
   "collaboration.get_owned_share",
+  "collaboration.review_git_anchor_sharing",
+  "collaboration.review_repository_rule_creation",
+  "collaboration.create_repository_rule",
   "collaboration.control_pending_share",
   "collaboration.share_conversation_source",
   "collaboration.revoke_conversation_source",
@@ -2959,6 +3197,16 @@ const commandNameSchema = z.enum([
   "collaboration.preview_shared_memory",
   "collaboration.load_shared_memory_preview_page",
   "collaboration.share_memory",
+  "collaboration.review_conversation_rule_creation",
+  "collaboration.create_conversation_rule",
+  "collaboration.control_sharing_rule",
+  "collaboration.control_repository_rule",
+  "collaboration.review_rule_detail",
+  "collaboration.amend_rule_detail",
+  "collaboration.review_rule_content_policy",
+  "collaboration.amend_rule_content_policy",
+  "collaboration.list_repository_rules",
+  "collaboration.list_sharing_rule_deliveries",
   "collaboration.revoke_shared_memory",
   "collaboration.change_shared_memory_fidelity",
   "collaboration.review_shared_project_snapshot",
@@ -3114,6 +3362,18 @@ export const collaborationCommandResultSchema = z.union([
     z.object({ share: ownedShareItemSchema }).strict()
   ),
   successResult(
+    "collaboration.review_git_anchor_sharing",
+    z.object({ review: gitAnchorSharingReviewPageSchema }).strict()
+  ),
+  successResult(
+    "collaboration.review_repository_rule_creation",
+    z.object({ review: repositorySharingRuleCreationReviewSchema }).strict()
+  ),
+  successResult(
+    "collaboration.create_repository_rule",
+    z.object({ delivery: sharingRuleDeliverySchema }).strict()
+  ),
+  successResult(
     "collaboration.control_pending_share",
     z.object({ pendingShare: pendingShareSchema }).strict()
   ),
@@ -3159,6 +3419,50 @@ export const collaborationCommandResultSchema = z.union([
       z.object({ grant: sharedMemoryGrantSchema }).strict(),
       z.object({ pendingShare: pendingShareSchema }).strict()
     ])
+  ),
+  successResult(
+    "collaboration.review_conversation_rule_creation",
+    z.object({ review: conversationSharingRuleCreationReviewSchema }).strict()
+  ),
+  successResult(
+    "collaboration.create_conversation_rule",
+    z.object({ delivery: sharingRuleDeliverySchema }).strict()
+  ),
+  successResult(
+    "collaboration.control_sharing_rule",
+    z.object({ delivery: sharingRuleDeliverySchema }).strict()
+  ),
+  successResult(
+    "collaboration.control_repository_rule",
+    z.object({ delivery: sharingRuleDeliverySchema }).strict()
+  ),
+  successResult(
+    "collaboration.review_rule_detail",
+    z.object({ review: sharingRuleDetailReviewSchema }).strict()
+  ),
+  successResult(
+    "collaboration.amend_rule_detail",
+    z.object({ delivery: sharingRuleDeliverySchema }).strict()
+  ),
+  successResult(
+    "collaboration.review_rule_content_policy",
+    z.object({ review: sharingRuleContentPolicyReviewSchema }).strict()
+  ),
+  successResult(
+    "collaboration.amend_rule_content_policy",
+    z.object({ delivery: sharingRuleDeliverySchema }).strict()
+  ),
+  successResult(
+    "collaboration.list_repository_rules",
+    z.object({ page: ownedRepositorySharingRulesPageSchema }).strict()
+  ),
+  successResult(
+    "collaboration.list_sharing_rule_deliveries",
+    z
+      .object({
+        deliveries: z.array(sharingRuleDeliverySchema).max(100)
+      })
+      .strict()
   ),
   successResult(
     "collaboration.revoke_shared_memory",

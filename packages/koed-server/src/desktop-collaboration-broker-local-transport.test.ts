@@ -1653,4 +1653,40 @@ describe("Desktop collaboration local transport", () => {
       fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/ack"))
     ).toHaveLength(subscriptionIndex);
   });
+  it("reads pending rule delivery locally without requiring fresh Team capabilities", async () => {
+    const resolveConnection = vi.fn(async () => connection);
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        upstream_backend_id?: string;
+        command: CollaborationRendererCommand;
+      };
+      expect(body.upstream_backend_id).toBe(connection.backendId);
+      return new Response(
+        JSON.stringify({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: body.command.requestId,
+          command: body.command.command,
+          ok: true,
+          data: { deliveries: [] }
+        }),
+        { status: 200 }
+      );
+    });
+    const transport = createDesktopCollaborationBrokerLocalTransport({
+      fetch: fetchMock,
+      resolveConnection
+    });
+    const command = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId,
+      command: "collaboration.list_sharing_rule_deliveries",
+      input: {}
+    });
+    expect(await transport.request(command, context())).toMatchObject({
+      ok: true,
+      data: { deliveries: [] }
+    });
+    expect(resolveConnection).toHaveBeenCalledWith(true, undefined, true);
+    transport.stop();
+  });
 });

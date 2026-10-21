@@ -31,6 +31,7 @@ export type DesktopThreadGroup = {
 
 export type DesktopProjectGroup = {
   namedProject?: import("@koed/shared").PersonalNamedProject;
+  projectReference?: import("@koed/shared").PersonalProjectReference;
   inclusionRules?: import("@koed/shared").PersonalProjectRule[];
   directInclusions?: import("@koed/shared").PersonalDirectMembership[];
   folder?: import("@koed/shared").PersonalFolderContext;

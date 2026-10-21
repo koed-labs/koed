@@ -138,6 +138,36 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     );
   });
 
+  it("inspects an exact source without creating missing summaries during selection review", async () => {
+    const candidateRepository = repository();
+    const requestLcmSummaryWork = vi.fn(async () => undefined);
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork
+    });
+    await expect(
+      preparation.loadCandidatePreview({
+        localOwnerUserId: "owner-1",
+        sessionId: "session-1",
+        representation: "lcm_rollups",
+        mode: "continuous",
+        prepareLcm: false
+      })
+    ).resolves.toMatchObject({ itemCount: 0, items: [] });
+    expect(candidateRepository.createLcmNodes).not.toHaveBeenCalled();
+    expect(requestLcmSummaryWork).not.toHaveBeenCalled();
+    expect(candidateRepository.listLcmGraphThreads).toHaveBeenCalledWith(
+      { userId: "owner-1" },
+      {
+        sessionId: "session-1",
+        groupBySession: true,
+        limit: 1,
+        includeInvalidated: false
+      }
+    );
+  });
+
   it("builds one owner-bound immutable Personal Note candidate", async () => {
     const candidateRepository = repository();
     const noteId = "00000000-0000-4000-8000-000000000011";

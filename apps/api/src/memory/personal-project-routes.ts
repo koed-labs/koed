@@ -399,6 +399,10 @@ export const registerPersonalProjectRoutes = (
           id: project.projectId,
           name: project.name,
           namedProject: project,
+          projectReference: {
+            ownerUserId: actor.userId,
+            projectId: project.projectId
+          },
           inclusionRules: rules,
           directInclusions: await repo.listPersonalProjectMemberships(
             actor,

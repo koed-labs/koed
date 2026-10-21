@@ -558,6 +558,28 @@
   text-transform: uppercase;
 }
 
+.collab-sharing-reasons {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--collab-border);
+  overflow-wrap: anywhere;
+}
+
+.collab-sharing-reasons h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.collab-git-sharing-review p,
+.collab-git-sharing-review li {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.collab-sharing-reasons p {
+  margin: 6px 0;
+  font-size: 13px;
+}
+
 .collab-share-preview {
   display: flex;
   flex: 1 1 auto;
@@ -2943,4 +2965,21 @@
     scroll-behavior: auto !important;
     transition-duration: 1ms !important;
   }
+}
+
+.collab-rule-delivery-status {
+  margin: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}
+.collab-rule-delivery-status article + article {
+  margin-top: 1rem;
+}
+.collab-rule-delivery-status h2 {
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
+}
+.collab-rule-delivery-status p {
+  margin: 0.35rem 0;
 }

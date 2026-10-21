@@ -1,10 +1,20 @@
+import { contentPolicyReviewFixture } from "../shared-memory/test-fixtures/rule-content-policy-review.js";
+import type { MemorySourceRepository } from "@koed/db";
 import { randomUUID } from "node:crypto";
 import {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
+  sharedMemoryConversationRuleCreationActionGrantBinding,
+  sharedMemoryRepositoryRuleCreationActionGrantBinding,
+  repositorySharingRuleCreationIntentSchema,
+  repositorySharingRuleCreationReviewSchema,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryRuleControlActionGrantBinding,
+  sharedMemoryRuleDetailActionGrantBinding,
+  sharingRuleDetailReviewSchema,
+  sharedMemoryRepositoryRuleControlActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding
 } from "@koed/shared";
@@ -48,6 +58,37 @@ const destination = {
 };
 
 const repository = (options?: { sourceOwnerPolicyWillReplace?: boolean }) => ({
+  getSharingRuleContentPolicyReview: vi.fn<
+    MemorySourceRepository["getSharingRuleContentPolicyReview"]
+  >(async () => null),
+  getSharingRuleDetailReview: vi.fn<
+    MemorySourceRepository["getSharingRuleDetailReview"]
+  >(async () => null),
+  getRepositorySharingRuleControlReview: vi
+    .fn<MemorySourceRepository["getRepositorySharingRuleControlReview"]>()
+    .mockResolvedValue(null),
+  getRepositorySharingRuleCreationReview: vi.fn<
+    MemorySourceRepository["getRepositorySharingRuleCreationReview"]
+  >(async () => null),
+  getConversationSharingRuleCreationReview: vi.fn<
+    MemorySourceRepository["getConversationSharingRuleCreationReview"]
+  >(async () => null),
+  getConversationSharingRuleControlReview: vi.fn<
+    MemorySourceRepository["getConversationSharingRuleControlReview"]
+  >(async (_actor, input) => ({
+    ...destination,
+    logicalMemoryId: ids.logicalMemory,
+    sourceTitle: source.title,
+    ruleId: input.ruleId,
+    reasonId: input.reasonId,
+    shareGrantId: input.shareGrantId,
+    state:
+      input.action === "resume" ? ("paused" as const) : ("active" as const),
+    maximumFidelity: "lcm_rollups" as const,
+    includeCuratedMemory: false,
+    authorityVersion: input.expectedAuthorityVersion,
+    grantVersion: input.expectedGrantVersion
+  })),
   reviewGrantRepositorySnapshot: vi.fn().mockResolvedValue({
     shareGrantId: ids.shareGrant,
     teamId: ids.team,
@@ -216,6 +257,314 @@ const fidelityIntent = (
   }) as const satisfies HighRiskActionGrantIntent;
 
 describe("Shared Memory action definitions", () => {
+  it("disables alpha content-policy approval admission before reviewing scope", async () => {
+    const repo = repository();
+    const intent = highRiskActionGrantIntentSchema.parse({
+      action: "shared_memory.rule_content_policy",
+      mutationId: ids.mutation,
+      review: contentPolicyReviewFixture({
+        ruleId: ids.shareGrant,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace
+      })
+    });
+    expect(await admit(intent, repo)).toBeNull();
+    expect(repo.getSharingRuleContentPolicyReview).not.toHaveBeenCalled();
+  });
+
+  it.each(
+    (["captured_session", "repository", "folder", "project"] as const).flatMap(
+      (selectorKind) =>
+        (
+          [
+            {
+              maximumFidelity: "memory_events",
+              disclosureIncrease: true,
+              disposition: "step_up"
+            },
+            {
+              maximumFidelity: "lcm_leaves",
+              disclosureIncrease: true,
+              disposition: "native_review"
+            },
+            {
+              maximumFidelity: "lcm_rollups",
+              disclosureIncrease: false,
+              disposition: "native_review"
+            },
+            {
+              maximumFidelity: "lcm_rollups",
+              disclosureIncrease: true,
+              disposition: "native_review"
+            }
+          ] as const
+        ).map((scenario) => ({ selectorKind, ...scenario }))
+    )
+  )(
+    "binds $selectorKind detail review to current authority and requires $disposition for $maximumFidelity",
+    async ({
+      selectorKind,
+      maximumFidelity,
+      disclosureIncrease,
+      disposition
+    }) => {
+      const review = sharingRuleDetailReviewSchema.parse({
+        ruleId: randomUUID(),
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        selectorKind,
+        state: "paused",
+        maximumFidelity,
+        includeCuratedMemory: false,
+        previousMaximumFidelity: "lcm_leaves",
+        previousIncludeCuratedMemory: false,
+        expectedAuthorityVersion: 4,
+        publisherFence: 2,
+        teamPolicyVersion: 3,
+        teamPolicyHash: "a".repeat(64),
+        workspacePolicyVersion: 2,
+        workspacePolicyHash: "b".repeat(64),
+        effectivePrivacyPolicyHash: "c".repeat(64),
+        policyBindingHash: "d".repeat(64),
+        memberBindingHash: "e".repeat(64),
+        memberCount: 7,
+        ownerPolicyExpansionCount: disclosureIncrease ? 2 : 0,
+        disclosureIncrease,
+        teamName: "Koed Team",
+        workspaceName: "Engineering",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        reviewHash: "f".repeat(64)
+      });
+      const intent = {
+        action: "shared_memory.rule_detail" as const,
+        mutationId: ids.mutation,
+        review
+      };
+      const repo = repository();
+      repo.getSharingRuleDetailReview.mockResolvedValue(review);
+      const admitted = await admit(intent, repo);
+      const binding = sharedMemoryRuleDetailActionGrantBinding({
+        ...intent,
+        referenceId: ids.request
+      });
+      expect(admitted).toMatchObject({
+        operation: binding,
+        policy: { disposition }
+      });
+      expect(admitted?.policy.review?.details).toEqual(
+        expect.arrayContaining([
+          { label: "Rule", value: review.ruleId },
+          { label: "Rule state", value: "paused" },
+          { label: "Existing members", value: "7" },
+          {
+            label: "Owner permission expansions",
+            value: disclosureIncrease ? "2" : "0"
+          }
+        ])
+      );
+      expect(repo.getSharingRuleDetailReview).toHaveBeenCalledExactlyOnceWith(
+        { userId: ids.actor },
+        {
+          ruleId: review.ruleId,
+          teamId: ids.team,
+          teamWorkspaceId: ids.workspace,
+          maximumFidelity,
+          includeCuratedMemory: false
+        },
+        review.expiresAt
+      );
+      const changedBinding = sharedMemoryRuleDetailActionGrantBinding({
+        ...intent,
+        review: { ...review, memberBindingHash: "a".repeat(64) },
+        referenceId: ids.request
+      });
+      expect(changedBinding.requestHash).not.toBe(binding.requestHash);
+      repo.getSharingRuleDetailReview.mockResolvedValue({
+        ...review,
+        expectedAuthorityVersion: 5
+      });
+      await expect(admit(intent, repo)).rejects.toBeInstanceOf(
+        ActionApprovalPolicyError
+      );
+      repo.getSharingRuleDetailReview.mockResolvedValue(null);
+      await expect(admit(intent, repo)).rejects.toBeInstanceOf(
+        ActionApprovalPolicyError
+      );
+    }
+  );
+
+  it.each(
+    (["pause", "resume", "stop", "retry"] as const).flatMap((controlAction) =>
+      (["repository", "folder", "project"] as const).map((selectorKind) => ({
+        controlAction,
+        selectorKind
+      }))
+    )
+  )(
+    "reviews the whole $selectorKind rule for $controlAction without inventing a source grant",
+    async ({ controlAction, selectorKind }) => {
+      const intent = highRiskActionGrantIntentSchema.parse({
+        action: "shared_memory.repository_rule_control",
+        selectorKind: "selection",
+        controlAction,
+        mutationId: ids.mutation,
+        ruleId: randomUUID(),
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        expectedAuthorityVersion: 3,
+        publisherFence: 5
+      });
+      if (intent.action !== "shared_memory.repository_rule_control")
+        throw new Error("Expected Git Anchor group control");
+      const repo = repository();
+      repo.getRepositorySharingRuleControlReview.mockResolvedValue({
+        ruleId: intent.ruleId,
+        ...destination,
+        selector:
+          selectorKind === "folder"
+            ? { kind: "folder", key: "f".repeat(64) }
+            : selectorKind === "project"
+              ? { kind: "project", key: "f".repeat(64) }
+              : { kind: "portable_repository", key: "gr_control" },
+        state: controlAction === "resume" ? "paused" : "active",
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: false,
+        authorityVersion: 3,
+        publisherFence: 5
+      });
+      const admitted = await admit(intent, repo);
+      const binding = sharedMemoryRepositoryRuleControlActionGrantBinding({
+        ...intent,
+        referenceId: ids.request
+      });
+      expect(admitted).toMatchObject({
+        operation: binding,
+        policy: { disposition: "native_review" }
+      });
+      expect(admitted?.policy.review?.description).toContain(
+        "all of its Conversation memberships"
+      );
+      expect(binding.body).not.toHaveProperty("shareGrantId");
+      expect(binding.body).not.toHaveProperty("reasonId");
+      expect(repo.getRepositorySharingRuleControlReview).toHaveBeenCalledWith(
+        { userId: ids.actor },
+        intent
+      );
+      for (const changed of [
+        { publisherFence: 6 },
+        { expectedAuthorityVersion: 4 },
+        { teamWorkspaceId: randomUUID() }
+      ]) {
+        const next = sharedMemoryRepositoryRuleControlActionGrantBinding({
+          ...intent,
+          ...changed,
+          referenceId: ids.request
+        });
+        expect(next.requestHash).not.toBe(binding.requestHash);
+        if ("teamWorkspaceId" in changed)
+          expect(next.scopeHash).not.toBe(binding.scopeHash);
+        else expect(next.scopeHash).toBe(binding.scopeHash);
+      }
+      repo.getRepositorySharingRuleControlReview.mockResolvedValue(null);
+      await expect(admit(intent, repo)).rejects.toBeInstanceOf(
+        ActionApprovalPolicyError
+      );
+    }
+  );
+  it.each(["repository", "folder", "project"] as const)(
+    "requires explicit future-member consent bound to the exact %s and current policies",
+    async (selectorKind) => {
+      const intent = highRiskActionGrantIntentSchema.parse({
+        action: "shared_memory.repository_rule_create",
+        mutationId: randomUUID(),
+        ruleId: randomUUID(),
+        selector:
+          selectorKind === "folder"
+            ? { kind: "folder", key: "f".repeat(64) }
+            : selectorKind === "project"
+              ? { kind: "project", key: "f".repeat(64) }
+              : {
+                  kind: "portable_repository",
+                  key: "gr_reviewed_future_members"
+                },
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        maximumFidelity: "lcm_rollups",
+        includeCuratedMemory: false,
+        includesFutureConversations: true,
+        completedReviewHash: "a".repeat(64),
+        selectionSnapshotVersion: randomUUID(),
+        teamPolicyVersion: 2,
+        teamPolicyHash: "b".repeat(64),
+        workspacePolicyVersion: 3,
+        workspacePolicyHash: "c".repeat(64),
+        effectivePrivacyPolicyHash: "d".repeat(64)
+      });
+      if (intent.action !== "shared_memory.repository_rule_create")
+        throw new Error("Unexpected intent");
+      const scope = repositorySharingRuleCreationReviewSchema.shape.scope
+        .strip()
+        .parse(intent);
+      const repo = repository();
+      repo.getRepositorySharingRuleCreationReview.mockResolvedValue({
+        scope,
+        teamName: "Koed Team",
+        workspaceName: "Engineering"
+      });
+      const admission = await admit(intent, repo);
+      expect(admission?.policy.disposition).toBe("native_review");
+      expect(JSON.stringify(admission?.policy.review)).toContain(
+        "future Conversations"
+      );
+      const boundIntent = repositorySharingRuleCreationIntentSchema
+        .strip()
+        .parse(intent);
+      const binding = sharedMemoryRepositoryRuleCreationActionGrantBinding({
+        ...boundIntent,
+        referenceId: ids.request
+      });
+      expect(admission?.operation).toEqual(binding);
+      expect(binding.body).not.toHaveProperty("action");
+      expect(binding.body).toMatchObject({
+        includesFutureConversations: true,
+        selector: scope.selector
+      });
+      for (const change of [
+        { selector: { ...scope.selector, key: "a".repeat(64) } },
+        { teamWorkspaceId: randomUUID() },
+        { effectivePrivacyPolicyHash: "e".repeat(64) },
+        { teamPolicyVersion: 4 },
+        { maximumFidelity: "memory_events" as const },
+        { includeCuratedMemory: true }
+      ]) {
+        await expect(
+          admit({ ...intent, ...change }, repo)
+        ).rejects.toBeInstanceOf(ActionApprovalPolicyError);
+        const changed = sharedMemoryRepositoryRuleCreationActionGrantBinding({
+          ...boundIntent,
+          ...change,
+          referenceId: ids.request
+        });
+        expect(changed.requestHash).not.toBe(binding.requestHash);
+      }
+      expect(
+        highRiskActionGrantIntentSchema.safeParse({
+          ...intent,
+          includesFutureConversations: false
+        }).success
+      ).toBe(false);
+      expect(
+        highRiskActionGrantIntentSchema.safeParse({
+          ...intent,
+          selector: { ...scope.selector, root: "/private/checkout" }
+        }).success
+      ).toBe(false);
+      repo.getRepositorySharingRuleCreationReview.mockResolvedValue(null);
+      await expect(admit(intent, repo)).rejects.toBeInstanceOf(
+        ActionApprovalPolicyError
+      );
+    }
+  );
   it("requires the exact current Project review before approving a device snapshot update", async () => {
     const repo = repository();
     const expected = await repo.reviewGrantRepositorySnapshot();
@@ -431,6 +780,84 @@ describe("Shared Memory action definitions", () => {
     });
   });
 
+  it.each(["pause", "resume", "stop", "retry"] as const)(
+    "reviews and binds the exact sharing rule %s action",
+    async (controlAction) => {
+      const intent = highRiskActionGrantIntentSchema.parse({
+        action: "shared_memory.rule_control",
+        controlAction,
+        mutationId: ids.mutation,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        shareGrantId: ids.shareGrant,
+        ruleId: randomUUID(),
+        reasonId: randomUUID(),
+        expectedAuthorityVersion: 3,
+        expectedGrantVersion: 7
+      });
+      if (intent.action !== "shared_memory.rule_control")
+        throw new Error("Expected rule control intent");
+      const repo = repository();
+      const admitted = await admit(intent, repo);
+      const bound = intent;
+      expect(admitted).toMatchObject({
+        operation: sharedMemoryRuleControlActionGrantBinding({
+          ...bound,
+          referenceId: ids.request
+        }),
+        policy: {
+          disposition: "native_review",
+          review: {
+            description:
+              "Apply this action to one Conversation sharing rule in one Workspace."
+          }
+        }
+      });
+      expect(repo.getConversationSharingRuleControlReview).toHaveBeenCalledWith(
+        { userId: ids.actor },
+        expect.objectContaining({
+          ruleId: intent.ruleId,
+          reasonId: intent.reasonId,
+          shareGrantId: ids.shareGrant,
+          teamId: ids.team,
+          teamWorkspaceId: ids.workspace,
+          expectedAuthorityVersion: 3,
+          expectedGrantVersion: 7,
+          action: controlAction
+        })
+      );
+      repo.getConversationSharingRuleControlReview.mockResolvedValueOnce(null);
+      await expect(admit(intent, repo)).rejects.toBeInstanceOf(
+        ActionApprovalPolicyError
+      );
+      const binding = sharedMemoryRuleControlActionGrantBinding({
+        ...bound,
+        referenceId: ids.request
+      });
+      for (const mutation of [
+        { ruleId: randomUUID() },
+        { reasonId: randomUUID() },
+        { shareGrantId: randomUUID() },
+        { teamId: randomUUID() },
+        { teamWorkspaceId: randomUUID() },
+        { expectedGrantVersion: 8 },
+        { expectedAuthorityVersion: 4 },
+        {
+          controlAction:
+            controlAction === "stop" ? ("pause" as const) : ("stop" as const)
+        }
+      ]) {
+        expect(
+          sharedMemoryRuleControlActionGrantBinding({
+            ...bound,
+            ...mutation,
+            referenceId: ids.request
+          }).requestHash
+        ).not.toBe(binding.requestHash);
+      }
+    }
+  );
+
   it("binds consent and Share Grant creation in one decision and steps up raw Memory", async () => {
     const derived = shareIntent("lcm_rollups");
     const raw = shareIntent("memory_events");
@@ -467,9 +894,11 @@ describe("Shared Memory action definitions", () => {
         review: {
           details: expect.arrayContaining([
             { label: "Maximum fidelity", value: "Memory Events" },
-            { label: "Source policy", value: "Replace during this share" }
+            { label: "Source policy", value: "Expand during this share" }
           ]),
-          consequence: expect.stringContaining("invalidates other Share Grants")
+          consequence: expect.stringContaining(
+            "Existing sharing reasons retain their own consent limits"
+          )
         }
       }
     });
@@ -661,5 +1090,96 @@ describe("Shared Memory action definitions", () => {
         action: "shared_memory.consent"
       }).success
     ).toBe(false);
+  });
+  it("reviews exact Conversation rule creation without converting an existing reason", async () => {
+    const intent = highRiskActionGrantIntentSchema.parse({
+      action: "shared_memory.conversation_rule_create",
+      mutationId: ids.mutation,
+      ruleId: randomUUID(),
+      logicalGrantId: ids.logicalGrant,
+      consentId: ids.consent,
+      source: capturedSource,
+      sourceCapabilities: ["lcm_rollups"],
+      activationRepresentation: "lcm_rollups",
+      logicalMemoryId: ids.logicalMemory,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      previewId: ids.preview,
+      previewHash: "a".repeat(64),
+      previewRevision: 1,
+      expectedGrantVersion: 3,
+      effectivePrivacyPolicyHash: "b".repeat(64),
+      mode: "continuous",
+      maximumFidelity: "lcm_rollups",
+      includeCuratedMemory: false,
+      expiresAt: null
+    });
+    if (intent.action !== "shared_memory.conversation_rule_create")
+      throw new Error("Expected rule creation");
+    const repo = repository();
+    repo.getConversationSharingRuleCreationReview.mockResolvedValue({
+      previewId: intent.previewId,
+      previewHash: intent.previewHash,
+      previewRevision: intent.previewRevision,
+      logicalMemoryId: ids.logicalMemory,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      source: capturedSource,
+      sourceTitle: source.title,
+      teamName: destination.team.name,
+      workspaceName: destination.workspace.name,
+      logicalGrantId: intent.logicalGrantId,
+      expectedGrantVersion: 3,
+      effectivePrivacyPolicyHash: intent.effectivePrivacyPolicyHash,
+      maximumFidelity: "lcm_rollups",
+      includeCuratedMemory: false,
+      activationRepresentation: "lcm_rollups",
+      sourceCapabilities: ["lcm_rollups"],
+      expiresAt: null,
+      reviewExpiresAt: "2099-01-01T00:00:00.000Z"
+    });
+    const admitted = await admit(intent, repo);
+    expect(admitted).toMatchObject({
+      operation: sharedMemoryConversationRuleCreationActionGrantBinding({
+        ...intent,
+        referenceId: ids.request
+      }),
+      policy: {
+        disposition: "native_review",
+        review: {
+          title: "Share this Conversation continuously?",
+          details: expect.arrayContaining([
+            { label: "Conversation", value: source.title }
+          ])
+        }
+      }
+    });
+    const bound = sharedMemoryConversationRuleCreationActionGrantBinding({
+      ...intent,
+      referenceId: ids.request
+    });
+    expect(
+      sharedMemoryConversationRuleCreationActionGrantBinding({
+        ...intent,
+        ruleId: randomUUID(),
+        referenceId: ids.request
+      }).requestHash
+    ).not.toBe(bound.requestHash);
+    for (const change of [
+      { expectedGrantVersion: 4 },
+      { effectivePrivacyPolicyHash: "c".repeat(64) },
+      { teamWorkspaceId: randomUUID() },
+      { source: { ...capturedSource, sessionId: randomUUID() } },
+      { maximumFidelity: "memory_events" as const },
+      { includeCuratedMemory: true }
+    ]) {
+      await expect(
+        admit({ ...intent, ...change }, repo)
+      ).rejects.toBeInstanceOf(ActionApprovalPolicyError);
+    }
+    repo.getConversationSharingRuleCreationReview.mockResolvedValue(null);
+    await expect(admit(intent, repo)).rejects.toBeInstanceOf(
+      ActionApprovalPolicyError
+    );
   });
 });

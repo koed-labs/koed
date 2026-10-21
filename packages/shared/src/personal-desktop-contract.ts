@@ -26,7 +26,8 @@ import {
 import {
   personalFolderScopeId,
   personalFolderContextSchema,
-  personalFolderReferenceSchema
+  personalFolderReferenceSchema,
+  personalProjectReferenceSchema
 } from "./personal-source-contract.js";
 import { personalMembershipReasonSchema } from "./personal-membership-contract.js";
 export {
@@ -305,6 +306,7 @@ export const personalDesktopProjectThreadSchema = z
 export const personalDesktopProjectSchema = z
   .object({
     namedProject: personalNamedProjectSchema.optional(),
+    projectReference: personalProjectReferenceSchema.optional(),
     inclusionRules: z.array(personalProjectRuleSchema).optional(),
     directInclusions: z.array(personalDirectMembershipSchema).optional(),
     folder: personalFolderContextSchema.optional(),

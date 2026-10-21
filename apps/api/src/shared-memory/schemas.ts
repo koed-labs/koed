@@ -1,5 +1,11 @@
 import {
   COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
+  conversationSharingRuleControlIntentSchema,
+  repositorySharingRuleCreationIntentSchema,
+  repositorySharingRuleControlIntentSchema,
+  sharingRuleDetailIntentSchema,
+  sharingRuleContentPolicyIntentSchema,
+  repositorySharingRuleMemberAdmissionSchema,
   personalNoteSourceSelectionIssues,
   sharedMemoryCandidatePreviewSchema,
   sharedMemoryCeilingAuthorizes,
@@ -198,6 +204,20 @@ export const sharedMemoryAuthoritySchema = z.discriminatedUnion("source", [
   deviceSharedMemoryAuthoritySchema
 ]);
 
+export const createRepositorySharingRuleSchema =
+  repositorySharingRuleCreationIntentSchema
+    .extend({ authority: deviceSharedMemoryAuthoritySchema })
+    .strict();
+
+export const amendSharingRuleDetailSchema = sharingRuleDetailIntentSchema
+  .extend({ authority: deviceSharedMemoryAuthoritySchema })
+  .strict();
+
+export const amendSharingRuleContentPolicySchema =
+  sharingRuleContentPolicyIntentSchema
+    .extend({ authority: deviceSharedMemoryAuthoritySchema })
+    .strict();
+
 export const sourceOwnerPolicyParamsSchema = z
   .object({ logicalMemoryId: uuidSchema })
   .strict();
@@ -373,6 +393,47 @@ export const createPendingShareSchema = z
     validatePersonalNoteConsent(input, context);
   });
 
+export const createConversationSharingRuleSchema =
+  createPendingShareSchema.safeExtend({
+    source: z
+      .object({
+        kind: z.literal("captured_session"),
+        sessionId: uuidSchema,
+        logicalMemoryId: uuidSchema
+      })
+      .strict(),
+    mode: z.literal("continuous"),
+    ruleId: uuidSchema,
+    expectedGrantVersion: positiveVersionSchema.nullable(),
+    effectivePrivacyPolicyHash: z.string().regex(/^[a-f0-9]{64}$/)
+  });
+
+export const controlRepositorySharingRuleSchema =
+  repositorySharingRuleControlIntentSchema
+    .omit({ ruleId: true })
+    .extend({ authority: sharedMemoryAuthoritySchema })
+    .strict();
+
+export const createRepositorySharingRuleMemberSchema = z
+  .object(createPendingShareSchema.shape)
+  .omit({ authority: true })
+  .extend({
+    source: z
+      .object({
+        kind: z.literal("captured_session"),
+        sessionId: uuidSchema,
+        logicalMemoryId: uuidSchema
+      })
+      .strict(),
+    mode: z.literal("continuous"),
+    expiresAt: z.null().optional(),
+    membership: repositorySharingRuleMemberAdmissionSchema.omit({
+      ruleId: true
+    })
+  })
+  .strict()
+  .superRefine(validateEffectiveSelection);
+
 export const changeSharedMemoryFidelityBundleSchema = z
   .object({
     source: sharedMemorySourceRefSchema,
@@ -480,3 +541,9 @@ export const revokeShareGrantSchema = z
     authority: sharedMemoryAuthoritySchema
   })
   .strict();
+
+export const controlConversationSharingRuleSchema =
+  conversationSharingRuleControlIntentSchema
+    .omit({ ruleId: true })
+    .extend({ authority: sharedMemoryAuthoritySchema })
+    .strict();

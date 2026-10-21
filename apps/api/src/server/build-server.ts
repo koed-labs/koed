@@ -17,6 +17,8 @@ import {
   createRealtimeTransportTicketRepository,
   createRemoteMcpOAuthRepository,
   createRetentionLifecycleRepository,
+  createSelectionSharingReconciliation,
+  createSelectionSharingJournal,
   databaseErrorCode,
   runDbMigrations,
   type CollaborationRealtimeMaterializationRepository,
@@ -559,11 +561,13 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   let localEdgeSecureFetch: ReturnType<
     typeof createSecureUpstreamFetch
   > | null = null;
+  let ruleControlDeliveryTimer: NodeJS.Timeout | null = null;
   let pendingShareSourceWorkerTimer: NodeJS.Timeout | null = null;
   let continuousNoteAdvancementWorkerTimer: NodeJS.Timeout | null = null;
   let pdsCheckpointPublicationService: ReturnType<
     typeof createPdsCheckpointPublicationService
   > | null = null;
+  let requestRuleDelivery: (() => void) | null = null;
   let requestPendingShareSourceWork: (() => void) | null = null;
   let requestContinuousNoteAdvancementWork: (() => void) | null = null;
   let personalNoteMemoryRepairService: ReturnType<
@@ -718,6 +722,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     if (relayCleanupTimer) clearInterval(relayCleanupTimer);
     await pdsCheckpointPublicationService?.stop();
     await pendingShareDrain?.stop();
+    if (ruleControlDeliveryTimer) clearInterval(ruleControlDeliveryTimer);
     if (pendingShareSourceWorkerTimer) {
       clearInterval(pendingShareSourceWorkerTimer);
     }
@@ -1082,6 +1087,21 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   };
   const collaborationActionGrantLifecycle =
     createCollaborationActionGrantLifecycle({ koedHome: config.koedHome });
+  const collaborationActionGrantControl =
+    options.collaborationActionGrantControl ??
+    createCollaborationActionGrantControl({
+      koedHome: config.koedHome,
+      fetch: localEdgeFetch,
+      resolveCandidateSourceIdentity:
+        localSharedMemoryCandidatePreparation?.resolveCandidateSourceIdentity,
+      actionGrantLifecycle: collaborationActionGrantLifecycle
+    });
+  const selectionSharingReconciliation =
+    pool &&
+    envelopeEncryptionProvider &&
+    !options.collaborationSharedMemoryAuthorityStore
+      ? createSelectionSharingReconciliation(pool, envelopeEncryptionProvider)
+      : null;
   const collaborationSharedMemoryControl =
     options.collaborationSharedMemoryControl ??
     (sharedMemoryAuthorityRepository
@@ -1091,7 +1111,20 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           fetch: localEdgeFetch,
           resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization,
           actionGrantLifecycle: collaborationActionGrantLifecycle,
+          actionGrantControl: collaborationActionGrantControl,
           authorityStore: sharedMemoryAuthorityRepository,
+          selectionSharingJournal:
+            pool &&
+            envelopeEncryptionProvider &&
+            !options.collaborationSharedMemoryAuthorityStore
+              ? createSelectionSharingJournal(pool, envelopeEncryptionProvider)
+              : undefined,
+          reconcileSelectionSharing: selectionSharingReconciliation
+            ? (ownerUserId) =>
+                selectionSharingReconciliation.reconcile(ownerUserId)
+            : undefined,
+          selectionReviewRepository: repository ?? undefined,
+          requestRuleDelivery: () => requestRuleDelivery?.(),
           requestPendingShareSourceWork: () =>
             requestPendingShareSourceWork?.(),
           requestContinuousNoteAdvancementWork: () =>
@@ -1126,6 +1159,35 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         })
       : undefined);
   if (config.teamCollaborationEnabled && sharedMemoryAuthorityRepository) {
+    let ruleDeliveryRunning = false;
+    let ruleDeliveryRequested = false;
+    const drainRuleDeliveries = () => {
+      ruleDeliveryRequested = true;
+      if (ruleDeliveryRunning) return;
+      ruleDeliveryRunning = true;
+      void (async () => {
+        do {
+          ruleDeliveryRequested = false;
+          const result =
+            await collaborationSharedMemoryControl?.reconcileRuleDeliveries();
+          if (result?.processed === 10) ruleDeliveryRequested = true;
+        } while (ruleDeliveryRequested);
+      })()
+        .catch(() => {
+          app.log.warn(
+            { event: { name: "sharing_rule.delivery_retry" } },
+            "Sharing rule delivery will retry"
+          );
+        })
+        .finally(() => {
+          ruleDeliveryRunning = false;
+          if (ruleDeliveryRequested) drainRuleDeliveries();
+        });
+    };
+    requestRuleDelivery = drainRuleDeliveries;
+    ruleControlDeliveryTimer = setInterval(drainRuleDeliveries, 5000);
+    ruleControlDeliveryTimer.unref();
+    drainRuleDeliveries();
     let sourceWorkerRunning = false;
     let sourceWorkerRequested = false;
     const drainPendingShareSourceWork = () => {
@@ -1322,16 +1384,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     continuousNoteAdvancementWorkerTimer.unref();
     drainContinuousNoteAdvancementWork();
   }
-  const collaborationActionGrantControl =
-    options.collaborationActionGrantControl ??
-    createCollaborationActionGrantControl({
-      koedHome: config.koedHome,
-      fetch: localEdgeFetch,
-      resolveCandidateSourceIdentity:
-        localSharedMemoryCandidatePreparation?.resolveCandidateSourceIdentity,
-      actionGrantLifecycle: collaborationActionGrantLifecycle
-    });
-
   const collaborationNavigationInvalidationListeners = new Set<
     (backendId: string) => void
   >();

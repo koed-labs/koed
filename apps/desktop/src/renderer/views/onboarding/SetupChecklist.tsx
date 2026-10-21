@@ -42,8 +42,8 @@ const stageCopy: Record<
     description: "Prepare storage and embedding dependencies."
   },
   model: {
-    title: "Local models",
-    description: "Download and verify the required local models."
+    title: "Memory models",
+    description: "Verify the models used to protect, index, and recall Memory."
   },
   services: {
     title: "Local services",

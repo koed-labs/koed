@@ -17,6 +17,7 @@ import {
   privacyClassificationOrderedInputHash,
   privacyClassificationResultManifestHash,
   reconstructSharedMemorySemanticSanitizedItems,
+  resolveSharingRuleContentPolicy,
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
   PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT,
   PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT,
@@ -52,6 +53,7 @@ interface SharedMemoryPrivacyLogger {
 
 type SharedMemoryPrivacyRepository = Pick<
   SharedMemoryRepository,
+  | "reconcileSharingRuleMembers"
   | "listPendingSemanticPrivacyTargets"
   | "readPendingSemanticPrivacyTarget"
   | "claimSemanticPrivacyTarget"
@@ -281,12 +283,34 @@ const materializeTarget = async (
   const actor = { userId: target.ownerUserId };
   const fields = exactClassificationFields(loaded);
   counters.totalFields += fields.length;
-  const policy = await options.privacyRepository.resolveEffectiveContentPolicy({
-    deploymentIdentityId,
-    sourceOwnerUserId: target.ownerUserId,
-    teamId: target.teamId,
-    teamWorkspaceId: target.teamWorkspaceId
-  });
+  const globalPolicy =
+    await options.privacyRepository.resolveEffectiveContentPolicy({
+      deploymentIdentityId,
+      sourceOwnerUserId: target.ownerUserId,
+      teamId: target.teamId,
+      teamWorkspaceId: target.teamWorkspaceId
+    });
+  if (
+    loaded.ruleContentPolicy &&
+    loaded.ruleContentPolicy.globalPolicyHash !==
+      globalPolicy.effectivePolicyHash
+  )
+    throw new SharedMemoryPrivacyMaterializationError(
+      "SharedMemoryPrivacyPolicyBindingError"
+    );
+  const rulePolicy = loaded.ruleContentPolicy
+    ? resolveSharingRuleContentPolicy({
+        globalLabels: globalPolicy.labels,
+        globalPolicyHash: globalPolicy.effectivePolicyHash,
+        labels: loaded.ruleContentPolicy.labels
+      })
+    : null;
+  const policy = rulePolicy
+    ? {
+        labels: rulePolicy.effectiveLabels,
+        effectivePolicyHash: rulePolicy.effectivePrivacyPolicyHash
+      }
+    : globalPolicy;
   if (policy.effectivePolicyHash !== target.effectivePrivacyPolicyHash) {
     throw new SharedMemoryPrivacyMaterializationError(
       "SharedMemoryPrivacyPolicyBindingError"
@@ -888,6 +912,9 @@ export const createSharedMemoryPrivacyMaterializationService = (
         );
       }
       await validateCapabilities();
+      await options.sharedMemoryRepository.reconcileSharingRuleMembers({
+        limit: targetLimit
+      });
       const targets =
         await options.sharedMemoryRepository.listPendingSemanticPrivacyTargets({
           limit: targetLimit

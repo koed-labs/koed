@@ -123,14 +123,21 @@ export const currentConsumerSnapshot = async (client: pg.PoolClient) => {
 };
 /** A portable Conversation resolves only through its exact verified local
  * binding. Native-only selection uses the actual owned Session ID directly. */
+export interface SelectionConsumerOptions {
+  /** Sharing may observe a retained, conclusive Project tombstone as an empty
+   * selection. Public Personal enumeration keeps its unavailable-target error. */
+  includeDeletedProjects?: boolean;
+}
 export const resolveConsumerSelection = async (
   client: pg.PoolClient,
   actor: ActorContext,
-  selection: PersonalSelectionConsumerSelection
+  selection: PersonalSelectionConsumerSelection,
+  options: SelectionConsumerOptions = {}
 ): Promise<{
   selection: PersonalSourceSelection;
   projectVersion: number | null;
   nativeProjectId?: string;
+  projectDeleted?: boolean;
 }> => {
   if (selection.ownerUserId !== actor.userId)
     throw selectionConsumerError(
@@ -140,10 +147,23 @@ export const resolveConsumerSelection = async (
     );
   const target = selection.target;
   if (target.kind === "project") {
-    const result = await client.query<{ version: number; project_id: string }>(
-      `select p.version,p.project_id from personal_named_projects p where p.owner_user_id=$1 and ${personalProjectIdentityMatchesSql("p", "$2::text")}
-      and p.deleted_at is null and ${personalProjectCatalogReadySql("p")}`,
-      [actor.userId, target.project.projectId]
+    const result = await client.query<{
+      version: number;
+      project_id: string;
+      deleted_at: Date | null;
+    }>(
+      `select p.version,p.project_id,p.deleted_at from personal_named_projects p where p.owner_user_id=$1 and ${personalProjectIdentityMatchesSql("p", "$2::text")}
+      and ((p.deleted_at is null and ${personalProjectCatalogReadySql("p")})
+        or ($3::boolean and p.deleted_at is not null and not exists (
+          select 1 from personal_membership_entities catalog
+          where catalog.owner_user_id=p.owner_user_id and catalog.local_project_id=p.project_id and catalog.entity_kind='project'
+            and (catalog.state<>'available' or catalog.current_revision->'operation'->>'kind' is distinct from 'delete_project')
+        )))`,
+      [
+        actor.userId,
+        target.project.projectId,
+        options.includeDeletedProjects === true
+      ]
     );
     if (!result.rows[0])
       throw selectionConsumerError(
@@ -161,7 +181,8 @@ export const resolveConsumerSelection = async (
         }
       }),
       projectVersion: result.rows[0].version,
-      nativeProjectId: result.rows[0].project_id
+      nativeProjectId: result.rows[0].project_id,
+      projectDeleted: result.rows[0].deleted_at !== null
     };
   }
   if (target.kind === "local_session" || target.kind === "session") {

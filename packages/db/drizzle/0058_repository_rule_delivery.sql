@@ -1,0 +1,6 @@
+ALTER TABLE "collaboration_sharing_rule_deliveries" DROP CONSTRAINT "csm_rule_delivery_destination_check";--> statement-breakpoint
+ALTER TABLE "collaboration_sharing_rule_deliveries" ADD COLUMN "operation_kind" text DEFAULT 'conversation_create' NOT NULL;--> statement-breakpoint
+UPDATE "collaboration_sharing_rule_deliveries" SET "operation_kind"='control' WHERE "share_grant_id" IS NOT NULL;--> statement-breakpoint
+ALTER TABLE "collaboration_sharing_rule_deliveries" ADD CONSTRAINT "csm_rule_delivery_destination_check" CHECK (("collaboration_sharing_rule_deliveries"."operation_kind"='control' and "collaboration_sharing_rule_deliveries"."share_grant_id" is not null and "collaboration_sharing_rule_deliveries"."logical_grant_id" is null)
+        or ("collaboration_sharing_rule_deliveries"."operation_kind"='conversation_create' and "collaboration_sharing_rule_deliveries"."share_grant_id" is null and "collaboration_sharing_rule_deliveries"."logical_grant_id" is not null)
+        or ("collaboration_sharing_rule_deliveries"."operation_kind"='repository_create' and "collaboration_sharing_rule_deliveries"."share_grant_id" is null and "collaboration_sharing_rule_deliveries"."logical_grant_id" is null));

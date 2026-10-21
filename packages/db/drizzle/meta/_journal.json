@@ -344,6 +344,139 @@
       "when": 1792498861780,
       "tag": "0048_personal_summary_changes",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1792504119303,
+      "tag": "0049_direct_share_reasons",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1792508458002,
+      "tag": "0050_continuous_sharing_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1792510577690,
+      "tag": "0051_reason_publication",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1792511932663,
+      "tag": "0052_encrypted_representation_titles",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1792513305818,
+      "tag": "0053_rule_lifecycle_catchup",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1792521591657,
+      "tag": "0054_sharing_rule_deliveries",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1792524154689,
+      "tag": "0055_pending_conversation_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1792525221699,
+      "tag": "0056_rule_creation_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1792531753227,
+      "tag": "0057_selection_rule_membership",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1792533275224,
+      "tag": "0058_repository_rule_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1792534483241,
+      "tag": "0059_rule_member_admissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1792539043614,
+      "tag": "0060_selection_sharing_journal",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1792542513250,
+      "tag": "0061_folder_sharing_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1792545928818,
+      "tag": "0062_project_sharing_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1792550904652,
+      "tag": "0063_rule_publication_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1792553600734,
+      "tag": "0064_rule_detail_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1792559977022,
+      "tag": "0065_rule_content_policy_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1792562514139,
+      "tag": "0066_rule_content_policy_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1792563739523,
+      "tag": "0067_retained_rule_preparation",
+      "breakpoints": true
     }
   ]
 }

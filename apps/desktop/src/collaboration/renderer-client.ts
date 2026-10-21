@@ -23,6 +23,9 @@ import {
   type CollaborationSafeError,
   type CollaborationSelection,
   type CollaborationSnapshot,
+  type SharingRuleDelivery,
+  type ConversationSharingRuleControlIntent,
+  type ConversationSharingRuleCreationReview,
   type OwnedShareItem,
   type OwnedSharedMemoryGrant,
   type CollaborationSubscription,
@@ -61,6 +64,10 @@ export interface CollaborationRendererBridge {
 export type CollaborationClientUpdate = {
   kind: "command" | "realtime" | "connection" | "purge";
   authoritativeRecovery?: boolean;
+  sharingRuleDeliveryAcknowledged?: {
+    mutationId: string;
+    shareGrantId: string | null;
+  };
   announcement?: string;
   announcementId?: string;
   realtimeUpdate?: Extract<
@@ -83,6 +90,7 @@ export type CollaborationActionGrantProjection = {
     | "awaiting_approval"
     | "awaiting_review"
     | "approved"
+    | "queued"
     | "executing"
     | "completed"
     | "denied"
@@ -295,6 +303,9 @@ export interface CollaborationRendererClient {
     kind: "pending" | "grant";
     id: string;
   }): Promise<OwnedShareItem>;
+  reviewGitAnchorSharing(
+    input: import("@koed/shared/collaboration").GitAnchorSharingReviewInput
+  ): Promise<import("@koed/shared/collaboration").GitAnchorSharingReviewPage>;
   controlPendingShare(input: {
     pendingShareId: string;
     expectedOperationVersion: number;
@@ -374,6 +385,90 @@ export interface CollaborationRendererClient {
     previewHash: string;
     expiresAt: string | null;
   }): Promise<SharedMemoryGrant | PendingShare>;
+  reviewConversationRuleCreation(
+    input: Extract<
+      CollaborationRendererCommand,
+      { command: "collaboration.review_conversation_rule_creation" }
+    >["input"]
+  ): Promise<ConversationSharingRuleCreationReview>;
+  createConversationRule(
+    input: Omit<
+      Extract<
+        CollaborationRendererCommand,
+        { command: "collaboration.create_conversation_rule" }
+      >["input"],
+      "actionGrant"
+    >
+  ): Promise<SharingRuleDelivery>;
+  reviewRepositoryRuleCreation(
+    input: Extract<
+      CollaborationRendererCommand,
+      { command: "collaboration.review_repository_rule_creation" }
+    >["input"]
+  ): Promise<import("@koed/shared").RepositorySharingRuleCreationReview>;
+  createRepositoryRule(
+    input: Omit<
+      Extract<
+        CollaborationRendererCommand,
+        { command: "collaboration.create_repository_rule" }
+      >["input"],
+      "actionGrant"
+    >
+  ): Promise<SharingRuleDelivery>;
+  listRepositoryRules(
+    input: Extract<
+      CollaborationRendererCommand,
+      { command: "collaboration.list_repository_rules" }
+    >["input"]
+  ): Promise<import("@koed/shared").OwnedRepositorySharingRulesPage>;
+  controlRepositoryRule(
+    input: Omit<
+      Extract<
+        CollaborationRendererCommand,
+        { command: "collaboration.control_repository_rule" }
+      >["input"],
+      "actionGrant"
+    >
+  ): Promise<SharingRuleDelivery>;
+  controlSharingRule(
+    input: Omit<ConversationSharingRuleControlIntent, "teamWorkspaceId"> & {
+      workspaceId: string;
+    }
+  ): Promise<SharingRuleDelivery>;
+  reviewRuleDetail(
+    input: Extract<
+      CollaborationRendererCommand,
+      { command: "collaboration.review_rule_detail" }
+    >["input"]
+  ): Promise<import("@koed/shared").SharingRuleDetailReview>;
+  amendRuleDetail(
+    input: Omit<
+      Extract<
+        CollaborationRendererCommand,
+        { command: "collaboration.amend_rule_detail" }
+      >["input"],
+      "actionGrant"
+    >
+  ): Promise<SharingRuleDelivery>;
+  reviewRuleContentPolicy(
+    input: Extract<
+      CollaborationRendererCommand,
+      { command: "collaboration.review_rule_content_policy" }
+    >["input"]
+  ): Promise<import("@koed/shared").SharingRuleContentPolicyReview>;
+  amendRuleContentPolicy(
+    input: Omit<
+      Extract<
+        CollaborationRendererCommand,
+        { command: "collaboration.amend_rule_content_policy" }
+      >["input"],
+      "actionGrant"
+    >
+  ): Promise<SharingRuleDelivery>;
+  listSharingRuleDeliveries(input: {
+    shareGrantId?: string;
+    mutationId?: string;
+  }): Promise<SharingRuleDelivery[]>;
   revokeSharedMemory(input: {
     mutationId: string;
     teamId: string;
@@ -1512,6 +1607,13 @@ export const createCollaborationRendererClient = (
   >();
   const listeners = new Set<CollaborationClientListener>();
   const actionGrantProjections = new CollaborationActionGrantProjectionStore();
+  const pendingRuleControls = new Map<
+    string,
+    { shareGrantId: string | null; actionGrantId: string }
+  >();
+  let ruleControlPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let ruleControlPollRunning = false;
+
   const sourceBackfills = new SharedSourceBackfillCoordinator();
   let selectionRequestGeneration = 0;
   let selectionIntentGeneration = 0;
@@ -1564,6 +1666,12 @@ export const createCollaborationRendererClient = (
       "collaboration.set_workspace_access": "Change Workspace access",
       "collaboration.preview_shared_memory": "Preview Shared Memory",
       "collaboration.share_memory": "Share Memory",
+      "collaboration.create_conversation_rule": "Start continuous sharing",
+      "collaboration.create_repository_rule": "Share Git Anchor continuously",
+      "collaboration.amend_rule_detail": "Change rule detail",
+      "collaboration.amend_rule_content_policy": "Change rule content policy",
+      "collaboration.control_sharing_rule": "Control continuous sharing",
+      "collaboration.control_repository_rule": "Control Git Anchor sharing",
       "collaboration.revoke_shared_memory": "Revoke Shared Memory",
       "collaboration.change_shared_memory_fidelity":
         "Change Shared Memory fidelity",
@@ -1796,6 +1904,126 @@ export const createCollaborationRendererClient = (
         input
       })
     );
+
+  const observeRuleDeliveries = async (deliveries: SharingRuleDelivery[]) => {
+    for (const delivery of deliveries) {
+      const pending = pendingRuleControls.get(delivery.intent.mutationId);
+      if (!pending || delivery.state === "queued") continue;
+      pendingRuleControls.delete(delivery.intent.mutationId);
+      const projection = actionGrantProjections.get(pending.actionGrantId);
+      if (projection)
+        publishActionGrant({
+          ...projection,
+          state: delivery.state === "acknowledged" ? "completed" : "failed",
+          retryable: false
+        });
+      if (delivery.state === "acknowledged" && snapshot) {
+        const change = {
+          mutationId: delivery.intent.mutationId,
+          shareGrantId:
+            "shareGrantId" in delivery.intent
+              ? delivery.intent.shareGrantId
+              : null
+        };
+        if (change.shareGrantId)
+          clearSharedSessionSelectionView(change.shareGrantId);
+        const amendedDetail = "operationKind" in delivery.intent;
+        if (amendedDetail) clearTeamSelectionViews(delivery.intent.teamId);
+        if (
+          amendedDetail ||
+          ("controlAction" in delivery.intent &&
+            delivery.intent.controlAction === "stop")
+        ) {
+          clientRuntime.invalidateAuthority();
+          if (
+            snapshot.view.kind === "shared_session" &&
+            (amendedDetail || snapshot.view.session.id === change.shareGrantId)
+          ) {
+            await publish(
+              {
+                ...snapshot,
+                view: {
+                  ...snapshot.view,
+                  source: {
+                    ...snapshot.view.source,
+                    items: [],
+                    olderCursor: null,
+                    newerCursor: null,
+                    hasOlder: false,
+                    hasNewer: false
+                  },
+                  companion: {
+                    ...snapshot.view.companion,
+                    messages: {
+                      ...snapshot.view.companion.messages,
+                      items: [],
+                      olderCursor: null,
+                      newerCursor: null,
+                      hasOlder: false,
+                      hasNewer: false
+                    }
+                  }
+                }
+              },
+              { kind: "command", sharingRuleDeliveryAcknowledged: change },
+              { rememberView: false }
+            );
+            await reloadAuthoritativeSnapshot?.();
+            continue;
+          }
+        }
+        await publish(
+          snapshot,
+          { kind: "command", sharingRuleDeliveryAcknowledged: change },
+          { rememberView: false }
+        );
+      }
+    }
+  };
+  const pollRuleControls = () => {
+    ruleControlPollTimer = null;
+    if (disposed || ruleControlPollRunning || pendingRuleControls.size === 0)
+      return;
+    ruleControlPollRunning = true;
+    void (async () => {
+      for (const [mutationId, pending] of [...pendingRuleControls]) {
+        try {
+          const result = await command(
+            "collaboration.list_sharing_rule_deliveries",
+            { mutationId }
+          );
+          if (
+            result.ok &&
+            result.command === "collaboration.list_sharing_rule_deliveries"
+          )
+            await observeRuleDeliveries(result.data.deliveries);
+        } catch (error) {
+          if (
+            error instanceof CollaborationClientError &&
+            ["access_revoked", "permission_denied", "not_available"].includes(
+              error.code
+            )
+          ) {
+            pendingRuleControls.delete(mutationId);
+            const projection = actionGrantProjections.get(
+              pending.actionGrantId
+            );
+            if (projection)
+              publishActionGrant({
+                ...projection,
+                state: "failed",
+                retryable: false
+              });
+          }
+          // A failed local read does not prove that Team access ended.
+        }
+      }
+    })().finally(() => {
+      ruleControlPollRunning = false;
+      if (!disposed && pendingRuleControls.size > 0)
+        ruleControlPollTimer = setTimeout(pollRuleControls, 2000);
+    });
+  };
 
   const deliverPendingReceipt = async (threadId: string): Promise<void> => {
     const pending = pendingDeliveryReceipts.get(threadId);
@@ -2250,7 +2478,17 @@ export const createCollaborationRendererClient = (
           publishActionGrant({
             ...existing,
             retryable: false,
-            state: "completed"
+            state:
+              result.ok &&
+              (result.command === "collaboration.control_sharing_rule" ||
+                result.command === "collaboration.create_conversation_rule" ||
+                result.command === "collaboration.create_repository_rule")
+                ? result.data.delivery.state === "queued"
+                  ? "queued"
+                  : result.data.delivery.state === "needs_review"
+                    ? "failed"
+                    : "completed"
+                : "completed"
           });
         }
         return result;
@@ -3946,6 +4184,18 @@ export const createCollaborationRendererClient = (
       }
       return result.data.share;
     },
+    async reviewGitAnchorSharing(input) {
+      const result = await command(
+        "collaboration.review_git_anchor_sharing",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.review_git_anchor_sharing"
+      )
+        throw new Error("Unexpected collaboration result.");
+      return result.data.review;
+    },
     async controlPendingShare(input) {
       const result = await command("collaboration.control_pending_share", {
         ...input,
@@ -4155,6 +4405,255 @@ export const createCollaborationRendererClient = (
         ? result.data.grant
         : result.data.pendingShare;
     },
+    async reviewConversationRuleCreation(input) {
+      const result = await command(
+        "collaboration.review_conversation_rule_creation",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.review_conversation_rule_creation"
+      )
+        throw new Error("Unexpected collaboration result.");
+      return result.data.review;
+    },
+    async createConversationRule(input) {
+      const commandRequestId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.create_conversation_rule",
+        commandRequestId,
+        ...input
+      });
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command: "collaboration.create_conversation_rule",
+          input: { ...input, actionGrant }
+        })
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.create_conversation_rule" ||
+        result.data.delivery.intent.ruleId !== input.ruleId
+      )
+        throw new Error("Unexpected collaboration result.");
+      if (result.data.delivery.state === "queued") {
+        pendingRuleControls.set(input.mutationId, {
+          shareGrantId: null,
+          actionGrantId: actionGrant.id
+        });
+        if (!ruleControlPollTimer)
+          ruleControlPollTimer = setTimeout(pollRuleControls, 1000);
+      }
+      return result.data.delivery;
+    },
+    async reviewRepositoryRuleCreation(input) {
+      const result = await command(
+        "collaboration.review_repository_rule_creation",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.review_repository_rule_creation"
+      )
+        throw new Error("Unexpected collaboration result.");
+      return result.data.review;
+    },
+    async createRepositoryRule(input) {
+      const commandRequestId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.create_repository_rule",
+        commandRequestId,
+        ...input
+      });
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command: "collaboration.create_repository_rule",
+          input: { ...input, actionGrant }
+        })
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.create_repository_rule" ||
+        result.data.delivery.intent.ruleId !== input.ruleId
+      )
+        throw new Error("Unexpected collaboration result.");
+      if (result.data.delivery.state === "queued") {
+        pendingRuleControls.set(input.mutationId, {
+          shareGrantId: null,
+          actionGrantId: actionGrant.id
+        });
+        if (!ruleControlPollTimer)
+          ruleControlPollTimer = setTimeout(pollRuleControls, 1000);
+      }
+      return result.data.delivery;
+    },
+    async listRepositoryRules(input) {
+      const result = await command(
+        "collaboration.list_repository_rules",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.list_repository_rules"
+      )
+        throw new Error("Unexpected collaboration result.");
+      return result.data.page;
+    },
+    async controlRepositoryRule(input) {
+      const commandRequestId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.control_repository_rule",
+        commandRequestId,
+        ...input
+      });
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command: "collaboration.control_repository_rule",
+          input: { ...input, actionGrant }
+        })
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.control_repository_rule" ||
+        result.data.delivery.intent.ruleId !== input.ruleId
+      )
+        throw new Error("Unexpected collaboration result.");
+      if (result.data.delivery.state === "queued") {
+        pendingRuleControls.set(input.mutationId, {
+          shareGrantId: null,
+          actionGrantId: actionGrant.id
+        });
+        if (!ruleControlPollTimer)
+          ruleControlPollTimer = setTimeout(pollRuleControls, 1000);
+      }
+      return result.data.delivery;
+    },
+    async controlSharingRule(input) {
+      const commandRequestId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.control_sharing_rule",
+        commandRequestId,
+        ...input
+      });
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command: "collaboration.control_sharing_rule",
+          input: { ...input, actionGrant }
+        })
+      );
+      if (!result.ok || result.command !== "collaboration.control_sharing_rule")
+        throw new Error("Unexpected collaboration result.");
+      if (result.data.delivery.state === "queued") {
+        pendingRuleControls.set(input.mutationId, {
+          shareGrantId: input.shareGrantId,
+          actionGrantId: actionGrant.id
+        });
+        if (!ruleControlPollTimer)
+          ruleControlPollTimer = setTimeout(pollRuleControls, 1000);
+      }
+      return result.data.delivery;
+    },
+    async reviewRuleDetail(input) {
+      const result = await command("collaboration.review_rule_detail", input);
+      if (!result.ok || result.command !== "collaboration.review_rule_detail")
+        throw new Error("Unexpected collaboration result.");
+      return result.data.review;
+    },
+    async amendRuleDetail(input) {
+      const commandRequestId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.amend_rule_detail",
+        commandRequestId,
+        ...input
+      });
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command: "collaboration.amend_rule_detail",
+          input: { ...input, actionGrant }
+        })
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.amend_rule_detail" ||
+        result.data.delivery.intent.mutationId !== input.mutationId
+      )
+        throw new Error("Unexpected collaboration result.");
+      if (result.data.delivery.state === "queued") {
+        pendingRuleControls.set(input.mutationId, {
+          shareGrantId: null,
+          actionGrantId: actionGrant.id
+        });
+        if (!ruleControlPollTimer)
+          ruleControlPollTimer = setTimeout(pollRuleControls, 1000);
+      }
+      return result.data.delivery;
+    },
+    async reviewRuleContentPolicy(input) {
+      const result = await command(
+        "collaboration.review_rule_content_policy",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.review_rule_content_policy"
+      )
+        throw new Error("Unexpected collaboration result.");
+      return result.data.review;
+    },
+    async amendRuleContentPolicy(input) {
+      const commandRequestId = crypto.randomUUID();
+      const actionGrant = await waitForActionGrant({
+        intent: "collaboration.amend_rule_content_policy",
+        commandRequestId,
+        ...input
+      });
+      const result = await runApprovedAction(
+        collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: commandRequestId,
+          command: "collaboration.amend_rule_content_policy",
+          input: { ...input, actionGrant }
+        })
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.amend_rule_content_policy" ||
+        result.data.delivery.intent.mutationId !== input.mutationId
+      )
+        throw new Error("Unexpected collaboration result.");
+      if (result.data.delivery.state === "queued") {
+        pendingRuleControls.set(input.mutationId, {
+          shareGrantId: null,
+          actionGrantId: actionGrant.id
+        });
+        if (!ruleControlPollTimer)
+          ruleControlPollTimer = setTimeout(pollRuleControls, 1000);
+      }
+      return result.data.delivery;
+    },
+    async listSharingRuleDeliveries(input) {
+      const result = await command(
+        "collaboration.list_sharing_rule_deliveries",
+        input
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.list_sharing_rule_deliveries"
+      )
+        throw new Error("Unexpected collaboration result.");
+      await observeRuleDeliveries(result.data.deliveries);
+      return result.data.deliveries;
+    },
     async revokeSharedMemory(input) {
       const commandRequestId = crypto.randomUUID();
       const actionGrant = await waitForActionGrant({
@@ -4238,6 +4737,8 @@ export const createCollaborationRendererClient = (
     dispose() {
       if (disposed) return;
       disposed = true;
+      if (ruleControlPollTimer) clearTimeout(ruleControlPollTimer);
+      pendingRuleControls.clear();
       clearPendingDeliveryReceipts();
       appliedReceiptVersions.clear();
       eventQueue.dispose();

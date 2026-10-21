@@ -14,6 +14,8 @@ import {
 } from "@koed/db";
 import * as shared from "@koed/shared";
 import {
+  crossIdentitySyncDigest,
+  repositorySharingRuleCreationReviewSchema,
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
   COLLABORATION_NAME_MAX_CODE_POINTS,
@@ -540,7 +542,8 @@ const remoteSharedGrantIndexSchema = z
     activeRepresentation: z.enum([
       "memory_events",
       "lcm_leaves",
-      "lcm_rollups"
+      "lcm_rollups",
+      "curated_assertions"
     ]),
     representationState: z.enum(["available", "stale"]),
     representationSourceRevision: z.number().int().safe().min(0),
@@ -3522,6 +3525,14 @@ export const registerCollaborationCommandRoute = (
                   input.command.input.intent.intent ===
                     "collaboration.share_memory" ||
                   input.command.input.intent.intent ===
+                    "collaboration.create_conversation_rule" ||
+                  input.command.input.intent.intent ===
+                    "collaboration.create_repository_rule" ||
+                  input.command.input.intent.intent ===
+                    "collaboration.control_repository_rule" ||
+                  input.command.input.intent.intent ===
+                    "collaboration.control_sharing_rule" ||
+                  input.command.input.intent.intent ===
                     "collaboration.change_shared_memory_fidelity"
                 ) {
                   return ["share_grant_management"] as const;
@@ -3593,7 +3604,38 @@ export const registerCollaborationCommandRoute = (
                     localOwnerUserId: user.id,
                     desktopCredentialKeyId: credential.credentialKeyId
                   })
-              : undefined
+              : undefined,
+          resolveRepositoryRuleCreationReview: options.sharedMemoryControl
+            ? async (intent) => {
+                const result = await options.sharedMemoryControl!.dispatch(
+                  {
+                    contractVersion: COLLABORATION_CONTRACT_VERSION,
+                    requestId: intent.commandRequestId,
+                    command: "collaboration.review_repository_rule_creation",
+                    input: intent.review
+                  },
+                  {
+                    upstreamBackendId: input.upstream_backend_id,
+                    localOwnerUserId: user.id,
+                    desktopCredentialKeyId: credential.credentialKeyId
+                  }
+                );
+                if (
+                  !result?.ok ||
+                  result.command !==
+                    "collaboration.review_repository_rule_creation"
+                )
+                  return false;
+                const scope =
+                  repositorySharingRuleCreationReviewSchema.shape.scope
+                    .strip()
+                    .parse({ ...intent, teamWorkspaceId: intent.workspaceId });
+                return (
+                  crossIdentitySyncDigest(scope) ===
+                  crossIdentitySyncDigest(result.data.review.scope)
+                );
+              }
+            : undefined
         });
         return (
           result ?? failureResult(input.command, safeError("not_available"))

@@ -15869,6 +15869,7 @@ describe("account and access flows", () => {
         expect.objectContaining({
           id: project.projectId,
           namedProject: project,
+          projectReference: { ownerUserId, projectId: project.projectId },
           path: null,
           threads: [
             expect.objectContaining({

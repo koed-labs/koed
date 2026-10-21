@@ -576,6 +576,10 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: read
   },
+  "collaboration.review_git_anchor_sharing": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
   "collaboration.control_pending_share": {
     scope: "team",
     desktopOperationFamily: write
@@ -619,6 +623,54 @@ export const collaborationCommandRegistry = {
   "collaboration.share_memory": {
     scope: "team",
     desktopOperationFamily: write
+  },
+  "collaboration.review_conversation_rule_creation": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.create_conversation_rule": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.review_repository_rule_creation": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.create_repository_rule": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.control_sharing_rule": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.control_repository_rule": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.review_rule_detail": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.amend_rule_detail": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.review_rule_content_policy": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.amend_rule_content_policy": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.list_repository_rules": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.list_sharing_rule_deliveries": {
+    scope: "team",
+    desktopOperationFamily: read
   },
   "collaboration.revoke_shared_memory": {
     scope: "team",

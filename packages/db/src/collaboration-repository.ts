@@ -1,3 +1,7 @@
+import {
+  publishedSharedMemoryAuthorizationSql,
+  sharingRuleMembershipSql
+} from "./shared-memory-publication-authority-sql.js";
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import {
@@ -1014,71 +1018,6 @@ const workspaceAccess = async (
   return result.rows[0]?.allowed === true;
 };
 
-type SharedMemoryAuthorizationAliases = {
-  grant: string;
-  consent: string;
-  ownerPolicy: string;
-  teamPolicy: string;
-  workspacePolicy: string;
-};
-
-const fidelityCeilingAuthorizesSql = (
-  ceilingSql: string,
-  representationSql: string
-): string => `case ${ceilingSql}
-  when 'memory_events' then ${representationSql} in ('memory_events', 'lcm_leaves', 'lcm_rollups')
-  when 'lcm_leaves' then ${representationSql} in ('lcm_leaves', 'lcm_rollups')
-  when 'lcm_rollups' then ${representationSql} = 'lcm_rollups'
-  else false
-end`;
-
-const cumulativeRepresentationAuthorizationSql = (
-  representationSql: string,
-  aliases: SharedMemoryAuthorizationAliases
-): string => `
-  (
-    (
-      ${representationSql} = 'curated_assertions'
-      and ${aliases.grant}.include_curated_memory
-      and ${aliases.consent}.include_curated_memory
-      and ${aliases.ownerPolicy}.include_curated_memory
-      and ${aliases.teamPolicy}.include_curated_memory
-      and ${aliases.workspacePolicy}.include_curated_memory
-    )
-    or (
-      ${representationSql} in ('memory_events', 'lcm_leaves', 'lcm_rollups')
-      and ${fidelityCeilingAuthorizesSql(
-        `${aliases.grant}.maximum_fidelity`,
-        representationSql
-      )}
-      and ${fidelityCeilingAuthorizesSql(
-        `${aliases.consent}.maximum_fidelity`,
-        representationSql
-      )}
-      and ${fidelityCeilingAuthorizesSql(
-        `${aliases.ownerPolicy}.maximum_fidelity`,
-        representationSql
-      )}
-      and ${fidelityCeilingAuthorizesSql(
-        `${aliases.teamPolicy}.maximum_fidelity`,
-        representationSql
-      )}
-      and ${fidelityCeilingAuthorizesSql(
-        `${aliases.workspacePolicy}.maximum_fidelity`,
-        representationSql
-      )}
-    )
-  )
-`;
-
-const grantMaximumFidelityAuthorizationSql = (
-  aliases: SharedMemoryAuthorizationAliases
-): string =>
-  cumulativeRepresentationAuthorizationSql(
-    `${aliases.grant}.maximum_fidelity`,
-    aliases
-  );
-
 const activeShareGrant = async (
   client: pg.Pool | pg.PoolClient,
   input: {
@@ -1089,60 +1028,12 @@ const activeShareGrant = async (
   }
 ): Promise<boolean> => {
   const result = await client.query<{ allowed: boolean }>(
-    `
-      select exists (
-        select 1
-        from team_memory_share_grants sg
-        join source_owner_representation_consents consent
-          on consent.id = sg.consent_id
-         and consent.logical_memory_id = sg.logical_memory_id
-         and consent.remote_replica_id is not distinct from sg.remote_replica_id
-         and consent.source_owner_principal_id = sg.owner_principal_id
-         and consent.team_id = sg.team_id
-         and consent.team_workspace_id = sg.team_workspace_id
-         and consent.source_owner_policy_id = sg.source_owner_policy_id
-         and consent.source_owner_policy_version = sg.source_owner_policy_version
-         and consent.team_policy_id = sg.team_policy_id
-         and consent.team_policy_version = sg.team_policy_version
-         and consent.workspace_policy_id = sg.workspace_policy_id
-         and consent.workspace_policy_version = sg.workspace_policy_version
-         and consent.state = 'active'
-         and consent.revoked_at is null
-         and (consent.expires_at is null or consent.expires_at > now())
-        join source_owner_representation_policies owner_policy
-          on owner_policy.policy_id = sg.source_owner_policy_id
-         and owner_policy.version = sg.source_owner_policy_version
-         and owner_policy.logical_memory_id = sg.logical_memory_id
-         and owner_policy.source_owner_principal_id = sg.owner_principal_id
-         and owner_policy.superseded_at is null
-        join team_representation_policies team_policy
-          on team_policy.policy_id = sg.team_policy_id
-         and team_policy.version = sg.team_policy_version
-         and team_policy.team_id = sg.team_id
-         and team_policy.superseded_at is null
-        join workspace_representation_policies workspace_policy
-          on workspace_policy.policy_id = sg.workspace_policy_id
-         and workspace_policy.version = sg.workspace_policy_version
-         and workspace_policy.team_workspace_id = sg.team_workspace_id
-         and workspace_policy.team_id = sg.team_id
-         and workspace_policy.superseded_at is null
-        where sg.id = $1
-          and sg.team_id = $2
-          and sg.team_workspace_id = $3
-          and sg.logical_memory_id = $4
-          and sg.lifecycle = 'active'
-          and sg.revoked_at is null
-          and sg.tombstoned_at is null
-          and sg.purge_completed_at is null
-          and ${grantMaximumFidelityAuthorizationSql({
-            grant: "sg",
-            consent: "consent",
-            ownerPolicy: "owner_policy",
-            teamPolicy: "team_policy",
-            workspacePolicy: "workspace_policy"
-          })}
-      ) as allowed
-    `,
+    `select ${publishedSharedMemoryAuthorizationSql({
+      shareGrantId: "$1",
+      teamId: "$2",
+      teamWorkspaceId: "$3",
+      logicalMemoryId: "$4"
+    })} as allowed`,
     [
       input.shareGrantId,
       input.teamId,
@@ -1152,6 +1043,26 @@ const activeShareGrant = async (
   );
   return result.rows[0]?.allowed === true;
 };
+
+const pendingRuleGrantActivationSql = (
+  grant: string,
+  pending: string
+): string => `(
+  ${grant}.lifecycle='unavailable' or (${grant}.lifecycle='active' and exists(
+    select 1 from pending_sharing_rule_admissions creation
+    join team_memory_sharing_rules rule on rule.id=creation.rule_id
+      and rule.owner_user_id=${grant}.owner_user_id
+      and rule.team_id=${grant}.team_id and rule.team_workspace_id=${grant}.team_workspace_id
+      and rule.state in ('active','paused')
+    join team_memory_share_reasons reason on reason.rule_id=rule.id and reason.kind='rule'
+      and reason.share_grant_id=${grant}.id and reason.consent_id=${pending}.consent_id
+      and ${sharingRuleMembershipSql("rule", "reason", grant)}
+    join source_owner_representation_consents consent on consent.id=reason.consent_id
+      and consent.state in ('active','paused') and consent.revoked_at is null
+      and (consent.expires_at is null or consent.expires_at>now())
+    where creation.pending_share_id=${pending}.id
+  ))
+)`;
 
 const pendingShareGrant = async (
   client: pg.Pool | pg.PoolClient,
@@ -1170,7 +1081,7 @@ const pendingShareGrant = async (
          join pending_share_operations p on p.grant_id=g.id
         where g.id=$1 and g.team_id=$2 and g.team_workspace_id=$3
           and g.logical_memory_id=$4 and g.owner_user_id=$5
-          and g.lifecycle='unavailable' and g.revoked_at is null
+          and ${pendingRuleGrantActivationSql("g", "p")} and g.revoked_at is null
           and p.owner_user_id=$5 and p.state in ('preparing','needs_attention')
           and p.stage='activating' and p.workspace_access_state='none'
           and p.revoked_at is null
@@ -1208,41 +1119,6 @@ const authorizedThreadJoinsSql = `
    and workspace_access.team_id = ct.team_id
    and workspace_access.user_id = $1
    and workspace_access.disabled_at is null
-  left join team_memory_share_grants share_grant
-    on share_grant.id = ct.share_grant_id
-   and share_grant.team_id = ct.team_id
-   and share_grant.team_workspace_id = ct.team_workspace_id
-   and share_grant.logical_memory_id = ct.shared_logical_memory_id
-  left join source_owner_representation_consents share_consent
-    on share_consent.id = share_grant.consent_id
-   and share_consent.logical_memory_id = share_grant.logical_memory_id
-   and share_consent.remote_replica_id is not distinct from share_grant.remote_replica_id
-   and share_consent.source_owner_principal_id = share_grant.owner_principal_id
-   and share_consent.team_id = share_grant.team_id
-   and share_consent.team_workspace_id = share_grant.team_workspace_id
-   and share_consent.source_owner_policy_id = share_grant.source_owner_policy_id
-   and share_consent.source_owner_policy_version = share_grant.source_owner_policy_version
-   and share_consent.team_policy_id = share_grant.team_policy_id
-   and share_consent.team_policy_version = share_grant.team_policy_version
-   and share_consent.workspace_policy_id = share_grant.workspace_policy_id
-   and share_consent.workspace_policy_version = share_grant.workspace_policy_version
-  left join source_owner_representation_policies current_owner_policy
-    on current_owner_policy.policy_id = share_grant.source_owner_policy_id
-   and current_owner_policy.version = share_grant.source_owner_policy_version
-   and current_owner_policy.logical_memory_id = share_grant.logical_memory_id
-   and current_owner_policy.source_owner_principal_id = share_grant.owner_principal_id
-   and current_owner_policy.superseded_at is null
-  left join team_representation_policies current_team_policy
-    on current_team_policy.policy_id = share_grant.team_policy_id
-   and current_team_policy.version = share_grant.team_policy_version
-   and current_team_policy.team_id = share_grant.team_id
-   and current_team_policy.superseded_at is null
-  left join workspace_representation_policies current_workspace_policy
-    on current_workspace_policy.policy_id = share_grant.workspace_policy_id
-   and current_workspace_policy.version = share_grant.workspace_policy_version
-   and current_workspace_policy.team_workspace_id = share_grant.team_workspace_id
-   and current_workspace_policy.team_id = share_grant.team_id
-   and current_workspace_policy.superseded_at is null
   left join collaboration_receipt_states read_state
     on read_state.thread_id = ct.id
    and read_state.user_id = $1
@@ -1287,19 +1163,11 @@ const authorizedThreadPredicate = (required: "read" | "write"): string => `
           and workspace_access.access ${
             required === "write" ? "= 'write'" : "in ('read', 'write')"
           }
-          and share_grant.lifecycle = 'active'
-          and share_grant.revoked_at is null
-          and share_grant.tombstoned_at is null
-          and share_grant.purge_completed_at is null
-          and share_consent.state = 'active'
-          and share_consent.revoked_at is null
-          and (share_consent.expires_at is null or share_consent.expires_at > now())
-          and ${grantMaximumFidelityAuthorizationSql({
-            grant: "share_grant",
-            consent: "share_consent",
-            ownerPolicy: "current_owner_policy",
-            teamPolicy: "current_team_policy",
-            workspacePolicy: "current_workspace_policy"
+          and ${publishedSharedMemoryAuthorizationSql({
+            shareGrantId: "ct.share_grant_id",
+            teamId: "ct.team_id",
+            teamWorkspaceId: "ct.team_workspace_id",
+            logicalMemoryId: "ct.shared_logical_memory_id"
           })}
         )
       )
@@ -1372,7 +1240,7 @@ const getAuthorizedThreadRow = async (
                        and pending_grant.team_workspace_id = ct.team_workspace_id
                        and pending_grant.logical_memory_id = ct.shared_logical_memory_id
                        and pending_grant.owner_user_id = $1
-                       and pending_grant.lifecycle = 'unavailable'
+                       and ${pendingRuleGrantActivationSql("pending_grant", "pending_share")}
                        and pending_grant.revoked_at is null
                        and pending_share.owner_user_id = $1
                        and pending_share.state in ('preparing', 'needs_attention')
@@ -2013,142 +1881,25 @@ const sharedMemoryScopedEventSql = `(
   or (event.family = 'access_revoked' and event.share_grant_id is not null)
 )`;
 
-const activeSharedMemoryGrantEventAuthorizationSql = `exists (
-  select 1
-  from team_memory_share_grants realtime_grant
-  join source_owner_representation_consents realtime_consent
-    on realtime_consent.id = realtime_grant.consent_id
-   and realtime_consent.logical_memory_id = realtime_grant.logical_memory_id
-   and realtime_consent.remote_replica_id is not distinct from realtime_grant.remote_replica_id
-   and realtime_consent.source_owner_principal_id = realtime_grant.owner_principal_id
-   and realtime_consent.team_id = realtime_grant.team_id
-   and realtime_consent.team_workspace_id = realtime_grant.team_workspace_id
-   and realtime_consent.source_owner_policy_id = realtime_grant.source_owner_policy_id
-   and realtime_consent.source_owner_policy_version = realtime_grant.source_owner_policy_version
-   and realtime_consent.team_policy_id = realtime_grant.team_policy_id
-   and realtime_consent.team_policy_version = realtime_grant.team_policy_version
-   and realtime_consent.workspace_policy_id = realtime_grant.workspace_policy_id
-   and realtime_consent.workspace_policy_version = realtime_grant.workspace_policy_version
-   and realtime_consent.state = 'active'
-   and realtime_consent.revoked_at is null
-   and (realtime_consent.expires_at is null or realtime_consent.expires_at > now())
-  join source_owner_representation_policies realtime_owner_policy
-    on realtime_owner_policy.policy_id = realtime_grant.source_owner_policy_id
-   and realtime_owner_policy.version = realtime_grant.source_owner_policy_version
-   and realtime_owner_policy.logical_memory_id = realtime_grant.logical_memory_id
-   and realtime_owner_policy.source_owner_principal_id = realtime_grant.owner_principal_id
-   and realtime_owner_policy.superseded_at is null
-  join team_representation_policies realtime_team_policy
-    on realtime_team_policy.policy_id = realtime_grant.team_policy_id
-   and realtime_team_policy.version = realtime_grant.team_policy_version
-   and realtime_team_policy.team_id = realtime_grant.team_id
-   and realtime_team_policy.superseded_at is null
-  join workspace_representation_policies realtime_workspace_policy
-    on realtime_workspace_policy.policy_id = realtime_grant.workspace_policy_id
-   and realtime_workspace_policy.version = realtime_grant.workspace_policy_version
-   and realtime_workspace_policy.team_id = realtime_grant.team_id
-   and realtime_workspace_policy.team_workspace_id = realtime_grant.team_workspace_id
-   and realtime_workspace_policy.superseded_at is null
-  where realtime_grant.id = event.share_grant_id
-    and realtime_grant.team_id = event.team_id
-    and realtime_grant.team_workspace_id = event.team_workspace_id
-    and realtime_grant.logical_memory_id = event.logical_memory_id
-    and realtime_grant.lifecycle = 'active'
-    and realtime_grant.revoked_at is null
-    and realtime_grant.tombstoned_at is null
-    and realtime_grant.purge_completed_at is null
-    and ${grantMaximumFidelityAuthorizationSql({
-      grant: "realtime_grant",
-      consent: "realtime_consent",
-      ownerPolicy: "realtime_owner_policy",
-      teamPolicy: "realtime_team_policy",
-      workspacePolicy: "realtime_workspace_policy"
-    })}
-)`;
-
-const sharedMemoryRepresentationEventAuthorizationSql = `exists (
-  select 1
-  from team_memory_representations realtime_representation
-  join team_memory_share_grants realtime_grant
-    on realtime_grant.id = realtime_representation.share_grant_id
-   and realtime_grant.consent_id = realtime_representation.consent_id
-   and realtime_grant.team_id = realtime_representation.team_id
-   and realtime_grant.team_workspace_id = realtime_representation.team_workspace_id
-   and realtime_grant.logical_memory_id = realtime_representation.logical_memory_id
-  join source_owner_representation_consents realtime_consent
-    on realtime_consent.id = realtime_grant.consent_id
-   and realtime_consent.logical_memory_id = realtime_grant.logical_memory_id
-   and realtime_consent.remote_replica_id is not distinct from realtime_grant.remote_replica_id
-   and realtime_consent.source_owner_principal_id = realtime_grant.owner_principal_id
-   and realtime_consent.team_id = realtime_grant.team_id
-   and realtime_consent.team_workspace_id = realtime_grant.team_workspace_id
-   and realtime_consent.source_owner_policy_id = realtime_grant.source_owner_policy_id
-   and realtime_consent.source_owner_policy_version = realtime_grant.source_owner_policy_version
-   and realtime_consent.team_policy_id = realtime_grant.team_policy_id
-   and realtime_consent.team_policy_version = realtime_grant.team_policy_version
-   and realtime_consent.workspace_policy_id = realtime_grant.workspace_policy_id
-   and realtime_consent.workspace_policy_version = realtime_grant.workspace_policy_version
-   and realtime_consent.state = 'active'
-   and realtime_consent.revoked_at is null
-   and (realtime_consent.expires_at is null or realtime_consent.expires_at > now())
-  join source_owner_representation_policies realtime_owner_policy
-    on realtime_owner_policy.policy_id = realtime_grant.source_owner_policy_id
-   and realtime_owner_policy.version = realtime_grant.source_owner_policy_version
-   and realtime_owner_policy.logical_memory_id = realtime_grant.logical_memory_id
-   and realtime_owner_policy.source_owner_principal_id = realtime_grant.owner_principal_id
-   and realtime_owner_policy.superseded_at is null
-  join team_representation_policies realtime_team_policy
-    on realtime_team_policy.policy_id = realtime_grant.team_policy_id
-   and realtime_team_policy.version = realtime_grant.team_policy_version
-   and realtime_team_policy.team_id = realtime_grant.team_id
-   and realtime_team_policy.superseded_at is null
-  join workspace_representation_policies realtime_workspace_policy
-    on realtime_workspace_policy.policy_id = realtime_grant.workspace_policy_id
-   and realtime_workspace_policy.version = realtime_grant.workspace_policy_version
-   and realtime_workspace_policy.team_id = realtime_grant.team_id
-   and realtime_workspace_policy.team_workspace_id = realtime_grant.team_workspace_id
-   and realtime_workspace_policy.superseded_at is null
-  where event.resource_type = 'team_memory_representation'
-    and realtime_representation.id = event.resource_id
-    and realtime_representation.share_grant_id = event.share_grant_id
-    and realtime_representation.team_id = event.team_id
-    and realtime_representation.team_workspace_id = event.team_workspace_id
-    and realtime_representation.logical_memory_id = event.logical_memory_id
-    and realtime_representation.source_owner_policy_id = realtime_grant.source_owner_policy_id
-    and realtime_representation.source_owner_policy_version = realtime_grant.source_owner_policy_version
-    and realtime_representation.team_policy_id = realtime_grant.team_policy_id
-    and realtime_representation.team_policy_version = realtime_grant.team_policy_version
-    and realtime_representation.workspace_policy_id = realtime_grant.workspace_policy_id
-    and realtime_representation.workspace_policy_version = realtime_grant.workspace_policy_version
-    and realtime_representation.fidelity_policy_revision = realtime_grant.fidelity_policy_revision
-    and realtime_representation.content_policy_version = realtime_grant.content_policy_version
-    and realtime_representation.classifier_version = realtime_grant.classifier_version
-    and realtime_representation.state in ('available', 'stale')
-    and realtime_representation.invalidated_at is null
-    and (
-      realtime_representation.curated_expires_at is null
-      or realtime_representation.curated_expires_at > now()
-    )
-    and realtime_grant.lifecycle = 'active'
-    and realtime_grant.revoked_at is null
-    and realtime_grant.tombstoned_at is null
-    and realtime_grant.purge_completed_at is null
-    and (
-      (event.family = 'memory_event_available' and realtime_representation.representation = 'memory_events')
-      or (event.family = 'lcm_leaf_available' and realtime_representation.representation = 'lcm_leaves')
-      or (event.family = 'lcm_rollup_available' and realtime_representation.representation = 'lcm_rollups')
-      or (event.family = 'fidelity_changed' and realtime_representation.representation = 'curated_assertions')
-    )
-    and ${cumulativeRepresentationAuthorizationSql(
-      "realtime_representation.representation",
-      {
-        grant: "realtime_grant",
-        consent: "realtime_consent",
-        ownerPolicy: "realtime_owner_policy",
-        teamPolicy: "realtime_team_policy",
-        workspacePolicy: "realtime_workspace_policy"
-      }
-    )}
+const activeSharedMemoryGrantEventAuthorizationSql =
+  publishedSharedMemoryAuthorizationSql({
+    shareGrantId: "event.share_grant_id",
+    teamId: "event.team_id",
+    teamWorkspaceId: "event.team_workspace_id",
+    logicalMemoryId: "event.logical_memory_id"
+  });
+const sharedMemoryRepresentationEventAuthorizationSql = `(
+  event.resource_type='team_memory_representation'
+  and ${publishedSharedMemoryAuthorizationSql({
+    shareGrantId: "event.share_grant_id",
+    teamId: "event.team_id",
+    teamWorkspaceId: "event.team_workspace_id",
+    logicalMemoryId: "event.logical_memory_id",
+    representationId: "event.resource_id",
+    representation: `case event.family when 'memory_event_available' then 'memory_events'
+      when 'lcm_leaf_available' then 'lcm_leaves' when 'lcm_rollup_available' then 'lcm_rollups'
+      when 'fidelity_changed' then 'curated_assertions' else null end`
+  })}
 )`;
 
 const exactSharedMemoryGrantEventBindingSql = `exists (

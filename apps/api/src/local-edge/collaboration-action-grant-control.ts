@@ -68,6 +68,12 @@ export interface CollaborationActionGrantControlContext {
   operationFamilies: ReadonlySet<
     "action_grant" | "share_grant_management" | "managed_execution"
   >;
+  resolveRepositoryRuleCreationReview?: (
+    input: Extract<
+      CollaborationActionGrantIntent,
+      { intent: "collaboration.create_repository_rule" }
+    >
+  ) => Promise<boolean>;
   resolveSharedMemoryPreviewTarget?: (input: {
     source: SharedMemorySourceRef;
     sourceCapabilities: Array<
@@ -421,6 +427,13 @@ export const createCollaborationActionGrantControl = (
           const intent = collaborationActionGrantIntentSchema.parse(
             command.input.intent
           );
+          if (intent.intent === "collaboration.amend_rule_content_policy")
+            return failure(command, new ControlFailure("not_available"));
+          if (
+            intent.intent === "collaboration.create_repository_rule" &&
+            !(await context.resolveRepositoryRuleCreationReview?.(intent))
+          )
+            return failure(command, new ControlFailure("permission_denied"));
           const previewTarget =
             intent.intent === "collaboration.preview_shared_memory"
               ? await context.resolveSharedMemoryPreviewTarget?.({
@@ -437,6 +450,7 @@ export const createCollaborationActionGrantControl = (
               : null;
           const consentPreview =
             intent.intent === "collaboration.share_memory" ||
+            intent.intent === "collaboration.create_conversation_rule" ||
             intent.intent === "collaboration.change_shared_memory_fidelity"
               ? await context.resolveSharedMemoryConsentPreview?.({
                   source: intent.source,
@@ -460,7 +474,8 @@ export const createCollaborationActionGrantControl = (
             return failure(command, new ControlFailure("permission_denied"));
           }
           if (
-            intent.intent === "collaboration.share_memory" &&
+            (intent.intent === "collaboration.share_memory" ||
+              intent.intent === "collaboration.create_conversation_rule") &&
             !consentPreview
           ) {
             return failure(command, new ControlFailure("permission_denied"));

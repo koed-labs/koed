@@ -1,4 +1,14 @@
 export { createAuditRepository } from "./audit-repository.js";
+export { createSelectionSharingReconciliation } from "./selection-sharing-reconciliation.js";
+export {
+  createSelectionSharingJournal,
+  recordSelectionSharingDetailScope,
+  recordSelectionSharingContentPolicyScope,
+  selectionSharingSourceKey,
+  selectionSharingGoalHash,
+  type SelectionSharingProgressLease,
+  type SelectionSharingSourceLease
+} from "./selection-sharing-journal.js";
 export { createRemoteMcpOAuthRepository } from "./remote-mcp-oauth-repository.js";
 export type {
   RemoteMcpOAuthStore,
@@ -68,6 +78,7 @@ export {
   type CollaborationSharedMemoryAuthorityBindingRepository,
   type CollaborationSharedMemoryAuthorityIdentity,
   type CollaborationSharedMemoryAuthorityRepository,
+  type CollaborationSharingRuleDeliveryWork,
   type CollaborationSharedMemoryAuthorityStore,
   type CollaborationSharedMemoryAuthorityStoreOptions,
   type CollaborationSharedMemoryCanonicalSourceItem,
@@ -418,9 +429,13 @@ export {
   type SharedMemoryCandidatePreviewRecord,
   type PendingShareRecord,
   type SharedMemoryRevokeReviewRecord,
+  type SharedMemoryRuleControlReviewRecord,
   type SharedMemoryReviewDestination,
   type SharedMemoryReviewSource,
   type SharedMemoryRepository,
+  type PendingConversationSharingRuleAuthority,
+  type RepositorySharingRuleMemberAdmission,
+  type RepositorySharingRuleMemberAcceptance,
   type SharedMemorySourceBindingDto
 } from "./shared-memory-repository.js";
 export {

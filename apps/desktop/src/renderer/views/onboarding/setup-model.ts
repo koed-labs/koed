@@ -104,7 +104,7 @@ export const setupStepsFromStatus = (status: KoedServerStatus): SetupStep[] => {
     }),
     step({
       id: "model",
-      title: "Local models",
+      title: "Memory models",
       description:
         "Install the verified local models used to protect, index, and recall Memory.",
       components: [

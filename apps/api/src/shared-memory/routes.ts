@@ -16,14 +16,41 @@ import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
+  sharedMemoryConversationRuleCreationActionGrantBinding,
+  sharedMemoryRepositoryRuleCreationActionGrantBinding,
+  repositorySharingRuleCreationReviewInputSchema,
+  repositorySharingRuleCreationIntentSchema,
+  repositorySharingRuleCreationResultSchema,
+  repositorySharingRuleMemberAcceptanceSchema,
+  repositorySharingRuleMembersInspectSchema,
+  repositorySharingRuleMembersStateSchema,
+  repositorySharingRuleMemberContextSchema,
+  repositorySharingRuleMemberContextResultSchema,
+  repositorySharingRuleMemberRemovalSchema,
+  repositorySharingRuleMemberRemovalResultSchema,
+  repositorySharingRuleMutationCancellationSchema,
+  repositorySharingRuleMutationSettlementSchema,
   sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryRuleControlActionGrantBinding,
+  sharedMemoryRuleDetailActionGrantBinding,
+  sharingRuleDetailReviewInputSchema,
+  sharingRuleDetailReviewSchema,
+  sharingRuleDetailResultSchema,
+  sharedMemoryRepositoryRuleControlActionGrantBinding,
+  repositorySharingRuleControlResultSchema,
+  ownedRepositorySharingRulesInputSchema,
+  ownedRepositorySharingRulesPageSchema,
+  conversationSharingRuleControlResultSchema,
+  conversationSharingRuleCreationReviewInputSchema,
+  conversationSharingRuleCreationReviewSchema,
   sharedMemoryRepositorySnapshotActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
   pendingShareSchema,
   sharedMemoryGrantScopedSourceId,
+  sharingDestinationReviewSchema,
   validateSharedMemoryCanonicalSourceItem,
   SharedMemoryConflictError,
   SharedMemorySourceItemRejectedError,
@@ -45,6 +72,10 @@ import {
   advanceContinuousPersonalNoteRevisionSchema,
   changeSharedMemoryFidelityBundleSchema,
   createPendingShareSchema,
+  createConversationSharingRuleSchema,
+  createRepositorySharingRuleSchema,
+  amendSharingRuleDetailSchema,
+  createRepositorySharingRuleMemberSchema,
   createSharedMemoryCandidatePreviewSchema,
   createSharedMemoryPreviewSchema,
   controlPendingShareSchema,
@@ -57,6 +88,8 @@ import {
   readGrantRepresentationPageQuerySchema,
   readGrantRepresentationQuerySchema,
   revokeShareGrantSchema,
+  controlConversationSharingRuleSchema,
+  controlRepositorySharingRuleSchema,
   revokeTeamConversationSourceGrantSchema,
   scopedShareGrantParamsSchema,
   shareGrantParamsSchema,
@@ -188,6 +221,20 @@ const authenticateSourceOwner = async (
     "share_grant_management",
     { apiTokenError: "API Tokens cannot authorize Shared Memory operations" }
   );
+
+const authenticateRulePublisher = async (
+  request: FastifyRequest,
+  context: SharedMemoryRouteContext
+) => {
+  rejectApiToken(request);
+  const device = await context.authenticateDeviceCredential(request);
+  if (
+    !device.credential.operationFamilies.includes("share_grant_management") ||
+    !device.credential.operationFamilies.includes("sync")
+  )
+    throw forbidden();
+  return device;
+};
 
 const authenticateSourceOwnerAuthority = async (
   request: FastifyRequest,
@@ -719,6 +766,314 @@ export const registerSharedMemoryRoutes = (
   app: FastifyInstance,
   context: SharedMemoryRouteContext
 ): void => {
+  app.get(
+    "/v1/shared-memory/teams/:teamId/workspaces/:teamWorkspaceId/sharing-review",
+    { preHandler: context.readRateLimit },
+    async (request) => {
+      const actor = await authenticateSourceOwner(request, context);
+      const params = workspacePolicyParamsSchema.parse(request.params);
+      const query = z
+        .object({
+          representation: z.enum(["memory_events", "lcm_leaves", "lcm_rollups"])
+        })
+        .strict()
+        .parse(request.query);
+      const policy = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .getSharedMemoryCandidatePreviewAdmission(
+            { userId: actor.id },
+            {
+              ...params,
+              representation: query.representation,
+              maximumFidelity: query.representation,
+              includeCuratedMemory: false
+            }
+          )
+      );
+      if (!policy) throw conflict();
+      return {
+        review: sharingDestinationReviewSchema.parse({
+          ...policy,
+          teamId: params.teamId,
+          workspaceId: params.teamWorkspaceId,
+          representation: query.representation
+        })
+      };
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/conversation-rules/review",
+    { preHandler: context.readRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const actor = await authenticateSourceOwner(request, context);
+      const input = conversationSharingRuleCreationReviewInputSchema.parse(
+        request.body
+      );
+      const review = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .getConversationSharingRuleCreationReview({ userId: actor.id }, input)
+      );
+      if (!review) throw conflict();
+      return {
+        review: conversationSharingRuleCreationReviewSchema.parse(review)
+      };
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/repository-rules/review",
+    { preHandler: context.readRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const actor = await authenticateSourceOwner(request, context);
+      const input = repositorySharingRuleCreationReviewInputSchema.parse(
+        request.body
+      );
+      const review = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .getRepositorySharingRuleCreationReview({ userId: actor.id }, input)
+      );
+      if (!review) throw conflict();
+      return { review };
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/repository-rules",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      rejectApiToken(request);
+      const input = createRepositorySharingRuleSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      if (authenticated.kind !== "device") throw forbidden();
+      const intent = repositorySharingRuleCreationIntentSchema
+        .strip()
+        .parse(input);
+      const binding = sharedMemoryRepositoryRuleCreationActionGrantBinding({
+        ...intent,
+        referenceId: authenticated.authority.referenceId
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => ({
+            statusCode: 201,
+            body: {
+              rule: repositorySharingRuleCreationResultSchema.parse(
+                await repository.createRepositorySharingRule(
+                  { userId: authenticated.actor.id },
+                  {
+                    ...intent,
+                    publisherCredentialId: authenticated.auth.credential.id,
+                    authority: authenticated.authority
+                  }
+                )
+              )
+            }
+          })
+        )
+      );
+      return reply.status(result.statusCode).send(result.body);
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/repository-rules/owned",
+    { preHandler: context.readRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const actor = await authenticateSourceOwner(request, context);
+      const input = ownedRepositorySharingRulesInputSchema.parse(request.body);
+      return {
+        page: ownedRepositorySharingRulesPageSchema.parse(
+          await executeRepositoryOperation(() =>
+            context
+              .requireSharedMemoryRepository()
+              .listOwnedRepositorySharingRules({ userId: actor.id }, input)
+          )
+        )
+      };
+    }
+  );
+  app.post(
+    "/v1/shared-memory/repository-rules/:ruleId/control",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      rejectApiToken(request);
+      const { ruleId } = z
+        .object({ ruleId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const input = controlRepositorySharingRuleSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      if (authenticated.kind !== "device") throw forbidden();
+      const binding = sharedMemoryRepositoryRuleControlActionGrantBinding({
+        ...input,
+        ruleId,
+        referenceId: authenticated.authority.referenceId
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const controlled = await repository.controlRepositorySharingRule(
+              { userId: authenticated.actor.id },
+              { ...input, ruleId, authority: authenticated.authority }
+            );
+            const control =
+              repositorySharingRuleControlResultSchema.parse(controlled);
+            if (control.ruleId !== ruleId) return null;
+            return { statusCode: 200, body: { control } };
+          }
+        )
+      );
+      return reply.status(result.statusCode).send(result.body);
+    }
+  );
+  app.post(
+    "/v1/shared-memory/repository-rules/:ruleId/members",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      const device = await authenticateRulePublisher(request, context);
+      const { ruleId } = z
+        .object({ ruleId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const input = createRepositorySharingRuleMemberSchema.parse(request.body);
+      const admission = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .createPendingRepositoryRuleMember(
+            { userId: device.user.id },
+            {
+              ...input,
+              publisherCredentialId: device.credential.id,
+              membership: { ...input.membership, ruleId }
+            }
+          )
+      );
+      return reply.status(202).send({
+        admission: repositorySharingRuleMemberAcceptanceSchema.parse(admission)
+      });
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/repository-rules/:ruleId/members/cancel-mutation",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const device = await authenticateRulePublisher(request, context);
+      const { ruleId } = z
+        .object({ ruleId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const input = repositorySharingRuleMutationCancellationSchema.parse(
+        request.body
+      );
+      const settlement = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .cancelRepositorySharingRuleMutation(
+            { userId: device.user.id },
+            { ...input, ruleId, publisherCredentialId: device.credential.id }
+          )
+      );
+      return {
+        settlement:
+          repositorySharingRuleMutationSettlementSchema.parse(settlement)
+      };
+    }
+  );
+  app.post(
+    "/v1/shared-memory/repository-rules/:ruleId/members/inspect",
+    { preHandler: context.readRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const device = await authenticateRulePublisher(request, context);
+      const { ruleId } = z
+        .object({ ruleId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const input = repositorySharingRuleMembersInspectSchema.parse(
+        request.body
+      );
+      const members = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .inspectRepositorySharingRuleMembers(
+            { userId: device.user.id },
+            { ...input, ruleId, publisherCredentialId: device.credential.id }
+          )
+      );
+      return {
+        members: repositorySharingRuleMembersStateSchema.parse(members)
+      };
+    }
+  );
+  app.post(
+    "/v1/shared-memory/repository-rules/:ruleId/members/:membershipId/context",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const device = await authenticateRulePublisher(request, context);
+      const params = z
+        .object({ ruleId: z.uuid(), membershipId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const input = repositorySharingRuleMemberContextSchema.parse(
+        request.body
+      );
+      const member = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .refreshRepositorySharingRuleMemberContext(
+            { userId: device.user.id },
+            { ...params, ...input, publisherCredentialId: device.credential.id }
+          )
+      );
+      return {
+        member: repositorySharingRuleMemberContextResultSchema.parse(member)
+      };
+    }
+  );
+  app.post(
+    "/v1/shared-memory/repository-rules/:ruleId/members/:membershipId/remove",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const device = await authenticateRulePublisher(request, context);
+      const params = z
+        .object({ ruleId: z.uuid(), membershipId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const input = repositorySharingRuleMemberRemovalSchema.parse(
+        request.body
+      );
+      const member = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .removeSharingRuleMember(
+            { userId: device.user.id },
+            { ...params, ...input, publisherCredentialId: device.credential.id }
+          )
+      );
+      return {
+        member: repositorySharingRuleMemberRemovalResultSchema.parse(member)
+      };
+    }
+  );
+
   app.put(
     "/v1/shared-memory/source-owner-policies/:logicalMemoryId",
     { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
@@ -891,6 +1246,58 @@ export const registerSharedMemoryRoutes = (
         )
       );
       return result.body;
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/conversation-rules",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      rejectApiToken(request);
+      const input = createConversationSharingRuleSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      // The enrolled Personal device executes and publishes this source's rule.
+      if (authenticated.kind !== "device") throw forbidden();
+      const binding = sharedMemoryConversationRuleCreationActionGrantBinding({
+        ...input,
+        referenceId: authenticated.authority.referenceId,
+        previewId: input.preview.previewId,
+        previewHash: input.preview.previewHash
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => ({
+            statusCode: 202,
+            body: {
+              ruleId: input.ruleId,
+              pendingShare: pendingShareDto(
+                await repository.createPendingConversationSharingRule(
+                  { userId: authenticated.actor.id },
+                  {
+                    ...input,
+                    authority: authenticated.authority,
+                    ruleCreation: {
+                      ruleId: input.ruleId,
+                      publisherCredentialId: authenticated.auth.credential.id,
+                      expectedGrantVersion: input.expectedGrantVersion,
+                      effectivePrivacyPolicyHash:
+                        input.effectivePrivacyPolicyHash
+                    }
+                  }
+                )
+              )
+            }
+          })
+        )
+      );
+      return reply.status(result.statusCode).send(result.body);
     }
   );
 
@@ -1205,6 +1612,156 @@ export const registerSharedMemoryRoutes = (
               statusCode: input.expectedVersion === 0 ? 201 : 200,
               body: { transcriptAccess: transcriptAccessDto(grant) }
             };
+          }
+        )
+      );
+      return reply.status(result.statusCode).send(result.body);
+    }
+  );
+
+  app.post(
+    "/v1/shared-memory/sharing-rules/:ruleId/detail-review",
+    { preHandler: context.readRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request) => {
+      const actor = await authenticateSourceOwner(request, context);
+      const params = z
+        .object({ ruleId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const input = sharingRuleDetailReviewInputSchema
+        .omit({ ruleId: true })
+        .parse(request.body);
+      const review = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .getSharingRuleDetailReview(
+            { userId: actor.id },
+            { ...input, ruleId: params.ruleId }
+          )
+      );
+      if (!review) throw conflict();
+      return { review: sharingRuleDetailReviewSchema.parse(review) };
+    }
+  );
+  app.post(
+    "/v1/shared-memory/sharing-rules/:ruleId/detail",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      rejectApiToken(request);
+      const params = z
+        .object({ ruleId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const input = amendSharingRuleDetailSchema.parse(request.body);
+      if (params.ruleId !== input.review.ruleId) throw forbidden();
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      if (authenticated.kind !== "device") throw forbidden();
+      const binding = sharedMemoryRuleDetailActionGrantBinding({
+        mutationId: input.mutationId,
+        review: input.review,
+        referenceId: authenticated.authority.referenceId
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const detailAmendment = sharingRuleDetailResultSchema.parse(
+              await repository.amendSharingRuleDetail(
+                { userId: authenticated.actor.id },
+                {
+                  mutationId: input.mutationId,
+                  review: input.review,
+                  authority: authenticated.authority
+                }
+              )
+            );
+            if (
+              detailAmendment.ruleId !== params.ruleId ||
+              detailAmendment.mutationId !== input.mutationId
+            )
+              return null;
+            return { statusCode: 200, body: { detailAmendment } };
+          }
+        )
+      );
+      return reply.status(result.statusCode).send(result.body);
+    }
+  );
+
+  // P2-09 is deferred. Keep explicit rejections for stale clients and approved
+  // requests without changing stored policy restrictions or approval records.
+  for (const suffix of ["content-policy-review", "content-policy"]) {
+    app.post(
+      `/v1/shared-memory/sharing-rules/:ruleId/${suffix}`,
+      { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+      (request) => {
+        rejectApiToken(request);
+        throw Object.assign(
+          new Error("Rule content-policy editing is unavailable in this alpha"),
+          { statusCode: 409 }
+        );
+      }
+    );
+  }
+
+  app.post(
+    "/v1/shared-memory/sharing-rules/:ruleId/control",
+    { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+    async (request, reply) => {
+      rejectApiToken(request);
+      const params = z
+        .object({ ruleId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const input = controlConversationSharingRuleSchema.parse(request.body);
+      const authenticated = await authenticateSourceOwnerAuthority(
+        request,
+        context,
+        input.authority
+      );
+      const binding = sharedMemoryRuleControlActionGrantBinding({
+        ...input,
+        ruleId: params.ruleId,
+        referenceId: authenticated.authority.referenceId
+      });
+      const result = await executeRepositoryOperation(() =>
+        runHighRiskSharedMemoryWrite(
+          context,
+          authenticated,
+          binding,
+          async (repository) => {
+            const controlled = await repository.controlConversationSharingRule(
+              { userId: authenticated.actor.id },
+              {
+                ruleId: params.ruleId,
+                reasonId: input.reasonId,
+                shareGrantId: input.shareGrantId,
+                mutationId: input.mutationId,
+                expectedAuthorityVersion: input.expectedAuthorityVersion,
+                expectedGrantVersion: input.expectedGrantVersion,
+                action: input.controlAction,
+                destination: {
+                  teamId: input.teamId,
+                  teamWorkspaceId: input.teamWorkspaceId
+                },
+                authority: authenticated.authority
+              }
+            );
+            const control =
+              conversationSharingRuleControlResultSchema.parse(controlled);
+            if (
+              control.ruleId !== params.ruleId ||
+              control.reasonId !== input.reasonId ||
+              control.shareGrantId !== input.shareGrantId
+            )
+              return null;
+            return { statusCode: 200, body: { control } };
           }
         )
       );

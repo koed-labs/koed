@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   personalSelectionConsumerStartSchema,
-  personalSelectionConsumerContinueSchema
+  personalSelectionConsumerContinueSchema,
+  personalSelectionMemberEvaluationInputSchema
 } from "@koed/shared";
 
 /** Owner configuration APIs expose metadata only. A selection/cursor is never
@@ -35,6 +36,17 @@ export const registerPersonalSelectionConsumerRoutes = (
       return requireRepository().continuePersonalSelectionEnumeration(
         { userId: user.id },
         personalSelectionConsumerContinueSchema.parse(request.body)
+      );
+    }
+  );
+  app.post(
+    "/v1/personal/selections/evaluate-members",
+    { preHandler: read },
+    async (request) => {
+      const user = await authenticate(request);
+      return requireRepository().evaluatePersonalSelectionMembers(
+        { userId: user.id },
+        personalSelectionMemberEvaluationInputSchema.parse(request.body)
       );
     }
   );

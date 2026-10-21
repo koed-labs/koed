@@ -403,6 +403,8 @@ _Avoid_: Share revocation, Access Suspension, Project removal
   **Team** in one **Workspace**; the first implemented source is a
   **Captured Session**
 - A **Share Grant** may allow summary-only recall or source-detail expansion
+- A Personal **Project** remains private when it selects **Memory** for sharing
+  to a **Workspace**. Sharing does not publish its name or private membership structure
 - Continuous sharing of a **Folder**, **Git Anchor**, or named **Project**
   includes existing and future matching **Conversations** and their later turns
 - Continuous sharing of one **Conversation** includes only that Conversation
@@ -411,6 +413,22 @@ _Avoid_: Share revocation, Access Suspension, Project removal
   publication. Resuming catches up with currently eligible members and content
 - Stopping sharing revokes the access supplied by that sharing action and
   preserves **Personal Memory** and independently authorized sharing
+- Removing a **Conversation** from a shared **Project** revokes that Project's
+  sharing reason and preserves independently authorized sharing
+- Excluding a User's **Conversation** from a **Workspace** revokes its access
+  there and blocks every sharing route until the User removes the exclusion.
+  Other Users' independent contributions remain unchanged
+- Removing a **Workspace** exclusion resumes eligible sharing and automatically
+  catches up through active continuous rules. Paused and stopped rules keep their states
+- Overlapping sharing reasons permit the highest detail supported by a
+  remaining reason and current policy. Removing a broader reason removes its
+  additional detail while preserving narrower authorized access
+- Changes to a continuous sharing rule's detail or content policy apply to
+  existing and future **Memory**. Sharing more requires explicit User confirmation
+- Existing snapshot shares retain their content and consent limits until the
+  owner explicitly converts them to continuous sharing
+- Sharing to each **Workspace** is independent. Adding a destination leaves
+  existing sharing unchanged until the owner explicitly stops its rules
 - A sharing pause is independent from a **Capture Pause**
 - Removing a **User** from a **Team** or **Workspace** removes future access but
   does not delete retained **Team-shared Memory**
@@ -482,8 +500,9 @@ _Avoid_: Share revocation, Access Suspension, Project removal
   selections. Their Capture Policy interaction remains unresolved.
 - Folder selection means exact Folder matching. Renamed directories, replaced
   checkouts, and equal paths on different devices do not prove the same context.
-- Removing membership from a shared Project and excluding a Conversation from
-  all sharing to one Workspace need distinct, explicit meanings.
+- Removing membership from a shared **Project** ends that Project's sharing
+  reason. Excluding a User's **Conversation** from a **Workspace** blocks every
+  sharing route for that owner's source in that destination.
 - "team memory" can sound like the Team owns the memory; resolved:
   **Team-shared Memory** remains owned by the originating **User** and is
   accessed through a **Share Grant**.

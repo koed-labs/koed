@@ -1,7 +1,14 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   decryptEnvelopeToUtf8,
+  sharingRuleDeliveryPresentationSchema,
+  sharingRuleMutationIntentSchema,
+  conversationSharingRuleCreationResultSchema,
+  repositorySharingRuleCreationResultSchema,
+  sharingRuleDeliverySchema,
+  type SharingRuleMutationIntent,
+  type SharingRuleDelivery,
   logicalMemorySourceRevisionIdentity,
   sharedMemoryCeilingAuthorizes,
   type EncryptedPayloadEnvelope,
@@ -14,6 +21,11 @@ import {
   sharedMemorySourceRefSchema
 } from "@koed/shared";
 import type pg from "pg";
+import {
+  seedSelectionSharingProgress,
+  recordSelectionSharingDetailScope,
+  recordSelectionSharingContentPolicyScope
+} from "./selection-sharing-journal.js";
 
 export interface CollaborationSharedMemoryAuthorityIdentity {
   backendId: string;
@@ -153,7 +165,91 @@ export interface CollaborationPersistedSharedSessionBinding extends Collaboratio
   includeCuratedMemory: boolean;
 }
 
+export interface CollaborationSharingRuleDeliveryWork {
+  workId: string;
+  leaseVersion: number;
+  identity: CollaborationSharedMemoryAuthorityIdentity;
+  remoteDeviceId: string;
+  requestId: string;
+  actionGrantId: string;
+  actionGrant: string;
+  intent: SharingRuleMutationIntent;
+  presentation: SharingRuleDelivery["presentation"];
+}
+interface SharingRuleDeliveryPayload {
+  identity: CollaborationSharedMemoryAuthorityIdentity;
+  remoteDeviceId: string;
+  requestId: string;
+  actionGrantId: string;
+  actionGrant: string | null;
+  intent: SharingRuleMutationIntent;
+  presentation: SharingRuleDelivery["presentation"];
+  control: SharingRuleDelivery["control"];
+  creation: SharingRuleDelivery["creation"];
+  detailAmendment?: SharingRuleDelivery["detailAmendment"];
+  contentPolicyAmendment?: SharingRuleDelivery["contentPolicyAmendment"];
+}
+type SharingRuleDeliveryRow = ProtectedRow & {
+  id: string;
+  enrollment_id: string;
+  mutation_id: string;
+  rule_id: string;
+  share_grant_id: string | null;
+  logical_grant_id: string | null;
+  operation_kind:
+    | "control"
+    | "conversation_create"
+    | "repository_create"
+    | "repository_control"
+    | "detail"
+    | "content_policy";
+  intent_hash: string;
+  state: SharingRuleDelivery["state"];
+  failure_code: SharingRuleDelivery["failureCode"];
+  updated_at: Date;
+  lease_version: number;
+};
+
 export interface CollaborationSharedMemoryAuthorityStore {
+  readRuleDeliveryEnrollment(input: {
+    backendId: string;
+    localOwnerUserId: string;
+  }): Promise<
+    | (CollaborationSharedMemoryAuthorityIdentity & { remoteDeviceId: string })
+    | null
+  >;
+  persistRuleDelivery(
+    input: Omit<
+      CollaborationSharingRuleDeliveryWork,
+      "workId" | "leaseVersion" | "actionGrant" | "presentation"
+    > & {
+      actionGrant: string | null;
+      presentation: SharingRuleDelivery["presentation"] | null;
+    }
+  ): Promise<SharingRuleDelivery | null>;
+  listRuleDeliveries(
+    input: CollaborationSharedMemoryAuthorityIdentity & {
+      shareGrantId?: string;
+      mutationId?: string;
+    }
+  ): Promise<SharingRuleDelivery[] | null>;
+  claimRuleDeliveries(input?: {
+    limit?: number;
+    localOwnerUserId?: string;
+  }): Promise<CollaborationSharingRuleDeliveryWork[]>;
+  finishRuleDelivery(input: {
+    workId: string;
+    leaseVersion: number;
+    identity: CollaborationSharedMemoryAuthorityIdentity;
+    outcome: "acknowledged" | "retry" | "needs_review";
+    control?: NonNullable<SharingRuleDelivery["control"]>;
+    creation?: NonNullable<SharingRuleDelivery["creation"]>;
+    detailAmendment?: NonNullable<SharingRuleDelivery["detailAmendment"]>;
+    contentPolicyAmendment?: NonNullable<
+      SharingRuleDelivery["contentPolicyAmendment"]
+    >;
+    failureCode?: SharingRuleDelivery["failureCode"];
+  }): Promise<SharingRuleDelivery | null>;
   isEnrollmentBound(
     input: CollaborationSharedMemoryAuthorityIdentity
   ): Promise<boolean>;
@@ -386,6 +482,66 @@ type GrantRow = ProtectedRow & {
   grant_version: number;
   lifecycle: SharedMemoryGrant["lifecycle"];
 };
+
+const ruleDeliveryTable = "collaboration_sharing_rule_deliveries";
+const validRuleDeliveryPayload = (
+  value: unknown
+): value is SharingRuleDeliveryPayload => {
+  if (!isObject(value) || !isObject(value.identity)) return false;
+  return (
+    typeof value.identity.backendId === "string" &&
+    backendIdPattern.test(value.identity.backendId) &&
+    isUuid(value.identity.localOwnerUserId) &&
+    isUuid(value.identity.upstreamUserId) &&
+    isUuid(value.remoteDeviceId) &&
+    isUuid(value.requestId) &&
+    isUuid(value.actionGrantId) &&
+    (value.actionGrant === null ||
+      (typeof value.actionGrant === "string" &&
+        /^hrg_[A-Za-z0-9_-]{20,124}$/.test(value.actionGrant))) &&
+    sharingRuleMutationIntentSchema.safeParse(value.intent).success &&
+    sharingRuleDeliveryPresentationSchema.safeParse(value.presentation)
+      .success &&
+    (value.control === null ||
+      sharingRuleDeliverySchema.shape.control.safeParse(value.control)
+        .success) &&
+    sharingRuleDeliverySchema.shape.contentPolicyAmendment.safeParse(
+      value.contentPolicyAmendment
+    ).success &&
+    sharingRuleDeliverySchema.shape.detailAmendment.safeParse(
+      value.detailAmendment
+    ).success &&
+    (value.creation === null ||
+      conversationSharingRuleCreationResultSchema.safeParse(value.creation)
+        .success ||
+      repositorySharingRuleCreationResultSchema.safeParse(value.creation)
+        .success)
+  );
+};
+const ruleDeliveryIntentHash = (
+  value: Pick<
+    SharingRuleDeliveryPayload,
+    "identity" | "remoteDeviceId" | "requestId" | "actionGrantId" | "intent"
+  >
+) =>
+  hashDto({
+    identity: value.identity,
+    remoteDeviceId: value.remoteDeviceId,
+    requestId: value.requestId,
+    actionGrantId: value.actionGrantId,
+    intent: value.intent
+  });
+
+const ruleDeliveryOperationKind = (intent: SharingRuleMutationIntent) =>
+  "operationKind" in intent
+    ? intent.operationKind
+    : "controlAction" in intent
+      ? "selectorKind" in intent
+        ? "repository_control"
+        : "control"
+      : "source" in intent
+        ? "conversation_create"
+        : "repository_create";
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1031,9 +1187,31 @@ export const createCollaborationSharedMemoryAuthorityStore = (
     if (active.rowCount === 0) return 0;
     const enrollmentIds = active.rows.map((row) => row.id);
     await client.query(
+      `update collaboration_sharing_selection_progress set state='revoked',protected_dto=null,protected_dto_hash=null,
+      locked_at=null,lease_version=lease_version+1,updated_at=now() where enrollment_id=any($1::uuid[])`,
+      [enrollmentIds]
+    );
+    await client.query(
+      `delete from collaboration_sharing_selection_pages where progress_id in (
+      select id from collaboration_sharing_selection_progress where enrollment_id=any($1::uuid[]))`,
+      [enrollmentIds]
+    );
+    await client.query(
+      `delete from collaboration_sharing_selection_sources where progress_id in (
+      select id from collaboration_sharing_selection_progress where enrollment_id=any($1::uuid[]))`,
+      [enrollmentIds]
+    );
+    await client.query(
       `update collaboration_shared_memory_companion_bindings
           set revoked_at = coalesce(revoked_at, now())
         where enrollment_id = any($1::uuid[]) and revoked_at is null`,
+      [enrollmentIds]
+    );
+    await client.query(
+      `update collaboration_sharing_rule_deliveries
+      set state='needs_review',failure_code='authority_unavailable',protected_dto=null,protected_dto_hash=null,
+          locked_at=null,lease_version=lease_version+1,updated_at=now()
+      where enrollment_id=any($1::uuid[]) and state='queued'`,
       [enrollmentIds]
     );
     const revoked = await client.query(
@@ -1143,19 +1321,21 @@ export const createCollaborationSharedMemoryAuthorityStore = (
   const revokeEnrollment: CollaborationSharedMemoryAuthorityBindingRepository["revokeEnrollment"] =
     async (input) => {
       if (!validIdentity(input) || !input.reason.trim()) return false;
-      const result = await pool.query(
-        `update collaboration_shared_memory_enrollments
-            set revoked_at = now(), revocation_reason = $4, updated_at = now()
-          where backend_id = $1 and local_owner_user_id = $2
-            and upstream_user_id = $3 and revoked_at is null`,
-        [
-          input.backendId,
-          input.localOwnerUserId,
-          input.upstreamUserId,
-          input.reason.trim().slice(0, 160)
-        ]
-      );
-      return result.rowCount === 1;
+      return withTransaction(pool, async (client) => {
+        await lockBinding(
+          client,
+          `csm:enrollment:${input.localOwnerUserId}:${input.backendId}`
+        );
+        const enrollment = await activeEnrollment(client, input, "update");
+        if (!enrollment) return false;
+        return (
+          (await revokeActiveBackendBindings(client, {
+            backendId: input.backendId,
+            localOwnerUserId: input.localOwnerUserId,
+            reason: input.reason.trim()
+          })) === 1
+        );
+      });
     };
 
   const revokeBackendEnrollments: CollaborationSharedMemoryAuthorityBindingRepository["revokeBackendEnrollments"] =
@@ -1249,7 +1429,351 @@ export const createCollaborationSharedMemoryAuthorityStore = (
       });
     };
 
+  const decodeRuleDelivery = async (
+    row: SharingRuleDeliveryRow,
+    identity: CollaborationSharedMemoryAuthorityIdentity,
+    remoteDeviceId: string
+  ) => {
+    if (!row.protected_dto) return null;
+    const payload = await decryptDto(provider, row, validRuleDeliveryPayload);
+    if (
+      !payload ||
+      !sameIdentity(payload.identity, identity) ||
+      payload.remoteDeviceId !== remoteDeviceId ||
+      payload.intent.mutationId !== row.mutation_id ||
+      payload.intent.ruleId !== row.rule_id ||
+      row.operation_kind !== ruleDeliveryOperationKind(payload.intent) ||
+      ("shareGrantId" in payload.intent
+        ? payload.intent.shareGrantId !== row.share_grant_id ||
+          row.logical_grant_id !== null
+        : "logicalGrantId" in payload.intent
+          ? payload.intent.logicalGrantId !== row.logical_grant_id ||
+            row.share_grant_id !== null
+          : row.share_grant_id !== null || row.logical_grant_id !== null) ||
+      ruleDeliveryIntentHash(payload) !== row.intent_hash
+    )
+      return null;
+    return payload;
+  };
+  const publicRuleDelivery = (
+    row: SharingRuleDeliveryRow,
+    payload: SharingRuleDeliveryPayload
+  ) =>
+    sharingRuleDeliverySchema.parse({
+      intent: payload.intent,
+      presentation: payload.presentation,
+      state: row.state,
+      control: row.state === "acknowledged" ? payload.control : null,
+      creation: row.state === "acknowledged" ? payload.creation : null,
+      detailAmendment:
+        row.state === "acknowledged" ? payload.detailAmendment : undefined,
+      contentPolicyAmendment:
+        row.state === "acknowledged"
+          ? payload.contentPolicyAmendment
+          : undefined,
+      failureCode: row.failure_code,
+      updatedAt: row.updated_at.toISOString()
+    });
+
   const store: CollaborationSharedMemoryAuthorityRepository = {
+    async readRuleDeliveryEnrollment(input) {
+      if (
+        !backendIdPattern.test(input.backendId) ||
+        !isUuid(input.localOwnerUserId)
+      )
+        return null;
+      const result = await pool.query<EnrollmentRow>(
+        `select id,backend_id,local_owner_user_id,upstream_user_id,remote_device_id
+        from collaboration_shared_memory_enrollments where backend_id=$1 and local_owner_user_id=$2 and revoked_at is null limit 1`,
+        [input.backendId, input.localOwnerUserId]
+      );
+      const row = result.rows[0];
+      return row
+        ? {
+            backendId: row.backend_id,
+            localOwnerUserId: row.local_owner_user_id,
+            upstreamUserId: row.upstream_user_id,
+            remoteDeviceId: row.remote_device_id
+          }
+        : null;
+    },
+    async persistRuleDelivery(input) {
+      if (
+        !validIdentity(input.identity) ||
+        !isUuid(input.remoteDeviceId) ||
+        !isUuid(input.requestId) ||
+        !isUuid(input.actionGrantId) ||
+        !sharingRuleMutationIntentSchema.safeParse(input.intent).success
+      )
+        return null;
+
+      return withTransaction(pool, async (client) => {
+        const enrollment = await activeEnrollment(
+          client,
+          input.identity,
+          "share"
+        );
+        if (!enrollment || enrollment.remote_device_id !== input.remoteDeviceId)
+          return null;
+        await lockBinding(
+          client,
+          `csm:rule-delivery:${enrollment.id}:${input.intent.ruleId}`
+        );
+        const existing = await client.query<SharingRuleDeliveryRow>(
+          `select * from collaboration_sharing_rule_deliveries where enrollment_id=$1 and mutation_id=$2 for update`,
+          [enrollment.id, input.intent.mutationId]
+        );
+        if (existing.rows[0]) {
+          const row = existing.rows[0];
+          if (row.intent_hash !== ruleDeliveryIntentHash(input)) return null;
+          const stored = await decodeRuleDelivery(
+            row,
+            input.identity,
+            input.remoteDeviceId
+          );
+          return stored ? publicRuleDelivery(row, stored) : null;
+        }
+        if (!input.actionGrant || !input.presentation) return null;
+        const payload: SharingRuleDeliveryPayload = {
+          ...input,
+          actionGrant: input.actionGrant,
+          presentation: input.presentation,
+          control: null,
+          creation: null
+        };
+        if (!validRuleDeliveryPayload(payload)) return null;
+        const pending = await client.query(
+          `select id from collaboration_sharing_rule_deliveries where enrollment_id=$1 and rule_id=$2 and state='queued' and ((share_grant_id is null)=$3::boolean) limit 1`,
+          [
+            enrollment.id,
+            input.intent.ruleId,
+            !("shareGrantId" in input.intent)
+          ]
+        );
+        if (pending.rowCount) return null;
+        const workId = randomUUID();
+        const encrypted = await encryptedDto(provider, {
+          table: ruleDeliveryTable,
+          sourceId: workId,
+          identity: input.identity,
+          dto: payload
+        });
+        const saved = await client.query<SharingRuleDeliveryRow>(
+          `insert into collaboration_sharing_rule_deliveries
+          (id,enrollment_id,mutation_id,rule_id,share_grant_id,logical_grant_id,intent_hash,protected_dto,protected_dto_hash,operation_kind)
+          values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10) returning *`,
+          [
+            workId,
+            enrollment.id,
+            input.intent.mutationId,
+            input.intent.ruleId,
+            "shareGrantId" in input.intent ? input.intent.shareGrantId : null,
+            "logicalGrantId" in input.intent
+              ? input.intent.logicalGrantId
+              : null,
+            ruleDeliveryIntentHash(input),
+            JSON.stringify(encrypted.envelope),
+            encrypted.hash,
+            ruleDeliveryOperationKind(input.intent)
+          ]
+        );
+        return publicRuleDelivery(saved.rows[0]!, payload);
+      });
+    },
+    async listRuleDeliveries(input) {
+      return withTransaction(pool, async (client) => {
+        const enrollment = await activeEnrollment(client, input, "share");
+        if (
+          !enrollment ||
+          (input.shareGrantId !== undefined && !isUuid(input.shareGrantId)) ||
+          (input.mutationId !== undefined && !isUuid(input.mutationId))
+        )
+          return null;
+        const result = await client.query<SharingRuleDeliveryRow>(
+          `select * from (select distinct on (rule_id) * from collaboration_sharing_rule_deliveries
+          where enrollment_id=$1 and ($3::uuid is null or mutation_id=$3) and ($2::uuid is null or share_grant_id=$2 or logical_grant_id in (
+            select logical_grant_id from collaboration_shared_memory_grants where enrollment_id=$1 and share_grant_id=$2
+          )) order by rule_id,created_at desc,id desc) recent
+          order by created_at desc,id desc limit 100`,
+          [enrollment.id, input.shareGrantId ?? null, input.mutationId ?? null]
+        );
+        const deliveries: SharingRuleDelivery[] = [];
+        for (const row of result.rows) {
+          const payload = await decodeRuleDelivery(
+            row,
+            input,
+            enrollment.remote_device_id
+          );
+          if (payload) deliveries.push(publicRuleDelivery(row, payload));
+        }
+        return deliveries;
+      });
+    },
+    async claimRuleDeliveries(input = {}) {
+      if (
+        input.localOwnerUserId !== undefined &&
+        !isUuid(input.localOwnerUserId)
+      )
+        return [];
+      return withTransaction(pool, async (client) => {
+        const selected = await client.query<
+          SharingRuleDeliveryRow & EnrollmentRow
+        >(
+          `select work.*,enrollment.backend_id,enrollment.local_owner_user_id,enrollment.upstream_user_id,enrollment.remote_device_id
+          from collaboration_sharing_rule_deliveries work join collaboration_shared_memory_enrollments enrollment on enrollment.id=work.enrollment_id and enrollment.revoked_at is null
+          where work.state='queued' and ($2::uuid is null or enrollment.local_owner_user_id=$2) and work.available_at<=now() and (work.locked_at is null or work.locked_at<now()-interval '5 minutes')
+          order by work.available_at,work.id limit $1`,
+          [
+            Math.max(1, Math.min(input.limit ?? 10, 50)),
+            input.localOwnerUserId ?? null
+          ]
+        );
+        const work: CollaborationSharingRuleDeliveryWork[] = [];
+        for (const candidate of selected.rows) {
+          const identity = {
+            backendId: candidate.backend_id,
+            localOwnerUserId: candidate.local_owner_user_id,
+            upstreamUserId: candidate.upstream_user_id
+          };
+          const enrollment = await activeEnrollment(client, identity, "share");
+          if (!enrollment || enrollment.id !== candidate.enrollment_id)
+            continue;
+          const locked = await client.query<SharingRuleDeliveryRow>(
+            `select * from collaboration_sharing_rule_deliveries
+            where id=$1 and enrollment_id=$2 and state='queued' and available_at<=now()
+              and (locked_at is null or locked_at<now()-interval '5 minutes') for update skip locked`,
+            [candidate.id, enrollment.id]
+          );
+          const row = locked.rows[0];
+          if (!row) continue;
+          const payload = await decodeRuleDelivery(
+            row,
+            identity,
+            enrollment.remote_device_id
+          );
+          if (!payload || !payload.actionGrant) {
+            await client.query(
+              `update collaboration_sharing_rule_deliveries set state='needs_review',failure_code='response_invalid',protected_dto=null,protected_dto_hash=null,locked_at=null,updated_at=now() where id=$1`,
+              [row.id]
+            );
+            continue;
+          }
+          const claimed = await client.query<{ lease_version: number }>(
+            `update collaboration_sharing_rule_deliveries set lease_version=lease_version+1,attempt_count=attempt_count+1,locked_at=now(),updated_at=now() where id=$1 returning lease_version`,
+            [row.id]
+          );
+          work.push({
+            workId: row.id,
+            leaseVersion: claimed.rows[0]!.lease_version,
+            identity,
+            remoteDeviceId: enrollment.remote_device_id,
+            requestId: payload.requestId,
+            actionGrantId: payload.actionGrantId,
+            actionGrant: payload.actionGrant,
+            intent: payload.intent,
+            presentation: payload.presentation
+          });
+        }
+        return work;
+      });
+    },
+    async finishRuleDelivery(input) {
+      return withTransaction(pool, async (client) => {
+        const enrollment = await activeEnrollment(
+          client,
+          input.identity,
+          "share"
+        );
+        if (!enrollment) return null;
+        const selected = await client.query<SharingRuleDeliveryRow>(
+          `select * from collaboration_sharing_rule_deliveries where id=$1 and enrollment_id=$2 and state='queued' and lease_version=$3 for update`,
+          [input.workId, enrollment.id, input.leaseVersion]
+        );
+        const row = selected.rows[0];
+        if (!row) return null;
+        const payload = await decodeRuleDelivery(
+          row,
+          input.identity,
+          enrollment.remote_device_id
+        );
+        if (!payload) return null;
+        if (input.outcome === "acknowledged") {
+          const receipt = sharingRuleDeliverySchema.parse({
+            intent: payload.intent,
+            presentation: payload.presentation,
+            state: "acknowledged",
+            control: input.control ?? null,
+            creation: input.creation ?? null,
+            detailAmendment: input.detailAmendment,
+            contentPolicyAmendment: input.contentPolicyAmendment,
+            failureCode: null,
+            updatedAt: new Date().toISOString()
+          });
+          payload.control = receipt.control;
+          payload.creation = receipt.creation;
+          payload.detailAmendment = receipt.detailAmendment;
+          payload.contentPolicyAmendment = receipt.contentPolicyAmendment;
+        }
+        if (input.outcome !== "retry") payload.actionGrant = null;
+        const encrypted = await encryptedDto(provider, {
+          table: ruleDeliveryTable,
+          sourceId: row.id,
+          identity: input.identity,
+          dto: payload
+        });
+        const saved = await client.query<SharingRuleDeliveryRow>(
+          `update collaboration_sharing_rule_deliveries
+          set state=$3,failure_code=$4,protected_dto=$5::jsonb,protected_dto_hash=$6,locked_at=null,
+              available_at=now()+least(300,power(2,least(attempt_count,8))*5)*interval '1 second',updated_at=now()
+          where id=$1 and lease_version=$2 returning *`,
+          [
+            row.id,
+            input.leaseVersion,
+            input.outcome === "retry" ? "queued" : input.outcome,
+            input.outcome === "acknowledged"
+              ? null
+              : (input.failureCode ?? "remote_unavailable"),
+            JSON.stringify(encrypted.envelope),
+            encrypted.hash
+          ]
+        );
+        if (input.outcome === "acknowledged" && payload.detailAmendment)
+          await recordSelectionSharingDetailScope(client, provider, {
+            identity: input.identity,
+            remoteDeviceId: enrollment.remote_device_id,
+            scope: payload.detailAmendment
+          });
+        if (input.outcome === "acknowledged" && payload.contentPolicyAmendment)
+          await recordSelectionSharingContentPolicyScope(client, provider, {
+            identity: input.identity,
+            remoteDeviceId: enrollment.remote_device_id,
+            scope: payload.contentPolicyAmendment
+          });
+        if (
+          input.outcome === "acknowledged" &&
+          "includesFutureConversations" in payload.intent
+        )
+          await seedSelectionSharingProgress(client, provider, {
+            enrollmentId: enrollment.id,
+            creationDeliveryId: row.id,
+            identity: input.identity,
+            remoteDeviceId: enrollment.remote_device_id,
+            intent: payload.intent
+          });
+        if (
+          input.outcome === "acknowledged" &&
+          "selectorKind" in payload.intent
+        ) {
+          await client.query(
+            `update collaboration_sharing_selection_progress set delivery_epoch=delivery_epoch+1,
+            state=case when $3='stop' then 'stopped' else state end,available_at=now(),source_work_at=now(),updated_at=now()
+            where enrollment_id=$1 and rule_id=$2 and state='active'`,
+            [enrollment.id, payload.intent.ruleId, payload.intent.controlAction]
+          );
+        }
+        return publicRuleDelivery(saved.rows[0]!, payload);
+      });
+    },
     bindEnrollment,
     revokeEnrollment,
     revokeBackendEnrollments,

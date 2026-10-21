@@ -640,6 +640,10 @@ export {
   ownedSharedMemoryGrantSchema,
   pendingShareSchema,
   ownedShareSummarySchema,
+  ownedSharingReasonSchema,
+  gitAnchorSharingReviewInputSchema,
+  gitAnchorSharingReviewPageSchema,
+  sharingDestinationReviewSchema,
   ownedShareItemSchema,
   conversationSourceAccessSchema,
   sharedMemoryPreviewSchema,
@@ -664,6 +668,10 @@ export type {
   CollaborationMessagePage,
   PersonalMemoryEntry,
   OwnedShareItem,
+  OwnedSharingReason,
+  GitAnchorSharingReviewInput,
+  GitAnchorSharingReviewPage,
+  SharingDestinationReview,
   CollaborationMembership,
   CollaborationInvitation,
   CollaborationInvitationPage,
@@ -862,7 +870,13 @@ export {
   sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
+  sharedMemoryConversationRuleCreationActionGrantBinding,
+  sharedMemoryRepositoryRuleCreationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryRuleControlActionGrantBinding,
+  sharedMemoryRuleDetailActionGrantBinding,
+  sharedMemoryRuleContentPolicyActionGrantBinding,
+  sharedMemoryRepositoryRuleControlActionGrantBinding,
   sharedMemoryRepositorySnapshotActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding
@@ -1898,8 +1912,73 @@ export * from "./personal-membership-review-contract.js";
 export { canonicalJsonStringify } from "./canonical-json.js";
 
 export * from "./personal-selection-consumer-contract.js";
+export * from "./selection-sharing-journal.js";
 
 export {
   personalCaptureTargetBindingSchema,
   type PersonalCaptureTargetBinding
 } from "./personal-capture-target-contract.js";
+
+export {
+  conversationSharingRuleCreationIntentSchema,
+  sharingSelectionSelectorSchema,
+  sharingSelectionTargetSchema,
+  sharingSelectionDescriptor,
+  repositorySharingRuleCreationReviewInputSchema,
+  repositorySharingRuleCreationPolicySchema,
+  repositorySharingRuleCreationIntentSchema,
+  repositorySharingRuleCreationReviewSchema,
+  repositorySharingRuleCreationResultSchema,
+  repositorySharingRuleControlIntentSchema,
+  repositorySharingRuleControlResultSchema,
+  repositorySharingRuleControlReviewSchema,
+  ownedRepositorySharingRulesInputSchema,
+  ownedRepositorySharingRulesPageSchema,
+  ownedRepositorySharingRuleSchema,
+  type OwnedRepositorySharingRule,
+  type OwnedRepositorySharingRulesPage,
+  type RepositorySharingRuleControlIntent,
+  type RepositorySharingRuleControlResult,
+  type RepositorySharingRuleControlReview,
+  repositorySharingRuleCreationReviewRequestSchema,
+  repositorySharingRuleCreationLocalIntentSchema,
+  repositorySharingRuleMemberAdmissionSchema,
+  repositorySharingRuleMemberAcceptanceSchema,
+  repositorySharingRuleMembersInspectSchema,
+  repositorySharingRuleMembersStateSchema,
+  repositorySharingRuleMemberContextSchema,
+  repositorySharingRuleMemberContextResultSchema,
+  repositorySharingRuleMemberRemovalSchema,
+  repositorySharingRuleMemberRemovalResultSchema,
+  repositorySharingRuleMutationCancellationSchema,
+  repositorySharingRuleMutationSettlementSchema,
+  type RepositorySharingRuleMembersState,
+  type RepositorySharingRuleMemberContext,
+  type RepositorySharingRuleMemberContextResult,
+  type RepositorySharingRuleCreationIntent,
+  type RepositorySharingRuleCreationReviewInput,
+  type RepositorySharingRuleCreationReview,
+  type RepositorySharingRuleCreationResult,
+  conversationSharingRuleCreationResultSchema,
+  sharingRuleMutationIntentSchema,
+  type ConversationSharingRuleCreationResult,
+  type SharingRuleMutationIntent,
+  type ConversationSharingRuleCreationIntent,
+  conversationSharingRuleCreationReviewInputSchema,
+  conversationSharingRuleCreationReviewSchema,
+  type ConversationSharingRuleCreationReviewInput,
+  type ConversationSharingRuleCreationReview,
+  sharingRuleDeliveryPresentationSchema,
+  sharingRuleDeliverySchema,
+  conversationSharingRuleControlIntentSchema,
+  conversationSharingRuleControlResultSchema
+} from "./team-sharing-review-contract.js";
+export type { ConversationSharingRuleControlIntent } from "./team-sharing-review-contract.js";
+
+export type {
+  SharingRuleDelivery,
+  ConversationSharingRuleControlResult
+} from "./team-sharing-review-contract.js";
+export * from "./sharing-rule-detail-contract.js";
+
+export * from "./sharing-rule-content-policy-contract.js";

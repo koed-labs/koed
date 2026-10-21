@@ -315,6 +315,10 @@ const buildServer = async (overrides?: {
       sourceOwnerPolicyWillActivate: true as const,
       sourceOwnerPolicyWillReplace: false as const
     })),
+    getConversationSharingRuleCreationReview: vi.fn(async () => null),
+    getRepositorySharingRuleCreationReview: vi.fn(async () => null),
+    getRepositorySharingRuleControlReview: vi.fn(async () => null),
+    getConversationSharingRuleControlReview: vi.fn(async () => null),
     getSharedMemoryRevokeReview: vi.fn(async (_actor, input) => ({
       source: {
         logicalMemoryId: ids.target,
@@ -434,6 +438,44 @@ const buildServer = async (overrides?: {
 };
 
 describe("high-risk action grant routes", () => {
+  it("disables alpha content-policy approvals for existing native and browser requests", async () => {
+    const fixture = await buildServer({
+      repository: {
+        getActionGrant: vi.fn(async () => ({
+          ...binding,
+          action: "shared_memory.rule_content_policy",
+          approvalTier: "native_review" as const
+        })),
+        getBrowserActivation: vi.fn(async () => ({
+          ...binding,
+          action: "shared_memory.rule_content_policy"
+        }))
+      }
+    });
+    try {
+      const native = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/high-risk/action-grants/${binding.id}/native-decision`,
+        headers: { authorization: "Koed-Device device-key:secret" },
+        payload: { decision: "approve" }
+      });
+      const browser = await fixture.app.inject({
+        method: "POST",
+        url: `/v1/high-risk/browser-activations/${binding.selector}/decision`,
+        headers: { cookie: "cm_session=alice-session" },
+        payload: { decision: "approve" }
+      });
+      expect(native.statusCode).toBe(403);
+      expect(browser.statusCode).toBe(403);
+      expect(
+        fixture.repository.decideNativeActionReview
+      ).not.toHaveBeenCalled();
+      expect(fixture.repository.decideBrowserActivation).not.toHaveBeenCalled();
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
   it("bounds Action Grant waits below the local transport deadline", async () => {
     const fixture = await buildServer();
     const response = await fixture.app.inject({
@@ -546,6 +588,90 @@ describe("high-risk action grant routes", () => {
       (fixture.repository.createActionGrant as ReturnType<typeof vi.fn>).mock
         .calls[0]?.[0]
     ).toMatchObject({ approvalTier: "direct", review: null });
+    await fixture.app.close();
+  });
+
+  it("admits a scoped Conversation rule control through native review", async () => {
+    const ruleId = randomUUID(),
+      reasonId = randomUUID(),
+      shareGrantId = randomUUID();
+    const review = vi.fn(async () => ({
+      logicalMemoryId: ids.target,
+      sourceTitle: "Release discussion",
+      ruleId,
+      reasonId,
+      shareGrantId,
+      team: { id: ids.team, name: "Koed Team" },
+      workspace: { id: ids.workspace, name: "Engineering" },
+      state: "active" as const,
+      maximumFidelity: "lcm_rollups" as const,
+      includeCuratedMemory: false,
+      authorityVersion: 3,
+      grantVersion: 7
+    }));
+    const fixture = await buildServer({
+      deviceOperationFamilies: ["share_grant_management"],
+      repository: { getConversationSharingRuleControlReview: review }
+    });
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/high-risk/action-grants",
+      headers: { authorization: "Koed-Device device-key:secret" },
+      payload: {
+        version: 1,
+        clientRequestId: randomUUID(),
+        grantCommitment: `v1:${"a".repeat(64)}`,
+        intent: {
+          action: "shared_memory.rule_control",
+          controlAction: "stop",
+          mutationId: randomUUID(),
+          teamId: ids.team,
+          teamWorkspaceId: ids.workspace,
+          ruleId,
+          reasonId,
+          shareGrantId,
+          expectedAuthorityVersion: 3,
+          expectedGrantVersion: 7
+        }
+      }
+    });
+    expect(response.statusCode).toBe(201);
+    expect(jsonBody(response)).toMatchObject({
+      status: {
+        approvalTier: "native_review",
+        state: "review_required",
+        activationPath: null,
+        review: {
+          title: "Stop this rule?",
+          details: expect.arrayContaining([
+            { label: "Conversation", value: "Release discussion" },
+            { label: "Workspace", value: "Engineering" }
+          ])
+        }
+      }
+    });
+    expect(fixture.repository.createActionGrant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationFamily: "share_grant_management",
+        targetId: ruleId,
+        teamId: ids.team,
+        action: `shared_memory.rule_control.${ids.workspace}.stop`,
+        approvalTier: "native_review"
+      })
+    );
+    expect(review).toHaveBeenCalledWith(
+      { userId: ids.alice },
+      expect.objectContaining({
+        ruleId,
+        reasonId,
+        shareGrantId,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        expectedAuthorityVersion: 3,
+        expectedGrantVersion: 7,
+        action: "stop"
+      })
+    );
     await fixture.app.close();
   });
 

@@ -3985,6 +3985,8 @@ export const createMemorySourceRepository = (
       ),
     resolvePersonalEncryptionProvider: () =>
       Promise.resolve(requireEnvelopeEncryptionProvider()),
+    resolveSharingRuleEncryptionProvider: () =>
+      Promise.resolve(requireOwnerPrivateReplicaEnvelopeEncryptionProvider()),
     resolveOwnerPrivateReplicaEncryptionProvider: () =>
       Promise.resolve(requireOwnerPrivateReplicaEnvelopeEncryptionProvider())
   });
@@ -3994,6 +3996,7 @@ export const createMemorySourceRepository = (
       const transactionalSharedMemoryRepository = createSharedMemoryRepository(
         createSavepointPool(client, "curated_memory"),
         {
+          inheritTransactionIsolation: true,
           resolveTeamEncryptionProvider: () =>
             Promise.resolve(
               options.teamEnvelopeEncryptionProvider ??

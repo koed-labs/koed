@@ -1273,6 +1273,8 @@ const localManagedConversationMethods = new Set<PropertyKey>([
   "createCapturedSession",
   "getCapturedSession",
   "listLcmGraphThreads",
+  "listAiClientInstances",
+  "listCurrentAiClientCapabilitySnapshots",
   "recordWorkflowTokenUsage"
 ]);
 

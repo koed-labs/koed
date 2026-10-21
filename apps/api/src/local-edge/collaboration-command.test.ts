@@ -1187,6 +1187,7 @@ const remotePresence = {
 const remoteNavigationPayload = (input?: {
   threads?: unknown[];
   workspaces?: unknown[];
+  shareGrants?: unknown[];
 }) => ({
   principal: {
     id: ids.remotePrincipal,
@@ -1241,7 +1242,7 @@ const remoteNavigationPayload = (input?: {
             access: "write",
             canRecall: true
           },
-          shareGrants: [remoteSharedGrant]
+          shareGrants: input?.shareGrants ?? [remoteSharedGrant]
         }
       ]
     }
@@ -2059,6 +2060,10 @@ describe("local-edge collaboration command route", () => {
     const dispatches: unknown[] = [];
     const harness = createHarness({
       sharedMemoryControl: {
+        reconcileRuleDeliveries: async () => ({
+          processed: 0,
+          acknowledged: 0
+        }),
         resolvePreviewTarget: async () => null,
         resolveConsentPreview: async () => null,
         loadInitialSharedSession: async () => null,
@@ -2121,6 +2126,10 @@ describe("local-edge collaboration command route", () => {
     const harness = createHarness({
       backend: null,
       sharedMemoryControl: {
+        reconcileRuleDeliveries: async () => ({
+          processed: 0,
+          acknowledged: 0
+        }),
         resolvePreviewTarget: async () => null,
         resolveConsentPreview: async () => null,
         loadInitialSharedSession: async () => null,
@@ -2491,74 +2500,95 @@ describe("local-edge collaboration command route", () => {
     ).toMatchObject({ ok: false, error: { code: "permission_denied" } });
   });
 
-  it("composes Personal state with authorized remote Team catalog and Shared Memory indexes", async () => {
-    const harness = createHarness({ response: remoteCompositionResponse });
-    const command = {
-      contractVersion: COLLABORATION_CONTRACT_VERSION,
-      requestId: randomUUID(),
-      command: "collaboration.load",
-      input: {}
-    } as CollaborationRendererCommand;
+  it.each(["memory_events", "curated_assertions"] as const)(
+    "composes Personal state with authorized remote Team catalog and %s Shared Memory indexes",
+    async (representation) => {
+      const harness = createHarness({
+        response: (call) => {
+          if (new URL(call.url).pathname.endsWith("/v1/teams/navigation")) {
+            const payload = remoteNavigationPayload({
+              shareGrants: [
+                {
+                  ...remoteSharedGrant,
+                  activeRepresentation: representation,
+                  activationRepresentation: representation,
+                  sourceCapabilities: [representation],
+                  includeCuratedMemory: representation === "curated_assertions"
+                }
+              ]
+            });
+            return Response.json(payload);
+          }
+          return remoteCompositionResponse(call);
+        }
+      });
+      const command = {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: "collaboration.load",
+        input: {}
+      } as CollaborationRendererCommand;
 
-    const response = await injectPersonalCommand(harness.app, command);
-    expect(response.statusCode).toBe(200);
-    const result = parseResultAs<LoadTestResult>(response.body);
-    expect(result).toMatchObject({
-      ok: true,
-      data: {
-        snapshot: {
-          connection: { state: "live", backendId: "team-vps" },
-          navigation: {
-            personalOwner: { id: ids.actor },
-            teamPrincipal: { id: ids.remotePrincipal }
+      const response = await injectPersonalCommand(harness.app, command);
+      expect(response.statusCode).toBe(200);
+      const result = parseResultAs<LoadTestResult>(response.body);
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          snapshot: {
+            connection: { state: "live", backendId: "team-vps" },
+            navigation: {
+              personalOwner: { id: ids.actor },
+              teamPrincipal: { id: ids.remotePrincipal }
+            }
           }
         }
+      });
+      if (!result.ok || result.command !== "collaboration.load") {
+        throw new Error("Expected collaboration.load success");
       }
-    });
-    if (!result.ok || result.command !== "collaboration.load") {
-      throw new Error("Expected collaboration.load success");
+      const team = result.data.snapshot.navigation.teams[0]!;
+      const workspace = team.workspaces[0]!;
+      expect(team).toMatchObject({
+        id: ids.team,
+        role: "member",
+        directMessages: [{ id: ids.thread }]
+      });
+      expect(team.people.map((person) => person.id)).toContain(
+        ids.remotePrincipal
+      );
+      expect(workspace).toMatchObject({
+        id: ids.workspace,
+        access: "write",
+        channels: [{ id: ids.thread }],
+        sharedMemory: [
+          {
+            id: ids.sharedGrant,
+            logicalMemoryId: ids.sharedLogicalMemory,
+            companionThreadId: ids.sharedDiscussionThread,
+            unreadCompanionCount: 1
+          }
+        ]
+      });
+      expect(result.data.snapshot.navigation.personalOwner.id).not.toBe(
+        result.data.snapshot.navigation.teamPrincipal?.id
+      );
+      expect(result.data.snapshot.navigation.personalOwner.id).toBe(ids.actor);
+      expect(result.data.snapshot.navigation.teamPrincipal?.id).toBe(
+        ids.remotePrincipal
+      );
+      expect(harness.calls.map((call) => new URL(call.url).pathname)).toEqual([
+        "/v1/local-edge/device-credentials/status",
+        "/koed/v1/teams/navigation"
+      ]);
+      for (const call of harness.calls) {
+        const headers = new Headers(call.init.headers);
+        expect(headers.get("authorization")).toBe(upstreamAuthorization);
+        expect(headers.get("authorization")).not.toBe(desktopAuthorization);
+        expect(headers.get("cookie")).toBeNull();
+      }
     }
-    const team = result.data.snapshot.navigation.teams[0]!;
-    const workspace = team.workspaces[0]!;
-    expect(team).toMatchObject({
-      id: ids.team,
-      role: "member",
-      directMessages: [{ id: ids.thread }]
-    });
-    expect(team.people.map((person) => person.id)).toContain(
-      ids.remotePrincipal
-    );
-    expect(workspace).toMatchObject({
-      id: ids.workspace,
-      access: "write",
-      channels: [{ id: ids.thread }],
-      sharedMemory: [
-        {
-          id: ids.sharedGrant,
-          logicalMemoryId: ids.sharedLogicalMemory,
-          companionThreadId: ids.sharedDiscussionThread,
-          unreadCompanionCount: 1
-        }
-      ]
-    });
-    expect(result.data.snapshot.navigation.personalOwner.id).not.toBe(
-      result.data.snapshot.navigation.teamPrincipal?.id
-    );
-    expect(result.data.snapshot.navigation.personalOwner.id).toBe(ids.actor);
-    expect(result.data.snapshot.navigation.teamPrincipal?.id).toBe(
-      ids.remotePrincipal
-    );
-    expect(harness.calls.map((call) => new URL(call.url).pathname)).toEqual([
-      "/v1/local-edge/device-credentials/status",
-      "/koed/v1/teams/navigation"
-    ]);
-    for (const call of harness.calls) {
-      const headers = new Headers(call.init.headers);
-      expect(headers.get("authorization")).toBe(upstreamAuthorization);
-      expect(headers.get("authorization")).not.toBe(desktopAuthorization);
-      expect(headers.get("cookie")).toBeNull();
-    }
-  });
+  );
 
   it("keeps a future remote Presence status from invalidating Team navigation", async () => {
     const harness = createHarness({
@@ -3128,6 +3158,10 @@ describe("local-edge collaboration command route", () => {
     const harness = createHarness({
       response: remoteCompositionResponse,
       sharedMemoryControl: {
+        reconcileRuleDeliveries: async () => ({
+          processed: 0,
+          acknowledged: 0
+        }),
         resolvePreviewTarget: async () => null,
         resolveConsentPreview: async () => null,
         dispatch: async () => null,
@@ -3251,6 +3285,10 @@ describe("local-edge collaboration command route", () => {
     const dispatched: CollaborationRendererCommand[] = [];
     const harness = createHarness({
       sharedMemoryControl: {
+        reconcileRuleDeliveries: async () => ({
+          processed: 0,
+          acknowledged: 0
+        }),
         resolvePreviewTarget: async () => null,
         resolveConsentPreview: async () => null,
         loadInitialSharedSession: async () => null,
@@ -3310,6 +3348,10 @@ describe("local-edge collaboration command route", () => {
     async (code) => {
       const harness = createHarness({
         sharedMemoryControl: {
+          reconcileRuleDeliveries: async () => ({
+            processed: 0,
+            acknowledged: 0
+          }),
           resolvePreviewTarget: async () => null,
           resolveConsentPreview: async () => null,
           loadInitialSharedSession: async () => null,
@@ -3365,6 +3407,10 @@ describe("local-edge collaboration command route", () => {
       const harness = createHarness({
         response: remoteCompositionResponse,
         sharedMemoryControl: {
+          reconcileRuleDeliveries: async () => ({
+            processed: 0,
+            acknowledged: 0
+          }),
           resolvePreviewTarget: async () => null,
           resolveConsentPreview: async () => null,
           dispatch: async () => null,
@@ -3414,6 +3460,10 @@ describe("local-edge collaboration command route", () => {
     const harness = createHarness({
       response: remoteCompositionResponse,
       sharedMemoryControl: {
+        reconcileRuleDeliveries: async () => ({
+          processed: 0,
+          acknowledged: 0
+        }),
         resolvePreviewTarget: async () => null,
         resolveConsentPreview: async () => null,
         dispatch: async () => null,

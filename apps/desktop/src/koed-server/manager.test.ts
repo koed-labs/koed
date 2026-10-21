@@ -38,6 +38,7 @@ import {
   shouldRefreshLocalAiClientsAfterResume,
   setupStartupReady,
   setupServicesHealthy,
+  setupExternalModelServicesHealthy,
   setupIntegrationHealthy
 } from "./manager.js";
 
@@ -1871,6 +1872,32 @@ describe("Koed server desktop manager", () => {
       ok: true,
       message: "Claude Code and Pi integrations are configured."
     });
+  });
+
+  it("requires healthy external models without requiring local model files", () => {
+    const healthy = {
+      embeddingService: { state: "healthy" },
+      privacyService: { state: "healthy" }
+    };
+    expect(setupExternalModelServicesHealthy(healthy, true)).toBe(true);
+    expect(
+      setupExternalModelServicesHealthy(
+        { ...healthy, privacyService: { state: "not_configured" } },
+        true
+      )
+    ).toBe(false);
+    expect(
+      setupExternalModelServicesHealthy(
+        { embeddingService: { state: "healthy" } },
+        false
+      )
+    ).toBe(true);
+    expect(
+      setupExternalModelServicesHealthy(
+        { ...healthy, embeddingService: { state: "needs_attention" } },
+        false
+      )
+    ).toBe(false);
   });
 
   it("treats local services as ready before later setup stages finish", () => {

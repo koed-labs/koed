@@ -237,10 +237,15 @@ describeDb("Collaboration repository", () => {
         maximum_fidelity text not null,
         include_curated_memory boolean not null,
         expires_at timestamptz,
-        revoked_at timestamptz
+        revoked_at timestamptz,
+        maximum_authorized_source_revision bigint,
+        fidelity_policy_revision integer not null default 1,
+        content_policy_version integer not null default 1,
+        classifier_version integer not null default 1
       );
       create temp table team_memory_share_grants (
         id uuid primary key,
+        owner_user_id uuid,
         logical_memory_id uuid not null,
         remote_replica_id uuid not null,
         owner_principal_id uuid not null,
@@ -262,6 +267,20 @@ describeDb("Collaboration repository", () => {
         revoked_at timestamptz,
         tombstoned_at timestamptz,
         purge_completed_at timestamptz
+      );
+      create temp table team_memory_share_reasons(
+        id uuid primary key default gen_random_uuid(),
+        share_grant_id uuid not null,consent_id uuid not null,
+        kind text not null default 'direct',rule_id uuid
+      );
+      create temp table team_memory_reason_publications(
+        reason_id uuid not null,share_grant_id uuid not null,consent_id uuid not null,
+        representation_id uuid not null,rule_version integer,publisher_fence bigint
+      );
+      create temp table team_memory_sharing_rules(
+        id uuid primary key,state text,owner_user_id uuid,logical_memory_id uuid,
+        team_id uuid,team_workspace_id uuid,authority_version integer,publisher_fence bigint,
+        effective_privacy_policy_hash text,maximum_fidelity text,include_curated_memory boolean
       );
       create temp table collaboration_threads (
         id uuid primary key,
@@ -307,6 +326,8 @@ describeDb("Collaboration repository", () => {
       );
       create temp table team_memory_representations (
         id uuid primary key,
+        source_revision bigint not null default 1,
+        effective_privacy_policy_hash text not null default repeat('a',64),
         share_grant_id uuid not null,
         consent_id uuid not null,
         team_id uuid not null,
@@ -480,6 +501,10 @@ describeDb("Collaboration repository", () => {
         ]
       );
       await authorizationPool.query(
+        `insert into team_memory_share_reasons(share_grant_id,consent_id) values($1,$2)`,
+        [scope.shareGrantId, scope.consentId]
+      );
+      await authorizationPool.query(
         `insert into collaboration_threads (
            id,logical_id,scope,kind,team_id,team_workspace_id,
            shared_logical_memory_id,share_grant_id,created_by_user_id,
@@ -624,6 +649,11 @@ describeDb("Collaboration repository", () => {
           scope.teamPolicyId,
           scope.workspacePolicyId
         ]
+      );
+      await authorizationPool.query(
+        `insert into team_memory_reason_publications(reason_id,share_grant_id,consent_id,representation_id)
+        select id,share_grant_id,consent_id,$2 from team_memory_share_reasons where share_grant_id=$1`,
+        [scope.shareGrantId, representationId]
       );
       await authorizationPool.query(
         `insert into collaboration_outbox (
@@ -802,6 +832,22 @@ describeDb("Collaboration repository", () => {
           )
         );
       }
+      // An active grant and consent are insufficient without an exact durable publication.
+      await harness.pool.query(
+        `delete from team_memory_reason_publications where share_grant_id=$1`,
+        [scope.shareGrantId]
+      );
+      await expect(isAuthorized(events.lcm_rollups)).resolves.toBe(false);
+      await expect(
+        harness.repository.getThread(actor(harness.actorUserId), {
+          threadId: scope.threadId
+        })
+      ).resolves.toBeNull();
+      const withoutPublications = await harness.repository.replayEvents(
+        actor(harness.actorUserId),
+        { scope: "team", teamId: harness.teamId, afterCursor: 0 }
+      );
+      expect(withoutPublications?.events).toEqual([]);
     } finally {
       await harness.pool.end();
     }

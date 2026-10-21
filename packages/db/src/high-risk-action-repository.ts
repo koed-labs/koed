@@ -491,6 +491,13 @@ const buildScopedRepositories = (
         }
         return Promise.resolve(ownerPrivateReplicaEnvelopeEncryptionProvider);
       },
+      resolveSharingRuleEncryptionProvider: () => {
+        if (!ownerPrivateReplicaEnvelopeEncryptionProvider)
+          throw new Error(
+            "Owner-private encryption is required for sharing rule execution"
+          );
+        return Promise.resolve(ownerPrivateReplicaEnvelopeEncryptionProvider);
+      },
       delegatedDeviceActionGrantExecution: true
     }),
     sync: createCrossIdentitySyncRepository(savepointPool, {

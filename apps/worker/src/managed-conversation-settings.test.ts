@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ManagedConversationExecutionRecord } from "@koed/db";
 import { assertManagedConversationTurnSettings } from "./managed-conversation-settings.js";
+import { combineManagedConversationRepositories } from "./managed-conversation-authority-client.js";
 
 describe("managed turn settings admission", () => {
   const execution = {
@@ -39,6 +40,34 @@ describe("managed turn settings admission", () => {
     }) as unknown as Parameters<
       typeof assertManagedConversationTurnSettings
     >[0];
+  it("checks remote execution settings against the publishing device owner's local catalog", async () => {
+    const local = repository();
+    const listInstances = vi.fn(local.listAiClientInstances);
+    const listSnapshots = vi.fn(local.listCurrentAiClientCapabilitySnapshots);
+    const combined = combineManagedConversationRepositories(
+      {
+        listAiClientInstances: listInstances,
+        listCurrentAiClientCapabilitySnapshots: listSnapshots
+      } as never,
+      {} as never,
+      "local-owner"
+    );
+    await expect(
+      assertManagedConversationTurnSettings(combined, execution)
+    ).resolves.toBeUndefined();
+    expect(listInstances).toHaveBeenCalledWith({ userId: "local-owner" });
+    expect(listSnapshots).toHaveBeenCalledWith({ userId: "local-owner" });
+    const stale = combineManagedConversationRepositories(
+      repository({ expiresAt: "2000-01-01T00:00:00Z" }) as never,
+      {} as never,
+      "local-owner"
+    );
+    await expect(
+      assertManagedConversationTurnSettings(stale, execution)
+    ).rejects.toMatchObject({
+      name: "ManagedConversationSettingsUnavailableError"
+    });
+  });
   it("accepts settings only from the execution owner's current catalog", async () => {
     await expect(
       assertManagedConversationTurnSettings(repository(), execution)

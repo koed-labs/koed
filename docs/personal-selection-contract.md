@@ -1,8 +1,8 @@
 # Personal selection contract
 
-P1-01 adds a versioned contract beside the current recall interfaces.
-It does not change active retrieval, capture, Desktop, or sync behavior.
-The remaining tickets in [tickets.md](../tickets.md) migrate those callers before activation in P1-17.
+Package 1 introduced the versioned Personal selection contract and migrated its
+callers before activation in P1-17.
+The [validation record](personal-project-validation.md) records the completed migration.
 
 A selection contains the owning User, one target, and separate caller repository context.
 The target determines the source boundary.
@@ -1113,6 +1113,24 @@ only an event ID and category. Notifications conservatively cover the owner;
 an unrelated source can therefore require re-enumeration. They never add that
 source to the frozen selection. A consumer replaces its membership baseline
 only after a complete successful enumeration.
+
+Continuous Git Anchor and exact Folder sharing also check previously known members through
+`POST /v1/personal/selections/evaluate-members`. The request carries a completed
+Git Anchor or exact Folder checkpoint and at most 100 exact local Session and logical Session
+ID pairs. It cannot supply an owner or change the checkpoint's selection.
+Any intervening selection change requires a fresh complete enumeration.
+
+The check distinguishes a matching source, a confirmed mismatch, an explicit
+retained deletion, and an unresolved source. Missing rows, mismatched logical
+IDs, unavailable replicas, invalidated sources, and unresolved Git facts do
+not prove removal. Folder checks use the full Personal Folder reference, including
+its originating device and directory incarnation, rather than a local path or
+Git identity. A confirmed result carries both Git and Folder context versions and a
+context hash bound to the source; an unresolved result carries neither.
+The response contains no source content or local path. It does not authorize
+Team publication or remove sharing itself. The publisher must retain unknown
+members until it has conclusive evidence and deliver any removal against the
+current rule and member versions.
 
 Journal IDs are page keys, not commit watermarks. Each change window pins the
 transactions visible before and after the window. A writer that allocated a

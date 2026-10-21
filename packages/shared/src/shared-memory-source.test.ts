@@ -124,7 +124,7 @@ describe("Shared Memory source binding", () => {
     ).toThrow("one manifest item");
   });
 
-  it("binds source identity into protected artifact previews", () => {
+  it("binds source and selected artifact identity into protected previews", () => {
     const source = noteSource();
     const preview = {
       schemaVersion: 1 as const,
@@ -151,6 +151,16 @@ describe("Shared Memory source binding", () => {
       sharedSourcePreviewHash({
         ...preview,
         source: { ...source, noteId: randomUUID() }
+      })
+    );
+    expect(sharedSourcePreviewHash(preview)).not.toBe(
+      sharedSourcePreviewHash({ ...preview, artifactId: randomUUID() })
+    );
+    expect(sharedSourcePreviewHash(preview)).toBe(
+      sharedSourcePreviewHash({
+        ...preview,
+        previewId: randomUUID(),
+        previewHash: "a".repeat(64)
       })
     );
   });

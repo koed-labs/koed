@@ -14,6 +14,7 @@ import {
   noPrivacyLabelsPolicy,
   privacyContentPolicyHash,
   privacyLabels,
+  resolveSharingRuleContentPolicy,
   PrivacyServiceUnavailableError,
   SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES,
   SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
@@ -372,6 +373,12 @@ const fixture = (input?: {
         : null;
     }
   );
+  const reconcileSharingRuleMembers = vi.fn(async () => ({
+    processed: 0,
+    prepared: 0,
+    unresolved: 0,
+    failed: 0
+  }));
   const listPendingSemanticPrivacyTargets = vi.fn(
     input?.listTargets ?? (async () => [target])
   );
@@ -496,6 +503,7 @@ const fixture = (input?: {
   const createService = () =>
     createSharedMemoryPrivacyMaterializationService({
       sharedMemoryRepository: {
+        reconcileSharingRuleMembers,
         listPendingSemanticPrivacyTargets,
         readPendingSemanticPrivacyTarget,
         claimSemanticPrivacyTarget,
@@ -540,6 +548,7 @@ const fixture = (input?: {
   return {
     service,
     restartService: createService,
+    reconcileSharingRuleMembers,
     capabilities,
     classify,
     findCachedClassification,
@@ -655,6 +664,168 @@ describe("Shared Memory privacy materialization service", () => {
         }
       }
     ]);
+  });
+
+  it.each(privacyLabels)(
+    "applies added rule redaction for %s while retaining enclosing requirements",
+    async (added) => {
+      const required: PrivacyLabel =
+        added === "secret" ? "private_phone" : "secret";
+      const globalLabels = labelPolicy(required);
+      const globalPolicyHash = privacyContentPolicyHash({
+        labels: globalLabels
+      });
+      const ruleLabels = labelPolicy(added);
+      const effective = resolveSharingRuleContentPolicy({
+        globalLabels,
+        globalPolicyHash,
+        labels: ruleLabels
+      });
+      const target = targetFor(effective.effectivePrivacyPolicyHash);
+      const loaded = {
+        ...loadedFor(target),
+        ruleContentPolicy: { labels: ruleLabels, globalPolicyHash }
+      };
+      const original = structuredClone(item);
+      const state = fixture({
+        policy: globalLabels,
+        target,
+        loaded,
+        cached: true
+      });
+      await expect(state.service.processOnce()).resolves.toMatchObject({
+        ready: 1,
+        failed: 0,
+        classifierInferenceCalls: 0
+      });
+      expect(state.storedInputs[0]?.items).toMatchObject([
+        {
+          content: {
+            text: privateValues
+              .map((value, index) => {
+                const category = privacyLabels[index]!;
+                return category === added || category === required
+                  ? `[${category.toUpperCase()}]`
+                  : value;
+              })
+              .join(" | ")
+          }
+        }
+      ]);
+      // A confirmed broader policy removes only the rule's added category.
+      const broaderTarget = targetFor(globalPolicyHash, randomUUID());
+      state.setTarget(broaderTarget, {
+        ...loadedFor(broaderTarget),
+        ruleContentPolicy: { labels: noPrivacyLabelsPolicy(), globalPolicyHash }
+      });
+      await expect(state.service.processOnce()).resolves.toMatchObject({
+        ready: 1,
+        failed: 0,
+        classifierInferenceCalls: 0
+      });
+      expect(state.storedInputs[1]?.items).toMatchObject([
+        {
+          content: {
+            text: privateValues
+              .map((value, index) =>
+                privacyLabels[index] === required
+                  ? `[${required.toUpperCase()}]`
+                  : value
+              )
+              .join(" | ")
+          }
+        }
+      ]);
+      expect(state.classify).not.toHaveBeenCalled();
+      expect(item).toEqual(original);
+    }
+  );
+
+  it("keeps overlapping rule redaction policies separate while reusing classification spans", async () => {
+    const globalLabels = labelPolicy("secret");
+    const globalPolicyHash = privacyContentPolicyHash({ labels: globalLabels });
+    const make = (added: PrivacyLabel) => {
+      const labels = labelPolicy(added);
+      const effective = resolveSharingRuleContentPolicy({
+        globalLabels,
+        globalPolicyHash,
+        labels
+      });
+      const target = targetFor(
+        effective.effectivePrivacyPolicyHash,
+        randomUUID()
+      );
+      return {
+        target,
+        loaded: {
+          ...loadedFor(target),
+          ruleContentPolicy: { labels, globalPolicyHash }
+        }
+      };
+    };
+    const first = make("private_email"),
+      second = make("private_phone");
+    const state = fixture({ policy: globalLabels, ...first, cached: true });
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      ready: 1,
+      failed: 0
+    });
+    state.setTarget(second.target, second.loaded);
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      ready: 1,
+      failed: 0
+    });
+    for (const [index, added] of (
+      ["private_email", "private_phone"] as const
+    ).entries()) {
+      expect(state.storedInputs[index]?.items).toMatchObject([
+        {
+          content: {
+            text: privateValues
+              .map((value, valueIndex) => {
+                const category = privacyLabels[valueIndex]!;
+                return category === "secret" || category === added
+                  ? `[${category.toUpperCase()}]`
+                  : value;
+              })
+              .join(" | ")
+          }
+        }
+      ]);
+    }
+    expect(state.classify).not.toHaveBeenCalled();
+    expect(first.target.effectivePrivacyPolicyHash).not.toBe(
+      second.target.effectivePrivacyPolicyHash
+    );
+  });
+
+  it("rejects a rule target whose enclosing policy changed before masking", async () => {
+    const globalLabels = labelPolicy("secret");
+    const globalPolicyHash = privacyContentPolicyHash({ labels: globalLabels });
+    const labels = labelPolicy("private_email");
+    const target = targetFor(
+      resolveSharingRuleContentPolicy({
+        globalLabels,
+        globalPolicyHash,
+        labels
+      }).effectivePrivacyPolicyHash
+    );
+    const state = fixture({
+      policy: globalLabels,
+      target,
+      cached: true,
+      loaded: {
+        ...loadedFor(target),
+        ruleContentPolicy: { labels, globalPolicyHash: "0".repeat(64) }
+      }
+    });
+    await expect(state.service.processOnce()).resolves.toMatchObject({
+      ready: 0,
+      failed: 1
+    });
+    expect(state.storedInputs).toHaveLength(0);
+    expect(state.classify).not.toHaveBeenCalled();
+    expect(state.findCachedClassification).not.toHaveBeenCalled();
   });
 
   it("defers final publication when the deployment-wide finalization slot is occupied", async () => {
@@ -1566,7 +1737,7 @@ describe("Shared Memory privacy materialization service", () => {
     expect(state.markSemanticPrivacyTargetFailed).not.toHaveBeenCalled();
   });
 
-  it("wakes once at the earliest durable privacy retry time", async () => {
+  it("resumes rule catch-up before Privacy targets at the earliest durable retry time", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-13T00:00:00.000Z"));
     const retryAt = "2026-08-13T00:00:05.000Z";
@@ -1594,6 +1765,12 @@ describe("Shared Memory privacy materialization service", () => {
     expect(state.listPendingSemanticPrivacyTargets).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(state.listPendingSemanticPrivacyTargets).toHaveBeenCalledTimes(2);
+    expect(state.reconcileSharingRuleMembers).toHaveBeenCalledTimes(2);
+    expect(
+      state.reconcileSharingRuleMembers.mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      state.listPendingSemanticPrivacyTargets.mock.invocationCallOrder[0]!
+    );
 
     await state.service.stop();
     vi.useRealTimers();

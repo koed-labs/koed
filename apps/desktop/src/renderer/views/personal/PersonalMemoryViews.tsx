@@ -1,4 +1,5 @@
 import { ProjectOrganization } from "./ProjectOrganization.js";
+import type { GitAnchorSharingReviewInput } from "@koed/shared/collaboration";
 import { SourceContextCorrectionDialog } from "./SourceContextCorrectionDialog.js";
 import { ConversationProjectsDialog } from "./ProjectMembershipActions.js";
 import { projectConversationFolders } from "../../../project-conversation-folders.js";
@@ -168,6 +169,10 @@ export type PersonalMemoryWorkspaceProps = {
     sessionId: string;
   }) => void;
   onShareToWorkspace?: (request: ShareToWorkspaceRequest) => void;
+  onReviewGitAnchorSharing?: (
+    target: GitAnchorSharingReviewInput["target"],
+    selectionTitle?: string
+  ) => void;
   projectWorkspaceSuggestions?: readonly ProjectWorkspaceSuggestion[];
   ready?: boolean;
   route: PersonalMemoryRoute;
@@ -745,6 +750,7 @@ function ProjectDetail({
   onRevealLocalProject,
   onSetRepositoryAnchor,
   onReviewRepository,
+  onReviewGitAnchorSharing,
   onProjectAssociation,
   onRetry,
   onSelectSession,
@@ -774,6 +780,7 @@ function ProjectDetail({
   onRevealLocalProject?: (localProjectId: string) => void;
   onSetRepositoryAnchor?: RendererPlatform["setRepositoryAnchor"];
   onReviewRepository?: RendererPlatform["reviewRepository"];
+  onReviewGitAnchorSharing?: PersonalMemoryWorkspaceProps["onReviewGitAnchorSharing"];
   onProjectAssociation?: RendererPlatform["projectAssociation"];
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
@@ -936,6 +943,11 @@ function ProjectDetail({
     );
   }
   const visibleThreadIds = new Set(threads.map((thread) => thread.id));
+  const gitAnchor =
+    project.repository?.kind === "portable_repository" ||
+    project.repository?.kind === "device_local_repository"
+      ? project.repository
+      : null;
   const rootThreads = threads.filter(
     (thread) =>
       thread.threadKind !== "subagent" ||
@@ -1058,7 +1070,7 @@ function ProjectDetail({
           contextKind={project.contextKind}
           key={project.id}
           api={managedConversations}
-          projectId={project.id}
+          projectId={project.localProjectId ?? project.id}
           projectRoot={project.contextKind === "project" ? project.path : null}
           commandProjectId={
             project.contextKind === "project" ? project.id : null
@@ -1076,6 +1088,24 @@ function ProjectDetail({
   }
   return (
     <section className="personal-project-detail">
+      {project.namedProject &&
+      project.projectReference &&
+      onReviewGitAnchorSharing ? (
+        <div className="personal-project-detail-actions">
+          <button
+            type="button"
+            className="personal-session-manage-button"
+            onClick={() =>
+              onReviewGitAnchorSharing(
+                { kind: "project", project: project.projectReference! },
+                project.name
+              )
+            }
+          >
+            Review Project sharing
+          </button>
+        </div>
+      ) : null}
       {organization ?? (
         <ProjectHeader
           key={project.id}
@@ -1094,6 +1124,37 @@ function ProjectDetail({
           onRevealLocalProject={onRevealLocalProject}
         >
           <div className="personal-project-detail-actions">
+            {project.folder && onReviewGitAnchorSharing ? (
+              <button
+                type="button"
+                className="personal-session-manage-button"
+                onClick={() =>
+                  onReviewGitAnchorSharing(
+                    {
+                      kind: "folder",
+                      folder: project.folder!.reference
+                    },
+                    project.folder?.capturedPath
+                  )
+                }
+              >
+                Review Folder sharing
+              </button>
+            ) : null}
+            {gitAnchor && onReviewGitAnchorSharing ? (
+              <button
+                type="button"
+                className="personal-session-manage-button"
+                onClick={() =>
+                  onReviewGitAnchorSharing({
+                    kind: "repository",
+                    repository: gitAnchor
+                  })
+                }
+              >
+                Review sharing
+              </button>
+            ) : null}
             <button
               className="personal-new-conversation personal-new-conversation-standalone"
               type="button"
@@ -3636,6 +3697,7 @@ export function PersonalMemoryWorkspace({
   onInspectEvent,
   onNavigate,
   onShareToWorkspace,
+  onReviewGitAnchorSharing,
   openExternal,
   revealLocalProject,
   setRepositoryAnchor,
@@ -3987,6 +4049,7 @@ export function PersonalMemoryWorkspace({
                   : undefined
               }
               onProjectAssociation={projectAssociation}
+              onReviewGitAnchorSharing={onReviewGitAnchorSharing}
               onRetry={() => void store.loadProjects()}
               onSelectSession={(sessionId) => {
                 if (!selectedProject) return;

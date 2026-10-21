@@ -1,4 +1,48 @@
-import { planRepositorySearch } from "@koed/shared";
+import { databaseErrorCode } from "./connection.js";
+import {
+  retainedReasonPreviewSql,
+  readRetainedRulePublication,
+  historicalPreparationJoinSql,
+  historicalPreparationExistsSql,
+  preparationPolicyColumnSql
+} from "./sharing-rule-retained-publication.js";
+import { rebuildRetainedSharingArtifact } from "./rebuild-retained-sharing-artifact.js";
+import {
+  representationPublicationAuthoritySql,
+  cumulativeRepresentationAuthorizationSql,
+  grantAuthorizesRepresentationSql,
+  sharingReasonAuthorizesRepresentationSql,
+  publishedSharedMemoryAuthorizationSql,
+  retainedOwnerPolicyAuthorizationSql,
+  sharingRuleMembershipSql,
+  sharingRuleMemberSourceSql
+} from "./shared-memory-publication-authority-sql.js";
+import { planRepositorySearch, type PrivacyLabelPolicy } from "@koed/shared";
+import { sharingRuleDetailAppliedScopeSchema } from "@koed/shared";
+import type {
+  SharingRuleDetailReviewInput,
+  SharingRuleDetailReview,
+  SharingRuleDetailIntent,
+  SharingRuleDetailResult
+} from "@koed/shared";
+import { readSharingRuleDetailReview } from "./sharing-rule-detail-review.js";
+import { readSharingRuleContentPolicyReview } from "./sharing-rule-content-policy-review.js";
+import type {
+  SharingRuleContentPolicyReviewInput,
+  SharingRuleContentPolicyReview,
+  SharingRuleContentPolicyIntent,
+  SharingRuleContentPolicyResult,
+  SharingRuleContentPolicyAppliedScope,
+  SharingRuleDetailAppliedScope
+} from "@koed/shared";
+import {
+  sharingRuleContentPolicyAppliedScopeSchema,
+  sharingRuleApprovedAmendmentFields,
+  resolveSharingRuleContentPolicy
+} from "@koed/shared";
+import { applySharingRuleContentPolicyAmendment } from "./sharing-rule-content-policy-amendment.js";
+import { applySharingRuleDetailAmendment } from "./sharing-rule-detail-amendment.js";
+import { resolveOwnedSharingRuleContentPolicy } from "./sharing-rule-content-policy.js";
 import {
   classifyTeamRepositoryEvidence,
   type ClassifiedRepositoryEvidence
@@ -19,10 +63,39 @@ import {
   structuredLcmSummarySchema
 } from "@koed/core";
 import {
+  repositorySharingRuleCreationReviewInputSchema,
+  repositorySharingRuleControlIntentSchema,
+  repositorySharingRuleControlResultSchema,
+  repositorySharingRuleControlReviewSchema,
+  ownedRepositorySharingRulesInputSchema,
+  ownedRepositorySharingRulesPageSchema,
+  type RepositorySharingRuleControlIntent,
+  type RepositorySharingRuleControlResult,
+  type RepositorySharingRuleControlReview,
+  repositorySharingRuleCreationIntentSchema,
+  repositorySharingRuleCreationReviewSchema,
+  sharedMemoryRepositoryRuleCreationActionGrantBinding,
+  type RepositorySharingRuleCreationIntent,
+  type RepositorySharingRuleCreationReviewInput,
+  type RepositorySharingRuleCreationReview,
+  type RepositorySharingRuleCreationResult,
+  repositorySharingRuleMembersStateSchema,
+  repositorySharingRuleMemberContextSchema,
+  repositorySharingRuleMemberRemovalSchema,
+  repositorySharingRuleMemberAdmissionSchema,
+  repositorySharingRuleMutationCancellationSchema,
+  repositorySharingRuleMutationSettlementSchema,
+  type RepositorySharingRuleMembersState,
+  type RepositorySharingRuleMemberContext,
+  type RepositorySharingRuleMemberContextResult,
+  conversationSharingRuleCreationReviewSchema,
+  type ConversationSharingRuleCreationReviewInput,
+  type ConversationSharingRuleCreationReview,
   capturedSessionSourceFrontierHash,
   classifyApprovalActivity,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
+  decryptEnvelopeToUtf8,
   logicalMemorySourceRevisionIdentity,
   privacyClassificationResultManifestHash,
   sharedMemoryGrantScopedSourceId,
@@ -37,6 +110,8 @@ import {
   sharedMemoryRepresentationsForCeiling,
   extractSharedMemorySemanticClassificationFields,
   sharedMemoryRepresentations,
+  ownedSharingReasonSchema,
+  type OwnedSharingReason,
   SharedMemoryConflictError,
   SharedMemorySemanticResourceLimitError,
   SharedMemorySourceItemRejectedError,
@@ -138,7 +213,7 @@ export type SharedMemorySemanticPreviewStatus =
 
 export interface SharedMemoryAuthorityContext {
   action: typeof SHARED_MEMORY_AUTHORITY;
-  source: "browser_session" | "device_action_grant";
+  source: "browser_session" | "device_action_grant" | "sharing_rule";
   referenceId: string;
 }
 
@@ -211,6 +286,46 @@ export interface SharedMemoryCandidatePreviewRecord {
   createdAt: string;
 }
 
+export interface PendingConversationSharingRuleAuthority {
+  ruleId: string;
+  publisherCredentialId: string;
+  expectedGrantVersion: number | null;
+  effectivePrivacyPolicyHash: string;
+}
+type PendingSharingRuleAdmissionAuthority =
+  PendingConversationSharingRuleAuthority &
+    (
+      | { admissionKind: "conversation_create" }
+      | {
+          admissionKind: "repository_member";
+          membershipId: string;
+          expectedAuthorityVersion: number;
+          expectedMembershipVersion: number;
+          publisherFence: number;
+          membershipRequestHash: string;
+        }
+    );
+export interface RepositorySharingRuleMemberAdmission {
+  ruleId: string;
+  selectionSnapshotVersion: string;
+  sourceContextHash: string;
+  gitContextVersion: number;
+  folderContextVersion: number;
+  selectorBindingHash: string;
+  expectedAuthorityVersion: number;
+  expectedMembershipVersion: number;
+  expectedGrantVersion: number | null;
+  publisherFence: number;
+}
+export interface RepositorySharingRuleMemberAcceptance {
+  pendingShareId: string;
+  membershipId: string;
+  membershipVersion: number;
+  authorityVersion: number;
+  publisherFence: number;
+  sourceRevision: number;
+}
+
 export interface PendingShareRecord {
   id: string;
   mutationId: string;
@@ -281,6 +396,7 @@ export interface OwnedShareSummary {
   } | null;
   lastReadyRevision: number | null;
   lastSuccessfulUpdateAt: string | null;
+  sharingReasons: OwnedSharingReason[];
 }
 
 export type OwnedConversationSourceAccessSummary = {
@@ -516,6 +632,11 @@ export interface SharedMemoryPendingSemanticTarget extends SharedMemorySemanticP
 
 export interface SharedMemoryDecryptedSemanticTarget {
   target: SharedMemoryPendingSemanticTarget;
+  /** Present for a rule reason; direct shares use only enclosing policy. */
+  ruleContentPolicy?: {
+    labels: PrivacyLabelPolicy;
+    globalPolicyHash: string;
+  };
   preview: SharedMemoryPersistedPreviewRecord;
   sourceManifest: SharedSourceArtifactV1["manifest"];
   sourceItemIdentityHash: string;
@@ -900,6 +1021,19 @@ export interface SharedMemoryRevokeReviewRecord extends SharedMemoryReviewDestin
   >;
 }
 
+export interface SharedMemoryRuleControlReviewRecord extends SharedMemoryReviewDestination {
+  logicalMemoryId: string;
+  sourceTitle: string;
+  ruleId: string;
+  reasonId: string;
+  shareGrantId: string;
+  state: "active" | "paused";
+  maximumFidelity: SharedMemoryFidelityCeiling;
+  includeCuratedMemory: boolean;
+  authorityVersion: number;
+  grantVersion: number;
+}
+
 export interface SharedMemoryCreateConsentInput {
   source: SharedMemorySourceRef;
   sourceCapabilities: SharedMemoryRepresentation[];
@@ -996,7 +1130,201 @@ export interface ContinuousPersonalNoteAdvancementResult {
   nextShareGrantId: string | null;
 }
 
+export interface SharedMemoryRulePublicationAuthority {
+  reasonId: string;
+  ruleId: string;
+  authorityVersion: number;
+  consentVersion: number;
+  publisherCredentialId: string;
+  publisherFence: number;
+  effectivePrivacyPolicyHash: string;
+}
+
 export interface SharedMemoryRepository {
+  amendSharingRuleContentPolicy(
+    actor: ActorContext,
+    input: SharingRuleContentPolicyIntent & {
+      authority: SharedMemoryAuthorityContext;
+    }
+  ): Promise<SharingRuleContentPolicyResult>;
+  amendSharingRuleDetail(
+    actor: ActorContext,
+    input: SharingRuleDetailIntent & { authority: SharedMemoryAuthorityContext }
+  ): Promise<SharingRuleDetailResult>;
+  getSharingRuleDetailReview(
+    actor: ActorContext,
+    input: SharingRuleDetailReviewInput,
+    expiresAt?: string
+  ): Promise<SharingRuleDetailReview | null>;
+  getSharingRuleContentPolicyReview(
+    actor: ActorContext,
+    input: SharingRuleContentPolicyReviewInput,
+    expiresAt?: string
+  ): Promise<SharingRuleContentPolicyReview | null>;
+  inspectRepositorySharingRuleMembers(
+    actor: ActorContext,
+    input: {
+      ruleId: string;
+      publisherCredentialId: string;
+      logicalMemoryIds: string[];
+    }
+  ): Promise<RepositorySharingRuleMembersState>;
+  refreshRepositorySharingRuleMemberContext(
+    actor: ActorContext,
+    input: RepositorySharingRuleMemberContext & {
+      ruleId: string;
+      membershipId: string;
+      publisherCredentialId: string;
+    }
+  ): Promise<RepositorySharingRuleMemberContextResult>;
+  getRepositorySharingRuleCreationReview(
+    actor: ActorContext,
+    input: RepositorySharingRuleCreationReviewInput
+  ): Promise<RepositorySharingRuleCreationReview | null>;
+  createRepositorySharingRule(
+    actor: ActorContext,
+    input: RepositorySharingRuleCreationIntent & {
+      publisherCredentialId: string;
+      authority: SharedMemoryAuthorityContext;
+    }
+  ): Promise<RepositorySharingRuleCreationResult>;
+  getConversationSharingRuleControlReview(
+    actor: ActorContext,
+    input: {
+      ruleId: string;
+      reasonId: string;
+      shareGrantId: string;
+      teamId: string;
+      teamWorkspaceId: string;
+      expectedAuthorityVersion: number;
+      expectedGrantVersion: number;
+      action: "pause" | "resume" | "stop" | "retry";
+    }
+  ): Promise<SharedMemoryRuleControlReviewRecord | null>;
+  controlConversationSharingRule(
+    actor: ActorContext,
+    input: {
+      ruleId: string;
+      reasonId: string;
+      shareGrantId: string;
+      mutationId: string;
+      expectedAuthorityVersion: number;
+      expectedGrantVersion: number;
+      action: "pause" | "resume" | "stop" | "retry";
+      destination?: { teamId: string; teamWorkspaceId: string };
+      authority: SharedMemoryAuthorityContext;
+    }
+  ): Promise<{
+    ruleId: string;
+    reasonId: string;
+    shareGrantId: string;
+    state: "active" | "paused" | "stopped";
+    authorityVersion: number;
+    consentVersion: number;
+    grantVersion: number;
+    publisherFence: number;
+    catchUpState: "idle" | "queued" | "needs_attention";
+  }>;
+  reconcileSharingRuleMembers(input?: { limit?: number }): Promise<{
+    processed: number;
+    prepared: number;
+    unresolved: number;
+    failed: number;
+  }>;
+  removeSharingRuleMember(
+    actor: ActorContext,
+    input: {
+      mutationId: string;
+      ruleId: string;
+      membershipId: string;
+      selectionSnapshotVersion: string;
+      sourceContextHash: string;
+      expectedAuthorityVersion: number;
+      expectedMembershipVersion: number;
+      publisherCredentialId: string;
+      publisherFence: number;
+    }
+  ): Promise<{
+    ruleId: string;
+    membershipId: string;
+    state: "removed";
+    membershipVersion: number;
+    authorityVersion: number;
+    shareGrantId: string | null;
+  }>;
+  listOwnedRepositorySharingRules(
+    actor: ActorContext,
+    input: ReturnType<typeof ownedRepositorySharingRulesInputSchema.parse>
+  ): Promise<ReturnType<typeof ownedRepositorySharingRulesPageSchema.parse>>;
+  getRepositorySharingRuleControlReview(
+    actor: ActorContext,
+    input: Omit<
+      RepositorySharingRuleControlIntent,
+      "mutationId" | "selectorKind"
+    >
+  ): Promise<RepositorySharingRuleControlReview | null>;
+  controlRepositorySharingRule(
+    actor: ActorContext,
+    input: RepositorySharingRuleControlIntent & {
+      authority: SharedMemoryAuthorityContext;
+    },
+    transactionClient?: pg.PoolClient
+  ): Promise<RepositorySharingRuleControlResult>;
+  cancelRepositorySharingRuleMutation(
+    actor: ActorContext,
+    input: {
+      ruleId: string;
+      publisherCredentialId: string;
+      mutationId: string;
+      kind: "admit" | "context" | "remove";
+      logicalMemoryId: string;
+      membershipId: string;
+      requestHash: string;
+    }
+  ): Promise<
+    ReturnType<typeof repositorySharingRuleMutationSettlementSchema.parse>
+  >;
+  prepareSharingRuleMember(
+    actor: ActorContext,
+    input: {
+      shareGrantId: string;
+      expectedGrantVersion: number;
+      ruleAuthority: SharedMemoryRulePublicationAuthority;
+    }
+  ): Promise<{
+    previews: SharedMemoryPersistedPreviewRecord[];
+    unresolvedRepresentations: SharedMemoryRepresentation[];
+  }>;
+  prepareRetainedSharingRulePublication(
+    actor: ActorContext,
+    input: {
+      shareGrantId: string;
+      expectedGrantVersion: number;
+      retainedRepresentationId: string;
+      ruleAuthority: SharedMemoryRulePublicationAuthority;
+    }
+  ): Promise<SharedMemoryPersistedPreviewRecord>;
+  createConversationSharingRule(
+    actor: ActorContext,
+    input: {
+      ruleId: string;
+      mutationId: string;
+      logicalGrantId: string;
+      consentId: string;
+      expectedConsentVersion: number;
+      expectedGrantVersion: number | null;
+      publisherCredentialId: string;
+      effectivePrivacyPolicyHash: string;
+      authority: SharedMemoryAuthorityContext;
+      internalPendingShareId?: string;
+    }
+  ): Promise<{
+    ruleId: string;
+    reasonId: string;
+    shareGrantId: string;
+    authorityVersion: number;
+    publisherFence: number;
+  }>;
   createSharedMemoryCandidatePreview(
     actor: ActorContext,
     input: {
@@ -1022,6 +1350,26 @@ export interface SharedMemoryRepository {
       authority: SharedMemoryAuthorityContext;
     }
   ): Promise<SharedMemoryCandidatePreviewRecord | null>;
+  getConversationSharingRuleCreationReview(
+    actor: ActorContext,
+    input: ConversationSharingRuleCreationReviewInput
+  ): Promise<ConversationSharingRuleCreationReview | null>;
+  createPendingConversationSharingRule(
+    actor: ActorContext,
+    input: Parameters<SharedMemoryRepository["createPendingShare"]>[1] & {
+      ruleCreation: PendingConversationSharingRuleAuthority;
+    }
+  ): Promise<PendingShareRecord>;
+  createPendingRepositoryRuleMember(
+    actor: ActorContext,
+    input: Omit<
+      Parameters<SharedMemoryRepository["createPendingShare"]>[1],
+      "authority"
+    > & {
+      membership: RepositorySharingRuleMemberAdmission;
+      publisherCredentialId: string;
+    }
+  ): Promise<RepositorySharingRuleMemberAcceptance>;
   createPendingShare(
     actor: ActorContext,
     input: {
@@ -1441,6 +1789,8 @@ export interface SharedMemoryRepository {
       consentId: string;
       expectedGrantVersion: number;
       expectedRepresentationVersion?: number;
+      retainedRepresentationId?: string;
+      ruleAuthority?: SharedMemoryRulePublicationAuthority;
       internalPendingShareId?: string;
       preview: SharedSourcePreviewReference;
     }
@@ -1630,6 +1980,26 @@ export interface SharedMemoryRepository {
 }
 
 type SharedMemoryClientScopedRepository = SharedMemoryRepository & {
+  createPendingShare(
+    actor: ActorContext,
+    input: Parameters<SharedMemoryRepository["createPendingShare"]>[1],
+    ruleCreation?: PendingSharingRuleAdmissionAuthority,
+    transactionClient?: pg.PoolClient
+  ): Promise<PendingShareRecord>;
+  controlConversationSharingRule(
+    actor: ActorContext,
+    input: Parameters<
+      SharedMemoryRepository["controlConversationSharingRule"]
+    >[1],
+    client?: pg.PoolClient
+  ): ReturnType<SharedMemoryRepository["controlConversationSharingRule"]>;
+  createConversationSharingRule(
+    actor: ActorContext,
+    input: Parameters<
+      SharedMemoryRepository["createConversationSharingRule"]
+    >[1],
+    client?: pg.PoolClient
+  ): ReturnType<SharedMemoryRepository["createConversationSharingRule"]>;
   createSourceOwnerConsent(
     actor: ActorContext,
     input: SharedMemoryCreateConsentInput,
@@ -1716,6 +2086,133 @@ const ENCRYPTED_MEMORY_NODE_TEXT = "[koed encrypted memory node]";
 const SHARED_MEMORY_CLASSIFIER_VERSION = 1;
 
 type SqlClient = Pick<pg.PoolClient, "query">;
+const SHARED_MEMORY_REPRESENTATION_TITLE_MARKER =
+  "[koed encrypted Shared Memory title]";
+const representationTitleField = (sourceRevisionHash: string) =>
+  `display_title:${sourceRevisionHash}`;
+class SharedMemorySourcePreparationPendingError extends SharedMemoryConflictError {}
+class SharedMemoryCuratedEvidenceIneligibleError extends SharedMemorySourcePreparationPendingError {}
+
+const lockSharingRulePublicationAuthority = async (
+  client: SqlClient,
+  actor: ActorContext,
+  input: {
+    shareGrantId: string;
+    expectedGrantVersion: number;
+    ruleAuthority: SharedMemoryRulePublicationAuthority;
+  },
+  retained?: { previewId: string; representationId: string }
+): Promise<Row> => {
+  const authority = input.ruleAuthority;
+  for (const field of ["reasonId", "ruleId", "publisherCredentialId"] as const)
+    assertUuid(authority[field], field);
+  assertHash(
+    authority.effectivePrivacyPolicyHash,
+    "effectivePrivacyPolicyHash"
+  );
+  const scope = await client.query<Row>(
+    `select owner_user_id,logical_memory_id,owner_principal_id from team_memory_share_grants where id=$1`,
+    [input.shareGrantId]
+  );
+  const root = scope.rows[0];
+  if (!root || root.owner_user_id !== actor.userId)
+    throw new SharedMemoryAuthorizationError(
+      "Only the owner may publish through a sharing rule"
+    );
+  await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
+    `shared-memory-owner-policy:${root.logical_memory_id}:${root.owner_principal_id}`
+  ]);
+  await client.query(
+    `select id from team_memory_share_grants where id=$1 for update`,
+    [input.shareGrantId]
+  );
+  const current = await client.query<Row>(
+    `select rule.*,member.logical_memory_id,reason.consent_id,c.consent_version,g.grant_version
+       from team_memory_share_grants g
+       join team_memory_share_reasons reason on reason.share_grant_id=g.id
+         and reason.id=$2 and reason.rule_id=$3 and reason.kind='rule'
+       join team_memory_sharing_rules rule on rule.id=reason.rule_id
+         and rule.owner_user_id=g.owner_user_id
+         and rule.team_id=g.team_id and rule.team_workspace_id=g.team_workspace_id
+       join team_memory_sharing_rule_members member on member.id=reason.membership_id
+         and member.rule_id=rule.id and member.owner_user_id=rule.owner_user_id
+         and member.state='present' and ${sharingRuleMemberSourceSql()}
+       join source_owner_representation_consents c on c.id=reason.consent_id
+         and c.logical_memory_id=g.logical_memory_id and c.source_owner_principal_id=g.owner_principal_id
+         and c.team_id=g.team_id and c.team_workspace_id=g.team_workspace_id
+         and c.mode='continuous' and c.state ${retained ? "in ('active','paused')" : "='active'"} and c.revoked_at is null
+         and (c.expires_at is null or c.expires_at>now())
+       join device_credentials publisher on publisher.id=rule.publisher_credential_id
+         and publisher.owner_user_id=g.owner_user_id and publisher.revoked_at is null
+         and (publisher.expires_at is null or publisher.expires_at>now())
+         and publisher.operation_families @> ARRAY['share_grant_management','sync']::text[]
+      where g.id=$1 and g.owner_user_id=$4 and g.lifecycle ${retained ? "in ('active','unavailable')" : "='active'"} and g.revoked_at is null
+        and g.grant_version=$5 and rule.state ${retained ? "in ('active','paused')" : "='active'"}
+        and rule.authority_version=$6 and c.consent_version=$7
+        and rule.publisher_credential_id=$8 and rule.publisher_fence=$9
+        and rule.effective_privacy_policy_hash=$10
+        and c.maximum_fidelity=rule.maximum_fidelity
+        and c.include_curated_memory=rule.include_curated_memory
+      for update of rule,member,reason,c for share of publisher`,
+    [
+      input.shareGrantId,
+      authority.reasonId,
+      authority.ruleId,
+      actor.userId,
+      input.expectedGrantVersion,
+      authority.authorityVersion,
+      authority.consentVersion,
+      authority.publisherCredentialId,
+      authority.publisherFence,
+      authority.effectivePrivacyPolicyHash
+    ]
+  );
+  if (!current.rows[0])
+    throw new SharedMemoryConflictError(
+      "Sharing rule authority or publisher changed before publication"
+    );
+  if (retained) {
+    assertUuid(retained.previewId, "retained previewId");
+    assertUuid(retained.representationId, "retained representationId");
+    const proof = await client.query(
+      `select retained_source.id from team_memory_reason_grant_records bound_grant
+       join shared_source_previews retained_source on retained_source.id=$4 and retained_source.invalidated_at is null
+       ${historicalPreparationJoinSql("retained_source", "bound_grant")}
+       where bound_grant.id=$1 and bound_grant.sharing_reason_id=$2 and bound_grant.sharing_rule_id=$3
+         and historical_authority.retained_representation_id=$5
+       for share of retained_source`,
+      [
+        input.shareGrantId,
+        authority.reasonId,
+        authority.ruleId,
+        retained.previewId,
+        retained.representationId
+      ]
+    );
+    if (!proof.rows[0])
+      throw new SharedMemoryConflictError(
+        "Historical publication has no current exact source authority"
+      );
+  }
+  await requireWorkspaceSharePermission(
+    client,
+    actor,
+    stringValue(current.rows[0].team_id),
+    stringValue(current.rows[0].team_workspace_id)
+  );
+  const privacy = await resolveCurrentPrivacyPolicy(client, {
+    ownerUserId: actor.userId,
+    teamId: stringValue(current.rows[0].team_id),
+    teamWorkspaceId: stringValue(current.rows[0].team_workspace_id),
+    sharingRuleId: authority.ruleId,
+    lockRows: true
+  });
+  if (privacy.effectivePolicyHash !== authority.effectivePrivacyPolicyHash)
+    throw new SharedMemoryConflictError(
+      "Sharing rule privacy policy changed before publication"
+    );
+  return current.rows[0];
+};
 type Row = Record<string, unknown>;
 
 interface LogicalMemorySourceIdentity {
@@ -2563,40 +3060,6 @@ const fidelityConsentDoesNotExpand = (
   ) &&
   (!candidate.includeCuratedMemory || current.includeCuratedMemory);
 
-const cumulativeRepresentationAuthorizationSql = (
-  representationSql: string,
-  aliases: {
-    grant?: string;
-    consent?: string;
-    ownerPolicy?: string;
-    teamPolicy?: string;
-    workspacePolicy?: string;
-  } = {}
-): string => {
-  const grant = aliases.grant ?? "g";
-  const consent = aliases.consent ?? "c";
-  const owner = aliases.ownerPolicy ?? "op";
-  const team = aliases.teamPolicy ?? "tp";
-  const workspace = aliases.workspacePolicy ?? "wp";
-  const ceilingAuthorizes = (alias: string) => `case ${alias}.maximum_fidelity
-    when 'memory_events' then ${representationSql} in ('memory_events','lcm_leaves','lcm_rollups')
-    when 'lcm_leaves' then ${representationSql} in ('lcm_leaves','lcm_rollups')
-    when 'lcm_rollups' then ${representationSql}='lcm_rollups'
-    else false end`;
-  return `((${representationSql}='curated_assertions'
-      and ${grant}.include_curated_memory
-      and ${consent}.include_curated_memory
-      and ${owner}.include_curated_memory
-      and ${team}.include_curated_memory
-      and ${workspace}.include_curated_memory)
-    or (${representationSql}<>'curated_assertions'
-      and ${ceilingAuthorizes(grant)}
-      and ${ceilingAuthorizes(consent)}
-      and ${ceilingAuthorizes(owner)}
-      and ${ceilingAuthorizes(team)}
-      and ${ceilingAuthorizes(workspace)}))`;
-};
-
 const semanticPrivacyConsentJoinSql = (
   preview = "preview",
   grant = "g",
@@ -2641,7 +3104,8 @@ const semanticPrivacyConsentJoinSql = (
   select current.id,current.maximum_fidelity,current.include_curated_memory
     from source_owner_representation_consent_records current
    where current.id=${grant}.consent_id
-     and current.state='active' and current.revoked_at is null
+     and (current.state='active' or (current.state='paused' and ${retainedReasonPreviewSql(preview, grant)}))
+     and current.revoked_at is null
      and (current.expires_at is null or current.expires_at>now())
      and (current.mode='continuous' or (
        current.preview_id=${preview}.id
@@ -2650,17 +3114,6 @@ const semanticPrivacyConsentJoinSql = (
      ))
   limit 1
 ) ${consent} on true`;
-
-const grantAuthorizesRepresentationSql = (
-  representationSql: string,
-  grant = "g"
-): string => `((${representationSql}='curated_assertions'
-    and ${grant}.include_curated_memory)
-  or (${representationSql}<>'curated_assertions' and case ${grant}.maximum_fidelity
-    when 'memory_events' then ${representationSql} in ('memory_events','lcm_leaves','lcm_rollups')
-    when 'lcm_leaves' then ${representationSql} in ('lcm_leaves','lcm_rollups')
-    when 'lcm_rollups' then ${representationSql}='lcm_rollups'
-    else false end))`;
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" &&
@@ -2840,7 +3293,11 @@ const mapGrant = (row: Row): SharedMemoryGrantRecord => {
       row.source_kind === "captured_session" && row.source_session_id
         ? stringValue(row.source_session_id)
         : null,
-    displayTitle: row.display_title ? stringValue(row.display_title) : null,
+    displayTitle:
+      row.display_title &&
+      row.display_title !== SHARED_MEMORY_REPRESENTATION_TITLE_MARKER
+        ? stringValue(row.display_title)
+        : null,
     teamId: stringValue(row.team_id),
     teamWorkspaceId: stringValue(row.team_workspace_id),
     consentId: stringValue(row.consent_id),
@@ -3404,6 +3861,11 @@ const requireShareAuthority = async (
     return authorityReference(input.authority);
   }
 
+  if (input.authority.source === "sharing_rule")
+    throw new SharedMemoryAuthorizationError(
+      "Ongoing rule authority is restricted to verified internal member admission"
+    );
+
   if (!input.delegatedDeviceActionGrant) {
     throw new SharedMemoryAuthorizationError(
       "Device Action Grants require atomic high-risk execution"
@@ -3447,6 +3909,10 @@ const requireRecordedShareAuthority = async (
     });
     return;
   }
+  if (input.authority.source === "sharing_rule")
+    throw new SharedMemoryAuthorizationError(
+      "Ongoing rule authority requires current member admission"
+    );
   if (!input.delegatedDeviceActionGrant) {
     throw new SharedMemoryAuthorizationError(
       "Device Action Grants require atomic high-risk execution"
@@ -3590,6 +4056,58 @@ const cascadeParentShareRevocation = async (
     revokedAt: Date;
   }
 ): Promise<void> => {
+  // A later direct-share approval can reactivate the root grant. Revocation
+  // must therefore end each attached reason's authority, not just hide its
+  // publications while the root happens to be revoked.
+  await client.query(
+    `update team_memory_sharing_rule_members member
+        set state='revoked',membership_version=membership_version+1,updated_at=now(),last_mutation_id=$2,
+            reconciliation_requested_at=null,next_reconciliation_at=null,reconciliation_attempt_count=0,reconciliation_failure_code=null
+      from team_memory_share_reasons reason
+      where reason.share_grant_id=$1 and reason.membership_id=member.id and member.state<>'revoked'`,
+    [input.shareGrantId, input.mutationId]
+  );
+  const stoppedRules = await client.query<Row>(
+    `update team_memory_sharing_rules rule
+        set state='stopped',authority_version=authority_version+1,
+            publisher_fence=publisher_fence+1,stopped_at=$2,
+            updated_at=now()
+      from team_memory_share_reasons reason
+      where reason.share_grant_id=$1 and reason.rule_id=rule.id
+        and rule.selector_kind='captured_session' and rule.state<>'stopped'
+      returning rule.id,rule.owner_user_id,rule.authority_version,
+                rule.publisher_fence,reason.id as reason_id`,
+    [input.shareGrantId, input.revokedAt]
+  );
+  await client.query(
+    `update source_owner_representation_consents consent
+        set state='revoked',revoked_at=coalesce(consent.revoked_at,$2),
+            consent_version=consent_version+1,
+            state_reason_code='parent_share_revoked',updated_at=now()
+      where consent.state<>'revoked' and exists (
+        select 1 from team_memory_share_reasons reason
+         where reason.share_grant_id=$1 and reason.consent_id=consent.id
+      )`,
+    [input.shareGrantId, input.revokedAt]
+  );
+  for (const rule of stoppedRules.rows) {
+    await client.query(
+      `insert into audit_events(actor_user_id,owner_user_id,visibility,action,target_table,target_id,metadata)
+       values($1,$2,'personal','shared_memory.rule.parent_share_revoked','team_memory_sharing_rules',$3,$4::jsonb)`,
+      [
+        input.actorUserId,
+        rule.owner_user_id,
+        rule.id,
+        JSON.stringify({
+          parentMutationId: input.mutationId,
+          shareGrantId: input.shareGrantId,
+          reasonId: rule.reason_id,
+          authorityVersion: rule.authority_version,
+          publisherFence: rule.publisher_fence
+        })
+      ]
+    );
+  }
   const sourceRevocationMutationId = crossIdentitySyncDeterministicUuid({
     kind: "parent_share_source_revocation",
     shareGrantId: input.shareGrantId,
@@ -3671,6 +4189,7 @@ const appendPolicyAudit = async (
     previousVersion: number;
     maximumFidelity: SharedMemoryFidelityCeiling;
     includeCuratedMemory: boolean;
+    origin?: "sharing_consent" | "owner_policy_edit";
   }
 ): Promise<void> => {
   await client.query(
@@ -3694,10 +4213,69 @@ const appendPolicyAudit = async (
         version: input.version,
         previousVersion: input.previousVersion,
         maximumFidelity: input.maximumFidelity,
-        includeCuratedMemory: input.includeCuratedMemory
+        includeCuratedMemory: input.includeCuratedMemory,
+        ...(input.origin ? { origin: input.origin } : {})
       })
     ]
   );
+};
+
+// A policy writer already owns the current policy row. Publication and controls
+// can own grant/consent rows before checking that policy. Never wait on their
+// authority rows while retaining the policy lock: reject the optimistic edit
+// and let the transaction roll back before the caller retries it.
+const lockPolicyAuthorityScope = async (
+  client: SqlClient,
+  scope:
+    | {
+        kind: "source_owner";
+        logicalMemoryId: string;
+        ownerPrincipalId: string;
+      }
+    | { kind: "team"; teamId: string }
+    | { kind: "workspace"; teamId: string; teamWorkspaceId: string }
+): Promise<void> => {
+  const parameters =
+    scope.kind === "source_owner"
+      ? [scope.logicalMemoryId, scope.ownerPrincipalId]
+      : scope.kind === "team"
+        ? [scope.teamId]
+        : [scope.teamId, scope.teamWorkspaceId];
+  const consentScope =
+    scope.kind === "source_owner"
+      ? "logical_memory_id=$1 and source_owner_principal_id=$2"
+      : scope.kind === "team"
+        ? "team_id=$1"
+        : "team_id=$1 and team_workspace_id=$2";
+  const grantScope =
+    scope.kind === "source_owner"
+      ? "logical_memory_id=$1 and owner_principal_id=$2"
+      : consentScope;
+  try {
+    await client.query(
+      `select id from source_owner_representation_consents
+        where ${consentScope} and state='active'
+        order by id for update nowait`,
+      parameters
+    );
+    await client.query(
+      `select id from team_memory_share_grants
+        where ${grantScope} and lifecycle='active'
+        order by id for update nowait`,
+      parameters
+    );
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "55P03"
+    )
+      throw new SharedMemoryConflictError(
+        "Sharing authority is busy; retry the policy edit against its current version"
+      );
+    throw error;
+  }
 };
 
 const invalidateAffectedGrants = async (
@@ -3768,6 +4346,45 @@ const activePolicy = async (
   return (result.rows[0] as Row | undefined) ?? null;
 };
 
+type OwnerPolicyBinding = { policyId: string; version: number };
+const retainedOwnerPolicyWithClient = async (
+  client: SqlClient,
+  current: Row,
+  binding: OwnerPolicyBinding,
+  scope: { logicalMemoryId: string; ownerPrincipalId: string }
+): Promise<Row> => {
+  if (
+    current.policy_id === binding.policyId &&
+    numberValue(current.version) === binding.version
+  )
+    return current;
+  const selected = await client.query<Row>(
+    `select bound.* from source_owner_representation_policies bound
+      where bound.policy_id=$1 and bound.version=$2 and bound.logical_memory_id=$3
+        and bound.source_owner_principal_id=$4 for share`,
+    [
+      binding.policyId,
+      binding.version,
+      scope.logicalMemoryId,
+      scope.ownerPrincipalId
+    ]
+  );
+  const bound = selected.rows[0];
+  if (
+    !bound ||
+    bound.policy_id !== current.policy_id ||
+    numberValue(bound.version) >= numberValue(current.version) ||
+    !fidelityConsentDoesNotExpand(
+      fidelityConsentFromRow(bound),
+      fidelityConsentFromRow(current)
+    )
+  )
+    throw new SharedMemoryConflictError(
+      "Current owner policy does not permit the retained consent binding"
+    );
+  return bound;
+};
+
 const requireCurrentPolicies = async (
   client: SqlClient,
   input: {
@@ -3775,6 +4392,7 @@ const requireCurrentPolicies = async (
     ownerPrincipalId: string;
     teamId: string;
     teamWorkspaceId: string;
+    retainedOwnerBinding?: OwnerPolicyBinding;
   }
 ): Promise<{
   owner: Row;
@@ -3783,7 +4401,7 @@ const requireCurrentPolicies = async (
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
 }> => {
-  const owner = await activePolicy(client, {
+  const currentOwner = await activePolicy(client, {
     table: "source_owner_representation_policies",
     whereSql: "logical_memory_id=$1 and source_owner_principal_id=$2",
     parameters: [input.logicalMemoryId, input.ownerPrincipalId]
@@ -3798,11 +4416,19 @@ const requireCurrentPolicies = async (
     whereSql: "team_id=$1 and team_workspace_id=$2",
     parameters: [input.teamId, input.teamWorkspaceId]
   });
-  if (!owner || !team || !workspace) {
+  if (!currentOwner || !team || !workspace) {
     throw new SharedMemoryConflictError(
       "All three active representation policies are required"
     );
   }
+  const owner = input.retainedOwnerBinding
+    ? await retainedOwnerPolicyWithClient(
+        client,
+        currentOwner,
+        input.retainedOwnerBinding,
+        input
+      )
+    : currentOwner;
   return {
     owner,
     team,
@@ -3981,6 +4607,7 @@ const resolveCurrentPrivacyPolicy = async (
     ownerUserId: string;
     teamId: string;
     teamWorkspaceId: string;
+    sharingRuleId?: string | null;
     lockRows?: boolean;
   }
 ) => {
@@ -4063,13 +4690,22 @@ const resolveCurrentPrivacyPolicy = async (
       "Privacy policy scope resolution is ambiguous"
     );
   }
+  let globalPolicy;
   try {
-    return resolveMonotonicPrivacyPolicySet(policies);
+    globalPolicy = resolveMonotonicPrivacyPolicySet(policies);
   } catch {
     throw new SharedMemoryConflictError(
       "Effective privacy policy binding is invalid"
     );
   }
+  if (!input.sharingRuleId)
+    return { ...globalPolicy, ruleContentPolicy: undefined };
+  const rulePolicy = await resolveOwnedSharingRuleContentPolicy(
+    client,
+    { ...input, ruleId: input.sharingRuleId },
+    globalPolicy
+  );
+  return { ...globalPolicy, ...rulePolicy };
 };
 
 const loadActivePrivacyClassifier = async (
@@ -4121,20 +4757,20 @@ export const freezeSharedMemorySemanticRecallBoundaryWithClient = async (
             select array_agg(g.id order by g.id)
               from (
                 select distinct grant_row.id
-                  from team_memory_share_grant_records grant_row
+                  from team_memory_reason_grant_records grant_row
                   join team_memory_representation_records r
                     on r.share_grant_id=grant_row.id
                    and r.consent_id=grant_row.consent_id
                    and r.state in ('available','stale') and r.invalidated_at is null
                    and (r.curated_expires_at is null or r.curated_expires_at>now())
                   join source_owner_representation_consent_records c
-                    on c.id=grant_row.consent_id and c.state='active'
+                    on c.id=grant_row.consent_id and c.state in ('active','paused')
                    and c.revoked_at is null
                    and (c.expires_at is null or c.expires_at>now())
                   join source_owner_representation_policies op
                     on op.policy_id=grant_row.source_owner_policy_id
                    and op.version=grant_row.source_owner_policy_version
-                   and op.superseded_at is null
+                   and ${retainedOwnerPolicyAuthorizationSql("op")}
                   join team_representation_policies tp
                     on tp.policy_id=grant_row.team_policy_id
                    and tp.version=grant_row.team_policy_version
@@ -4166,6 +4802,7 @@ export const freezeSharedMemorySemanticRecallBoundaryWithClient = async (
                      or (grant_row.source_kind='personal_note' and grant_row.remote_replica_id is null)
                    )
                    and ${cumulativeRepresentationAuthorizationSql("r.representation", { grant: "grant_row" })}
+            and ${sharingReasonAuthorizesRepresentationSql("r", "grant_row")}
                  order by grant_row.id
                  limit $3
               ) g
@@ -4244,7 +4881,7 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
   if (lockRows && !lockedContext?.sourceGrantLocks.has(input.shareGrantId)) {
     // Lock source dependencies before evaluating the shared authorization query.
     await client.query(
-      `select g.id from team_memory_share_grant_records g
+      `select g.id from team_memory_reason_grant_records g
          join memory_replicas mr on mr.id=g.remote_replica_id
          join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
         where g.id=$1 for share of g,mr,sr`,
@@ -4252,6 +4889,12 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
     );
     lockedContext?.sourceGrantLocks.add(input.shareGrantId);
   }
+  // Bound ordinary reads before joining the remaining authorization gates.
+  // This prevents repeated source-binding UNION expansion across the full join
+  // tree. Locked mutation reviews retain their existing row-lock propagation.
+  const publicationAuthority = lockRows
+    ? "team_memory_publication_grant_records g"
+    : "(select * from team_memory_publication_grant_records where id=$1 offset 0) g";
   const result = await client.query(
     `select g.*,
         r.id as representation_row_id,r.consent_id as representation_consent_id,
@@ -4261,6 +4904,7 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
         r.privacy_classifier_hash,r.effective_privacy_policy_hash,
         r.source_manifest_hash,r.sanitized_content_hash,
         r.representation,r.source_revision as representation_source_revision,
+        r.display_title as display_title,
         r.source_revision_hash,r.provenance_hash,
         r.source_owner_policy_id as representation_owner_policy_id,
         r.source_owner_policy_version as representation_owner_policy_version,
@@ -4299,7 +4943,7 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
         sr.state as sync_relationship_state,
         sr.target_processing_cursor,
         c.mode as consent_mode
-   from team_memory_share_grant_records g
+   from ${publicationAuthority}
    join teams t on t.id=g.team_id and t.lifecycle='active' and t.entitlement_status in ('active','grace')
    join team_memberships tm on tm.team_id=g.team_id and tm.user_id=$2
      and tm.status='enabled' and tm.disabled_at is null
@@ -4313,7 +4957,7 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
      and c.state in ('active','paused') and c.revoked_at is null
      and (c.expires_at is null or c.expires_at>now())
    join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
-     and op.version=g.source_owner_policy_version and op.superseded_at is null
+     and op.version=g.source_owner_policy_version and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id and ${retainedOwnerPolicyAuthorizationSql("op")}
    join team_representation_policies tp on tp.policy_id=g.team_policy_id
      and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
    join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
@@ -4325,8 +4969,9 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
      and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
      and sr.state <> 'purge_pending'
    join lateral (
-     select r0.* from team_memory_representation_records r0
-      where r0.share_grant_id=g.id and r0.consent_id=g.consent_id
+     select r0.* from team_memory_representations r0
+      where r0.id=g.publication_representation_id and r0.share_grant_id=g.id and r0.consent_id=g.consent_id
+        and ${sharingReasonAuthorizesRepresentationSql("r0")}
         and r0.representation=coalesce(
           $3::shared_memory_representation,
           g.activation_representation
@@ -4381,6 +5026,8 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
       or (g.source_kind='personal_note' and g.remote_replica_id is null)
     )
     and ${cumulativeRepresentationAuthorizationSql("r.representation")}
+  order by case r.representation when 'memory_events' then 0 when 'lcm_leaves' then 1 when 'lcm_rollups' then 2 else 3 end,
+           r.source_revision desc,r.available_at desc,r.id desc
   limit 1 ${lockRows ? "for share of g,t,tm,u,tw,wa,c,op,tp,wp,sp,sa,semantic,privacy_classifier" : ""}`,
     [input.shareGrantId, actor.userId, input.representation]
   );
@@ -4440,7 +5087,9 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
   const privacyScope = JSON.stringify([
     grant.ownerUserId,
     grant.teamId,
-    grant.teamWorkspaceId
+    grant.teamWorkspaceId,
+    row.sharing_rule_id,
+    representation.effectivePrivacyPolicyHash
   ]);
   const effectivePrivacyPolicy =
     lockedContext?.privacyPolicies.get(privacyScope) ??
@@ -4448,6 +5097,7 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
       ownerUserId: grant.ownerUserId!,
       teamId: grant.teamId,
       teamWorkspaceId: grant.teamWorkspaceId,
+      sharingRuleId: nullableStringValue(row.sharing_rule_id),
       lockRows
     }));
   lockedContext?.privacyPolicies.set(privacyScope, effectivePrivacyPolicy);
@@ -4557,7 +5207,14 @@ export const createSharedMemoryRepository = (
       ownerUserId: string;
       purpose: "decrypt";
     }) => EnvelopeEncryptionProvider | Promise<EnvelopeEncryptionProvider>;
+    resolveSharingRuleEncryptionProvider?: (input: {
+      ownerUserId: string;
+      ruleId: string;
+      purpose: "encrypt" | "decrypt";
+    }) => EnvelopeEncryptionProvider | Promise<EnvelopeEncryptionProvider>;
     delegatedDeviceActionGrantExecution?: boolean;
+    /** The caller owns an existing transaction and its isolation level. */
+    inheritTransactionIsolation?: boolean;
     /** Test-only boundary hook for deterministic claim/revocation races. */
     afterSharedMemorySemanticClaimForTest?: () => Promise<void>;
     /** Test-only hook while exact authorization locks remain held after decrypt. */
@@ -4638,9 +5295,15 @@ export const createSharedMemoryRepository = (
   const fidelityPolicyHashForPreview = (input: {
     representation: SharedMemoryRepresentation;
     revision: number;
-    owner: SharedMemoryPolicyRecord;
-    team: SharedMemoryPolicyRecord;
-    workspace: SharedMemoryPolicyRecord;
+    owner: Pick<
+      SharedMemoryPolicyRecord,
+      "policyId" | "version" | "policyHash"
+    >;
+    team: Pick<SharedMemoryPolicyRecord, "policyId" | "version" | "policyHash">;
+    workspace: Pick<
+      SharedMemoryPolicyRecord,
+      "policyId" | "version" | "policyHash"
+    >;
   }): string =>
     crossIdentitySyncDigest({
       kind: "shared_memory_fidelity_policy",
@@ -4763,6 +5426,25 @@ export const createSharedMemoryRepository = (
     remoteReplicaId: string | null;
     syncRelationshipId: string | null;
   };
+
+  const ownerCapForSelection = (
+    current: Row | null | undefined,
+    selected: {
+      maximumFidelity: SharedMemoryFidelityCeiling;
+      includeCuratedMemory: boolean;
+    }
+  ) => ({
+    maximumFidelity:
+      current &&
+      sharedMemoryCeilingAuthorizes(
+        stringValue(current.maximum_fidelity) as SharedMemoryFidelityCeiling,
+        selected.maximumFidelity
+      )
+        ? (stringValue(current.maximum_fidelity) as SharedMemoryFidelityCeiling)
+        : selected.maximumFidelity,
+    includeCuratedMemory:
+      current?.include_curated_memory === true || selected.includeCuratedMemory
+  });
 
   const proposedSourceOwnerPolicy = (input: {
     existing: Row | null | undefined;
@@ -5204,6 +5886,23 @@ export const createSharedMemoryRepository = (
     };
   };
 
+  const artifactSelectionScope = (
+    context: Pick<
+      ArtifactPersistenceContext,
+      | "maximumFidelity"
+      | "includeCuratedMemory"
+      | "sourceCapabilities"
+      | "activationRepresentation"
+      | "mode"
+    >
+  ): SharedSourceArtifactV1["selection"] => ({
+    maximumFidelity: context.maximumFidelity,
+    includeCuratedMemory: context.includeCuratedMemory,
+    sourceCapabilities: context.sourceCapabilities,
+    activationRepresentation: context.activationRepresentation,
+    mode: context.mode
+  });
+
   const buildArtifactBody = (input: {
     context: AuthoritativeSyncContext;
     representation: SharedMemoryRepresentation;
@@ -5253,6 +5952,7 @@ export const createSharedMemoryRepository = (
         workspacePolicyId: input.context.workspacePolicyId,
         workspacePolicyVersion: input.context.workspacePolicyVersion
       },
+      selection: artifactSelectionScope(input.context),
       manifest: input.manifest,
       manifestHash: input.manifestHash,
       items: input.items,
@@ -6648,7 +7348,7 @@ export const createSharedMemoryRepository = (
               (event) => !coveredEventIds.has(event.eventId)
             ))
         ) {
-          throw new SharedMemoryConflictError(
+          throw new SharedMemorySourcePreparationPendingError(
             "LCM leaves do not cover the authoritative source revision"
           );
         }
@@ -6685,17 +7385,22 @@ export const createSharedMemoryRepository = (
               (event) => !coveredEventIds.has(event.eventId)
             ))
         ) {
-          throw new SharedMemoryConflictError(
+          throw new SharedMemorySourcePreparationPendingError(
             "LCM rollups do not cover the authoritative source revision"
           );
         }
       }
     }
-    if (
-      items.length === 0 ||
-      manifest.length === 0 ||
-      items.length > MAX_SOURCE_ITEMS
-    ) {
+    if (items.length === 0 || manifest.length === 0) {
+      if (input.representation === "curated_assertions")
+        throw new SharedMemoryCuratedEvidenceIneligibleError(
+          "No eligible Curated Memory evidence remains for this Conversation"
+        );
+      throw new SharedMemorySourcePreparationPendingError(
+        "Authoritative Shared Memory source material is not ready"
+      );
+    }
+    if (items.length > MAX_SOURCE_ITEMS) {
       throw new SharedMemoryConflictError(
         "Authoritative Shared Memory source material is empty or invalid"
       );
@@ -6823,10 +7528,21 @@ export const createSharedMemoryRepository = (
         source.kind === "captured_session" ? source.sessionId : null,
       source_note_id: source.kind === "personal_note" ? source.noteId : null,
       source_memory_event_id:
-        source.kind === "personal_note" ? source.memoryEventId : null,
-      maximum_fidelity: input.context.maximumFidelity,
-      include_curated_memory: input.context.includeCuratedMemory
+        source.kind === "personal_note" ? source.memoryEventId : null
     };
+    if (
+      artifactRow.maximum_fidelity !== input.context.maximumFidelity ||
+      artifactRow.include_curated_memory !==
+        input.context.includeCuratedMemory ||
+      crossIdentitySyncDigest(
+        representationArrayValue(artifactRow.source_capabilities)
+      ) !== crossIdentitySyncDigest(input.context.sourceCapabilities) ||
+      artifactRow.activation_representation !==
+        input.context.activationRepresentation
+    )
+      throw new SharedMemoryConflictError(
+        "Persisted source artifact selection scope does not match its identity"
+      );
     const provider = await resolveOwnerPrivateReplicaEncryptionProvider({
       ownerUserId: input.context.ownerUserId,
       ownerPrincipalId: input.context.ownerPrincipalId,
@@ -7167,7 +7883,25 @@ export const createSharedMemoryRepository = (
             artifact.deviceCredentialId &&
           artifactBody.sync.deviceProvenanceHash ===
             artifact.deviceProvenanceHash;
+    const selection = artifactBody.selection;
+    const selectionMatches =
+      isPlainObject(selection) &&
+      selection.maximumFidelity === artifact.maximumFidelity &&
+      selection.includeCuratedMemory === artifact.includeCuratedMemory &&
+      Array.isArray(selection.sourceCapabilities) &&
+      crossIdentitySyncDigest(selection.sourceCapabilities) ===
+        crossIdentitySyncDigest(artifact.sourceCapabilities) &&
+      selection.activationRepresentation ===
+        artifact.activationRepresentation &&
+      crossIdentitySyncDigest(selection.sourceCapabilities) ===
+        crossIdentitySyncDigest(
+          representationArrayValue(row.preview_source_capabilities)
+        ) &&
+      selection.activationRepresentation ===
+        row.preview_activation_representation &&
+      selection.mode === row.preview_mode;
     if (
+      !selectionMatches ||
       artifactBody.schemaVersion !== SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION ||
       previewBody.schemaVersion !== SHARED_SOURCE_PREVIEW_SCHEMA_VERSION ||
       artifactBody.artifactId !== artifact.artifactId ||
@@ -7487,6 +8221,9 @@ export const createSharedMemoryRepository = (
       authority?: SharedMemoryAuthorityContext;
       continuousGrantId?: string;
       internalPendingShareId?: string;
+      rulePreparation?: Parameters<
+        SharedMemoryRepository["prepareSharingRuleMember"]
+      >[1];
     }
   ): Promise<{
     context: AuthoritativeSyncContext;
@@ -7494,7 +8231,7 @@ export const createSharedMemoryRepository = (
     teamPolicy: SharedMemoryPolicyRecord;
     workspacePolicy: SharedMemoryPolicyRecord;
   }> => {
-    if (!delegatedDeviceActionGrant) {
+    if (!delegatedDeviceActionGrant && !options.inheritTransactionIsolation) {
       await client.query("set transaction isolation level repeatable read");
     }
     const owner = await requireSourceOwner(
@@ -7502,7 +8239,35 @@ export const createSharedMemoryRepository = (
       actor,
       input.logicalMemoryId
     );
-    if (input.internalPendingShareId) {
+    let retainedOwnerBinding: OwnerPolicyBinding | undefined;
+    if (input.rulePreparation) {
+      const rule = await lockSharingRulePublicationAuthority(
+        client,
+        actor,
+        input.rulePreparation
+      );
+      const approved = await client.query<Row>(
+        `select c.source_owner_policy_id,c.source_owner_policy_version
+        from team_memory_share_reasons reason join source_owner_representation_consents c on c.id=reason.consent_id
+        where reason.id=$1 and reason.share_grant_id=$2`,
+        [
+          input.rulePreparation.ruleAuthority.reasonId,
+          input.rulePreparation.shareGrantId
+        ]
+      );
+      retainedOwnerBinding = {
+        policyId: stringValue(approved.rows[0]!.source_owner_policy_id),
+        version: numberValue(approved.rows[0]!.source_owner_policy_version)
+      };
+      if (
+        rule.logical_memory_id !== input.logicalMemoryId ||
+        rule.team_id !== input.teamId ||
+        rule.team_workspace_id !== input.teamWorkspaceId
+      )
+        throw new SharedMemoryConflictError(
+          "Rule preparation does not match its exact source and destination"
+        );
+    } else if (input.internalPendingShareId) {
       const pending = await client.query(
         `select 1 from pending_share_operation_records
           where id=$1 and owner_user_id=$2 and logical_memory_id=$3
@@ -7542,6 +8307,8 @@ export const createSharedMemoryRepository = (
         `select exists (
            select 1
              from team_memory_share_grant_records g
+             join team_memory_share_reasons direct_reason on direct_reason.share_grant_id=g.id
+               and direct_reason.consent_id=g.consent_id and direct_reason.kind='direct'
              join source_owner_representation_consent_records consent
                on consent.id=g.consent_id
               and consent.mode='continuous'
@@ -7592,6 +8359,17 @@ export const createSharedMemoryRepository = (
         );
       }
     }
+    if (input.continuousGrantId) {
+      const approved = await client.query<Row>(
+        `select c.source_owner_policy_id,c.source_owner_policy_version
+        from team_memory_share_grants g join source_owner_representation_consents c on c.id=g.consent_id where g.id=$1`,
+        [input.continuousGrantId]
+      );
+      retainedOwnerBinding = {
+        policyId: stringValue(approved.rows[0]!.source_owner_policy_id),
+        version: numberValue(approved.rows[0]!.source_owner_policy_version)
+      };
+    }
     await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
       `shared-memory-owner-policy:${input.logicalMemoryId}:${owner.ownerPrincipalId}`
     ]);
@@ -7601,18 +8379,17 @@ export const createSharedMemoryRepository = (
       parameters: [input.logicalMemoryId, owner.ownerPrincipalId]
     });
     assertFidelityConsent(input);
-    const currentConsent = existingOwnerPolicy
-      ? fidelityConsentFromRow(existingOwnerPolicy)
-      : null;
+    const selectedOwnerCap = ownerCapForSelection(existingOwnerPolicy, input);
     const policyChanged =
       !existingOwnerPolicy ||
-      currentConsent?.maximumFidelity !== input.maximumFidelity ||
-      currentConsent?.includeCuratedMemory !== input.includeCuratedMemory;
-    if (policyChanged && !input.authority && !input.internalPendingShareId) {
-      throw new SharedMemoryConflictError(
-        "Continuous materialization requires the existing source-owner policy"
+      !fidelityConsentDoesNotExpand(
+        selectedOwnerCap,
+        fidelityConsentFromRow(existingOwnerPolicy)
       );
-    }
+    if (policyChanged && !input.authority && !input.internalPendingShareId)
+      throw new SharedMemoryConflictError(
+        "Continuous materialization requires current owner-policy authority"
+      );
     const teamPolicyRow = await activePolicy(client, {
       table: "team_representation_policies",
       whereSql: "team_id=$1",
@@ -7628,15 +8405,26 @@ export const createSharedMemoryRepository = (
         "Team and Workspace representation policies are required"
       );
     }
+    const boundOwnerPolicy =
+      retainedOwnerBinding && existingOwnerPolicy
+        ? await retainedOwnerPolicyWithClient(
+            client,
+            existingOwnerPolicy,
+            retainedOwnerBinding,
+            {
+              logicalMemoryId: input.logicalMemoryId,
+              ownerPrincipalId: owner.ownerPrincipalId
+            }
+          )
+        : existingOwnerPolicy;
     const ownerPolicy = policyChanged
       ? proposedSourceOwnerPolicy({
           existing: existingOwnerPolicy,
           logicalMemoryId: input.logicalMemoryId,
           ownerPrincipalId: owner.ownerPrincipalId,
-          maximumFidelity: input.maximumFidelity,
-          includeCuratedMemory: input.includeCuratedMemory
+          ...selectedOwnerCap
         })
-      : mapPolicy(existingOwnerPolicy!, "source_owner");
+      : mapPolicy(boundOwnerPolicy!, "source_owner");
     const teamPolicy = mapPolicy(teamPolicyRow, "team");
     const workspacePolicy = mapPolicy(workspacePolicyRow, "workspace");
     const effectiveMaximumFidelity = intersectSharedMemoryFidelityCeilings(
@@ -7660,11 +8448,13 @@ export const createSharedMemoryRepository = (
       );
     }
     if (
-      input.maximumFidelity !== effectiveMaximumFidelity ||
-      input.includeCuratedMemory !== effectiveIncludeCuratedMemory
+      !fidelityConsentDoesNotExpand(input, {
+        maximumFidelity: effectiveMaximumFidelity,
+        includeCuratedMemory: effectiveIncludeCuratedMemory
+      })
     ) {
       throw new SharedMemoryConflictError(
-        "Preview fidelity is outside the exact policy intersection"
+        "Selected detail exceeds the current policy ceiling"
       );
     }
     const rowResult = await client.query<Row>(
@@ -7817,8 +8607,12 @@ export const createSharedMemoryRepository = (
     > & {
       authority?: SharedMemoryAuthorityContext;
       representation?: SharedMemoryRepresentation;
+      rulePreparation?: Parameters<
+        SharedMemoryRepository["prepareSharingRuleMember"]
+      >[1];
     },
-    continuousGrantId?: string
+    continuousGrantId?: string,
+    transactionClient?: pg.PoolClient
   ): Promise<SharedMemoryPersistedPreviewRecord> => {
     assertUuid(input.logicalMemoryId, "logicalMemoryId");
     assertUuid(input.remoteReplicaId, "remoteReplicaId");
@@ -7827,12 +8621,20 @@ export const createSharedMemoryRepository = (
     assertFidelityConsent(input);
     const representation =
       input.representation ?? input.activationRepresentation;
-    return withTransaction(pool, async (client) => {
+    const command = async (client: pg.PoolClient) => {
       const { context } = await loadAuthoritativeSyncContext(client, actor, {
         ...input,
         representation,
         continuousGrantId
       });
+      if (
+        input.rulePreparation &&
+        context.deviceCredentialId !==
+          input.rulePreparation.ruleAuthority.publisherCredentialId
+      )
+        throw new SharedMemoryAuthorizationError(
+          "The synced source does not belong to the rule's authorized publisher"
+        );
       const provider = await resolveOwnerPrivateReplicaEncryptionProvider({
         ownerUserId: context.ownerUserId,
         ownerPrincipalId: context.ownerPrincipalId,
@@ -7872,8 +8674,53 @@ export const createSharedMemoryRepository = (
         artifactBody,
         previewBody
       });
+      if (input.rulePreparation) {
+        const authority = input.rulePreparation.ruleAuthority;
+        const reason = await client.query<Row>(
+          `select consent_id from team_memory_share_reasons where id=$1 and share_grant_id=$2`,
+          [authority.reasonId, input.rulePreparation.shareGrantId]
+        );
+        await client.query(
+          `insert into team_memory_reason_preparations
+             (reason_id,share_grant_id,consent_id,preview_id,source_revision,rule_version,consent_version,grant_version,publisher_credential_id,publisher_fence,effective_privacy_policy_hash)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+           on conflict (reason_id,preview_id) do update set
+             consent_id=excluded.consent_id,source_revision=excluded.source_revision,
+             rule_version=excluded.rule_version,consent_version=excluded.consent_version,
+             grant_version=excluded.grant_version,publisher_credential_id=excluded.publisher_credential_id,
+             publisher_fence=excluded.publisher_fence,effective_privacy_policy_hash=excluded.effective_privacy_policy_hash,updated_at=now()`,
+          [
+            authority.reasonId,
+            input.rulePreparation.shareGrantId,
+            reason.rows[0]!.consent_id,
+            persisted.preview.previewId,
+            persisted.preview.sourceRevision,
+            authority.authorityVersion,
+            authority.consentVersion,
+            input.rulePreparation.expectedGrantVersion,
+            authority.publisherCredentialId,
+            authority.publisherFence,
+            authority.effectivePrivacyPolicyHash
+          ]
+        );
+      }
       return persisted.preview;
-    });
+    };
+    if (transactionClient) return command(transactionClient);
+    // This preview owns its repeatable-read transaction. A concurrent publisher
+    // can change its snapshot, so retry the whole transaction and recheck all
+    // authority. A caller-owned transaction must be retried by its own owner.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await withTransaction(pool, command);
+      } catch (error) {
+        if (
+          attempt >= 2 ||
+          !["40001", "40P01"].includes(databaseErrorCode(error))
+        )
+          throw error;
+      }
+    }
   };
 
   const persistPersonalNoteSourceArtifact = async (
@@ -8093,15 +8940,16 @@ export const createSharedMemoryRepository = (
       });
       const ownerPolicy =
         existingOwnerPolicy &&
-        stringValue(existingOwnerPolicy.maximum_fidelity) === "memory_events" &&
-        existingOwnerPolicy.include_curated_memory === false
+        stringValue(existingOwnerPolicy.maximum_fidelity) === "memory_events"
           ? mapPolicy(existingOwnerPolicy, "source_owner")
           : proposedSourceOwnerPolicy({
               existing: existingOwnerPolicy,
               logicalMemoryId: source.logicalMemoryId,
               ownerPrincipalId: logicalOwnerPrincipalId,
-              maximumFidelity: "memory_events",
-              includeCuratedMemory: false,
+              ...ownerCapForSelection(existingOwnerPolicy, {
+                maximumFidelity: "memory_events",
+                includeCuratedMemory: false
+              }),
               policyId: existingOwnerPolicy
                 ? undefined
                 : crossIdentitySyncDeterministicUuid({
@@ -8310,6 +9158,7 @@ export const createSharedMemoryRepository = (
           workspacePolicyId: workspacePolicy.policyId,
           workspacePolicyVersion: workspacePolicy.version
         },
+        selection: artifactSelectionScope(context),
         manifest,
         manifestHash: crossIdentitySyncDigest(manifest),
         items,
@@ -8452,8 +9301,7 @@ export const createSharedMemoryRepository = (
           existing: currentOwner,
           logicalMemoryId: input.logicalMemoryId,
           ownerPrincipalId: input.ownerPrincipalId,
-          maximumFidelity: input.maximumFidelity,
-          includeCuratedMemory: input.includeCuratedMemory,
+          ...ownerCapForSelection(currentOwner, input),
           policyId: input.artifact.sourceOwnerPolicyId,
           version: input.artifact.sourceOwnerPolicyVersion
         });
@@ -8486,13 +9334,15 @@ export const createSharedMemoryRepository = (
         input.representation,
         effectiveIncludeCuratedMemory
       ) ||
-      input.maximumFidelity !== effectiveMaximumFidelity ||
-      input.includeCuratedMemory !== effectiveIncludeCuratedMemory ||
+      !fidelityConsentDoesNotExpand(input, {
+        maximumFidelity: effectiveMaximumFidelity,
+        includeCuratedMemory: effectiveIncludeCuratedMemory
+      }) ||
       input.artifact.maximumFidelity !== input.maximumFidelity ||
       input.artifact.includeCuratedMemory !== input.includeCuratedMemory
     ) {
       throw new SharedMemoryConflictError(
-        "Preview is outside the proposed exact three-policy intersection"
+        "Preview detail or policy binding changed after review"
       );
     }
     return {
@@ -8501,8 +9351,8 @@ export const createSharedMemoryRepository = (
       currentOwner,
       team,
       workspace,
-      maximumFidelity: effectiveMaximumFidelity,
-      includeCuratedMemory: effectiveIncludeCuratedMemory
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: input.includeCuratedMemory
     };
   };
 
@@ -8671,8 +9521,7 @@ export const createSharedMemoryRepository = (
   const activatePreviewSourceOwnerPolicy = async (
     client: pg.PoolClient,
     actor: ActorContext,
-    input: SharedMemoryCreateConsentInput,
-    preservingGrantId?: string
+    input: SharedMemoryCreateConsentInput
   ): Promise<void> => {
     assertFidelityConsent(input);
     const loaded = await loadPersistedPreviewByReference(client, {
@@ -8728,6 +9577,44 @@ export const createSharedMemoryRepository = (
       includeCuratedMemory: input.includeCuratedMemory
     });
     if (!policies.ownerNeedsActivation) return;
+    if (input.authority.source === "sharing_rule") {
+      if (!input.internalPendingShareId)
+        throw new SharedMemoryAuthorizationError(
+          "Ongoing rule consent requires its Pending Share"
+        );
+      const authority = await lockPendingRepositoryMember(
+        client,
+        actor,
+        input.internalPendingShareId
+      );
+      if (policies.currentOwner) {
+        const restrictions = await client.query<Row>(
+          `select policy.*,policy.created_at>$3::timestamptz as later from source_owner_representation_policies policy
+           left join audit_events audit on audit.target_table='source_owner_representation_policies' and audit.target_id=policy.id
+             and audit.owner_user_id=$4 and audit.action in ('shared_memory.source_owner_policy.created','shared_memory.source_owner_policy.updated')
+           where policy.logical_memory_id=$1 and policy.source_owner_principal_id=$2
+             and coalesce(audit.metadata->>'origin','owner_policy_edit')<>'sharing_consent'
+           order by policy.version desc,policy.created_at desc limit 1`,
+          [
+            preview.logicalMemoryId,
+            owner.ownerPrincipalId,
+            authority.approvedAt,
+            actor.userId
+          ]
+        );
+        const restriction = restrictions.rows[0];
+        if (
+          restriction?.later === true &&
+          !fidelityConsentDoesNotExpand(
+            input,
+            fidelityConsentFromRow(restriction)
+          )
+        )
+          throw new SharedMemoryConflictError(
+            "A newer owner restriction requires fresh approval before this source can join the rule"
+          );
+      }
+    }
 
     const previousVersion = policies.currentOwner
       ? numberValue(policies.currentOwner.version)
@@ -8771,28 +9658,11 @@ export const createSharedMemoryRepository = (
       version: policies.owner.version,
       previousVersion,
       maximumFidelity: policies.owner.maximumFidelity,
-      includeCuratedMemory: policies.owner.includeCuratedMemory
+      includeCuratedMemory: policies.owner.includeCuratedMemory,
+      origin: "sharing_consent"
     });
-    if (!policies.currentOwner) return;
-
-    await client.query(
-      `update source_owner_representation_consents
-          set state='paused', paused_at=now(), updated_at=now(),
-              state_reason_code='source_owner_policy_changed'
-        where logical_memory_id=$1 and source_owner_principal_id=$2 and state='active'`,
-      [preview.logicalMemoryId, owner.ownerPrincipalId]
-    );
-    await invalidateAffectedGrants(client, {
-      mutationId: input.authority.referenceId,
-      actorUserId: actor.userId,
-      whereSql: preservingGrantId
-        ? "g.logical_memory_id=$1 and g.owner_principal_id=$2 and g.id<>$3"
-        : "g.logical_memory_id=$1 and g.owner_principal_id=$2",
-      parameters: preservingGrantId
-        ? [preview.logicalMemoryId, owner.ownerPrincipalId, preservingGrantId]
-        : [preview.logicalMemoryId, owner.ownerPrincipalId],
-      reasonCode: "source_owner_policy_changed"
-    });
+    // This activation is a reviewed expansion for a new consent, never a
+    // source-wide restriction. Existing reason/consent authority remains intact.
   };
 
   const semanticVectorTable = (dimensions: 384 | 1024 | 1536 | 3072): string =>
@@ -8937,10 +9807,11 @@ export const createSharedMemoryRepository = (
   ): Promise<{
     row: Row;
     target: SharedMemoryPendingSemanticTarget;
+    ruleContentPolicy: SharedMemoryDecryptedSemanticTarget["ruleContentPolicy"];
   } | null> => {
     const result = await client.query<Row>(
       `select semantic.*,preview.remote_replica_id,
-              g.id as share_grant_id,c.id as consent_id,g.grant_version
+              g.id as share_grant_id,c.id as consent_id,g.grant_version,g.sharing_rule_id
          from shared_source_semantic_previews semantic
          join shared_source_preview_records preview
            on preview.id=semantic.source_preview_id
@@ -8969,7 +9840,7 @@ export const createSharedMemoryRepository = (
           and artifact.team_workspace_id=semantic.team_workspace_id
           and artifact.representation=semantic.representation
           and artifact.invalidated_at is null
-         join team_memory_share_grant_records g
+         join team_memory_reason_grant_records g
            on g.logical_memory_id=semantic.logical_memory_id
           and g.remote_replica_id is not distinct from preview.remote_replica_id
           and g.owner_user_id=semantic.owner_user_id
@@ -8978,7 +9849,7 @@ export const createSharedMemoryRepository = (
           and g.team_workspace_id=semantic.team_workspace_id
           and g.revoked_at is null
           and (
-            g.lifecycle='active'
+            (g.lifecycle='active' or (g.lifecycle='unavailable' and ${historicalPreparationExistsSql()}))
             or (g.lifecycle='unavailable' and exists (
               select 1 from pending_share_operation_records pending
                where pending.grant_id=g.id
@@ -9013,16 +9884,17 @@ export const createSharedMemoryRepository = (
           and access.access='write'
           and access.can_share_owned_memory=true
           and access.disabled_at is null
-         join source_owner_representation_policies op
-           on op.policy_id=g.source_owner_policy_id
-          and op.version=g.source_owner_policy_version
-          and op.superseded_at is null
+         ${historicalPreparationJoinSql()}
+             join source_owner_representation_policies op
+           on op.policy_id=${preparationPolicyColumnSql("source_owner_policy_id")}
+          and op.version=${preparationPolicyColumnSql("source_owner_policy_version")} and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id
+          and ${retainedOwnerPolicyAuthorizationSql("op")}
          join team_representation_policies tp
-           on tp.policy_id=g.team_policy_id and tp.version=g.team_policy_version
+           on tp.policy_id=${preparationPolicyColumnSql("team_policy_id")} and tp.version=${preparationPolicyColumnSql("team_policy_version")}
           and tp.team_id=g.team_id and tp.superseded_at is null
          join workspace_representation_policies wp
-           on wp.policy_id=g.workspace_policy_id
-          and wp.version=g.workspace_policy_version
+           on wp.policy_id=${preparationPolicyColumnSql("workspace_policy_id")}
+          and wp.version=${preparationPolicyColumnSql("workspace_policy_version")}
           and wp.team_id=g.team_id
           and wp.team_workspace_id=g.team_workspace_id
           and wp.superseded_at is null
@@ -9034,24 +9906,37 @@ export const createSharedMemoryRepository = (
         where semantic.id=$1 and semantic.owner_user_id=$2
           and semantic.status='pending'
           and ${cumulativeRepresentationAuthorizationSql("semantic.representation")}
-        limit 1
+          and (g.sharing_rule_id is null or exists (
+            select 1 from team_memory_sharing_rules policy_rule
+             where policy_rule.id=g.sharing_rule_id
+               and policy_rule.owner_user_id=g.owner_user_id
+               and policy_rule.team_id=g.team_id
+               and policy_rule.team_workspace_id=g.team_workspace_id
+               and policy_rule.state in ('active','paused')
+               and policy_rule.effective_privacy_policy_hash=semantic.effective_privacy_policy_hash
+          ))
+        order by g.id
         ${lock ? `for update of semantic,grant_lock${skipLocked ? " skip locked" : ""}` : ""}`,
       [semanticPreviewId, actor.userId]
     );
-    const row = result.rows[0];
-    if (!row) return null;
-    const effectivePolicy = await resolveCurrentPrivacyPolicy(client, {
-      ownerUserId: stringValue(row.owner_user_id),
-      teamId: stringValue(row.team_id),
-      teamWorkspaceId: stringValue(row.team_workspace_id)
-    });
-    if (
-      effectivePolicy.effectivePolicyHash !==
-      stringValue(row.effective_privacy_policy_hash)
-    ) {
-      return null;
+    for (const row of result.rows) {
+      const effectivePolicy = await resolveCurrentPrivacyPolicy(client, {
+        ownerUserId: stringValue(row.owner_user_id),
+        teamId: stringValue(row.team_id),
+        teamWorkspaceId: stringValue(row.team_workspace_id),
+        sharingRuleId: nullableStringValue(row.sharing_rule_id)
+      });
+      if (
+        effectivePolicy.effectivePolicyHash ===
+        stringValue(row.effective_privacy_policy_hash)
+      )
+        return {
+          row,
+          target: mapPendingSemanticTarget(row),
+          ruleContentPolicy: effectivePolicy.ruleContentPolicy
+        };
     }
-    return { row, target: mapPendingSemanticTarget(row) };
+    return null;
   };
 
   const decryptReadySemanticPreview = async (
@@ -9070,13 +9955,15 @@ export const createSharedMemoryRepository = (
       teamId: string;
       teamWorkspaceId: string;
       representation: SharedMemoryRepresentation;
+      sharingRuleId?: string | null;
     }
   ): Promise<SharedMemoryReadySemanticDerivative | null> => {
     const activeClassifier = await loadActivePrivacyClassifier(client);
     const effectivePolicy = await resolveCurrentPrivacyPolicy(client, {
       ownerUserId: actor.userId,
       teamId: input.teamId,
-      teamWorkspaceId: input.teamWorkspaceId
+      teamWorkspaceId: input.teamWorkspaceId,
+      sharingRuleId: input.sharingRuleId
     });
     const result = await client.query<Row>(
       `select * from shared_source_semantic_previews
@@ -9259,6 +10146,473 @@ export const createSharedMemoryRepository = (
     readiness: PendingShareSourceReadinessDecision;
   }
 
+  const lockRepositoryRuleAuthority = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    ruleId: string,
+    publisherCredentialId: string
+  ) => {
+    const result = await client.query<Row>(
+      `select rule.* from team_memory_sharing_rules rule
+       join device_credentials publisher on publisher.id=rule.publisher_credential_id and publisher.owner_user_id=rule.owner_user_id
+         and publisher.revoked_at is null and (publisher.expires_at is null or publisher.expires_at>now())
+         and publisher.operation_families @> ARRAY['share_grant_management','sync']::text[]
+       join users owner on owner.id=rule.owner_user_id and owner.disabled_at is null and owner.deleted_at is null
+       where rule.id=$1 and rule.owner_user_id=$2 and rule.publisher_credential_id=$3 and rule.selector_kind in ('repository','folder','project')
+       for update of rule for share of publisher`,
+      [ruleId, actor.userId, publisherCredentialId]
+    );
+    const rule = result.rows[0];
+    return decodeRepositoryRuleAuthority(actor, rule);
+  };
+  const decodeRepositoryRuleAuthority = async (
+    actor: ActorContext,
+    rule: Row | undefined
+  ) => {
+    if (!rule || !options.resolveSharingRuleEncryptionProvider)
+      throw new SharedMemoryAuthorizationError(
+        "The current selection publisher authority is unavailable"
+      );
+    const ruleId = stringValue(rule.id);
+    const envelope = rule.selector_payload as EncryptedPayloadEnvelope;
+    if (
+      envelope?.provenance?.sourceTable !== "team_memory_sharing_rules" ||
+      envelope.provenance.sourceId !== ruleId ||
+      envelope.provenance.sourceColumn !== "selector_payload" ||
+      envelope.aad?.ownerUserId !== actor.userId ||
+      envelope.aad?.ruleId !== ruleId ||
+      envelope.aad?.selectorBindingHash !== rule.selector_binding_hash
+    )
+      throw new SharedMemoryConflictError(
+        "The private rule authority binding changed"
+      );
+    const provider = await options.resolveSharingRuleEncryptionProvider({
+      ownerUserId: actor.userId,
+      ruleId,
+      purpose: "decrypt"
+    });
+    const payload: unknown = JSON.parse(
+      await decryptEnvelopeToUtf8(provider, envelope)
+    );
+    if (
+      !isPlainObject(payload) ||
+      payload.version !== 1 ||
+      payload.ownerUserId !== actor.userId ||
+      typeof payload.approvedAt !== "string" ||
+      !Number.isFinite(Date.parse(payload.approvedAt))
+    )
+      throw new SharedMemoryConflictError(
+        "The original rule approval is unavailable"
+      );
+    const creationIntent = repositorySharingRuleCreationIntentSchema.parse(
+      payload.intent
+    );
+    const detailAmendment =
+      payload.detailAmendment === undefined
+        ? null
+        : sharingRuleDetailAppliedScopeSchema.parse(payload.detailAmendment);
+    const contentPolicyAmendment =
+      payload.contentPolicyAmendment === undefined
+        ? null
+        : sharingRuleContentPolicyAppliedScopeSchema.parse(
+            payload.contentPolicyAmendment
+          );
+    if (
+      detailAmendment &&
+      (detailAmendment.result.ruleId !== ruleId ||
+        detailAmendment.review.teamId !== creationIntent.teamId ||
+        detailAmendment.review.teamWorkspaceId !==
+          creationIntent.teamWorkspaceId ||
+        detailAmendment.result.authorityVersion >
+          numberValue(rule.authority_version) ||
+        detailAmendment.result.publisherFence >
+          numberValue(rule.publisher_fence))
+    )
+      throw new SharedMemoryConflictError(
+        "The amended rule scope binding changed"
+      );
+    if (
+      (contentPolicyAmendment?.result.contentPolicyVersion ?? 0) !==
+        numberValue(rule.content_policy_version) ||
+      (contentPolicyAmendment &&
+        (contentPolicyAmendment.result.ruleId !== ruleId ||
+          contentPolicyAmendment.review.teamId !== creationIntent.teamId ||
+          contentPolicyAmendment.review.teamWorkspaceId !==
+            creationIntent.teamWorkspaceId ||
+          contentPolicyAmendment.result.authorityVersion >
+            numberValue(rule.authority_version) ||
+          contentPolicyAmendment.result.publisherFence >
+            numberValue(rule.publisher_fence) ||
+          contentPolicyAmendment.result.globalPolicyHash !==
+            rule.approved_global_privacy_policy_hash ||
+          crossIdentitySyncDigest(contentPolicyAmendment.result.labels) !==
+            crossIdentitySyncDigest(rule.content_privacy_labels) ||
+          crossIdentitySyncDigest(
+            contentPolicyAmendment.review.effectiveLabels
+          ) !==
+            crossIdentitySyncDigest(rule.approved_effective_privacy_labels)))
+    )
+      throw new SharedMemoryConflictError(
+        "The approved content policy binding changed"
+      );
+    const intent = {
+      ...creationIntent,
+      ...sharingRuleApprovedAmendmentFields({
+        detailAmendment,
+        contentPolicyAmendment
+      })
+    };
+    if (
+      (["folder", "project"].includes(intent.selector.kind)
+        ? intent.selector.kind
+        : "repository") !== rule.selector_kind ||
+      intent.ruleId !== ruleId ||
+      intent.mutationId !== rule.creation_mutation_id ||
+      intent.teamId !== rule.team_id ||
+      intent.teamWorkspaceId !== rule.team_workspace_id ||
+      intent.maximumFidelity !== rule.maximum_fidelity ||
+      intent.includeCuratedMemory !== rule.include_curated_memory ||
+      intent.effectivePrivacyPolicyHash !==
+        rule.effective_privacy_policy_hash ||
+      crossIdentitySyncDigest(intent.selector) !== rule.selector_binding_hash
+    )
+      throw new SharedMemoryConflictError(
+        "The rule no longer matches its approved scope"
+      );
+    return {
+      rule,
+      intent,
+      creationIntent,
+      detailAmendment,
+      contentPolicyAmendment,
+      payload,
+      approvedAt: detailAmendment?.approvedAt ?? payload.approvedAt
+    };
+  };
+
+  const memberMutationBinding = (input: {
+    ruleId: string;
+    kind: "admit" | "context" | "remove";
+    logicalMemoryId: string;
+    membershipId: string;
+    mutationId: string;
+    body: unknown;
+  }) => ({
+    ruleId: input.ruleId,
+    kind: input.kind,
+    logicalMemoryId: input.logicalMemoryId,
+    membershipId: input.membershipId,
+    mutationId: input.mutationId,
+    requestHash: crossIdentitySyncDigest({
+      kind: input.kind,
+      logicalMemoryId: input.logicalMemoryId,
+      membershipId: input.membershipId,
+      body: input.body
+    })
+  });
+  type MemberMutationBinding = ReturnType<typeof memberMutationBinding>;
+  const lockMemberMutation = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    binding: MemberMutationBinding
+  ) => {
+    await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
+      `shared-memory-rule-mutation:${actor.userId}:${binding.ruleId}:${binding.mutationId}`
+    ]);
+    const settled = await client.query<Row>(
+      `select metadata from audit_events where owner_user_id=$1 and action='shared_memory.rule.member_mutation_settled'
+      and target_table='team_memory_sharing_rule_members' and metadata->>'ruleId'=$2 and metadata->>'mutationId'=$3 order by created_at limit 1`,
+      [actor.userId, binding.ruleId, binding.mutationId]
+    );
+    if (!settled.rows[0]) return null;
+    const receipt = repositorySharingRuleMutationSettlementSchema.parse(
+      settled.rows[0].metadata
+    );
+    if (
+      crossIdentitySyncDigest(
+        repositorySharingRuleMutationCancellationSchema.parse({
+          mutationId: receipt.mutationId,
+          kind: receipt.kind,
+          logicalMemoryId: receipt.logicalMemoryId,
+          membershipId: receipt.membershipId,
+          requestHash: receipt.requestHash
+        })
+      ) !==
+      crossIdentitySyncDigest(
+        repositorySharingRuleMutationCancellationSchema.strip().parse(binding)
+      )
+    )
+      throw new SharedMemoryConflictError(
+        "This member mutation is bound to another request"
+      );
+    return receipt;
+  };
+  const requireUncanceledMemberMutation = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    binding: MemberMutationBinding
+  ) => {
+    const settled = await lockMemberMutation(client, actor, binding);
+    if (settled?.state === "canceled")
+      throw new SharedMemoryConflictError(
+        "This exact member mutation was canceled before acceptance"
+      );
+  };
+  const recordMemberMutation = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    binding: MemberMutationBinding,
+    receipt: unknown
+  ) => {
+    const settlement = repositorySharingRuleMutationSettlementSchema.parse({
+      ...binding,
+      state: "accepted",
+      receipt
+    });
+    await recordAuditEventWithClient(client, {
+      actorUserId: actor.userId,
+      ownerUserId: actor.userId,
+      visibility: "personal",
+      action: "shared_memory.rule.member_mutation_settled",
+      targetTable: "team_memory_sharing_rule_members",
+      targetId: binding.membershipId,
+      metadata: settlement
+    });
+  };
+
+  /** Caller holds owner-policy/root, parent and member locks in that order. */
+  const revokeRepositoryMemberWork = async (
+    client: pg.PoolClient,
+    scope: {
+      ruleId: string;
+      membershipId: string;
+      ownerUserId: string;
+      logicalMemoryId: string;
+      teamId: string;
+      teamWorkspaceId: string;
+      shareGrantId: string | null;
+      reasonId: string | null;
+      consentId: string | null;
+      mutationId: string;
+      cause?: "selection_rule_stopped" | "selection_membership_removed";
+    }
+  ) => {
+    const cause = scope.cause ?? "selection_membership_removed";
+    if (scope.consentId) {
+      await client.query(
+        `update source_owner_representation_consents set state='revoked',revoked_at=coalesce(revoked_at,now()),
+               consent_version=consent_version+1,state_reason_code=$2,updated_at=now()
+             where id=$1 and state<>'revoked'`,
+        [scope.consentId, cause]
+      );
+      await client.query(
+        `with invalidated as (
+               update team_memory_representations set state='invalidated',invalidated_at=now(),updated_at=now(),
+                 invalidation_reason_code=$3,record_version=record_version+1
+                where share_grant_id=$1 and consent_id=$2 and state in ('pending','available','stale') returning id
+             ) delete from team_memory_semantic_items where representation_id in (select id from invalidated)`,
+        [scope.shareGrantId, scope.consentId, cause]
+      );
+      await client.query(
+        "delete from team_memory_reason_preparations where reason_id=$1",
+        [scope.reasonId]
+      );
+    }
+    if (scope.shareGrantId) {
+      await client.query(
+        "update team_memory_share_grants set grant_version=grant_version+1,updated_at=now() where id=$1",
+        [scope.shareGrantId]
+      );
+      const remaining = await client.query<{ allowed: boolean }>(
+        `select ${publishedSharedMemoryAuthorizationSql({ shareGrantId: "$1", teamId: "$2", teamWorkspaceId: "$3", logicalMemoryId: "$4" })} as allowed`,
+        [
+          scope.shareGrantId,
+          scope.teamId,
+          scope.teamWorkspaceId,
+          scope.logicalMemoryId
+        ]
+      );
+      await appendOutbox(client, {
+        mutationId: scope.mutationId,
+        family: remaining.rows[0]?.allowed
+          ? "share_grant_lifecycle"
+          : "access_revoked",
+        teamId: stringValue(scope.teamId),
+        teamWorkspaceId: stringValue(scope.teamWorkspaceId),
+        shareGrantId: stringValue(scope.shareGrantId),
+        logicalMemoryId: stringValue(scope.logicalMemoryId),
+        resourceType: "team_memory_share_grant",
+        resourceId: stringValue(scope.shareGrantId),
+        actorPrincipalId: scope.ownerUserId
+      });
+    }
+    const canceled = await client.query<Row>(
+      `update pending_share_operations p set state='revoked',stage='complete',source_update_state='stopped',workspace_access_state='revoked',
+             revoked_at=now(),redacted_failure_code=null,operation_version=operation_version+1,updated_at=now()
+           from pending_sharing_rule_admissions admission where admission.pending_share_id=p.id and admission.membership_id=$1
+             and admission.rule_id=$2 and admission.admission_kind='repository_member' and p.revoked_at is null
+           returning p.id`,
+      [scope.membershipId, scope.ruleId]
+    );
+    for (const pending of canceled.rows) {
+      await client.query(
+        "update pending_share_outbox set state='completed',locked_at=null,updated_at=now() where pending_share_id=$1",
+        [pending.id]
+      );
+      await appendPendingShareOwnerEvent(client, {
+        mutationId: crossIdentitySyncDeterministicUuid({
+          kind: "rule_member_removed_pending",
+          mutationId: scope.mutationId,
+          pendingShareId: pending.id
+        }),
+        ownerUserId: scope.ownerUserId,
+        pendingShareId: stringValue(pending.id)
+      });
+    }
+  };
+
+  const cleanupStoppedRepositoryMembers = async (limit: number) => {
+    const selected = await pool.query<Row>(
+      `select member.id,member.rule_id,member.logical_memory_id,member.owner_user_id,
+      rule.team_id,rule.team_workspace_id,lm.owner_principal_id from team_memory_sharing_rule_members member
+      join team_memory_sharing_rules rule on rule.id=member.rule_id and rule.owner_user_id=member.owner_user_id
+      join logical_memories lm on lm.id=member.logical_memory_id
+      where rule.selector_kind in ('repository','folder','project') and rule.state='stopped' and member.state in ('present','unresolved')
+      order by member.updated_at,member.id limit $1`,
+      [limit]
+    );
+    let failed = 0;
+    for (const source of selected.rows) {
+      try {
+        await withTransaction(pool, async (client) => {
+          await client.query(
+            "select pg_advisory_xact_lock(hashtextextended($1,0))",
+            [
+              `shared-memory-owner-policy:${source.logical_memory_id}:${source.owner_principal_id}`
+            ]
+          );
+          await client.query(
+            "select id from team_memory_share_grants where logical_memory_id=$1 and team_workspace_id=$2 for update",
+            [source.logical_memory_id, source.team_workspace_id]
+          );
+          const parent = await client.query<Row>(
+            "select * from team_memory_sharing_rules where id=$1 and owner_user_id=$2 and selector_kind in ('repository','folder','project') and state='stopped' for update",
+            [source.rule_id, source.owner_user_id]
+          );
+          if (!parent.rows[0]) return;
+          const member = await client.query<Row>(
+            "select * from team_memory_sharing_rule_members where id=$1 and rule_id=$2 and owner_user_id=$3 and state in ('present','unresolved') for update",
+            [source.id, source.rule_id, source.owner_user_id]
+          );
+          if (!member.rows[0]) return;
+          const reason = await client.query<Row>(
+            "select * from team_memory_share_reasons where membership_id=$1 and rule_id=$2 and kind='rule'",
+            [source.id, source.rule_id]
+          );
+          const mutationId = crossIdentitySyncDeterministicUuid({
+            kind: "stopped_repository_member",
+            ruleId: source.rule_id,
+            membershipId: source.id,
+            authorityVersion: numberValue(parent.rows[0].authority_version)
+          });
+          await client.query(
+            `update team_memory_sharing_rule_members set state='revoked',membership_version=membership_version+1,last_mutation_id=$2,
+          reconciliation_requested_at=null,next_reconciliation_at=null,reconciliation_attempt_count=0,reconciliation_failure_code=null,updated_at=now() where id=$1`,
+            [source.id, mutationId]
+          );
+          await revokeRepositoryMemberWork(client, {
+            ruleId: stringValue(source.rule_id),
+            membershipId: stringValue(source.id),
+            ownerUserId: stringValue(source.owner_user_id),
+            logicalMemoryId: stringValue(source.logical_memory_id),
+            teamId: stringValue(source.team_id),
+            teamWorkspaceId: stringValue(source.team_workspace_id),
+            shareGrantId: nullableString(reason.rows[0]?.share_grant_id),
+            reasonId: nullableString(reason.rows[0]?.id),
+            consentId: nullableString(reason.rows[0]?.consent_id),
+            mutationId,
+            cause: "selection_rule_stopped"
+          });
+        });
+      } catch {
+        failed++;
+        // A failing source does not hold the front of every subsequent batch.
+        await pool.query(
+          "update team_memory_sharing_rule_members set updated_at=now() where id=$1 and rule_id=$2 and state in ('present','unresolved')",
+          [source.id, source.rule_id]
+        );
+      }
+    }
+    return { processed: selected.rows.length, failed };
+  };
+
+  const lockPendingRepositoryMember = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    pendingShareId: string
+  ) => {
+    const selected = await client.query<Row>(
+      `select admission.*,p.logical_memory_id,p.team_id,p.team_workspace_id,p.maximum_fidelity,p.include_curated_memory,p.consent_id,
+        lm.owner_principal_id from pending_sharing_rule_admissions admission
+       join pending_share_operations p on p.id=admission.pending_share_id and p.owner_user_id=$2 and p.state='preparing' and p.revoked_at is null
+       join logical_memories lm on lm.id=p.logical_memory_id and lm.owner_user_id=p.owner_user_id
+       where admission.pending_share_id=$1 and admission.admission_kind='repository_member'`,
+      [pendingShareId, actor.userId]
+    );
+    const admission = selected.rows[0];
+    if (!admission)
+      throw new SharedMemoryConflictError(
+        "Pending member admission is no longer current"
+      );
+    await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
+      `shared-memory-owner-policy:${admission.logical_memory_id}:${admission.owner_principal_id}`
+    ]);
+    await client.query(
+      "select id from team_memory_share_grants where logical_memory_id=$1 and team_workspace_id=$2 for update",
+      [admission.logical_memory_id, admission.team_workspace_id]
+    );
+    const authority = await lockRepositoryRuleAuthority(
+      client,
+      actor,
+      stringValue(admission.rule_id),
+      stringValue(admission.publisher_credential_id)
+    );
+    if (
+      authority.rule.state !== "active" ||
+      numberValue(authority.rule.authority_version) !==
+        numberValue(admission.expected_authority_version) ||
+      numberValue(authority.rule.publisher_fence) !==
+        numberValue(admission.publisher_fence) ||
+      authority.rule.team_id !== admission.team_id ||
+      authority.rule.team_workspace_id !== admission.team_workspace_id ||
+      authority.rule.maximum_fidelity !== admission.maximum_fidelity ||
+      authority.rule.include_curated_memory !==
+        admission.include_curated_memory ||
+      authority.rule.effective_privacy_policy_hash !==
+        admission.effective_privacy_policy_hash
+    )
+      throw new SharedMemoryConflictError(
+        "The queued member no longer matches current rule authority"
+      );
+    const member = await client.query<Row>(
+      `select * from team_memory_sharing_rule_members where id=$1 and rule_id=$2 and owner_user_id=$3
+        and logical_memory_id=$4 and state='unresolved' and membership_version=$5
+        and selection_snapshot_version is not null and source_context_hash is not null and git_context_version is not null and folder_context_version is not null for update`,
+      [
+        admission.membership_id,
+        admission.rule_id,
+        actor.userId,
+        admission.logical_memory_id,
+        admission.expected_membership_version
+      ]
+    );
+    if (!member.rows[0])
+      throw new SharedMemoryConflictError(
+        "The queued source eligibility changed"
+      );
+    return { ...authority, admission, member: member.rows[0] };
+  };
+
   const loadPendingShareProcessingContext = async (
     pendingShareId: string,
     stallThresholdMs: number
@@ -9273,6 +10627,10 @@ export const createSharedMemoryRepository = (
                 note_preview.id as note_preview_id,
                 note_preview.preview_hash as note_preview_hash,
                 mr.id as remote_replica_id,mr.latest_revision,
+                exists(select 1 from pending_sharing_rule_admissions creation
+                  join team_memory_sharing_rules rule on rule.id=creation.rule_id
+                  join team_memory_share_reasons reason on reason.rule_id=rule.id and reason.consent_id=p.consent_id
+                  where creation.pending_share_id=p.id) as rule_member_initialized,
                 sr.target_processing_cursor,sr.state as sync_state
            from pending_share_operation_records p
            join logical_memories lm
@@ -9345,39 +10703,49 @@ export const createSharedMemoryRepository = (
     const stalled =
       Date.now() - new Date(pending.last_progress_at as Date).getTime() >=
       stallThresholdMs;
-    const readiness: PendingShareSourceReadinessDecision = notePreviewReady
-      ? { kind: "ready", remoteReplicaId: null }
-      : personalNote
+    const readiness: PendingShareSourceReadinessDecision =
+      pending.rule_member_initialized === true
         ? {
-            kind: "waiting",
-            state: stalled ? "needs_attention" : "preparing",
-            stage: "uploading",
-            failureCode: stalled ? "source_preparation_stalled" : null,
-            visibleTransition:
-              workerExpected.state !==
-                (stalled ? "needs_attention" : "preparing") ||
-              stringValue(pending.stage) !== "uploading" ||
-              nullableString(pending.redacted_failure_code) !==
-                (stalled ? "source_preparation_stalled" : null)
+            kind: "ready",
+            remoteReplicaId: nullableString(pending.remote_replica_id)
           }
-        : decidePendingShareSourceReadiness(
-            {
-              wantedRevision,
-              targetRevision: nullableNumber(pending.target_processing_cursor),
-              replicaRevision: nullableNumber(pending.latest_revision),
-              logicalRevision: numberValue(pending.latest_source_revision),
-              remoteReplicaId: nullableString(pending.remote_replica_id),
-              localSessionId: nullableString(pending.local_session_id),
-              lastProgressAtMs: new Date(
-                pending.last_progress_at as Date
-              ).getTime(),
-              currentState: workerExpected.state,
-              currentStage: stringValue(pending.stage),
-              currentFailureCode: nullableString(pending.redacted_failure_code)
-            },
-            stallThresholdMs,
-            Date.now()
-          );
+        : notePreviewReady
+          ? { kind: "ready", remoteReplicaId: null }
+          : personalNote
+            ? {
+                kind: "waiting",
+                state: stalled ? "needs_attention" : "preparing",
+                stage: "uploading",
+                failureCode: stalled ? "source_preparation_stalled" : null,
+                visibleTransition:
+                  workerExpected.state !==
+                    (stalled ? "needs_attention" : "preparing") ||
+                  stringValue(pending.stage) !== "uploading" ||
+                  nullableString(pending.redacted_failure_code) !==
+                    (stalled ? "source_preparation_stalled" : null)
+              }
+            : decidePendingShareSourceReadiness(
+                {
+                  wantedRevision,
+                  targetRevision: nullableNumber(
+                    pending.target_processing_cursor
+                  ),
+                  replicaRevision: nullableNumber(pending.latest_revision),
+                  logicalRevision: numberValue(pending.latest_source_revision),
+                  remoteReplicaId: nullableString(pending.remote_replica_id),
+                  localSessionId: nullableString(pending.local_session_id),
+                  lastProgressAtMs: new Date(
+                    pending.last_progress_at as Date
+                  ).getTime(),
+                  currentState: workerExpected.state,
+                  currentStage: stringValue(pending.stage),
+                  currentFailureCode: nullableString(
+                    pending.redacted_failure_code
+                  )
+                },
+                stallThresholdMs,
+                Date.now()
+              );
     return {
       pending,
       workerExpected,
@@ -10362,6 +11730,387 @@ export const createSharedMemoryRepository = (
     return "failed";
   };
 
+  // Only the original rule approval may supersede a destination revocation.
+  // A later detail amendment must not restore sources revoked under that rule.
+  const repositoryRuleCanReuseDestination = (
+    grant: Row,
+    originalApprovedAt?: string
+  ) =>
+    (grant.lifecycle === "active" && grant.revoked_at === null) ||
+    (grant.lifecycle === "revoked" &&
+      grant.revoked_at instanceof Date &&
+      grant.personal_deleted_at === null &&
+      grant.tombstoned_at === null &&
+      grant.purge_completed_at === null &&
+      originalApprovedAt !== undefined &&
+      Date.parse(originalApprovedAt) > grant.revoked_at.getTime());
+
+  const activateRepositoryRuleMember = async (
+    client: pg.PoolClient,
+    context: PendingShareActivationContext,
+    scope: Awaited<ReturnType<typeof lockPendingRepositoryMember>>
+  ) => {
+    const { actor, pendingShareId, pending } = context;
+    const { rule, admission, member } = scope;
+    const consents = await client.query<Row>(
+      `select c.* from source_owner_representation_consent_records c join logical_memories lm on lm.id=c.logical_memory_id and lm.owner_user_id=$2
+        where c.id=$1 and c.logical_memory_id=$3 and c.team_id=$4 and c.team_workspace_id=$5 and c.mode='continuous'
+        and c.state='active' and c.revoked_at is null and (c.expires_at is null or c.expires_at>now()) for update of c`,
+      [
+        context.consentId,
+        actor.userId,
+        pending.logical_memory_id,
+        pending.team_id,
+        pending.team_workspace_id
+      ]
+    );
+    const consent = consents.rows[0];
+    if (!consent)
+      throw new SharedMemoryConflictError(
+        "Member consent is no longer current"
+      );
+    const grants = await client.query<Row>(
+      "select * from team_memory_share_grants where logical_memory_id=$1 and team_workspace_id=$2 for update",
+      [pending.logical_memory_id, pending.team_workspace_id]
+    );
+    const existing = grants.rows[0];
+    if (
+      existing
+        ? existing.owner_user_id !== actor.userId ||
+          existing.logical_grant_id !== pending.logical_grant_id ||
+          !repositoryRuleCanReuseDestination(
+            existing,
+            stringValue(scope.payload.approvedAt)
+          ) ||
+          numberValue(existing.grant_version) !==
+            numberValue(admission.expected_grant_version)
+        : admission.expected_grant_version !== null
+    )
+      throw new SharedMemoryConflictError(
+        "The member's destination grant changed before activation"
+      );
+    let shareGrantId: string;
+    if (existing) {
+      shareGrantId = stringValue(existing.id);
+    } else {
+      const grant = await repository.createShareGrant(
+        actor,
+        {
+          mutationId: stringValue(pending.mutation_id),
+          logicalGrantId: stringValue(pending.logical_grant_id),
+          consentId: context.consentId,
+          authority: context.authority as SharedMemoryAuthorityContext,
+          internalPendingShareId: pendingShareId
+        },
+        client
+      );
+      shareGrantId = grant.id;
+      await client.query(
+        "update team_memory_share_grants set lifecycle='active',updated_at=now() where id=$1 and lifecycle='unavailable' and revoked_at is null",
+        [shareGrantId]
+      );
+    }
+    const snapshot = await snapshotOwnedTeamRepository(
+      client,
+      actor.userId,
+      stringValue(pending.logical_memory_id)
+    );
+    if (!existing)
+      await client.query(
+        `update team_memory_share_reasons set kind='rule',rule_id=$2,membership_id=$3,updated_at=now()
+       where share_grant_id=$1 and consent_id=$4 and kind='direct'`,
+        [shareGrantId, rule.id, member.id, context.consentId]
+      );
+    else
+      await client.query(
+        `insert into team_memory_share_reasons(share_grant_id,consent_id,kind,rule_id,membership_id,repository_snapshot,repository_snapshot_source_revision)
+       values($1,$2,'rule',$3,$4,$5::jsonb,$6)
+       on conflict (share_grant_id,rule_id) where kind='rule' do update set consent_id=excluded.consent_id,membership_id=excluded.membership_id,
+         repository_snapshot=excluded.repository_snapshot,repository_snapshot_source_revision=excluded.repository_snapshot_source_revision,updated_at=now()`,
+        [
+          shareGrantId,
+          context.consentId,
+          rule.id,
+          member.id,
+          JSON.stringify(snapshot),
+          consent.source_revision
+        ]
+      );
+    if (existing?.lifecycle === "revoked") {
+      const clock = await client.query<{ now: Date }>(
+        "select transaction_timestamp() as now"
+      );
+      const cancellation = await cancelShareGrantRevocationRetentionWithClient(
+        client,
+        {
+          shareGrantId,
+          actorUserId: actor.userId,
+          mutationId: stringValue(pending.mutation_id),
+          canceledAt: clock.rows[0]!.now
+        }
+      );
+      if (cancellation === "purge_started")
+        throw new SharedMemoryConflictError(
+          "Share Grant retention purge has already started"
+        );
+      // Replace only the root's current consent. Old reasons, consents and
+      // invalidated publications stay revoked; the new reason publishes afresh.
+      await client.query(
+        `update team_memory_share_grants g set
+            consent_id=c.id,source_owner_policy_id=c.source_owner_policy_id,
+            source_owner_policy_version=c.source_owner_policy_version,
+            team_policy_id=c.team_policy_id,team_policy_version=c.team_policy_version,
+            workspace_policy_id=c.workspace_policy_id,workspace_policy_version=c.workspace_policy_version,
+            maximum_fidelity=c.maximum_fidelity,include_curated_memory=c.include_curated_memory,
+            fidelity_policy_revision=c.fidelity_policy_revision,content_policy_version=c.content_policy_version,
+            classifier_version=c.classifier_version,source_revision=c.source_revision,
+            activation_representation=c.activation_representation,mode=c.mode,source_capabilities=c.source_capabilities,
+            source_revision_id=c.source_revision_id,remote_replica_id=c.remote_replica_id,
+            lifecycle='active',revoked_at=null,revoked_by_user_id=null,revocation_reason=null,
+            retention_policy_id=null,retention_policy_version=null,retention_triggered_at=null,retain_until=null,
+            active_retention_decision_id=null,active_purge_job_id=null,updated_at=now()
+           from source_owner_representation_consents c where g.id=$1 and c.id=$2`,
+        [shareGrantId, context.consentId]
+      );
+    }
+    await client.query(
+      `update team_memory_sharing_rule_members set state='present',membership_version=membership_version+1,
+        reconciliation_requested_at=now(),next_reconciliation_at=now(),reconciliation_attempt_count=0,reconciliation_failure_code=null,updated_at=now()
+       where id=$1 and membership_version=$2 and state='unresolved'`,
+      [member.id, member.membership_version]
+    );
+    await client.query(
+      "update team_memory_share_grants set grant_version=grant_version+1,updated_at=now() where id=$1",
+      [shareGrantId]
+    );
+    await recordAuditEventWithClient(client, {
+      actorUserId: actor.userId,
+      ownerUserId: actor.userId,
+      visibility: "personal",
+      action: "shared_memory.rule.member_activated",
+      targetTable: "team_memory_sharing_rule_members",
+      targetId: stringValue(member.id),
+      metadata: {
+        pendingShareId,
+        mutationId: pending.mutation_id,
+        consentId: context.consentId,
+        shareGrantId
+      }
+    });
+    return { shareGrantId };
+  };
+
+  const processPendingSharingRuleAdmission = async (
+    context: PendingShareActivationContext,
+    creation: Row,
+    ensureCompanion: NonNullable<
+      Parameters<SharedMemoryRepository["processPendingShares"]>[0]
+    >["ensureCompanion"]
+  ): Promise<PendingShareProcessingOutcome> => {
+    const { actor, pendingShareId, pending, workerExpected } = context;
+    const loadRule = () =>
+      pool.query<Row>(
+        `select rule.*,reason.id as reason_id,reason.share_grant_id,consent.consent_version
+       from team_memory_sharing_rules rule
+       join team_memory_share_reasons reason on reason.rule_id=rule.id and reason.kind='rule' and reason.consent_id=$2
+       join source_owner_representation_consents consent on consent.id=reason.consent_id
+       join team_memory_sharing_rule_members member on member.id=reason.membership_id and member.rule_id=rule.id and member.state='present'
+       where rule.id=$1 and rule.owner_user_id=$3
+         and (($5='conversation_create' and rule.creation_mutation_id=$4) or ($5='repository_member' and member.id=$6))`,
+        [
+          creation.rule_id,
+          context.consentId,
+          actor.userId,
+          pending.mutation_id,
+          creation.admission_kind,
+          creation.membership_id
+        ]
+      );
+    let rule = (await loadRule()).rows[0];
+    if (!rule) {
+      const preview = await createPendingShareAuthoritativePreview(context);
+      if (!(await validatePendingShareCandidateManifest(context, preview)))
+        return "failed";
+      const consentInput: SharedMemoryCreateConsentInput = {
+        source: context.source,
+        sourceCapabilities: context.sourceCapabilities,
+        activationRepresentation: context.activationRepresentation,
+        consentId: context.consentId,
+        preview,
+        mode: "continuous",
+        maximumFidelity: context.maximumFidelity,
+        includeCuratedMemory: context.includeCuratedMemory,
+        expiresAt: nullableIso(pending.share_expires_at),
+        authority: context.authority as SharedMemoryAuthorityContext,
+        internalPendingShareId: pendingShareId
+      };
+      await withTransaction(pool, async (client) => {
+        const memberScope =
+          creation.admission_kind === "repository_member"
+            ? await lockPendingRepositoryMember(client, actor, pendingShareId)
+            : null;
+        const current = await client.query(
+          `select id from pending_share_operations where id=$1 and state=$2 and operation_version=$3 and revoked_at is null for update`,
+          [
+            pendingShareId,
+            workerExpected.state,
+            workerExpected.operationVersion
+          ]
+        );
+        if (!current.rowCount)
+          throw new SharedMemoryConflictError(
+            "Pending rule changed before activation"
+          );
+        await activatePreviewSourceOwnerPolicy(client, actor, consentInput);
+        const consent = await repository.createSourceOwnerConsent(
+          actor,
+          consentInput,
+          client
+        );
+        const created = memberScope
+          ? await activateRepositoryRuleMember(client, context, memberScope)
+          : await repository.createConversationSharingRule(
+              actor,
+              {
+                ruleId: stringValue(creation.rule_id),
+                mutationId: stringValue(pending.mutation_id),
+                logicalGrantId: stringValue(pending.logical_grant_id),
+                consentId: consent.id,
+                expectedConsentVersion: consent.consentVersion,
+                expectedGrantVersion:
+                  creation.expected_grant_version === null
+                    ? null
+                    : numberValue(creation.expected_grant_version),
+                publisherCredentialId: stringValue(
+                  creation.publisher_credential_id
+                ),
+                effectivePrivacyPolicyHash: stringValue(
+                  creation.effective_privacy_policy_hash
+                ),
+                authority: context.authority as SharedMemoryAuthorityContext,
+                internalPendingShareId: pendingShareId
+              },
+              client
+            );
+        await client.query(
+          `update pending_share_operations set grant_id=$2,updated_at=now() where id=$1`,
+          [pendingShareId, created.shareGrantId]
+        );
+      });
+      rule = (await loadRule()).rows[0];
+    }
+    if (!rule || rule.state === "stopped")
+      throw new SharedMemoryConflictError(
+        "The pending sharing rule was stopped"
+      );
+    const grantResult = await pool.query<Row>(
+      `select * from team_memory_share_grant_records where id=$1 and owner_user_id=$2 and lifecycle='active' and revoked_at is null`,
+      [rule.share_grant_id, actor.userId]
+    );
+    if (!grantResult.rows[0])
+      throw new SharedMemoryConflictError(
+        "The pending rule destination is no longer active"
+      );
+    const grant = mapGrant(grantResult.rows[0]);
+    if (ensureCompanion && !(await ensureCompanion({ actor, grant })))
+      throw new SharedMemoryConflictError(
+        "Pending rule companion discussion is unavailable"
+      );
+    if (rule.state === "active")
+      await repository.prepareSharingRuleMember(actor, {
+        shareGrantId: grant.id,
+        expectedGrantVersion: grant.grantVersion,
+        ruleAuthority: {
+          reasonId: stringValue(rule.reason_id),
+          ruleId: stringValue(rule.id),
+          authorityVersion: numberValue(rule.authority_version),
+          consentVersion: numberValue(rule.consent_version),
+          publisherCredentialId: stringValue(rule.publisher_credential_id),
+          publisherFence: numberValue(rule.publisher_fence),
+          effectivePrivacyPolicyHash: stringValue(
+            rule.effective_privacy_policy_hash
+          )
+        }
+      });
+    return withTransaction(pool, async (client) => {
+      await requireWorkspaceSharePermission(
+        client,
+        actor,
+        grant.teamId,
+        grant.teamWorkspaceId
+      );
+      await client.query(
+        "select id from team_memory_share_grants where id=$1 for share",
+        [grant.id]
+      );
+      const current = await client.query<Row>(
+        `select rule.state,exists(select 1 from team_memory_reason_publications publication
+           join team_memory_representations representation on representation.id=publication.representation_id
+             and representation.state in ('available','stale') and representation.invalidated_at is null
+           join source_owner_representation_consents consent on consent.id=publication.consent_id
+             and consent.state in ('active','paused') and consent.revoked_at is null
+             and (consent.expires_at is null or consent.expires_at>now())
+           where publication.reason_id=$2 and publication.consent_id=rule_reason.consent_id
+             and representation.representation=current_consent.activation_representation and representation.source_revision>=$3) as published
+         from team_memory_sharing_rules rule join team_memory_share_grants grant_row on grant_row.id=$4
+         join team_memory_share_reasons rule_reason on rule_reason.id=$2 and rule_reason.rule_id=rule.id
+           and rule_reason.share_grant_id=grant_row.id and rule_reason.consent_id=$6
+         join source_owner_representation_consents current_consent on current_consent.id=rule_reason.consent_id
+           and current_consent.state in ('active','paused') and current_consent.revoked_at is null
+           and (current_consent.expires_at is null or current_consent.expires_at>now())
+         join team_memory_sharing_rule_members member on member.id=rule_reason.membership_id and member.rule_id=rule.id
+           and member.logical_memory_id=grant_row.logical_memory_id and member.state='present'
+         where rule.id=$1 and rule.owner_user_id=$5 and rule.state in ('active','paused')
+           and grant_row.lifecycle='active' and grant_row.revoked_at is null for share of rule,grant_row`,
+        [
+          rule!.id,
+          rule!.reason_id,
+          context.wantedRevision,
+          grant.id,
+          actor.userId,
+          context.consentId
+        ]
+      );
+      if (!current.rows[0])
+        throw new SharedMemoryConflictError(
+          "Pending rule authority ended before publication"
+        );
+      const complete = current.rows[0].published === true;
+      const saved = await client.query<Row>(
+        `update pending_share_operations set state=case when $4 then 'activated' else 'preparing' end,
+           stage=case when $4 then 'complete' else 'privacy_filtering' end,
+           workspace_access_state=case when $4 then 'active' else 'none' end,
+           source_update_state=case when $5='paused' then 'paused' when $4 then 'active' else 'preparing' end,
+           grant_id=$6,activated_at=case when $4 then coalesce(activated_at,now()) else activated_at end,
+           redacted_failure_code=null,last_progress_at=now(),updated_at=now(),operation_version=operation_version+1
+         where id=$1 and state=$2 and operation_version=$3 and revoked_at is null returning operation_version`,
+        [
+          pendingShareId,
+          workerExpected.state,
+          workerExpected.operationVersion,
+          complete,
+          current.rows[0].state,
+          grant.id
+        ]
+      );
+      if (!saved.rows[0]) return "skipped";
+      await client.query(
+        `update pending_share_outbox set state=case when $2 then 'completed' else 'pending' end,locked_at=null,available_at=now()+interval '30 seconds',updated_at=now() where pending_share_id=$1`,
+        [pendingShareId, complete]
+      );
+      await appendPendingShareOwnerEvent(client, {
+        mutationId: crossIdentitySyncDeterministicUuid({
+          kind: "pending_conversation_rule_progress",
+          pendingShareId,
+          operationVersion: numberValue(saved.rows[0].operation_version)
+        }),
+        ownerUserId: actor.userId,
+        pendingShareId
+      });
+      return complete ? "activated" : "waiting";
+    });
+  };
+
   const processClaimedPendingShare = async (
     pendingShareId: string,
     stallThresholdMs: number,
@@ -10409,6 +12158,31 @@ export const createSharedMemoryRepository = (
         wantedRevision,
         remoteReplicaId: readiness.remoteReplicaId
       });
+      const creation = await pool.query<Row>(
+        `select * from pending_sharing_rule_admissions where pending_share_id=$1`,
+        [pendingShareId]
+      );
+      if (creation.rows[0]) {
+        failureStage = "activation_bundle";
+        // Concurrent source/rule reconciliation can abort an activation
+        // transaction. Replay the idempotent admission with fresh authority
+        // reads, rather than treating a transient database conflict as denial.
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            return await processPendingSharingRuleAdmission(
+              context,
+              creation.rows[0],
+              ensureCompanion
+            );
+          } catch (error) {
+            if (
+              attempt >= 2 ||
+              !["40001", "40P01"].includes(databaseErrorCode(error))
+            )
+              throw error;
+          }
+        }
+      }
       failureStage = "authoritative_preview";
       const preview = await createPendingShareAuthoritativePreview(context);
       failureStage = "candidate_manifest";
@@ -10681,7 +12455,2579 @@ export const createSharedMemoryRepository = (
     };
   };
 
+  const readRepresentationTitle = async (
+    client: pg.PoolClient,
+    grant: SharedMemoryGrantRecord,
+    representation: SharedMemoryRepresentationRecord
+  ): Promise<string | null> => {
+    const sourceColumn = representationTitleField(
+      representation.sourceRevisionHash
+    );
+    const key = await client.query<Row>(
+      `select key_id,key_version from encrypted_field_payloads where encryption_scope='team' and team_id=$1 and team_workspace_id=$2 and source_table='team_memory_representations' and source_id=$3 and source_column=$4 and invalidated_at is null limit 1`,
+      [grant.teamId, grant.teamWorkspaceId, representation.id, sourceColumn]
+    );
+    if (!key.rows[0]) return null;
+    const provider = await options.resolveTeamEncryptionProvider({
+      teamId: grant.teamId,
+      purpose: "decrypt",
+      keyId: stringValue(key.rows[0].key_id),
+      keyVersion: numberValue(key.rows[0].key_version)
+    });
+    const title = await decryptTeamEncryptedFieldAfterAuthorizationWithClient(
+      client,
+      provider,
+      {
+        sourceTable: "team_memory_representations",
+        sourceId: representation.id,
+        sourceColumn,
+        teamId: grant.teamId,
+        teamWorkspaceId: grant.teamWorkspaceId
+      }
+    );
+    if (
+      typeof title !== "string" ||
+      title.length === 0 ||
+      Array.from(title).length > 80
+    )
+      throw new SharedMemoryConflictError(
+        "Encrypted representation title is incomplete or invalid"
+      );
+    return title;
+  };
+
+  const reviewRepositoryRuleCreation = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    raw: RepositorySharingRuleCreationReviewInput,
+    existingRuleId?: string
+  ) => {
+    const input = repositorySharingRuleCreationReviewInputSchema.parse(raw);
+    await requireWorkspaceSharePermission(
+      client,
+      actor,
+      input.teamId,
+      input.teamWorkspaceId
+    );
+    const team = await activePolicy(client, {
+      table: "team_representation_policies",
+      whereSql: "team_id=$1",
+      parameters: [input.teamId]
+    });
+    const workspace = await activePolicy(client, {
+      table: "workspace_representation_policies",
+      whereSql: "team_id=$1 and team_workspace_id=$2",
+      parameters: [input.teamId, input.teamWorkspaceId]
+    });
+    if (
+      !team ||
+      !workspace ||
+      !fidelityConsentDoesNotExpand(
+        input,
+        effectiveFidelityConsent(team, workspace)
+      )
+    )
+      throw new SharedMemoryConflictError(
+        "The destination cannot accept the reviewed rule detail"
+      );
+    const privacy = await resolveCurrentPrivacyPolicy(client, {
+      ownerUserId: actor.userId,
+      teamId: input.teamId,
+      teamWorkspaceId: input.teamWorkspaceId,
+      sharingRuleId: existingRuleId
+    });
+    const names = await client.query<{
+      team_name: string;
+      workspace_name: string;
+    }>(
+      `select t.name team_name,w.name workspace_name from teams t join team_workspaces w on w.team_id=t.id where t.id=$1 and w.id=$2`,
+      [input.teamId, input.teamWorkspaceId]
+    );
+    if (!names.rows[0])
+      throw new SharedMemoryConflictError(
+        "The reviewed destination is unavailable"
+      );
+    return repositorySharingRuleCreationReviewSchema.parse({
+      scope: {
+        ...input,
+        teamPolicyVersion: numberValue(team.version),
+        teamPolicyHash: stringValue(team.policy_hash),
+        workspacePolicyVersion: numberValue(workspace.version),
+        workspacePolicyHash: stringValue(workspace.policy_hash),
+        effectivePrivacyPolicyHash: privacy.effectivePolicyHash
+      },
+      teamName: names.rows[0].team_name,
+      workspaceName: names.rows[0].workspace_name
+    });
+  };
+
+  const lockOwnedRepositoryRule = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    ruleId: string
+  ) => {
+    const selected = await client.query<Row>(
+      `select rule.*,t.name team_name,w.name workspace_name from team_memory_sharing_rules rule
+      join users owner on owner.id=rule.owner_user_id and owner.disabled_at is null and owner.deleted_at is null
+      join teams t on t.id=rule.team_id join team_workspaces w on w.id=rule.team_workspace_id and w.team_id=t.id
+      where rule.id=$1 and rule.owner_user_id=$2 and rule.selector_kind in ('repository','folder','project') for update of rule`,
+      [ruleId, actor.userId]
+    );
+    return decodeRepositoryRuleAuthority(actor, selected.rows[0]);
+  };
+  const reviewRepositoryRuleControl = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    input: Omit<
+      RepositorySharingRuleControlIntent,
+      "mutationId" | "selectorKind"
+    >,
+    scope?: Awaited<ReturnType<typeof lockOwnedRepositoryRule>>
+  ) => {
+    const authority =
+        scope ?? (await lockOwnedRepositoryRule(client, actor, input.ruleId)),
+      rule = authority.rule;
+    if (
+      rule.team_id !== input.teamId ||
+      rule.team_workspace_id !== input.teamWorkspaceId ||
+      numberValue(rule.authority_version) !== input.expectedAuthorityVersion ||
+      numberValue(rule.publisher_fence) !== input.publisherFence ||
+      rule.state === "stopped" ||
+      (input.controlAction === "pause" && rule.state !== "active") ||
+      (input.controlAction === "resume" && rule.state !== "paused") ||
+      (input.controlAction === "retry" && rule.state !== "active")
+    )
+      throw new SharedMemoryConflictError(
+        "The selection rule changed; refresh before controlling it"
+      );
+    if (input.controlAction === "resume" || input.controlAction === "retry") {
+      const publisher = await client.query(
+        `select id from device_credentials where id=$1 and owner_user_id=$2 and revoked_at is null
+        and (expires_at is null or expires_at>now()) and operation_families @> ARRAY['share_grant_management','sync']::text[] for share`,
+        [rule.publisher_credential_id, actor.userId]
+      );
+      if (!publisher.rowCount)
+        throw new SharedMemoryConflictError(
+          "The recorded publisher is unavailable"
+        );
+      const current = await reviewRepositoryRuleCreation(
+        client,
+        actor,
+        repositorySharingRuleCreationReviewInputSchema
+          .strip()
+          .parse(authority.intent),
+        input.ruleId
+      );
+      if (
+        crossIdentitySyncDigest(current.scope) !==
+        crossIdentitySyncDigest(
+          repositorySharingRuleCreationReviewSchema.shape.scope
+            .strip()
+            .parse(authority.intent)
+        )
+      )
+        throw new SharedMemoryConflictError(
+          "The approved rule policies changed; fresh approval is required"
+        );
+    }
+    return repositorySharingRuleControlReviewSchema.parse({
+      ruleId: input.ruleId,
+      team: { id: rule.team_id, name: rule.team_name },
+      workspace: { id: rule.team_workspace_id, name: rule.workspace_name },
+      selector: authority.intent.selector,
+      state: rule.state,
+      maximumFidelity: rule.maximum_fidelity,
+      includeCuratedMemory: rule.include_curated_memory,
+      authorityVersion: numberValue(rule.authority_version),
+      publisherFence: numberValue(rule.publisher_fence)
+    });
+  };
+
+  const retainRepositoryRuleAmendment = async (
+    client: pg.PoolClient,
+    actor: ActorContext,
+    input: (
+      | { kind: "detail"; scope: SharingRuleDetailAppliedScope }
+      | { kind: "content_policy"; scope: SharingRuleContentPolicyAppliedScope }
+    ) & { approvalReferenceId: string }
+  ) => {
+    const review = input.scope.review;
+
+    const rule = (
+      await client.query<Row>(
+        "select * from team_memory_sharing_rules where id=$1 and owner_user_id=$2",
+        [review.ruleId, actor.userId]
+      )
+    ).rows[0];
+    if (!rule)
+      throw new SharedMemoryConflictError("Sharing rule is unavailable");
+    if (rule.selector_kind === "captured_session") return;
+    if (!options.resolveSharingRuleEncryptionProvider)
+      throw new SharedMemoryAuthorizationError(
+        "Private rule scope encryption is unavailable"
+      );
+    const envelope = rule.selector_payload as EncryptedPayloadEnvelope;
+    if (
+      envelope?.aad?.ownerUserId !== actor.userId ||
+      envelope.aad.ruleId !== review.ruleId ||
+      envelope.aad.selectorBindingHash !== rule.selector_binding_hash ||
+      envelope.provenance?.sourceTable !== "team_memory_sharing_rules" ||
+      envelope.provenance.sourceId !== review.ruleId ||
+      envelope.provenance.sourceColumn !== "selector_payload"
+    )
+      throw new SharedMemoryConflictError("Private rule scope binding changed");
+    const decryptProvider = await options.resolveSharingRuleEncryptionProvider({
+      ownerUserId: actor.userId,
+      ruleId: review.ruleId,
+      purpose: "decrypt"
+    });
+    const payload: unknown = JSON.parse(
+      await decryptEnvelopeToUtf8(decryptProvider, envelope)
+    );
+    if (
+      !isPlainObject(payload) ||
+      payload.version !== 1 ||
+      payload.ownerUserId !== actor.userId ||
+      typeof payload.approvedAt !== "string" ||
+      !Number.isFinite(Date.parse(payload.approvedAt))
+    )
+      throw new SharedMemoryConflictError(
+        "Original rule approval is unavailable"
+      );
+    const creation = repositorySharingRuleCreationIntentSchema.parse(
+      payload.intent
+    );
+    const previousDetail =
+      payload.detailAmendment === undefined
+        ? null
+        : sharingRuleDetailAppliedScopeSchema.parse(payload.detailAmendment);
+    const previousContent =
+      payload.contentPolicyAmendment === undefined
+        ? null
+        : sharingRuleContentPolicyAppliedScopeSchema.parse(
+            payload.contentPolicyAmendment
+          );
+    for (const previous of [previousDetail, previousContent]) {
+      if (
+        previous &&
+        (previous.result.ruleId !== review.ruleId ||
+          previous.review.teamId !== review.teamId ||
+          previous.review.teamWorkspaceId !== review.teamWorkspaceId ||
+          previous.result.authorityVersion > review.expectedAuthorityVersion ||
+          previous.result.publisherFence > review.publisherFence)
+      )
+        throw new SharedMemoryConflictError(
+          "The previous amendment binding changed"
+        );
+    }
+    const previousScope = {
+      ...creation,
+      ...sharingRuleApprovedAmendmentFields({
+        detailAmendment: previousDetail,
+        contentPolicyAmendment: previousContent
+      })
+    };
+    const previousMaximumFidelity =
+      input.kind === "detail"
+        ? input.scope.review.previousMaximumFidelity
+        : input.scope.review.maximumFidelity;
+    const previousIncludeCuratedMemory =
+      input.kind === "detail"
+        ? input.scope.review.previousIncludeCuratedMemory
+        : input.scope.review.includeCuratedMemory;
+    const expectedPreviousContentVersion =
+      input.kind === "content_policy"
+        ? input.scope.review.expectedContentPolicyVersion
+        : numberValue(rule.content_policy_version);
+    let previousPrivacyHash = review.effectivePrivacyPolicyHash;
+    if (input.kind === "content_policy") {
+      const prior = input.scope.review;
+      if (prior.expectedContentPolicyVersion === 0)
+        previousPrivacyHash = prior.previousGlobalPolicyHash;
+      else {
+        if (!prior.previousEffectiveLabels)
+          throw new SharedMemoryConflictError(
+            "Previous content approval is unavailable"
+          );
+        previousPrivacyHash = resolveSharingRuleContentPolicy({
+          globalLabels: prior.previousEffectiveLabels,
+          globalPolicyHash: prior.previousGlobalPolicyHash,
+          labels: prior.previousLabels
+        }).effectivePrivacyPolicyHash;
+      }
+    }
+    if (
+      creation.ruleId !== review.ruleId ||
+      creation.teamId !== review.teamId ||
+      creation.teamWorkspaceId !== review.teamWorkspaceId ||
+      creation.mutationId !== rule.creation_mutation_id ||
+      (["folder", "project"].includes(creation.selector.kind)
+        ? creation.selector.kind
+        : "repository") !== rule.selector_kind ||
+      previousScope.maximumFidelity !== previousMaximumFidelity ||
+      previousScope.includeCuratedMemory !== previousIncludeCuratedMemory ||
+      previousScope.effectivePrivacyPolicyHash !== previousPrivacyHash ||
+      (previousContent?.result.contentPolicyVersion ?? 0) !==
+        expectedPreviousContentVersion ||
+      crossIdentitySyncDigest(creation.selector) !== rule.selector_binding_hash
+    )
+      throw new SharedMemoryConflictError(
+        "Amendment cannot replace rule identity"
+      );
+    const provider = await options.resolveSharingRuleEncryptionProvider({
+      ownerUserId: actor.userId,
+      ruleId: review.ruleId,
+      purpose: "encrypt"
+    });
+    const saved = await provider.encrypt({
+      plaintext: JSON.stringify({
+        ...payload,
+        ...(input.kind === "detail"
+          ? {
+              detailAmendment: sharingRuleDetailAppliedScopeSchema.parse(
+                input.scope
+              ),
+              detailApprovalReferenceId: input.approvalReferenceId
+            }
+          : {
+              contentPolicyAmendment:
+                sharingRuleContentPolicyAppliedScopeSchema.parse(input.scope),
+              contentPolicyApprovalReferenceId: input.approvalReferenceId
+            })
+      }),
+      scope: {
+        tenantId: actor.userId,
+        objectClass: "owner_private_sharing_rule"
+      },
+      provenance: {
+        rowFamily: "owner_private_sharing_rule",
+        sourceTable: "team_memory_sharing_rules",
+        sourceColumn: "selector_payload",
+        sourceId: review.ruleId
+      },
+      ciphertextLocation: "team_memory_sharing_rules.selector_payload",
+      aad: {
+        ownerUserId: actor.userId,
+        ruleId: review.ruleId,
+        selectorBindingHash: stringValue(rule.selector_binding_hash)
+      }
+    });
+    await client.query(
+      "update team_memory_sharing_rules set selector_payload=$2 where id=$1",
+      [review.ruleId, saved]
+    );
+  };
+
+  const prepareRetainedPublications = async (limit: number) => {
+    const selected = await pool.query<Row>(
+      `select distinct on (rule.id,c.id,original.source_revision,original.representation,source.source_hash)
+        rule.id rule_id,rule.owner_user_id,rule.authority_version,rule.publisher_credential_id,
+        rule.publisher_fence,rule.effective_privacy_policy_hash,member.id membership_id,
+        reason.id reason_id,g.id share_grant_id,g.grant_version,c.consent_version,
+        original.id retained_representation_id
+       from team_memory_sharing_rules rule
+       join team_memory_sharing_rule_members member on member.rule_id=rule.id and member.owner_user_id=rule.owner_user_id and member.state='present'
+       join team_memory_share_reasons reason on reason.rule_id=rule.id and reason.membership_id=member.id
+       join team_memory_share_grants g on g.id=reason.share_grant_id and g.owner_user_id=rule.owner_user_id
+         and g.lifecycle in ('active','unavailable') and g.revoked_at is null
+       join source_owner_representation_consents c on c.id=reason.consent_id and c.mode='continuous'
+         and c.state in ('active','paused') and c.revoked_at is null and (c.expires_at is null or c.expires_at>now())
+       join team_memory_reason_publications publication on publication.reason_id=reason.id and publication.share_grant_id=g.id and publication.consent_id=c.id
+       join team_memory_representations original on original.id=publication.representation_id
+       join shared_source_previews source on source.id=original.source_preview_id and source.invalidated_at is null
+       join source_owner_representation_policies op on op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id and op.superseded_at is null
+       join team_representation_policies tp on tp.team_id=rule.team_id and tp.superseded_at is null
+       join workspace_representation_policies wp on wp.team_id=rule.team_id and wp.team_workspace_id=rule.team_workspace_id and wp.superseded_at is null
+       where rule.state in ('active','paused') and rule.content_policy_version>0
+         and coalesce(member.next_reconciliation_at,'-infinity'::timestamptz)<=now()
+         and ${grantAuthorizesRepresentationSql("original.representation", "rule")}
+         and ${cumulativeRepresentationAuthorizationSql("original.representation")}
+         and not exists (
+           select 1 from team_memory_reason_preparations prepared
+           join shared_source_previews prepared_source on prepared_source.id=prepared.preview_id and prepared_source.invalidated_at is null
+           join shared_source_artifacts prepared_artifact on prepared_artifact.id=prepared_source.source_artifact_id and prepared_artifact.invalidated_at is null
+           where prepared.reason_id=reason.id and prepared.consent_id=c.id and prepared.share_grant_id=g.id
+             and prepared.retained_representation_id is not null and prepared.rule_version=rule.authority_version
+             and prepared.consent_version=c.consent_version and prepared.grant_version=g.grant_version
+             and prepared.publisher_credential_id=rule.publisher_credential_id and prepared.publisher_fence=rule.publisher_fence
+             and prepared.effective_privacy_policy_hash=rule.effective_privacy_policy_hash
+             and prepared_source.source_revision=original.source_revision and prepared_source.representation=original.representation
+             and prepared_source.source_hash=source.source_hash
+             and prepared_artifact.source_owner_policy_id=op.policy_id and prepared_artifact.source_owner_policy_version=op.version
+             and prepared_artifact.team_policy_id=tp.policy_id and prepared_artifact.team_policy_version=tp.version
+             and prepared_artifact.workspace_policy_id=wp.policy_id and prepared_artifact.workspace_policy_version=wp.version
+         )
+       order by rule.id,c.id,original.source_revision,original.representation,source.source_hash,publication.created_at,original.id
+       limit $1`,
+      [limit]
+    );
+    const result = { processed: selected.rows.length, prepared: 0, failed: 0 };
+    for (const row of selected.rows) {
+      try {
+        await repository.prepareRetainedSharingRulePublication(
+          { userId: stringValue(row.owner_user_id) },
+          {
+            shareGrantId: stringValue(row.share_grant_id),
+            expectedGrantVersion: numberValue(row.grant_version),
+            retainedRepresentationId: stringValue(
+              row.retained_representation_id
+            ),
+            ruleAuthority: {
+              ruleId: stringValue(row.rule_id),
+              reasonId: stringValue(row.reason_id),
+              authorityVersion: numberValue(row.authority_version),
+              consentVersion: numberValue(row.consent_version),
+              publisherCredentialId: stringValue(row.publisher_credential_id),
+              publisherFence: numberValue(row.publisher_fence),
+              effectivePrivacyPolicyHash: stringValue(
+                row.effective_privacy_policy_hash
+              )
+            }
+          }
+        );
+        result.prepared++;
+      } catch {
+        result.failed++;
+        await pool.query(
+          `update team_memory_sharing_rule_members member set next_reconciliation_at=now()+interval '30 seconds',
+             reconciliation_requested_at=coalesce(reconciliation_requested_at,now()),
+             reconciliation_failure_code='preparation_failed',updated_at=now()
+           where member.id=$1 and member.state='present' and exists (
+             select 1 from team_memory_sharing_rules rule where rule.id=member.rule_id
+               and rule.authority_version=$2 and rule.publisher_fence=$3 and rule.state in ('active','paused')
+           )`,
+          [row.membership_id, row.authority_version, row.publisher_fence]
+        );
+      }
+    }
+    return result;
+  };
+
   const repository: SharedMemoryClientScopedRepository = {
+    async amendSharingRuleContentPolicy(actor, input) {
+      if (input.authority.source !== "device_action_grant")
+        throw new SharedMemoryAuthorizationError(
+          "Rule content-policy changes require native approval"
+        );
+      return withTransaction(pool, async (client) =>
+        applySharingRuleContentPolicyAmendment(
+          client,
+          actor,
+          { mutationId: input.mutationId, review: input.review },
+          {
+            authorize: async () => {
+              await requireShareAuthority(client, actor, {
+                teamId: input.review.teamId,
+                teamWorkspaceId: input.review.teamWorkspaceId,
+                authority: input.authority,
+                consume: false,
+                delegatedDeviceActionGrant
+              });
+            },
+            review: (scope, expiresAt) =>
+              readSharingRuleContentPolicyReview(
+                client,
+                actor,
+                scope,
+                (privacyScope) =>
+                  resolveCurrentPrivacyPolicy(client, {
+                    ...privacyScope,
+                    lockRows: true
+                  }),
+                expiresAt,
+                true
+              ),
+            retainScope: (scope) =>
+              retainRepositoryRuleAmendment(client, actor, {
+                kind: "content_policy",
+                scope,
+                approvalReferenceId: input.authority.referenceId
+              })
+          }
+        )
+      );
+    },
+    async amendSharingRuleDetail(actor, input) {
+      if (input.authority.source !== "device_action_grant")
+        throw new SharedMemoryAuthorizationError(
+          "Rule detail changes require native approval"
+        );
+      return withTransaction(pool, async (client) => {
+        return applySharingRuleDetailAmendment(
+          client,
+          actor,
+          { mutationId: input.mutationId, review: input.review },
+          {
+            authorize: async () => {
+              await requireShareAuthority(client, actor, {
+                teamId: input.review.teamId,
+                teamWorkspaceId: input.review.teamWorkspaceId,
+                authority: input.authority,
+                consume: false,
+                delegatedDeviceActionGrant
+              });
+            },
+            review: (scope, expiresAt) =>
+              readSharingRuleDetailReview(
+                client,
+                actor,
+                scope,
+                async (privacyScope) =>
+                  (
+                    await resolveCurrentPrivacyPolicy(client, {
+                      ...privacyScope,
+                      sharingRuleId: input.review.ruleId,
+                      lockRows: true
+                    })
+                  ).effectivePolicyHash,
+                expiresAt,
+                true
+              ),
+            ownerPolicy: async (member, detail) => {
+              const current = await activePolicy(client, {
+                table: "source_owner_representation_policies",
+                whereSql:
+                  "logical_memory_id=$1 and source_owner_principal_id=$2",
+                parameters: [
+                  member.logical_memory_id,
+                  member.owner_principal_id
+                ]
+              });
+              const cap = ownerCapForSelection(current, detail);
+              if (
+                current &&
+                current.maximum_fidelity === cap.maximumFidelity &&
+                current.include_curated_memory === cap.includeCuratedMemory
+              )
+                return {
+                  policyId: stringValue(current.policy_id),
+                  version: numberValue(current.version)
+                };
+              const policy = proposedSourceOwnerPolicy({
+                existing: current,
+                logicalMemoryId: member.logical_memory_id,
+                ownerPrincipalId: member.owner_principal_id,
+                ...cap
+              });
+              if (current)
+                await client.query(
+                  "update source_owner_representation_policies set superseded_at=now() where id=$1",
+                  [current.id]
+                );
+              const inserted = await client.query<{ id: string }>(
+                `insert into source_owner_representation_policies
+              (policy_id,logical_memory_id,source_owner_principal_id,version,maximum_fidelity,include_curated_memory,policy_hash,created_by_user_id,effective_at)
+              values($1,$2,$3,$4,$5,$6,$7,$8,now()) returning id`,
+                [
+                  policy.policyId,
+                  member.logical_memory_id,
+                  member.owner_principal_id,
+                  policy.version,
+                  policy.maximumFidelity,
+                  policy.includeCuratedMemory,
+                  policy.policyHash,
+                  actor.userId
+                ]
+              );
+              await appendPolicyAudit(client, {
+                actorUserId: actor.userId,
+                ownerUserId: actor.userId,
+                action: current
+                  ? "shared_memory.source_owner_policy.updated"
+                  : "shared_memory.source_owner_policy.created",
+                targetTable: "source_owner_representation_policies",
+                targetId: inserted.rows[0]!.id,
+                mutationId: input.mutationId,
+                scope: "source_owner",
+                logicalMemoryId: member.logical_memory_id,
+                policyId: policy.policyId,
+                version: policy.version,
+                previousVersion: current ? numberValue(current.version) : 0,
+                maximumFidelity: policy.maximumFidelity,
+                includeCuratedMemory: policy.includeCuratedMemory,
+                origin: "sharing_consent"
+              });
+              return { policyId: policy.policyId, version: policy.version };
+            },
+            retainScope: (scope) =>
+              retainRepositoryRuleAmendment(client, actor, {
+                kind: "detail",
+                scope,
+                approvalReferenceId: input.authority.referenceId
+              })
+          }
+        );
+      });
+    },
+    async getSharingRuleContentPolicyReview(actor, input, expiresAt) {
+      if (
+        expiresAt &&
+        (!Number.isFinite(Date.parse(expiresAt)) ||
+          Date.parse(expiresAt) <= Date.now() ||
+          Date.parse(expiresAt) > Date.now() + 5 * 60_000)
+      )
+        throw new SharedMemoryConflictError(
+          "Content-policy review expired; refresh it before confirming"
+        );
+      return withTransaction(pool, async (client) => {
+        await client.query(
+          "set transaction isolation level repeatable read read only"
+        );
+        return readSharingRuleContentPolicyReview(
+          client,
+          actor,
+          input,
+          (scope) => resolveCurrentPrivacyPolicy(client, scope),
+          expiresAt
+        );
+      });
+    },
+    async getSharingRuleDetailReview(actor, input, expiresAt) {
+      if (
+        expiresAt &&
+        (Date.parse(expiresAt) <= Date.now() ||
+          Date.parse(expiresAt) > Date.now() + 5 * 60_000)
+      )
+        throw new SharedMemoryConflictError(
+          "Detail review expired; refresh it before confirming"
+        );
+      return withTransaction(pool, async (client) => {
+        await client.query(
+          "set transaction isolation level repeatable read read only"
+        );
+        return readSharingRuleDetailReview(
+          client,
+          actor,
+          input,
+          async (scope) =>
+            (
+              await resolveCurrentPrivacyPolicy(client, {
+                ...scope,
+                sharingRuleId: input.ruleId
+              })
+            ).effectivePolicyHash,
+          expiresAt
+        );
+      });
+    },
+    async listOwnedRepositorySharingRules(actor, raw) {
+      const input = ownedRepositorySharingRulesInputSchema.parse(raw);
+      return withTransaction(pool, async (client) => {
+        const selected = await client.query<Row>(
+          `select rule.*,t.name team_name,w.name workspace_name,
+          exists(select 1 from device_credentials publisher where publisher.id=rule.publisher_credential_id and publisher.owner_user_id=rule.owner_user_id
+            and publisher.revoked_at is null and (publisher.expires_at is null or publisher.expires_at>now())
+            and publisher.operation_families @> ARRAY['share_grant_management','sync']::text[]) publisher_available
+          from team_memory_sharing_rules rule join users owner on owner.id=rule.owner_user_id and owner.disabled_at is null and owner.deleted_at is null
+          join teams t on t.id=rule.team_id join team_workspaces w on w.id=rule.team_workspace_id and w.team_id=t.id
+          where rule.owner_user_id=$1 and rule.selector_kind in ('repository','folder','project') and rule.selector_binding_hash=$2 and ($3::uuid is null or rule.id>$3)
+          order by rule.id limit $4`,
+          [
+            actor.userId,
+            crossIdentitySyncDigest(input.selector),
+            input.afterRuleId,
+            input.limit + 1
+          ]
+        );
+        const rows = selected.rows.slice(0, input.limit),
+          rules = [];
+        for (const row of rows) {
+          const approved = await decodeRepositoryRuleAuthority(actor, row);
+          rules.push({
+            ruleId: row.id,
+            selector: approved.intent.selector,
+            team: { id: row.team_id, name: row.team_name },
+            workspace: { id: row.team_workspace_id, name: row.workspace_name },
+            state: row.state,
+            maximumFidelity: row.maximum_fidelity,
+            includeCuratedMemory: row.include_curated_memory,
+            authorityVersion: numberValue(row.authority_version),
+            publisherFence: numberValue(row.publisher_fence),
+            publisherAvailable: row.publisher_available === true
+          });
+        }
+        return ownedRepositorySharingRulesPageSchema.parse({
+          rules,
+          nextCursor:
+            selected.rows.length > input.limit ? rows.at(-1)!.id : null
+        });
+      });
+    },
+    async getRepositorySharingRuleControlReview(actor, input) {
+      return withTransaction(pool, (client) =>
+        reviewOrNull(() => reviewRepositoryRuleControl(client, actor, input))
+      );
+    },
+    async controlRepositorySharingRule(actor, input, transactionClient) {
+      const { authority, ...raw } = input;
+      const intent = repositorySharingRuleControlIntentSchema.parse(raw);
+      if (
+        authority.source !== "device_action_grant" ||
+        !delegatedDeviceActionGrant
+      )
+        throw new SharedMemoryAuthorizationError(
+          "Selection controls require the owner's reviewed device operation"
+        );
+      const requestHash = crossIdentitySyncDigest(intent);
+      const command = async (client: pg.PoolClient) => {
+        const scope = await lockOwnedRepositoryRule(
+          client,
+          actor,
+          intent.ruleId
+        );
+        if (
+          scope.rule.team_id !== intent.teamId ||
+          scope.rule.team_workspace_id !== intent.teamWorkspaceId
+        )
+          throw new SharedMemoryAuthorizationError(
+            "The reviewed destination does not match the rule"
+          );
+        await requireShareAuthority(client, actor, {
+          teamId: intent.teamId,
+          teamWorkspaceId: intent.teamWorkspaceId,
+          authority,
+          consume: false,
+          delegatedDeviceActionGrant,
+          requireSharePermission:
+            intent.controlAction === "resume" ||
+            intent.controlAction === "retry"
+        });
+        const replay = await client.query<Row>(
+          `select metadata from audit_events where owner_user_id=$1 and target_table='team_memory_sharing_rules'
+          and target_id=$2 and action='shared_memory.repository_rule.controlled' and metadata->>'mutationId'=$3 order by created_at limit 1`,
+          [actor.userId, intent.ruleId, intent.mutationId]
+        );
+        if (replay.rows[0]) {
+          const metadata = replay.rows[0].metadata as Row;
+          if (metadata.requestHash !== requestHash)
+            throw new SharedMemoryConflictError(
+              "This control mutation is bound to another request"
+            );
+          return repositorySharingRuleControlResultSchema.parse(
+            metadata.result
+          );
+        }
+        await reviewRepositoryRuleControl(client, actor, intent, scope);
+        const state =
+          intent.controlAction === "pause"
+            ? "paused"
+            : intent.controlAction === "stop"
+              ? "stopped"
+              : "active";
+        const updated = await client.query<Row>(
+          `update team_memory_sharing_rules set state=$2,authority_version=authority_version+1,
+          publisher_fence=publisher_fence+case when $2='stopped' then 1 else 0 end,
+          stopped_at=case when $2='stopped' then now() else null end,updated_at=now() where id=$1 returning *`,
+          [intent.ruleId, state]
+        );
+        const row = updated.rows[0]!;
+        const result = repositorySharingRuleControlResultSchema.parse({
+          selectorKind: "selection",
+          ruleId: intent.ruleId,
+          state,
+          authorityVersion: numberValue(row.authority_version),
+          publisherFence: numberValue(row.publisher_fence),
+          catchUpState: state === "active" ? "queued" : "idle"
+        });
+        await recordAuditEventWithClient(client, {
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: "personal",
+          action: "shared_memory.repository_rule.controlled",
+          targetTable: "team_memory_sharing_rules",
+          targetId: intent.ruleId,
+          metadata: { mutationId: intent.mutationId, requestHash, result }
+        });
+        // Only the parent is locked here. Publication checks see pause/stop
+        // immediately; bounded source cleanup takes root locks before the parent.
+        await client.query(
+          "select pg_notify('koed_shared_memory_privacy','repository_rule_control')"
+        );
+        return result;
+      };
+      return transactionClient
+        ? command(transactionClient)
+        : withTransaction(pool, command);
+    },
+    async getRepositorySharingRuleCreationReview(actor, input) {
+      return withTransaction(pool, (client) =>
+        reviewOrNull(() => reviewRepositoryRuleCreation(client, actor, input))
+      );
+    },
+    async createRepositorySharingRule(actor, raw) {
+      const { publisherCredentialId, authority, ...intentInput } = raw;
+      const intent =
+        repositorySharingRuleCreationIntentSchema.parse(intentInput);
+      assertUuid(publisherCredentialId, "publisherCredentialId");
+      if (
+        authority.source !== "device_action_grant" ||
+        !delegatedDeviceActionGrant
+      )
+        throw new SharedMemoryAuthorizationError(
+          "Selection rules require an enrolled device's reviewed creation operation"
+        );
+      const binding = sharedMemoryRepositoryRuleCreationActionGrantBinding({
+        ...intent,
+        referenceId: authority.referenceId
+      });
+      const requestHash = crossIdentitySyncDigest({
+        ownerUserId: actor.userId,
+        publisherCredentialId,
+        intent
+      });
+      return withTransaction(pool, async (client) => {
+        // One owner mutation must not create competing parent rules on retry.
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1,0))",
+          [`sharing-rule-create:${actor.userId}:${intent.mutationId}`]
+        );
+        await requireShareAuthority(client, actor, {
+          teamId: intent.teamId,
+          teamWorkspaceId: intent.teamWorkspaceId,
+          authority,
+          consume: false,
+          delegatedDeviceActionGrant
+        });
+        const approval = await client.query<{ decided_at: Date }>(
+          `select confirmation.decided_at from high_risk_browser_confirmations confirmation
+           join high_risk_device_action_grants approval on approval.confirmation_id=confirmation.id
+           join device_credentials publisher on publisher.id=approval.device_credential_id and publisher.owner_user_id=approval.owner_user_id
+           where confirmation.client_request_id=$1 and confirmation.owner_user_id=$2 and confirmation.device_credential_id=$3
+             and confirmation.state='approved' and confirmation.revoked_at is null and confirmation.decided_at is not null
+             and confirmation.operation_family='share_grant_management' and confirmation.action=$4 and confirmation.target_id=$5
+             and confirmation.scope_hash=$6 and confirmation.request_hash=$7
+             and approval.state='active' and approval.expires_at>now() and approval.revoked_at is null
+             and publisher.revoked_at is null and (publisher.expires_at is null or publisher.expires_at>now())
+             and publisher.operation_families @> ARRAY['share_grant_management','sync']::text[]
+           for share of confirmation,approval,publisher`,
+          [
+            authority.referenceId,
+            actor.userId,
+            publisherCredentialId,
+            binding.action,
+            intent.ruleId,
+            binding.scopeHash,
+            binding.requestHash
+          ]
+        );
+        if (!approval.rows[0])
+          throw new SharedMemoryAuthorizationError(
+            "The exact future-member approval is unavailable"
+          );
+        const existing = await client.query<Row>(
+          `select rule.*,audit.metadata from team_memory_sharing_rules rule
+           left join audit_events audit on audit.target_table='team_memory_sharing_rules' and audit.target_id=rule.id
+             and audit.owner_user_id=rule.owner_user_id and audit.action='shared_memory.rule.repository_created'
+           where rule.id=$1 or rule.creation_mutation_id=$2 for update of rule`,
+          [intent.ruleId, intent.mutationId]
+        );
+        if (existing.rows[0]) {
+          const current = existing.rows[0];
+          if (
+            current.id !== intent.ruleId ||
+            current.owner_user_id !== actor.userId ||
+            current.creation_mutation_id !== intent.mutationId ||
+            !isPlainObject(current.metadata) ||
+            current.metadata.requestHash !== requestHash
+          )
+            throw new SharedMemoryConflictError(
+              "Rule creation retry changed its recorded intent"
+            );
+          return {
+            ruleId: intent.ruleId,
+            state: "active" as const,
+            authorityVersion: 1 as const,
+            publisherFence: 1 as const
+          };
+        }
+        const scope = repositorySharingRuleCreationReviewSchema.shape.scope
+          .strip()
+          .parse(intent);
+        const reviewInput = repositorySharingRuleCreationReviewInputSchema
+          .strip()
+          .parse(intent);
+        const review = await reviewRepositoryRuleCreation(
+          client,
+          actor,
+          reviewInput
+        );
+        if (
+          crossIdentitySyncDigest(review.scope) !==
+          crossIdentitySyncDigest(scope)
+        )
+          throw new SharedMemoryConflictError(
+            "Rule policy changed after approval; review it again"
+          );
+        if (!options.resolveSharingRuleEncryptionProvider)
+          throw new SharedMemoryConflictError(
+            "Owner-private rule encryption is unavailable"
+          );
+        const provider = await options.resolveSharingRuleEncryptionProvider({
+          ownerUserId: actor.userId,
+          ruleId: intent.ruleId,
+          purpose: "encrypt"
+        });
+        const payload = await provider.encrypt({
+          plaintext: JSON.stringify({
+            version: 1,
+            ownerUserId: actor.userId,
+            intent,
+            approvedAt: approval.rows[0].decided_at.toISOString(),
+            approvalReferenceId: authority.referenceId
+          }),
+          scope: {
+            tenantId: actor.userId,
+            objectClass: "owner_private_sharing_rule"
+          },
+          provenance: {
+            rowFamily: "owner_private_sharing_rule",
+            sourceTable: "team_memory_sharing_rules",
+            sourceColumn: "selector_payload",
+            sourceId: intent.ruleId
+          },
+          ciphertextLocation: "team_memory_sharing_rules.selector_payload",
+          aad: {
+            ownerUserId: actor.userId,
+            ruleId: intent.ruleId,
+            selectorBindingHash: crossIdentitySyncDigest(intent.selector)
+          }
+        });
+        await client.query(
+          `insert into team_memory_sharing_rules(id,owner_user_id,logical_memory_id,selector_kind,selector_binding_hash,selector_payload,
+            team_id,team_workspace_id,maximum_fidelity,include_curated_memory,effective_privacy_policy_hash,publisher_credential_id,creation_mutation_id)
+           values($1,$2,null,$12,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [
+            intent.ruleId,
+            actor.userId,
+            crossIdentitySyncDigest(intent.selector),
+            payload,
+            intent.teamId,
+            intent.teamWorkspaceId,
+            intent.maximumFidelity,
+            intent.includeCuratedMemory,
+            intent.effectivePrivacyPolicyHash,
+            publisherCredentialId,
+            intent.mutationId,
+            ["folder", "project"].includes(intent.selector.kind)
+              ? intent.selector.kind
+              : "repository"
+          ]
+        );
+        await recordAuditEventWithClient(client, {
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: "personal",
+          action: "shared_memory.rule.repository_created",
+          targetTable: "team_memory_sharing_rules",
+          targetId: intent.ruleId,
+          metadata: {
+            mutationId: intent.mutationId,
+            requestHash,
+            approvedAt: approval.rows[0].decided_at.toISOString(),
+            approvalReferenceId: authority.referenceId
+          }
+        });
+        return {
+          ruleId: intent.ruleId,
+          state: "active" as const,
+          authorityVersion: 1 as const,
+          publisherFence: 1 as const
+        };
+      });
+    },
+    async getConversationSharingRuleCreationReview(actor, input) {
+      return withTransaction(pool, (client) =>
+        reviewOrNull(async () => {
+          await requireWorkspaceSharePermission(
+            client,
+            actor,
+            input.teamId,
+            input.teamWorkspaceId
+          );
+          const result = await client.query<Row>(
+            `select preview.*,team.name as team_name,workspace.name as workspace_name,
+             coalesce(nullif(trim(session.metadata->>'threadName'),''),'Conversation') as source_title
+           from shared_memory_candidate_preview_records preview
+           join teams team on team.id=preview.team_id
+           join team_workspaces workspace on workspace.id=preview.team_workspace_id and workspace.team_id=team.id
+           left join local_captured_session_logical_memories local_memory
+             on local_memory.logical_memory_id=preview.logical_memory_id and local_memory.owner_user_id=preview.owner_user_id
+           left join sessions session on session.id=local_memory.local_session_id and session.owner_user_id=preview.owner_user_id
+           where preview.id=$1 and preview.preview_hash=$2 and preview.preview_revision=$3
+             and preview.logical_memory_id=$4 and preview.team_id=$5 and preview.team_workspace_id=$6
+             and preview.owner_user_id=$7 and preview.source_kind='captured_session' and preview.mode='continuous'
+             and preview.invalidated_at is null and preview.expires_at>now()
+             and (preview.share_expires_at is null or preview.share_expires_at>now())`,
+            [
+              input.previewId,
+              input.previewHash,
+              input.previewRevision,
+              input.logicalMemoryId,
+              input.teamId,
+              input.teamWorkspaceId,
+              actor.userId
+            ]
+          );
+          const preview = result.rows[0];
+          if (!preview)
+            throw new SharedMemoryConflictError(
+              "A current continuous Conversation preview is required"
+            );
+          const selected = await client.query<Row>(
+            `select * from team_memory_share_grants where logical_memory_id=$1 and team_workspace_id=$2`,
+            [input.logicalMemoryId, input.teamWorkspaceId]
+          );
+          const grant = selected.rows[0];
+          if (
+            grant &&
+            (grant.owner_user_id !== actor.userId ||
+              grant.team_id !== input.teamId ||
+              grant.lifecycle !== "active" ||
+              grant.revoked_at !== null)
+          )
+            throw new SharedMemoryConflictError(
+              "The existing destination cannot accept a new sharing reason"
+            );
+          const privacy = await resolveCurrentPrivacyPolicy(client, {
+            ownerUserId: actor.userId,
+            teamId: input.teamId,
+            teamWorkspaceId: input.teamWorkspaceId
+          });
+          return conversationSharingRuleCreationReviewSchema.parse({
+            ...input,
+            source: requiredSourceRefFromRow(preview),
+            sourceTitle: stringValue(preview.source_title),
+            teamName: stringValue(preview.team_name),
+            workspaceName: stringValue(preview.workspace_name),
+            logicalGrantId: grant
+              ? stringValue(grant.logical_grant_id)
+              : crossIdentitySyncDeterministicUuid({
+                  kind: "conversation_rule_destination",
+                  ownerUserId: actor.userId,
+                  logicalMemoryId: input.logicalMemoryId,
+                  teamId: input.teamId,
+                  teamWorkspaceId: input.teamWorkspaceId
+                }),
+            expectedGrantVersion: grant
+              ? numberValue(grant.grant_version)
+              : null,
+            effectivePrivacyPolicyHash: privacy.effectivePolicyHash,
+            maximumFidelity: preview.maximum_fidelity,
+            includeCuratedMemory: preview.include_curated_memory === true,
+            activationRepresentation: preview.activation_representation,
+            sourceCapabilities: representationArrayValue(
+              preview.source_capabilities
+            ),
+            expiresAt: nullableIso(preview.share_expires_at),
+            reviewExpiresAt: iso(preview.expires_at)
+          });
+        })
+      );
+    },
+    async getConversationSharingRuleControlReview(actor, input) {
+      return withTransaction(pool, (client) =>
+        reviewOrNull(async () => {
+          const selected = await client.query<Row>(
+            `select rule.*,g.grant_version,g.lifecycle as grant_lifecycle,g.revoked_at as grant_revoked_at,
+                  reason.id as reason_id,g.id as share_grant_id,c.state as consent_state,
+                  c.revoked_at as consent_revoked_at,(c.expires_at is null or c.expires_at>now()) as consent_unexpired,
+                  t.name as team_name,w.name as workspace_name,
+                  coalesce(nullif(trim(s.metadata->>'threadName'),''),'Conversation') as source_title,
+                  exists(select 1 from device_credentials publisher
+                    where publisher.id=rule.publisher_credential_id
+                      and publisher.owner_user_id=rule.owner_user_id and publisher.revoked_at is null
+                      and (publisher.expires_at is null or publisher.expires_at>now())
+                      and publisher.operation_families @> ARRAY['share_grant_management','sync']::text[]) as publisher_available
+             from team_memory_sharing_rules rule
+             join team_memory_share_reasons reason on reason.rule_id=rule.id and reason.kind='rule'
+             join team_memory_share_grants g on g.id=reason.share_grant_id
+               and g.logical_memory_id=rule.logical_memory_id and g.owner_user_id=rule.owner_user_id
+               and g.team_id=rule.team_id and g.team_workspace_id=rule.team_workspace_id
+             join source_owner_representation_consents c on c.id=reason.consent_id
+               and c.logical_memory_id=g.logical_memory_id and c.source_owner_principal_id=g.owner_principal_id
+               and c.team_id=g.team_id and c.team_workspace_id=g.team_workspace_id and c.mode='continuous'
+               and c.maximum_fidelity=rule.maximum_fidelity and c.include_curated_memory=rule.include_curated_memory
+             left join local_captured_session_logical_memories local_memory
+               on local_memory.logical_memory_id=g.logical_memory_id and local_memory.owner_user_id=g.owner_user_id
+             left join sessions s on s.id=local_memory.local_session_id and s.owner_user_id=g.owner_user_id
+             join teams t on t.id=g.team_id
+             join team_workspaces w on w.id=g.team_workspace_id and w.team_id=g.team_id
+            where rule.id=$1 and reason.id=$2 and g.id=$3 and rule.owner_user_id=$4
+              and rule.team_id=$5 and rule.team_workspace_id=$6
+              and rule.authority_version=$7 and g.grant_version=$8`,
+            [
+              input.ruleId,
+              input.reasonId,
+              input.shareGrantId,
+              actor.userId,
+              input.teamId,
+              input.teamWorkspaceId,
+              input.expectedAuthorityVersion,
+              input.expectedGrantVersion
+            ]
+          );
+          const row = selected.rows[0];
+          if (
+            !row ||
+            row.state === "stopped" ||
+            (input.action === "pause" && row.state !== "active") ||
+            (input.action === "resume" && row.state !== "paused") ||
+            (input.action === "retry" && row.state !== "active")
+          )
+            return null;
+          if (input.action === "resume" || input.action === "retry") {
+            if (
+              row.grant_lifecycle !== "active" ||
+              row.grant_revoked_at !== null ||
+              row.consent_revoked_at !== null ||
+              row.consent_state !==
+                (input.action === "resume" ? "paused" : "active") ||
+              row.consent_unexpired !== true ||
+              row.publisher_available !== true
+            )
+              return null;
+            await requireWorkspaceSharePermission(
+              client,
+              actor,
+              input.teamId,
+              input.teamWorkspaceId
+            );
+            const privacy = await resolveCurrentPrivacyPolicy(client, {
+              ownerUserId: actor.userId,
+              teamId: input.teamId,
+              teamWorkspaceId: input.teamWorkspaceId,
+              sharingRuleId: input.ruleId
+            });
+            if (
+              privacy.effectivePolicyHash !== row.effective_privacy_policy_hash
+            )
+              return null;
+          }
+          return {
+            logicalMemoryId: stringValue(row.logical_memory_id),
+            sourceTitle: stringValue(row.source_title),
+            ruleId: input.ruleId,
+            reasonId: input.reasonId,
+            shareGrantId: input.shareGrantId,
+            team: { id: input.teamId, name: stringValue(row.team_name) },
+            workspace: {
+              id: input.teamWorkspaceId,
+              name: stringValue(row.workspace_name)
+            },
+            state: row.state as "active" | "paused",
+            maximumFidelity:
+              row.maximum_fidelity as SharedMemoryFidelityCeiling,
+            includeCuratedMemory: row.include_curated_memory === true,
+            authorityVersion: numberValue(row.authority_version),
+            grantVersion: numberValue(row.grant_version)
+          };
+        })
+      );
+    },
+    async controlConversationSharingRule(
+      actor,
+      input,
+      transactionClient?: pg.PoolClient
+    ) {
+      for (const field of [
+        "ruleId",
+        "reasonId",
+        "shareGrantId",
+        "mutationId"
+      ] as const)
+        assertUuid(input[field], field);
+      if (!["pause", "resume", "stop", "retry"].includes(input.action))
+        throw new SharedMemoryConflictError("Unknown sharing rule control");
+      for (const value of [
+        input.expectedAuthorityVersion,
+        input.expectedGrantVersion
+      ]) {
+        if (!Number.isSafeInteger(value) || value < 1)
+          throw new SharedMemoryConflictError(
+            "A current reviewed sharing version is required"
+          );
+      }
+      const command = async (client: pg.PoolClient) => {
+        const scope = await client.query<Row>(
+          `select g.owner_user_id,g.logical_memory_id,g.owner_principal_id,g.team_id,g.team_workspace_id from team_memory_share_grants g join team_memory_share_reasons reason on reason.share_grant_id=g.id and reason.id=$2 and reason.rule_id=$3 where g.id=$1`,
+          [input.shareGrantId, input.reasonId, input.ruleId]
+        );
+        const root = scope.rows[0];
+        if (!root || root.owner_user_id !== actor.userId)
+          throw new SharedMemoryAuthorizationError(
+            "Only the owner may control this sharing rule"
+          );
+        if (
+          input.destination &&
+          (root.team_id !== input.destination.teamId ||
+            root.team_workspace_id !== input.destination.teamWorkspaceId)
+        )
+          throw new SharedMemoryAuthorizationError(
+            "Sharing rule destination does not match the reviewed action"
+          );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1,0))",
+          [
+            `shared-memory-owner-policy:${root.logical_memory_id}:${root.owner_principal_id}`
+          ]
+        );
+        await client.query(
+          `select id from team_memory_share_grants where id=$1 for update`,
+          [input.shareGrantId]
+        );
+        const selected = await client.query<Row>(
+          `select rule.*,member.id as membership_id,member.reconciliation_requested_at,member.reconciliation_attempt_count,member.reconciliation_failure_code,
+                  reason.consent_id,c.consent_version,c.state as consent_state,c.revoked_at as consent_revoked_at,g.grant_version,g.lifecycle as grant_lifecycle,g.revoked_at as grant_revoked_at
+          from team_memory_sharing_rules rule join team_memory_share_reasons reason on reason.rule_id=rule.id
+          join team_memory_sharing_rule_members member on member.id=reason.membership_id and member.rule_id=rule.id
+          join team_memory_share_grants g on g.id=reason.share_grant_id
+          join source_owner_representation_consents c on c.id=reason.consent_id
+          where rule.id=$1 and reason.id=$2 and g.id=$3 and rule.owner_user_id=$4
+          and reason.kind='rule' and rule.logical_memory_id=g.logical_memory_id
+          and rule.team_id=g.team_id and rule.team_workspace_id=g.team_workspace_id
+          and c.logical_memory_id=g.logical_memory_id and c.source_owner_principal_id=g.owner_principal_id
+          and c.team_id=g.team_id and c.team_workspace_id=g.team_workspace_id and c.mode='continuous'
+          for update of rule,member,reason,c`,
+          [input.ruleId, input.reasonId, input.shareGrantId, actor.userId]
+        );
+        const current = selected.rows[0];
+        if (!current)
+          throw new SharedMemoryAuthorizationError(
+            "Sharing rule binding is unavailable"
+          );
+        await requireShareAuthority(client, actor, {
+          teamId: stringValue(current.team_id),
+          teamWorkspaceId: stringValue(current.team_workspace_id),
+          authority: input.authority,
+          consume: false,
+          delegatedDeviceActionGrant,
+          requireSharePermission:
+            input.action === "resume" || input.action === "retry"
+        });
+        const result = (row: Row) => ({
+          ruleId: input.ruleId,
+          reasonId: input.reasonId,
+          shareGrantId: input.shareGrantId,
+          state: stringValue(row.state) as "active" | "paused" | "stopped",
+          authorityVersion: numberValue(row.authority_version),
+          consentVersion: numberValue(row.consent_version),
+          grantVersion: numberValue(row.grant_version),
+          publisherFence: numberValue(row.publisher_fence),
+          catchUpState:
+            row.reconciliation_requested_at === null
+              ? ("idle" as const)
+              : numberValue(row.reconciliation_attempt_count) >= 5 &&
+                  row.reconciliation_failure_code !== null
+                ? ("needs_attention" as const)
+                : ("queued" as const)
+        });
+        const replay = await client.query<Row>(
+          `select action,metadata from audit_events where owner_user_id=$1 and target_table='team_memory_sharing_rules' and target_id=$2 and metadata->>'mutationId'=$3 order by created_at limit 1`,
+          [actor.userId, input.ruleId, input.mutationId]
+        );
+        if (replay.rows[0]) {
+          const metadata = replay.rows[0].metadata as Row;
+          if (
+            replay.rows[0].action !== `shared_memory.rule.${input.action}` ||
+            metadata.reasonId !== input.reasonId ||
+            metadata.shareGrantId !== input.shareGrantId ||
+            metadata.expectedAuthorityVersion !==
+              input.expectedAuthorityVersion ||
+            metadata.expectedGrantVersion !== input.expectedGrantVersion
+          )
+            throw new SharedMemoryConflictError(
+              "Sharing rule control retry changed its intent"
+            );
+          return result(current);
+        }
+        if (
+          numberValue(current.authority_version) !==
+            input.expectedAuthorityVersion ||
+          numberValue(current.grant_version) !== input.expectedGrantVersion
+        )
+          throw new SharedMemoryConflictError(
+            "Sharing rule changed after review"
+          );
+        if (
+          current.state === "stopped" ||
+          (input.action === "pause" && current.state !== "active") ||
+          (input.action === "resume" && current.state !== "paused") ||
+          (input.action === "retry" && current.state !== "active")
+        )
+          throw new SharedMemoryConflictError(
+            "Sharing rule control does not match its current state"
+          );
+        const active = input.action === "resume" || input.action === "retry";
+        if (
+          active &&
+          (current.grant_lifecycle !== "active" ||
+            current.grant_revoked_at !== null ||
+            current.consent_revoked_at !== null ||
+            (input.action === "resume" && current.consent_state !== "paused") ||
+            (input.action === "retry" && current.consent_state !== "active"))
+        )
+          throw new SharedMemoryConflictError(
+            "Sharing authority cannot be resumed"
+          );
+        const state =
+          input.action === "pause"
+            ? "paused"
+            : input.action === "stop"
+              ? "stopped"
+              : "active";
+        const changed = await client.query<Row>(
+          `update team_memory_sharing_rules set state=$2,authority_version=authority_version+1,
+          stopped_at=case when $2='stopped' then now() else null end,updated_at=now()
+          where id=$1 returning *`,
+          [input.ruleId, state]
+        );
+        const work = await client.query<Row>(
+          `update team_memory_sharing_rule_members set
+             membership_version=membership_version+case when $2='stopped' and state<>'revoked' then 1 else 0 end,
+             last_mutation_id=case when $2='stopped' then $3 else last_mutation_id end,
+             state=case when $2='stopped' then 'revoked' else state end,
+             reconciliation_requested_at=case when $2='active' then now() else null end,
+             next_reconciliation_at=case when $2='active' then now() else null end,
+             reconciliation_attempt_count=0,reconciliation_failure_code=null,updated_at=now()
+           where id=$1 returning reconciliation_requested_at,reconciliation_attempt_count,reconciliation_failure_code`,
+          [current.membership_id, state, input.mutationId]
+        );
+        const consent = await client.query<Row>(
+          `update source_owner_representation_consents set
+          state=case when $2='stop' then 'revoked' when $2='pause' and state='active' then 'paused' when $2='resume' then 'active' else state end,
+          paused_at=case when $2='pause' and state='active' then now() when $2 in ('resume','retry') then null else paused_at end,
+          revoked_at=case when $2='stop' then coalesce(revoked_at,now()) else revoked_at end,
+          consent_version=consent_version+1,state_reason_code=$3,updated_at=now()
+          where id=$1 returning consent_version`,
+          [current.consent_id, input.action, `rule_${input.action}`]
+        );
+        const grant = await client.query<Row>(
+          `update team_memory_share_grants set grant_version=grant_version+1,updated_at=now() where id=$1 returning grant_version`,
+          [input.shareGrantId]
+        );
+        const updated: Row = {
+          ...changed.rows[0]!,
+          ...work.rows[0]!,
+          consent_version: consent.rows[0]!.consent_version,
+          grant_version: grant.rows[0]!.grant_version
+        };
+        if (active)
+          await lockSharingRulePublicationAuthority(client, actor, {
+            shareGrantId: input.shareGrantId,
+            expectedGrantVersion: numberValue(updated.grant_version),
+            ruleAuthority: {
+              reasonId: input.reasonId,
+              ruleId: input.ruleId,
+              authorityVersion: numberValue(updated.authority_version),
+              consentVersion: numberValue(updated.consent_version),
+              publisherCredentialId: stringValue(
+                updated.publisher_credential_id
+              ),
+              publisherFence: numberValue(updated.publisher_fence),
+              effectivePrivacyPolicyHash: stringValue(
+                updated.effective_privacy_policy_hash
+              )
+            }
+          });
+        await client.query(
+          `insert into audit_events(actor_user_id,owner_user_id,visibility,action,target_table,target_id,metadata) values($1,$1,'personal',$2,'team_memory_sharing_rules',$3,$4::jsonb)`,
+          [
+            actor.userId,
+            `shared_memory.rule.${input.action}`,
+            input.ruleId,
+            JSON.stringify({
+              mutationId: input.mutationId,
+              reasonId: input.reasonId,
+              shareGrantId: input.shareGrantId,
+              expectedAuthorityVersion: input.expectedAuthorityVersion,
+              expectedGrantVersion: input.expectedGrantVersion,
+              authorityVersion: updated.authority_version,
+              grantVersion: updated.grant_version
+            })
+          ]
+        );
+        const remainingPublication =
+          input.action === "stop"
+            ? await client.query<{ allowed: boolean }>(
+                `select ${publishedSharedMemoryAuthorizationSql({
+                  shareGrantId: "$1",
+                  teamId: "$2",
+                  teamWorkspaceId: "$3",
+                  logicalMemoryId: "$4"
+                })} as allowed`,
+                [
+                  input.shareGrantId,
+                  current.team_id,
+                  current.team_workspace_id,
+                  current.logical_memory_id
+                ]
+              )
+            : null;
+        await appendOutbox(client, {
+          mutationId: input.mutationId,
+          family:
+            input.action === "stop" && !remainingPublication?.rows[0]?.allowed
+              ? "access_revoked"
+              : "share_grant_lifecycle",
+          teamId: stringValue(current.team_id),
+          teamWorkspaceId: stringValue(current.team_workspace_id),
+          shareGrantId: input.shareGrantId,
+          logicalMemoryId: stringValue(current.logical_memory_id),
+          resourceType: "team_memory_share_grant",
+          resourceId: input.shareGrantId,
+          actorPrincipalId: actor.userId
+        });
+        await client.query(
+          "select pg_notify('koed_shared_memory_privacy','rule_control')"
+        );
+        return result(updated);
+      };
+      return transactionClient
+        ? command(transactionClient)
+        : withTransaction(pool, command);
+    },
+    async cancelRepositorySharingRuleMutation(actor, input) {
+      const { ruleId, publisherCredentialId, ...raw } = input;
+      const request =
+        repositorySharingRuleMutationCancellationSchema.parse(raw);
+      assertUuid(ruleId, "ruleId");
+      assertUuid(publisherCredentialId, "publisherCredentialId");
+      if (
+        request.membershipId !==
+        crossIdentitySyncDeterministicUuid({
+          kind: "sharing_rule_member",
+          ruleId,
+          logicalMemoryId: request.logicalMemoryId
+        })
+      )
+        throw new SharedMemoryConflictError(
+          "Cancellation must name the exact source membership"
+        );
+      return withTransaction(pool, async (client) => {
+        const binding = { ...request, ruleId };
+        const settled = await lockMemberMutation(client, actor, binding);
+        await lockRepositoryRuleAuthority(
+          client,
+          actor,
+          ruleId,
+          publisherCredentialId
+        );
+        await requireSourceOwner(client, actor, request.logicalMemoryId);
+        if (settled) return settled;
+        // Holding the same mutation lock as all three write paths proves an
+        // absent receipt has no concurrent accepted operation. The retained
+        // tombstone rejects an original request that arrives after this commit.
+        const cancellation =
+          repositorySharingRuleMutationSettlementSchema.parse({
+            ...binding,
+            state: "canceled"
+          });
+        await recordAuditEventWithClient(client, {
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: "personal",
+          action: "shared_memory.rule.member_mutation_settled",
+          targetTable: "team_memory_sharing_rule_members",
+          targetId: request.membershipId,
+          metadata: cancellation
+        });
+        return cancellation;
+      });
+    },
+    async inspectRepositorySharingRuleMembers(actor, input) {
+      assertUuid(input.ruleId, "ruleId");
+      assertUuid(input.publisherCredentialId, "publisherCredentialId");
+      if (
+        input.logicalMemoryIds.length < 1 ||
+        input.logicalMemoryIds.length > 100
+      )
+        throw new SharedMemoryConflictError(
+          "Inspect between one and 100 exact source identities"
+        );
+      for (const id of input.logicalMemoryIds)
+        assertUuid(id, "logicalMemoryId");
+      return withTransaction(pool, async (client) => {
+        const { rule, detailAmendment, contentPolicyAmendment } =
+          await lockRepositoryRuleAuthority(
+            client,
+            actor,
+            input.ruleId,
+            input.publisherCredentialId
+          );
+        const sources = await client.query<Row>(
+          `select requested.id logical_memory_id,g.id grant_id,g.logical_grant_id,g.grant_version,g.lifecycle,
+            member.id membership_id,member.membership_version,member.state membership_state,
+            member.selection_snapshot_version,member.source_context_hash,member.git_context_version,member.folder_context_version,
+            pending.id pending_share_id,pending.state pending_share_state
+           from unnest($1::uuid[]) with ordinality requested(id,position)
+           left join team_memory_sharing_rule_members member on member.logical_memory_id=requested.id and member.rule_id=$2 and member.owner_user_id=$3
+           left join team_memory_share_grants g on g.logical_memory_id=requested.id and g.owner_user_id=$3 and g.team_id=$4 and g.team_workspace_id=$5
+           left join lateral (
+             select p.id,p.state from pending_sharing_rule_admissions admission join pending_share_operations p on p.id=admission.pending_share_id
+             where admission.membership_id=member.id and admission.rule_id=$2 and admission.admission_kind='repository_member'
+               and p.owner_user_id=$3 order by admission.expected_membership_version desc,p.created_at desc limit 1
+           ) pending on true order by requested.position`,
+          [
+            input.logicalMemoryIds,
+            input.ruleId,
+            actor.userId,
+            rule.team_id,
+            rule.team_workspace_id
+          ]
+        );
+        return repositorySharingRuleMembersStateSchema.parse({
+          detailAmendment: detailAmendment ?? undefined,
+          contentPolicyAmendment: contentPolicyAmendment ?? undefined,
+          ruleId: input.ruleId,
+          state: rule.state,
+          authorityVersion: numberValue(rule.authority_version),
+          publisherFence: numberValue(rule.publisher_fence),
+          selectorBindingHash: rule.selector_binding_hash,
+          effectivePrivacyPolicyHash: rule.effective_privacy_policy_hash,
+          teamId: rule.team_id,
+          teamWorkspaceId: rule.team_workspace_id,
+          maximumFidelity: rule.maximum_fidelity,
+          includeCuratedMemory: rule.include_curated_memory,
+          entries: sources.rows.map((row) => ({
+            logicalMemoryId: row.logical_memory_id,
+            grant: row.grant_id
+              ? {
+                  id: row.grant_id,
+                  logicalGrantId: row.logical_grant_id,
+                  version: numberValue(row.grant_version),
+                  lifecycle: row.lifecycle
+                }
+              : null,
+            member: row.membership_id
+              ? {
+                  id: row.membership_id,
+                  version: numberValue(row.membership_version),
+                  state: row.membership_state,
+                  selectionSnapshotVersion: row.selection_snapshot_version,
+                  sourceContextHash: row.source_context_hash,
+                  gitContextVersion:
+                    row.git_context_version === null
+                      ? null
+                      : numberValue(row.git_context_version),
+                  folderContextVersion:
+                    row.folder_context_version === null
+                      ? null
+                      : numberValue(row.folder_context_version),
+                  pendingShare: row.pending_share_id
+                    ? {
+                        id: row.pending_share_id,
+                        state: row.pending_share_state
+                      }
+                    : null
+                }
+              : null
+          }))
+        });
+      });
+    },
+    async refreshRepositorySharingRuleMemberContext(actor, input) {
+      const { ruleId, membershipId, publisherCredentialId, ...rawContext } =
+        input;
+      const context =
+        repositorySharingRuleMemberContextSchema.parse(rawContext);
+      for (const id of [ruleId, membershipId, publisherCredentialId])
+        assertUuid(id, "ruleMemberIdentity");
+      const requestHash = crossIdentitySyncDigest(input);
+      return withTransaction(pool, async (client) => {
+        const scope = await client.query<{ logical_memory_id: string }>(
+          "select logical_memory_id from team_memory_sharing_rule_members where id=$1 and rule_id=$2 and owner_user_id=$3",
+          [membershipId, ruleId, actor.userId]
+        );
+        if (!scope.rows[0])
+          throw new SharedMemoryAuthorizationError(
+            "The owner source membership is unavailable"
+          );
+        const mutation = memberMutationBinding({
+          ruleId,
+          membershipId,
+          logicalMemoryId: scope.rows[0].logical_memory_id,
+          kind: "context",
+          mutationId: context.mutationId,
+          body: context
+        });
+        await requireUncanceledMemberMutation(client, actor, mutation);
+        const { rule } = await lockRepositoryRuleAuthority(
+          client,
+          actor,
+          ruleId,
+          publisherCredentialId
+        );
+        const replay = await client.query<Row>(
+          `select metadata from audit_events where owner_user_id=$1 and target_table='team_memory_sharing_rule_members'
+           and target_id=$2 and action='shared_memory.rule.member_context_refreshed' and metadata->>'mutationId'=$3 order by created_at limit 1`,
+          [actor.userId, membershipId, context.mutationId]
+        );
+        if (replay.rows[0]) {
+          const metadata = replay.rows[0].metadata as Row;
+          if (
+            metadata.requestHash !== requestHash ||
+            metadata.ruleId !== ruleId
+          )
+            throw new SharedMemoryConflictError(
+              "Member context retry changed its recorded intent"
+            );
+          return {
+            ruleId,
+            membershipId,
+            membershipVersion: numberValue(metadata.membershipVersion),
+            authorityVersion: numberValue(metadata.authorityVersion)
+          };
+        }
+        if (
+          !["active", "paused"].includes(stringValue(rule.state)) ||
+          numberValue(rule.authority_version) !==
+            context.expectedAuthorityVersion ||
+          numberValue(rule.publisher_fence) !== context.publisherFence ||
+          rule.selector_binding_hash !== context.selectorBindingHash
+        )
+          throw new SharedMemoryConflictError(
+            "The rule changed before eligibility refresh"
+          );
+        await requireWorkspaceSharePermission(
+          client,
+          actor,
+          stringValue(rule.team_id),
+          stringValue(rule.team_workspace_id)
+        );
+        const member = await client.query<Row>(
+          `update team_memory_sharing_rule_members set selection_snapshot_version=$5,source_context_hash=$6,git_context_version=$7,folder_context_version=$10,
+             membership_version=membership_version+1,last_mutation_id=$8,updated_at=now(),
+             reconciliation_requested_at=case when $9='active' then now() else null end,
+             next_reconciliation_at=case when $9='active' then now() else null end,
+             reconciliation_attempt_count=0,reconciliation_failure_code=null
+           where id=$1 and rule_id=$2 and owner_user_id=$3 and state='present' and membership_version=$4
+             and git_context_version<=$7 and folder_context_version<=$10 returning membership_version`,
+          [
+            membershipId,
+            ruleId,
+            actor.userId,
+            context.expectedMembershipVersion,
+            context.selectionSnapshotVersion,
+            context.sourceContextHash,
+            context.gitContextVersion,
+            context.mutationId,
+            rule.state,
+            context.folderContextVersion
+          ]
+        );
+        if (!member.rows[0])
+          throw new SharedMemoryConflictError(
+            "The source membership or source context changed before refresh"
+          );
+        const result = {
+          ruleId,
+          membershipId,
+          membershipVersion: numberValue(member.rows[0].membership_version),
+          authorityVersion: numberValue(rule.authority_version)
+        };
+        await recordAuditEventWithClient(client, {
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: "personal",
+          action: "shared_memory.rule.member_context_refreshed",
+          targetTable: "team_memory_sharing_rule_members",
+          targetId: membershipId,
+          metadata: { mutationId: context.mutationId, requestHash, ...result }
+        });
+        await recordMemberMutation(client, actor, mutation, result);
+        await client.query(
+          "select pg_notify('koed_shared_memory_privacy','rule_member_context')"
+        );
+        return result;
+      });
+    },
+    async removeSharingRuleMember(actor, input) {
+      for (const field of [
+        "mutationId",
+        "ruleId",
+        "membershipId",
+        "selectionSnapshotVersion",
+        "publisherCredentialId"
+      ] as const)
+        assertUuid(input[field], field);
+      assertHash(input.sourceContextHash, "sourceContextHash");
+      for (const value of [
+        input.expectedAuthorityVersion,
+        input.expectedMembershipVersion,
+        input.publisherFence
+      ])
+        if (!Number.isSafeInteger(value) || value < 1)
+          throw new SharedMemoryConflictError(
+            "A current rule and membership version is required"
+          );
+      const requestHash = crossIdentitySyncDigest(input);
+      return withTransaction(pool, async (client) => {
+        const scope = await client.query<Row>(
+          `select member.logical_memory_id,lm.owner_principal_id,reason.share_grant_id
+             from team_memory_sharing_rule_members member
+             join logical_memories lm on lm.id=member.logical_memory_id and lm.owner_user_id=member.owner_user_id
+             join users owner on owner.id=member.owner_user_id and owner.disabled_at is null and owner.deleted_at is null
+             left join team_memory_share_reasons reason on reason.membership_id=member.id and reason.rule_id=member.rule_id
+            where member.id=$1 and member.rule_id=$2 and member.owner_user_id=$3`,
+          [input.membershipId, input.ruleId, actor.userId]
+        );
+        const source = scope.rows[0];
+        if (!source)
+          throw new SharedMemoryAuthorizationError(
+            "Only the owner may remove this rule's source membership"
+          );
+        const { ruleId, membershipId } = input;
+        const body = repositorySharingRuleMemberRemovalSchema
+          .strip()
+          .parse(input);
+        const mutation = memberMutationBinding({
+          ruleId,
+          membershipId,
+          logicalMemoryId: stringValue(source.logical_memory_id),
+          kind: "remove",
+          mutationId: input.mutationId,
+          body
+        });
+        await requireUncanceledMemberMutation(client, actor, mutation);
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1,0))",
+          [
+            `shared-memory-owner-policy:${source.logical_memory_id}:${source.owner_principal_id}`
+          ]
+        );
+        if (source.share_grant_id)
+          await client.query(
+            "select id from team_memory_share_grants where id=$1 for update",
+            [source.share_grant_id]
+          );
+        const selected = await client.query<Row>(
+          `select rule.*,member.state as membership_state,member.membership_version,
+                  member.logical_memory_id as member_logical_memory_id,reason.id as reason_id,
+                  reason.consent_id,reason.share_grant_id
+             from team_memory_sharing_rules rule
+             join team_memory_sharing_rule_members member on member.rule_id=rule.id and member.owner_user_id=rule.owner_user_id
+             join device_credentials publisher on publisher.id=rule.publisher_credential_id and publisher.owner_user_id=rule.owner_user_id
+               and publisher.revoked_at is null and (publisher.expires_at is null or publisher.expires_at>now())
+               and publisher.operation_families @> ARRAY['share_grant_management','sync']::text[]
+             left join team_memory_share_reasons reason on reason.membership_id=member.id and reason.rule_id=rule.id
+            where rule.id=$1 and member.id=$2 and rule.owner_user_id=$3
+              and rule.publisher_credential_id=$4 and rule.selector_kind in ('repository','folder','project')
+            for update of rule,member for share of publisher`,
+          [
+            input.ruleId,
+            input.membershipId,
+            actor.userId,
+            input.publisherCredentialId
+          ]
+        );
+        const current = selected.rows[0];
+        if (!current)
+          throw new SharedMemoryAuthorizationError(
+            "The selection rule publisher changed"
+          );
+        if (current.share_grant_id !== source.share_grant_id)
+          throw new SharedMemoryConflictError(
+            "The source publication binding changed during membership removal"
+          );
+        const replay = await client.query<Row>(
+          `select metadata from audit_events where owner_user_id=$1 and target_table='team_memory_sharing_rule_members'
+             and target_id=$2 and action='shared_memory.rule.member_removed' and metadata->>'mutationId'=$3 order by created_at limit 1`,
+          [actor.userId, input.membershipId, input.mutationId]
+        );
+        if (replay.rows[0]) {
+          const metadata = replay.rows[0].metadata as Row;
+          if (metadata.requestHash !== requestHash)
+            throw new SharedMemoryConflictError(
+              "Membership retry changed its recorded intent"
+            );
+          return {
+            ruleId: input.ruleId,
+            membershipId: input.membershipId,
+            state: "removed" as const,
+            membershipVersion: numberValue(metadata.membershipVersion),
+            authorityVersion: numberValue(metadata.authorityVersion),
+            shareGrantId: nullableString(metadata.shareGrantId)
+          };
+        }
+        if (
+          !["active", "paused"].includes(stringValue(current.state)) ||
+          !["present", "unresolved"].includes(
+            stringValue(current.membership_state)
+          ) ||
+          numberValue(current.authority_version) !==
+            input.expectedAuthorityVersion ||
+          numberValue(current.membership_version) !==
+            input.expectedMembershipVersion ||
+          numberValue(current.publisher_fence) !== input.publisherFence
+        )
+          throw new SharedMemoryConflictError(
+            "The rule or source membership changed before removal"
+          );
+        const member = await client.query<Row>(
+          `update team_memory_sharing_rule_members set state='removed',membership_version=membership_version+1,
+              last_mutation_id=$2,selection_snapshot_version=$3,source_context_hash=$4,
+              updated_at=now(),reconciliation_requested_at=null,next_reconciliation_at=null,
+              reconciliation_attempt_count=0,reconciliation_failure_code=null where id=$1 returning membership_version`,
+          [
+            input.membershipId,
+            input.mutationId,
+            input.selectionSnapshotVersion,
+            input.sourceContextHash
+          ]
+        );
+        const rule = await client.query<Row>(
+          `update team_memory_sharing_rules set authority_version=authority_version+1,
+             updated_at=now() where id=$1 returning authority_version`,
+          [input.ruleId]
+        );
+        await revokeRepositoryMemberWork(client, {
+          ruleId: input.ruleId,
+          membershipId: input.membershipId,
+          ownerUserId: actor.userId,
+          logicalMemoryId: stringValue(current.member_logical_memory_id),
+          teamId: stringValue(current.team_id),
+          teamWorkspaceId: stringValue(current.team_workspace_id),
+          shareGrantId: nullableString(current.share_grant_id),
+          reasonId: nullableString(current.reason_id),
+          consentId: nullableString(current.consent_id),
+          mutationId: input.mutationId
+        });
+        const result = {
+          ruleId: input.ruleId,
+          membershipId: input.membershipId,
+          state: "removed" as const,
+          membershipVersion: numberValue(member.rows[0]!.membership_version),
+          authorityVersion: numberValue(rule.rows[0]!.authority_version),
+          shareGrantId: nullableString(current.share_grant_id)
+        };
+        await client.query(
+          `insert into audit_events(actor_user_id,owner_user_id,visibility,action,target_table,target_id,metadata)
+             values($1,$1,'personal','shared_memory.rule.member_removed','team_memory_sharing_rule_members',$2,$3::jsonb)`,
+          [
+            actor.userId,
+            input.membershipId,
+            JSON.stringify({
+              mutationId: input.mutationId,
+              requestHash,
+              ...result
+            })
+          ]
+        );
+        await recordMemberMutation(client, actor, mutation, result);
+        return result;
+      });
+    },
+    async reconcileSharingRuleMembers(input = {}) {
+      const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
+      const retained = await prepareRetainedPublications(
+        Math.max(1, Math.floor(limit / 2))
+      );
+      const cleaned = await cleanupStoppedRepositoryMembers(
+        Math.max(1, Math.floor(limit / 2))
+      );
+      // Claims expire on the existing worker clock. Never hold rule locks while
+      // source preparation acquires the owner-policy and root-grant locks.
+      const claimed = await withTransaction(pool, async (client) => {
+        const selected = await client.query<Row>(
+          `select rule.*,member.id as membership_id,reason.id as reason_id,g.id as share_grant_id,
+                  g.grant_version,c.consent_version
+             from team_memory_sharing_rule_members member
+             join team_memory_sharing_rules rule on rule.id=member.rule_id
+             join team_memory_share_reasons reason on reason.membership_id=member.id and reason.rule_id=rule.id
+             join team_memory_share_grants g on g.id=reason.share_grant_id
+             join source_owner_representation_consents c on c.id=reason.consent_id
+            where rule.state='active' and member.state='present' and member.next_reconciliation_at<=now()
+            order by member.next_reconciliation_at,member.id
+            limit $1 for update of member skip locked`,
+          [Math.max(0, limit - cleaned.processed - retained.processed)]
+        );
+        for (const row of selected.rows) {
+          await client.query(
+            `update team_memory_sharing_rule_members
+                set reconciliation_requested_at=coalesce(reconciliation_requested_at,now()),
+                    next_reconciliation_at=now()+interval '30 seconds'
+              where id=$1`,
+            [row.membership_id]
+          );
+        }
+        return selected.rows;
+      });
+      const result = {
+        processed: claimed.length + cleaned.processed + retained.processed,
+        prepared: retained.prepared,
+        unresolved: 0,
+        failed: cleaned.failed + retained.failed
+      };
+      for (const row of claimed) {
+        try {
+          const prepared = await repository.prepareSharingRuleMember(
+            { userId: stringValue(row.owner_user_id) },
+            {
+              shareGrantId: stringValue(row.share_grant_id),
+              expectedGrantVersion: numberValue(row.grant_version),
+              ruleAuthority: {
+                ruleId: stringValue(row.id),
+                reasonId: stringValue(row.reason_id),
+                authorityVersion: numberValue(row.authority_version),
+                consentVersion: numberValue(row.consent_version),
+                publisherCredentialId: stringValue(row.publisher_credential_id),
+                publisherFence: numberValue(row.publisher_fence),
+                effectivePrivacyPolicyHash: stringValue(
+                  row.effective_privacy_policy_hash
+                )
+              }
+            }
+          );
+          result.prepared += prepared.previews.length;
+          result.unresolved += prepared.unresolvedRepresentations.length;
+        } catch (error) {
+          result.failed++;
+          const code =
+            error instanceof SharedMemoryAuthorizationError ||
+            error instanceof SharedMemoryConflictError
+              ? "authority_unavailable"
+              : "preparation_failed";
+          // Keep retrying after a visible failure; a temporarily offline publisher
+          // or later summary must recover without a new source-sync event.
+          await pool.query(
+            `update team_memory_sharing_rule_members member
+                set reconciliation_requested_at=coalesce(reconciliation_requested_at,now()),
+                    next_reconciliation_at=now()+make_interval(secs=>least(300,5*power(2,least(reconciliation_attempt_count,6)))::double precision),
+                    reconciliation_attempt_count=least(reconciliation_attempt_count+1,32),
+                    reconciliation_failure_code=$4,updated_at=now()
+              where member.id=$1 and member.state='present'
+                and exists(select 1 from team_memory_sharing_rules rule where rule.id=member.rule_id
+                  and rule.authority_version=$2 and rule.publisher_fence=$3 and rule.state='active')
+                and exists(select 1 from team_memory_share_grants g where g.id=$5 and g.grant_version=$6)`,
+            [
+              row.membership_id,
+              row.authority_version,
+              row.publisher_fence,
+              code,
+              row.share_grant_id,
+              row.grant_version
+            ]
+          );
+        }
+      }
+      return result;
+    },
+    async prepareRetainedSharingRulePublication(actor, input) {
+      const authority = input.ruleAuthority;
+      for (const value of [
+        input.shareGrantId,
+        input.retainedRepresentationId,
+        authority.ruleId,
+        authority.reasonId,
+        authority.publisherCredentialId
+      ])
+        assertUuid(value, "retained publication identity");
+      return withTransaction(pool, async (client) => {
+        const root = (
+          await client.query<Row>(
+            "select owner_user_id,logical_memory_id,owner_principal_id from team_memory_share_grants where id=$1",
+            [input.shareGrantId]
+          )
+        ).rows[0];
+        if (!root || root.owner_user_id !== actor.userId)
+          throw new SharedMemoryAuthorizationError(
+            "Only the owner may prepare retained rule history"
+          );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1,0))",
+          [
+            `shared-memory-owner-policy:${root.logical_memory_id}:${root.owner_principal_id}`
+          ]
+        );
+        await client.query(
+          "select id from team_memory_share_grants where id=$1 for update",
+          [input.shareGrantId]
+        );
+        await client.query(
+          "select id from team_memory_sharing_rules where id=$1 and owner_user_id=$2 for update",
+          [authority.ruleId, actor.userId]
+        );
+        const source = await readRetainedRulePublication(client, {
+          ownerUserId: actor.userId,
+          ruleId: authority.ruleId,
+          reasonId: authority.reasonId,
+          shareGrantId: input.shareGrantId,
+          representationId: input.retainedRepresentationId
+        });
+        if (
+          !source ||
+          numberValue(source.grant_version) !== input.expectedGrantVersion ||
+          numberValue(source.authority_version) !==
+            authority.authorityVersion ||
+          numberValue(source.consent_version) !== authority.consentVersion ||
+          source.publisher_credential_id !== authority.publisherCredentialId ||
+          numberValue(source.publisher_fence) !== authority.publisherFence ||
+          source.effective_privacy_policy_hash !==
+            authority.effectivePrivacyPolicyHash
+        )
+          throw new SharedMemoryConflictError(
+            "Retained publication authority changed before preparation"
+          );
+        const privacy = await resolveCurrentPrivacyPolicy(client, {
+          ownerUserId: actor.userId,
+          teamId: stringValue(source.team_id),
+          teamWorkspaceId: stringValue(source.team_workspace_id),
+          sharingRuleId: authority.ruleId,
+          lockRows: true
+        });
+        if (
+          privacy.effectivePolicyHash !== authority.effectivePrivacyPolicyHash
+        )
+          throw new SharedMemoryConflictError(
+            "Retained publication Privacy approval is stale"
+          );
+        const original = await loadPersistedPreviewByReference(client, {
+          preview: {
+            previewId: stringValue(source.source_preview_id),
+            previewHash: stringValue(source.preview_hash)
+          },
+          requiredMessage:
+            "The original private publication artifact is unavailable"
+        });
+        const maximumFidelity = intersectSharedMemoryFidelityCeilings(
+          original.artifactBody.selection.maximumFidelity,
+          ...[
+            source.rule_maximum_fidelity,
+            source.consent_maximum_fidelity,
+            source.grant_maximum_fidelity,
+            source.owner_maximum_fidelity,
+            source.team_maximum_fidelity,
+            source.workspace_maximum_fidelity
+          ].map((value) => stringValue(value) as SharedMemoryFidelityCeiling)
+        );
+        if (!maximumFidelity || !original.artifactBody.sync)
+          throw new SharedMemoryConflictError(
+            "Retained rule source scope is unavailable"
+          );
+        const includeCuratedMemory =
+          original.artifactBody.selection.includeCuratedMemory &&
+          [
+            source.rule_include_curated_memory,
+            source.consent_include_curated_memory,
+            source.grant_include_curated_memory,
+            source.owner_include_curated_memory,
+            source.team_include_curated_memory,
+            source.workspace_include_curated_memory
+          ].every((value) => value === true);
+        const policy = (kind: "owner" | "team" | "workspace") => ({
+          policyId: stringValue(source[`${kind}_policy_id`]),
+          version: numberValue(source[`${kind}_policy_version`]),
+          policyHash: stringValue(source[`${kind}_policy_hash`])
+        });
+        const ownerPolicy = policy("owner"),
+          teamPolicy = policy("team"),
+          workspacePolicy = policy("workspace");
+        const old = original.artifactBody;
+        const sync = old.sync!;
+        const context: ArtifactPersistenceContext = {
+          logicalMemoryId: old.logicalMemoryId,
+          remoteReplicaId: original.artifact.remoteReplicaId,
+          syncRelationshipId: original.artifact.syncRelationshipId,
+          ownerUserId: actor.userId,
+          ownerPrincipalId: stringValue(source.owner_principal_id),
+          teamId: stringValue(source.team_id),
+          teamWorkspaceId: stringValue(source.team_workspace_id),
+          sourceRevision: old.binding.sourceRevision,
+          sourceCursor: sync.sourceCursor,
+          packageSequence: sync.packageSequence,
+          maximumFidelity,
+          includeCuratedMemory,
+          sourceCapabilities: old.selection.sourceCapabilities.filter(
+            (representation) =>
+              sharedMemoryCeilingAuthorizes(
+                maximumFidelity,
+                representation,
+                includeCuratedMemory
+              )
+          ),
+          activationRepresentation: old.representation,
+          mode: "continuous",
+          fidelityPolicyRevision: numberValue(source.fidelity_policy_revision),
+          fidelityPolicyHash: fidelityPolicyHashForPreview({
+            representation: old.representation,
+            revision: numberValue(source.fidelity_policy_revision),
+            owner: ownerPolicy,
+            team: teamPolicy,
+            workspace: workspacePolicy
+          }),
+          contentPolicyVersion: numberValue(
+            source.preview_content_policy_version
+          ),
+          contentPolicyHash: contentPolicyHashForPreview({
+            representation: old.representation,
+            version: numberValue(source.preview_content_policy_version)
+          }),
+          classifierVersion: SHARED_MEMORY_CLASSIFIER_VERSION,
+          classifierHash: classifierHashForPreview({
+            representation: old.representation,
+            version: SHARED_MEMORY_CLASSIFIER_VERSION
+          }),
+          sourceOwnerPolicyId: ownerPolicy.policyId,
+          sourceOwnerPolicyVersion: ownerPolicy.version,
+          teamPolicyId: teamPolicy.policyId,
+          teamPolicyVersion: teamPolicy.version,
+          workspacePolicyId: workspacePolicy.policyId,
+          workspacePolicyVersion: workspacePolicy.version,
+          sourceDeploymentIdentityId: sync.sourceDeploymentIdentityId,
+          remoteUserIdentityId: sync.remoteUserIdentityId,
+          deviceCredentialId: sync.deviceCredentialId,
+          deviceProvenanceHash: sync.deviceProvenanceHash
+        };
+        const artifactBody = rebuildRetainedSharingArtifact({
+          original: old,
+          binding: {
+            representationPolicyRevision: context.fidelityPolicyRevision,
+            representationPolicyHash: context.fidelityPolicyHash,
+            contentPolicyVersion: context.contentPolicyVersion,
+            contentPolicyHash: context.contentPolicyHash,
+            classifierVersion: context.classifierVersion,
+            classifierHash: context.classifierHash
+          },
+          policies: {
+            sourceOwnerPolicyId: ownerPolicy.policyId,
+            sourceOwnerPolicyVersion: ownerPolicy.version,
+            teamPolicyId: teamPolicy.policyId,
+            teamPolicyVersion: teamPolicy.version,
+            workspacePolicyId: workspacePolicy.policyId,
+            workspacePolicyVersion: workspacePolicy.version
+          },
+          selection: artifactSelectionScope(context)
+        });
+        const persisted = await persistArtifactAndPreview(client, actor, {
+          context,
+          artifactBody,
+          previewBody: buildPreviewBody({ artifact: artifactBody })
+        });
+        await client.query(
+          `insert into team_memory_reason_preparations
+            (reason_id,share_grant_id,consent_id,preview_id,retained_representation_id,source_revision,
+             rule_version,consent_version,grant_version,publisher_credential_id,publisher_fence,effective_privacy_policy_hash)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+           on conflict (reason_id,preview_id) do update set retained_representation_id=excluded.retained_representation_id,
+             consent_id=excluded.consent_id,source_revision=excluded.source_revision,rule_version=excluded.rule_version,
+             consent_version=excluded.consent_version,grant_version=excluded.grant_version,
+             publisher_credential_id=excluded.publisher_credential_id,publisher_fence=excluded.publisher_fence,
+             effective_privacy_policy_hash=excluded.effective_privacy_policy_hash,updated_at=now()`,
+          [
+            authority.reasonId,
+            input.shareGrantId,
+            source.consent_id,
+            persisted.preview.previewId,
+            input.retainedRepresentationId,
+            old.binding.sourceRevision,
+            authority.authorityVersion,
+            authority.consentVersion,
+            input.expectedGrantVersion,
+            authority.publisherCredentialId,
+            authority.publisherFence,
+            authority.effectivePrivacyPolicyHash
+          ]
+        );
+        return persisted.preview;
+      });
+    },
+    async prepareSharingRuleMember(actor, input) {
+      const grant = await withTransaction(pool, async (client) => {
+        await lockSharingRulePublicationAuthority(client, actor, input);
+        const selected = await client.query<Row>(
+          `select * from team_memory_reason_grant_records where id=$1 and sharing_reason_id=$2`,
+          [input.shareGrantId, input.ruleAuthority.reasonId]
+        );
+        return selected.rows[0]!;
+      });
+      const representations: SharedMemoryRepresentation[] = [
+        ...sharedMemoryRepresentationsForCeiling(
+          stringValue(grant.maximum_fidelity) as SharedMemoryFidelityCeiling
+        ),
+        ...(grant.include_curated_memory === true
+          ? ["curated_assertions" as const]
+          : [])
+      ];
+      const previews: SharedMemoryPersistedPreviewRecord[] = [];
+      const unresolvedRepresentations: SharedMemoryRepresentation[] = [];
+      for (const representation of representations) {
+        try {
+          previews.push(
+            await createAuthoritativeSourcePreview(actor, {
+              logicalMemoryId: stringValue(grant.logical_memory_id),
+              remoteReplicaId: stringValue(grant.remote_replica_id),
+              teamId: stringValue(grant.team_id),
+              teamWorkspaceId: stringValue(grant.team_workspace_id),
+              sourceCapabilities: representationArrayValue(
+                grant.source_capabilities
+              ),
+              activationRepresentation: representationValue(
+                grant.activation_representation
+              ),
+              mode: "continuous",
+              maximumFidelity: stringValue(
+                grant.maximum_fidelity
+              ) as SharedMemoryFidelityCeiling,
+              includeCuratedMemory: grant.include_curated_memory === true,
+              representation,
+              rulePreparation: input
+            })
+          );
+        } catch (error) {
+          if (!(error instanceof SharedMemorySourcePreparationPendingError))
+            throw error;
+          unresolvedRepresentations.push(representation);
+        }
+      }
+      await pool.query(
+        `update team_memory_sharing_rule_members member
+            set reconciliation_requested_at=case when $4 then coalesce(member.reconciliation_requested_at,now()) else null end,
+                next_reconciliation_at=now()+case when $4 then interval '30 seconds' else interval '60 seconds' end,
+                reconciliation_attempt_count=0,
+                reconciliation_failure_code=case when $4 then 'source_not_ready' else null end,
+                updated_at=now()
+          where member.state='present' and exists(select 1 from team_memory_share_reasons reason
+              join team_memory_sharing_rules rule on rule.id=reason.rule_id
+              where reason.membership_id=member.id and reason.id=$7 and rule.id=$1
+                and rule.authority_version=$2 and rule.publisher_fence=$3 and rule.state='active')
+            and exists(select 1 from team_memory_share_grants g where g.id=$5 and g.grant_version=$6)`,
+        [
+          input.ruleAuthority.ruleId,
+          input.ruleAuthority.authorityVersion,
+          input.ruleAuthority.publisherFence,
+          unresolvedRepresentations.length > 0,
+          input.shareGrantId,
+          input.expectedGrantVersion,
+          input.ruleAuthority.reasonId
+        ]
+      );
+      return { previews, unresolvedRepresentations };
+    },
+    async createConversationSharingRule(
+      actor,
+      input,
+      transactionClient?: pg.PoolClient
+    ) {
+      for (const field of [
+        "ruleId",
+        "mutationId",
+        "logicalGrantId",
+        "consentId",
+        "publisherCredentialId"
+      ] as const)
+        assertUuid(input[field], field);
+      assertHash(
+        input.effectivePrivacyPolicyHash,
+        "effectivePrivacyPolicyHash"
+      );
+      const command = async (client: pg.PoolClient) => {
+        const scope = await client.query<Row>(
+          `select c.logical_memory_id,c.source_owner_principal_id,c.team_workspace_id,lm.owner_user_id from source_owner_representation_consents c join logical_memories lm on lm.id=c.logical_memory_id where c.id=$1`,
+          [input.consentId]
+        );
+        const source = scope.rows[0];
+        if (!source || source.owner_user_id !== actor.userId)
+          throw new SharedMemoryAuthorizationError(
+            "Only the Conversation owner may create its sharing rule"
+          );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1,0))",
+          [
+            `shared-memory-owner-policy:${source.logical_memory_id}:${source.source_owner_principal_id}`
+          ]
+        );
+        await client.query(
+          `select id from team_memory_share_grants where logical_memory_id=$1 and team_workspace_id=$2 for update`,
+          [source.logical_memory_id, source.team_workspace_id]
+        );
+        const consentResult = await client.query<Row>(
+          `select c.*,lm.owner_user_id from source_owner_representation_consent_records c
+             join logical_memories lm on lm.id=c.logical_memory_id
+            where c.id=$1 for update of c`,
+          [input.consentId]
+        );
+        const consent = consentResult.rows[0];
+        if (!consent || consent.owner_user_id !== actor.userId)
+          throw new SharedMemoryAuthorizationError(
+            "Only the Conversation owner may create its sharing rule"
+          );
+        if (input.internalPendingShareId) {
+          const pending = await client.query(
+            `select 1 from pending_share_operations p join pending_sharing_rule_admissions creation on creation.pending_share_id=p.id
+             where p.id=$1 and p.owner_user_id=$2 and p.logical_memory_id=$3 and p.team_id=$4 and p.team_workspace_id=$5
+               and p.consent_id=$6 and p.logical_grant_id=$7 and p.state='preparing' and p.revoked_at is null
+               and creation.admission_kind='conversation_create' and creation.rule_id=$8 and creation.publisher_credential_id=$9
+               and creation.expected_grant_version is not distinct from $10::integer and creation.effective_privacy_policy_hash=$11
+             for update of p`,
+            [
+              input.internalPendingShareId,
+              actor.userId,
+              consent.logical_memory_id,
+              consent.team_id,
+              consent.team_workspace_id,
+              input.consentId,
+              input.logicalGrantId,
+              input.ruleId,
+              input.publisherCredentialId,
+              input.expectedGrantVersion,
+              input.effectivePrivacyPolicyHash
+            ]
+          );
+          if (!pending.rowCount)
+            throw new SharedMemoryAuthorizationError(
+              "Pending rule creation authority changed"
+            );
+          await requireWorkspaceSharePermission(
+            client,
+            actor,
+            stringValue(consent.team_id),
+            stringValue(consent.team_workspace_id)
+          );
+        } else {
+          await requireShareAuthority(client, actor, {
+            teamId: stringValue(consent.team_id),
+            teamWorkspaceId: stringValue(consent.team_workspace_id),
+            authority: input.authority,
+            consume: false,
+            delegatedDeviceActionGrant
+          });
+        }
+        const existingRule = await client.query<Row>(
+          `select rule.*,reason.id as reason_id,reason.share_grant_id,reason.consent_id
+             from team_memory_sharing_rules rule
+             join team_memory_share_reasons reason on reason.rule_id=rule.id
+            where rule.id=$1 or rule.creation_mutation_id=$2 for update of rule,reason`,
+          [input.ruleId, input.mutationId]
+        );
+        if (existingRule.rows[0]) {
+          const current = existingRule.rows[0];
+          if (
+            current.id !== input.ruleId ||
+            current.creation_mutation_id !== input.mutationId ||
+            current.owner_user_id !== actor.userId ||
+            current.selector_kind !== "captured_session" ||
+            current.logical_memory_id !== consent.logical_memory_id ||
+            current.consent_id !== input.consentId ||
+            current.publisher_credential_id !== input.publisherCredentialId ||
+            current.effective_privacy_policy_hash !==
+              input.effectivePrivacyPolicyHash
+          )
+            throw new SharedMemoryConflictError(
+              "Sharing rule retry identity does not match its recorded intent"
+            );
+          return {
+            ruleId: stringValue(current.id),
+            reasonId: stringValue(current.reason_id),
+            shareGrantId: stringValue(current.share_grant_id),
+            authorityVersion: numberValue(current.authority_version),
+            publisherFence: numberValue(current.publisher_fence)
+          };
+        }
+        if (
+          consent.source_kind !== "captured_session" ||
+          consent.mode !== "continuous" ||
+          consent.state !== "active" ||
+          consent.revoked_at !== null ||
+          numberValue(consent.consent_version) !== input.expectedConsentVersion
+        )
+          throw new SharedMemoryConflictError(
+            "A current reviewed continuous Conversation consent is required"
+          );
+        const clock = await client.query<{ now: Date }>(
+          "select transaction_timestamp() as now"
+        );
+        if (
+          consent.expires_at !== null &&
+          new Date(iso(consent.expires_at)) <= clock.rows[0]!.now
+        )
+          throw new SharedMemoryConflictError(
+            "Sharing rule consent has expired"
+          );
+        const publisher = await client.query(
+          `select id from device_credentials where id=$1 and owner_user_id=$2
+              and revoked_at is null and (expires_at is null or expires_at>now())
+              and operation_families @> ARRAY['share_grant_management','sync']::text[] for share`,
+          [input.publisherCredentialId, actor.userId]
+        );
+        if (!publisher.rows[0])
+          throw new SharedMemoryAuthorizationError(
+            "The sharing rule requires a current enrolled owner publisher"
+          );
+        const privacy = await resolveCurrentPrivacyPolicy(client, {
+          ownerUserId: actor.userId,
+          teamId: stringValue(consent.team_id),
+          teamWorkspaceId: stringValue(consent.team_workspace_id)
+        });
+        if (privacy.effectivePolicyHash !== input.effectivePrivacyPolicyHash)
+          throw new SharedMemoryConflictError(
+            "Sharing rule policy changed after review"
+          );
+        const policies = await requireCurrentPolicies(client, {
+          logicalMemoryId: stringValue(consent.logical_memory_id),
+          ownerPrincipalId: stringValue(consent.source_owner_principal_id),
+          teamId: stringValue(consent.team_id),
+          teamWorkspaceId: stringValue(consent.team_workspace_id)
+        });
+        if (
+          !fidelityConsentDoesNotExpand(
+            fidelityConsentFromRow(consent),
+            policies
+          ) ||
+          policies.owner.policy_id !== consent.source_owner_policy_id ||
+          numberValue(policies.owner.version) !==
+            numberValue(consent.source_owner_policy_version) ||
+          policies.team.policy_id !== consent.team_policy_id ||
+          numberValue(policies.team.version) !==
+            numberValue(consent.team_policy_version) ||
+          policies.workspace.policy_id !== consent.workspace_policy_id ||
+          numberValue(policies.workspace.version) !==
+            numberValue(consent.workspace_policy_version)
+        )
+          throw new SharedMemoryConflictError(
+            "Sharing rule representation policies changed after review"
+          );
+        const bound = await client.query(
+          `select id from team_memory_share_reasons where consent_id=$1 limit 1`,
+          [input.consentId]
+        );
+        if (bound.rows[0])
+          throw new SharedMemoryConflictError(
+            "A new rule needs independent consent; existing sharing reasons cannot be converted implicitly"
+          );
+        const grants = await client.query<Row>(
+          `select * from team_memory_share_grants where logical_memory_id=$1 and team_workspace_id=$2 for update`,
+          [consent.logical_memory_id, consent.team_workspace_id]
+        );
+        const existingGrant = grants.rows[0];
+        let shareGrantId: string;
+        if (existingGrant) {
+          if (
+            existingGrant.owner_user_id !== actor.userId ||
+            existingGrant.logical_grant_id !== input.logicalGrantId ||
+            existingGrant.lifecycle !== "active" ||
+            existingGrant.revoked_at !== null ||
+            numberValue(existingGrant.grant_version) !==
+              input.expectedGrantVersion
+          )
+            throw new SharedMemoryConflictError(
+              "The destination grant changed after review"
+            );
+          shareGrantId = stringValue(existingGrant.id);
+        } else {
+          if (input.expectedGrantVersion !== null)
+            throw new SharedMemoryConflictError(
+              "The reviewed destination grant is missing"
+            );
+          const grant = await repository.createShareGrant(
+            actor,
+            {
+              mutationId: input.mutationId,
+              logicalGrantId: input.logicalGrantId,
+              consentId: input.consentId,
+              authority: input.authority,
+              internalPendingShareId: input.internalPendingShareId
+            },
+            client
+          );
+          shareGrantId = grant.id;
+          if (input.internalPendingShareId)
+            await client.query(
+              `update team_memory_share_grants set lifecycle='active',updated_at=now() where id=$1 and lifecycle='unavailable' and revoked_at is null`,
+              [shareGrantId]
+            );
+        }
+        await client.query(
+          `insert into team_memory_sharing_rules
+             (id,owner_user_id,logical_memory_id,team_id,team_workspace_id,maximum_fidelity,include_curated_memory,effective_privacy_policy_hash,publisher_credential_id,creation_mutation_id)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [
+            input.ruleId,
+            actor.userId,
+            consent.logical_memory_id,
+            consent.team_id,
+            consent.team_workspace_id,
+            consent.maximum_fidelity,
+            consent.include_curated_memory,
+            input.effectivePrivacyPolicyHash,
+            input.publisherCredentialId,
+            input.mutationId
+          ]
+        );
+        const membershipId = crossIdentitySyncDeterministicUuid({
+          kind: "sharing_rule_member",
+          ruleId: input.ruleId,
+          logicalMemoryId: stringValue(consent.logical_memory_id)
+        });
+        await client.query(
+          `insert into team_memory_sharing_rule_members(id,rule_id,owner_user_id,logical_memory_id,last_mutation_id)
+           values($1,$2,$3,$4,$5)`,
+          [
+            membershipId,
+            input.ruleId,
+            actor.userId,
+            consent.logical_memory_id,
+            input.mutationId
+          ]
+        );
+        let reason: Row;
+        if (!existingGrant) {
+          // This reason and its consent were created in this transaction. No
+          // previously shared snapshot or direct authority is being converted.
+          const inserted = await client.query<Row>(
+            `update team_memory_share_reasons set kind='rule',rule_id=$2,membership_id=$4,updated_at=now() where share_grant_id=$1 and consent_id=$3 and kind='direct' returning id`,
+            [shareGrantId, input.ruleId, input.consentId, membershipId]
+          );
+          reason = inserted.rows[0]!;
+        } else {
+          const snapshot = await snapshotOwnedTeamRepository(
+            client,
+            actor.userId,
+            stringValue(consent.logical_memory_id)
+          );
+          const inserted = await client.query<Row>(
+            `insert into team_memory_share_reasons (share_grant_id,consent_id,kind,rule_id,repository_snapshot,repository_snapshot_source_revision,membership_id) values ($1,$2,'rule',$3,$4::jsonb,$5,$6) returning id`,
+            [
+              shareGrantId,
+              input.consentId,
+              input.ruleId,
+              JSON.stringify(snapshot),
+              consent.source_revision,
+              membershipId
+            ]
+          );
+          reason = inserted.rows[0]!;
+        }
+        await client.query(
+          `update team_memory_share_grants set grant_version=grant_version+1,updated_at=now() where id=$1`,
+          [shareGrantId]
+        );
+        await client.query(
+          `insert into audit_events (actor_user_id,owner_user_id,visibility,action,target_table,target_id,metadata) values ($1,$1,'personal','shared_memory.rule.create','team_memory_sharing_rules',$2,$3::jsonb)`,
+          [
+            actor.userId,
+            input.ruleId,
+            JSON.stringify({
+              mutationId: input.mutationId,
+              shareGrantId,
+              reasonId: reason.id
+            })
+          ]
+        );
+        await client.query(
+          "select pg_notify('koed_shared_memory_privacy','rule_created')"
+        );
+        return {
+          ruleId: input.ruleId,
+          reasonId: stringValue(reason.id),
+          shareGrantId,
+          authorityVersion: 1,
+          publisherFence: 1
+        };
+      };
+      return transactionClient
+        ? command(transactionClient)
+        : withTransaction(pool, command);
+    },
     async reviewGrantRepositorySnapshot(actor, input) {
       assertUuid(input.shareGrantId, "shareGrantId");
       return withTransaction(pool, (client) =>
@@ -11126,7 +15472,296 @@ export const createSharedMemoryRepository = (
           : null;
       });
     },
-    async createPendingShare(actor, input) {
+    async createPendingRepositoryRuleMember(actor, input) {
+      const { membership, publisherCredentialId, ...pendingInput } = input;
+      for (const value of [
+        membership.ruleId,
+        membership.selectionSnapshotVersion,
+        publisherCredentialId,
+        input.mutationId
+      ])
+        assertUuid(value, "memberAdmission");
+      assertHash(membership.sourceContextHash, "sourceContextHash");
+      assertHash(membership.selectorBindingHash, "selectorBindingHash");
+      for (const value of [
+        membership.expectedAuthorityVersion,
+        membership.publisherFence,
+        membership.gitContextVersion,
+        membership.folderContextVersion
+      ])
+        if (!Number.isSafeInteger(value) || value < 1)
+          throw new SharedMemoryConflictError(
+            "Current rule and source context versions are required"
+          );
+      if (
+        !Number.isSafeInteger(membership.expectedMembershipVersion) ||
+        membership.expectedMembershipVersion < 0 ||
+        input.source.kind !== "captured_session" ||
+        input.mode !== "continuous"
+      )
+        throw new SharedMemoryConflictError(
+          "A member admission needs an exact Conversation and membership version"
+        );
+      const requestHash = crossIdentitySyncDigest({
+        ownerUserId: actor.userId,
+        ...input
+      });
+      const membershipId = crossIdentitySyncDeterministicUuid({
+        kind: "sharing_rule_member",
+        ruleId: membership.ruleId,
+        logicalMemoryId: input.logicalMemoryId
+      });
+      const mutation = memberMutationBinding({
+        ruleId: membership.ruleId,
+        membershipId,
+        kind: "admit",
+        logicalMemoryId: input.logicalMemoryId,
+        mutationId: input.mutationId,
+        body: {
+          ...pendingInput,
+          expiresAt: pendingInput.expiresAt ?? null,
+          membership: repositorySharingRuleMemberAdmissionSchema
+            .omit({ ruleId: true })
+            .strip()
+            .parse(membership)
+        }
+      });
+      return withTransaction(pool, async (client) => {
+        await requireUncanceledMemberMutation(client, actor, mutation);
+        const owner = await requireSourceOwner(
+          client,
+          actor,
+          input.logicalMemoryId
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1,0))",
+          [
+            `shared-memory-owner-policy:${input.logicalMemoryId}:${owner.ownerPrincipalId}`
+          ]
+        );
+        await client.query(
+          "select id from team_memory_share_grants where logical_memory_id=$1 and team_workspace_id=$2 for update",
+          [input.logicalMemoryId, input.teamWorkspaceId]
+        );
+        const authority = await lockRepositoryRuleAuthority(
+          client,
+          actor,
+          membership.ruleId,
+          publisherCredentialId
+        );
+        const prior = await client.query<Row>(
+          `select admission.*,p.id,p.source_revision from pending_sharing_rule_admissions admission
+           join pending_share_operations p on p.id=admission.pending_share_id and p.owner_user_id=$2
+           where p.mutation_id=$1`,
+          [input.mutationId, actor.userId]
+        );
+        const receipt = (row: Row): RepositorySharingRuleMemberAcceptance => ({
+          pendingShareId: stringValue(row.pending_share_id),
+          membershipId: stringValue(row.membership_id),
+          membershipVersion: numberValue(row.expected_membership_version),
+          authorityVersion: numberValue(row.expected_authority_version),
+          publisherFence: numberValue(row.publisher_fence),
+          sourceRevision: numberValue(row.source_revision)
+        });
+        if (prior.rows[0]) {
+          if (
+            prior.rows[0].admission_kind !== "repository_member" ||
+            prior.rows[0].rule_id !== membership.ruleId ||
+            prior.rows[0].membership_id !== membershipId ||
+            prior.rows[0].membership_request_hash !== requestHash ||
+            prior.rows[0].publisher_credential_id !== publisherCredentialId
+          )
+            throw new SharedMemoryConflictError(
+              "Member admission retry changed its immutable intent"
+            );
+          return receipt(prior.rows[0]);
+        }
+        if (
+          authority.rule.state !== "active" ||
+          numberValue(authority.rule.authority_version) !==
+            membership.expectedAuthorityVersion ||
+          numberValue(authority.rule.publisher_fence) !==
+            membership.publisherFence ||
+          authority.rule.selector_binding_hash !==
+            membership.selectorBindingHash ||
+          authority.rule.team_id !== input.teamId ||
+          authority.rule.team_workspace_id !== input.teamWorkspaceId ||
+          authority.rule.maximum_fidelity !== input.maximumFidelity ||
+          authority.rule.include_curated_memory !==
+            input.includeCuratedMemory ||
+          input.expiresAt != null
+        )
+          throw new SharedMemoryConflictError(
+            "The source no longer matches the current approved rule scope"
+          );
+        const reviewInput = repositorySharingRuleCreationReviewInputSchema
+          .strip()
+          .parse(authority.intent);
+        const current = await reviewRepositoryRuleCreation(
+          client,
+          actor,
+          reviewInput,
+          membership.ruleId
+        );
+        if (
+          crossIdentitySyncDigest(current.scope) !==
+          crossIdentitySyncDigest(
+            repositorySharingRuleCreationReviewSchema.shape.scope
+              .strip()
+              .parse(authority.intent)
+          )
+        )
+          throw new SharedMemoryConflictError(
+            "Rule policy changed before source admission"
+          );
+        const members = await client.query<Row>(
+          "select * from team_memory_sharing_rule_members where id=$1 and rule_id=$2 and owner_user_id=$3 for update",
+          [membershipId, membership.ruleId, actor.userId]
+        );
+        const member = members.rows[0];
+        if (
+          member
+            ? member.logical_memory_id !== input.logicalMemoryId ||
+              !["removed", "unresolved"].includes(stringValue(member.state)) ||
+              numberValue(member.membership_version) !==
+                membership.expectedMembershipVersion ||
+              numberValue(member.git_context_version) >
+                membership.gitContextVersion ||
+              numberValue(member.folder_context_version) >
+                membership.folderContextVersion
+            : membership.expectedMembershipVersion !== 0
+        )
+          throw new SharedMemoryConflictError(
+            "The source membership changed or was explicitly revoked"
+          );
+        if (member?.state === "unresolved") {
+          const retired = await client.query<Row>(
+            `update pending_share_operations p set state='revoked',stage='complete',source_update_state='stopped',workspace_access_state='revoked',revoked_at=now(),
+               redacted_failure_code=null,operation_version=operation_version+1,updated_at=now() from pending_sharing_rule_admissions admission
+             where admission.pending_share_id=p.id and admission.membership_id=$1 and admission.admission_kind='repository_member'
+               and p.grant_id is null and p.revoked_at is null and p.state in ('preparing','needs_attention','failed')
+               and (admission.expected_authority_version<>$2 or $3::text is distinct from $4::text or $5::int is distinct from $6::int
+                 or p.preview_id is distinct from $7::uuid or p.preview_hash is distinct from $8::text
+                 or $9::int is distinct from $10::int)
+             returning p.id`,
+            [
+              membershipId,
+              membership.expectedAuthorityVersion,
+              member.source_context_hash,
+              membership.sourceContextHash,
+              member.git_context_version,
+              membership.gitContextVersion,
+              input.preview.previewId,
+              input.preview.previewHash,
+              member.folder_context_version,
+              membership.folderContextVersion
+            ]
+          );
+          if (!retired.rowCount)
+            throw new SharedMemoryConflictError(
+              "This member already has current admission work"
+            );
+          for (const row of retired.rows) {
+            await client.query(
+              "update pending_share_outbox set state='completed',locked_at=null,updated_at=now() where pending_share_id=$1",
+              [row.id]
+            );
+            await appendPendingShareOwnerEvent(client, {
+              mutationId: crossIdentitySyncDeterministicUuid({
+                kind: "stale_member_admission_retired",
+                mutationId: input.mutationId,
+                pendingShareId: row.id
+              }),
+              ownerUserId: actor.userId,
+              pendingShareId: stringValue(row.id)
+            });
+          }
+        }
+        const memberVersion = member
+          ? numberValue(member.membership_version) + 1
+          : 1;
+        if (member)
+          await client.query(
+            `update team_memory_sharing_rule_members set state='unresolved',membership_version=$2,selection_snapshot_version=$3,source_context_hash=$4,
+             git_context_version=$5,folder_context_version=$7,last_mutation_id=$6,reconciliation_requested_at=null,next_reconciliation_at=null,
+             reconciliation_attempt_count=0,reconciliation_failure_code=null,updated_at=now() where id=$1`,
+            [
+              membershipId,
+              memberVersion,
+              membership.selectionSnapshotVersion,
+              membership.sourceContextHash,
+              membership.gitContextVersion,
+              input.mutationId,
+              membership.folderContextVersion
+            ]
+          );
+        else
+          await client.query(
+            `insert into team_memory_sharing_rule_members(id,rule_id,owner_user_id,logical_memory_id,state,selection_snapshot_version,source_context_hash,
+             git_context_version,last_mutation_id,folder_context_version,reconciliation_requested_at,next_reconciliation_at)
+           values($1,$2,$3,$4,'unresolved',$5,$6,$7,$8,$9,null,null)`,
+            [
+              membershipId,
+              membership.ruleId,
+              actor.userId,
+              input.logicalMemoryId,
+              membership.selectionSnapshotVersion,
+              membership.sourceContextHash,
+              membership.gitContextVersion,
+              input.mutationId,
+              membership.folderContextVersion
+            ]
+          );
+        const pending = await repository.createPendingShare(
+          actor,
+          {
+            ...pendingInput,
+            authority: {
+              action: SHARED_MEMORY_AUTHORITY,
+              source: "sharing_rule",
+              referenceId: membership.ruleId
+            }
+          },
+          {
+            admissionKind: "repository_member",
+            ruleId: membership.ruleId,
+            publisherCredentialId,
+            expectedGrantVersion: membership.expectedGrantVersion,
+            effectivePrivacyPolicyHash: stringValue(
+              authority.rule.effective_privacy_policy_hash
+            ),
+            membershipId,
+            expectedAuthorityVersion: membership.expectedAuthorityVersion,
+            expectedMembershipVersion: memberVersion,
+            publisherFence: membership.publisherFence,
+            membershipRequestHash: requestHash
+          },
+          client
+        );
+        const acceptance = {
+          pendingShareId: pending.id,
+          membershipId,
+          membershipVersion: memberVersion,
+          authorityVersion: membership.expectedAuthorityVersion,
+          publisherFence: membership.publisherFence,
+          sourceRevision: pending.sourceRevision
+        };
+        await recordMemberMutation(client, actor, mutation, acceptance);
+        return acceptance;
+      });
+    },
+    async createPendingConversationSharingRule(actor, input) {
+      return repository.createPendingShare(actor, input, {
+        ...input.ruleCreation,
+        admissionKind: "conversation_create"
+      });
+    },
+    async createPendingShare(
+      actor,
+      input,
+      ruleCreation?: PendingSharingRuleAdmissionAuthority,
+      transactionClient?: pg.PoolClient
+    ) {
       const sourceRef = normalizedSourceRef(
         input.source,
         input.logicalMemoryId
@@ -11137,8 +15772,34 @@ export const createSharedMemoryRepository = (
         );
       }
       assertEffectiveShareSelection({ ...input, source: sourceRef });
+      if (ruleCreation) {
+        assertUuid(ruleCreation.ruleId, "ruleId");
+        assertUuid(ruleCreation.publisherCredentialId, "publisherCredentialId");
+        assertHash(
+          ruleCreation.effectivePrivacyPolicyHash,
+          "effectivePrivacyPolicyHash"
+        );
+        if (
+          sourceRef.kind !== "captured_session" ||
+          input.mode !== "continuous" ||
+          (ruleCreation.expectedGrantVersion !== null &&
+            (!Number.isSafeInteger(ruleCreation.expectedGrantVersion) ||
+              ruleCreation.expectedGrantVersion < 1))
+        )
+          throw new SharedMemoryConflictError(
+            "A rule requires one continuously shared Conversation and an exact destination version"
+          );
+      }
+      if (
+        (input.authority.source === "sharing_rule") !==
+        (ruleCreation?.admissionKind === "repository_member")
+      )
+        throw new SharedMemoryAuthorizationError(
+          "Ongoing membership needs verified rule authority"
+        );
       const requestHash = crossIdentitySyncDigest({
         version: 2,
+        ruleCreation: ruleCreation ?? null,
         ownerUserId: actor.userId,
         source: sourceRef,
         sourceCapabilities: input.sourceCapabilities,
@@ -11156,7 +15817,7 @@ export const createSharedMemoryRepository = (
         includeCuratedMemory: input.includeCuratedMemory,
         expiresAt: input.expiresAt ?? null
       });
-      return withTransaction(pool, async (client) => {
+      const command = async (client: pg.PoolClient) => {
         await client.query(
           "select pg_advisory_xact_lock(hashtextextended($1,0))",
           [`pending-share:${input.mutationId}`]
@@ -11196,24 +15857,95 @@ export const createSharedMemoryRepository = (
           ]
         );
         const inFlight = await client.query<{ id: string }>(
-          `select id from pending_share_operations
-            where owner_user_id=$1 and logical_memory_id=$2
-              and team_id=$3 and team_workspace_id=$4
-              and state in ('preparing','needs_attention')
-              and revoked_at is null
-            order by created_at desc,id desc
-            limit 1 for update`,
+          `select pending.id from pending_share_operations pending
+            where pending.owner_user_id=$1 and pending.logical_memory_id=$2
+              and pending.team_id=$3 and pending.team_workspace_id=$4
+              and pending.state in ('preparing','needs_attention')
+              and pending.revoked_at is null
+              and not ($5::boolean and pending.grant_id is not null and exists (
+                select 1 from pending_sharing_rule_admissions creation
+                  join team_memory_sharing_rules rule on rule.id=creation.rule_id
+                  join team_memory_share_reasons reason on reason.rule_id=rule.id
+                    and reason.share_grant_id=pending.grant_id and reason.consent_id=pending.consent_id
+                 where creation.pending_share_id=pending.id
+              ))
+            order by pending.created_at desc,pending.id desc
+            limit 1 for update of pending`,
           [
             actor.userId,
             input.logicalMemoryId,
             input.teamId,
-            input.teamWorkspaceId
+            input.teamWorkspaceId,
+            ruleCreation !== undefined &&
+              ruleCreation.expectedGrantVersion !== null
           ]
         );
         if (inFlight.rows[0]) {
           throw new SharedMemoryConflictError(
             "A Pending Share is already in progress for this destination"
           );
+        }
+        if (ruleCreation) {
+          const publisher = await client.query(
+            `select id from device_credentials where id=$1 and owner_user_id=$2 and revoked_at is null
+              and (expires_at is null or expires_at>now())
+              and operation_families @> ARRAY['share_grant_management','sync']::text[] for share`,
+            [ruleCreation.publisherCredentialId, actor.userId]
+          );
+          if (!publisher.rows[0])
+            throw new SharedMemoryAuthorizationError(
+              "A rule requires the current owner publisher"
+            );
+          const privacy = await resolveCurrentPrivacyPolicy(client, {
+            ownerUserId: actor.userId,
+            teamId: input.teamId,
+            teamWorkspaceId: input.teamWorkspaceId,
+            sharingRuleId:
+              ruleCreation.admissionKind === "repository_member"
+                ? ruleCreation.ruleId
+                : undefined,
+            lockRows: true
+          });
+          if (
+            privacy.effectivePolicyHash !==
+            ruleCreation.effectivePrivacyPolicyHash
+          )
+            throw new SharedMemoryConflictError(
+              "Rule privacy policy changed after review"
+            );
+          const grants = await client.query<Row>(
+            `select * from team_memory_share_grants where logical_memory_id=$1 and team_workspace_id=$2 for update`,
+            [input.logicalMemoryId, input.teamWorkspaceId]
+          );
+          const grant = grants.rows[0];
+          const repositoryAuthority =
+            grant?.lifecycle === "revoked" &&
+            ruleCreation.admissionKind === "repository_member"
+              ? await lockRepositoryRuleAuthority(
+                  client,
+                  actor,
+                  ruleCreation.ruleId,
+                  ruleCreation.publisherCredentialId
+                )
+              : undefined;
+          if (
+            grant
+              ? grant.owner_user_id !== actor.userId ||
+                grant.logical_grant_id !== input.logicalGrantId ||
+                grant.team_id !== input.teamId ||
+                !repositoryRuleCanReuseDestination(
+                  grant,
+                  repositoryAuthority
+                    ? stringValue(repositoryAuthority.payload.approvedAt)
+                    : undefined
+                ) ||
+                numberValue(grant.grant_version) !==
+                  ruleCreation.expectedGrantVersion
+              : ruleCreation.expectedGrantVersion !== null
+          )
+            throw new SharedMemoryConflictError(
+              "The rule destination changed after review"
+            );
         }
         const preview = await client.query<Row>(
           `select candidate.*,binding.source_kind,binding.source_session_id,
@@ -11244,7 +15976,9 @@ export const createSharedMemoryRepository = (
             input.includeCuratedMemory,
             input.mode,
             input.expiresAt ?? null,
-            input.authority.source
+            input.authority.source === "sharing_rule"
+              ? "device_action_grant"
+              : input.authority.source
           ]
         );
         const source = preview.rows[0];
@@ -11322,6 +16056,35 @@ export const createSharedMemoryRepository = (
             "Pending Share could not be persisted"
           );
         }
+        if (ruleCreation)
+          await client.query(
+            `insert into pending_sharing_rule_admissions(pending_share_id,rule_id,publisher_credential_id,expected_grant_version,effective_privacy_policy_hash,
+              admission_kind,membership_id,expected_authority_version,expected_membership_version,publisher_fence,membership_request_hash)
+              values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [
+              pendingId,
+              ruleCreation.ruleId,
+              ruleCreation.publisherCredentialId,
+              ruleCreation.expectedGrantVersion,
+              ruleCreation.effectivePrivacyPolicyHash,
+              ruleCreation.admissionKind,
+              ruleCreation.admissionKind === "repository_member"
+                ? ruleCreation.membershipId
+                : null,
+              ruleCreation.admissionKind === "repository_member"
+                ? ruleCreation.expectedAuthorityVersion
+                : null,
+              ruleCreation.admissionKind === "repository_member"
+                ? ruleCreation.expectedMembershipVersion
+                : null,
+              ruleCreation.admissionKind === "repository_member"
+                ? ruleCreation.publisherFence
+                : null,
+              ruleCreation.admissionKind === "repository_member"
+                ? ruleCreation.membershipRequestHash
+                : null
+            ]
+          );
         await client.query(
           `insert into pending_share_outbox (pending_share_id)
            values ($1) on conflict (pending_share_id) do nothing`,
@@ -11375,7 +16138,10 @@ export const createSharedMemoryRepository = (
               ? previewSource.memoryEventId
               : null
         });
-      });
+      };
+      return transactionClient
+        ? command(transactionClient)
+        : withTransaction(pool, command);
     },
     async createPendingFidelityChange(actor, input) {
       assertFidelityConsent(input);
@@ -11624,6 +16390,7 @@ export const createSharedMemoryRepository = (
                   last_progress_at=now(),next_attempt_at=now(),updated_at=now(),
                   operation_version=operation_version+1
             where grant_id=$1 and owner_user_id=$18
+              and not exists(select 1 from pending_sharing_rule_admissions creation where creation.pending_share_id=pending_share_operations.id)
               and (
                 ($19::boolean=false and state='activated')
                 or ($19::boolean=true and state in ('activated','preparing','needs_attention')
@@ -11901,6 +16668,47 @@ export const createSharedMemoryRepository = (
       assertUuid(input.pendingShareId, "pendingShareId");
       assertUuid(input.mutationId, "mutationId");
       return withTransaction(pool, async (client) => {
+        // Member cancellation follows the same source -> grant -> rule ->
+        // member order as admission, before acquiring its Pending Share row.
+        const memberCancellation =
+          input.action === "revoke"
+            ? (
+                await client.query<Row>(
+                  `select admission.*,p.logical_memory_id,p.team_workspace_id,lm.owner_principal_id
+           from pending_sharing_rule_admissions admission join pending_share_operations p on p.id=admission.pending_share_id
+           join logical_memories lm on lm.id=p.logical_memory_id and lm.owner_user_id=p.owner_user_id
+           where p.id=$1 and p.owner_user_id=$2 and admission.admission_kind='repository_member'`,
+                  [input.pendingShareId, actor.userId]
+                )
+              ).rows[0]
+            : null;
+        if (memberCancellation) {
+          await client.query(
+            "select pg_advisory_xact_lock(hashtextextended($1,0))",
+            [
+              `shared-memory-owner-policy:${memberCancellation.logical_memory_id}:${memberCancellation.owner_principal_id}`
+            ]
+          );
+          await client.query(
+            "select id from team_memory_share_grants where logical_memory_id=$1 and team_workspace_id=$2 for update",
+            [
+              memberCancellation.logical_memory_id,
+              memberCancellation.team_workspace_id
+            ]
+          );
+          await client.query(
+            "select id from team_memory_sharing_rules where id=$1 and owner_user_id=$2 for update",
+            [memberCancellation.rule_id, actor.userId]
+          );
+          await client.query(
+            "select id from team_memory_sharing_rule_members where id=$1 and rule_id=$2 and owner_user_id=$3 for update",
+            [
+              memberCancellation.membership_id,
+              memberCancellation.rule_id,
+              actor.userId
+            ]
+          );
+        }
         const result = await client.query<Row>(
           `select p.*,grant_row.grant_version,
                   preview.source_kind as effective_source_kind,
@@ -11935,6 +16743,16 @@ export const createSharedMemoryRepository = (
           }
           throw new SharedMemoryConflictError();
         }
+        if (input.action === "pause" || input.action === "resume") {
+          const ruleCreation = await client.query(
+            `select 1 from pending_sharing_rule_admissions where pending_share_id=$1`,
+            [input.pendingShareId]
+          );
+          if (ruleCreation.rowCount)
+            throw new SharedMemoryConflictError(
+              "Use this continuous sharing rule's reviewed controls"
+            );
+        }
         if (input.action === "retry") {
           if (
             !["failed", "needs_attention"].includes(stringValue(pending.state))
@@ -11962,6 +16780,26 @@ export const createSharedMemoryRepository = (
           if (stringValue(pending.state) === "revoked") {
             throw new SharedMemoryConflictError(
               "Pending Share is already revoked"
+            );
+          }
+          if (memberCancellation) {
+            const veto = await client.query(
+              `update team_memory_sharing_rule_members set state='revoked',membership_version=membership_version+1,last_mutation_id=$3,
+                 reconciliation_requested_at=null,next_reconciliation_at=null,reconciliation_attempt_count=0,reconciliation_failure_code=null,updated_at=now()
+               where id=$1 and membership_version=$2 and state='unresolved'`,
+              [
+                memberCancellation.membership_id,
+                memberCancellation.expected_membership_version,
+                input.mutationId
+              ]
+            );
+            if (!veto.rowCount)
+              throw new SharedMemoryConflictError(
+                "The source admission changed before cancellation"
+              );
+            await client.query(
+              "update team_memory_sharing_rules set authority_version=authority_version+1,updated_at=now() where id=$1",
+              [memberCancellation.rule_id]
             );
           }
           await client.query(
@@ -12188,6 +17026,12 @@ export const createSharedMemoryRepository = (
               "Owner-private sync relationship is not ready"
             );
           }
+          // Match preparation and publication: owner, then Team, then Workspace.
+          const ownerPolicy = await activePolicy(client, {
+            table: "source_owner_representation_policies",
+            whereSql: "logical_memory_id=$1 and source_owner_principal_id=$2",
+            parameters: [input.logicalMemoryId, owner.ownerPrincipalId]
+          });
           const teamPolicy = await activePolicy(client, {
             table: "team_representation_policies",
             whereSql: "team_id=$1",
@@ -12226,11 +17070,6 @@ export const createSharedMemoryRepository = (
               "Preview fidelity is outside the destination policy intersection"
             );
           }
-          const ownerPolicy = await activePolicy(client, {
-            table: "source_owner_representation_policies",
-            whereSql: "logical_memory_id=$1 and source_owner_principal_id=$2",
-            parameters: [input.logicalMemoryId, owner.ownerPrincipalId]
-          });
           const currentConsent = ownerPolicy
             ? fidelityConsentFromRow(ownerPolicy)
             : null;
@@ -12255,9 +17094,8 @@ export const createSharedMemoryRepository = (
             effectiveMaximumFidelity,
             effectiveIncludeCuratedMemory,
             sourceOwnerPolicyWillChange:
-              currentConsent?.maximumFidelity !== input.maximumFidelity ||
-              currentConsent?.includeCuratedMemory !==
-                input.includeCuratedMemory
+              !currentConsent ||
+              !fidelityConsentDoesNotExpand(input, currentConsent)
           };
         })
       );
@@ -12636,6 +17474,11 @@ export const createSharedMemoryRepository = (
           return mapPolicy(existing.rows[0] as Row, "source_owner");
         }
         if (current) {
+          await lockPolicyAuthorityScope(client, {
+            kind: "source_owner",
+            logicalMemoryId: input.logicalMemoryId,
+            ownerPrincipalId: owner.ownerPrincipalId
+          });
           await client.query(
             "update source_owner_representation_policies set superseded_at=now() where id=$1",
             [current.id]
@@ -12672,7 +17515,8 @@ export const createSharedMemoryRepository = (
           version,
           previousVersion: input.expectedCurrentVersion,
           maximumFidelity: input.maximumFidelity,
-          includeCuratedMemory: input.includeCuratedMemory
+          includeCuratedMemory: input.includeCuratedMemory,
+          origin: "owner_policy_edit"
         });
         if (current) {
           await client.query(
@@ -12783,6 +17627,10 @@ export const createSharedMemoryRepository = (
           includeCuratedMemory: input.includeCuratedMemory
         });
         if (current) {
+          await lockPolicyAuthorityScope(client, {
+            kind: "team",
+            teamId: input.teamId
+          });
           await client.query(
             `update source_owner_representation_consents set state='paused',paused_at=now(),
                   updated_at=now(),state_reason_code='team_policy_changed'
@@ -12896,6 +17744,11 @@ export const createSharedMemoryRepository = (
           includeCuratedMemory: input.includeCuratedMemory
         });
         if (current) {
+          await lockPolicyAuthorityScope(client, {
+            kind: "workspace",
+            teamId: input.teamId,
+            teamWorkspaceId: input.teamWorkspaceId
+          });
           await client.query(
             `update source_owner_representation_consents set state='paused',paused_at=now(),
                   updated_at=now(),state_reason_code='workspace_policy_changed'
@@ -12945,12 +17798,7 @@ export const createSharedMemoryRepository = (
     async changeFidelityBundle(actor, input) {
       try {
         return await withTransaction(pool, async (client) => {
-          await activatePreviewSourceOwnerPolicy(
-            client,
-            actor,
-            input.consent,
-            input.fidelity.shareGrantId
-          );
+          await activatePreviewSourceOwnerPolicy(client, actor, input.consent);
           const consent = await repository.createSourceOwnerConsent(
             actor,
             input.consent,
@@ -13107,8 +17955,7 @@ export const createSharedMemoryRepository = (
           teamWorkspaceId
         });
         if (
-          policies.maximumFidelity !== input.maximumFidelity ||
-          policies.includeCuratedMemory !== input.includeCuratedMemory ||
+          !fidelityConsentDoesNotExpand(input, policies) ||
           !sharedMemoryCeilingAuthorizes(
             input.maximumFidelity,
             preview.representation,
@@ -13137,7 +17984,7 @@ export const createSharedMemoryRepository = (
           preview.binding.classifierHash !== artifact.classifierHash
         ) {
           throw new SharedMemoryConflictError(
-            "Consent fidelity must match the exact three-policy intersection"
+            "Consent detail or current policy binding does not match the preview"
           );
         }
         const existing = await client.query(
@@ -13364,12 +18211,9 @@ export const createSharedMemoryRepository = (
           teamWorkspaceId: stringValue(consent.team_workspace_id)
         });
         const consentFidelity = fidelityConsentFromRow(consent);
-        if (
-          policies.maximumFidelity !== consentFidelity.maximumFidelity ||
-          policies.includeCuratedMemory !== consentFidelity.includeCuratedMemory
-        )
+        if (!fidelityConsentDoesNotExpand(consentFidelity, policies))
           throw new SharedMemoryConflictError(
-            "Consent is no longer in the exact fidelity policy intersection"
+            "Consent detail exceeds the current policy ceiling"
           );
         const retentionPolicy = await client.query(
           `select 1 from retention_policies
@@ -13511,6 +18355,18 @@ export const createSharedMemoryRepository = (
           throw new SharedMemoryAuthorizationError(
             "Only the source owner may select Shared Memory fidelity"
           );
+        const directReason = await client.query<Row>(
+          `select id,consent_id from team_memory_share_reasons
+          where share_grant_id=$1 and kind='direct' for update`,
+          [input.shareGrantId]
+        );
+        if (
+          !directReason.rows[0] ||
+          directReason.rows[0].consent_id !== grant.consent_id
+        )
+          throw new SharedMemoryConflictError(
+            "Direct fidelity replacement requires its own sharing reason"
+          );
         if (grant.lifecycle !== "active" && grant.lifecycle !== "revoked") {
           throw new SharedMemoryConflictError(
             "Share Grant cannot be changed after retention purge has started"
@@ -13622,12 +18478,9 @@ export const createSharedMemoryRepository = (
           teamId: stringValue(grant.team_id),
           teamWorkspaceId: stringValue(grant.team_workspace_id)
         });
-        if (
-          policies.maximumFidelity !== input.maximumFidelity ||
-          policies.includeCuratedMemory !== input.includeCuratedMemory
-        )
+        if (!fidelityConsentDoesNotExpand(input, policies))
           throw new SharedMemoryConflictError(
-            "Selected fidelity is outside the exact policy intersection"
+            "Selected detail exceeds the current policy ceiling"
           );
         if (grant.lifecycle === "revoked") {
           const clock = await client.query<{ now: Date }>(
@@ -13651,12 +18504,18 @@ export const createSharedMemoryRepository = (
             set state='invalidated',invalidated_at=now(),updated_at=now(),
                 record_version=record_version+1,
                 invalidation_reason_code='owner_selected_fidelity_replacement'
-          where share_grant_id=$1 and state in ('pending','available','stale')`,
-          [input.shareGrantId]
+          where share_grant_id=$1 and consent_id=$2 and state in ('pending','available','stale')
+            and not exists(select 1 from team_memory_reason_publications publication
+              join team_memory_share_reasons reason on reason.id=publication.reason_id
+              where publication.representation_id=team_memory_representations.id and reason.id<>$3)`,
+          [input.shareGrantId, grant.consent_id, directReason.rows[0].id]
         );
         await client.query(
-          `delete from team_memory_semantic_items where share_grant_id=$1`,
-          [input.shareGrantId]
+          `delete from team_memory_semantic_items item where share_grant_id=$1
+            and exists(select 1 from team_memory_representations representation
+              where representation.id=item.representation_id and representation.consent_id=$2
+                and representation.invalidated_at is not null)`,
+          [input.shareGrantId, grant.consent_id]
         );
         const updated = await client.query(
           `update team_memory_share_grants set
@@ -13885,7 +18744,8 @@ export const createSharedMemoryRepository = (
                   preview.owner_principal_id,preview.team_id,
                   preview.team_workspace_id,preview.representation,
                   g.id as share_grant_id,c.id as consent_id,g.grant_version,
-                  g.lifecycle as grant_lifecycle
+                  g.lifecycle as grant_lifecycle,g.sharing_rule_id,
+                  policy_rule.effective_privacy_policy_hash as rule_privacy_policy_hash
              from shared_source_preview_records preview
              join shared_source_artifact_records artifact
                on artifact.id=preview.source_artifact_id
@@ -13899,7 +18759,7 @@ export const createSharedMemoryRepository = (
               and artifact.source_revision=preview.source_revision
               and artifact.source_hash=preview.source_hash
               and artifact.invalidated_at is null
-             join team_memory_share_grant_records g
+             join team_memory_reason_grant_records g
                on g.logical_memory_id=preview.logical_memory_id
               and g.remote_replica_id is not distinct from preview.remote_replica_id
               and g.owner_user_id=preview.owner_user_id
@@ -13908,7 +18768,7 @@ export const createSharedMemoryRepository = (
               and g.team_workspace_id=preview.team_workspace_id
               and g.revoked_at is null
               and (
-                g.lifecycle='active'
+                (g.lifecycle='active' or (g.lifecycle='unavailable' and ${historicalPreparationExistsSql()}))
                 or (g.lifecycle='unavailable' and exists (
                   select 1 from pending_share_operation_records pending
                    where pending.grant_id=g.id
@@ -13920,6 +18780,11 @@ export const createSharedMemoryRepository = (
                 ))
               )
              ${semanticPrivacyConsentJoinSql()}
+             left join team_memory_sharing_rules policy_rule
+               on policy_rule.id=g.sharing_rule_id
+              and policy_rule.owner_user_id=g.owner_user_id
+              and policy_rule.team_id=g.team_id
+              and policy_rule.team_workspace_id=g.team_workspace_id
              join users owner on owner.id=preview.owner_user_id
               and owner.disabled_at is null and owner.deleted_at is null
              join teams team on team.id=preview.team_id
@@ -13940,16 +18805,17 @@ export const createSharedMemoryRepository = (
               and access.access='write'
               and access.can_share_owned_memory=true
               and access.disabled_at is null
+             ${historicalPreparationJoinSql()}
              join source_owner_representation_policies op
-               on op.policy_id=g.source_owner_policy_id
-              and op.version=g.source_owner_policy_version
-              and op.superseded_at is null
+               on op.policy_id=${preparationPolicyColumnSql("source_owner_policy_id")}
+              and op.version=${preparationPolicyColumnSql("source_owner_policy_version")} and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id
+              and ${retainedOwnerPolicyAuthorizationSql("op")}
              join team_representation_policies tp
-               on tp.policy_id=g.team_policy_id and tp.version=g.team_policy_version
+               on tp.policy_id=${preparationPolicyColumnSql("team_policy_id")} and tp.version=${preparationPolicyColumnSql("team_policy_version")}
               and tp.team_id=g.team_id and tp.superseded_at is null
              join workspace_representation_policies wp
-               on wp.policy_id=g.workspace_policy_id
-              and wp.version=g.workspace_policy_version
+               on wp.policy_id=${preparationPolicyColumnSql("workspace_policy_id")}
+              and wp.version=${preparationPolicyColumnSql("workspace_policy_version")}
               and wp.team_id=g.team_id
               and wp.team_workspace_id=g.team_workspace_id
               and wp.superseded_at is null
@@ -13957,6 +18823,7 @@ export const createSharedMemoryRepository = (
               and preview.owner_user_id is not null
               and ($2::uuid is null or g.id=$2)
               and ($3::uuid is null or preview.id=$3)
+              and (g.sharing_rule_id is null or policy_rule.state in ('active','paused'))
               and ${cumulativeRepresentationAuthorizationSql("preview.representation")}
             order by preview.created_at,preview.id
             limit $1`,
@@ -13968,7 +18835,7 @@ export const createSharedMemoryRepository = (
         );
         const targets: SharedMemoryPendingSemanticTarget[] = [];
         const seenTargetIds = new Set<string>();
-        const candidateByPreviewId = new Map<
+        const candidateByPolicy = new Map<
           string,
           { row: Row; effectivePolicyHash: string }
         >();
@@ -13976,22 +18843,32 @@ export const createSharedMemoryRepository = (
           const effectivePolicy = await resolveCurrentPrivacyPolicy(client, {
             ownerUserId: stringValue(candidate.owner_user_id),
             teamId: stringValue(candidate.team_id),
-            teamWorkspaceId: stringValue(candidate.team_workspace_id)
+            teamWorkspaceId: stringValue(candidate.team_workspace_id),
+            sharingRuleId: nullableStringValue(candidate.sharing_rule_id)
           });
+          if (
+            candidate.sharing_rule_id !== null &&
+            effectivePolicy.effectivePolicyHash !==
+              candidate.rule_privacy_policy_hash
+          )
+            continue;
+          const policyKey = JSON.stringify([
+            candidate.source_preview_id,
+            effectivePolicy.effectivePolicyHash
+          ]);
+          if (candidateByPolicy.has(policyKey)) continue;
+          // A preview can serve several independently approved policies. Only
+          // classifier replacement supersedes all of its variants here. Policy
+          // invalidation checks every authorized reason in the invalidator.
           const superseded = await client.query<Row>(
             `update shared_source_semantic_previews
                 set status='stale',stale_at=now(),updated_at=now(),
                     invalidation_reason_code='privacy_binding_superseded'
               where source_preview_id=$1 and status='ready'
                 and invalidated_at is null
-                and (classifier_generation_id<>$2
-                  or effective_privacy_policy_hash<>$3)
+                and classifier_generation_id<>$2
               returning *`,
-            [
-              candidate.source_preview_id,
-              classifier.id,
-              effectivePolicy.effectivePolicyHash
-            ]
+            [candidate.source_preview_id, classifier.id]
           );
           await invalidateSemanticDerivativeDependentsWithClient(
             client,
@@ -14008,32 +18885,40 @@ export const createSharedMemoryRepository = (
               ? "classifier_rematerialization"
               : "policy_remasking";
           } else {
-            const priorRevision = await client.query(
-              `select 1 from shared_source_semantic_previews
+            const priorRevision = await client.query<{
+              prior_policy: boolean | null;
+              prior_revision: boolean | null;
+            }>(
+              `select bool_or(source_preview_id=$7 and effective_privacy_policy_hash<>$8) as prior_policy,
+                      bool_or(source_revision<$6) as prior_revision
+                 from shared_source_semantic_previews
                 where logical_memory_id=$1 and owner_user_id=$2
                   and team_id=$3 and team_workspace_id=$4
-                  and representation=$5 and source_revision<$6
-                limit 1`,
+                  and representation=$5`,
               [
                 candidate.logical_memory_id,
                 candidate.owner_user_id,
                 candidate.team_id,
                 candidate.team_workspace_id,
                 candidate.representation,
-                candidate.source_revision
+                candidate.source_revision,
+                candidate.source_preview_id,
+                effectivePolicy.effectivePolicyHash
               ]
             );
-            if (priorRevision.rows[0]) {
+            if (priorRevision.rows[0]?.prior_policy === true) {
+              workReason = "policy_remasking";
+            } else if (priorRevision.rows[0]?.prior_revision === true) {
               workReason = "source_revision_classification";
             }
           }
           const semanticPreviewId = randomUUID();
-          candidateByPreviewId.set(stringValue(candidate.source_preview_id), {
+          candidateByPolicy.set(policyKey, {
             row: candidate,
             effectivePolicyHash: effectivePolicy.effectivePolicyHash
           });
           await client.query(
-            `insert into shared_source_semantic_previews (
+            `insert into shared_source_semantic_previews as derivative (
                id,source_preview_id,source_artifact_id,
                source_preview_revision,source_preview_hash,source_artifact_hash,
                source_manifest_hash,source_revision,source_hash,logical_memory_id,
@@ -14045,7 +18930,23 @@ export const createSharedMemoryRepository = (
                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
                'pending'
              )
-             on conflict do nothing`,
+             on conflict (source_preview_id,classifier_generation_id,effective_privacy_policy_hash)
+             do update set status='pending',sanitized_content_hash=null,payload_binding_hash=null,
+               result_manifest_hash=null,ready_at=null,stale_at=null,invalidated_at=null,
+               invalidation_reason_code=null,failed_at=null,failure_code=null,last_error_class=null,
+               attempt_count=0,next_attempt_at=null,continuation_chunk_index=0,
+               eligible_at=now(),enqueued_at=now(),updated_at=now(),
+               scheduling_class=excluded.scheduling_class,work_reason='policy_remasking'
+             where derivative.status in ('stale','invalidated')
+               and derivative.invalidation_reason_code in (
+                 'privacy_policy_superseded','privacy_binding_superseded',
+                 'privacy_policy_unavailable','sharing_authorization_revoked'
+               )
+               and not exists (
+                 select 1 from shared_source_semantic_privacy_work_claims claim
+                 where claim.semantic_preview_id=derivative.id
+                   and claim.state='active' and claim.expires_at>now()
+               )`,
             [
               semanticPreviewId,
               candidate.source_preview_id,
@@ -14071,7 +18972,7 @@ export const createSharedMemoryRepository = (
             ]
           );
         }
-        if (candidateByPreviewId.size === 0) return targets;
+        if (candidateByPolicy.size === 0) return targets;
         const pending = await client.query<Row>(
           `select semantic.*
                from shared_source_semantic_previews semantic
@@ -14096,15 +18997,24 @@ export const createSharedMemoryRepository = (
                 semantic.eligible_at,semantic.enqueued_at,semantic.id
               limit $3`,
           [
-            [...candidateByPreviewId.keys()],
+            [
+              ...new Set(
+                [...candidateByPolicy.values()].map(({ row }) =>
+                  stringValue(row.source_preview_id)
+                )
+              )
+            ],
             classifier.id,
             Math.min(limit * 8, 800)
           ]
         );
         for (const row of pending.rows) {
           if (targets.length >= limit) break;
-          const candidate = candidateByPreviewId.get(
-            stringValue(row.source_preview_id)
+          const candidate = candidateByPolicy.get(
+            JSON.stringify([
+              row.source_preview_id,
+              row.effective_privacy_policy_hash
+            ])
           );
           if (
             !candidate ||
@@ -14190,6 +19100,7 @@ export const createSharedMemoryRepository = (
         }
         return {
           target: loaded.target,
+          ruleContentPolicy: loaded.ruleContentPolicy,
           preview: preview.preview,
           sourceManifest: preview.artifactBody.manifest,
           sourceItemIdentityHash: sharedMemorySourceItemIdentityHash(
@@ -15075,12 +19986,14 @@ export const createSharedMemoryRepository = (
               set display_title=$2,updated_at=now()
             where grant_id=$1 and owner_user_id=$3
               and coalesce(replacement_source_revision,source_revision)=$4
+              and coalesce(replacement_consent_id,consent_id)=$5
               and state='preparing' and revoked_at is null`,
           [
             target.shareGrantId,
             displayTitle,
             actor.userId,
-            target.sourceRevision
+            target.sourceRevision,
+            target.consentId
           ]
         );
         await client.query(
@@ -15089,9 +20002,10 @@ export const createSharedMemoryRepository = (
              from pending_share_operations pending
             where pending.id=outbox.pending_share_id
               and pending.grant_id=$1 and pending.owner_user_id=$2
+              and coalesce(pending.replacement_consent_id,pending.consent_id)=$3
               and pending.state='preparing' and pending.stage='privacy_filtering'
               and pending.revoked_at is null`,
-          [target.shareGrantId, actor.userId]
+          [target.shareGrantId, actor.userId, target.consentId]
         );
         await client.query(
           "select pg_notify('koed_pending_share_activation','work')"
@@ -15193,10 +20107,16 @@ export const createSharedMemoryRepository = (
                   last_progress_at=now(),updated_at=now(),
                   operation_version=operation_version+1
             where grant_id=$1 and owner_user_id=$3
+              and coalesce(replacement_consent_id,consent_id)=$4
               and state='preparing' and stage='privacy_filtering'
               and revoked_at is null
             returning id,operation_version`,
-          [target.shareGrantId, input.failureCode, actor.userId]
+          [
+            target.shareGrantId,
+            input.failureCode,
+            actor.userId,
+            target.consentId
+          ]
         );
         for (const pending of terminal.rows) {
           const pendingShareId = stringValue(pending.id);
@@ -15271,6 +20191,10 @@ export const createSharedMemoryRepository = (
                from shared_source_semantic_previews semantic
               where semantic.status='pending'
                 and semantic.next_attempt_at is not null
+             union all
+             select member.next_reconciliation_at as work_at
+               from team_memory_sharing_rule_members member join team_memory_sharing_rules rule on rule.id=member.rule_id
+              where rule.state='active' and member.state='present' and member.next_reconciliation_at is not null
              union all
              select claim.expires_at as work_at
                from shared_source_semantic_privacy_work_claims claim
@@ -15473,7 +20397,7 @@ export const createSharedMemoryRepository = (
           const current = await client.query<{
             source_current: boolean;
             classifier_current: boolean;
-            authorization_current: boolean;
+            authorized_rule_ids: Array<string | null>;
           }>(
             `select
                exists (
@@ -15496,13 +20420,13 @@ export const createSharedMemoryRepository = (
                     and generation.status='active'
                     and generation.revoked_at is null
                ) as classifier_current,
-               exists (
-                 select 1
+               array (
+                 select distinct g.sharing_rule_id
                    from shared_source_preview_records preview
                    join shared_source_artifact_records artifact
                      on artifact.id=preview.source_artifact_id
                     and artifact.invalidated_at is null
-                   join team_memory_share_grant_records g
+                   join team_memory_reason_grant_records g
                      on g.logical_memory_id=preview.logical_memory_id
                     and g.remote_replica_id is not distinct from preview.remote_replica_id
                     and g.owner_user_id=preview.owner_user_id
@@ -15511,7 +20435,7 @@ export const createSharedMemoryRepository = (
                     and g.team_workspace_id=preview.team_workspace_id
                     and g.revoked_at is null
                     and (
-                      g.lifecycle='active'
+                      (g.lifecycle='active' or (g.lifecycle='unavailable' and ${historicalPreparationExistsSql()}))
                       or (g.lifecycle='unavailable' and exists (
                         select 1 from pending_share_operation_records pending
                          where pending.grant_id=g.id
@@ -15523,6 +20447,11 @@ export const createSharedMemoryRepository = (
                       ))
                     )
                    ${semanticPrivacyConsentJoinSql()}
+                   left join team_memory_sharing_rules policy_rule
+                     on policy_rule.id=g.sharing_rule_id
+                    and policy_rule.owner_user_id=g.owner_user_id
+                    and policy_rule.team_id=g.team_id
+                    and policy_rule.team_workspace_id=g.team_workspace_id
                    join teams team on team.id=preview.team_id
                     and team.lifecycle='active'
                     and team.entitlement_status in ('active','grace')
@@ -15531,17 +20460,18 @@ export const createSharedMemoryRepository = (
                     and workspace.team_id=preview.team_id
                     and workspace.lifecycle='active'
                     and workspace.archived_at is null
-                   join source_owner_representation_policies op
-                     on op.policy_id=g.source_owner_policy_id
-                    and op.version=g.source_owner_policy_version
-                    and op.superseded_at is null
+                   ${historicalPreparationJoinSql()}
+             join source_owner_representation_policies op
+                     on op.policy_id=${preparationPolicyColumnSql("source_owner_policy_id")}
+                    and op.version=${preparationPolicyColumnSql("source_owner_policy_version")} and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id
+                    and ${retainedOwnerPolicyAuthorizationSql("op")}
                    join team_representation_policies tp
-                     on tp.policy_id=g.team_policy_id
-                    and tp.version=g.team_policy_version
+                     on tp.policy_id=${preparationPolicyColumnSql("team_policy_id")}
+                    and tp.version=${preparationPolicyColumnSql("team_policy_version")}
                     and tp.team_id=g.team_id and tp.superseded_at is null
                    join workspace_representation_policies wp
-                     on wp.policy_id=g.workspace_policy_id
-                    and wp.version=g.workspace_policy_version
+                     on wp.policy_id=${preparationPolicyColumnSql("workspace_policy_id")}
+                    and wp.version=${preparationPolicyColumnSql("workspace_policy_version")}
                     and wp.team_id=g.team_id
                     and wp.team_workspace_id=g.team_workspace_id
                     and wp.superseded_at is null
@@ -15551,8 +20481,10 @@ export const createSharedMemoryRepository = (
                     and artifact.id=$4 and artifact.artifact_hash=$5
                     and artifact.manifest_hash=$6
                     and preview.source_revision=$7 and preview.source_hash=$8
+                    and (g.sharing_rule_id is null or policy_rule.state in ('active','paused'))
+                    and (g.sharing_rule_id is null or policy_rule.effective_privacy_policy_hash=$12)
                     and ${cumulativeRepresentationAuthorizationSql("preview.representation")}
-               ) as authorization_current`,
+               ) as authorized_rule_ids`,
             [
               row.source_preview_id,
               row.source_preview_revision,
@@ -15564,7 +20496,8 @@ export const createSharedMemoryRepository = (
               row.source_hash,
               row.classifier_generation_id,
               row.classifier_version,
-              row.classifier_hash
+              row.classifier_hash,
+              row.effective_privacy_policy_hash
             ]
           );
           const state = current.rows[0];
@@ -15573,27 +20506,37 @@ export const createSharedMemoryRepository = (
             reasonCode = "source_binding_stale";
           } else if (!state.classifier_current) {
             reasonCode = "privacy_classifier_superseded";
-          } else if (!state.authorization_current) {
+          } else if (state.authorized_rule_ids.length === 0) {
             reasonCode = "sharing_authorization_revoked";
           } else {
-            try {
-              const effectivePolicy = await resolveCurrentPrivacyPolicy(
-                client,
-                {
-                  ownerUserId: stringValue(row.owner_user_id),
-                  teamId: stringValue(row.team_id),
-                  teamWorkspaceId: stringValue(row.team_workspace_id)
+            let permitted = false;
+            let unavailable = false;
+            for (const ruleId of state.authorized_rule_ids) {
+              try {
+                const effectivePolicy = await resolveCurrentPrivacyPolicy(
+                  client,
+                  {
+                    ownerUserId: stringValue(row.owner_user_id),
+                    teamId: stringValue(row.team_id),
+                    teamWorkspaceId: stringValue(row.team_workspace_id),
+                    sharingRuleId: ruleId
+                  }
+                );
+                if (
+                  effectivePolicy.effectivePolicyHash ===
+                  stringValue(row.effective_privacy_policy_hash)
+                ) {
+                  permitted = true;
+                  break;
                 }
-              );
-              if (
-                effectivePolicy.effectivePolicyHash !==
-                stringValue(row.effective_privacy_policy_hash)
-              ) {
-                reasonCode = "privacy_policy_superseded";
+              } catch {
+                unavailable = true;
               }
-            } catch {
-              reasonCode = "privacy_policy_unavailable";
             }
+            if (!permitted)
+              reasonCode = unavailable
+                ? "privacy_policy_unavailable"
+                : "privacy_policy_superseded";
           }
           if (!reasonCode) continue;
           const wasReady = stringValue(row.status) === "ready";
@@ -15626,24 +20569,48 @@ export const createSharedMemoryRepository = (
         `select semantic.id as semantic_preview_id,semantic.owner_user_id,
                 semantic.source_preview_id,semantic.source_preview_hash,
                 semantic.source_revision,semantic.representation,
-                g.id as share_grant_id,g.consent_id,g.grant_version
+                g.id as share_grant_id,g.consent_id,g.grant_version,
+                g.sharing_reason_id,g.sharing_reason_kind,g.sharing_rule_id,
+                preparation.retained_representation_id,
+                preparation.rule_version as prepared_rule_version,
+                preparation.consent_version as prepared_consent_version,
+                preparation.publisher_credential_id as prepared_publisher_credential_id,
+                preparation.publisher_fence as prepared_publisher_fence,
+                preparation.effective_privacy_policy_hash as prepared_privacy_policy_hash
            from shared_source_semantic_previews semantic
            join shared_source_preview_records preview
              on preview.id=semantic.source_preview_id
             and preview.invalidated_at is null
-           join team_memory_share_grant_records g
+           join team_memory_reason_grant_records g
              on g.logical_memory_id=semantic.logical_memory_id
             and g.remote_replica_id is not distinct from preview.remote_replica_id
             and g.owner_user_id=semantic.owner_user_id
             and g.owner_principal_id=semantic.owner_principal_id
             and g.team_id=semantic.team_id
             and g.team_workspace_id=semantic.team_workspace_id
-            and g.lifecycle='active' and g.revoked_at is null
+            and g.lifecycle in ('active','unavailable') and g.revoked_at is null
            join source_owner_representation_consent_records consent
              on consent.id=g.consent_id
-            and consent.state='active' and consent.revoked_at is null
+            and consent.state in ('active','paused') and consent.revoked_at is null
             and (consent.expires_at is null or consent.expires_at>now())
+           left join team_memory_reason_preparations preparation
+             on preparation.reason_id=g.sharing_reason_id and preparation.share_grant_id=g.id
+            and preparation.consent_id=g.consent_id and preparation.preview_id=preview.id
+            and preparation.source_revision=semantic.source_revision
+           left join team_memory_sharing_rules rule on rule.id=g.sharing_rule_id
           where semantic.status='ready'
+            and ((g.sharing_reason_kind='direct' and consent.state='active' and g.lifecycle='active') or (
+              ((rule.state='active' and consent.state='active' and g.lifecycle='active')
+                or (rule.state in ('active','paused') and preparation.retained_representation_id is not null
+                  and ${historicalPreparationExistsSql()}))
+              and semantic.effective_privacy_policy_hash=rule.effective_privacy_policy_hash
+              and preparation.rule_version=rule.authority_version
+              and preparation.consent_version=consent.consent_version
+              and preparation.grant_version=g.grant_version
+              and preparation.publisher_credential_id=rule.publisher_credential_id
+              and preparation.publisher_fence=rule.publisher_fence
+              and preparation.effective_privacy_policy_hash=rule.effective_privacy_policy_hash
+            ))
             and semantic.invalidated_at is null
             and not exists (
               select 1 from pending_share_operation_records pending
@@ -15661,7 +20628,7 @@ export const createSharedMemoryRepository = (
             and not exists (
               select 1
                 from team_memory_representation_records representation
-               where representation.share_grant_id=g.id
+               where representation.share_grant_id=g.id and representation.consent_id=g.consent_id
                  and representation.representation=semantic.representation
                  and representation.source_revision=semantic.source_revision
                  and representation.sanitized_source_preview_id=semantic.id
@@ -15690,6 +20657,24 @@ export const createSharedMemoryRepository = (
             shareGrantId: stringValue(row.share_grant_id),
             consentId: stringValue(row.consent_id),
             expectedGrantVersion: numberValue(row.grant_version),
+            retainedRepresentationId:
+              nullableStringValue(row.retained_representation_id) ?? undefined,
+            ruleAuthority:
+              row.sharing_reason_kind === "rule"
+                ? {
+                    reasonId: stringValue(row.sharing_reason_id),
+                    ruleId: stringValue(row.sharing_rule_id),
+                    authorityVersion: numberValue(row.prepared_rule_version),
+                    consentVersion: numberValue(row.prepared_consent_version),
+                    publisherCredentialId: stringValue(
+                      row.prepared_publisher_credential_id
+                    ),
+                    publisherFence: numberValue(row.prepared_publisher_fence),
+                    effectivePrivacyPolicyHash: stringValue(
+                      row.prepared_privacy_policy_hash
+                    )
+                  }
+                : undefined,
             preview: {
               previewId: stringValue(row.source_preview_id),
               previewHash: stringValue(row.source_preview_hash)
@@ -15716,17 +20701,40 @@ export const createSharedMemoryRepository = (
       transactionClient?: pg.PoolClient
     ) {
       assertUuid(input.mutationId, "mutationId");
+      const retained = input.retainedRepresentationId !== undefined;
+      if (retained && (!input.ruleAuthority || input.internalPendingShareId))
+        throw new SharedMemoryAuthorizationError(
+          "Historical materialization requires exact rule authority"
+        );
+      if (input.retainedRepresentationId)
+        assertUuid(input.retainedRepresentationId, "retainedRepresentationId");
       if (input.internalPendingShareId) {
         assertUuid(input.internalPendingShareId, "internalPendingShareId");
       }
       const command = async (client: pg.PoolClient) => {
+        if (input.ruleAuthority)
+          await lockSharingRulePublicationAuthority(
+            client,
+            actor,
+            {
+              shareGrantId: input.shareGrantId,
+              expectedGrantVersion: input.expectedGrantVersion,
+              ruleAuthority: input.ruleAuthority
+            },
+            input.retainedRepresentationId
+              ? {
+                  previewId: input.preview.previewId,
+                  representationId: input.retainedRepresentationId
+                }
+              : undefined
+          );
         const grantResult = await client.query<Row>(
           `select g.*,
                 mr.id as authorized_replica_id,
                 sr.id as authorized_sync_relationship_id,
                 mr.freshness_status as replica_freshness_status,
                 sr.state as sync_relationship_state
-           from team_memory_share_grant_records g
+           from team_memory_reason_grant_records g
            left join memory_replicas mr
              on mr.id=g.remote_replica_id
             and mr.replica_role='target'
@@ -15739,13 +20747,13 @@ export const createSharedMemoryRepository = (
             and sr.side='target'
             and sr.revoked_at is null
             and sr.state in ('processing','partially_available','ready','stale')
-          where g.id=$1
+          where g.id=$1 and g.consent_id=$2
             and (
               (g.source_kind='captured_session' and mr.id is not null and sr.id is not null)
               or (g.source_kind='personal_note' and g.remote_replica_id is null)
             )
           for update of g`,
-          [input.shareGrantId]
+          [input.shareGrantId, input.consentId]
         );
         const grantRow = grantResult.rows[0] as Row | undefined;
         if (!grantRow || grantRow.owner_user_id !== actor.userId) {
@@ -15753,6 +20761,16 @@ export const createSharedMemoryRepository = (
             "Only the source owner may materialize a Share Grant representation"
           );
         }
+        if (
+          (grantRow.sharing_reason_kind === "rule") !==
+            (input.ruleAuthority !== undefined) ||
+          (input.ruleAuthority &&
+            (grantRow.sharing_reason_id !== input.ruleAuthority.reasonId ||
+              grantRow.sharing_rule_id !== input.ruleAuthority.ruleId))
+        )
+          throw new SharedMemoryConflictError(
+            "Materialization requires the exact sharing reason authority"
+          );
         const pendingActivation =
           stringValue(grantRow.lifecycle) === "unavailable"
             ? await client.query<Row>(
@@ -15800,7 +20818,8 @@ export const createSharedMemoryRepository = (
           ) ||
           (stringValue(grantRow.lifecycle) === "unavailable" &&
             !pendingActivation?.rows[0] &&
-            !remediationRecovery?.rows[0]) ||
+            !remediationRecovery?.rows[0] &&
+            !retained) ||
           grantRow.revoked_at !== null ||
           (input.internalPendingShareId !== undefined &&
             !pendingContinuousNoteAdvancement?.rows[0])
@@ -15810,11 +20829,18 @@ export const createSharedMemoryRepository = (
           );
         }
         if (
+          retained &&
+          (pendingActivation?.rows[0] || remediationRecovery?.rows[0])
+        )
+          throw new SharedMemoryConflictError(
+            "Historical publication cannot replace a pending approval or remediation flow"
+          );
+        if (
           numberValue(grantRow.grant_version) !== input.expectedGrantVersion
         ) {
           throw new SharedMemoryConflictError();
         }
-        const grant = mapGrant(grantRow);
+        let grant = mapGrant(grantRow);
         await requireWorkspaceSharePermission(
           client,
           actor,
@@ -15826,6 +20852,65 @@ export const createSharedMemoryRepository = (
           requiredMessage: "Materialization preview reference is not active"
         });
         const { preview, artifact } = loaded;
+        if (input.ruleAuthority) {
+          if (
+            !retained &&
+            artifact.deviceCredentialId !==
+              input.ruleAuthority.publisherCredentialId
+          )
+            throw new SharedMemoryAuthorizationError(
+              "The prepared source does not match the rule publisher"
+            );
+          const authority = input.ruleAuthority;
+          const preparation = await client.query<Row>(
+            `select reason_id,retained_representation_id from team_memory_reason_preparations
+              where reason_id=$1 and share_grant_id=$2 and consent_id=$3 and preview_id=$4
+                and source_revision=$5 and rule_version=$6 and consent_version=$7 and grant_version=$8
+                and publisher_credential_id=$9 and publisher_fence=$10 and effective_privacy_policy_hash=$11
+              for share`,
+            [
+              authority.reasonId,
+              input.shareGrantId,
+              input.consentId,
+              preview.previewId,
+              preview.sourceRevision,
+              authority.authorityVersion,
+              authority.consentVersion,
+              input.expectedGrantVersion,
+              authority.publisherCredentialId,
+              authority.publisherFence,
+              authority.effectivePrivacyPolicyHash
+            ]
+          );
+          if (!preparation.rows[0])
+            throw new SharedMemoryConflictError(
+              "Materialization has no current rule preparation binding"
+            );
+          if (retained) {
+            if (
+              preparation.rows[0].retained_representation_id !==
+                input.retainedRepresentationId ||
+              !fidelityConsentDoesNotExpand(artifact, grant)
+            )
+              throw new SharedMemoryConflictError(
+                "Historical artifact exceeds its retained consent"
+              );
+            grant = {
+              ...grant,
+              maximumFidelity: artifact.maximumFidelity,
+              includeCuratedMemory: artifact.includeCuratedMemory,
+              sourceOwnerPolicyId: artifact.sourceOwnerPolicyId,
+              sourceOwnerPolicyVersion: artifact.sourceOwnerPolicyVersion,
+              teamPolicyId: artifact.teamPolicyId,
+              teamPolicyVersion: artifact.teamPolicyVersion,
+              workspacePolicyId: artifact.workspacePolicyId,
+              workspacePolicyVersion: artifact.workspacePolicyVersion,
+              fidelityPolicyRevision: artifact.representationPolicyRevision,
+              contentPolicyVersion: artifact.contentPolicyVersion,
+              classifierVersion: artifact.classifierVersion
+            };
+          }
+        }
         const consentResult = await client.query<Row>(
           `select consent.*,binding.source_kind,binding.source_session_id,
                   binding.source_note_id,binding.source_memory_event_id
@@ -15838,7 +20923,7 @@ export const createSharedMemoryRepository = (
               and consent.source_owner_principal_id=$4
               and consent.team_id=$5
               and consent.team_workspace_id=$6
-              and consent.state='active'
+              and consent.state ${retained ? "in ('active','paused')" : "='active'"}
               and consent.revoked_at is null
               and (consent.expires_at is null or consent.expires_at>now())
             for update of consent`,
@@ -15896,8 +20981,10 @@ export const createSharedMemoryRepository = (
           );
         }
         if (
-          consent.maximumFidelity !== grant.maximumFidelity ||
-          consent.includeCuratedMemory !== grant.includeCuratedMemory ||
+          (retained
+            ? !fidelityConsentDoesNotExpand(grant, consent)
+            : consent.maximumFidelity !== grant.maximumFidelity ||
+              consent.includeCuratedMemory !== grant.includeCuratedMemory) ||
           !sharedMemoryCeilingAuthorizes(
             consent.maximumFidelity,
             preview.representation,
@@ -15928,11 +21015,14 @@ export const createSharedMemoryRepository = (
           logicalMemoryId: grant.logicalMemoryId,
           ownerPrincipalId: grant.ownerPrincipalId,
           teamId: grant.teamId,
-          teamWorkspaceId: grant.teamWorkspaceId
+          teamWorkspaceId: grant.teamWorkspaceId,
+          retainedOwnerBinding: {
+            policyId: grant.sourceOwnerPolicyId,
+            version: grant.sourceOwnerPolicyVersion
+          }
         });
         if (
-          currentPolicies.maximumFidelity !== grant.maximumFidelity ||
-          currentPolicies.includeCuratedMemory !== grant.includeCuratedMemory ||
+          !fidelityConsentDoesNotExpand(grant, currentPolicies) ||
           !sharedMemoryCeilingAuthorizes(
             currentPolicies.maximumFidelity,
             preview.representation,
@@ -15951,7 +21041,7 @@ export const createSharedMemoryRepository = (
             grant.workspacePolicyVersion
         ) {
           throw new SharedMemoryConflictError(
-            "Materialization requires the exact active policy intersection"
+            "Materialization requires a permitted consent and current policy ceiling"
           );
         }
         let authoritativeSourceCursor = preview.sourceRevision;
@@ -15972,7 +21062,9 @@ export const createSharedMemoryRepository = (
           if (
             replicaState.sourceCursor < preview.sourceRevision ||
             replicaState.localReplicaId !== grant.remoteReplicaId ||
-            preview.deviceProvenanceHash !== replicaState.deviceProvenanceHash
+            (!retained &&
+              preview.deviceProvenanceHash !==
+                replicaState.deviceProvenanceHash)
           ) {
             throw new SharedMemoryConflictError(
               "Active replica provenance no longer matches the authoritative preview"
@@ -16005,6 +21097,7 @@ export const createSharedMemoryRepository = (
         const latestMaterializedRevision =
           nullableNumber(latestResult.rows[0]?.latest_source_revision) ?? 0;
         if (
+          !retained &&
           consent.mode === "continuous" &&
           preview.sourceRevision <
             Math.max(monotonicFloor, latestMaterializedRevision)
@@ -16026,6 +21119,7 @@ export const createSharedMemoryRepository = (
             logicalMemoryId: grant.logicalMemoryId,
             teamId: grant.teamId,
             teamWorkspaceId: grant.teamWorkspaceId,
+            sharingRuleId: input.ruleAuthority?.ruleId,
             representation: preview.representation
           })
         );
@@ -16106,6 +21200,7 @@ export const createSharedMemoryRepository = (
               and representation.content_policy_version=$5
               and representation.classifier_version=$6
               and representation.sanitized_source_preview_id=$7
+              and representation.consent_id=$8
             for update of representation`,
           [
             grant.id,
@@ -16114,9 +21209,52 @@ export const createSharedMemoryRepository = (
             grant.fidelityPolicyRevision,
             grant.contentPolicyVersion,
             grant.classifierVersion,
-            sanitized.record.id
+            sanitized.record.id,
+            consent.id
           ]
         );
+        const bindRulePublication = async (representationId: string) => {
+          if (!input.ruleAuthority) return;
+          const authority = input.ruleAuthority;
+          await client.query(
+            `insert into team_memory_reason_publications
+              (reason_id,share_grant_id,consent_id,representation_id,rule_version,publisher_fence)
+            values ($1,$2,$3,$4,$5,$6)
+            on conflict (reason_id,representation_id) do update
+              set rule_version=excluded.rule_version,publisher_fence=excluded.publisher_fence`,
+            [
+              authority.reasonId,
+              grant.id,
+              consent.id,
+              representationId,
+              authority.authorityVersion,
+              authority.publisherFence
+            ]
+          );
+        };
+        const writeRepresentationTitle = async (representationId: string) => {
+          const provider = await options.resolveTeamEncryptionProvider({
+            teamId: grant.teamId,
+            purpose: "encrypt"
+          });
+          await upsertEncryptedFieldPayloadWithClient(client, actor, provider, {
+            sourceTable: "team_memory_representations",
+            sourceId: representationId,
+            sourceColumn: representationTitleField(sourceRevisionHash),
+            plaintext: sanitized.payload.displayTitle,
+            visibility: "team",
+            teamId: grant.teamId,
+            teamWorkspaceId: grant.teamWorkspaceId,
+            rowFamily: "shared_memory_representation_title",
+            scope: envelopeScope(grant),
+            aad: {
+              shareGrantId: grant.id,
+              consentId: consent.id,
+              sourceRevision: preview.sourceRevision,
+              sourceRevisionHash
+            }
+          });
+        };
         let representationRow = existingResult.rows[0] as Row | undefined;
         if (representationRow) {
           const representationState = stringValue(representationRow.state);
@@ -16174,6 +21312,12 @@ export const createSharedMemoryRepository = (
             representationState === "available" ||
             representationState === "stale"
           ) {
+            await writeRepresentationTitle(stringValue(representationRow.id));
+            await client.query(
+              `update team_memory_representations set display_title=$2 where id=$1`,
+              [representationRow.id, SHARED_MEMORY_REPRESENTATION_TITLE_MARKER]
+            );
+            await bindRulePublication(stringValue(representationRow.id));
             return mapRepresentation(representationRow);
           }
         } else {
@@ -16322,10 +21466,10 @@ export const createSharedMemoryRepository = (
         }
         const finalAuthority = await client.query<Row>(
           `select semantic.id
-             from team_memory_share_grant_records g
+             from team_memory_reason_grant_records g
              join source_owner_representation_consent_records c
                on c.id=g.consent_id and c.id=$2
-              and c.state='active' and c.revoked_at is null
+              and c.state ${retained ? "in ('active','paused')" : "='active'"} and c.revoked_at is null
               and (c.expires_at is null or c.expires_at>now())
              join users owner on owner.id=g.owner_user_id
               and owner.id=$5 and owner.disabled_at is null
@@ -16350,20 +21494,6 @@ export const createSharedMemoryRepository = (
               and access.access='write'
               and access.can_share_owned_memory=true
               and access.disabled_at is null
-             join source_owner_representation_policies op
-               on op.policy_id=g.source_owner_policy_id
-              and op.version=g.source_owner_policy_version
-              and op.superseded_at is null
-             join team_representation_policies tp
-               on tp.policy_id=g.team_policy_id
-              and tp.version=g.team_policy_version
-              and tp.team_id=g.team_id and tp.superseded_at is null
-             join workspace_representation_policies wp
-               on wp.policy_id=g.workspace_policy_id
-              and wp.version=g.workspace_policy_version
-              and wp.team_id=g.team_id
-              and wp.team_workspace_id=g.team_workspace_id
-              and wp.superseded_at is null
              join shared_source_preview_records preview
                on preview.id=$3 and preview.invalidated_at is null
               and preview.logical_memory_id=g.logical_memory_id
@@ -16375,6 +21505,21 @@ export const createSharedMemoryRepository = (
              join shared_source_artifact_records artifact
                on artifact.id=preview.source_artifact_id
               and artifact.invalidated_at is null
+             ${historicalPreparationJoinSql()}
+             join source_owner_representation_policies op
+               on op.policy_id=${preparationPolicyColumnSql("source_owner_policy_id")}
+              and op.version=${preparationPolicyColumnSql("source_owner_policy_version")} and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id
+              and ${retainedOwnerPolicyAuthorizationSql("op")}
+             join team_representation_policies tp
+               on tp.policy_id=${preparationPolicyColumnSql("team_policy_id")}
+              and tp.version=${preparationPolicyColumnSql("team_policy_version")}
+              and tp.team_id=g.team_id and tp.superseded_at is null
+             join workspace_representation_policies wp
+               on wp.policy_id=${preparationPolicyColumnSql("workspace_policy_id")}
+              and wp.version=${preparationPolicyColumnSql("workspace_policy_version")}
+              and wp.team_id=g.team_id
+              and wp.team_workspace_id=g.team_workspace_id
+              and wp.superseded_at is null
              left join lateral (
                select true as authorized
                  from memory_replicas replica
@@ -16434,7 +21579,7 @@ export const createSharedMemoryRepository = (
                   and artifact.sync_relationship_id is null)
               )
               and (
-                g.lifecycle='active'
+                (g.lifecycle='active' or ($7::uuid is not null and g.lifecycle='unavailable' and historical_authority.retained_representation_id=$7))
                 or (g.lifecycle='unavailable' and exists (
                   select 1 from pending_share_operation_records pending
                    where pending.grant_id=g.id
@@ -16446,6 +21591,7 @@ export const createSharedMemoryRepository = (
                 ))
               )
               and g.grant_version=$6
+              and ($7::uuid is null or historical_authority.retained_representation_id=$7)
               and (c.mode='continuous' or (
                 c.preview_id=preview.id and c.preview_hash=preview.preview_hash
                 and c.source_revision=preview.source_revision
@@ -16462,7 +21608,8 @@ export const createSharedMemoryRepository = (
             preview.previewId,
             sanitized.record.id,
             actor.userId,
-            input.expectedGrantVersion
+            input.expectedGrantVersion,
+            input.retainedRepresentationId ?? null
           ]
         );
         if (!finalAuthority.rows[0]) {
@@ -16474,6 +21621,7 @@ export const createSharedMemoryRepository = (
           ownerUserId: actor.userId,
           teamId: grant.teamId,
           teamWorkspaceId: grant.teamWorkspaceId,
+          sharingRuleId: input.ruleAuthority?.ruleId,
           lockRows: true
         });
         if (
@@ -16657,9 +21805,11 @@ export const createSharedMemoryRepository = (
           nullableString(grantRow.sync_relationship_state) === "stale" ||
           (consent.mode === "continuous" &&
             preview.sourceRevision < authoritativeSourceCursor);
+        await writeRepresentationTitle(representationId);
+        await bindRulePublication(representationId);
         const finalized = await client.query<Row>(
           `update team_memory_representations
-            set state=$2::memory_representation_state,
+            set state=$2::memory_representation_state,display_title=$5,
                 chunk_count=$3,
                 freshness_evaluated_at=now(),
                 available_at=case when $2::memory_representation_state='pending' then null
@@ -16677,7 +21827,8 @@ export const createSharedMemoryRepository = (
                 ? "stale"
                 : "available",
             chunks.length,
-            staleState ? new Date() : null
+            staleState ? new Date() : null,
+            SHARED_MEMORY_REPRESENTATION_TITLE_MARKER
           ]
         );
         if (
@@ -16688,8 +21839,13 @@ export const createSharedMemoryRepository = (
           await client.query(
             `update team_memory_share_grants
               set source_revision=$2,source_revision_id=$3,updated_at=now()
-            where id=$1`,
-            [grant.id, preview.sourceRevision, artifact.sourceRevisionId]
+            where id=$1 and consent_id=$4`,
+            [
+              grant.id,
+              preview.sourceRevision,
+              artifact.sourceRevisionId,
+              consent.id
+            ]
           );
         }
         if (
@@ -16707,6 +21863,13 @@ export const createSharedMemoryRepository = (
             resourceId: representationId,
             actorPrincipalId: actor.userId
           });
+        }
+        if (retained && grantRow.lifecycle === "unavailable") {
+          await client.query(
+            `update team_memory_share_grants set lifecycle='active',grant_version=grant_version+1,updated_at=now()
+             where id=$1 and grant_version=$2 and lifecycle='unavailable' and revoked_at is null`,
+            [grant.id, input.expectedGrantVersion]
+          );
         }
         if (remediationRecovery?.rows[0]) {
           await client.query(
@@ -16785,15 +21948,21 @@ export const createSharedMemoryRepository = (
                 g.remote_replica_id,g.team_id,g.team_workspace_id,
                 g.maximum_fidelity,g.include_curated_memory,g.grant_version,
                 g.source_capabilities,g.activation_representation,g.mode,
-                consent.id as consent_id
-           from team_memory_share_grant_records g
+                consent.id as consent_id,consent.consent_version,
+                g.sharing_reason_id,g.sharing_reason_kind,g.sharing_rule_id,
+                rule.authority_version,rule.publisher_credential_id,rule.publisher_fence,
+                rule.effective_privacy_policy_hash
+           from team_memory_reason_grant_records g
            join source_owner_representation_consent_records consent
              on consent.id=g.consent_id
             and consent.mode='continuous'
             and consent.state='active'
             and consent.revoked_at is null
             and (consent.expires_at is null or consent.expires_at>now())
+           left join team_memory_sharing_rules rule on rule.id=g.sharing_rule_id
           where g.remote_replica_id=$1
+            and (g.sharing_reason_kind='direct' or (rule.state='active'
+              and ${sharingRuleMembershipSql("rule", "reason", "g", "(select membership_id from team_memory_share_reasons where id=g.sharing_reason_id)")}))
             and (
               g.lifecycle='active'
               or (g.lifecycle='unavailable' and exists (
@@ -16805,7 +21974,7 @@ export const createSharedMemoryRepository = (
               ))
             )
             and g.revoked_at is null
-            and g.source_revision<$2
+            and (g.source_revision<$2 or g.sharing_reason_kind='rule')
           order by g.id`,
         [input.remoteReplicaId, input.sourceRevision]
       );
@@ -16813,6 +21982,33 @@ export const createSharedMemoryRepository = (
       for (const row of candidates.rows) {
         const grantId = stringValue(row.id);
         const actor = { userId: stringValue(row.owner_user_id) };
+        if (row.sharing_reason_kind === "rule") {
+          try {
+            const prepared = await repository.prepareSharingRuleMember(actor, {
+              shareGrantId: grantId,
+              expectedGrantVersion: numberValue(row.grant_version),
+              ruleAuthority: {
+                reasonId: stringValue(row.sharing_reason_id),
+                ruleId: stringValue(row.sharing_rule_id),
+                authorityVersion: numberValue(row.authority_version),
+                consentVersion: numberValue(row.consent_version),
+                publisherCredentialId: stringValue(row.publisher_credential_id),
+                publisherFence: numberValue(row.publisher_fence),
+                effectivePrivacyPolicyHash: stringValue(
+                  row.effective_privacy_policy_hash
+                )
+              }
+            });
+            advanced += prepared.previews.length;
+          } catch (error) {
+            if (
+              !(error instanceof SharedMemoryAuthorizationError) &&
+              !(error instanceof SharedMemoryConflictError)
+            )
+              throw error;
+          }
+          continue;
+        }
         const maximumFidelity = stringValue(
           row.maximum_fidelity
         ) as SharedMemoryFidelityCeiling;
@@ -16857,15 +22053,21 @@ export const createSharedMemoryRepository = (
       const candidates = await pool.query<Row>(
         `select g.id,g.logical_memory_id,g.remote_replica_id,g.team_id,
                 g.team_workspace_id,g.grant_version,g.consent_id,
-                c.maximum_fidelity,c.include_curated_memory,
-                g.source_capabilities,g.activation_representation,g.mode
-           from team_memory_share_grant_records g
+                c.consent_version,c.maximum_fidelity,c.include_curated_memory,
+                g.source_capabilities,g.activation_representation,g.mode,
+                g.sharing_reason_id,g.sharing_reason_kind,g.sharing_rule_id,
+                rule.authority_version,rule.publisher_credential_id,rule.publisher_fence,
+                rule.effective_privacy_policy_hash
+           from team_memory_reason_grant_records g
            join source_owner_representation_consent_records c on c.id=g.consent_id
             and c.mode='continuous' and c.state='active' and c.revoked_at is null
             and (c.expires_at is null or c.expires_at>now())
+           left join team_memory_sharing_rules rule on rule.id=g.sharing_rule_id
           where g.owner_user_id=$1 and g.lifecycle='active' and g.revoked_at is null
             and g.include_curated_memory and c.include_curated_memory
-          order by g.id`,
+            and (g.sharing_reason_kind='direct' or (rule.state='active'
+              and ${sharingRuleMembershipSql("rule", "reason", "g", "(select membership_id from team_memory_share_reasons where id=g.sharing_reason_id)")}))
+          order by g.id,g.sharing_reason_id`,
         [actor.userId]
       );
       let rematerialized = 0;
@@ -16873,46 +22075,107 @@ export const createSharedMemoryRepository = (
       for (const row of candidates.rows) {
         const grantId = stringValue(row.id);
         try {
-          await createAuthoritativeSourcePreview(
-            actor,
-            {
-              logicalMemoryId: stringValue(row.logical_memory_id),
-              remoteReplicaId: stringValue(row.remote_replica_id),
-              teamId: stringValue(row.team_id),
-              teamWorkspaceId: stringValue(row.team_workspace_id),
-              representation: "curated_assertions",
-              sourceCapabilities: representationArrayValue(
-                row.source_capabilities
-              ),
-              activationRepresentation: representationValue(
-                row.activation_representation
-              ),
-              mode: stringValue(row.mode) as SharedMemoryConsentMode,
-              maximumFidelity: stringValue(
-                row.maximum_fidelity
-              ) as SharedMemoryFidelityCeiling,
-              includeCuratedMemory: true
-            },
-            grantId
-          );
-          rematerialized += 1;
+          const outcome = await withTransaction(pool, async (client) => {
+            try {
+              await createAuthoritativeSourcePreview(
+                actor,
+                {
+                  logicalMemoryId: stringValue(row.logical_memory_id),
+                  remoteReplicaId: stringValue(row.remote_replica_id),
+                  teamId: stringValue(row.team_id),
+                  teamWorkspaceId: stringValue(row.team_workspace_id),
+                  representation: "curated_assertions",
+                  sourceCapabilities: representationArrayValue(
+                    row.source_capabilities
+                  ),
+                  activationRepresentation: representationValue(
+                    row.activation_representation
+                  ),
+                  mode: stringValue(row.mode) as SharedMemoryConsentMode,
+                  maximumFidelity: stringValue(
+                    row.maximum_fidelity
+                  ) as SharedMemoryFidelityCeiling,
+                  includeCuratedMemory: true,
+                  ...(row.sharing_reason_kind === "rule"
+                    ? {
+                        rulePreparation: {
+                          shareGrantId: grantId,
+                          expectedGrantVersion: numberValue(row.grant_version),
+                          ruleAuthority: {
+                            reasonId: stringValue(row.sharing_reason_id),
+                            ruleId: stringValue(row.sharing_rule_id),
+                            authorityVersion: numberValue(
+                              row.authority_version
+                            ),
+                            consentVersion: numberValue(row.consent_version),
+                            publisherCredentialId: stringValue(
+                              row.publisher_credential_id
+                            ),
+                            publisherFence: numberValue(row.publisher_fence),
+                            effectivePrivacyPolicyHash: stringValue(
+                              row.effective_privacy_policy_hash
+                            )
+                          }
+                        }
+                      }
+                    : {})
+                },
+                row.sharing_reason_kind === "direct" ? grantId : undefined,
+                client
+              );
+              return "rematerialized";
+            } catch (error) {
+              if (
+                !(error instanceof SharedMemoryCuratedEvidenceIneligibleError)
+              )
+                throw error;
+              // Serialize with direct consent controls as well as the rule locks
+              // already held by source preparation. A stale authority is not
+              // evidence that retained Curated Memory should be invalidated.
+              const current = await client.query(
+                `select g.id from team_memory_share_grants g
+                   join source_owner_representation_consents c on c.id=$2
+                   join team_memory_share_reasons reason on reason.id=$3
+                     and reason.share_grant_id=g.id and reason.consent_id=c.id
+                  where g.id=$1 and g.grant_version=$4 and g.lifecycle='active' and g.revoked_at is null
+                    and c.consent_version=$5 and c.state='active' and c.revoked_at is null
+                    and (c.expires_at is null or c.expires_at>now())
+                  for share of g,c,reason`,
+                [
+                  grantId,
+                  row.consent_id,
+                  row.sharing_reason_id,
+                  row.grant_version,
+                  row.consent_version
+                ]
+              );
+              if (!current.rowCount) return "unchanged";
+              const removed = await client.query(
+                `with invalidated as (
+                   update team_memory_representations
+                      set state='invalidated',invalidated_at=now(),updated_at=now(),
+                          invalidation_reason_code='curated_evidence_ineligible',
+                          record_version=record_version+1
+                    where share_grant_id=$1 and consent_id=$2 and representation='curated_assertions'
+                      and state in ('pending','available','stale')
+                    returning id
+                 ), deleted as (
+                   delete from team_memory_semantic_items
+                    where representation_id in (select id from invalidated)
+                 ) select id from invalidated`,
+                [grantId, row.consent_id]
+              );
+              return removed.rowCount ? "invalidated" : "unchanged";
+            }
+          });
+          if (outcome === "rematerialized") rematerialized += 1;
+          if (outcome === "invalidated") invalidated += 1;
         } catch (error) {
-          if (!(error instanceof SharedMemoryConflictError)) throw error;
-          await pool.query(
-            `with invalidated as (
-               update team_memory_representations
-                  set state='invalidated',invalidated_at=now(),updated_at=now(),
-                      invalidation_reason_code='curated_evidence_ineligible',
-                      record_version=record_version+1
-                where share_grant_id=$1 and representation='curated_assertions'
-                  and state in ('pending','available','stale')
-                returning id
-             )
-             delete from team_memory_semantic_items
-              where representation_id in (select id from invalidated)`,
-            [grantId]
-          );
-          invalidated += 1;
+          if (
+            !(error instanceof SharedMemoryConflictError) &&
+            !(error instanceof SharedMemoryAuthorizationError)
+          )
+            throw error;
         }
       }
       return { rematerialized, invalidated };
@@ -16952,8 +22215,8 @@ export const createSharedMemoryRepository = (
           "read"
         );
         const result = await client.query<Row>(
-          `select g.id as share_grant_id,g.logical_memory_id,g.owner_user_id,
-                share_owner.display_name as owner_display_name,g.display_title,
+          `select distinct on (g.updated_at,g.id) g.id as share_grant_id,g.logical_memory_id,g.owner_user_id,
+                share_owner.display_name as owner_display_name,r.display_title,
                 g.team_id,g.team_workspace_id,g.maximum_fidelity,
                 g.include_curated_memory,g.source_capabilities,
                 g.activation_representation,
@@ -16966,7 +22229,7 @@ export const createSharedMemoryRepository = (
                 sr.state as sync_relationship_state,
                 sr.target_processing_cursor,
                 c.mode as consent_mode
-           from team_memory_share_grant_records g
+           from team_memory_reason_grant_records g
            join teams t on t.id=g.team_id and t.lifecycle='active'
              and t.entitlement_status in ('active','grace')
            join team_memberships tm on tm.team_id=g.team_id and tm.user_id=$1
@@ -16983,7 +22246,7 @@ export const createSharedMemoryRepository = (
              and c.state in ('active','paused') and c.revoked_at is null
              and (c.expires_at is null or c.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
-             and op.version=g.source_owner_policy_version and op.superseded_at is null
+             and op.version=g.source_owner_policy_version and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id and ${retainedOwnerPolicyAuthorizationSql("op")}
            join team_representation_policies tp on tp.policy_id=g.team_policy_id
              and tp.version=g.team_policy_version and tp.team_id=g.team_id
              and tp.superseded_at is null
@@ -16996,10 +22259,11 @@ export const createSharedMemoryRepository = (
            left join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
              and sr.logical_memory_id=g.logical_memory_id and sr.side='target'
            join lateral (
-             select r0.representation,r0.state,r0.source_revision,r0.updated_at
+             select r0.id,r0.representation,r0.state,r0.source_revision,r0.updated_at,r0.display_title,r0.available_at
                from team_memory_representation_records r0
               where r0.share_grant_id=g.id and r0.consent_id=g.consent_id
                 and ${cumulativeRepresentationAuthorizationSql("r0.representation")}
+            and ${sharingReasonAuthorizesRepresentationSql("r0")}
                 and r0.state in ('available','stale')
                 and r0.invalidated_at is null
                 and (r0.curated_expires_at is null or r0.curated_expires_at>now())
@@ -17028,7 +22292,9 @@ export const createSharedMemoryRepository = (
               c.include_curated_memory and op.include_curated_memory
               and tp.include_curated_memory and wp.include_curated_memory
             ))
-          order by g.updated_at desc,g.id desc
+          order by g.updated_at desc,g.id desc,
+            case r.representation when 'memory_events' then 0 when 'lcm_leaves' then 1 when 'lcm_rollups' then 2 else 3 end,
+            r.source_revision desc,r.available_at desc,r.id desc
           limit $4 offset $5`,
           [
             actor.userId,
@@ -17039,10 +22305,31 @@ export const createSharedMemoryRepository = (
           ]
         );
         const hasMore = result.rows.length > input.limit;
+        const entries: SharedMemoryWorkspaceIndexEntry[] = [];
+        for (const row of result.rows.slice(0, input.limit)) {
+          const entry = mapWorkspaceIndexEntry(row);
+          entry.title = "Shared Memory";
+          if (row.display_title === SHARED_MEMORY_REPRESENTATION_TITLE_MARKER) {
+            const authorized = await readSharedMemoryGrantAuthorityWithClient(
+              client,
+              actor,
+              {
+                shareGrantId: entry.shareGrantId,
+                representation: entry.activeRepresentation
+              }
+            );
+            if (!authorized) continue;
+            entry.title =
+              (await readRepresentationTitle(
+                client,
+                authorized.grant,
+                authorized.representation
+              )) ?? "Shared Memory";
+          }
+          entries.push(entry);
+        }
         return {
-          entries: result.rows
-            .slice(0, input.limit)
-            .map(mapWorkspaceIndexEntry),
+          entries,
           limit: input.limit,
           offset: input.offset,
           hasMore
@@ -17128,6 +22415,7 @@ export const createSharedMemoryRepository = (
         }
         const result = await client.query<Row>(
           `select owned.record_kind,owned.payload,owned.source_access,
+                  coalesce(reasons.entries,'[]'::jsonb) as sharing_reasons,
                   owned.effective_source_kind,owned.effective_source_session_id,
                   owned.effective_source_note_id,owned.effective_source_memory_event_id,
                   owned.effective_source_revision,
@@ -17143,12 +22431,12 @@ export const createSharedMemoryRepository = (
                       then 'available' else 'unavailable' end,
                     'mode',coalesce(c.mode,owned.share_mode),
                     'authorizedPreview',case when not workspace_access.available
-                      or coalesce(c.preview_id,owned.preview_id) is null
+                      or coalesce(published_preview.id,c.preview_id,owned.preview_id) is null
                       then null else jsonb_build_object(
-                        'previewId',coalesce(c.preview_id,owned.preview_id),
-                        'previewHash',coalesce(c.preview_hash,owned.preview_hash),
-                        'previewRevision',coalesce(c.preview_revision,owned.preview_revision),
-                        'sourceRevision',coalesce(c.source_revision,owned.source_revision)) end,
+                        'previewId',coalesce(published_preview.id,c.preview_id,owned.preview_id),
+                        'previewHash',coalesce(published_preview.preview_hash,c.preview_hash,owned.preview_hash),
+                        'previewRevision',coalesce(published_preview.preview_revision,c.preview_revision,owned.preview_revision),
+                        'sourceRevision',coalesce(published_preview.source_revision,c.source_revision,owned.source_revision)) end,
                     'lastReadyRevision',ready.source_revision,
                     'lastSuccessfulUpdateAt',ready.available_at
                   ) as summary,
@@ -17252,6 +22540,89 @@ export const createSharedMemoryRepository = (
              ) workspace_access
              left join source_owner_representation_consent_records c on c.id=owned.consent_id
              left join lateral (
+               select preview.id,preview.preview_hash,preview.preview_revision,preview.source_revision
+                 from team_memory_representations representation
+                 join team_memory_share_reasons reason
+                   on reason.share_grant_id=representation.share_grant_id and reason.consent_id=c.id
+                 join team_memory_reason_publications publication
+                   on publication.reason_id=reason.id and publication.consent_id=c.id
+                  and publication.representation_id=representation.id
+                 join shared_source_preview_records preview on preview.id=representation.source_preview_id
+                  and preview.owner_user_id=$1 and preview.logical_memory_id=owned.logical_memory_id
+                  and preview.team_id=owned.team_id and preview.team_workspace_id=owned.team_workspace_id
+                  and preview.activation_representation=c.activation_representation
+                  and preview.invalidated_at is null
+                 join shared_source_artifacts artifact on artifact.id=preview.source_artifact_id
+                  and artifact.maximum_fidelity=c.maximum_fidelity
+                  and artifact.include_curated_memory=c.include_curated_memory
+                  and artifact.invalidated_at is null
+                where representation.share_grant_id=owned.grant_id
+                  and representation.state in ('available','stale') and representation.invalidated_at is null
+                  and c.state in ('active','paused') and c.revoked_at is null
+                  and (c.expires_at is null or c.expires_at>now())
+                order by preview.source_revision desc,representation.updated_at desc,preview.id desc limit 1
+             ) published_preview on true
+             left join lateral (
+               select jsonb_agg(jsonb_build_object(
+                 'id',reason.id,'kind',reason.kind,'consentId',consent.id,
+                 'rule',case when rule.id is null then null else jsonb_build_object(
+                   'id',rule.id,'selectorKind',rule.selector_kind,'authorityVersion',rule.authority_version,
+                   'publisherFence',rule.publisher_fence,'state',rule.state,
+                   'catchUpState',case when member.reconciliation_requested_at is null then 'idle'
+                     when member.reconciliation_attempt_count>=5 and member.reconciliation_failure_code is not null then 'needs_attention'
+                     else 'queued' end,
+                   'failureCode',member.reconciliation_failure_code) end,
+                 'consentVersion',consent.consent_version,'mode',consent.mode,
+                 'updateState',case
+                   when reason_grant.lifecycle not in ('active','unavailable')
+                     or consent.state='revoked' or consent.revoked_at is not null or rule.state='stopped'
+                     or (rule.id is not null and member.state is distinct from 'present') then 'stopped'
+                   when consent.state='expired' or consent.expires_at<=now() then 'expired'
+                   when consent.state='paused' or rule.state='paused' then 'paused'
+                   when consent.state='pending' or reason_grant.lifecycle='unavailable'
+                     or (rule.id is not null and not exists (
+                       select 1 from team_memory_reason_publications publication
+                       join team_memory_representations representation on representation.id=publication.representation_id
+                       where publication.reason_id=reason.id and publication.consent_id=reason.consent_id
+                         and representation.state in ('available','stale') and representation.invalidated_at is null
+                     )) then 'pending'
+                   when consent.mode='snapshot' then 'fixed_snapshot'
+                   else 'active' end,
+                 'maximumFidelity',consent.maximum_fidelity,
+                 'includeCuratedMemory',consent.include_curated_memory,
+                 'permittedRepresentations',consent.source_capabilities,
+                 'maximumAuthorizedSourceRevision',consent.maximum_authorized_source_revision,
+                 'expiresAt',consent.expires_at,
+                 'repositorySnapshot',reason.repository_snapshot,
+                 'repositorySnapshotSourceRevision',reason.repository_snapshot_source_revision,
+                 'publishedRepresentations',coalesce((
+                   select jsonb_agg(jsonb_build_object(
+                     'representation',representation.representation,
+                     'sourceRevision',representation.source_revision,
+                     'recordVersion',representation.record_version,
+                     'state',representation.state
+                   ) order by representation.representation,representation.source_revision)
+                   from team_memory_representation_records representation
+                   join team_memory_reason_publications publication
+                     on publication.representation_id=representation.id
+                    and publication.reason_id=reason.id
+                    and publication.share_grant_id=reason.share_grant_id
+                    and publication.consent_id=reason.consent_id
+                   where representation.share_grant_id=reason.share_grant_id
+                     and representation.consent_id=reason.consent_id
+                     and representation.state in ('available','stale')
+                     and representation.invalidated_at is null
+                 ),'[]'::jsonb)
+               ) order by reason.created_at,reason.id) as entries
+               from team_memory_share_reasons reason
+               join team_memory_share_grants reason_grant
+                 on reason_grant.id=reason.share_grant_id and reason_grant.owner_user_id=$1
+                                join source_owner_representation_consents consent on consent.id=reason.consent_id
+               left join team_memory_sharing_rules rule on rule.id=reason.rule_id
+               left join team_memory_sharing_rule_members member on member.id=reason.membership_id and member.rule_id=rule.id
+               where reason.share_grant_id=owned.grant_id
+             ) reasons on true
+             left join lateral (
                select ct.id
                  from collaboration_threads ct
                 where ct.kind='shared_session_discussion'
@@ -17332,6 +22703,20 @@ export const createSharedMemoryRepository = (
               lastReadyRevision: nullableNumber(rawSummary.lastReadyRevision),
               lastSuccessfulUpdateAt: nullableIso(
                 rawSummary.lastSuccessfulUpdateAt
+              ),
+              sharingReasons: (row.sharing_reasons as unknown[]).map(
+                (value) => {
+                  const reason = ownedSharingReasonSchema.parse(value);
+                  reason.permittedRepresentations =
+                    reason.permittedRepresentations.filter((representation) =>
+                      sharedMemoryCeilingAuthorizes(
+                        reason.maximumFidelity,
+                        representation,
+                        reason.includeCuratedMemory
+                      )
+                    );
+                  return reason;
+                }
               )
             };
             const sourceAccess: OwnedConversationSourceAccessSummary = source
@@ -17404,6 +22789,29 @@ export const createSharedMemoryRepository = (
                 : entry.grant.id === input.id)
           );
           if (match) return match;
+          // Pending Share history replaces the grant in the owner's list, but
+          // exact grant lookups must still support controls such as revocation.
+          const pending = page.entries.find(
+            (entry) =>
+              input.kind === "grant" &&
+              entry.kind === "pending" &&
+              entry.pendingShare.grantId === input.id
+          );
+          if (pending?.kind === "pending") {
+            const result = await pool.query<Row>(
+              `select * from team_memory_share_grant_records
+                where id=$1 and owner_user_id=$2`,
+              [input.id, actor.userId]
+            );
+            if (result.rows[0]) {
+              return {
+                kind: "grant",
+                grant: mapGrant(result.rows[0]),
+                sourceAccess: pending.sourceAccess,
+                summary: pending.summary
+              };
+            }
+          }
           if (!page.hasMore || !page.next) break;
           after = page.next;
         }
@@ -17448,7 +22856,7 @@ export const createSharedMemoryRepository = (
         const readiness = await client.query<Row>(
           `select count(*)::integer as missing_count
              from team_memory_representation_records r
-             join team_memory_share_grant_records g on g.id=r.share_grant_id
+             join ${representationPublicationAuthoritySql} on g.id=r.share_grant_id and g.publication_representation_id=r.id
                and g.lifecycle='active' and g.revoked_at is null
                and ${grantAuthorizesRepresentationSql("r.representation")}
             where r.state in ('available','stale') and r.invalidated_at is null
@@ -17477,7 +22885,7 @@ export const createSharedMemoryRepository = (
              and r.logical_memory_id=smi.logical_memory_id
              and r.state in ('available','stale') and r.invalidated_at is null
              and (r.curated_expires_at is null or r.curated_expires_at>now())
-           join team_memory_share_grant_records g on g.id=r.share_grant_id
+           join ${representationPublicationAuthoritySql} on g.id=r.share_grant_id and g.publication_representation_id=r.id
              and g.lifecycle='active' and g.revoked_at is null
              and g.consent_id=r.consent_id
            join teams t on t.id=g.team_id and t.lifecycle='active'
@@ -17485,10 +22893,10 @@ export const createSharedMemoryRepository = (
            join team_workspaces tw on tw.id=g.team_workspace_id and tw.team_id=g.team_id
              and tw.lifecycle='active' and tw.archived_at is null
            join source_owner_representation_consent_records consent on consent.id=g.consent_id
-             and consent.state='active' and consent.revoked_at is null
+             and consent.state in ('active','paused') and consent.revoked_at is null
              and (consent.expires_at is null or consent.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
-             and op.version=g.source_owner_policy_version and op.superseded_at is null
+             and op.version=g.source_owner_policy_version and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id and ${retainedOwnerPolicyAuthorizationSql("op")}
            join team_representation_policies tp on tp.policy_id=g.team_policy_id
              and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
            join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
@@ -17558,12 +22966,15 @@ export const createSharedMemoryRepository = (
             and r.team_policy_id=g.team_policy_id and r.team_policy_version=g.team_policy_version
             and r.workspace_policy_id=g.workspace_policy_id and r.workspace_policy_version=g.workspace_policy_version
             and ${cumulativeRepresentationAuthorizationSql("r.representation", { consent: "consent" })}
+            and ${sharingReasonAuthorizesRepresentationSql()}
             and not exists (
               select 1 from team_memory_representation_records newer
                where newer.share_grant_id=r.share_grant_id
                  and newer.representation=r.representation
+                 and newer.consent_id=r.consent_id
                  and newer.state in ('available','stale')
                  and newer.source_revision>r.source_revision
+                 and ${sharingReasonAuthorizesRepresentationSql("newer")}
             )
           order by coalesce(smi.next_attempt_at,smi.updated_at),smi.id
           limit $1
@@ -17611,6 +23022,7 @@ export const createSharedMemoryRepository = (
                         semantic.effective_privacy_policy_hash as semantic_effective_privacy_policy_hash,
                         semantic.classifier_hash as semantic_classifier_hash,
                         g.remote_replica_id as grant_remote_replica_id,
+                        g.sharing_rule_id,
                         sp.preview_hash as semantic_source_preview_hash,
                         sp.source_hash as semantic_source_hash,
                         sa.artifact_hash as semantic_source_artifact_hash,
@@ -17626,7 +23038,7 @@ export const createSharedMemoryRepository = (
                      and r.logical_memory_id=smi.logical_memory_id
                      and r.state in ('available','stale') and r.invalidated_at is null
                      and (r.curated_expires_at is null or r.curated_expires_at>now())
-                   join team_memory_share_grant_records g on g.id=smi.share_grant_id
+                   join team_memory_publication_grant_records g on g.id=smi.share_grant_id and g.publication_representation_id=r.id
                      and g.team_workspace_id=smi.team_workspace_id
                      and g.team_id=smi.team_id and g.logical_memory_id=smi.logical_memory_id
                      and g.lifecycle='active' and g.revoked_at is null
@@ -17636,10 +23048,10 @@ export const createSharedMemoryRepository = (
                    join team_workspaces tw on tw.id=g.team_workspace_id and tw.team_id=g.team_id
                      and tw.lifecycle='active' and tw.archived_at is null
                    join source_owner_representation_consent_records consent on consent.id=g.consent_id
-                     and consent.state='active' and consent.revoked_at is null
+                     and consent.state in ('active','paused') and consent.revoked_at is null
                      and (consent.expires_at is null or consent.expires_at>now())
                    join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
-                     and op.version=g.source_owner_policy_version and op.superseded_at is null
+                     and op.version=g.source_owner_policy_version and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id and ${retainedOwnerPolicyAuthorizationSql("op")}
                    join team_representation_policies tp on tp.policy_id=g.team_policy_id
                      and tp.version=g.team_policy_version and tp.team_id=g.team_id
                      and tp.superseded_at is null
@@ -17702,6 +23114,7 @@ export const createSharedMemoryRepository = (
                     and r.workspace_policy_id=g.workspace_policy_id
                     and r.workspace_policy_version=g.workspace_policy_version
                     and ${cumulativeRepresentationAuthorizationSql("r.representation", { consent: "consent" })}
+            and ${sharingReasonAuthorizesRepresentationSql()}
                   order by smi.id
                   for share of smi,r,g,t,tw,consent,op,tp,wp,sp,sa,semantic,
                     privacy_classifier,chunk`,
@@ -17718,7 +23131,8 @@ export const createSharedMemoryRepository = (
                 {
                   ownerUserId: stringValue(row.semantic_owner_user_id),
                   teamId: stringValue(row.team_id),
-                  teamWorkspaceId: stringValue(row.team_workspace_id)
+                  teamWorkspaceId: stringValue(row.team_workspace_id),
+                  sharingRuleId: nullableStringValue(row.sharing_rule_id)
                 }
               );
               if (
@@ -17754,6 +23168,7 @@ export const createSharedMemoryRepository = (
                       logicalMemoryId: stringValue(row.logical_memory_id),
                       teamId: stringValue(row.team_id),
                       teamWorkspaceId: stringValue(row.team_workspace_id),
+                      sharingRuleId: nullableStringValue(row.sharing_rule_id),
                       representation: stringValue(
                         row.representation
                       ) as SharedMemoryRepresentation
@@ -17856,22 +23271,36 @@ export const createSharedMemoryRepository = (
                   sourceBinding.personalSourceType !== null &&
                   sourceBinding.personalSourceId !== null
                 ) {
+                  // Retained Team content can be embedded after its owner loses
+                  // sharing access. Personal reuse still needs current owner
+                  // authority, locked through the authorized embedding handoff.
+                  // Without it, compute from the Team derivative instead.
                   const personal = await client.query<Row>(
-                    `select id,source_text,embedding_model,
-                            embedding_dimensions,embedding_version,
-                            tokenizer,input_transform,pooling,normalization
-                       from memory_embeddings
-                      where owner_user_id=$1 and visibility='personal'
-                        and embedding_model=$2 and embedding_dimensions=$3
-                        and invalidated_at is null
-                        and personal_deleted_at is null
-                        and source_chunk_index=0 and source_chunk_count=1
+                    `select embedding.id,embedding.source_text,embedding.embedding_model,
+                            embedding.embedding_dimensions,embedding.embedding_version,
+                            embedding.tokenizer,embedding.input_transform,
+                            embedding.pooling,embedding.normalization
+                       from memory_embeddings embedding
+                       join users owner on owner.id=embedding.owner_user_id
+                         and owner.disabled_at is null and owner.deleted_at is null
+                       join team_memberships membership
+                         on membership.user_id=owner.id and membership.team_id=$6
+                         and membership.status='enabled' and membership.disabled_at is null
+                       join team_workspace_access_grants access
+                         on access.user_id=owner.id and access.team_id=$6
+                         and access.team_workspace_id=$7 and access.disabled_at is null
+                         and access.access='write' and access.can_share_owned_memory=true
+                      where embedding.owner_user_id=$1 and embedding.visibility='personal'
+                        and embedding.embedding_model=$2 and embedding.embedding_dimensions=$3
+                        and embedding.invalidated_at is null
+                        and embedding.personal_deleted_at is null
+                        and embedding.source_chunk_index=0 and embedding.source_chunk_count=1
                         and (
-                          (memory_event_id=$4 and $5::text='memory_event')
-                          or (memory_node_id=$4 and $5::text='memory_node')
-                          or (curated_memory_assertion_id=$4 and $5::text='curated_memory')
+                          (embedding.memory_event_id=$4 and $5::text='memory_event')
+                          or (embedding.memory_node_id=$4 and $5::text='memory_node')
+                          or (embedding.curated_memory_assertion_id=$4 and $5::text='curated_memory')
                         )
-                      order by created_at desc,id desc
+                      order by embedding.created_at desc,embedding.id desc
                       limit 1
                       for share`,
                     [
@@ -17879,7 +23308,9 @@ export const createSharedMemoryRepository = (
                       input.model,
                       input.dimensions,
                       sourceBinding.personalSourceId,
-                      sourceBinding.personalSourceType
+                      sourceBinding.personalSourceType,
+                      stringValue(row.team_id),
+                      stringValue(row.team_workspace_id)
                     ]
                   );
                   const personalRow = personal.rows[0];
@@ -18055,18 +23486,18 @@ export const createSharedMemoryRepository = (
       return withTransaction(pool, async (client) => {
         const current = await client.query<Row>(
           `select smi.id,semantic.owner_user_id,semantic.team_id,
-                  semantic.team_workspace_id,
+                  semantic.team_workspace_id,g.sharing_rule_id,
                   semantic.effective_privacy_policy_hash
              from team_memory_semantic_items smi
              join team_memory_representation_records r
                on r.id=smi.representation_id
               and r.state in ('available','stale')
               and r.invalidated_at is null
-             join team_memory_share_grant_records g on g.id=r.share_grant_id
+             join ${representationPublicationAuthoritySql} on g.id=r.share_grant_id and g.publication_representation_id=r.id
               and g.lifecycle='active' and g.revoked_at is null
               and g.consent_id=r.consent_id
              join source_owner_representation_consent_records consent
-               on consent.id=g.consent_id and consent.state='active'
+               on consent.id=g.consent_id and consent.state in ('active','paused')
               and consent.revoked_at is null
               and (consent.expires_at is null or consent.expires_at>now())
              join users owner on owner.id=g.owner_user_id
@@ -18092,8 +23523,8 @@ export const createSharedMemoryRepository = (
               and access.disabled_at is null
              join source_owner_representation_policies op
                on op.policy_id=g.source_owner_policy_id
-              and op.version=g.source_owner_policy_version
-              and op.superseded_at is null
+              and op.version=g.source_owner_policy_version and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id
+              and ${retainedOwnerPolicyAuthorizationSql("op")}
              join team_representation_policies tp
                on tp.policy_id=g.team_policy_id
               and tp.version=g.team_policy_version
@@ -18122,7 +23553,8 @@ export const createSharedMemoryRepository = (
             where smi.id=$1 and smi.content_hash=$2
               and smi.embedding_state='processing'
               and ${cumulativeRepresentationAuthorizationSql("r.representation", { consent: "consent" })}
-            for update of smi`,
+            and ${sharingReasonAuthorizesRepresentationSql()}
+            for update of smi for share of owner,membership,access`,
           [input.semanticItemId, input.contentHash]
         );
         const currentRow = current.rows[0];
@@ -18130,7 +23562,8 @@ export const createSharedMemoryRepository = (
         const currentPrivacyPolicy = await resolveCurrentPrivacyPolicy(client, {
           ownerUserId: stringValue(currentRow.owner_user_id),
           teamId: stringValue(currentRow.team_id),
-          teamWorkspaceId: stringValue(currentRow.team_workspace_id)
+          teamWorkspaceId: stringValue(currentRow.team_workspace_id),
+          sharingRuleId: nullableStringValue(currentRow.sharing_rule_id)
         });
         if (
           currentPrivacyPolicy.effectivePolicyHash !==
@@ -18312,7 +23745,7 @@ export const createSharedMemoryRepository = (
            join team_memory_representation_records r on r.id=smi.representation_id
              and r.state in ('available','stale') and r.invalidated_at is null
              and (r.curated_expires_at is null or r.curated_expires_at>now())
-           join team_memory_share_grant_records g on g.id=smi.share_grant_id
+           join ${representationPublicationAuthoritySql} on g.id=smi.share_grant_id and g.publication_representation_id=r.id
              and g.team_workspace_id=$2 and g.lifecycle='active' and g.revoked_at is null
              and g.consent_id=r.consent_id
            join teams t on t.id=g.team_id and t.lifecycle='active'
@@ -18326,10 +23759,10 @@ export const createSharedMemoryRepository = (
              and wa.team_id=g.team_id and wa.user_id=$1 and wa.disabled_at is null
              and wa.access in ('read','write')
            join source_owner_representation_consent_records c on c.id=g.consent_id
-             and c.state='active' and c.revoked_at is null
+             and c.state in ('active','paused') and c.revoked_at is null
              and (c.expires_at is null or c.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
-             and op.version=g.source_owner_policy_version and op.superseded_at is null
+             and op.version=g.source_owner_policy_version and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id and ${retainedOwnerPolicyAuthorizationSql("op")}
            join team_representation_policies tp on tp.policy_id=g.team_policy_id
              and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
            join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
@@ -18367,6 +23800,7 @@ export const createSharedMemoryRepository = (
             and r.team_policy_id=g.team_policy_id and r.team_policy_version=g.team_policy_version
             and r.workspace_policy_id=g.workspace_policy_id and r.workspace_policy_version=g.workspace_policy_version
             and ${cumulativeRepresentationAuthorizationSql("r.representation")}
+            and ${sharingReasonAuthorizesRepresentationSql()}
             and (
               $12::text='global'
               or ($12::text='session' and local_memory.local_session_id=$13::uuid)
@@ -18396,8 +23830,10 @@ export const createSharedMemoryRepository = (
               select 1 from team_memory_representation_records newer
                where newer.share_grant_id=r.share_grant_id
                  and newer.representation=r.representation
+                 and newer.consent_id=r.consent_id
                  and newer.state in ('available','stale')
                  and newer.source_revision>r.source_revision
+                 and ${sharingReasonAuthorizesRepresentationSql("newer")}
             )
           group by r.representation
           order by r.representation`,
@@ -18474,7 +23910,7 @@ export const createSharedMemoryRepository = (
            join team_memory_representation_records r on r.id=smi.representation_id
              and r.state in ('available','stale') and r.invalidated_at is null
              and (r.curated_expires_at is null or r.curated_expires_at>now())
-           join team_memory_share_grant_records g on g.id=smi.share_grant_id
+           join ${representationPublicationAuthoritySql} on g.id=smi.share_grant_id and g.publication_representation_id=r.id
              and g.team_workspace_id=$2 and g.lifecycle='active' and g.revoked_at is null
              and g.consent_id=r.consent_id
            join teams t on t.id=g.team_id and t.lifecycle='active'
@@ -18488,10 +23924,10 @@ export const createSharedMemoryRepository = (
              and wa.team_id=g.team_id and wa.user_id=$1 and wa.disabled_at is null
              and wa.access in ('read','write')
            join source_owner_representation_consent_records c on c.id=g.consent_id
-             and c.state='active' and c.revoked_at is null
+             and c.state in ('active','paused') and c.revoked_at is null
              and (c.expires_at is null or c.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
-             and op.version=g.source_owner_policy_version and op.superseded_at is null
+             and op.version=g.source_owner_policy_version and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id and ${retainedOwnerPolicyAuthorizationSql("op")}
            join team_representation_policies tp on tp.policy_id=g.team_policy_id
              and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
            join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
@@ -18529,6 +23965,7 @@ export const createSharedMemoryRepository = (
             and r.team_policy_id=g.team_policy_id and r.team_policy_version=g.team_policy_version
             and r.workspace_policy_id=g.workspace_policy_id and r.workspace_policy_version=g.workspace_policy_version
             and ${cumulativeRepresentationAuthorizationSql("r.representation")}
+            and ${sharingReasonAuthorizesRepresentationSql()}
             and (
               $12::text='global'
               or ($12::text='session' and local_memory.local_session_id=$13::uuid)
@@ -18558,8 +23995,10 @@ export const createSharedMemoryRepository = (
               select 1 from team_memory_representation_records newer
                where newer.share_grant_id=r.share_grant_id
                  and newer.representation=r.representation
+                 and newer.consent_id=r.consent_id
                  and newer.state in ('available','stale')
                  and newer.source_revision>r.source_revision
+                 and ${sharingReasonAuthorizesRepresentationSql("newer")}
             )
           order by v.embedding <=> $6::${semanticVectorCast(input.dimensions)},smi.id
           limit $11`,
@@ -18603,11 +24042,13 @@ export const createSharedMemoryRepository = (
               limits.current
             )
           : { rows: [] as Row[] };
-      // Merge before disclosure so pool overlap consumes neither another decrypt
-      // nor another evidence slot. Grant-scoped source IDs retain visibility.
+      // Merge pool overlap before disclosure. Independent reasons can publish
+      // the same source revision in different records; retain each exact record
+      // until hydration selects the currently authorized representation.
       const merged = new Map<string, Row>();
       for (const row of [...globalRows.rows, ...currentRows.rows]) {
         const key = JSON.stringify([
+          row.representation_id,
           row.representation,
           row.pseudonymous_source_id,
           row.source_item_index,
@@ -18684,7 +24125,7 @@ export const createSharedMemoryRepository = (
              and r.logical_memory_id=smi.logical_memory_id
              and r.state in ('available','stale') and r.invalidated_at is null
              and (r.curated_expires_at is null or r.curated_expires_at>now())
-           join team_memory_share_grant_records g on g.id=smi.share_grant_id
+           join ${representationPublicationAuthoritySql} on g.id=smi.share_grant_id and g.publication_representation_id=r.id
              and g.lifecycle='active' and g.revoked_at is null
              and g.consent_id=r.consent_id
            join teams t on t.id=g.team_id and t.lifecycle='active'
@@ -18698,10 +24139,10 @@ export const createSharedMemoryRepository = (
              and wa.team_id=g.team_id and wa.user_id=u.id and wa.disabled_at is null
              and wa.access in ('read','write')
            join source_owner_representation_consent_records consent on consent.id=g.consent_id
-             and consent.state='active' and consent.revoked_at is null
+             and consent.state in ('active','paused') and consent.revoked_at is null
              and (consent.expires_at is null or consent.expires_at>now())
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
-             and op.version=g.source_owner_policy_version and op.superseded_at is null
+             and op.version=g.source_owner_policy_version and op.logical_memory_id=g.logical_memory_id and op.source_owner_principal_id=g.owner_principal_id and ${retainedOwnerPolicyAuthorizationSql("op")}
            join team_representation_policies tp on tp.policy_id=g.team_policy_id
              and tp.version=g.team_policy_version and tp.team_id=g.team_id
              and tp.superseded_at is null
@@ -18742,6 +24183,7 @@ export const createSharedMemoryRepository = (
             and ${cumulativeRepresentationAuthorizationSql("r.representation", {
               consent: "consent"
             })}
+            and ${sharingReasonAuthorizesRepresentationSql()}
             and (
               $3::text='global'
               or ($3::text='session' and local_memory.local_session_id=$4::uuid)
@@ -18970,6 +24412,11 @@ export const createSharedMemoryRepository = (
         );
         if (!authorized) return null;
         const { row, grant, representation, teamSourceBinding } = authorized;
+        grant.displayTitle = await readRepresentationTitle(
+          client,
+          grant,
+          representation
+        );
         const chunksResult = await client.query(
           `select id,chunk_index,aad from team_memory_representation_chunks
           where representation_id=$1 and share_grant_id=$2 and team_id=$3

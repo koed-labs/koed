@@ -137,6 +137,18 @@ const personalProject: PersonalDesktopProject = {
   ]
 };
 
+const interactionReviewGit = {
+  kind: "portable_repository" as const,
+  key: "gr_browser_review_anchor",
+  root: "/private/operator/koed",
+  branch: "main",
+  reason: "origin" as const,
+  checkoutId: "browser-review-checkout",
+  originatingDeviceId: "browser-review-device",
+  selectedRemote: "origin",
+  anchorDisplay: "example.test/koed-review"
+};
+
 const independentProjectMetadata: PersonalDesktopProjectMetadata = {
   schemaVersion: 1,
   discoveredAt: timestamp,
@@ -1276,6 +1288,15 @@ const createInteractionPersonalMemoryApi = (
   };
   return {
     ...personalMemoryApi,
+    listProjects: async () => [
+      { ...personalProject, repository: interactionReviewGit }
+    ],
+    listProjectMetadata: async () =>
+      ((await personalMemoryApi.listProjectMetadata?.()) ?? []).map((entry) =>
+        entry.localProjectId === personalProject.id
+          ? { ...entry, repository: interactionReviewGit }
+          : entry
+      ),
     listNotes: async () => ({
       notes: notes.map(interactionNoteSummary),
       nextBeforeSequence: null
@@ -1538,6 +1559,77 @@ const interactionPage = (
   items
 });
 
+const explainFixtureShare = (share: OwnedShareItem): OwnedShareItem => {
+  const record = share.kind === "grant" ? share.grant : share.pendingShare;
+  const grantId =
+    share.kind === "grant" ? share.grant.id : share.pendingShare.grantId;
+  const stopped =
+    share.kind === "grant"
+      ? share.grant.lifecycle !== "active"
+      : share.pendingShare.state === "revoked";
+  return {
+    ...share,
+    summary: {
+      ...share.summary,
+      sharingReasons: grantId
+        ? [
+            {
+              id: grantId,
+              kind: "direct",
+              rule: null,
+              consentId: record.consentId,
+              consentVersion: 1,
+              mode: record.mode,
+              updateState: stopped
+                ? "stopped"
+                : record.mode === "snapshot"
+                  ? "fixed_snapshot"
+                  : share.kind === "pending" &&
+                      share.pendingShare.sourceUpdateState === "paused"
+                    ? "paused"
+                    : "active",
+              maximumFidelity: record.maximumFidelity,
+              includeCuratedMemory: record.includeCuratedMemory,
+              permittedRepresentations: record.sourceCapabilities.filter(
+                (value) =>
+                  value === "curated_assertions"
+                    ? record.includeCuratedMemory
+                    : ["lcm_rollups", "lcm_leaves", "memory_events"].indexOf(
+                        value
+                      ) <=
+                      ["lcm_rollups", "lcm_leaves", "memory_events"].indexOf(
+                        record.maximumFidelity
+                      )
+              ),
+              maximumAuthorizedSourceRevision:
+                record.mode === "snapshot" ? record.sourceRevision : null,
+              expiresAt: null,
+              repositorySnapshot: {
+                version: 1,
+                classification: "unresolved",
+                fingerprint: null,
+                label: null,
+                branchObservation: null
+              },
+              repositorySnapshotSourceRevision: record.sourceRevision,
+              publishedRepresentations:
+                stopped || share.summary.lastReadyRevision === null
+                  ? []
+                  : [
+                      {
+                        representation: record.activationRepresentation,
+                        sourceRevision: share.summary.lastReadyRevision,
+                        recordVersion: 1,
+                        state: "available"
+                      }
+                    ]
+            }
+          ]
+        : []
+    }
+  };
+};
+
 const createStatefulCollaborationBridge = (actor: StatefulActor) => {
   let connection: CollaborationSnapshot["connection"] = {
     state: "live",
@@ -1628,7 +1720,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
         sourceRevision: 12
       },
       lastReadyRevision: 12,
-      lastSuccessfulUpdateAt: timestamp
+      lastSuccessfulUpdateAt: timestamp,
+      sharingReasons: []
     }
   };
   let activeOwnedShare: Extract<OwnedShareItem, { kind: "grant" }> | null = {
@@ -1677,7 +1770,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       mode: "snapshot",
       authorizedPreview: null,
       lastReadyRevision: 12,
-      lastSuccessfulUpdateAt: timestamp
+      lastSuccessfulUpdateAt: timestamp,
+      sharingReasons: []
     }
   };
   let noteOwnedShare: Extract<OwnedShareItem, { kind: "pending" }> | null =
@@ -2205,15 +2299,72 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
             nextCursor: null
           }
         });
+      case "collaboration.review_git_anchor_sharing": {
+        const last = parsed.input.cursor !== null;
+        const entry = {
+          source: {
+            localSessionId: interactionIds.alphaSession,
+            localLogicalSessionId: interactionIds.alphaMemory,
+            portable: null,
+            identityState: "local_only" as const,
+            contextVersion: { git: 1, folder: 1 }
+          },
+          reason: {
+            kind: "selection" as const,
+            targetKind: "repository" as const
+          },
+          projectVersion: null,
+          title: "Existing eligible Conversation",
+          readiness: "eligible" as const,
+          sourceRevision: 12,
+          itemCount: 1
+        };
+        return result(parsed, {
+          review: {
+            target: parsed.input.target,
+            destination: {
+              teamId: parsed.input.teamId,
+              workspaceId: parsed.input.workspaceId,
+              representation: parsed.input.representation,
+              effectiveMaximumFidelity: "memory_events",
+              effectiveIncludeCuratedMemory: false,
+              teamPolicyVersion: 1,
+              teamPolicyHash: "a".repeat(64),
+              workspacePolicyVersion: 1,
+              workspacePolicyHash: "b".repeat(64)
+            },
+            snapshotVersion: uuid(901),
+            entries: last
+              ? [
+                  entry,
+                  {
+                    ...entry,
+                    source: { ...entry.source, localSessionId: uuid(902) },
+                    title: "Conversation awaiting selected detail",
+                    readiness: "unresolved",
+                    sourceRevision: null,
+                    itemCount: null
+                  }
+                ]
+              : [entry],
+            nextCursor: last ? null : "browser-review-next-page",
+            complete: last,
+            completionToken: last ? "browser-completed-review" : null,
+            includesFutureConversations: true,
+            expiresAt: timestamp
+          }
+        });
+      }
       case "collaboration.list_owned_shares":
         return result(parsed, {
-          shares: parsed.input.history
+          shares: (parsed.input.history
             ? revokedOwnedShares
             : [
                 ...(noteOwnedShare ? [noteOwnedShare] : []),
                 pendingOwnedShare,
                 ...(activeOwnedShare ? [activeOwnedShare] : [])
-              ],
+              ]
+          ).map(explainFixtureShare),
           nextCursor: null
         });
       case "collaboration.preview_shared_memory_candidate": {
@@ -2421,7 +2572,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
                 sourceRevision: 1
               },
               lastReadyRevision: 1,
-              lastSuccessfulUpdateAt: timestamp
+              lastSuccessfulUpdateAt: timestamp,
+              sharingReasons: []
             }
           };
         }
@@ -2442,7 +2594,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
               parsed.input.id
         );
         if (!share) return failure(parsed);
-        return result(parsed, { share });
+        return result(parsed, { share: explainFixtureShare(share) });
       }
       case "collaboration.list_owned_shared_memory_grants":
         return result(parsed, {
@@ -2933,7 +3085,8 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           sourceRevision: note.revision
         },
         lastReadyRevision: note.revision,
-        lastSuccessfulUpdateAt: timestamp
+        lastSuccessfulUpdateAt: timestamp,
+        sharingReasons: []
       }
     };
     emitContinuousNoteStatus();

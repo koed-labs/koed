@@ -11,6 +11,7 @@ const stateCopy: Record<CollaborationActionGrantProjection["state"], string> = {
   awaiting_review: "Waiting for your review",
   approved: "Approved",
   executing: "Applying approved change",
+  queued: "Waiting for Team acknowledgment",
   completed: "Complete",
   denied: "Denied",
   expired: "Approval expired",
@@ -26,6 +27,7 @@ const stateTone: Record<
   awaiting_review: "warning",
   approved: "neutral",
   executing: "neutral",
+  queued: "warning",
   completed: "success",
   denied: "destructive",
   expired: "warning",
@@ -37,7 +39,11 @@ const stateIcon = (
   state: CollaborationActionGrantProjection["state"]
 ): ReactNode => {
   if (state === "completed") return <Check />;
-  if (state === "awaiting_approval" || state === "awaiting_review") {
+  if (
+    state === "awaiting_approval" ||
+    state === "awaiting_review" ||
+    state === "queued"
+  ) {
     return <Clock />;
   }
   if (state === "approved" || state === "executing") {

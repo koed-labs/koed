@@ -10,6 +10,7 @@ import {
 import type { ActorContext } from "./types.js";
 import { personalSourceSelectionSql } from "./personal-selection-sql.js";
 import { personalProjectMembershipReasonsSql } from "./personal-project-rule-repository.js";
+import { evaluatePersonalSelectionMembers } from "./personal-selection-member-evaluation.js";
 import {
   selectionConsumerError,
   withSelectionConsumerTransaction,
@@ -17,13 +18,15 @@ import {
   retainConsumerCursor,
   currentConsumerSnapshot,
   resolveConsumerSelection,
-  type ConsumerCursor
+  type ConsumerCursor,
+  type SelectionConsumerOptions
 } from "./personal-selection-consumer-state.js";
 
 const page = async (
   client: pg.PoolClient,
   actor: ActorContext,
-  cursor: Omit<ConsumerCursor, "cursor_id">
+  cursor: Omit<ConsumerCursor, "cursor_id">,
+  options: SelectionConsumerOptions
 ) => {
   const changed = await client.query(
     `select 1 from personal_selection_changes where owner_user_id=$1
@@ -39,7 +42,8 @@ const page = async (
   const resolved = await resolveConsumerSelection(
     client,
     actor,
-    cursor.selection
+    cursor.selection,
+    options
   );
   const named = resolved.nativeProjectId;
   const reasonSql = named
@@ -60,7 +64,7 @@ const page = async (
     reason.id reason_id,reason.value reason from sessions s
     left join personal_source_bindings b on b.owner_user_id=s.owner_user_id and b.local_session_id=s.id and b.local_logical_session_id=s.logical_session_id and b.availability='available'
     cross join lateral (${reasonSql}) reason
-    where s.owner_user_id=$1 and ${personalSourceSelectionSql("s", "$2")} and pds_session_recall_ready(s.id)
+    where s.owner_user_id=$1 and not $6::boolean and ${personalSourceSelectionSql("s", "$2")} and pds_session_recall_ready(s.id)
       and not exists(select 1 from personal_source_bindings pending where pending.owner_user_id=s.owner_user_id and pending.local_session_id=s.id
         and (pending.availability<>'available' or pending.local_logical_session_id is distinct from s.logical_session_id))
       and ($4::uuid is null or (s.id,reason.id)>($4::uuid,$5::uuid))
@@ -70,7 +74,8 @@ const page = async (
       resolved.selection,
       named ?? cursor.selection.target.kind,
       cursor.after_source?.sessionId ?? null,
-      cursor.after_source?.reasonId ?? null
+      cursor.after_source?.reasonId ?? null,
+      resolved.projectDeleted === true
     ]
   );
   const entries = rows.rows.slice(0, 100),
@@ -107,7 +112,13 @@ const page = async (
   });
 };
 
-export const createPersonalSelectionConsumerRepository = (pool: pg.Pool) => ({
+export const createPersonalSelectionConsumerRepository = (
+  pool: pg.Pool,
+  options: SelectionConsumerOptions = {}
+) => ({
+  evaluatePersonalSelectionMembers(actor: ActorContext, raw: unknown) {
+    return evaluatePersonalSelectionMembers(pool, actor, raw, options);
+  },
   async startPersonalSelectionEnumeration(actor: ActorContext, raw: unknown) {
     const input = personalSelectionConsumerStartSchema.parse(raw);
     const selection = personalSelectionConsumerSelectionSchema.parse({
@@ -116,17 +127,22 @@ export const createPersonalSelectionConsumerRepository = (pool: pg.Pool) => ({
       target: input.target
     });
     return withSelectionConsumerTransaction(pool, actor, async (client) =>
-      page(client, actor, {
-        owner_user_id: actor.userId,
-        kind: "enumeration",
-        selection,
-        snapshot_version: randomUUID(),
-        from_snapshot: await currentConsumerSnapshot(client),
-        to_snapshot: null,
-        after_source: null,
-        after_change_id: null,
-        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000)
-      })
+      page(
+        client,
+        actor,
+        {
+          owner_user_id: actor.userId,
+          kind: "enumeration",
+          selection,
+          snapshot_version: randomUUID(),
+          from_snapshot: await currentConsumerSnapshot(client),
+          to_snapshot: null,
+          after_source: null,
+          after_change_id: null,
+          expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000)
+        },
+        options
+      )
     );
   },
   async continuePersonalSelectionEnumeration(
@@ -143,7 +159,7 @@ export const createPersonalSelectionConsumerRepository = (pool: pg.Pool) => ({
           400,
           "This cursor does not continue an enumeration"
         );
-      return page(client, actor, cursor);
+      return page(client, actor, cursor, options);
     });
   },
   async reconcilePersonalSelectionChanges(actor: ActorContext, raw: unknown) {

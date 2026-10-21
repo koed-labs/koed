@@ -6,6 +6,9 @@ import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
+  crossIdentitySyncDeterministicUuid,
+  sharingRuleDetailReviewSchema,
+  type SharingRuleDelivery,
   type CollaborationMessage,
   type CollaborationSelection,
   type CollaborationSnapshot,
@@ -974,6 +977,7 @@ const createClient = (initial = baseSnapshot()): MockClient => {
     getOwnedShare: vi.fn(async () => {
       throw new Error("No owned share fixture");
     }),
+    reviewGitAnchorSharing: vi.fn(),
     controlPendingShare: vi.fn(),
     shareConversationSource: vi.fn(),
     revokeConversationSource: vi.fn(),
@@ -1060,6 +1064,38 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       revokedAt: null,
       companionThreadId: ids.discussion
     })),
+    reviewConversationRuleCreation: vi.fn(async () => {
+      throw new Error("Unexpected rule creation review");
+    }),
+    createConversationRule: vi.fn(async () => {
+      throw new Error("Unexpected rule creation");
+    }),
+    reviewRepositoryRuleCreation: vi.fn(async () => {
+      throw new Error("Unexpected Git Anchor rule review");
+    }),
+    createRepositoryRule: vi.fn(async () => {
+      throw new Error("Unexpected Git Anchor rule creation");
+    }),
+    listRepositoryRules: vi.fn(async () => ({ rules: [], nextCursor: null })),
+    reviewRuleDetail: vi.fn(async () => {
+      throw new Error("No detail review configured");
+    }),
+    amendRuleDetail: vi.fn(async () => {
+      throw new Error("No detail amendment configured");
+    }),
+    controlSharingRule: vi.fn(async () => {
+      throw new Error("Unexpected sharing rule control");
+    }),
+    controlRepositoryRule: vi.fn(async () => {
+      throw new Error("Unexpected Git Anchor group control");
+    }),
+    reviewRuleContentPolicy: vi.fn(async () => {
+      throw new Error("No detail review configured");
+    }),
+    amendRuleContentPolicy: vi.fn(async () => {
+      throw new Error("No detail amendment configured");
+    }),
+    listSharingRuleDeliveries: vi.fn(async () => []),
     revokeSharedMemory: vi.fn(async () => {
       throw new Error(
         "Shared Memory owner flow is not configured in this fixture"
@@ -1247,6 +1283,70 @@ const createPersonalMemoryApi = (): PersonalDesktopApi => {
     subscribe: vi.fn(() => () => undefined)
   };
 };
+
+const activatedOwnedShare = (): Extract<
+  OwnedShareItem,
+  { kind: "pending" }
+> => ({
+  kind: "pending",
+  pendingShare: {
+    source: {
+      kind: "captured_session",
+      sessionId: ids.eventSession,
+      logicalMemoryId: ids.logicalMemory
+    },
+    sourceCapabilities: ["memory_events"],
+    activationRepresentation: "memory_events",
+    id: uuid(601),
+    mutationId: uuid(602),
+    logicalGrantId: uuid(603),
+    consentId: uuid(604),
+    logicalMemoryId: ids.logicalMemory,
+    teamId: ids.team,
+    workspaceId: ids.workspace,
+    maximumFidelity: "memory_events",
+    includeCuratedMemory: false,
+    mode: "continuous",
+    sourceRevision: 12,
+    state: "activated",
+    stage: "complete",
+    workspaceAccessState: "active",
+    sourceUpdateState: "active",
+    operationVersion: 3,
+    attemptCount: 1,
+    redactedFailureCode: null,
+    lastProgressAt: at,
+    createdAt: at,
+    updatedAt: at,
+    activatedAt: at,
+    revokedAt: null,
+    grantId: uuid(605),
+    grantVersion: 2
+  },
+  sourceAccess: null,
+  summary: {
+    source: {
+      kind: "captured_session",
+      sessionId: ids.eventSession,
+      logicalMemoryId: ids.logicalMemory
+    },
+    sourceSessionId: ids.eventSession,
+    sourceTitle: "Async sharing fixture",
+    teamName: "Atlas Research",
+    workspaceName: "Launch Plans",
+    workspaceContentAccess: "available",
+    mode: "continuous",
+    authorizedPreview: {
+      previewId: uuid(606),
+      previewHash: "a".repeat(64),
+      previewRevision: 1,
+      sourceRevision: 12
+    },
+    lastReadyRevision: 12,
+    lastSuccessfulUpdateAt: at,
+    sharingReasons: []
+  }
+});
 
 describe("CollaborationApp", () => {
   let container: HTMLDivElement;
@@ -1813,112 +1913,144 @@ describe("CollaborationApp", () => {
     );
   });
 
-  it("tracks an accepted Pending Share when the owner modal is reopened", async () => {
-    const snapshot = baseSnapshot();
-    const entry = snapshot.navigation.personal.memory[0]!;
-    const client = createClient(snapshot);
-    const pending: OwnedShareItem = {
-      kind: "pending",
-      pendingShare: {
-        source: {
-          kind: "captured_session",
-          sessionId: entry.id,
-          logicalMemoryId: entry.logicalMemoryId!
-        },
-        sourceCapabilities: ["memory_events"],
-        activationRepresentation: "memory_events",
-        id: uuid(620),
-        mutationId: uuid(621),
-        logicalGrantId: uuid(622),
-        consentId: uuid(623),
-        logicalMemoryId: entry.logicalMemoryId!,
-        teamId: ids.team,
-        workspaceId: ids.workspace,
-        maximumFidelity: "memory_events",
-        includeCuratedMemory: false,
-        mode: "continuous",
-        sourceRevision: 12,
-        state: "preparing",
-        stage: "processing",
-        workspaceAccessState: "none",
-        sourceUpdateState: "preparing",
-        operationVersion: 2,
-        attemptCount: 1,
-        redactedFailureCode: null,
-        lastProgressAt: at,
-        createdAt: at,
-        updatedAt: at,
-        activatedAt: null,
-        revokedAt: null,
-        grantId: null,
-        grantVersion: null
-      },
-      sourceAccess: null,
-      summary: {
-        source: {
-          kind: "captured_session",
-          sessionId: entry.id,
-          logicalMemoryId: entry.logicalMemoryId!
-        },
-        sourceSessionId: entry.id,
-        sourceTitle: entry.title,
-        teamName: "Atlas Research",
-        workspaceName: "Launch Plans",
-        workspaceContentAccess: "available",
-        mode: "continuous",
-        authorizedPreview: {
-          previewId: uuid(624),
-          previewHash: "a".repeat(64),
-          previewRevision: 1,
-          sourceRevision: 12
-        },
-        lastReadyRevision: null,
-        lastSuccessfulUpdateAt: null
+  it.each([false, true])(
+    "tracks an accepted Pending Share and selects an unshared destination when available: %s",
+    async (anotherWorkspace) => {
+      const snapshot = baseSnapshot();
+      if (anotherWorkspace) {
+        const team = snapshot.navigation.teams[0]!;
+        team.workspaces.push({
+          ...team.workspaces[0]!,
+          id: uuid(625),
+          name: "Design",
+          channels: [],
+          sharedMemory: []
+        });
       }
-    };
-    vi.mocked(client.listOwnedShares).mockResolvedValue({
-      shares: [pending],
-      nextCursor: null
-    });
+      const entry = snapshot.navigation.personal.memory[0]!;
+      const client = createClient(snapshot);
+      const pending: OwnedShareItem = {
+        kind: "pending",
+        pendingShare: {
+          source: {
+            kind: "captured_session",
+            sessionId: entry.id,
+            logicalMemoryId: entry.logicalMemoryId!
+          },
+          sourceCapabilities: ["memory_events"],
+          activationRepresentation: "memory_events",
+          id: uuid(620),
+          mutationId: uuid(621),
+          logicalGrantId: uuid(622),
+          consentId: uuid(623),
+          logicalMemoryId: entry.logicalMemoryId!,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          mode: "continuous",
+          sourceRevision: 12,
+          state: "preparing",
+          stage: "processing",
+          workspaceAccessState: "none",
+          sourceUpdateState: "preparing",
+          operationVersion: 2,
+          attemptCount: 1,
+          redactedFailureCode: null,
+          lastProgressAt: at,
+          createdAt: at,
+          updatedAt: at,
+          activatedAt: null,
+          revokedAt: null,
+          grantId: null,
+          grantVersion: null
+        },
+        sourceAccess: null,
+        summary: {
+          source: {
+            kind: "captured_session",
+            sessionId: entry.id,
+            logicalMemoryId: entry.logicalMemoryId!
+          },
+          sourceSessionId: entry.id,
+          sourceTitle: entry.title,
+          teamName: "Atlas Research",
+          workspaceName: "Launch Plans",
+          workspaceContentAccess: "available",
+          mode: "continuous",
+          authorizedPreview: {
+            previewId: uuid(624),
+            previewHash: "a".repeat(64),
+            previewRevision: 1,
+            sourceRevision: 12
+          },
+          lastReadyRevision: null,
+          lastSuccessfulUpdateAt: null,
+          sharingReasons: []
+        }
+      };
+      vi.mocked(client.listOwnedShares).mockResolvedValue({
+        shares: [pending],
+        nextCursor: null
+      });
 
-    await act(async () =>
-      root.render(
-        <CollaborationModalLayer
-          client={client}
-          markdownAdapters={{
-            openExternal: vi.fn(async () => undefined),
-            writeClipboard: vi.fn(async () => undefined)
-          }}
-          modal={{ kind: "share_personal_memory", sessionId: entry.id }}
-          onModalChange={vi.fn()}
-          snapshot={snapshot}
-        />
-      )
-    );
+      await act(async () =>
+        root.render(
+          <CollaborationModalLayer
+            client={client}
+            markdownAdapters={{
+              openExternal: vi.fn(async () => undefined),
+              writeClipboard: vi.fn(async () => undefined)
+            }}
+            modal={{ kind: "share_personal_memory", sessionId: entry.id }}
+            onModalChange={vi.fn()}
+            snapshot={snapshot}
+          />
+        )
+      );
 
-    await vi.waitFor(() =>
-      expect(document.body.textContent).toContain(
-        "preparing · privacy filtering"
-      )
-    );
-    expect(document.body.textContent).not.toContain("Not shared yet.");
-    expect(client.listOwnedShares).toHaveBeenCalledWith({
-      cursor: null,
-      limit: 100,
-      history: false
-    });
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain(
+          "preparing · privacy filtering"
+        )
+      );
+      expect(document.body.textContent).not.toContain("Not shared yet.");
+      expect(client.listOwnedShares).toHaveBeenCalledWith({
+        cursor: null,
+        limit: 100,
+        history: false
+      });
 
-    await click(container, "Share with another Workspace");
-    await vi.waitFor(() =>
-      expect(document.body.textContent).toContain(
-        "Sharing to this Workspace is already being prepared."
-      )
-    );
-    const review = Array.from(
-      document.body.querySelectorAll<HTMLButtonElement>("button")
-    ).find((button) => button.textContent === "Review");
-    expect(review?.disabled).toBe(true);
-  });
+      await click(container, "Share with another Workspace");
+      if (anotherWorkspace) {
+        await vi.waitFor(() =>
+          expect(
+            [...document.body.querySelectorAll("select")].find((select) =>
+              [...select.options].some((option) => option.value === uuid(625))
+            )?.value
+          ).toBe(uuid(625))
+        );
+        expect(document.body.textContent).not.toContain(
+          "Sharing to this Workspace is already being prepared."
+        );
+        expect(client.createConversationRule).not.toHaveBeenCalled();
+        expect(client.controlSharingRule).not.toHaveBeenCalled();
+        expect(client.changeSharedMemoryFidelity).not.toHaveBeenCalled();
+        expect(client.revokeSharedMemory).not.toHaveBeenCalled();
+        expect(pending.pendingShare.state).toBe("preparing");
+      } else {
+        await vi.waitFor(() =>
+          expect(document.body.textContent).toContain(
+            "Sharing to this Workspace is already being prepared."
+          )
+        );
+      }
+      const review = Array.from(
+        document.body.querySelectorAll<HTMLButtonElement>("button")
+      ).find((button) => button.textContent === "Review");
+      expect(review?.disabled).toBe(!anotherWorkspace);
+    }
+  );
 
   it("defaults a Personal Note Share to continuous updates", async () => {
     const snapshot = baseSnapshot();
@@ -2369,7 +2501,8 @@ describe("CollaborationApp", () => {
           sourceRevision: 12
         },
         lastReadyRevision: 12,
-        lastSuccessfulUpdateAt: at
+        lastSuccessfulUpdateAt: at,
+        sharingReasons: []
       }
     };
     const paused: OwnedShareItem = {
@@ -2773,7 +2906,8 @@ describe("CollaborationApp", () => {
         mode: "continuous",
         authorizedPreview: null,
         lastReadyRevision: 12,
-        lastSuccessfulUpdateAt: at
+        lastSuccessfulUpdateAt: at,
+        sharingReasons: []
       }
     };
     const client = createClient(snapshot);
@@ -2906,7 +3040,8 @@ describe("CollaborationApp", () => {
         mode: "continuous",
         authorizedPreview: null,
         lastReadyRevision: 12,
-        lastSuccessfulUpdateAt: at
+        lastSuccessfulUpdateAt: at,
+        sharingReasons: []
       }
     };
     const client = createClient(snapshot);
@@ -3233,7 +3368,8 @@ describe("CollaborationApp", () => {
         mode: "continuous",
         authorizedPreview: null,
         lastReadyRevision: null,
-        lastSuccessfulUpdateAt: null
+        lastSuccessfulUpdateAt: null,
+        sharingReasons: []
       }
     };
     const client = createClient(snapshot);
@@ -4851,7 +4987,8 @@ describe("CollaborationApp", () => {
         mode: "continuous",
         authorizedPreview: null,
         lastReadyRevision: null,
-        lastSuccessfulUpdateAt: null
+        lastSuccessfulUpdateAt: null,
+        sharingReasons: []
       }
     };
     const client = createClient(snapshot);
@@ -4884,68 +5021,308 @@ describe("CollaborationApp", () => {
     ).not.toBeNull();
   });
 
+  it.each([false, true])(
+    "refreshes pending Shares to active without a live event, including transient read failure (%s)",
+    async (transientFailure) => {
+      vi.useFakeTimers();
+      const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+      const activated = activatedOwnedShare();
+      let current = {
+        ...activated,
+        pendingShare: {
+          ...activated.pendingShare,
+          state: "preparing" as const,
+          stage: "privacy_filtering" as const,
+          workspaceAccessState: "none" as const,
+          activatedAt: null
+        }
+      } as OwnedShareItem;
+      const client = createClient(snapshot);
+      let failNext = false;
+      vi.mocked(client.listOwnedShares).mockImplementation(
+        async ({ history }) => {
+          if (!history && failNext) {
+            failNext = false;
+            throw new CollaborationClientError({
+              code: "offline",
+              userMessage: "Team Backend unavailable",
+              retryable: true,
+              retryAfterMs: null
+            });
+          }
+          return { shares: history ? [] : [current], nextCursor: null };
+        }
+      );
+      vi.mocked(client.getOwnedShare).mockImplementation(async () => current);
+      await act(async () =>
+        root.render(
+          <PersonalMemoryView
+            client={client}
+            initialSection="shares"
+            markdownAdapters={{
+              openExternal: vi.fn(),
+              writeClipboard: vi.fn()
+            }}
+            onShare={vi.fn()}
+            snapshot={snapshot}
+          />
+        )
+      );
+      const row = document.body.querySelector<HTMLButtonElement>(
+        '[aria-label="Async sharing fixture, Launch Plans, preparing"]'
+      );
+      expect(row).not.toBeNull();
+      row!.focus();
+      current = activated;
+      failNext = transientFailure;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      if (transientFailure) {
+        expect(document.body.textContent).toContain("Shares unavailable");
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1_000);
+        });
+      }
+      const activeRow = document.body.querySelector<HTMLButtonElement>(
+        '[aria-label="Async sharing fixture, Launch Plans, Sharing updates"]'
+      );
+      expect(activeRow).not.toBeNull();
+      expect(document.activeElement).toBe(activeRow);
+      expect(document.body.textContent).not.toContain("Shares unavailable");
+      const callsAfterActivation = vi.mocked(client.listOwnedShares).mock.calls
+        .length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(client.listOwnedShares).toHaveBeenCalledTimes(
+        callsAfterActivation
+      );
+    }
+  );
+
+  it("refreshes an active continuous Share source preview to its latest published revision", async () => {
+    vi.useFakeTimers();
+    const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+    const activated = activatedOwnedShare();
+    activated.summary.sharingReasons = [
+      {
+        id: uuid(701),
+        kind: "direct",
+        rule: null,
+        consentId: activated.pendingShare.consentId,
+        consentVersion: 1,
+        mode: "continuous",
+        updateState: "active",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        permittedRepresentations: ["memory_events"],
+        maximumAuthorizedSourceRevision: null,
+        expiresAt: null,
+        repositorySnapshot: {
+          version: 1,
+          classification: "unresolved",
+          fingerprint: null,
+          label: null,
+          branchObservation: null
+        },
+        repositorySnapshotSourceRevision: 12,
+        publishedRepresentations: []
+      }
+    ];
+    let current = activated;
+    const client = createClient(snapshot);
+    vi.mocked(client.listOwnedShares).mockImplementation(
+      async ({ history }) => ({
+        shares: history ? [] : [current],
+        nextCursor: null
+      })
+    );
+    vi.mocked(client.getOwnedShare).mockImplementation(async () => current);
+    await act(async () =>
+      root.render(
+        <PersonalMemoryView
+          client={client}
+          initialSection="shares"
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          onShare={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+    const initialDetailReads = vi.mocked(client.getOwnedShare).mock.calls
+      .length;
+    current = {
+      ...activated,
+      summary: {
+        ...activated.summary,
+        authorizedPreview: {
+          previewId: uuid(702),
+          previewHash: "b".repeat(64),
+          previewRevision: 2,
+          sourceRevision: 13
+        },
+        lastReadyRevision: 13
+      }
+    };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(vi.mocked(client.getOwnedShare).mock.calls.length).toBeGreaterThan(
+      initialDetailReads
+    );
+    current = {
+      ...current,
+      summary: {
+        ...current.summary,
+        sharingReasons: current.summary.sharingReasons.map((reason) => ({
+          ...reason,
+          updateState: "paused"
+        }))
+      }
+    };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    const readsAfterPause = vi.mocked(client.listOwnedShares).mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(client.listOwnedShares).toHaveBeenCalledTimes(readsAfterPause);
+  });
+
+  it("resumes Shares completion refresh after retrying a failed activation", async () => {
+    vi.useFakeTimers();
+    const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+    const activated = activatedOwnedShare();
+    let current = {
+      ...activated,
+      pendingShare: {
+        ...activated.pendingShare,
+        state: "needs_attention" as const,
+        stage: "activating" as const,
+        workspaceAccessState: "none" as const,
+        activatedAt: null
+      }
+    } as OwnedShareItem;
+    const client = createClient(snapshot);
+    vi.mocked(client.listOwnedShares).mockImplementation(
+      async ({ history }) => ({
+        shares: history ? [] : [current],
+        nextCursor: null
+      })
+    );
+    vi.mocked(client.getOwnedShare).mockImplementation(async () => current);
+    vi.mocked(client.controlPendingShare).mockImplementation(async () => {
+      if (current.kind !== "pending") throw new Error("Expected Pending Share");
+      current = {
+        ...current,
+        pendingShare: { ...current.pendingShare, state: "preparing" }
+      };
+      return current.pendingShare;
+    });
+    await act(async () =>
+      root.render(
+        <PersonalMemoryView
+          client={client}
+          initialSection="shares"
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          onShare={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+    const clickButton = async (text: string) => {
+      const button = Array.from(document.body.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent?.trim() === text
+      );
+      expect(button).toBeDefined();
+      await act(async () => button!.click());
+    };
+    await clickButton("Modify");
+    await clickButton("Retry");
+    expect(client.controlPendingShare).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "retry" })
+    );
+    await clickButton("Done");
+    current = activated;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(
+      document.body.querySelector(
+        '[aria-label="Async sharing fixture, Launch Plans, Sharing updates"]'
+      )
+    ).not.toBeNull();
+  });
+
+  it("cancels pending Shares refresh when leaving the view", async () => {
+    vi.useFakeTimers();
+    const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+    const pending = activatedOwnedShare();
+    pending.pendingShare.state = "preparing";
+    pending.pendingShare.stage = "privacy_filtering";
+    pending.pendingShare.workspaceAccessState = "none";
+    const client = createClient(snapshot);
+    vi.mocked(client.listOwnedShares).mockResolvedValue({
+      shares: [pending],
+      nextCursor: null
+    });
+    vi.mocked(client.getOwnedShare).mockResolvedValue(pending);
+    await act(async () =>
+      root.render(
+        <PersonalMemoryView
+          client={client}
+          initialSection="shares"
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          onShare={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+    const calls = vi.mocked(client.listOwnedShares).mock.calls.length;
+    await act(async () => root.render(<div>Closed Shares</div>));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(client.listOwnedShares).toHaveBeenCalledTimes(calls);
+  });
+
+  it("does not retry Shares reads after an access denial", async () => {
+    vi.useFakeTimers();
+    const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+    const client = createClient(snapshot);
+    vi.mocked(client.listOwnedShares).mockRejectedValue(
+      new CollaborationClientError({
+        code: "permission_denied",
+        userMessage: "Access denied",
+        retryable: false,
+        retryAfterMs: null
+      })
+    );
+    await act(async () =>
+      root.render(
+        <PersonalMemoryView
+          client={client}
+          initialSection="shares"
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          onShare={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+    expect(document.body.textContent).toContain("Shares unavailable");
+    const calls = vi.mocked(client.listOwnedShares).mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(client.listOwnedShares).toHaveBeenCalledTimes(calls);
+  });
+
   it("keeps Shares detail focus stable while a continuous Pending Share pauses", async () => {
     const setInterval = vi.spyOn(window, "setInterval");
     const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
-    const pending: OwnedShareItem = {
-      kind: "pending",
-      pendingShare: {
-        source: {
-          kind: "captured_session",
-          sessionId: ids.eventSession,
-          logicalMemoryId: ids.logicalMemory
-        },
-        sourceCapabilities: ["memory_events"],
-        activationRepresentation: "memory_events",
-        id: uuid(601),
-        mutationId: uuid(602),
-        logicalGrantId: uuid(603),
-        consentId: uuid(604),
-        logicalMemoryId: ids.logicalMemory,
-        teamId: ids.team,
-        workspaceId: ids.workspace,
-        maximumFidelity: "memory_events",
-        includeCuratedMemory: false,
-        mode: "continuous",
-        sourceRevision: 12,
-        state: "activated",
-        stage: "complete",
-        workspaceAccessState: "active",
-        sourceUpdateState: "active",
-        operationVersion: 3,
-        attemptCount: 1,
-        redactedFailureCode: null,
-        lastProgressAt: at,
-        createdAt: at,
-        updatedAt: at,
-        activatedAt: at,
-        revokedAt: null,
-        grantId: uuid(605),
-        grantVersion: 2
-      },
-      sourceAccess: null,
-      summary: {
-        source: {
-          kind: "captured_session",
-          sessionId: ids.eventSession,
-          logicalMemoryId: ids.logicalMemory
-        },
-        sourceSessionId: ids.eventSession,
-        sourceTitle: "Async sharing fixture",
-        teamName: "Atlas Research",
-        workspaceName: "Launch Plans",
-        workspaceContentAccess: "available",
-        mode: "continuous",
-        authorizedPreview: {
-          previewId: uuid(606),
-          previewHash: "a".repeat(64),
-          previewRevision: 1,
-          sourceRevision: 12
-        },
-        lastReadyRevision: 12,
-        lastSuccessfulUpdateAt: at
-      }
-    };
+    const pending = activatedOwnedShare();
     const paused: OwnedShareItem = {
       ...pending,
       pendingShare: {
@@ -5710,7 +6087,9 @@ pnpm test
     );
     const readyConsentButton = Array.from(
       document.body.querySelectorAll<HTMLButtonElement>("button")
-    ).find((button) => button.textContent?.trim() === "Share");
+    ).find(
+      (button) => button.textContent?.trim() === "Start continuous sharing"
+    );
     expect(readyConsentButton?.disabled).toBe(false);
     expect(readyConsentButton?.getAttribute("aria-busy")).toBeNull();
     expect(readyConsentButton?.querySelector(".collab-spin")).toBeNull();
@@ -6265,4 +6644,379 @@ pnpm test
       messageId: uuid(403)
     });
   });
+  it("keeps continuous rule creation pending until its exact Team receipt arrives", async () => {
+    const snapshot = baseSnapshot();
+    const client = createClient(snapshot);
+    let delivery: SharingRuleDelivery | null = null;
+    vi.mocked(client.reviewConversationRuleCreation).mockImplementation(
+      async (input) => {
+        const preview = vi
+          .mocked(client.previewSharedMemory)
+          .mock.calls.at(-1)?.[0];
+        if (!preview?.source || preview.source.kind !== "captured_session")
+          throw new Error("Expected a Conversation preview");
+        return {
+          previewId: uuid(940),
+          previewHash: input.previewHash,
+          previewRevision: input.previewRevision,
+          logicalMemoryId: input.logicalMemoryId,
+          teamId: input.teamId,
+          teamWorkspaceId: input.workspaceId,
+          source: preview.source,
+          sourceTitle: "One Conversation",
+          teamName: "Koed Team",
+          workspaceName: "Engineering",
+          logicalGrantId: uuid(941),
+          expectedGrantVersion: null,
+          effectivePrivacyPolicyHash: "e".repeat(64),
+          maximumFidelity: preview.maximumFidelity,
+          includeCuratedMemory: preview.includeCuratedMemory,
+          activationRepresentation: preview.activationRepresentation,
+          sourceCapabilities: preview.sourceCapabilities,
+          expiresAt: null,
+          reviewExpiresAt: "2099-01-01T00:00:00.000Z"
+        };
+      }
+    );
+    vi.mocked(client.createConversationRule).mockImplementation(
+      async (input) => {
+        const { workspaceId, ...intent } = input;
+        delivery = {
+          intent: { ...intent, teamWorkspaceId: workspaceId },
+          presentation: {
+            sourceTitle: "One Conversation",
+            teamName: "Koed Team",
+            workspaceName: "Engineering"
+          },
+          state: "queued",
+          control: null,
+          creation: null,
+          failureCode: null,
+          updatedAt: at
+        };
+        return delivery;
+      }
+    );
+    vi.mocked(client.listSharingRuleDeliveries).mockImplementation(async () =>
+      delivery ? [delivery] : []
+    );
+    const onViewShare = vi.fn();
+    await act(async () =>
+      root.render(
+        <CollaborationModalLayer
+          client={client}
+          markdownAdapters={{
+            openExternal: vi.fn(async () => undefined),
+            writeClipboard: vi.fn(async () => undefined)
+          }}
+          modal={{
+            kind: "share_personal_memory",
+            sessionId: snapshot.navigation.personal.memory[0]!.id
+          }}
+          onModalChange={vi.fn()}
+          onViewShare={onViewShare}
+          snapshot={snapshot}
+        />
+      )
+    );
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Review")
+    );
+    await click(container, "Review");
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector<HTMLButtonElement>(".collab-consent-action")
+          ?.textContent
+      ).toContain("Start continuous sharing")
+    );
+    await click(container, "Start continuous sharing");
+    expect(client.createConversationRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        previewId: uuid(940),
+        logicalGrantId: uuid(941),
+        effectivePrivacyPolicyHash: "e".repeat(64),
+        expectedGrantVersion: null,
+        mode: "continuous"
+      })
+    );
+    expect(client.shareMemory).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Waiting for Team acknowledgment"
+    );
+    expect(document.body.textContent).not.toContain("Sharing accepted");
+    const queued = delivery as SharingRuleDelivery | null;
+    if (!queued) throw new Error("Expected a queued creation");
+    const pendingShareId = crossIdentitySyncDeterministicUuid({
+      kind: "pending_share",
+      mutationId: queued.intent.mutationId
+    });
+    delivery = {
+      ...queued,
+      state: "acknowledged",
+      creation: { pendingShareId, sourceRevision: 12 }
+    };
+    await vi.waitFor(
+      () => expect(document.body.textContent).toContain("Sharing accepted"),
+      { timeout: 4000 }
+    );
+    expect(client.listSharingRuleDeliveries).toHaveBeenCalledWith({
+      mutationId: queued.intent.mutationId
+    });
+    expect(document.body.textContent).toContain("Preparing eligible Memory");
+    expect(document.body.textContent).not.toContain("Share complete");
+    await click(container, "View share");
+    expect(onViewShare).toHaveBeenCalledWith(`pending:${pendingShareId}`);
+  });
+  it.each(["pause", "detail"] as const)(
+    "applies %s to a rule through its activated Pending Share without changing direct consent",
+    async (operation) => {
+      const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+      const pending: OwnedShareItem = {
+        kind: "pending",
+        pendingShare: {
+          source: {
+            kind: "captured_session",
+            sessionId: ids.eventSession,
+            logicalMemoryId: ids.logicalMemory
+          },
+          sourceCapabilities: ["memory_events"],
+          activationRepresentation: "memory_events",
+          id: uuid(601),
+          mutationId: uuid(602),
+          logicalGrantId: uuid(603),
+          consentId: uuid(604),
+          logicalMemoryId: ids.logicalMemory,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          mode: "continuous",
+          sourceRevision: 12,
+          state: "activated",
+          stage: "complete",
+          workspaceAccessState: "active",
+          sourceUpdateState: "active",
+          operationVersion: 3,
+          attemptCount: 1,
+          redactedFailureCode: null,
+          lastProgressAt: at,
+          createdAt: at,
+          updatedAt: at,
+          activatedAt: at,
+          revokedAt: null,
+          grantId: uuid(605),
+          grantVersion: 2
+        },
+        sourceAccess: null,
+        summary: {
+          source: {
+            kind: "captured_session",
+            sessionId: ids.eventSession,
+            logicalMemoryId: ids.logicalMemory
+          },
+          sourceSessionId: ids.eventSession,
+          sourceTitle: "Pending rule controls",
+          teamName: "Atlas Research",
+          workspaceName: "Launch Plans",
+          workspaceContentAccess: "available",
+          mode: "continuous",
+          authorizedPreview: {
+            previewId: uuid(606),
+            previewHash: "a".repeat(64),
+            previewRevision: 1,
+            sourceRevision: 12
+          },
+          lastReadyRevision: 12,
+          lastSuccessfulUpdateAt: at,
+          sharingReasons: []
+        }
+      };
+
+      pending.pendingShare.grantVersion = 7;
+      pending.summary.sharingReasons = [
+        {
+          id: uuid(950),
+          kind: "rule",
+          rule: {
+            id: uuid(951),
+            selectorKind: "captured_session",
+            authorityVersion: 11,
+            publisherFence: 1,
+            state: "active",
+            catchUpState: "idle",
+            failureCode: null
+          },
+          consentId: pending.pendingShare.consentId,
+          consentVersion: 1,
+          mode: "continuous",
+          updateState: "active",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          permittedRepresentations: [
+            "lcm_rollups",
+            "lcm_leaves",
+            "memory_events"
+          ],
+          maximumAuthorizedSourceRevision: null,
+          expiresAt: null,
+          repositorySnapshot: {
+            version: 1,
+            classification: "unresolved",
+            fingerprint: null,
+            label: null,
+            branchObservation: null
+          },
+          repositorySnapshotSourceRevision: null,
+          publishedRepresentations: [
+            {
+              representation: "memory_events",
+              sourceRevision: 12,
+              recordVersion: 1,
+              state: "available"
+            }
+          ]
+        }
+      ];
+      const client = createClient(snapshot);
+      let delivery: SharingRuleDelivery | null = null;
+      vi.mocked(client.listOwnedShares).mockResolvedValue({
+        shares: [pending],
+        nextCursor: null
+      });
+      vi.mocked(client.getOwnedShare).mockResolvedValue(pending);
+      vi.mocked(client.controlSharingRule).mockImplementation(async (input) => {
+        const { workspaceId, ...intent } = input;
+        delivery = {
+          intent: { ...intent, teamWorkspaceId: workspaceId },
+          presentation: {
+            sourceTitle: pending.summary.sourceTitle,
+            teamName: pending.summary.teamName,
+            workspaceName: pending.summary.workspaceName
+          },
+          state: "queued",
+          control: null,
+          creation: null,
+          failureCode: null,
+          updatedAt: at
+        };
+        return delivery;
+      });
+      const detailReview = sharingRuleDetailReviewSchema.parse({
+        ruleId: uuid(951),
+        teamId: pending.pendingShare.teamId,
+        teamWorkspaceId: pending.pendingShare.workspaceId,
+        selectorKind: "captured_session",
+        state: "active",
+        maximumFidelity: "lcm_leaves",
+        includeCuratedMemory: false,
+        previousMaximumFidelity: "memory_events",
+        previousIncludeCuratedMemory: false,
+        expectedAuthorityVersion: 11,
+        publisherFence: 1,
+        teamPolicyVersion: 1,
+        teamPolicyHash: "a".repeat(64),
+        workspacePolicyVersion: 1,
+        workspacePolicyHash: "b".repeat(64),
+        effectivePrivacyPolicyHash: "c".repeat(64),
+        policyBindingHash: "d".repeat(64),
+        memberBindingHash: "e".repeat(64),
+        memberCount: 1,
+        ownerPolicyExpansionCount: 0,
+        disclosureIncrease: false,
+        teamName: pending.summary.teamName,
+        workspaceName: pending.summary.workspaceName,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        reviewHash: "f".repeat(64)
+      });
+      vi.mocked(client.reviewRuleDetail).mockResolvedValue(detailReview);
+      vi.mocked(client.amendRuleDetail).mockImplementation(async (input) => {
+        const { workspaceId, ...intent } = input;
+        delivery = {
+          intent: { ...intent, teamWorkspaceId: workspaceId },
+          presentation: {
+            sourceTitle: pending.summary.sourceTitle,
+            teamName: pending.summary.teamName,
+            workspaceName: pending.summary.workspaceName
+          },
+          state: "queued",
+          control: null,
+          creation: null,
+          failureCode: null,
+          updatedAt: at
+        };
+        return delivery;
+      });
+      vi.mocked(client.listSharingRuleDeliveries).mockImplementation(
+        async () => (delivery ? [delivery] : [])
+      );
+      await act(async () =>
+        root.render(
+          <PersonalMemoryView
+            client={client}
+            initialSection="shares"
+            markdownAdapters={{
+              openExternal: vi.fn(),
+              writeClipboard: vi.fn()
+            }}
+            onShare={vi.fn()}
+            snapshot={snapshot}
+          />
+        )
+      );
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("Pending rule controls")
+      );
+      if (operation === "pause") {
+        await click(container, "Pause updates");
+        expect(client.controlSharingRule).toHaveBeenCalledWith(
+          expect.objectContaining({
+            teamId: pending.pendingShare.teamId,
+            workspaceId: pending.pendingShare.workspaceId,
+            shareGrantId: pending.pendingShare.grantId,
+            ruleId: uuid(951),
+            reasonId: uuid(950),
+            expectedAuthorityVersion: 11,
+            expectedGrantVersion: 7,
+            controlAction: "pause"
+          })
+        );
+      } else {
+        await click(container, "Change rule detail");
+        const select = document.body.querySelector<HTMLSelectElement>(
+          'section[aria-label="Change rule detail"] select'
+        )!;
+        await act(async () => setValue(select, "lcm_leaves"));
+        await click(container, "Review detail change");
+        expect(client.reviewRuleDetail).toHaveBeenCalledExactlyOnceWith({
+          ruleId: uuid(951),
+          teamId: pending.pendingShare.teamId,
+          workspaceId: pending.pendingShare.workspaceId,
+          maximumFidelity: "lcm_leaves",
+          includeCuratedMemory: false
+        });
+        await click(container, "Confirm rule detail");
+        expect(client.amendRuleDetail).toHaveBeenCalledExactlyOnceWith({
+          operationKind: "detail",
+          mutationId: expect.any(String),
+          ruleId: uuid(951),
+          teamId: pending.pendingShare.teamId,
+          workspaceId: pending.pendingShare.workspaceId,
+          review: detailReview
+        });
+        expect(client.controlSharingRule).not.toHaveBeenCalled();
+        expect(client.shareMemory).not.toHaveBeenCalled();
+      }
+      expect(client.controlPendingShare).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(
+        "Waiting for Team acknowledgment"
+      );
+      expect(document.body.textContent).toContain(
+        "Updates active for this Conversation only."
+      );
+      const pause = Array.from(
+        document.body.querySelectorAll<HTMLButtonElement>("button")
+      ).find((button) => button.textContent === "Pause updates");
+      expect(pause?.disabled).toBe(true);
+    }
+  );
 });

@@ -1564,7 +1564,8 @@ export function App({
                     state === "awaiting_approval" ||
                     state === "awaiting_review" ||
                     state === "approved" ||
-                    state === "executing"
+                    state === "executing" ||
+                    state === "queued"
                 )
                 .map((grant) => ({
                   expiresAt: grant.expiresAt,
@@ -1914,6 +1915,16 @@ export function App({
                 ...(source.localEntry ? { localEntry: source.localEntry } : {})
               });
             }}
+            onReviewGitAnchorSharing={
+              snapshot?.connection.state === "live"
+                ? (target, selectionTitle) =>
+                    collaboration.setModal({
+                      kind: "review_git_anchor_sharing",
+                      target,
+                      selectionTitle
+                    })
+                : undefined
+            }
             ready={personalMemoryReady}
             route={personalMemoryRoute(route)}
             sharingRecords={

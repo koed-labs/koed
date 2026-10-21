@@ -43,6 +43,70 @@ export const personalSelectionConsumerStartSchema = z
 export const personalSelectionConsumerContinueSchema = z
   .object({ cursor: z.uuid() })
   .strict();
+/** Recheck known Git Anchor members against a completed, unchanged baseline.
+ * Missing or unavailable sources cannot establish a membership removal. */
+export const personalSelectionMemberEvaluationInputSchema = z
+  .object({
+    cursor: z.uuid(),
+    sources: z
+      .array(
+        z
+          .object({
+            localSessionId: z.uuid(),
+            localLogicalSessionId: z.uuid()
+          })
+          .strict()
+      )
+      .min(1)
+      .max(100)
+  })
+  .strict();
+export const personalSelectionMemberEvaluationSchema = z
+  .object({
+    snapshotVersion: z.uuid(),
+    entries: z
+      .array(
+        z
+          .object({
+            localSessionId: z.uuid(),
+            localLogicalSessionId: z.uuid(),
+            state: z.enum([
+              "matching",
+              "not_matching",
+              "deleted",
+              "unresolved"
+            ]),
+            contextVersion: z
+              .object({
+                git: z.number().int().positive(),
+                folder: z.number().int().positive()
+              })
+              .strict()
+              .nullable(),
+            sourceContextHash: z
+              .string()
+              .regex(/^[a-f0-9]{64}$/)
+              .nullable()
+          })
+          .strict()
+      )
+      .max(100),
+    expiresAt: z.iso.datetime({ offset: true })
+  })
+  .strict()
+  .superRefine((evaluation, context) => {
+    for (const entry of evaluation.entries) {
+      if (
+        (entry.state === "unresolved") !== (entry.sourceContextHash === null) ||
+        (entry.state === "unresolved") !== (entry.contextVersion === null)
+      )
+        context.addIssue({
+          code: "custom",
+          message:
+            "Only conclusive membership evaluations carry source context evidence"
+        });
+    }
+  });
 const source = z
   .object({
     localSessionId: z.uuid(),

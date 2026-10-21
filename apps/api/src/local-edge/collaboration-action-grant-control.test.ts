@@ -1,3 +1,4 @@
+import { contentPolicyReviewFixture } from "../shared-memory/test-fixtures/rule-content-policy-review.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -192,6 +193,37 @@ describe("collaboration Action Grant control", () => {
     };
     return { koedHome, nowRef, fetchMock, control, context };
   };
+
+  it("disables alpha content-policy approval requests before contacting Team", async () => {
+    const fixture = createFixture();
+    const result = await fixture.control.dispatch(
+      parsedCommand({
+        command: "collaboration.request_action_grant",
+        input: {
+          intent: {
+            intent: "collaboration.amend_rule_content_policy",
+            operationKind: "content_policy",
+            commandRequestId: ids.commandRequest,
+            mutationId: ids.mutation,
+            ruleId: ids.logicalGrant,
+            teamId: ids.team,
+            workspaceId: ids.workspace,
+            review: contentPolicyReviewFixture({
+              ruleId: ids.logicalGrant,
+              teamId: ids.team,
+              teamWorkspaceId: ids.workspace
+            })
+          }
+        }
+      }),
+      fixture.context
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "not_available" }
+    });
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+  });
 
   const requestCommand = (): CreateWorkspaceGrantCommand => {
     const command = parsedCommand<RequestActionGrantCommand>({

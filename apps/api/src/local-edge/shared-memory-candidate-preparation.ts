@@ -102,15 +102,23 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     sessionId: string;
     representation: SharedMemoryRepresentation;
     mode: "snapshot" | "continuous";
+    prepareLcm?: boolean;
   }): Promise<SharedMemoryCandidatePreview | null> => {
     const projects = await options.repository.listLcmGraphThreads(
       { userId: input.localOwnerUserId },
-      { limit: 500, includeInvalidated: false }
+      {
+        sessionId: input.sessionId,
+        groupBySession: true,
+        limit: 1,
+        includeInvalidated: false
+      }
     );
     const thread = projects
       .flatMap((project) => project.threads)
       .find((candidate) => candidate.sessionId === input.sessionId);
     if (!thread) return null;
+    if (input.representation === "memory_events" && thread.eventCount === 0)
+      return null;
 
     const deploymentId = options.resolveDeploymentId();
     if (!deploymentId) return null;
@@ -243,12 +251,13 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
         });
       }
     } else {
-      await prepareLocalLcmCandidateRepresentation({
-        repository: options.repository,
-        ownerUserId: input.localOwnerUserId,
-        sessionId: input.sessionId,
-        representation: input.representation
-      });
+      if (input.prepareLcm !== false)
+        await prepareLocalLcmCandidateRepresentation({
+          repository: options.repository,
+          ownerUserId: input.localOwnerUserId,
+          sessionId: input.sessionId,
+          representation: input.representation
+        });
       const kind = input.representation === "lcm_leaves" ? "leaf" : "rollup";
       const syncEligibleNodeIds = new Set(
         await options.repository.listCapturedSessionSyncEligibleLcmNodeIds(

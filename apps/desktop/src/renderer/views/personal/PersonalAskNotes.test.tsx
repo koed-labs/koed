@@ -87,7 +87,7 @@ describe("Personal Ask", () => {
       catalogued: true,
       discoveredAt: "2026-08-17T12:00:00.000Z",
       lastSeenAt: "2026-08-17T12:00:00.000Z",
-      localProjectId: "project-research",
+      localProjectId: "lp_research_checkout",
       branch: null,
       remoteDisplay: null,
       isWorktree: false
@@ -109,7 +109,7 @@ describe("Personal Ask", () => {
       status: "queued" as const,
       conversation: {
         executionId: "11111111-1111-4111-8111-111111111111",
-        projectId: project.id,
+        projectId: project.localProjectId,
         capturedSessionId: "11111111-1111-4111-8111-111111111111",
         threadId: "11111111-1111-4111-8111-111111111111"
       },
@@ -320,7 +320,7 @@ describe("Personal Ask", () => {
     );
     expect(start).toHaveBeenCalledWith(
       expect.objectContaining({
-        projectId: project.id,
+        projectId: project.localProjectId,
         contextKind: "project",
         aiClientInstanceId: "codex-preferred",
         model: "preferred-model",

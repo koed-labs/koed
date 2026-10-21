@@ -827,6 +827,7 @@ const personalProjectsData = (
       return {
         id: project.id,
         namedProject: project.namedProject,
+        projectReference: project.projectReference,
         inclusionRules: project.inclusionRules,
         directInclusions: project.directInclusions,
         folder: project.folder,
@@ -1352,6 +1353,17 @@ const resultMessage = (value: unknown, fallback: string): string => {
 const componentHealthy = (value: unknown): boolean =>
   objectValue(value)?.state === "healthy";
 
+export const setupExternalModelServicesHealthy = (
+  value: unknown,
+  requirePrivacy: boolean
+): boolean => {
+  const status = objectValue(value);
+  return (
+    componentHealthy(status?.embeddingService) &&
+    (!requirePrivacy || componentHealthy(status?.privacyService))
+  );
+};
+
 const personalDeviceSyncComponent = (
   environment: NodeJS.ProcessEnv
 ): ComponentStatus => {
@@ -1856,6 +1868,12 @@ export const createKoedServerManager = ({
   const requiredModelKinds = resolveTeamCollaborationEnabled(environment)
     ? (["embedding", "privacy"] as const)
     : (["embedding"] as const);
+
+  const usesExternalModels = () =>
+    resolveKoedServerConfig(resolveKoedServerPaths(environment), {
+      ...loadRepoEnv(repoRoot, environment),
+      ...environment
+    }).dependencyMode === "external";
 
   const aggregateRequiredModels = (
     results: Array<{
@@ -5119,6 +5137,13 @@ export const createKoedServerManager = ({
           const servicesComplete = setupServicesHealthy(status);
           const detectedAiClients = detectedSetupAiClients(status);
           const integrationComplete = setupIntegrationHealthy(status);
+          const externalModels = usesExternalModels();
+          const modelsComplete = externalModels
+            ? setupExternalModelServicesHealthy(
+                status,
+                requiredModelKinds.some((kind) => kind === "privacy")
+              )
+            : resultState(modelStatus) === "installed";
           const verificationComplete = componentHealthy(
             status?.lastVerification
           );
@@ -5144,9 +5169,12 @@ export const createKoedServerManager = ({
                     )
             },
             model: {
-              complete: resultState(modelStatus) === "installed",
-              message:
-                resultState(modelStatus) === "installed"
+              complete: modelsComplete,
+              message: externalModels
+                ? modelsComplete
+                  ? "Configured model services are ready."
+                  : "Configured model services need attention."
+                : modelsComplete
                   ? "Embedding and Privacy Filter models are verified."
                   : resultMessage(
                       modelStatus,
@@ -5225,6 +5253,18 @@ export const createKoedServerManager = ({
         );
       }
       case "model": {
+        if (usesExternalModels()) {
+          const ready = setupExternalModelServicesHealthy(
+            await statusWithEnrollmentReconciliation(),
+            requiredModelKinds.some((kind) => kind === "privacy")
+          );
+          return {
+            ok: ready,
+            message: ready
+              ? "Configured model services are ready."
+              : "Configure the required external model services before continuing."
+          };
+        }
         onProgress({
           completedBytes: null,
           message: "Installing required local models…",

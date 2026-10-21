@@ -46,6 +46,12 @@ type HighRiskRepository = Pick<
   | "getSharedMemoryCandidatePreviewAdmission"
   | "getSharedMemoryPendingShareReview"
   | "getSharedMemoryShareReview"
+  | "getConversationSharingRuleControlReview"
+  | "getSharingRuleDetailReview"
+  | "getSharingRuleContentPolicyReview"
+  | "getConversationSharingRuleCreationReview"
+  | "getRepositorySharingRuleCreationReview"
+  | "getRepositorySharingRuleControlReview"
   | "getSharedMemoryRevokeReview"
   | "reviewGrantRepositorySnapshot"
   | "getSharedMemoryFidelityChangeReview"
@@ -304,7 +310,11 @@ export const registerHighRiskRoutes = (
         deviceCredentialId: auth.credential.id,
         upstreamBackendId: auth.credential.upstreamBackendId
       });
-      if (!current || current.approvalTier !== "native_review") {
+      if (
+        !current ||
+        current.action === "shared_memory.rule_content_policy" ||
+        current.approvalTier !== "native_review"
+      ) {
         throw forbidden();
       }
       requireOperationFamily(
@@ -439,6 +449,15 @@ export const registerHighRiskRoutes = (
       const { decision } = decideHighRiskBrowserActivationSchema.parse(
         request.body
       );
+      // Existing deferred requests may still be denied, but never approved.
+      if (decision === "approve") {
+        const current = await context.requireRepository().getBrowserActivation({
+          selector,
+          ownerUserId: session.user.id
+        });
+        if (current?.action === "shared_memory.rule_content_policy")
+          throw forbidden();
+      }
       const activation = await context
         .requireRepository()
         .decideBrowserActivation({

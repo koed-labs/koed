@@ -91,6 +91,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@noble/hashes": "2.2.0",
     "json-canonicalize": "2.0.0",
     "undici": "^7.28.0",
     "zod": "^4.4.3"

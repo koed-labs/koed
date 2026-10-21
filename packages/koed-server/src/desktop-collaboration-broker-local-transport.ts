@@ -61,7 +61,8 @@ export interface DesktopCollaborationBrokerLocalTransportOptions {
   fetch: typeof fetch;
   resolveConnection: (
     requiresTeamBackend: boolean,
-    preferredBackendId?: string
+    preferredBackendId?: string,
+    localDeliveryOnly?: boolean
   ) => Promise<CollaborationLocalConnection | null>;
   random?: () => number;
   now?: () => number;
@@ -1193,7 +1194,15 @@ export const createDesktopCollaborationBrokerLocalTransport = (
       (await options
         .resolveConnection(
           commandRequiresTeamBackend(command, existing),
-          preferredBackendId
+          preferredBackendId,
+          ...(command.command === "collaboration.amend_rule_detail" ||
+          command.command === "collaboration.amend_rule_content_policy" ||
+          command.command === "collaboration.control_sharing_rule" ||
+          command.command === "collaboration.create_conversation_rule" ||
+          command.command === "collaboration.create_repository_rule" ||
+          command.command === "collaboration.list_sharing_rule_deliveries"
+            ? ([true] as const)
+            : [])
         )
         .catch(() => null));
     if (!connection) return failureResult(command, safeError("offline"));

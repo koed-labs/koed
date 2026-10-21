@@ -1,3 +1,8 @@
+import type {
+  ConversationSharingRuleControlIntent,
+  RepositorySharingRuleCreationIntent,
+  RepositorySharingRuleControlIntent
+} from "./team-sharing-review-contract.js";
 import {
   highRiskActionGrantCanonicalHash,
   HIGH_RISK_ACTION_GRANT_HASH_DOMAINS
@@ -5,6 +10,8 @@ import {
 import type { SharedMemorySourceRef } from "./shared-memory-source.js";
 import type { SharedMemoryFidelityCeiling } from "./shared-memory-fidelity.js";
 import type { TeamRepositorySnapshotReview } from "./team-repository-snapshot.js";
+import type { SharingRuleContentPolicyIntent } from "./sharing-rule-content-policy-contract.js";
+import type { SharingRuleDetailIntent } from "./sharing-rule-detail-contract.js";
 
 export const SHARED_MEMORY_AUTHORITY_ACTION =
   "workspace.memory.share_owned" as const;
@@ -215,6 +222,45 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
   });
 };
 
+export const sharedMemoryConversationRuleCreationActionGrantBinding = (
+  input: Parameters<typeof sharedMemoryPendingShareActionGrantBinding>[0] & {
+    ruleId: string;
+    expectedGrantVersion: number | null;
+    effectivePrivacyPolicyHash: string;
+  }
+): SharedMemoryActionGrantBinding => {
+  const pending = sharedMemoryPendingShareActionGrantBinding(input);
+  return withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.conversation_rule_create.${input.teamWorkspaceId}`,
+    teamId: input.teamId,
+    targetId: input.ruleId,
+    method: "POST",
+    path: "/v1/shared-memory/conversation-rules",
+    body: {
+      ...pending.body,
+      ruleId: input.ruleId,
+      expectedGrantVersion: input.expectedGrantVersion,
+      effectivePrivacyPolicyHash: input.effectivePrivacyPolicyHash
+    }
+  });
+};
+
+export const sharedMemoryRepositoryRuleCreationActionGrantBinding = (
+  input: RepositorySharingRuleCreationIntent & { referenceId: string }
+): SharedMemoryActionGrantBinding => {
+  const { referenceId, ...intent } = input;
+  return withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.repository_rule_create.${intent.teamWorkspaceId}`,
+    teamId: intent.teamId,
+    targetId: intent.ruleId,
+    method: "POST",
+    path: "/v1/shared-memory/repository-rules",
+    body: { ...intent, authority: authorityBody(referenceId) }
+  });
+};
+
 export const sharedMemoryRevokeActionGrantBinding = (input: {
   referenceId: string;
   mutationId: string;
@@ -364,3 +410,82 @@ export const sharedMemoryFidelityBundleActionGrantBinding = (input: {
     }
   });
 };
+
+export const sharedMemoryRuleControlActionGrantBinding = (
+  input: ConversationSharingRuleControlIntent & { referenceId: string }
+): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.rule_control.${input.teamWorkspaceId}.${input.controlAction}`,
+    teamId: input.teamId,
+    targetId: input.ruleId,
+    method: "POST",
+    path: `/v1/shared-memory/sharing-rules/${input.ruleId}/control`,
+    body: {
+      mutationId: input.mutationId,
+      teamId: input.teamId,
+      teamWorkspaceId: input.teamWorkspaceId,
+      shareGrantId: input.shareGrantId,
+      reasonId: input.reasonId,
+      expectedAuthorityVersion: input.expectedAuthorityVersion,
+      expectedGrantVersion: input.expectedGrantVersion,
+      controlAction: input.controlAction,
+      authority: authorityBody(input.referenceId)
+    }
+  });
+
+export const sharedMemoryRuleDetailActionGrantBinding = (
+  input: SharingRuleDetailIntent & { referenceId: string }
+): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.rule_detail.${input.review.teamWorkspaceId}`,
+    teamId: input.review.teamId,
+    targetId: input.review.ruleId,
+    method: "POST",
+    path: `/v1/shared-memory/sharing-rules/${input.review.ruleId}/detail`,
+    body: {
+      mutationId: input.mutationId,
+      review: input.review,
+      authority: authorityBody(input.referenceId)
+    }
+  });
+
+export const sharedMemoryRuleContentPolicyActionGrantBinding = (
+  input: SharingRuleContentPolicyIntent & { referenceId: string }
+): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.rule_content_policy.${input.review.teamWorkspaceId}`,
+    teamId: input.review.teamId,
+    targetId: input.review.ruleId,
+    method: "POST",
+    path: `/v1/shared-memory/sharing-rules/${input.review.ruleId}/content-policy`,
+    body: {
+      mutationId: input.mutationId,
+      review: input.review,
+      authority: authorityBody(input.referenceId)
+    }
+  });
+
+export const sharedMemoryRepositoryRuleControlActionGrantBinding = (
+  input: RepositorySharingRuleControlIntent & { referenceId: string }
+): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.repository_rule_control.${input.teamWorkspaceId}.${input.controlAction}`,
+    teamId: input.teamId,
+    targetId: input.ruleId,
+    method: "POST",
+    path: `/v1/shared-memory/repository-rules/${input.ruleId}/control`,
+    body: {
+      selectorKind: "selection",
+      mutationId: input.mutationId,
+      teamId: input.teamId,
+      teamWorkspaceId: input.teamWorkspaceId,
+      expectedAuthorityVersion: input.expectedAuthorityVersion,
+      publisherFence: input.publisherFence,
+      controlAction: input.controlAction,
+      authority: authorityBody(input.referenceId)
+    }
+  });

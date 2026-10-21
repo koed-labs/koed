@@ -281,7 +281,7 @@ describe("SetupChecklist", () => {
 
     expect(inspect).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("Koed package");
-    expect(container.textContent).toContain("Local models");
+    expect(container.textContent).toContain("Memory models");
     expect(container.querySelector(".koed-setup-clients")).toBeNull();
     expect(
       [...container.querySelectorAll(".koed-setup-step")].find((row) =>
