@@ -66,7 +66,24 @@ const run = async () => {
     );
     await mkdir(images, { recursive: true });
     const capture = async (name) => {
+      const theme = name.endsWith("-dark.png") ? "dark" : "light";
+      const generatedDeck = name.startsWith("deck-generated-open-");
+      const deckExpected =
+        name !== "deck-generated-action-light.png" &&
+        name !== "deck-to-sources-dark.png";
+      const visible = await js(`(() => {
+        const panel = document.querySelector(${JSON.stringify(deckExpected ? ".hq-decks__panel" : name === "deck-to-sources-dark.png" ? ".hq-project-sources__panel" : ".hq-text-action")});
+        const rect = panel?.getBoundingClientRect();
+        return !!rect && rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.left < innerWidth && rect.top < innerHeight &&
+          document.documentElement.classList.contains('dark') === ${theme === "dark"} &&
+          ${generatedDeck ? "panel.textContent.includes('Chapter 7 flashcards') && panel.textContent.includes('What shifts supply?')" : "true"};
+      })()`);
+      assert.equal(visible, true, `${name} must show its panel and theme`);
+      await js(
+        "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+      );
       await delay(250);
+      await window.webContents.capturePage();
       await writeFile(
         resolve(images, name),
         (await window.webContents.capturePage()).toPNG()

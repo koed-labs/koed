@@ -48,6 +48,26 @@ const session = (
 });
 
 describe("chat move owner-bound placement client", () => {
+  it("runs trusted issue readback before an outbound move and blocks PATCH when pending", async () => {
+    const beforeAssign = vi.fn(async () => {
+      throw new Error("summary pending");
+    });
+    const requestJson = vi.fn(async (path: string) =>
+      path.startsWith("/v1/projects?")
+        ? { projects: [target], nextCursor: null }
+        : session(targetProjectId)
+    );
+    const client = createChatMovePlacementClient({
+      authority: async () => authority,
+      requestJson,
+      beforeAssign
+    });
+    await expect(client.assign(move)).rejects.toThrow("summary pending");
+    expect(beforeAssign).toHaveBeenCalledExactlyOnceWith(move, authority);
+    expect(
+      requestJson.mock.calls.some(([path]) => path.endsWith("/project"))
+    ).toBe(false);
+  });
   it("resumes only the exact already prepared text-action batch", async () => {
     const actionId = uuid(8),
       batchId = uuid(9);

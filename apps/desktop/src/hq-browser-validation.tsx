@@ -107,6 +107,29 @@ const hq712Capture =
   hq705Capture;
 const hq701Capture =
   new URLSearchParams(window.location.search).get("hq701Capture") === "yes";
+const hq702Capture =
+  new URLSearchParams(window.location.search).get("hq702Capture") === "yes";
+let hq702PolicyStatus: "absent" | "active" | "revoked" = "absent";
+const hq702Trace = {
+  statusReads: 0,
+  enableReviews: 0,
+  revokeReviews: 0,
+  stageRetries: 0,
+  chatStatusReads: 0,
+  makePrivateReviews: 0,
+  moves: 0,
+  chatOffers: [] as Array<{
+    sessionId: string;
+    reason: "moved_in" | "share_again";
+  }>
+};
+let hq702ChatStatus: "shared" | "private" = "shared";
+let hq702CancelMakePrivate = true;
+const hq702MovedSessionId = "00000000-0000-4000-8000-000000000091";
+const hq702SecondSessionId = "00000000-0000-4000-8000-000000007022";
+let hq702MovedStatus: "unshared" | "pending" | "shared" = "unshared";
+let hq702CancelMovedOffer = true;
+let hq702CancelShareAgain = true;
 let hq701Pending =
   new URLSearchParams(window.location.search).get("hq701Pending") === "yes";
 const hq701Trace = { cancellations: 0 };
@@ -1393,7 +1416,9 @@ const installSettingsDesktop = () => {
     ...(hq603Capture ? { scheduledJobs: hq603ScheduledJobs } : {}),
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
     ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
-    ...(hq106Capture ? { personalMemory: sidebarPersonalMemoryApi } : {}),
+    ...(hq106Capture || hq702Capture
+      ? { personalMemory: sidebarPersonalMemoryApi }
+      : {}),
     ...(hq204Capture ||
     hq205Capture ||
     hq207Capture ||
@@ -2579,7 +2604,7 @@ const sidebarPersonalProjectIds: Record<string, string> = {
   "hq108-extra-3": "00000000-0000-4000-8000-000000002037"
 };
 
-const sidebarProjectGroups: PersonalDesktopProject[] = [
+let sidebarProjectGroups: PersonalDesktopProject[] = [
   ...[
     { id: "hq103-koed", name: "Koed" },
     { id: "hq103-notes", name: "Research notes" },
@@ -2643,6 +2668,20 @@ const sidebarProjectGroups: PersonalDesktopProject[] = [
                     sessionId: hq204SessionId,
                     personalProjectId: hq204ProjectId,
                     name: "Plan next week"
+                  }
+                ]
+              : []),
+            ...(hq702Capture
+              ? [
+                  {
+                    ...sidebarConversation(
+                      hq204ProjectId,
+                      "New empty Project",
+                      7022
+                    ),
+                    sessionId: hq702SecondSessionId,
+                    personalProjectId: hq204ProjectId,
+                    name: "Other project chat"
                   }
                 ]
               : []),
@@ -3192,7 +3231,117 @@ const hq712State = (): WorkspaceProjectState => ({
   readOnly: hq712Offline,
   notice: hq712Offline ? "Offline. Shared changes are paused." : null
 });
+const hq702Review = () => ({
+  status: hq702PolicyStatus,
+  pendingAction: null,
+  reviewRequired: false,
+  eligibleCount: 1,
+  reviewSources: [
+    {
+      reviewLabel: "Launch plan chat · 20 Oct",
+      eligible: true
+    }
+  ]
+});
+const hq702InitialStage = () => ({
+  stagedCount: 1,
+  skippedCount: 0,
+  pendingCount: 1,
+  needsReviewCount: 0,
+  items: [{ label: "Launch plan chat · 20 Oct", state: "pending" as const }]
+});
 const sidebarProjectsApi = {
+  sharedChatStatus: async (personalProjectId: string, sessionId: string) => {
+    if (
+      !hq702Capture ||
+      personalProjectId !== hq204ProjectId ||
+      (sessionId !== hq204SessionId &&
+        sessionId !== hq702MovedSessionId &&
+        sessionId !== hq702SecondSessionId)
+    )
+      throw new Error("Chat sharing fixture unavailable");
+    hq702Trace.chatStatusReads++;
+    return sessionId === hq204SessionId
+      ? hq702ChatStatus
+      : sessionId === hq702MovedSessionId
+        ? hq702MovedStatus
+        : ("shared" as const);
+  },
+  sharedChatMakePrivate: async (
+    personalProjectId: string,
+    sessionId: string
+  ) => {
+    if (
+      !hq702Capture ||
+      personalProjectId !== hq204ProjectId ||
+      sessionId !== hq204SessionId
+    )
+      throw new Error("Chat sharing fixture unavailable");
+    hq702Trace.makePrivateReviews++;
+    if (hq702CancelMakePrivate) {
+      hq702CancelMakePrivate = false;
+      throw new Error("Project summary sharing was canceled.");
+    }
+    hq702ChatStatus = "private";
+    return { state: "private" as const };
+  },
+  sharedChatOffer: async (
+    personalProjectId: string,
+    sessionId: string,
+    reason: "moved_in" | "share_again"
+  ) => {
+    if (
+      !hq702Capture ||
+      personalProjectId !== hq204ProjectId ||
+      (sessionId !== hq204SessionId && sessionId !== hq702MovedSessionId)
+    )
+      throw new Error("Chat summary offer fixture unavailable");
+    hq702Trace.chatOffers.push({ sessionId, reason });
+    if (reason === "moved_in") {
+      if (sessionId !== hq702MovedSessionId || hq702MovedStatus !== "unshared")
+        throw new Error("Moved-in summary offer is unavailable");
+      if (hq702CancelMovedOffer) {
+        hq702CancelMovedOffer = false;
+        return { state: "canceled" as const };
+      }
+      hq702MovedStatus = "pending";
+      return { state: "pending" as const };
+    }
+    if (sessionId !== hq204SessionId || hq702ChatStatus !== "private")
+      throw new Error("Share again requires a private chat");
+    if (hq702CancelShareAgain) {
+      hq702CancelShareAgain = false;
+      return { state: "canceled" as const };
+    }
+    hq702ChatStatus = "shared";
+    return { state: "activated" as const };
+  },
+  sharedPolicyStatus: async (personalProjectId: string) => {
+    if (!hq702Capture || personalProjectId !== hq204ProjectId)
+      throw new Error("Policy fixture unavailable");
+    hq702Trace.statusReads++;
+    return hq702Review();
+  },
+  sharedPolicyEnable: async (personalProjectId: string) => {
+    if (!hq702Capture || personalProjectId !== hq204ProjectId)
+      throw new Error("Policy fixture unavailable");
+    hq702Trace.enableReviews++;
+    hq702PolicyStatus = "active";
+    return { policy: hq702Review(), initialStage: hq702InitialStage() };
+  },
+  sharedPolicyStageInitial: async (personalProjectId: string) => {
+    if (!hq702Capture || personalProjectId !== hq204ProjectId)
+      throw new Error("Policy fixture unavailable");
+    hq702Trace.stageRetries++;
+    return { policy: hq702Review(), initialStage: hq702InitialStage() };
+  },
+  sharedPolicyRevoke: async (personalProjectId: string) => {
+    if (!hq702Capture || personalProjectId !== hq204ProjectId)
+      throw new Error("Policy fixture unavailable");
+    hq702Trace.revokeReviews++;
+    hq702PolicyStatus = "revoked";
+    return hq702Review();
+  },
   sharedShareContext: async () => {
     if (!hq701Capture) throw new Error("Share fixture unavailable");
     return {
@@ -3888,7 +4037,51 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
               }
             ]
           : [],
-  assignSessionProject: async () => ({ projectId: null }),
+  assignSessionProject: async (request) => {
+    if (!hq702Capture || request.sessionId !== hq702MovedSessionId)
+      return { projectId: null };
+    if (request.action !== "move" && request.action !== "loose")
+      throw new Error("Fixture move unavailable");
+    const target = request.action === "move" ? request.targetProjectId : null;
+    if (target !== null && target !== hq204ProjectId)
+      throw new Error("Fixture destination unavailable");
+    const source = sidebarProjectGroups.find((project) =>
+      project.threads.some((thread) => thread.sessionId === request.sessionId)
+    );
+    const destination = sidebarProjectGroups.find(
+      (project) => project.id === (target ?? "hq103-loose")
+    );
+    const thread = source?.threads.find(
+      (entry) => entry.sessionId === request.sessionId
+    );
+    if (!source || !destination || !thread || source.id === destination.id)
+      throw new Error("Fixture move source changed");
+    sidebarProjectGroups = sidebarProjectGroups.map((project) =>
+      project.id === source.id
+        ? {
+            ...project,
+            threads: project.threads.filter(
+              (entry) => entry.sessionId !== request.sessionId
+            )
+          }
+        : project.id === destination.id
+          ? {
+              ...project,
+              threads: [
+                ...project.threads,
+                {
+                  ...thread,
+                  projectId: project.id,
+                  projectName: project.name,
+                  personalProjectId: target
+                }
+              ]
+            }
+          : project
+    );
+    hq702Trace.moves++;
+    return { projectId: target, pending: false };
+  },
   updateSessionTitle: async ({ title }) => ({ title }),
   updateSessionPresentation: async () => ({
     presentation: {
@@ -4234,6 +4427,10 @@ export function HqValidationApp() {
       (
         window as Window & { __koedHq701Trace?: typeof hq701Trace }
       ).__koedHq701Trace = hq701Trace;
+    if (hq702Capture)
+      (
+        window as Window & { __koedHq702Trace?: typeof hq702Trace }
+      ).__koedHq702Trace = hq702Trace;
     if (hq705Capture)
       (
         window as Window & { __koedHq705Trace?: typeof hq705Trace }
@@ -4253,6 +4450,8 @@ export function HqValidationApp() {
       delete window.__koedHqFixture;
       delete (window as Window & { __koedHq701Trace?: typeof hq701Trace })
         .__koedHq701Trace;
+      delete (window as Window & { __koedHq702Trace?: typeof hq702Trace })
+        .__koedHq702Trace;
       delete (window as Window & { __koedHq705Trace?: typeof hq705Trace })
         .__koedHq705Trace;
       delete (window as Window & { __koedHq505Trace?: typeof hq505Trace })

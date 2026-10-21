@@ -43,7 +43,137 @@ import {
 export const projectsCommandChannel = "koed:projects:command";
 export type { WorkspaceProjectShareContext } from "@koed/shared/workspace-project-contract";
 
+/** The full policy receipt stays in main. Renderer status contains review copy
+ * only; captured Session IDs and Team authority IDs never cross this IPC. */
+export const projectPolicyRendererStatusSchema = z
+  .object({
+    status: z.enum(["absent", "active", "revoked"]),
+    pendingAction: z.enum(["enable", "revoke"]).nullable(),
+    reviewRequired: z.boolean(),
+    eligibleCount: z.number().int().nonnegative().max(100),
+    reviewSources: z
+      .array(
+        z
+          .object({
+            reviewLabel: z.string().min(1).max(160),
+            eligible: z.boolean()
+          })
+          .strict()
+      )
+      .max(100)
+  })
+  .strict();
+
+const projectPolicyInitialStageSchema = z
+  .object({
+    stagedCount: z.number().int().nonnegative().max(100),
+    skippedCount: z.number().int().nonnegative().max(100),
+    pendingCount: z.number().int().nonnegative().max(100),
+    needsReviewCount: z.number().int().nonnegative().max(100),
+    items: z
+      .array(
+        z
+          .object({
+            label: z.string().min(1).max(160),
+            state: z.enum(["pending", "skipped", "needs_review"]),
+            reason: z
+              .enum([
+                "occupied",
+                "already_issued",
+                "ineligible",
+                "source_changed",
+                "result_unknown"
+              ])
+              .optional()
+          })
+          .strict()
+      )
+      .max(100)
+  })
+  .strict()
+  .superRefine((summary, context) => {
+    const staged = summary.items.filter(
+      (item) => item.state === "pending" && !item.reason
+    ).length;
+    const pending = summary.items.filter(
+      (item) => item.state === "pending"
+    ).length;
+    const skipped = summary.items.filter(
+      (item) => item.state === "skipped"
+    ).length;
+    const needsReview = summary.items.filter(
+      (item) => item.state === "needs_review"
+    ).length;
+    if (
+      summary.stagedCount !== staged ||
+      summary.pendingCount !== pending ||
+      summary.skippedCount !== skipped ||
+      summary.needsReviewCount !== needsReview ||
+      summary.items.some(
+        (item) =>
+          (item.state === "pending" &&
+            item.reason !== undefined &&
+            item.reason !== "result_unknown") ||
+          (item.state === "skipped" &&
+            item.reason !== "occupied" &&
+            item.reason !== "already_issued" &&
+            item.reason !== "ineligible") ||
+          (item.state === "needs_review" && item.reason !== "source_changed")
+      )
+    )
+      context.addIssue({
+        code: "custom",
+        message: "Invalid Project policy stage summary"
+      });
+  });
+
 export const projectsRequestSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("sharedPolicyStatus"),
+      personalProjectId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPolicyEnable"),
+      personalProjectId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPolicyRevoke"),
+      personalProjectId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPolicyStageInitial"),
+      personalProjectId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedChatMakePrivate"),
+      personalProjectId: z.uuid(),
+      sessionId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedChatStatus"),
+      personalProjectId: z.uuid(),
+      sessionId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedChatOffer"),
+      personalProjectId: z.uuid(),
+      sessionId: z.uuid(),
+      reason: z.enum(["moved_in", "share_again"])
+    })
+    .strict(),
   z.object({ operation: z.literal("sharedShareContext") }).strict(),
   z
     .object({
@@ -337,6 +467,50 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
 ]);
 
 export const projectsResultSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("sharedPolicyStatus"),
+      policy: projectPolicyRendererStatusSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPolicyEnable"),
+      policy: projectPolicyRendererStatusSchema,
+      initialStage: projectPolicyInitialStageSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPolicyRevoke"),
+      policy: projectPolicyRendererStatusSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPolicyStageInitial"),
+      policy: projectPolicyRendererStatusSchema,
+      initialStage: projectPolicyInitialStageSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedChatMakePrivate"),
+      state: z.literal("private")
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedChatStatus"),
+      state: z.enum(["private", "pending", "shared", "unshared", "ineligible"])
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedChatOffer"),
+      state: z.enum(["pending", "activated", "canceled"])
+    })
+    .strict(),
   z
     .object({
       operation: z.literal("sharedShareContext"),
@@ -684,6 +858,33 @@ export type ProjectsRequest = z.infer<typeof projectsRequestSchema>;
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 
 export interface ProjectsDesktopApi {
+  sharedPolicyStatus?(
+    personalProjectId: string
+  ): Promise<z.infer<typeof projectPolicyRendererStatusSchema>>;
+  sharedPolicyEnable?(personalProjectId: string): Promise<{
+    policy: z.infer<typeof projectPolicyRendererStatusSchema>;
+    initialStage: z.infer<typeof projectPolicyInitialStageSchema>;
+  }>;
+  sharedPolicyRevoke?(
+    personalProjectId: string
+  ): Promise<z.infer<typeof projectPolicyRendererStatusSchema>>;
+  sharedPolicyStageInitial?(personalProjectId: string): Promise<{
+    policy: z.infer<typeof projectPolicyRendererStatusSchema>;
+    initialStage: z.infer<typeof projectPolicyInitialStageSchema>;
+  }>;
+  sharedChatMakePrivate?(
+    personalProjectId: string,
+    sessionId: string
+  ): Promise<{ state: "private" }>;
+  sharedChatStatus?(
+    personalProjectId: string,
+    sessionId: string
+  ): Promise<"private" | "pending" | "shared" | "unshared" | "ineligible">;
+  sharedChatOffer?(
+    personalProjectId: string,
+    sessionId: string,
+    reason: "moved_in" | "share_again"
+  ): Promise<{ state: "pending" | "activated" | "canceled" }>;
   sharedShareContext?(): Promise<WorkspaceProjectShareContext>;
   sharedPendingShare?(
     personalProjectId: string

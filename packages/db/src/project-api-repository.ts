@@ -445,9 +445,19 @@ const sourceManifest = async (
   // sharing. It is the durable backend history for explicit no-Sync grants,
   // including backends removed from the current registry.
   const historical = await client.query<{ backend_id: string }>(
-    `select distinct backend_id from collaboration_shared_memory_enrollments
-      where local_owner_user_id=$1 order by backend_id`,
-    [ownerUserId]
+    `select distinct backend_id from (
+       select backend_id from collaboration_shared_memory_enrollments
+        where local_owner_user_id=$1
+       union all
+       select backend_id from project_share_local_issues
+        where owner_user_id=$1 and project_id=$2
+          and state in ('reserved','staged','activated')
+       union all
+       select backend_id from project_share_explicit_offers
+        where owner_user_id=$1 and project_id=$2
+          and state in ('prepared','pending','accepted','activated')
+     ) backend_history order by backend_id`,
+    [ownerUserId, projectId]
   );
   const relevantBackendIds = [
     ...new Set([

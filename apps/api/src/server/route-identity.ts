@@ -687,6 +687,71 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
     "implemented",
     teamDeploymentModes
   ),
+  ...(
+    [
+      [
+        "GET",
+        "/v1/workspace-projects/{projectId}/share-policy/status",
+        "Read this member's current Project share policy."
+      ],
+      [
+        "GET",
+        "/v1/workspace-projects/{projectId}/share-policy/issues/{sessionId}/status",
+        "Read exact policy-version issue activation for owner-local move reconciliation."
+      ],
+      [
+        "GET",
+        "/v1/workspace-projects/{projectId}/share-policy/manifests/{manifestId}/review",
+        "Read the exact stored owner manifest and key for Native review."
+      ],
+      [
+        "POST",
+        "/v1/workspace-projects/{projectId}/share-policy/manifests",
+        "Stage a bounded owner Captured Session manifest for exact Native review."
+      ],
+      [
+        "POST",
+        "/v1/workspace-projects/{projectId}/share-policy/initial-bundles",
+        "Stage one exact policy-authorized Bundled Pending Share using existing source preparation."
+      ],
+      [
+        "POST",
+        "/v1/workspace-projects/{projectId}/share-policy/future-bundles",
+        "Verify a signed capture-time future policy proof and stage one Bundled Pending Share."
+      ],
+      [
+        "POST",
+        "/v1/workspace-projects/{projectId}/share-policy/exclusions",
+        "Fence new policy issues for one owner Conversation before private withdrawal."
+      ],
+      [
+        "POST",
+        "/v1/workspace-projects/{projectId}/share-policy/execution-receipts/read",
+        "Read only an exact owner and device bound consumed policy action receipt."
+      ],
+      [
+        "POST",
+        "/v1/workspace-projects/{projectId}/share-policy/enable",
+        "Consume exact Native approval to enable a member Project share policy."
+      ],
+      [
+        "POST",
+        "/v1/workspace-projects/{projectId}/share-policy/revoke",
+        "Consume exact Native approval to stop new member Project policy issues."
+      ]
+    ] as const
+  ).map(([method, path, description]) =>
+    route(
+      method,
+      path,
+      "device_credential",
+      "shared_memory",
+      description,
+      "request_time_shared_memory_owner",
+      "implemented",
+      teamDeploymentModes
+    )
+  ),
   route(
     "POST",
     "/v1/workspace-projects/{projectId}/sources",
@@ -853,6 +918,136 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
     "desktop_local_credential",
     "projects",
     "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/projects/{projectId}/project-share-policy/manifest",
+    "desktop_local_credential",
+    "shared_memory",
+    "Loopback owner Desktop credential and enrolled Team client credential derive the exact local Captured Session manifest.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  ...(
+    [
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/attempts/start",
+        "Durably bind the exact approved Project policy action before dispatch."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/local-state",
+        "Read current owner-local policy version and per-link public key for Team match."
+      ],
+      [
+        "GET",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/attempts/pending",
+        "Read unresolved exact owner Project policy attempts."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/attempts/finalize",
+        "Apply local Project policy only from an exact consumed Team execution receipt."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/consume",
+        "Resolve an approved owner-bound Native Action Grant in local custody and consume it for the exact Team Project policy effect."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/stage-initial",
+        "Stage an exact owner-local sanitized Captured Session candidate through Team Pending Share."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/reconcile-future",
+        "Page owner-local future captures, sign exact proof, and stage eligible Bundled Pending Shares."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/make-private",
+        "Fence Team policy issuance before recording owner-local Conversation privacy."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/session-status",
+        "Read exact owner Conversation policy status in its linked Personal Project."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/reconcile-issues",
+        "Reconcile exact Team issue activation into owner-local grant freeze provenance."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/fence-unpublished",
+        "Fence a staged owner-local policy issue on Team before HQ107 moves the source."
+      ],
+      [
+        "GET",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/fence-unpublished/current",
+        "Read the exact current owner-local move fence for known-cancel recovery."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/fence-unpublished/release",
+        "Release an acknowledged move fence after a known no-effect cancellation."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/explicit-offers",
+        "Prepare a trusted exact Conversation offer for fresh Native review."
+      ],
+      [
+        "GET",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/explicit-offers/{offerId}",
+        "Revalidate an exact Conversation offer before Native review."
+      ],
+      [
+        "GET",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/explicit-offers/{offerId}/status",
+        "Read the exact Team Pending Share for one Conversation offer."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/explicit-offers/{offerId}/settle",
+        "Settle an exact Project-bound Pending Share from Team readback."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/explicit-offers/{offerId}/fence",
+        "Fence an unpublished exact Conversation offer before privacy or move."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/execution-receipts/read",
+        "Read an exact Project policy Action Grant receipt through owner-local custody."
+      ]
+    ] as const
+  ).map(([method, path, description]) =>
+    route(
+      method,
+      path,
+      "desktop_local_credential",
+      "shared_memory",
+      description,
+      "none",
+      "implemented",
+      localEdgeDeploymentModes
+    )
+  ),
+  route(
+    "GET",
+    "/v1/local-edge/project-share-policy/active-projects",
+    "desktop_local_credential",
+    "shared_memory",
+    "Page the owner local edge's active linked Project policies for main-process reconciliation.",
     "none",
     "implemented",
     localEdgeDeploymentModes

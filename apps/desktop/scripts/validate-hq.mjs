@@ -131,6 +131,8 @@ const delegatedMemoryActions = process.env.KOED_HQ307_DELEGATED_S18 === "1";
 const delegatedRowMemoryChips = process.env.KOED_HQ308_DELEGATED_S19 === "1";
 const delegatedScheduledS12 =
   process.env.KOED_HQ603_DELEGATED_S12_SCHEDULED === "1";
+const delegatedSummarySharingS15 =
+  process.env.KOED_HQ702_DELEGATED_S15_2 === "1";
 const unitSkipReason =
   "This ID belongs to its owning unit suite, not the Electron browser harness.";
 const integrationSkipReason =
@@ -978,6 +980,12 @@ const runAssertion = async (name, assertion) => {
 
 const reportSkippedCases = () => {
   for (const entry of registry) {
+    if (delegatedSummarySharingS15 && entry.id === "S15.2") {
+      process.stdout.write(
+        "DELEGATED S15.2 [HQ-702]: exact chat-summary question, separate transcript and Curated Memory disclosure, and Native approve/cancel UI run in HQ702.ui.native after this harness. Real Team publication and no Conversation Source Access are verified by separate PostgreSQL tests; S15.1, S15.3, and two-user acceptance remain pending.\n"
+      );
+      continue;
+    }
     if (delegatedScheduledS12 && entry.id === "S12.1") {
       process.stdout.write(
         "SKIP S12.1 [HQ-108, HQ-603]: Scheduled summary, expansion, Job Needs you, sidebar actions, and navigation are delegated to HQ603.native after this harness. The remaining Now rows, cross-Project Needs you, and folding clauses still lack complete compound proof.\n"
@@ -2715,7 +2723,7 @@ const runValidation = async () => {
     assert.equal(hq208Created.dialogClosed, true);
 
     process.stdout.write(
-      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length - Number(delegatedS09) - (delegatedProjectHq ? 2 : 0) - Number(delegatedMemoryScope) - Number(delegatedMemoryCitations) - Number(delegatedMemoryActions) - Number(delegatedRowMemoryChips)} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report${delegatedS09 ? "; S09.1 is delegated to the dedicated native Sources proof" : ""}${delegatedProjectHq ? "; S01.1 and S11.1 are delegated to the dedicated native Project HQ proof" : ""}${delegatedMemoryScope ? "; S18.2 is delegated to the dedicated native Memory scope proof" : ""}${delegatedMemoryCitations ? "; S07.1 is delegated to the dedicated native citation proof" : ""}${delegatedMemoryActions ? "; S18.1 is delegated to the dedicated native Memory actions proof" : ""}${delegatedRowMemoryChips ? "; S19.1 is delegated to the dedicated native row memory-chip proof" : ""}${delegatedScheduledS12 ? "; the Scheduled subset of S12.1 is delegated to HQ603.native while the compound case remains SKIP" : ""}. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
+      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length - Number(delegatedS09) - (delegatedProjectHq ? 2 : 0) - Number(delegatedMemoryScope) - Number(delegatedMemoryCitations) - Number(delegatedMemoryActions) - Number(delegatedRowMemoryChips) - Number(delegatedSummarySharingS15)} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report${delegatedS09 ? "; S09.1 is delegated to the dedicated native Sources proof" : ""}${delegatedProjectHq ? "; S01.1 and S11.1 are delegated to the dedicated native Project HQ proof" : ""}${delegatedMemoryScope ? "; S18.2 is delegated to the dedicated native Memory scope proof" : ""}${delegatedMemoryCitations ? "; S07.1 is delegated to the dedicated native citation proof" : ""}${delegatedMemoryActions ? "; S18.1 is delegated to the dedicated native Memory actions proof" : ""}${delegatedRowMemoryChips ? "; S19.1 is delegated to the dedicated native row memory-chip proof" : ""}${delegatedSummarySharingS15 ? "; S15.2 UI wording and Native decision are delegated to HQ702.ui.native, with real no-CSA publication verified separately in PostgreSQL" : ""}${delegatedScheduledS12 ? "; the Scheduled subset of S12.1 is delegated to HQ603.native while the compound case remains SKIP" : ""}. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
     );
   } finally {
     if (debuggerClient?.isAttached()) debuggerClient.detach();

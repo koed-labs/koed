@@ -2513,6 +2513,9 @@ const dispatchShare = async (
     logicalMemoryId: command.input.logicalMemoryId,
     teamId: command.input.teamId,
     teamWorkspaceId: command.input.workspaceId,
+    ...(command.input.workspaceProjectId
+      ? { workspaceProjectId: command.input.workspaceProjectId }
+      : {}),
     consentId: command.input.consentId,
     previewId: preview.data.previewId,
     previewRevision: command.input.previewRevision,

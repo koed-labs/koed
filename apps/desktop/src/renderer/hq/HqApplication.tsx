@@ -437,6 +437,106 @@ export function HqApplication({
     profileKey: visibilityProfileKey,
     projectIds: new Set(personalProjects.map(({ id }) => id))
   };
+  const chatShareScopeKey = JSON.stringify([
+    visibilityOwnerId,
+    visibilityProfileKey,
+    visibilityRevision
+  ]);
+  const chatShareScopeRef = useRef(chatShareScopeKey);
+  chatShareScopeRef.current = chatShareScopeKey;
+  const currentChatShareBinding = (
+    personalProjectId: string,
+    sessionId: string
+  ): string | null => {
+    if (!visibilityOwnerId || !visibilityProfileKey) return null;
+    const project = personalProjects.find(({ id }) => id === personalProjectId);
+    if (
+      !project ||
+      project.lifecycle !== "active" ||
+      !project.teamBackendId ||
+      !project.workspaceProjectId ||
+      !projects.some((candidate) =>
+        candidate.threads.some(
+          (thread) =>
+            thread.sessionId === sessionId &&
+            thread.personalProjectId === personalProjectId &&
+            !thread.originDevice &&
+            !thread.conversationTrashedAt
+        )
+      )
+    )
+      return null;
+    return JSON.stringify([
+      chatShareScopeKey,
+      personalProjectId,
+      project.teamBackendId,
+      project.workspaceProjectId,
+      project.version,
+      sessionId
+    ]);
+  };
+  const chatShareBindingRef = useRef(currentChatShareBinding);
+  chatShareBindingRef.current = currentChatShareBinding;
+  const readChatShareStatus = async (
+    personalProjectId: string,
+    sessionId: string
+  ) => {
+    const binding = chatShareBindingRef.current(personalProjectId, sessionId);
+    if (!binding || !projectsApi?.sharedChatStatus)
+      throw new Error("Chat summary sharing is unavailable.");
+    const state = await projectsApi.sharedChatStatus(
+      personalProjectId,
+      sessionId
+    );
+    if (chatShareBindingRef.current(personalProjectId, sessionId) !== binding)
+      throw new Error("Chat Project changed. Check sharing status again.");
+    return state;
+  };
+  const makeChatPrivate = async (
+    personalProjectId: string,
+    sessionId: string
+  ) => {
+    const binding = chatShareBindingRef.current(personalProjectId, sessionId);
+    if (!binding || !projectsApi?.sharedChatMakePrivate)
+      throw new Error("Chat summary sharing is unavailable.");
+    const result = await projectsApi.sharedChatMakePrivate(
+      personalProjectId,
+      sessionId
+    );
+    if (chatShareBindingRef.current(personalProjectId, sessionId) !== binding)
+      throw new Error("Chat Project changed. Check sharing status again.");
+    return result;
+  };
+  const offerChatSummary = async (
+    personalProjectId: string,
+    sessionId: string,
+    reason: "share_again" | "moved_in",
+    expectedStatus: "private" | "unshared"
+  ) => {
+    const binding = chatShareBindingRef.current(personalProjectId, sessionId);
+    if (
+      !binding ||
+      !projectsApi?.sharedChatOffer ||
+      !projectsApi.sharedChatStatus
+    )
+      throw new Error("Chat summary sharing is unavailable.");
+    const status = await projectsApi.sharedChatStatus(
+      personalProjectId,
+      sessionId
+    );
+    if (chatShareBindingRef.current(personalProjectId, sessionId) !== binding)
+      throw new Error("Chat Project changed. Check sharing status again.");
+    if (status !== expectedStatus)
+      throw new Error("Chat summary status changed. Check it again.");
+    const result = await projectsApi.sharedChatOffer(
+      personalProjectId,
+      sessionId,
+      reason
+    );
+    if (chatShareBindingRef.current(personalProjectId, sessionId) !== binding)
+      throw new Error("Chat Project changed. Check sharing status again.");
+    return result;
+  };
   const [sharedPeopleCounts, setSharedPeopleCounts] = useState<
     Record<string, number>
   >({});
@@ -2151,10 +2251,12 @@ export function HqApplication({
     const epoch = ++moveEpoch.current;
     const ownerId = visibilityOwnerId;
     const profileKey = visibilityProfileKey;
+    const shareScope = chatShareScopeKey;
     const current = () =>
       moveEpoch.current === epoch &&
       chatAuthority.current.ownerId === ownerId &&
-      chatAuthority.current.profileKey === profileKey;
+      chatAuthority.current.profileKey === profileKey &&
+      chatShareScopeRef.current === shareScope;
     try {
       let result = await personalMemoryApi.assignSessionProject(
         undoBatchId
@@ -2214,7 +2316,9 @@ export function HqApplication({
         });
         return;
       }
-      await personalMemoryStore.loadProjects({ silent: true });
+      const refreshed = await personalMemoryStore.loadProjects({
+        silent: true
+      });
       if (!current()) return;
       if (toProjectId) setRevealProject({ id: toProjectId, token: epoch });
       if (
@@ -2242,6 +2346,98 @@ export function HqApplication({
               moveBatchId: result.moveBatchId
             }
       );
+      if (
+        toProjectId &&
+        fromProjectId !== toProjectId &&
+        projectsApi?.sharedChatOffer &&
+        projectsApi.sharedChatStatus &&
+        refreshed.projectOrder.some((id) =>
+          refreshed.projectsById
+            .get(id)
+            ?.threads.some(
+              (thread) =>
+                thread.sessionId === sessionId &&
+                thread.personalProjectId === toProjectId &&
+                !thread.originDevice &&
+                !thread.conversationTrashedAt
+            )
+        )
+      ) {
+        const destination = projectsStore?.current();
+        const linked = destination?.projects.find(
+          (project) =>
+            destination.ownerId === ownerId &&
+            destination.profileKey === profileKey &&
+            project.id === toProjectId &&
+            project.lifecycle === "active" &&
+            project.teamBackendId &&
+            project.workspaceProjectId
+        );
+        if (linked) {
+          const binding = JSON.stringify([
+            linked.id,
+            linked.version,
+            linked.teamBackendId,
+            linked.workspaceProjectId
+          ]);
+          const linkStillCurrent = () => {
+            const next = projectsStore?.current();
+            const project = next?.projects.find(({ id }) => id === toProjectId);
+            return (
+              current() &&
+              next?.ownerId === ownerId &&
+              next?.profileKey === profileKey &&
+              project?.lifecycle === "active" &&
+              JSON.stringify([
+                project.id,
+                project.version,
+                project.teamBackendId,
+                project.workspaceProjectId
+              ]) === binding
+            );
+          };
+          try {
+            const status = await projectsApi.sharedChatStatus(
+              toProjectId,
+              sessionId
+            );
+            if (!linkStillCurrent()) return;
+            if (status === "unshared") {
+              const offer = await projectsApi.sharedChatOffer(
+                toProjectId,
+                sessionId,
+                "moved_in"
+              );
+              if (!linkStillCurrent()) return;
+              setMoveNotice((notice) =>
+                notice?.sessionId === sessionId &&
+                notice.toProjectId === toProjectId
+                  ? {
+                      ...notice,
+                      message:
+                        offer.state === "canceled"
+                          ? "Chat moved. Summary sharing was canceled. Review it from the chat menu."
+                          : offer.state === "pending"
+                            ? "Chat moved. Summary sharing is pending; check its status before assuming it was shared."
+                            : "Chat moved. Its summary sharing was confirmed."
+                    }
+                  : notice
+              );
+            }
+          } catch (error) {
+            if (!linkStillCurrent()) return;
+            setMoveNotice((notice) =>
+              notice?.sessionId === sessionId &&
+              notice.toProjectId === toProjectId
+                ? {
+                    ...notice,
+                    message: `Chat moved. Summary sharing needs a status check: ${error instanceof Error ? error.message : "unavailable."}`
+                  }
+                : notice
+            );
+          }
+        }
+      }
     } catch (error) {
       if (current())
         setMoveNotice({
@@ -2367,6 +2563,39 @@ export function HqApplication({
               personalMemoryApi?.forgetSession
                 ? (projectId, sessionId, title) =>
                     openChatDeleteRequest(projectId, sessionId, title, "forget")
+                : undefined
+            }
+            chatShareScopeKey={chatShareScopeKey}
+            onChatShareStatus={
+              projectsApi?.sharedChatStatus && projectsApi.sharedChatMakePrivate
+                ? readChatShareStatus
+                : undefined
+            }
+            onMakeChatPrivate={
+              projectsApi?.sharedChatStatus && projectsApi.sharedChatMakePrivate
+                ? makeChatPrivate
+                : undefined
+            }
+            onShareChatAgain={
+              projectsApi?.sharedChatStatus && projectsApi.sharedChatOffer
+                ? (personalProjectId, sessionId) =>
+                    offerChatSummary(
+                      personalProjectId,
+                      sessionId,
+                      "share_again",
+                      "private"
+                    )
+                : undefined
+            }
+            onShareUnsharedChat={
+              projectsApi?.sharedChatStatus && projectsApi.sharedChatOffer
+                ? (personalProjectId, sessionId) =>
+                    offerChatSummary(
+                      personalProjectId,
+                      sessionId,
+                      "moved_in",
+                      "unshared"
+                    )
                 : undefined
             }
             onOpenNow={() => selectRoute({ kind: "home" })}
@@ -2742,12 +2971,14 @@ export function HqApplication({
       />
       {projectsApi && visibilityClient ? (
         <HqShareSheet
+          key={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}:${visibilityRevision ?? ""}:${shareProjectId ?? "closed"}`}
           open={shareProjectId !== null}
           project={
             personalProjects.find((item) => item.id === shareProjectId) ?? null
           }
           projectsApi={projectsApi}
           collaboration={visibilityClient}
+          identityKey={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}:${visibilityRevision ?? ""}`}
           onClose={() => setShareProjectId(null)}
           onShared={() => {
             void projectsStore?.refresh();

@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0074_hot_albert_cleary";
-const expectedLatestMigrationIndex = 74;
+const expectedLatestMigrationTag = "0075_dashing_khan";
+const expectedLatestMigrationIndex = 75;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -730,6 +730,54 @@ const assertMigrationLedger = async (pool, expectedRecords) => {
 
 const assertLatestSchema = async (pool) => {
   const columnsByTable = {
+    ...Object.fromEntries(
+      [
+        "project_share_explicit_offers",
+        "project_share_local_issues",
+        "project_share_move_fences",
+        "project_share_policy_attempts"
+      ].map((table) => [
+        table,
+        [
+          ["id", "uuid", "NO"],
+          ["owner_user_id", "uuid", "NO"],
+          ["project_id", "uuid", "NO"],
+          ["created_at", "timestamp with time zone", "NO"],
+          ["updated_at", "timestamp with time zone", "NO"]
+        ]
+      ])
+    ),
+    projects: [
+      ["share_policy_link_epoch", "uuid", "NO"],
+      ["project_share_policy_version", "integer", "YES"]
+    ],
+    project_share_policy_signing_keys: [
+      ["link_epoch", "uuid", "NO"],
+      ["public_key", "text", "NO"],
+      ["sealed_private_key", "jsonb", "NO"]
+    ],
+    project_share_private_conversations: [["owner_user_id", "uuid", "NO"]],
+    workspace_project_explicit_share_fences: [["mutation_id", "uuid", "NO"]],
+    workspace_project_share_policies: [
+      ["workspace_project_id", "uuid", "NO"],
+      ["source_owner_team_member_id", "uuid", "NO"],
+      ["version", "integer", "NO"],
+      ["signing_public_key", "text", "NO"]
+    ],
+    workspace_project_share_policy_exclusions: [["session_id", "uuid", "NO"]],
+    workspace_project_share_policy_issues: [
+      ["policy_id", "uuid", "NO"],
+      ["pending_share_id", "uuid", "YES"]
+    ],
+    workspace_project_share_policy_manifests: [
+      ["manifest_hash", "text", "NO"],
+      ["eligible_session_ids", "jsonb", "NO"]
+    ],
+    project_policy_session_grants: [
+      ["origin", "text", "NO"],
+      ["policy_generation", "integer", "YES"]
+    ],
+    pending_share_operations: [["workspace_project_id", "uuid", "YES"]],
     project_decks: [
       ["id", "uuid", "NO"],
       ["project_id", "uuid", "NO"],
@@ -869,7 +917,9 @@ const assertLatestSchema = async (pool) => {
     ],
     managed_conversation_executions: [
       ["is_project_hq", "boolean", "NO"],
-      ["hq_private_path", "text", "YES"]
+      ["hq_private_path", "text", "YES"],
+      ["share_policy_capture_version", "integer", "YES"],
+      ["share_policy_capture_link_epoch", "uuid", "YES"]
     ],
     managed_conversation_turn_citations: [
       ["id", "uuid", "NO"],
@@ -892,7 +942,13 @@ const assertLatestSchema = async (pool) => {
       ["encrypted_detail", "jsonb", "NO"],
       ["created_at", "timestamp with time zone", "NO"]
     ],
-    sessions: [["forget_batch_id", "uuid", "YES"]],
+    sessions: [
+      ["forget_batch_id", "uuid", "YES"],
+      ["project_share_capture_policy_version", "integer", "YES"],
+      ["project_share_capture_link_epoch", "uuid", "YES"],
+      ["project_share_private_pending_at", "timestamp with time zone", "YES"],
+      ["project_share_move_pending_at", "timestamp with time zone", "YES"]
+    ],
     chat_delete_operations: [
       ["batch_id", "uuid", "NO"],
       ["session_id", "uuid", "NO"],

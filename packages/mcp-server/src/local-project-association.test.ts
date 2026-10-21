@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   associate: vi.fn(),
   older: vi.fn(async () => 0),
   overrides: vi.fn(async () => ({ mapped: 0, ambiguous: 0 })),
+  query: vi.fn(async () => ({ rows: [] as Array<Record<string, unknown>> })),
   end: vi.fn(async () => undefined),
   warn: vi.fn()
 }));
@@ -33,6 +34,15 @@ type TestState = {
     gitDirIdentity?: string | null;
     folderIdentity?: string | null;
     confirmationVersion?: number;
+    captureSharePolicy?: {
+      projectId: string;
+      workspaceProjectId: string;
+      policyVersion: number;
+      linkEpoch: string;
+      deviceCredentialId: string;
+      associationVersion: number;
+      preparedAt: string;
+    };
   }>;
 };
 type TestCatalog = {
@@ -50,6 +60,7 @@ type AssociationCall = {
   confirmedSeparate?: boolean;
   confirmationVersion?: number;
   requiresConfirmation?: boolean;
+  captureSharePolicy?: TestState["history"][number]["captureSharePolicy"];
 };
 const readTestState = (file: string): TestState =>
   JSON.parse(readFileSync(file, "utf8")) as TestState;
@@ -57,7 +68,7 @@ const associationCalls = (): Array<[AssociationCall]> =>
   mocks.associate.mock.calls as Array<[AssociationCall]>;
 
 vi.mock("@koed/db", () => ({
-  createDbPool: () => ({ end: mocks.end }),
+  createDbPool: () => ({ end: mocks.end, query: mocks.query }),
   createProjectRepository: () => ({
     associateVerifiedCapturedSession: mocks.associate,
     associateOlderSessions: mocks.older,
@@ -88,6 +99,8 @@ afterEach(() => {
   mocks.older.mockClear();
   mocks.overrides.mockReset();
   mocks.overrides.mockResolvedValue({ mapped: 0, ambiguous: 0 });
+  mocks.query.mockReset();
+  mocks.query.mockResolvedValue({ rows: [] });
   mocks.end.mockClear();
   mocks.warn.mockClear();
   for (const root of roots.splice(0))
@@ -165,6 +178,119 @@ const testService = (input: ReturnType<typeof fixture>) => {
 };
 
 describe("local Project association durability", () => {
+  it("persists only an exact pre-capture policy snapshot and forwards its original proof", async () => {
+    const input = fixture();
+    const service = testService(input);
+    const snapshot = {
+      project_id: randomUUID(),
+      workspace_project_id: randomUUID(),
+      project_share_policy_version: 3,
+      project_share_policy_device_credential_id: randomUUID(),
+      share_policy_link_epoch: randomUUID(),
+      association_version: 7
+    };
+    mocks.query.mockResolvedValueOnce({ rows: [snapshot] });
+    mocks.associate.mockResolvedValue({
+      state: "resolved",
+      projectId: snapshot.project_id,
+      sessionAssigned: true
+    });
+    try {
+      expect(
+        await service.prepare({
+          sourceKind: "codex",
+          externalSessionId: "policy-capture",
+          sourceProjectPath: input.folders[0]!.cwd,
+          localProjectId: input.folders[0]!.localProjectId
+        })
+      ).toBe(true);
+      const state = readTestState(
+        path.join(input.koedHome, "config", "project-associations.json")
+      );
+      const proof = state.pending[0] as TestState["history"][number];
+      expect(proof.captureSharePolicy).toMatchObject({
+        projectId: snapshot.project_id,
+        workspaceProjectId: snapshot.workspace_project_id,
+        policyVersion: 3,
+        linkEpoch: snapshot.share_policy_link_epoch,
+        deviceCredentialId: snapshot.project_share_policy_device_credential_id,
+        associationVersion: 7
+      });
+      expect(
+        Number.isFinite(Date.parse(proof.captureSharePolicy!.preparedAt))
+      ).toBe(true);
+      expect(mocks.query).toHaveBeenCalledWith(
+        expect.stringContaining("context.association_state='resolved'"),
+        [
+          "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          input.folders[0]!.localProjectId
+        ]
+      );
+      await service.complete("codex", "policy-capture", randomUUID());
+      await service.replay();
+      expect(mocks.associate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          captureSharePolicy: proof.captureSharePolicy
+        })
+      );
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("keeps Personal capture durable but never backfills policy proof after missing, ambiguous, or failed lookup", async () => {
+    const input = fixture();
+    const service = testService(input);
+    const snapshot = {
+      project_id: randomUUID(),
+      workspace_project_id: randomUUID(),
+      project_share_policy_version: 1,
+      project_share_policy_device_credential_id: randomUUID(),
+      share_policy_link_epoch: randomUUID(),
+      association_version: 1
+    };
+    mocks.query.mockResolvedValueOnce({ rows: [] });
+    mocks.query.mockResolvedValueOnce({ rows: [snapshot, snapshot] });
+    mocks.query.mockRejectedValueOnce(new Error("database unavailable"));
+    mocks.associate.mockResolvedValue({
+      state: "resolved",
+      projectId: randomUUID(),
+      sessionAssigned: true
+    });
+    try {
+      for (const name of ["missing", "ambiguous", "outage"]) {
+        expect(
+          await service.prepare({
+            sourceKind: "codex",
+            externalSessionId: name,
+            sourceProjectPath: input.folders[0]!.cwd,
+            localProjectId: input.folders[0]!.localProjectId
+          })
+        ).toBe(true);
+      }
+      const state = readTestState(
+        path.join(input.koedHome, "config", "project-associations.json")
+      );
+      expect(state.pending).toHaveLength(3);
+      expect(state.history).toHaveLength(1);
+      expect(state.history.every((row) => !row.captureSharePolicy)).toBe(true);
+      expect(state.pending.every((row) => !("captureSharePolicy" in row))).toBe(
+        true
+      );
+      mocks.query.mockResolvedValue({ rows: [snapshot] });
+      for (const name of ["missing", "ambiguous", "outage"])
+        await service.complete("codex", name, randomUUID());
+      for (let pass = 0; pass < 3; pass++) await service.replay();
+      expect(associationCalls()).toHaveLength(3);
+      expect(
+        associationCalls().every(([call]) => !call.captureSharePolicy)
+      ).toBe(true);
+      expect(mocks.query).toHaveBeenCalledTimes(3);
+    } finally {
+      await service.close();
+    }
+  });
   it("reports ambiguous legacy overrides once without identity data", async () => {
     const { koedHome, folders, environment } = fixture();
     const service = testService({ koedHome, folders, environment });

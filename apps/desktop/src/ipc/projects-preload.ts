@@ -49,6 +49,73 @@ export const createProjectsPreloadApi = (
     return result;
   };
   const api: ProjectsDesktopApi = {
+    sharedPolicyStatus: async (personalProjectId) => {
+      const result = await command({
+        operation: "sharedPolicyStatus",
+        personalProjectId
+      });
+      if (result.operation !== "sharedPolicyStatus")
+        throw new Error("Invalid Project policy status.");
+      return result.policy;
+    },
+    sharedPolicyEnable: async (personalProjectId) => {
+      const result = await command({
+        operation: "sharedPolicyEnable",
+        personalProjectId
+      });
+      if (result.operation !== "sharedPolicyEnable")
+        throw new Error("Invalid Project policy activation.");
+      return { policy: result.policy, initialStage: result.initialStage };
+    },
+    sharedPolicyRevoke: async (personalProjectId) => {
+      const result = await command({
+        operation: "sharedPolicyRevoke",
+        personalProjectId
+      });
+      if (result.operation !== "sharedPolicyRevoke")
+        throw new Error("Invalid Project policy revocation.");
+      return result.policy;
+    },
+    sharedPolicyStageInitial: async (personalProjectId) => {
+      const result = await command({
+        operation: "sharedPolicyStageInitial",
+        personalProjectId
+      });
+      if (result.operation !== "sharedPolicyStageInitial")
+        throw new Error("Invalid Project policy initial staging.");
+      return { policy: result.policy, initialStage: result.initialStage };
+    },
+    sharedChatMakePrivate: async (personalProjectId, sessionId) => {
+      const result = await command({
+        operation: "sharedChatMakePrivate",
+        personalProjectId,
+        sessionId
+      });
+      if (result.operation !== "sharedChatMakePrivate")
+        throw new Error("Invalid Project chat privacy result.");
+      return { state: result.state };
+    },
+    sharedChatStatus: async (personalProjectId, sessionId) => {
+      const result = await command({
+        operation: "sharedChatStatus",
+        personalProjectId,
+        sessionId
+      });
+      if (result.operation !== "sharedChatStatus")
+        throw new Error("Invalid Project chat sharing status.");
+      return result.state;
+    },
+    sharedChatOffer: async (personalProjectId, sessionId, reason) => {
+      const result = await command({
+        operation: "sharedChatOffer",
+        personalProjectId,
+        sessionId,
+        reason
+      });
+      if (result.operation !== "sharedChatOffer")
+        throw new Error("Invalid Project chat summary offer result.");
+      return { state: result.state };
+    },
     sharedShareContext: async () => {
       const result = await command({ operation: "sharedShareContext" });
       if (result.operation !== "sharedShareContext")

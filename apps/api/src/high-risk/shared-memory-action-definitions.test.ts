@@ -488,6 +488,40 @@ describe("Shared Memory action definitions", () => {
     });
   });
 
+  it("keeps the source-policy replacement warning in an exact Project summary review", async () => {
+    const workspaceProjectId = randomUUID();
+    const intent = {
+      ...shareIntent("lcm_leaves"),
+      workspaceProjectId,
+      mode: "continuous" as const
+    };
+    const admitted = await admit(
+      intent,
+      repository({ sourceOwnerPolicyWillReplace: true })
+    );
+    if (!admitted) throw new Error("Project summary review was not admitted");
+    expect(admitted.policy).toMatchObject({
+      disposition: "native_review",
+      review: {
+        title: `Share a summary of this chat with ${destination.team.name}?`,
+        consequence: expect.stringContaining("invalidates other Share Grants"),
+        details: expect.arrayContaining([
+          { label: "Project", value: workspaceProjectId },
+          { label: "Curated Memory", value: "Excluded" }
+        ])
+      }
+    });
+    const otherProject = await admit(
+      { ...intent, workspaceProjectId: randomUUID() },
+      repository({ sourceOwnerPolicyWillReplace: true })
+    );
+    if (!otherProject)
+      throw new Error("Second Project review was not admitted");
+    expect(otherProject.operation.requestHash).not.toBe(
+      admitted.operation.requestHash
+    );
+  });
+
   it("authorizes revocation from the exact source-owned grant without destination read state", async () => {
     const intent = {
       action: "shared_memory.revoke",

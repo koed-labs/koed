@@ -1147,6 +1147,83 @@ describeDb("high-risk action grants", () => {
     }
   });
 
+  it("waits for an in-flight execution before treating an expired grant as terminal", async () => {
+    const fixture = await createFixture();
+    const repository = createRepository({ pool });
+    const operation = binding(fixture);
+    const grant = await createGrant(repository, fixture, operation);
+    await repository.decideBrowserActivation({
+      selector: grant.selector!,
+      ownerUserId: fixture.userId,
+      userSessionId: fixture.userSessionId,
+      freshlyAuthenticatedAt: new Date(),
+      decision: "approve"
+    });
+    const identities = await pool.query<{
+      internal_id: string;
+      public_reference_id: string;
+    }>(
+      `select action.id as internal_id,confirmation.client_request_id as public_reference_id
+         from high_risk_device_action_grants action
+         join high_risk_browser_confirmations confirmation
+           on confirmation.id=action.confirmation_id
+        where confirmation.client_request_id=$1`,
+      [grant.clientRequestId]
+    );
+    expect(identities.rows[0]?.internal_id).not.toBe(grant.clientRequestId);
+    expect(identities.rows[0]?.public_reference_id).toBe(grant.clientRequestId);
+    await pool.query(
+      `update high_risk_device_action_grants
+          set expires_at=clock_timestamp()+interval '120 milliseconds'
+        where id=$1`,
+      [identities.rows[0]!.internal_id]
+    );
+    let enterExecution!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enterExecution = resolve;
+    });
+    let releaseExecution!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseExecution = resolve;
+    });
+    const execution = repository.executeActionGrant({
+      ...operation,
+      actionGrant: grant.actionGrant,
+      execute: async () => {
+        enterExecution();
+        await release;
+        return { statusCode: 200, body: { policyEnabled: true } };
+      }
+    });
+    await entered;
+    await delay(160);
+    let reconciled = false;
+    const read = repository
+      .reconcileActionGrantExecution<{ policyEnabled: boolean }>({
+        ...operation,
+        clientRequestId: grant.clientRequestId,
+        actionGrantId: grant.clientRequestId
+      })
+      .then((result) => {
+        reconciled = true;
+        return result;
+      });
+    await delay(30);
+    expect(reconciled).toBe(false);
+    releaseExecution();
+    await expect(execution).resolves.toMatchObject({
+      statusCode: 200,
+      body: { policyEnabled: true },
+      replayed: false
+    });
+    const outcome = await read;
+    expect(outcome.receipt).toMatchObject({
+      statusCode: 200,
+      body: { policyEnabled: true }
+    });
+    expect(outcome.grant).toMatchObject({ state: "consumed" });
+  });
+
   it("expires and revokes unused confirmations and grants", async () => {
     const fixture = await createFixture();
     const confirmationRepository = createRepository({

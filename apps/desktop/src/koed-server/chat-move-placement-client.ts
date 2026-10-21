@@ -42,6 +42,10 @@ const responseSchema = z
 /** Resolve first-class Projects under one owner profile; dispatch placement once. */
 export const createChatMovePlacementClient = (input: {
   authority: () => Promise<ProjectsAuthority>;
+  beforeAssign?: (
+    request: PersonalDesktopSessionProjectInput,
+    authority: ProjectsAuthority
+  ) => Promise<void>;
   requestJson: (
     path: string,
     init: RequestInit,
@@ -200,6 +204,15 @@ export const createChatMovePlacementClient = (input: {
         };
       }
 
+      if (
+        input.beforeAssign &&
+        (request.action === "move" || request.action === "loose") &&
+        (request.action === "loose" ||
+          request.targetProjectId !== request.expectedProjectId)
+      ) {
+        await input.beforeAssign(request, bound);
+        await assertAuthority();
+      }
       await assertAuthority();
       const payload = await input.requestJson(
         `/v1/memory/graph/sessions/${encodeURIComponent(request.sessionId)}/project`,

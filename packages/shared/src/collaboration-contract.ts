@@ -1901,12 +1901,25 @@ export const collaborationActionGrantIntentSchema = z
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
+      workspaceProjectId: z.uuid().optional(),
       mode: z.enum(["snapshot", "continuous"]),
       maximumFidelity: sharedMemoryFidelityCeilingSchema,
       includeCuratedMemory: z.boolean(),
       previewRevision: positiveVersionSchema,
       previewHash: sha256Schema,
       expiresAt: collaborationTimestampSchema.nullable()
+    }),
+    actionGrantIntent("collaboration.project_share_policy_enable", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      expectedPolicyVersion: z.number().int().nonnegative(),
+      manifestId: z.uuid(),
+      manifestHash: sha256Schema
+    }),
+    actionGrantIntent("collaboration.project_share_policy_revoke", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      expectedPolicyVersion: positiveVersionSchema
     }),
     actionGrantIntent("collaboration.revoke_shared_memory", {
       mutationId: z.uuid(),
@@ -2050,7 +2063,19 @@ export const collaborationApprovalReviewSchema = z
           })
           .strict()
       )
-      .max(12)
+      .max(12),
+    reviewSources: z
+      .array(
+        z
+          .object({
+            sessionId: z.uuid(),
+            reviewLabel: authoritativeApprovalCopy(160),
+            eligible: z.boolean()
+          })
+          .strict()
+      )
+      .max(100)
+      .optional()
   })
   .strict();
 
@@ -2940,6 +2965,7 @@ export const collaborationRendererCommandSchema = z
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
       workspaceId: z.uuid(),
+      workspaceProjectId: z.uuid().optional(),
       mode: z.enum(["snapshot", "continuous"]),
       maximumFidelity: sharedMemoryFidelityCeilingSchema,
       includeCuratedMemory: z.boolean(),

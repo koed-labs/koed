@@ -266,6 +266,11 @@
 .hq-sidebar__job-clock[data-paused="true"] {
   opacity: 0.5;
 }
+.hq-sidebar__private-badge {
+  display: inline-flex;
+  flex: none;
+  color: var(--hq-muted);
+}
 .hq-sidebar__conversation {
   position: relative;
 }
@@ -309,6 +314,17 @@
   background: transparent;
   font: inherit;
   cursor: pointer;
+}
+.hq-sidebar__chat-sharing p {
+  max-inline-size: 240px;
+  margin: 4px 6px;
+  padding: 3px 6px;
+  color: var(--hq-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.hq-sidebar__chat-sharing p[role="alert"] {
+  color: var(--hq-danger);
 }
 .hq-sidebar__job-menu-title {
   max-inline-size: 240px;

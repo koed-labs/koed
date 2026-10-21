@@ -1046,6 +1046,9 @@ export const registerSharedMemoryRoutes = (
         logicalMemoryId: input.logicalMemoryId,
         teamId: input.teamId,
         teamWorkspaceId: input.teamWorkspaceId,
+        ...(input.workspaceProjectId
+          ? { workspaceProjectId: input.workspaceProjectId }
+          : {}),
         previewId: input.preview.previewId,
         previewRevision: input.previewRevision,
         previewHash: input.preview.previewHash,
@@ -1075,6 +1078,9 @@ export const registerSharedMemoryRoutes = (
                     activationRepresentation: input.activationRepresentation,
                     teamId: input.teamId,
                     teamWorkspaceId: input.teamWorkspaceId,
+                    ...(input.workspaceProjectId
+                      ? { workspaceProjectId: input.workspaceProjectId }
+                      : {}),
                     preview: input.preview,
                     previewRevision: input.previewRevision,
                     mode: input.mode,

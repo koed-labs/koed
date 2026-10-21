@@ -36,6 +36,7 @@ import {
 } from "./schema.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
 import { createWorkspaceProjectRepository } from "./workspace-project-repository.js";
+import { createProjectSharePolicyRepository } from "./project-share-policy-repository.js";
 import { createTeamConversationSourceRepository } from "./team-conversation-source-repository.js";
 import { issueTeamLifecycleFreezeAuthority } from "./team-lifecycle-freeze-authority.js";
 
@@ -142,6 +143,7 @@ export interface ExecuteHighRiskActionGrantInput<
   execute: (repositories: {
     team: ReturnType<typeof createTeamAccessRepository>;
     workspaceProject: ReturnType<typeof createWorkspaceProjectRepository>;
+    projectSharePolicy: ReturnType<typeof createProjectSharePolicyRepository>;
     retention: ReturnType<typeof createRetentionLifecycleRepository>;
     sharedMemory: ReturnType<typeof createSharedMemoryRepository>;
     sync: ReturnType<typeof createCrossIdentitySyncRepository>;
@@ -183,6 +185,14 @@ export interface HighRiskActionRepository {
   getActionGrant(
     input: GetHighRiskActionGrantInput
   ): Promise<HighRiskActionGrantBindingRecord | null>;
+  reconcileActionGrantExecution<TBody>(
+    input: GetHighRiskActionGrantInput &
+      HighRiskOperationBinding & { actionGrantId: string }
+  ): Promise<{
+    receipt: HighRiskMutationReceipt<TBody> | null;
+    grant: HighRiskActionGrantBindingRecord | null;
+    serverTime: Date;
+  }>;
   awaitActionGrant(
     input: AwaitHighRiskActionGrantInput
   ): Promise<HighRiskActionGrantBindingRecord | null>;
@@ -527,6 +537,7 @@ const buildScopedRepositories = (
     delegatedDeviceActionGrantExecution: true
   });
   return {
+    projectSharePolicy: createProjectSharePolicyRepository(savepointPool),
     workspaceProject: createWorkspaceProjectRepository(savepointPool, {
       freezeGrantForParent: async (transactionClient, input) => {
         const verified = verifiedProjectFreezeParent;
@@ -1114,6 +1125,90 @@ export const createHighRiskActionRepository = (
     async getActionGrant(input) {
       const row = await selectConfirmationWithGrant(db, input);
       return row ? mapBindingRecord(row.confirmation, row.grant) : null;
+    },
+
+    async reconcileActionGrantExecution<TBody>(
+      input: GetHighRiskActionGrantInput &
+        HighRiskOperationBinding & { actionGrantId: string }
+    ) {
+      validateOperationBinding(input);
+      validateUuid("Action Grant ID", input.actionGrantId);
+      const provider = options.envelopeEncryptionProvider;
+      const pool = options.pool;
+      if (!provider || !pool)
+        throw new Error("High-risk receipt custody unavailable");
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        // The mutation transaction locks this same grant row FOR UPDATE.
+        // A read after this lock sees either its committed receipt or a
+        // provably non-executable terminal grant, never an in-flight active
+        // grant that merely crossed its wall-clock expiry.
+        await client.query(
+          `select grant_row.id
+             from high_risk_device_action_grants grant_row
+             join high_risk_browser_confirmations confirmation
+               on confirmation.id=grant_row.confirmation_id
+            where confirmation.client_request_id=$1
+              and grant_row.owner_user_id=$2
+              and grant_row.device_credential_id=$3
+              and grant_row.upstream_backend_id=$4
+            for update of grant_row`,
+          [
+            input.actionGrantId,
+            input.ownerUserId,
+            input.deviceCredentialId,
+            input.upstreamBackendId
+          ]
+        );
+        const tx = createDb(client);
+        const row = await selectConfirmationWithGrant(tx, {
+          ...input,
+          clientRequestId: input.actionGrantId
+        });
+        const grant = row?.grant;
+        const exact = Boolean(
+          row &&
+          grant &&
+          row!.confirmation.clientRequestId === input.actionGrantId &&
+          grant!.ownerUserId === input.ownerUserId &&
+          grant!.deviceCredentialId === input.deviceCredentialId &&
+          grant!.upstreamBackendId === input.upstreamBackendId &&
+          grant!.teamId === input.teamId &&
+          grant!.operationFamily === input.operationFamily &&
+          grant!.action === input.action &&
+          grant!.targetId === input.targetId &&
+          grant!.scopeHash === input.scopeHash &&
+          grant!.requestHash === input.requestHash
+        );
+        const [nowRow] = (
+          await client.query<{ now: Date }>("select now() as now")
+        ).rows;
+        let receipt: HighRiskMutationReceipt<TBody> | null = null;
+        if (exact && grant!.state === "consumed" && grant!.useCount === 1) {
+          const [stored] = await tx
+            .select()
+            .from(highRiskActionGrantExecutionReceipts)
+            .where(
+              eq(highRiskActionGrantExecutionReceipts.actionGrantId, grant!.id)
+            )
+            .limit(1);
+          if (!stored)
+            throw new Error("Consumed Action Grant has no execution receipt");
+          receipt = await decodeReceiptRow<TBody>(provider, stored);
+        }
+        await client.query("commit");
+        return {
+          receipt,
+          grant: exact ? mapBindingRecord(row!.confirmation, grant!) : null,
+          serverTime: nowRow!.now
+        };
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
     async awaitActionGrant(input) {

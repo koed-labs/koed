@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import type { ProjectSharePolicyRepository } from "@koed/db";
+import { describe, expect, it, vi } from "vitest";
 
-import { highRiskActionDefinitions } from "./action-definitions.js";
+import {
+  admitHighRiskActionGrant,
+  highRiskActionDefinitions,
+  type HighRiskActionDefinitionRepository
+} from "./action-definitions.js";
 import {
   highRiskActionGrantIntentSchema,
   resolveHighRiskActionGrantOperation,
@@ -20,6 +25,26 @@ const matrixCases: Array<{
   intent: HighRiskActionGrantIntent;
   expected: "direct" | "native_review" | "step_up";
 }> = [
+  {
+    intent: {
+      action: "shared_memory.project_share_policy.enable",
+      teamId: uuid(1),
+      projectId: uuid(2),
+      expectedPolicyVersion: 0,
+      manifestId: uuid(3),
+      manifestHash: "a".repeat(64)
+    },
+    expected: "native_review"
+  },
+  {
+    intent: {
+      action: "shared_memory.project_share_policy.revoke",
+      teamId: uuid(1),
+      projectId: uuid(2),
+      expectedPolicyVersion: 1
+    },
+    expected: "native_review"
+  },
   {
     intent: {
       action: "workspace_project.leave",
@@ -399,6 +424,74 @@ const matrixCases: Array<{
 ];
 
 describe("action approval policy", () => {
+  it.each([
+    ["shared_memory.project_share_policy.enable", "absent"],
+    ["shared_memory.project_share_policy.revoke", "active"]
+  ] as const)(
+    "admits %s only through the exact Project policy review",
+    async (action, status) => {
+      const intent = matrixCases.find(
+        (entry) => entry.intent.action === action
+      )!.intent;
+      const getReview = vi.fn(async () => ({
+        policyId: status === "active" ? uuid(10) : null,
+        ownerTeamMemberId: uuid(11),
+        projectId: uuid(2),
+        teamId: uuid(1),
+        workspaceId: uuid(12),
+        projectName: "Policy Project",
+        policyVersion: status === "active" ? 1 : 0,
+        status,
+        manifestId: status === "active" ? null : uuid(3),
+        manifestHash: status === "active" ? null : "a".repeat(64),
+        signingPublicKey: null,
+        personalProjectBindingHash: null,
+        deviceCredentialId: null,
+        eligibleCount: 0,
+        reviewSources: []
+      }));
+      const admitted = await admitHighRiskActionGrant({
+        repository: {} as HighRiskActionDefinitionRepository,
+        projectSharePolicyRepository: {
+          getReview
+        } as unknown as ProjectSharePolicyRepository,
+        userId: uuid(13),
+        deviceCredentialId: uuid(14),
+        upstreamBackendId: "test-backend",
+        clientRequestId: uuid(15),
+        hashSecret: () => "a".repeat(64),
+        intent
+      });
+      expect(admitted?.policy.disposition).toBe("native_review");
+      expect(getReview).toHaveBeenCalledWith(
+        {
+          userId: uuid(13),
+          deviceCredentialId: uuid(14),
+          upstreamBackendId: "test-backend"
+        },
+        status === "active"
+          ? { projectId: uuid(2), expectedPolicyVersion: 1 }
+          : {
+              projectId: uuid(2),
+              expectedPolicyVersion: 0,
+              manifestId: uuid(3),
+              manifestHash: "a".repeat(64)
+            }
+      );
+      await expect(
+        admitHighRiskActionGrant({
+          repository: {} as HighRiskActionDefinitionRepository,
+          projectSharePolicyRepository: null,
+          userId: uuid(13),
+          deviceCredentialId: uuid(14),
+          upstreamBackendId: "test-backend",
+          clientRequestId: uuid(15),
+          hashSecret: () => "a".repeat(64),
+          intent
+        })
+      ).rejects.toThrow("Project share policy authority");
+    }
+  );
   it("rejects an unknown Curated share action instead of assigning a default tier", () => {
     expect(
       highRiskActionGrantIntentSchema.safeParse({

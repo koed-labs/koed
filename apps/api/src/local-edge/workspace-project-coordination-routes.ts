@@ -2,6 +2,11 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   fetchBoundedJson,
+  projectSharePolicyReviewSchema,
+  projectSharePolicyEnableSchema,
+  projectSharePolicyRevokeSchema,
+  projectSharePolicyReceiptReadSchema,
+  collaborationActionGrantIntentSchema,
   verifyDesktopLocalCredentialAuthorization,
   verifyLocalEdgeClientCredentialAuthorization
 } from "@koed/shared";
@@ -10,6 +15,7 @@ import {
   PersonalWorkspaceProjectUnavailableError,
   workspaceProjectCopyManifestHash,
   type PersonalWorkspaceProjectRepository,
+  type PersonalProjectSharePolicyRepository,
   type ProjectSourceRepository,
   type createFlashcardDeckRepository
 } from "@koed/db";
@@ -30,6 +36,8 @@ import {
   putDeckProgressSchema
 } from "@koed/shared";
 import { authenticateProjectOperation } from "../projects/desktop-read-auth.js";
+import type { createLocalSharedMemoryCandidatePreparation } from "./shared-memory-candidate-preparation.js";
+import { prepareLocalLcmCandidateRepresentation } from "./shared-memory-candidate-preparation.js";
 import {
   readLocalEdgeUpstreamRegistry,
   safeUpstreamProxyUrl,
@@ -223,6 +231,10 @@ export const registerWorkspaceProjectCoordinationRoutes = (
     | "createPersonalNote"
     | "findPersonalNoteByIdempotencyKey"
     | "getPersonalNote"
+  > | null,
+  projectSharePolicyRepository?: PersonalProjectSharePolicyRepository | null,
+  candidatePreparation?: ReturnType<
+    typeof createLocalSharedMemoryCandidatePreparation
   > | null
 ) => {
   const repo = () =>
@@ -255,7 +267,10 @@ export const registerWorkspaceProjectCoordinationRoutes = (
   const authenticate = async (
     request: FastifyRequest,
     backendId: string,
-    family: "team_workspace_read" | "team_workspace_write",
+    family:
+      | "team_workspace_read"
+      | "team_workspace_write"
+      | "share_grant_management",
     personalWrite = true
   ) => {
     const { actor, local } = await authenticateLocal(request, personalWrite);
@@ -295,6 +310,2446 @@ export const registerWorkspaceProjectCoordinationRoutes = (
       denied("Authoritative Team Project state unavailable", 424);
     return remote.payload;
   };
+  const readExplicitRemote = async (
+    backendId: string,
+    workspaceProjectId: string,
+    offer: { mutationId: string; sessionId: string; logicalMemoryId: string }
+  ) => {
+    const backend = upstreamBackendById(
+      readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+      backendId
+    );
+    if (!backend) denied("Team backend is not enrolled", 424);
+    const authorization = context.localEdge.resolveUpstreamAuthorization(
+      backend!
+    );
+    if (!authorization) denied("Team upstream credential unavailable", 424);
+    const result = await fetchBoundedJson(
+      context.localEdge.fetch,
+      safeUpstreamProxyUrl(
+        backend!,
+        `/v1/workspace-projects/${encodeURIComponent(workspaceProjectId)}` +
+          `/share-policy/explicit-pending/read`
+      ),
+      {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          authorization: authorization!
+        },
+        body: JSON.stringify({
+          mutationId: offer.mutationId,
+          sessionId: offer.sessionId,
+          logicalMemoryId: offer.logicalMemoryId
+        })
+      },
+      { timeoutMs: 15_000, maxBytes: 8_000 }
+    );
+    if (!result.response.ok)
+      denied("Exact Team Pending Share read unavailable", 424);
+    return z
+      .object({
+        state: z.enum(["absent", "pending", "activated", "blocked"]),
+        pendingShareId: z.uuid().nullable(),
+        shareGrantId: z.uuid().nullable(),
+        grantVersion: z.number().int().positive().nullable(),
+        sourceRevision: z.number().int().positive().nullable(),
+        teamId: z.uuid(),
+        workspaceId: z.uuid(),
+        ownerTeamMemberId: z.uuid()
+      })
+      .strict()
+      .parse(result.payload);
+  };
+  const fenceExplicitRemote = async (
+    backendId: string,
+    workspaceProjectId: string,
+    offer: { mutationId: string; sessionId: string }
+  ) => {
+    const backend = upstreamBackendById(
+      readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+      backendId
+    );
+    if (!backend) denied("Team backend is not enrolled", 424);
+    const authorization = context.localEdge.resolveUpstreamAuthorization(
+      backend!
+    );
+    if (!authorization) denied("Team upstream credential unavailable", 424);
+    const result = await fetchBoundedJson(
+      context.localEdge.fetch,
+      safeUpstreamProxyUrl(
+        backend!,
+        `/v1/workspace-projects/${encodeURIComponent(workspaceProjectId)}` +
+          `/share-policy/explicit-pending/fence`
+      ),
+      {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          authorization: authorization!
+        },
+        body: JSON.stringify({
+          mutationId: offer.mutationId,
+          sessionId: offer.sessionId
+        })
+      },
+      { timeoutMs: 15_000, maxBytes: 8_000 }
+    );
+    if (!result.response.ok)
+      denied("Team explicit offer fence unavailable", 424);
+    return z
+      .object({
+        state: z.enum(["fenced", "activated"]),
+        shareGrantId: z.uuid().nullable(),
+        grantVersion: z.number().int().positive().nullable()
+      })
+      .strict()
+      .parse(result.payload);
+  };
+  const policyCursorSchema = z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,256}$/)
+    .optional();
+  const decodePolicyCursor = (
+    cursor: string | undefined,
+    binding: string
+  ): string | undefined => {
+    if (!cursor) return undefined;
+    try {
+      const parsed = z
+        .object({ binding: z.string(), id: z.uuid() })
+        .strict()
+        .parse(JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")));
+      if (parsed.binding !== binding)
+        denied("Project policy cursor scope changed", 409);
+      return parsed.id;
+    } catch {
+      denied("Project policy cursor is invalid", 400);
+    }
+  };
+  const encodePolicyCursor = (binding: string, id: string | null) =>
+    id
+      ? Buffer.from(JSON.stringify({ binding, id }), "utf8").toString(
+          "base64url"
+        )
+      : null;
+  app.get(
+    "/v1/local-edge/project-share-policy/active-projects",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const { actor } = await authenticateLocal(request, false);
+      if (!projectSharePolicyRepository)
+        denied("Project share policy unavailable", 503);
+      const query = z
+        .object({ cursor: policyCursorSchema })
+        .strict()
+        .parse(request.query);
+      const binding = `owner:${actor.id}`;
+      const page = await projectSharePolicyRepository!.listActivePolicyProjects(
+        actor.id,
+        decodePolicyCursor(query.cursor, binding)
+      );
+      return {
+        ...page,
+        nextCursor: page.hasMore
+          ? encodePolicyCursor(binding, page.nextCursor)
+          : null
+      };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/local-state",
+    { preHandler: context.rateLimit.memoryRead, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid()
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management",
+        false
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (!projectSharePolicyRepository)
+        denied("Local Project policy custody unavailable", 503);
+      const device = z
+        .object({ credential: z.object({ id: z.uuid() }).passthrough() })
+        .passthrough()
+        .parse(
+          await requestTeam(
+            body.teamBackendId,
+            "/v1/local-edge/device-credentials/status"
+          )
+        );
+      return {
+        ...(await projectSharePolicyRepository!.localPolicyState({
+          ownerUserId: authority.actor.id,
+          projectId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId
+        })),
+        currentDeviceCredentialId: device.credential.id
+      };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/manifest",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid()
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "team_workspace_write"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      const principal = await teamPrincipal(body.teamBackendId);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== principal
+      )
+        denied("Team principal binding changed", 409);
+      if (!projectSharePolicyRepository)
+        denied("Project share policy unavailable", 503);
+      const teamStatus = projectSharePolicyReviewSchema.parse(
+        await requestTeam(
+          body.teamBackendId,
+          `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/status`
+        )
+      );
+      if (
+        teamStatus.projectId !== body.workspaceProjectId ||
+        teamStatus.status === "active"
+      )
+        denied("Team Project policy changed before preparation", 409);
+      const device = z
+        .object({ credential: z.object({ id: z.uuid() }).passthrough() })
+        .passthrough()
+        .parse(
+          await requestTeam(
+            body.teamBackendId,
+            "/v1/local-edge/device-credentials/status"
+          )
+        );
+      const signing = await projectSharePolicyRepository!.prepareSigningKey({
+        ownerUserId: authority.actor.id,
+        projectId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId,
+        deviceCredentialId: device.credential.id,
+        policyVersion: teamStatus.policyVersion + 1
+      });
+      const initial = await projectSharePolicyRepository!.buildInitialManifest({
+        ownerUserId: authority.actor.id,
+        projectId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId
+      });
+      if (initial.entries.length && !candidatePreparation)
+        denied("Local summary preparation unavailable", 503);
+      for (const entry of initial.entries) {
+        await prepareLocalLcmCandidateRepresentation({
+          repository: context.requireRepository(),
+          ownerUserId: authority.actor.id,
+          sessionId: entry.sessionId,
+          representation: "lcm_leaves"
+        });
+      }
+      const candidates = new Map<
+        string,
+        { logicalMemoryId: string; sourceRevision: number; itemCount: number }
+      >();
+      for (const entry of initial.entries) {
+        const candidate = await candidatePreparation!.loadCandidatePreview({
+          localOwnerUserId: authority.actor.id,
+          sessionId: entry.sessionId,
+          representation: "lcm_leaves",
+          mode: "continuous"
+        });
+        if (!candidate || candidate.itemCount < 1)
+          denied(
+            "Exact sanitized summary is not ready before Native review",
+            409
+          );
+        candidates.set(entry.sessionId, {
+          logicalMemoryId: candidate!.logicalMemoryId,
+          sourceRevision: candidate!.sourceRevision,
+          itemCount: candidate!.itemCount
+        });
+      }
+      const prepared = await projectSharePolicyRepository!.buildInitialManifest(
+        {
+          ownerUserId: authority.actor.id,
+          projectId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId
+        }
+      );
+      if (
+        prepared.personalProjectBindingHash !==
+          initial.personalProjectBindingHash ||
+        prepared.entries.length !== initial.entries.length ||
+        prepared.entries.some(
+          (entry, index) =>
+            entry.sessionId !== initial.entries[index]?.sessionId
+        )
+      )
+        denied(
+          "Captured Session set changed during summary preparation; review again",
+          409
+        );
+      for (const entry of prepared.entries) {
+        const candidate = candidates.get(entry.sessionId);
+        if (
+          !candidate ||
+          candidate.sourceRevision !== entry.sourceRevision ||
+          candidate.logicalMemoryId !== entry.logicalMemoryId ||
+          candidate.itemCount < 1
+        )
+          denied(
+            "Exact sanitized summary is not ready; retry preparation before Native review",
+            409
+          );
+      }
+      return {
+        ...prepared,
+        signingPublicKey: signing.signingPublicKey,
+        deviceCredentialId: device.credential.id
+      };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/stage-initial",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          sessionId: z.uuid(),
+          expectedPolicyVersion: z.number().int().positive()
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (!projectSharePolicyRepository || !candidatePreparation)
+        denied("Local policy candidate preparation unavailable", 503);
+      const policy = projectSharePolicyReviewSchema.parse(
+        await requestTeam(
+          body.teamBackendId,
+          `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/status`
+        )
+      );
+      if (
+        policy.projectId !== body.workspaceProjectId ||
+        policy.status !== "active" ||
+        policy.policyVersion !== body.expectedPolicyVersion
+      )
+        denied("Team Project policy changed", 409);
+      const principal = await teamPrincipal(body.teamBackendId);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== principal
+      )
+        denied("Team principal binding changed", 409);
+      const local = await projectSharePolicyRepository!.buildInitialManifest({
+        ownerUserId: authority.actor.id,
+        projectId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId
+      });
+      const exact = local.entries.find(
+        (entry) => entry.sessionId === body.sessionId
+      );
+      if (!exact)
+        denied(
+          "Captured Session is not eligible in the exact Personal Project",
+          409
+        );
+      const candidate = await candidatePreparation!.loadCandidatePreview({
+        localOwnerUserId: authority.actor.id,
+        sessionId: body.sessionId,
+        representation: "lcm_leaves",
+        mode: "continuous"
+      });
+      if (
+        !candidate ||
+        candidate.source.kind !== "captured_session" ||
+        candidate.source.sessionId !== body.sessionId ||
+        candidate.logicalMemoryId !== exact!.logicalMemoryId ||
+        candidate.sourceRevision !== exact!.sourceRevision ||
+        candidate.itemCount < 1 ||
+        candidate.items.length !== candidate.itemCount
+      )
+        denied(
+          "Exact sanitized summary candidate is not ready; review the updated source",
+          409
+        );
+      const preparedCandidate = candidate!;
+      const fresh = await projectSharePolicyRepository!.buildInitialManifest({
+        ownerUserId: authority.actor.id,
+        projectId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId
+      });
+      if (
+        fresh.personalProjectBindingHash !== local.personalProjectBindingHash ||
+        JSON.stringify(fresh.entries) !== JSON.stringify(local.entries)
+      )
+        denied("Personal Project source or mapping changed; review again", 409);
+      const localIssue = await projectSharePolicyRepository!.reserveLocalIssue({
+        ownerUserId: authority.actor.id,
+        projectId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId,
+        policyVersion: body.expectedPolicyVersion,
+        provenance: "initial",
+        entry: exact!
+      });
+      const sourceIdentity =
+        candidatePreparation!.resolveCandidateSourceIdentity(
+          authority.actor.id
+        );
+      if (!sourceIdentity)
+        denied("Owner source deployment identity unavailable", 424);
+      const backend = upstreamBackendById(
+        readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+        body.teamBackendId
+      );
+      if (!backend) denied("Team backend is not enrolled", 424);
+      const authorization = context.localEdge.resolveUpstreamAuthorization(
+        backend!
+      );
+      if (!authorization) denied("Team upstream credential unavailable", 424);
+      const path = `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/initial-bundles`;
+      const stage = await fetchBoundedJson(
+        context.localEdge.fetch,
+        safeUpstreamProxyUrl(backend!, path),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            authorization: authorization!
+          },
+          body: JSON.stringify({
+            expectedPolicyVersion: body.expectedPolicyVersion,
+            personalProjectBindingHash: local.personalProjectBindingHash,
+            sessionId: body.sessionId,
+            mappingRevision: exact!.mappingRevision,
+            candidate: {
+              logicalMemoryId: preparedCandidate.logicalMemoryId,
+              source: preparedCandidate.source,
+              ...sourceIdentity,
+              deviceCredentialId: (
+                (await requestTeam(
+                  body.teamBackendId,
+                  "/v1/local-edge/device-credentials/status"
+                )) as { credential?: { id?: string } }
+              ).credential?.id,
+              sourceCapabilities: preparedCandidate.sourceCapabilities,
+              activationRepresentation: "lcm_leaves",
+              candidateHash: preparedCandidate.candidateHash,
+              sourceRevision: preparedCandidate.sourceRevision,
+              itemCount: preparedCandidate.itemCount,
+              excludedItemCount: preparedCandidate.excludedItemCount,
+              manifest: preparedCandidate.manifest,
+              byteCount: preparedCandidate.byteCount
+            }
+          })
+        },
+        { timeoutMs: 30_000, maxBytes: 64_000 }
+      );
+      if (!stage.response.ok)
+        denied(
+          stage.response.status === 409
+            ? "Team Project source changed; review again"
+            : "Team Project Pending Share could not be staged",
+          stage.response.status === 409 ? 409 : 424
+        );
+      const outcome = z
+        .discriminatedUnion("state", [
+          z.object({ state: z.literal("staged"), pendingShareId: z.uuid() }),
+          z.object({
+            state: z.literal("skipped"),
+            reason: z.enum(["occupied", "already_issued"])
+          })
+        ])
+        .parse(stage.payload);
+      if (outcome.state === "staged")
+        await projectSharePolicyRepository!.attachRemotePending({
+          ownerUserId: authority.actor.id,
+          issueId: localIssue.issueId,
+          pendingShareId: outcome.pendingShareId
+        });
+      return outcome;
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/reconcile-future",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          expectedPolicyVersion: z.number().int().positive(),
+          cursor: policyCursorSchema
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (!projectSharePolicyRepository || !candidatePreparation)
+        denied("Local policy candidate preparation unavailable", 503);
+      const policy = projectSharePolicyReviewSchema.parse(
+        await requestTeam(
+          body.teamBackendId,
+          `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/status`
+        )
+      );
+      if (
+        policy.projectId !== body.workspaceProjectId ||
+        policy.status !== "active" ||
+        !policy.policyId ||
+        policy.policyVersion !== body.expectedPolicyVersion
+      )
+        denied("Team Project policy changed", 409);
+      const teamPrincipalUserId = await teamPrincipal(body.teamBackendId);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== teamPrincipalUserId
+      )
+        denied("Team principal binding changed", 409);
+      const binding =
+        `${authority.actor.id}:${projectId}:${body.teamBackendId}:` +
+        `${body.workspaceProjectId}:${body.expectedPolicyVersion}`;
+      const page = await projectSharePolicyRepository!.listFutureEligible({
+        ownerUserId: authority.actor.id,
+        projectId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId,
+        policyVersion: body.expectedPolicyVersion,
+        cursor: decodePolicyCursor(body.cursor, binding)
+      });
+      const sourceIdentity =
+        candidatePreparation!.resolveCandidateSourceIdentity(
+          authority.actor.id
+        );
+      if (!sourceIdentity)
+        denied("Owner source deployment identity unavailable", 424);
+      const device = z
+        .object({ credential: z.object({ id: z.uuid() }).passthrough() })
+        .passthrough()
+        .parse(
+          await requestTeam(
+            body.teamBackendId,
+            "/v1/local-edge/device-credentials/status"
+          )
+        );
+      const backend = upstreamBackendById(
+        readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+        body.teamBackendId
+      );
+      if (!backend) denied("Team backend is not enrolled", 424);
+      const authorization = context.localEdge.resolveUpstreamAuthorization(
+        backend!
+      );
+      if (!authorization) denied("Team upstream credential unavailable", 424);
+      const bindingHash =
+        await projectSharePolicyRepository!.projectBindingHash({
+          ownerUserId: authority.actor.id,
+          projectId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId
+        });
+      let staged = 0,
+        skipped = 0,
+        failed = 0;
+      for (const pageEntry of page.entries) {
+        try {
+          // Closure is local preparation only. It can advance the source
+          // revision, so bind the issue to a fresh exact eligible snapshot.
+          await prepareLocalLcmCandidateRepresentation({
+            repository: context.requireRepository(),
+            ownerUserId: authority.actor.id,
+            sessionId: pageEntry.sessionId,
+            representation: "lcm_leaves"
+          });
+          const candidate = await candidatePreparation!.loadCandidatePreview({
+            localOwnerUserId: authority.actor.id,
+            sessionId: pageEntry.sessionId,
+            representation: "lcm_leaves",
+            mode: "continuous"
+          });
+          const entry = await projectSharePolicyRepository!.exactFutureEligible(
+            {
+              ownerUserId: authority.actor.id,
+              projectId,
+              teamBackendId: body.teamBackendId,
+              workspaceProjectId: body.workspaceProjectId,
+              policyVersion: body.expectedPolicyVersion,
+              sessionId: pageEntry.sessionId
+            }
+          );
+          if (
+            !entry ||
+            entry.logicalMemoryId !== pageEntry.logicalMemoryId ||
+            entry.mappingRevision !== pageEntry.mappingRevision ||
+            !candidate ||
+            candidate.source.kind !== "captured_session" ||
+            candidate.source.sessionId !== entry.sessionId ||
+            candidate.logicalMemoryId !== entry.logicalMemoryId ||
+            candidate.sourceRevision !== entry.sourceRevision ||
+            candidate.itemCount < 1 ||
+            candidate.items.length !== candidate.itemCount
+          ) {
+            failed++;
+            continue;
+          }
+          const localIssue =
+            await projectSharePolicyRepository!.reserveLocalIssue({
+              ownerUserId: authority.actor.id,
+              projectId,
+              teamBackendId: body.teamBackendId,
+              workspaceProjectId: body.workspaceProjectId,
+              policyVersion: body.expectedPolicyVersion,
+              provenance: "future",
+              entry
+            });
+          const closureHash = createHash("sha256")
+            .update(
+              JSON.stringify({
+                manifest: candidate.manifest,
+                byteCount: candidate.byteCount,
+                itemCount: candidate.itemCount,
+                excludedItemCount: candidate.excludedItemCount
+              })
+            )
+            .digest("hex");
+          const proof = await projectSharePolicyRepository!.signFutureProof({
+            ownerUserId: authority.actor.id,
+            teamPrincipalUserId,
+            projectId,
+            teamBackendId: body.teamBackendId,
+            workspaceProjectId: body.workspaceProjectId,
+            deviceCredentialId: device.credential.id,
+            policyId: policy.policyId!,
+            ownerTeamMemberId: policy.ownerTeamMemberId,
+            policyVersion: body.expectedPolicyVersion,
+            personalProjectBindingHash: bindingHash,
+            entry,
+            candidateHash: candidate.candidateHash,
+            closureHash
+          });
+          const result = await fetchBoundedJson(
+            context.localEdge.fetch,
+            safeUpstreamProxyUrl(
+              backend!,
+              `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/future-bundles`
+            ),
+            {
+              method: "POST",
+              redirect: "error",
+              headers: {
+                accept: "application/json",
+                "content-type": "application/json",
+                authorization: authorization!
+              },
+              body: JSON.stringify({
+                expectedPolicyVersion: body.expectedPolicyVersion,
+                personalProjectBindingHash: bindingHash,
+                sessionId: entry.sessionId,
+                mappingRevision: entry.mappingRevision,
+                proof,
+                candidate: {
+                  logicalMemoryId: candidate.logicalMemoryId,
+                  source: candidate.source,
+                  ...sourceIdentity,
+                  deviceCredentialId: device.credential.id,
+                  sourceCapabilities: candidate.sourceCapabilities,
+                  activationRepresentation: "lcm_leaves",
+                  candidateHash: candidate.candidateHash,
+                  sourceRevision: candidate.sourceRevision,
+                  itemCount: candidate.itemCount,
+                  excludedItemCount: candidate.excludedItemCount,
+                  manifest: candidate.manifest,
+                  byteCount: candidate.byteCount
+                }
+              })
+            },
+            { timeoutMs: 30_000, maxBytes: 64_000 }
+          );
+          if (!result.response.ok) {
+            failed++;
+            continue;
+          }
+          const outcome = z
+            .discriminatedUnion("state", [
+              z.object({
+                state: z.literal("staged"),
+                pendingShareId: z.uuid()
+              }),
+              z.object({
+                state: z.literal("skipped"),
+                reason: z.enum(["occupied", "already_issued"])
+              })
+            ])
+            .parse(result.payload);
+          if (outcome.state === "staged") {
+            await projectSharePolicyRepository!.attachRemotePending({
+              ownerUserId: authority.actor.id,
+              issueId: localIssue.issueId,
+              pendingShareId: outcome.pendingShareId
+            });
+            staged++;
+          } else skipped++;
+        } catch {
+          failed++;
+        }
+      }
+      return {
+        processed: page.entries.length,
+        staged,
+        skipped,
+        failed,
+        hasMore: page.hasMore,
+        nextCursor: page.hasMore
+          ? encodePolicyCursor(binding, page.nextCursor)
+          : null
+      };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/explicit-offers",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          sessionId: z.uuid(),
+          reason: z.enum(["moved_in", "share_again"])
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (!projectSharePolicyRepository || !candidatePreparation)
+        denied("Exact Conversation offer unavailable", 503);
+      const teamPrincipalUserId = await teamPrincipal(body.teamBackendId);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== teamPrincipalUserId
+      )
+        denied("Team principal binding changed", 409);
+      const device = z
+        .object({ credential: z.object({ id: z.uuid() }).passthrough() })
+        .passthrough()
+        .parse(
+          await requestTeam(
+            body.teamBackendId,
+            "/v1/local-edge/device-credentials/status"
+          )
+        );
+      await prepareLocalLcmCandidateRepresentation({
+        repository: context.requireRepository(),
+        ownerUserId: authority.actor.id,
+        sessionId: body.sessionId,
+        representation: "lcm_leaves"
+      });
+      const candidate = await candidatePreparation!.loadCandidatePreview({
+        localOwnerUserId: authority.actor.id,
+        sessionId: body.sessionId,
+        representation: "lcm_leaves",
+        mode: "continuous"
+      });
+      if (
+        !candidate ||
+        candidate.source.kind !== "captured_session" ||
+        candidate.source.sessionId !== body.sessionId ||
+        candidate.itemCount < 1
+      )
+        denied("Exact sanitized Conversation candidate unavailable", 409);
+      const target = await projectSharePolicyRepository!.inspectPrivateTarget({
+        ownerUserId: authority.actor.id,
+        projectId,
+        sessionId: body.sessionId
+      });
+      const offer = await projectSharePolicyRepository!.prepareExplicitOffer({
+        ownerUserId: authority.actor.id,
+        projectId,
+        sessionId: body.sessionId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId,
+        teamPrincipalUserId,
+        deviceCredentialId: device.credential.id,
+        reason: body.reason,
+        logicalMemoryId: candidate!.logicalMemoryId,
+        mappingRevision: target.mappingRevision,
+        sourceRevision: candidate!.sourceRevision,
+        candidateHash: candidate!.candidateHash
+      });
+      return {
+        ...offer,
+        sessionId: body.sessionId,
+        workspaceProjectId: body.workspaceProjectId,
+        reason: body.reason,
+        mappingRevision: target.mappingRevision,
+        sourceRevision: candidate!.sourceRevision,
+        source: candidate!.source,
+        logicalMemoryId: candidate!.logicalMemoryId,
+        sourceCapabilities: candidate!.sourceCapabilities,
+        activationRepresentation: "lcm_leaves" as const,
+        maximumFidelity: "lcm_leaves" as const,
+        mode: "continuous" as const,
+        includeCuratedMemory: false,
+        candidateHash: candidate!.candidateHash,
+        itemCount: candidate!.itemCount,
+        excludedItemCount: candidate!.excludedItemCount,
+        manifest: candidate!.manifest,
+        byteCount: candidate!.byteCount,
+        candidateExpiresAt: candidate!.expiresAt
+      };
+    }
+  );
+  app.get(
+    "/v1/local-edge/projects/:projectId/project-share-policy/explicit-offers/:offerId",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const { projectId, offerId } = z
+        .object({ projectId: z.uuid(), offerId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const { teamBackendId } = z
+        .object({ teamBackendId: z.string().trim().min(1).max(160) })
+        .strict()
+        .parse(request.query);
+      const authority = await authenticate(
+        request,
+        teamBackendId,
+        "share_grant_management"
+      );
+      if (!projectSharePolicyRepository || !candidatePreparation)
+        denied("Exact Conversation offer unavailable", 503);
+      const offer = await projectSharePolicyRepository!.readExplicitOffer({
+        ownerUserId: authority.actor.id,
+        projectId,
+        offerId,
+        teamBackendId
+      });
+      if (offer.state !== "prepared")
+        denied(
+          "Explicit Conversation offer is no longer available for Native review",
+          409
+        );
+      if (
+        (await repo().principalBinding(authority.actor.id, teamBackendId)) !==
+        (await teamPrincipal(teamBackendId))
+      )
+        denied("Team principal binding changed", 409);
+      const device = z
+        .object({ credential: z.object({ id: z.uuid() }).passthrough() })
+        .passthrough()
+        .parse(
+          await requestTeam(
+            teamBackendId,
+            "/v1/local-edge/device-credentials/status"
+          )
+        );
+      if (offer.deviceCredentialId !== device.credential.id)
+        denied("Native offer device changed", 409);
+      const candidate = await candidatePreparation!.loadCandidatePreview({
+        localOwnerUserId: authority.actor.id,
+        sessionId: offer.sessionId,
+        representation: "lcm_leaves",
+        mode: "continuous"
+      });
+      if (
+        !candidate ||
+        candidate.source.kind !== "captured_session" ||
+        candidate.source.sessionId !== offer.sessionId ||
+        candidate.logicalMemoryId !== offer.logicalMemoryId ||
+        candidate.sourceRevision !== offer.sourceRevision ||
+        candidate.candidateHash !== offer.candidateHash
+      )
+        denied("Exact Conversation offer candidate changed", 409);
+      return {
+        ...offer,
+        source: candidate!.source,
+        sourceCapabilities: candidate!.sourceCapabilities,
+        activationRepresentation: "lcm_leaves" as const,
+        maximumFidelity: "lcm_leaves" as const,
+        mode: "continuous" as const,
+        includeCuratedMemory: false,
+        candidateHash: candidate!.candidateHash,
+        itemCount: candidate!.itemCount,
+        excludedItemCount: candidate!.excludedItemCount,
+        manifest: candidate!.manifest,
+        byteCount: candidate!.byteCount,
+        candidateExpiresAt: candidate!.expiresAt
+      };
+    }
+  );
+  app.get(
+    "/v1/local-edge/projects/:projectId/project-share-policy/explicit-offers/:offerId/status",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const { projectId, offerId } = z
+        .object({ projectId: z.uuid(), offerId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const { teamBackendId } = z
+        .object({ teamBackendId: z.string().trim().min(1).max(160) })
+        .strict()
+        .parse(request.query);
+      const authority = await authenticate(
+        request,
+        teamBackendId,
+        "share_grant_management",
+        false
+      );
+      if (!projectSharePolicyRepository)
+        denied("Exact Conversation offer unavailable", 503);
+      const offer = await projectSharePolicyRepository!.readExplicitOffer({
+        ownerUserId: authority.actor.id,
+        projectId,
+        offerId,
+        teamBackendId,
+        historical: true
+      });
+      const remote = await readExplicitRemote(
+        teamBackendId,
+        offer.workspaceProjectId,
+        offer
+      );
+      if (
+        remote.sourceRevision !== null &&
+        remote.sourceRevision !== offer.sourceRevision
+      )
+        denied("Team Conversation source differs from reviewed offer", 409);
+      if (
+        remote.state === "activated" &&
+        remote.pendingShareId &&
+        remote.shareGrantId &&
+        remote.grantVersion
+      )
+        await projectSharePolicyRepository!.settleExplicitOffer({
+          ownerUserId: authority.actor.id,
+          projectId,
+          offerId,
+          teamBackendId,
+          workspaceProjectId: offer.workspaceProjectId,
+          mutationId: offer.mutationId,
+          pendingShareId: remote.pendingShareId,
+          shareGrantId: remote.shareGrantId,
+          grantVersion: remote.grantVersion,
+          teamId: remote.teamId,
+          teamWorkspaceId: remote.workspaceId,
+          state: "activated"
+        });
+      else if (remote.state === "blocked")
+        await projectSharePolicyRepository!.blockExplicitOffer({
+          ownerUserId: authority.actor.id,
+          projectId,
+          offerId,
+          teamBackendId,
+          workspaceProjectId: offer.workspaceProjectId,
+          mutationId: offer.mutationId
+        });
+      return {
+        offerId,
+        state: remote.state,
+        pendingShareId: remote.pendingShareId,
+        shareGrantId: remote.shareGrantId,
+        grantVersion: remote.grantVersion,
+        mutationId: offer.mutationId
+      };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/explicit-offers/:offerId/settle",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId, offerId } = z
+        .object({ projectId: z.uuid(), offerId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const { teamBackendId } = z
+        .object({ teamBackendId: z.string().trim().min(1).max(160) })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        teamBackendId,
+        "share_grant_management"
+      );
+      if (!projectSharePolicyRepository)
+        denied("Exact Conversation offer unavailable", 503);
+      const offer = await projectSharePolicyRepository!.readExplicitOffer({
+        ownerUserId: authority.actor.id,
+        projectId,
+        offerId,
+        teamBackendId,
+        historical: true
+      });
+      if (
+        (await repo().principalBinding(authority.actor.id, teamBackendId)) !==
+        (await teamPrincipal(teamBackendId))
+      )
+        denied("Team principal binding changed", 409);
+      const currentDevice = z
+        .object({ credential: z.object({ id: z.uuid() }).passthrough() })
+        .passthrough()
+        .parse(
+          await requestTeam(
+            teamBackendId,
+            "/v1/local-edge/device-credentials/status"
+          )
+        );
+      if (offer.deviceCredentialId !== currentDevice.credential.id)
+        denied("Explicit Conversation offer device changed", 409);
+      const remote = await readExplicitRemote(
+        teamBackendId,
+        offer.workspaceProjectId,
+        offer
+      );
+      if (
+        remote.sourceRevision !== null &&
+        remote.sourceRevision !== offer.sourceRevision
+      )
+        denied("Team Conversation source differs from reviewed offer", 409);
+      if (
+        (remote.state !== "pending" && remote.state !== "activated") ||
+        !remote.pendingShareId ||
+        !remote.shareGrantId ||
+        !remote.grantVersion
+      )
+        return { state: "pending" as const };
+      await projectSharePolicyRepository!.settleExplicitOffer({
+        ownerUserId: authority.actor.id,
+        projectId,
+        offerId,
+        teamBackendId,
+        workspaceProjectId: offer.workspaceProjectId,
+        mutationId: offer.mutationId,
+        pendingShareId: remote.pendingShareId,
+        shareGrantId: remote.shareGrantId,
+        grantVersion: remote.grantVersion,
+        teamId: remote.teamId,
+        teamWorkspaceId: remote.workspaceId,
+        state: remote.state === "activated" ? "activated" : "accepted"
+      });
+      return {
+        state: remote.state,
+        pendingShareId: remote.pendingShareId,
+        shareGrantId: remote.shareGrantId,
+        grantVersion: remote.grantVersion
+      };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/explicit-offers/:offerId/fence",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId, offerId } = z
+        .object({ projectId: z.uuid(), offerId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const { teamBackendId } = z
+        .object({ teamBackendId: z.string().trim().min(1).max(160) })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        teamBackendId,
+        "share_grant_management"
+      );
+      if (!projectSharePolicyRepository)
+        denied("Exact Conversation offer unavailable", 503);
+      const offer = await projectSharePolicyRepository!.readExplicitOffer({
+        ownerUserId: authority.actor.id,
+        projectId,
+        offerId,
+        teamBackendId,
+        historical: true
+      });
+      const remote = await fenceExplicitRemote(
+        teamBackendId,
+        offer.workspaceProjectId,
+        offer
+      );
+      if (remote.state === "activated")
+        return {
+          state: "activation_race" as const,
+          shareGrantId: remote.shareGrantId,
+          grantVersion: remote.grantVersion
+        };
+      await projectSharePolicyRepository!.blockExplicitOffer({
+        ownerUserId: authority.actor.id,
+        projectId,
+        offerId,
+        teamBackendId,
+        workspaceProjectId: offer.workspaceProjectId,
+        mutationId: offer.mutationId
+      });
+      return { state: "fenced" as const };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/make-private",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          sessionId: z.uuid()
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (!projectSharePolicyRepository)
+        denied("Project policy unavailable", 503);
+      const target = await projectSharePolicyRepository!.inspectPrivateTarget({
+        ownerUserId: authority.actor.id,
+        projectId,
+        sessionId: body.sessionId
+      });
+      await projectSharePolicyRepository!.beginPrivate({
+        ownerUserId: authority.actor.id,
+        projectId,
+        sessionId: body.sessionId,
+        expectedProjectAssignmentVersion: target.mappingRevision
+      });
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== (await teamPrincipal(body.teamBackendId))
+      )
+        denied("Team principal binding changed", 409);
+      let withdrawalTarget: {
+        shareGrantId: string;
+        grantVersion: number;
+      } | null = null;
+      const offers = await projectSharePolicyRepository!.listOpenExplicitOffers(
+        {
+          ownerUserId: authority.actor.id,
+          projectId,
+          sessionId: body.sessionId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId
+        }
+      );
+      for (const offerId of offers) {
+        const offer = await projectSharePolicyRepository!.readExplicitOffer({
+          ownerUserId: authority.actor.id,
+          projectId,
+          offerId,
+          teamBackendId: body.teamBackendId,
+          historical: true
+        });
+        const fenced = await fenceExplicitRemote(
+          body.teamBackendId,
+          body.workspaceProjectId,
+          offer
+        );
+        if (fenced.state === "activated") {
+          if (!fenced.shareGrantId || !fenced.grantVersion)
+            denied(
+              "Exact active Conversation withdrawal target unavailable",
+              409
+            );
+          if (
+            withdrawalTarget &&
+            (withdrawalTarget.shareGrantId !== fenced.shareGrantId ||
+              withdrawalTarget.grantVersion !== fenced.grantVersion)
+          )
+            denied(
+              "Multiple active Conversation grants require separate withdrawal",
+              409
+            );
+          withdrawalTarget = {
+            shareGrantId: fenced.shareGrantId!,
+            grantVersion: fenced.grantVersion!
+          };
+        } else
+          await projectSharePolicyRepository!.blockExplicitOffer({
+            ownerUserId: authority.actor.id,
+            projectId,
+            offerId,
+            teamBackendId: body.teamBackendId,
+            workspaceProjectId: body.workspaceProjectId,
+            mutationId: offer.mutationId
+          });
+      }
+      const policy = projectSharePolicyReviewSchema.parse(
+        await requestTeam(
+          body.teamBackendId,
+          `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/status`
+        )
+      );
+      if (policy.projectId !== body.workspaceProjectId)
+        denied("Team Project policy changed", 409);
+      const backend = upstreamBackendById(
+        readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+        body.teamBackendId
+      );
+      if (!backend) denied("Team backend is not enrolled", 424);
+      const authorization = context.localEdge.resolveUpstreamAuthorization(
+        backend!
+      );
+      if (!authorization) denied("Team upstream credential unavailable", 424);
+      const result = await fetchBoundedJson(
+        context.localEdge.fetch,
+        safeUpstreamProxyUrl(
+          backend!,
+          `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/exclusions`
+        ),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            authorization: authorization!
+          },
+          body: JSON.stringify({
+            sessionId: body.sessionId,
+            expectedPolicyVersion: policy.policyVersion
+          })
+        },
+        { timeoutMs: 15_000, maxBytes: 8_000 }
+      );
+      if (!result.response.ok)
+        denied("Team private exclusion was not acknowledged", 424);
+      const ack = z
+        .object({
+          blocked: z.literal(true),
+          withdrawalRequired: z.boolean(),
+          withdrawalTarget: z
+            .object({
+              shareGrantId: z.uuid(),
+              grantVersion: z.number().int().positive()
+            })
+            .strict()
+            .nullable()
+        })
+        .strict()
+        .parse(result.payload);
+      if (ack.withdrawalRequired && ack.withdrawalTarget) {
+        if (
+          withdrawalTarget &&
+          (withdrawalTarget.shareGrantId !==
+            ack.withdrawalTarget.shareGrantId ||
+            withdrawalTarget.grantVersion !== ack.withdrawalTarget.grantVersion)
+        )
+          denied(
+            "Multiple active Conversation grants require separate withdrawal",
+            409
+          );
+        withdrawalTarget = ack.withdrawalTarget;
+      }
+      if (ack.withdrawalRequired && !ack.withdrawalTarget)
+        denied("Exact Conversation withdrawal target unavailable", 409);
+      if (withdrawalTarget)
+        return { state: "withdrawal_required" as const, withdrawalTarget };
+      await projectSharePolicyRepository!.markPrivate({
+        ownerUserId: authority.actor.id,
+        projectId,
+        sessionId: body.sessionId,
+        expectedProjectAssignmentVersion: target.mappingRevision
+      });
+      return { state: "private" as const };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/session-status",
+    { preHandler: context.rateLimit.memoryRead, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          sessionId: z.uuid()
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management",
+        false
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (!projectSharePolicyRepository)
+        denied("Project policy unavailable", 503);
+      const offers = await projectSharePolicyRepository!.listOpenExplicitOffers(
+        {
+          ownerUserId: authority.actor.id,
+          projectId,
+          sessionId: body.sessionId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId
+        }
+      );
+      for (const offerId of offers) {
+        const offer = await projectSharePolicyRepository!.readExplicitOffer({
+          ownerUserId: authority.actor.id,
+          projectId,
+          offerId,
+          teamBackendId: body.teamBackendId,
+          historical: true
+        });
+        const remote = await readExplicitRemote(
+          body.teamBackendId,
+          body.workspaceProjectId,
+          offer
+        );
+        if (
+          remote.state === "activated" &&
+          remote.pendingShareId &&
+          remote.shareGrantId &&
+          remote.grantVersion
+        ) {
+          if (remote.sourceRevision !== offer.sourceRevision)
+            denied("Team Conversation grant differs from exact offer", 409);
+          await projectSharePolicyRepository!.settleExplicitOffer({
+            ownerUserId: authority.actor.id,
+            projectId,
+            offerId,
+            teamBackendId: body.teamBackendId,
+            workspaceProjectId: body.workspaceProjectId,
+            mutationId: offer.mutationId,
+            pendingShareId: remote.pendingShareId,
+            shareGrantId: remote.shareGrantId,
+            grantVersion: remote.grantVersion,
+            teamId: remote.teamId,
+            teamWorkspaceId: remote.workspaceId,
+            state: "activated"
+          });
+        } else if (remote.state === "blocked")
+          await projectSharePolicyRepository!.blockExplicitOffer({
+            ownerUserId: authority.actor.id,
+            projectId,
+            offerId,
+            teamBackendId: body.teamBackendId,
+            workspaceProjectId: body.workspaceProjectId,
+            mutationId: offer.mutationId
+          });
+      }
+      return projectSharePolicyRepository!.sessionStatus({
+        ownerUserId: authority.actor.id,
+        projectId,
+        sessionId: body.sessionId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId
+      });
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/reconcile-issues",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          sessionId: z.uuid().optional(),
+          cursor: policyCursorSchema
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== (await teamPrincipal(body.teamBackendId))
+      )
+        denied("Team principal binding changed", 409);
+      if (!projectSharePolicyRepository)
+        denied("Project policy issue custody unavailable", 503);
+      const cursorBinding = `issues:${authority.actor.id}:${projectId}:${body.teamBackendId}:${body.workspaceProjectId}:${body.sessionId ?? "all"}`;
+      const page = await projectSharePolicyRepository!.listUnsettledIssues({
+        ownerUserId: authority.actor.id,
+        projectId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId,
+        sessionId: body.sessionId,
+        cursor: decodePolicyCursor(body.cursor, cursorBinding)
+      });
+      let activated = 0;
+      let pending = 0;
+      for (const issue of page.issues) {
+        if (
+          issue.teamBackendId !== body.teamBackendId ||
+          issue.workspaceProjectId !== body.workspaceProjectId
+        )
+          denied("Owner-local policy issue scope changed", 409);
+        const remote = z
+          .object({
+            state: z.enum([
+              "absent",
+              "staged",
+              "activated",
+              "issued_terminal",
+              "blocked"
+            ]),
+            policyVersion: z.number().int().positive().nullable(),
+            sessionId: z.uuid(),
+            logicalMemoryId: z.uuid().nullable(),
+            sourceRevision: z.number().int().positive().nullable(),
+            mappingRevision: z.number().int().positive().nullable(),
+            pendingShareId: z.uuid().nullable(),
+            shareGrantId: z.uuid().nullable(),
+            grantVersion: z.number().int().positive().nullable(),
+            grantLifecycle: z.string().nullable(),
+            teamId: z.uuid(),
+            workspaceId: z.uuid(),
+            ownerTeamMemberId: z.uuid()
+          })
+          .strict()
+          .parse(
+            await requestTeam(
+              body.teamBackendId,
+              `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}` +
+                `/share-policy/issues/${encodeURIComponent(issue.sessionId)}/status` +
+                `?policyVersion=${issue.policyVersion}`
+            )
+          );
+        if (
+          remote.state !== "activated" &&
+          remote.state !== "issued_terminal"
+        ) {
+          pending++;
+          continue;
+        }
+        if (
+          remote.sessionId !== issue.sessionId ||
+          remote.logicalMemoryId !== issue.logicalMemoryId ||
+          remote.policyVersion !== issue.policyVersion ||
+          remote.sourceRevision !== issue.sourceRevision ||
+          remote.mappingRevision !== issue.mappingRevision ||
+          (issue.remotePendingShareId !== null &&
+            remote.pendingShareId !== issue.remotePendingShareId) ||
+          !remote.logicalMemoryId ||
+          !remote.pendingShareId ||
+          !remote.shareGrantId ||
+          !remote.grantVersion
+        )
+          denied(
+            "Team policy issue activation differs from local reservation",
+            409
+          );
+        const exact = {
+          ownerUserId: authority.actor.id,
+          projectId,
+          issueId: issue.issueId,
+          sessionId: issue.sessionId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId,
+          policyVersion: issue.policyVersion,
+          mappingRevision: issue.mappingRevision,
+          sourceRevision: issue.sourceRevision,
+          remotePendingShareId: remote.pendingShareId!,
+          logicalMemoryId: remote.logicalMemoryId!,
+          teamId: remote.teamId,
+          teamWorkspaceId: remote.workspaceId,
+          shareGrantId: remote.shareGrantId!,
+          grantVersion: remote.grantVersion!
+        };
+        if (remote.state === "issued_terminal")
+          await projectSharePolicyRepository!.reconcileTerminalIssue({
+            ...exact,
+            grantLifecycle: remote.grantLifecycle ?? ""
+          });
+        else await projectSharePolicyRepository!.reconcileActivatedIssue(exact);
+        activated++;
+      }
+      return {
+        processed: page.issues.length,
+        activated,
+        pending,
+        hasMore: page.hasMore,
+        nextCursor: page.hasMore
+          ? encodePolicyCursor(cursorBinding, page.nextCursor)
+          : null
+      };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/fence-unpublished",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          sessionId: z.uuid()
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== (await teamPrincipal(body.teamBackendId))
+      )
+        denied("Team principal binding changed", 409);
+      if (!projectSharePolicyRepository)
+        denied("Project policy issue custody unavailable", 503);
+      const moveFence = await projectSharePolicyRepository!.beginMoveFence({
+        ownerUserId: authority.actor.id,
+        projectId,
+        sessionId: body.sessionId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId
+      });
+      const page = await projectSharePolicyRepository!.listUnsettledIssues({
+        ownerUserId: authority.actor.id,
+        projectId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId,
+        sessionId: body.sessionId
+      });
+      if (page.hasMore)
+        denied("Conversation has more policy issues requiring review", 409);
+      const offers = await projectSharePolicyRepository!.listOpenExplicitOffers(
+        {
+          ownerUserId: authority.actor.id,
+          projectId,
+          sessionId: body.sessionId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId
+        }
+      );
+      for (const offerId of offers) {
+        const offer = await projectSharePolicyRepository!.readExplicitOffer({
+          ownerUserId: authority.actor.id,
+          projectId,
+          offerId,
+          teamBackendId: body.teamBackendId,
+          historical: true
+        });
+        const fenced = await fenceExplicitRemote(
+          body.teamBackendId,
+          body.workspaceProjectId,
+          offer
+        );
+        if (fenced.state === "activated") {
+          const remote = await readExplicitRemote(
+            body.teamBackendId,
+            body.workspaceProjectId,
+            offer
+          );
+          if (
+            remote.state !== "activated" ||
+            remote.sourceRevision !== offer.sourceRevision ||
+            !remote.pendingShareId ||
+            !remote.shareGrantId ||
+            !remote.grantVersion ||
+            remote.shareGrantId !== fenced.shareGrantId ||
+            remote.grantVersion !== fenced.grantVersion
+          )
+            denied("Exact manual grant activation needs reconciliation", 409);
+          const alreadyBound =
+            await projectSharePolicyRepository!.hasExactGrantBinding({
+              ownerUserId: authority.actor.id,
+              projectId,
+              sessionId: body.sessionId,
+              teamBackendId: body.teamBackendId,
+              workspaceProjectId: body.workspaceProjectId,
+              shareGrantId: remote.shareGrantId!,
+              grantVersion: remote.grantVersion!
+            });
+          await projectSharePolicyRepository!.settleExplicitOffer({
+            ownerUserId: authority.actor.id,
+            projectId,
+            offerId,
+            teamBackendId: body.teamBackendId,
+            workspaceProjectId: body.workspaceProjectId,
+            mutationId: offer.mutationId,
+            pendingShareId: remote.pendingShareId!,
+            shareGrantId: remote.shareGrantId!,
+            grantVersion: remote.grantVersion!,
+            teamId: remote.teamId,
+            teamWorkspaceId: remote.workspaceId,
+            state: "activated"
+          });
+          if (!alreadyBound) return { state: "activation_race" as const };
+          continue;
+        }
+        await projectSharePolicyRepository!.blockExplicitOffer({
+          ownerUserId: authority.actor.id,
+          projectId,
+          offerId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId,
+          mutationId: offer.mutationId
+        });
+      }
+      const policy = projectSharePolicyReviewSchema.parse(
+        await requestTeam(
+          body.teamBackendId,
+          `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/status`
+        )
+      );
+      if (policy.projectId !== body.workspaceProjectId)
+        denied("Team Project policy issue cannot be fenced", 409);
+      const backend = upstreamBackendById(
+        readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+        body.teamBackendId
+      );
+      if (!backend) denied("Team backend is not enrolled", 424);
+      const authorization = context.localEdge.resolveUpstreamAuthorization(
+        backend!
+      );
+      if (!authorization) denied("Team upstream credential unavailable", 424);
+      const result = await fetchBoundedJson(
+        context.localEdge.fetch,
+        safeUpstreamProxyUrl(
+          backend!,
+          `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/exclusions`
+        ),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            authorization: authorization!
+          },
+          body: JSON.stringify({
+            sessionId: body.sessionId,
+            expectedPolicyVersion: policy.policyVersion
+          })
+        },
+        { timeoutMs: 15_000, maxBytes: 8_000 }
+      );
+      if (!result.response.ok)
+        denied("Team policy issue fence was not acknowledged", 424);
+      const ack = z
+        .object({
+          blocked: z.literal(true),
+          withdrawalRequired: z.boolean(),
+          withdrawalTarget: z
+            .object({
+              shareGrantId: z.uuid(),
+              grantVersion: z.number().int().positive()
+            })
+            .strict()
+            .nullable()
+        })
+        .strict()
+        .parse(result.payload);
+      if (ack.withdrawalRequired) {
+        if (
+          !ack.withdrawalTarget ||
+          !(await projectSharePolicyRepository!.hasExactGrantBinding({
+            ownerUserId: authority.actor.id,
+            projectId,
+            sessionId: body.sessionId,
+            teamBackendId: body.teamBackendId,
+            workspaceProjectId: body.workspaceProjectId,
+            shareGrantId: ack.withdrawalTarget.shareGrantId,
+            grantVersion: ack.withdrawalTarget.grantVersion
+          }))
+        )
+          return { state: "activation_race" as const };
+      }
+      for (const issue of page.issues) {
+        if (
+          issue.teamBackendId !== body.teamBackendId ||
+          issue.workspaceProjectId !== body.workspaceProjectId
+        )
+          denied("Owner-local policy issue scope changed", 409);
+        await projectSharePolicyRepository!.freezeUnpublishedIssue({
+          ownerUserId: authority.actor.id,
+          projectId,
+          issueId: issue.issueId,
+          sessionId: issue.sessionId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId,
+          mappingRevision: issue.mappingRevision
+        });
+      }
+      await projectSharePolicyRepository!.acknowledgeMoveFence({
+        ownerUserId: authority.actor.id,
+        projectId,
+        sessionId: body.sessionId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId,
+        fenceId: moveFence.fenceId,
+        mappingRevision: moveFence.mappingRevision
+      });
+      return {
+        state: page.issues.length ? ("frozen" as const) : ("settled" as const),
+        fenceId: moveFence.fenceId
+      };
+    }
+  );
+  app.get(
+    "/v1/local-edge/projects/:projectId/project-share-policy/fence-unpublished/current",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const query = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          sessionId: z.uuid()
+        })
+        .strict()
+        .parse(request.query);
+      const authority = await authenticate(
+        request,
+        query.teamBackendId,
+        "share_grant_management",
+        false
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== query.teamBackendId ||
+        link.workspaceProjectId !== query.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (!projectSharePolicyRepository)
+        denied("Project policy move fence custody unavailable", 503);
+      return projectSharePolicyRepository!.currentMoveFence({
+        ownerUserId: authority.actor.id,
+        projectId,
+        sessionId: query.sessionId,
+        teamBackendId: query.teamBackendId,
+        workspaceProjectId: query.workspaceProjectId
+      });
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/fence-unpublished/release",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          sessionId: z.uuid(),
+          fenceId: z.uuid()
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (!projectSharePolicyRepository)
+        denied("Project policy move fence custody unavailable", 503);
+      await projectSharePolicyRepository!.releaseMoveFence({
+        ownerUserId: authority.actor.id,
+        projectId,
+        sessionId: body.sessionId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId,
+        fenceId: body.fenceId
+      });
+      return { state: "released" as const };
+    }
+  );
+  const policyConsumeBody = z
+    .object({
+      teamBackendId: z.string().trim().min(1).max(160),
+      workspaceProjectId: z.uuid(),
+      actionGrant: z.object({ id: z.uuid() }).strict(),
+      intent: collaborationActionGrantIntentSchema,
+      payload: z.union([
+        projectSharePolicyEnableSchema,
+        projectSharePolicyRevokeSchema
+      ])
+    })
+    .strict();
+  const policyAttemptStartBody = policyConsumeBody.extend({
+    clientRequestId: z.uuid()
+  });
+  const policyPayloadHash = (
+    payload: z.infer<typeof policyConsumeBody>["payload"]
+  ) => createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/attempts/start",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 64 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = policyAttemptStartBody.parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      const principal = await teamPrincipal(body.teamBackendId);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== principal
+      )
+        denied("Team principal binding changed", 409);
+      const intent = body.intent;
+      if (
+        intent.intent !== "collaboration.project_share_policy_enable" &&
+        intent.intent !== "collaboration.project_share_policy_revoke"
+      )
+        denied("Exact Project policy Action Grant intent required", 403);
+      const policyIntent = intent as Extract<
+        typeof intent,
+        {
+          intent:
+            | "collaboration.project_share_policy_enable"
+            | "collaboration.project_share_policy_revoke";
+        }
+      >;
+      const action =
+        policyIntent.intent === "collaboration.project_share_policy_enable"
+          ? "enable"
+          : "revoke";
+      if (
+        policyIntent.commandRequestId !== body.clientRequestId ||
+        policyIntent.projectId !== body.workspaceProjectId ||
+        body.payload.authority.referenceId !== body.actionGrant.id ||
+        policyIntent.expectedPolicyVersion !==
+          body.payload.expectedPolicyVersion ||
+        (action === "enable" &&
+          (!("manifestId" in policyIntent) ||
+            !("manifestId" in body.payload) ||
+            policyIntent.manifestId !== body.payload.manifestId ||
+            policyIntent.manifestHash !== body.payload.manifestHash)) ||
+        (action === "revoke" && "manifestId" in body.payload)
+      )
+        denied("Exact Project policy action attempt changed", 409);
+      const device = z
+        .object({ credential: z.object({ id: z.uuid() }).passthrough() })
+        .passthrough()
+        .parse(
+          await requestTeam(
+            body.teamBackendId,
+            "/v1/local-edge/device-credentials/status"
+          )
+        );
+      if (!projectSharePolicyRepository)
+        denied("Project policy custody unavailable", 503);
+      const result = await projectSharePolicyRepository!.beginAttempt({
+        ownerUserId: authority.actor.id,
+        projectId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId,
+        action,
+        clientRequestId: body.clientRequestId,
+        actionGrantId: body.actionGrant.id,
+        teamId: policyIntent.teamId,
+        teamPrincipalUserId: principal,
+        deviceCredentialId: device.credential.id,
+        expectedPolicyVersion: body.payload.expectedPolicyVersion,
+        payloadHash: policyPayloadHash(body.payload),
+        ...(action === "enable" && "manifestId" in body.payload
+          ? {
+              manifestId: body.payload.manifestId,
+              manifestHash: body.payload.manifestHash,
+              entries: body.payload.currentEntries
+            }
+          : {})
+      });
+      return { attemptId: result.attemptId, state: "pending" as const };
+    }
+  );
+  app.get(
+    "/v1/local-edge/projects/:projectId/project-share-policy/attempts/pending",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const { actor } = await authenticateLocal(request, false);
+      if (!projectSharePolicyRepository)
+        denied("Project policy custody unavailable", 503);
+      const link = await repo().getLink(actor.id, projectId);
+      if (!link) return { attempts: [] };
+      const authority = await authenticate(
+        request,
+        link.teamBackendId,
+        "share_grant_management",
+        false
+      );
+      if (authority.actor.id !== actor.id)
+        denied("Project policy owner changed", 409);
+      const principal = await teamPrincipal(link.teamBackendId);
+      if (
+        (await repo().principalBinding(actor.id, link.teamBackendId)) !==
+        principal
+      )
+        denied("Team principal binding changed", 409);
+      const status = projectSharePolicyReviewSchema.parse(
+        await requestTeam(
+          link.teamBackendId,
+          `/v1/workspace-projects/${encodeURIComponent(link.workspaceProjectId)}/share-policy/status`
+        )
+      );
+      const device = z
+        .object({ credential: z.object({ id: z.uuid() }).passthrough() })
+        .passthrough()
+        .parse(
+          await requestTeam(
+            link.teamBackendId,
+            "/v1/local-edge/device-credentials/status"
+          )
+        );
+      return {
+        attempts: await projectSharePolicyRepository!.pendingAttempts({
+          ownerUserId: actor.id,
+          projectId,
+          currentScope: {
+            teamBackendId: link.teamBackendId,
+            workspaceProjectId: link.workspaceProjectId,
+            teamId: status.teamId,
+            teamPrincipalUserId: principal,
+            deviceCredentialId: device.credential.id
+          }
+        })
+      };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/consume",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 64 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = policyConsumeBody.parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "team_workspace_write"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      const policy = projectSharePolicyReviewSchema.parse(
+        await requestTeam(
+          body.teamBackendId,
+          `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/status`
+        )
+      );
+      const enabling =
+        body.intent.intent === "collaboration.project_share_policy_enable";
+      const revoking =
+        body.intent.intent === "collaboration.project_share_policy_revoke";
+      if (!enabling && !revoking)
+        denied("Project policy Action Grant intent required", 403);
+      const intent = body.intent as Extract<
+        typeof body.intent,
+        {
+          intent:
+            | "collaboration.project_share_policy_enable"
+            | "collaboration.project_share_policy_revoke";
+        }
+      >;
+      if (
+        policy.projectId !== body.workspaceProjectId ||
+        policy.teamId !== intent.teamId ||
+        intent.projectId !== body.workspaceProjectId ||
+        intent.expectedPolicyVersion !== body.payload.expectedPolicyVersion ||
+        body.payload.authority.referenceId !== body.actionGrant.id ||
+        (enabling &&
+          (!("manifestId" in body.payload) ||
+            !("manifestId" in intent) ||
+            intent.manifestId !== body.payload.manifestId ||
+            intent.manifestHash !== body.payload.manifestHash)) ||
+        (revoking && "manifestId" in body.payload)
+      )
+        denied("Project policy grant intent does not match exact effect", 409);
+      if (!projectSharePolicyRepository)
+        denied("Project policy attempt custody unavailable", 503);
+      const pendingAttempts =
+        await projectSharePolicyRepository!.pendingAttempts({
+          ownerUserId: authority.actor.id,
+          projectId
+        });
+      const attempt = pendingAttempts.find(
+        (row) =>
+          row.clientRequestId === intent.commandRequestId &&
+          row.actionGrantId === body.actionGrant.id &&
+          row.teamBackendId === body.teamBackendId &&
+          row.workspaceProjectId === body.workspaceProjectId &&
+          row.teamId === intent.teamId &&
+          row.action === (enabling ? "enable" : "revoke") &&
+          row.expectedPolicyVersion === body.payload.expectedPolicyVersion &&
+          row.payloadHash === policyPayloadHash(body.payload) &&
+          (enabling
+            ? row.manifestId ===
+                (body.payload as z.infer<typeof projectSharePolicyEnableSchema>)
+                  .manifestId &&
+              row.manifestHash ===
+                (body.payload as z.infer<typeof projectSharePolicyEnableSchema>)
+                  .manifestHash
+            : !row.manifestId && !row.manifestHash)
+      );
+      if (!attempt)
+        denied(
+          "Exact Project policy action attempt was not durably prepared",
+          409
+        );
+      const backend = upstreamBackendById(
+        readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+        body.teamBackendId
+      );
+      if (!backend) denied("Team backend is not enrolled", 424);
+      const authorization = context.localEdge.resolveUpstreamAuthorization(
+        backend!
+      );
+      if (!authorization) denied("Team upstream credential unavailable", 424);
+      const deviceStatus = await requestTeam(
+        body.teamBackendId,
+        "/v1/local-edge/device-credentials/status"
+      );
+      const remote = z
+        .object({
+          user: z.object({ id: z.uuid() }).passthrough(),
+          credential: z.object({ id: z.uuid() }).passthrough()
+        })
+        .passthrough()
+        .parse(deviceStatus);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== remote.user.id
+      )
+        denied("Team principal binding changed", 409);
+      if (
+        attempt!.teamPrincipalUserId !== remote.user.id ||
+        attempt!.deviceCredentialId !== remote.credential.id
+      )
+        denied("Project policy attempt device or principal changed", 409);
+      await projectSharePolicyRepository!.assertAttemptCurrent({
+        ownerUserId: authority.actor.id,
+        projectId,
+        attemptId: attempt!.attemptId,
+        teamBackendId: body.teamBackendId,
+        workspaceProjectId: body.workspaceProjectId,
+        teamId: intent.teamId,
+        teamPrincipalUserId: remote.user.id,
+        deviceCredentialId: remote.credential.id
+      });
+      const secret =
+        await context.collaboration.actionGrantControl?.resolveSecret({
+          reference: body.actionGrant,
+          intent: body.intent,
+          context: {
+            backend: backend!,
+            localOwnerUserId: authority.actor.id,
+            principalUserId: remote.user.id,
+            upstreamDeviceCredentialId: remote.credential.id,
+            upstreamDeviceAuthorization: authorization!,
+            operationFamilies: new Set(["share_grant_management"])
+          }
+        });
+      if (!secret)
+        denied("Approved Project policy Action Grant unavailable", 403);
+      const path = `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/${enabling ? "enable" : "revoke"}`;
+      const result = await fetchBoundedJson(
+        context.localEdge.fetch,
+        safeUpstreamProxyUrl(backend!, path),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            authorization: authorization!,
+            "x-koed-action-grant": secret!
+          },
+          body: JSON.stringify(body.payload)
+        },
+        { timeoutMs: 30_000, maxBytes: 64_000 }
+      );
+      if (!result.response.ok)
+        denied(
+          result.response.status === 409
+            ? "Project policy changed before approval consumption"
+            : "Team Project policy could not be updated",
+          result.response.status === 409 ? 409 : 424
+        );
+      return result.payload;
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/execution-receipts/read",
+    { preHandler: context.rateLimit.memoryRead, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          receipt: projectSharePolicyReceiptReadSchema
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management",
+        false
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== (await teamPrincipal(body.teamBackendId))
+      )
+        denied("Team principal binding changed", 409);
+      const backend = upstreamBackendById(
+        readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+        body.teamBackendId
+      );
+      if (!backend) denied("Team backend is not enrolled", 424);
+      const authorization = context.localEdge.resolveUpstreamAuthorization(
+        backend!
+      );
+      if (!authorization) denied("Team upstream credential unavailable", 424);
+      const result = await fetchBoundedJson(
+        context.localEdge.fetch,
+        safeUpstreamProxyUrl(
+          backend!,
+          `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/execution-receipts/read`
+        ),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            authorization: authorization!
+          },
+          body: JSON.stringify(body.receipt)
+        },
+        { timeoutMs: 15_000, maxBytes: 64_000 }
+      );
+      if (!result.response.ok)
+        denied("Exact Project policy execution receipt unavailable", 424);
+      return z
+        .object({
+          executed: z.boolean(),
+          receipt: z
+            .object({
+              statusCode: z.number().int(),
+              body: z.unknown()
+            })
+            .strict()
+            .nullable(),
+          terminalState: z.enum(["denied", "revoked", "expired"]).nullable(),
+          serverTime: z.string().datetime({ offset: true })
+        })
+        .strict()
+        .parse(result.payload);
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/attempts/finalize",
+    { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const { attemptId } = z
+        .object({ attemptId: z.uuid() })
+        .strict()
+        .parse(request.body);
+      const local = await authenticateLocal(request, true);
+      if (!projectSharePolicyRepository)
+        denied("Project policy custody unavailable", 503);
+      const attempts = await projectSharePolicyRepository!.pendingAttempts({
+        ownerUserId: local.actor.id,
+        projectId
+      });
+      const attempt = attempts.find((row) => row.attemptId === attemptId);
+      if (!attempt)
+        denied("Exact pending Project policy attempt unavailable", 409);
+      const authority = await authenticate(
+        request,
+        attempt!.teamBackendId,
+        "share_grant_management"
+      );
+      if (authority.actor.id !== local.actor.id)
+        denied("Project policy owner changed", 409);
+      const link = await repo().getLink(local.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== attempt!.teamBackendId ||
+        link.workspaceProjectId !== attempt!.workspaceProjectId
+      )
+        denied("Exact shared Project link changed", 409);
+      if (
+        (await repo().principalBinding(
+          local.actor.id,
+          attempt!.teamBackendId
+        )) !== attempt!.teamPrincipalUserId ||
+        (await teamPrincipal(attempt!.teamBackendId)) !==
+          attempt!.teamPrincipalUserId
+      )
+        denied("Team principal binding changed", 409);
+      const device = z
+        .object({ credential: z.object({ id: z.uuid() }).passthrough() })
+        .passthrough()
+        .parse(
+          await requestTeam(
+            attempt!.teamBackendId,
+            "/v1/local-edge/device-credentials/status"
+          )
+        );
+      if (device.credential.id !== attempt!.deviceCredentialId)
+        denied("Team device credential changed", 409);
+      await projectSharePolicyRepository!.assertAttemptCurrent({
+        ownerUserId: local.actor.id,
+        projectId,
+        attemptId,
+        teamBackendId: attempt!.teamBackendId,
+        workspaceProjectId: attempt!.workspaceProjectId,
+        teamId: attempt!.teamId,
+        teamPrincipalUserId: attempt!.teamPrincipalUserId,
+        deviceCredentialId: attempt!.deviceCredentialId
+      });
+      const backend = upstreamBackendById(
+        readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+        attempt!.teamBackendId
+      );
+      if (!backend) denied("Team backend is not enrolled", 424);
+      const authorization = context.localEdge.resolveUpstreamAuthorization(
+        backend!
+      );
+      if (!authorization) denied("Team upstream credential unavailable", 424);
+      const result = await fetchBoundedJson(
+        context.localEdge.fetch,
+        safeUpstreamProxyUrl(
+          backend!,
+          `/v1/workspace-projects/${encodeURIComponent(attempt!.workspaceProjectId)}/share-policy/execution-receipts/read`
+        ),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            authorization: authorization!
+          },
+          body: JSON.stringify({
+            action: attempt!.action,
+            clientRequestId: attempt!.clientRequestId,
+            actionGrantId: attempt!.actionGrantId,
+            teamId: attempt!.teamId,
+            expectedPolicyVersion: attempt!.expectedPolicyVersion,
+            ...(attempt!.action === "enable"
+              ? {
+                  manifestId: attempt!.manifestId,
+                  manifestHash: attempt!.manifestHash
+                }
+              : {})
+          })
+        },
+        { timeoutMs: 15_000, maxBytes: 64_000 }
+      );
+      if (!result.response.ok)
+        denied("Exact Project policy execution receipt unavailable", 424);
+      const receipt = z
+        .object({
+          executed: z.boolean(),
+          receipt: z
+            .object({
+              statusCode: z.number().int(),
+              body: z
+                .object({
+                  policyId: z.uuid(),
+                  version: z.number().int().positive()
+                })
+                .passthrough()
+            })
+            .strict()
+            .nullable(),
+          terminalState: z.enum(["denied", "revoked", "expired"]).nullable(),
+          serverTime: z.string().datetime({ offset: true })
+        })
+        .strict()
+        .parse(result.payload);
+      if (!receipt.executed || !receipt.receipt) {
+        if (receipt.terminalState) {
+          await projectSharePolicyRepository!.terminalAttempt({
+            ownerUserId: local.actor.id,
+            projectId,
+            attemptId
+          });
+          return { state: "terminal" as const, reason: receipt.terminalState };
+        }
+        return { state: "unknown" as const };
+      }
+      if (
+        receipt.receipt.statusCode !== 200 ||
+        receipt.receipt.body.version !== attempt!.expectedPolicyVersion + 1
+      )
+        denied("Project policy receipt did not confirm exact effect", 409);
+      await projectSharePolicyRepository!.finalizeAttempt({
+        ownerUserId: local.actor.id,
+        projectId,
+        attemptId,
+        action: attempt!.action,
+        expectedPolicyVersion: attempt!.expectedPolicyVersion,
+        deviceCredentialId: attempt!.deviceCredentialId,
+        teamBackendId: attempt!.teamBackendId,
+        workspaceProjectId: attempt!.workspaceProjectId
+      });
+      return {
+        state: "finalized" as const,
+        action: attempt!.action,
+        version: receipt.receipt.body.version
+      };
+    }
+  );
   const deckRepo = () =>
     deckRepository ?? denied("Personal Deck progress unavailable", 503);
   const linkedDeck = async (

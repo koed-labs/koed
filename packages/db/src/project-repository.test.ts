@@ -134,6 +134,117 @@ describe.skipIf(!testUrl)("Personal Project repository", () => {
     expect(new Set(projects.rows.map((row) => row.key)).size).toBe(2);
   });
 
+  it("stamps only exact post-policy captures prepared against the unchanged local context", async () => {
+    const seed = await fixture();
+    const associated = await repository.associateVerifiedCapturedSession(seed);
+    const projectId = associated.projectId!;
+    const workspaceProjectId = randomUUID();
+    const deviceCredentialId = randomUUID();
+    await pool.query(
+      `update projects set team_backend_id='team-fixture',workspace_project_id=$2,
+         project_share_policy_version=1,project_share_policy_device_credential_id=$3,
+         project_share_policy_enabled_at=now()-interval '1 second'
+       where id=$1`,
+      [projectId, workspaceProjectId, deviceCredentialId]
+    );
+    const linkEpoch = (
+      await pool.query<{ share_policy_link_epoch: string }>(
+        `select share_policy_link_epoch from projects where id=$1`,
+        [projectId]
+      )
+    ).rows[0]!.share_policy_link_epoch;
+    const sessionStamp = async (sessionId: string) => {
+      const result = await pool.query<{
+        project_share_capture_policy_version: number | null;
+      }>(
+        `select project_share_capture_policy_version from sessions where id=$1`,
+        [sessionId]
+      );
+      return result.rows[0]?.project_share_capture_policy_version ?? null;
+    };
+    const associate = async (
+      input: VerifiedLocalProjectContext,
+      preparedAt: string,
+      policyVersion = 1,
+      associationVersion = 1
+    ) => {
+      await pool.query(
+        `update sessions set source_kind='codex',source_adapter_version='codex-transcript-v1'
+          where id=$1`,
+        [input.sessionId]
+      );
+      await repository.associateVerifiedCapturedSession({
+        ...input,
+        captureSharePolicy: {
+          projectId,
+          workspaceProjectId,
+          policyVersion,
+          linkEpoch,
+          deviceCredentialId,
+          associationVersion,
+          preparedAt
+        }
+      });
+      return sessionStamp(input.sessionId);
+    };
+    const eligiblePreparedAt = new Date().toISOString();
+    const eligible = await fixture({
+      owner: seed.ownerUserId,
+      localProjectId: seed.localProjectId
+    });
+    expect(await associate(eligible, eligiblePreparedAt)).toBe(1);
+
+    const old = await fixture({
+      owner: seed.ownerUserId,
+      localProjectId: seed.localProjectId
+    });
+    expect(
+      await associate(old, new Date(Date.now() + 1000).toISOString())
+    ).toBeNull();
+    const stalePolicy = await fixture({
+      owner: seed.ownerUserId,
+      localProjectId: seed.localProjectId
+    });
+    expect(
+      await associate(stalePolicy, new Date(Date.now() - 1000).toISOString(), 2)
+    ).toBeNull();
+    const staleContext = await fixture({
+      owner: seed.ownerUserId,
+      localProjectId: seed.localProjectId
+    });
+    expect(
+      await associate(
+        staleContext,
+        new Date(Date.now() - 1000).toISOString(),
+        1,
+        2
+      )
+    ).toBeNull();
+    const justMe = await fixture({
+      owner: seed.ownerUserId,
+      localProjectId: seed.localProjectId
+    });
+    await pool.query(
+      `update sessions set project_override_id='just-me',project_override_name='Just me',
+         project_override_at=now(),project_override_by_user_id=$2 where id=$1`,
+      [justMe.sessionId, seed.ownerUserId]
+    );
+    expect(
+      await associate(justMe, new Date(Date.now() - 1000).toISOString())
+    ).toBeNull();
+    await pool.query(
+      `update projects set share_policy_link_epoch=gen_random_uuid() where id=$1`,
+      [projectId]
+    );
+    const relinked = await fixture({
+      owner: seed.ownerUserId,
+      localProjectId: seed.localProjectId
+    });
+    expect(
+      await associate(relinked, new Date(Date.now() - 1000).toISOString())
+    ).toBeNull();
+  });
+
   it("publishes one owner Project invalidation for creation and each first Session assignment", async () => {
     const first = await fixture();
     const created = await repository.associateVerifiedCapturedSession(first);

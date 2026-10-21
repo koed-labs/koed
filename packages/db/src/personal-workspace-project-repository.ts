@@ -953,6 +953,10 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         `
         update projects
            set team_backend_id=$3,team_workspace_id=$4,workspace_project_id=$5,
+               share_policy_link_epoch=gen_random_uuid(),
+               project_share_policy_version=null,
+               project_share_policy_device_credential_id=null,
+               project_share_policy_enabled_at=null,
                version=version+1,updated_at=now()
          where id=$1 and owner_user_id=$2 returning version`,
         [
@@ -1273,7 +1277,11 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         await client.query(
           `update projects
            set team_backend_id=null,team_workspace_id=null,
-               workspace_project_id=null,version=version+1,updated_at=now()
+               workspace_project_id=null,share_policy_link_epoch=gen_random_uuid(),
+               project_share_policy_version=null,
+               project_share_policy_device_credential_id=null,
+               project_share_policy_enabled_at=null,
+               version=version+1,updated_at=now()
            where id=$1 and owner_user_id=$2`,
           [projectId, ownerUserId]
         );
@@ -1364,7 +1372,11 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         `
         update projects
            set team_backend_id=null,team_workspace_id=null,
-               workspace_project_id=null,version=version+1,updated_at=now()
+               workspace_project_id=null,share_policy_link_epoch=gen_random_uuid(),
+               project_share_policy_version=null,
+               project_share_policy_device_credential_id=null,
+               project_share_policy_enabled_at=null,
+               version=version+1,updated_at=now()
          where id=$1 and owner_user_id=$2`,
         [projectId, ownerUserId]
       );

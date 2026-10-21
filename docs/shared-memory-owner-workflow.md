@@ -1,5 +1,8 @@
 # Shared Memory owner workflow model
 
+Project Share Policy uses these transaction boundaries. Its implementation
+and recovery rules are in [Project Share Policy backend lifecycle](./project-share-policy-backend.md).
+
 ## Decision
 
 Defer extraction of a new deep workflow module. The load-bearing Shared Memory

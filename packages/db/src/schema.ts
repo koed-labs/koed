@@ -526,6 +526,16 @@ export const projects = pgTable(
     teamBackendId: text("team_backend_id"),
     teamWorkspaceId: uuid("team_workspace_id"),
     workspaceProjectId: uuid("workspace_project_id"),
+    sharePolicyLinkEpoch: uuid("share_policy_link_epoch")
+      .notNull()
+      .defaultRandom(),
+    projectSharePolicyVersion: integer("project_share_policy_version"),
+    projectSharePolicyDeviceCredentialId: uuid(
+      "project_share_policy_device_credential_id"
+    ),
+    projectSharePolicyEnabledAt: timestamp("project_share_policy_enabled_at", {
+      withTimezone: true
+    }),
     createdAt: now(),
     updatedAt: updatedNow(),
     version: integer("version").notNull().default(1)
@@ -540,6 +550,14 @@ export const projects = pgTable(
     check("projects_name_not_blank", sql`length(trim(${table.name})) > 0`),
     check("projects_key_not_blank", sql`length(trim(${table.key})) > 0`),
     check("projects_version_positive", sql`${table.version} > 0`),
+    check(
+      "projects_share_policy_state_check",
+      sql`(${table.projectSharePolicyVersion} is null and ${table.projectSharePolicyEnabledAt} is null
+          and ${table.projectSharePolicyDeviceCredentialId} is null)
+        or (${table.projectSharePolicyVersion} > 0 and ${table.projectSharePolicyEnabledAt} is not null
+          and ${table.projectSharePolicyDeviceCredentialId} is not null
+          and ${table.workspaceProjectId} is not null and ${table.teamBackendId} is not null)`
+    ),
     check(
       "projects_deletion_generation_nonnegative",
       sql`${table.deletionGeneration} >= 0`
@@ -726,8 +744,8 @@ export const chatDeleteOperations = pgTable(
   ]
 );
 
-// Written only after an owner-authorized Project Share Policy issuance. This
-// provenance distinguishes policy grants from explicit grants on the same source.
+// Owner-local exact grant provenance for policy issuance and separately
+// Native-approved Project Conversation shares. The origin is never inferred.
 export const projectPolicySessionGrants = pgTable(
   "project_policy_session_grants",
   {
@@ -740,7 +758,8 @@ export const projectPolicySessionGrants = pgTable(
     teamId: uuid("team_id").notNull(),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
     shareGrantId: uuid("share_grant_id").notNull(),
-    policyGeneration: integer("policy_generation").notNull(),
+    origin: text("origin").notNull().default("policy"),
+    policyGeneration: integer("policy_generation"),
     mappingVersion: integer("mapping_version").notNull(),
     grantVersion: integer("grant_version").notNull(),
     createdAt: now()
@@ -767,7 +786,270 @@ export const projectPolicySessionGrants = pgTable(
     ),
     check(
       "project_policy_session_grants_versions_check",
-      sql`${table.policyGeneration}>0 and ${table.mappingVersion}>0 and ${table.grantVersion}>0`
+      sql`((${table.origin}='policy' and ${table.policyGeneration} is not null and ${table.policyGeneration}>0)
+        or (${table.origin}='manual' and ${table.policyGeneration} is null))
+        and ${table.mappingVersion}>0 and ${table.grantVersion}>0`
+    )
+  ]
+);
+
+// Owner-local reservation made before any Team policy Pending Share request.
+// Personal move/private mutations must see it before changing placement.
+export const projectShareLocalIssues = pgTable(
+  "project_share_local_issues",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    backendId: text("backend_id").notNull(),
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    policyVersion: integer("policy_version").notNull(),
+    linkEpoch: uuid("link_epoch").notNull(),
+    mappingRevision: integer("mapping_revision").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    remotePendingShareId: uuid("remote_pending_share_id"),
+    remoteShareGrantId: uuid("remote_share_grant_id"),
+    remoteGrantVersion: integer("remote_grant_version"),
+    remoteGrantLifecycle: text("remote_grant_lifecycle"),
+    state: text("state").notNull().default("reserved"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.sessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId],
+      name: "project_share_local_issues_session_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.projectId, table.ownerUserId],
+      foreignColumns: [projects.id, projects.ownerUserId],
+      name: "project_share_local_issues_project_fk"
+    }).onDelete("cascade"),
+    unique("project_share_local_issues_session_project_unique").on(
+      table.ownerUserId,
+      table.sessionId,
+      table.projectId,
+      table.backendId,
+      table.workspaceProjectId,
+      table.policyVersion,
+      table.linkEpoch
+    ),
+    check(
+      "project_share_local_issues_positive_check",
+      sql`${table.policyVersion}>0 and ${table.mappingRevision}>0 and ${table.sourceRevision}>0`
+    ),
+    check(
+      "project_share_local_issues_state_check",
+      sql`${table.state} in ('reserved','staged','activated','frozen')`
+    )
+  ]
+);
+
+// An exact Team exclusion acknowledgement for a linked chat with no grant
+// binding. It is scoped to the placement and link epoch reviewed by HQ107.
+export const projectShareMoveFences = pgTable(
+  "project_share_move_fences",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    backendId: text("backend_id").notNull(),
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    linkEpoch: uuid("link_epoch").notNull(),
+    mappingVersion: integer("mapping_version").notNull(),
+    state: text("state").notNull().default("preparing"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.sessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId],
+      name: "project_share_move_fences_session_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.projectId, table.ownerUserId],
+      foreignColumns: [projects.id, projects.ownerUserId],
+      name: "project_share_move_fences_project_fk"
+    }).onDelete("cascade"),
+    unique("project_share_move_fences_exact_unique").on(
+      table.ownerUserId,
+      table.sessionId,
+      table.projectId,
+      table.backendId,
+      table.workspaceProjectId,
+      table.linkEpoch,
+      table.mappingVersion
+    ),
+    check(
+      "project_share_move_fences_state_check",
+      sql`${table.state} in ('preparing','acknowledged') and ${table.mappingVersion}>0`
+    )
+  ]
+);
+
+// A per-Conversation explicit offer is bound before Native preview. An
+// uncertain Team response remains pending and is settled by exact readback.
+export const projectShareExplicitOffers = pgTable(
+  "project_share_explicit_offers",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    backendId: text("backend_id").notNull(),
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    teamPrincipalUserId: uuid("team_principal_user_id").notNull(),
+    deviceCredentialId: uuid("device_credential_id").notNull(),
+    linkEpoch: uuid("link_epoch").notNull(),
+    reason: text("reason").notNull(),
+    mappingRevision: integer("mapping_revision").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    candidateHash: text("candidate_hash").notNull(),
+    mutationId: uuid("mutation_id").notNull().unique(),
+    state: text("state").notNull().default("prepared"),
+    remotePendingShareId: uuid("remote_pending_share_id"),
+    remoteShareGrantId: uuid("remote_share_grant_id"),
+    remoteGrantVersion: integer("remote_grant_version"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.projectId, table.ownerUserId],
+      foreignColumns: [projects.id, projects.ownerUserId],
+      name: "project_share_explicit_offer_project_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.sessionId, table.ownerUserId],
+      foreignColumns: [sessions.id, sessions.ownerUserId],
+      name: "project_share_explicit_offer_session_fk"
+    }).onDelete("cascade"),
+    check(
+      "project_share_explicit_offer_reason_check",
+      sql`${table.reason} in ('moved_in','share_again')`
+    ),
+    check(
+      "project_share_explicit_offer_state_check",
+      sql`${table.state} in ('prepared','pending','accepted','activated','blocked')`
+    ),
+    check(
+      "project_share_explicit_offer_revision_check",
+      sql`${table.mappingRevision}>0 and ${table.sourceRevision}>0
+          and length(${table.candidateHash})=64 and ${table.expiresAt}>${table.createdAt}`
+    )
+  ]
+);
+
+// A move/private/delete receives this Team ACK before Personal placement
+// changes. It blocks only the exact Native mutation, including late POSTs.
+export const workspaceProjectExplicitShareFences = pgTable(
+  "workspace_project_explicit_share_fences",
+  {
+    id: id(),
+    workspaceProjectId: uuid("workspace_project_id")
+      .notNull()
+      .references(() => workspaceProjects.id, { onDelete: "restrict" }),
+    sourceOwnerTeamMemberId: uuid("source_owner_team_member_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    mutationId: uuid("mutation_id").notNull().unique(),
+    createdAt: now()
+  },
+  (table) => [
+    index("workspace_project_explicit_fences_session_idx").on(
+      table.workspaceProjectId,
+      table.sourceOwnerTeamMemberId,
+      table.sessionId
+    )
+  ]
+);
+
+// The owner local edge alone holds the sealed private half. A fresh key is
+// generated for each Team Project policy version and exact device binding.
+export const projectSharePolicySigningKeys = pgTable(
+  "project_share_policy_signing_keys",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    backendId: text("backend_id").notNull(),
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    deviceCredentialId: uuid("device_credential_id").notNull(),
+    policyVersion: integer("policy_version").notNull(),
+    linkEpoch: uuid("link_epoch").notNull(),
+    publicKey: text("public_key").notNull(),
+    sealedPrivateKey: jsonb("sealed_private_key").$type<unknown>().notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.projectId, table.ownerUserId],
+      foreignColumns: [projects.id, projects.ownerUserId],
+      name: "project_policy_signing_key_project_fk"
+    }).onDelete("cascade"),
+    unique("project_policy_signing_key_version_unique").on(
+      table.ownerUserId,
+      table.projectId,
+      table.backendId,
+      table.workspaceProjectId,
+      table.deviceCredentialId,
+      table.policyVersion,
+      table.linkEpoch
+    ),
+    check(
+      "project_policy_signing_key_version_positive",
+      sql`${table.policyVersion}>0`
+    )
+  ]
+);
+
+// A lost network reply never becomes implied consent. The owner local edge
+// resumes only this exact prepared action by reading Team's one-use receipt.
+export const projectSharePolicyAttempts = pgTable(
+  "project_share_policy_attempts",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    backendId: text("backend_id").notNull(),
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    action: text("action").notNull(),
+    clientRequestId: uuid("client_request_id").notNull(),
+    actionGrantId: uuid("action_grant_id").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    sealedBinding: jsonb("sealed_binding").$type<unknown>().notNull(),
+    state: text("state").notNull().default("pending"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.projectId, table.ownerUserId],
+      foreignColumns: [projects.id, projects.ownerUserId],
+      name: "project_policy_attempt_project_fk"
+    }).onDelete("cascade"),
+    unique("project_policy_attempt_request_unique").on(
+      table.ownerUserId,
+      table.clientRequestId
+    ),
+    check(
+      "project_policy_attempt_action_check",
+      sql`${table.action} in ('enable','revoke')`
+    ),
+    check(
+      "project_policy_attempt_payload_hash_check",
+      sql`${table.payloadHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "project_policy_attempt_state_check",
+      sql`${table.state} in ('pending','executed','terminal')`
     )
   ]
 );
@@ -977,6 +1259,7 @@ export const projectLocalContexts = pgTable(
     gitDirHash: text("git_dir_hash"),
     folderHash: text("folder_hash"),
     associationState: text("association_state").notNull().default("resolved"),
+    associationVersion: integer("association_version").notNull().default(1),
     lastConfirmationVersion: integer("last_confirmation_version")
       .notNull()
       .default(0),
@@ -1006,6 +1289,10 @@ export const projectLocalContexts = pgTable(
     check(
       "project_local_contexts_association_shape_check",
       sql`(${table.associationState} = 'resolved' and ${table.projectId} is not null) or (${table.associationState} = 'unresolved' and ${table.projectId} is null)`
+    ),
+    check(
+      "project_local_contexts_association_version_check",
+      sql`${table.associationVersion} > 0`
     )
   ]
 );
@@ -1587,6 +1874,247 @@ export const workspaceProjectMembers = pgTable(
   ]
 );
 
+// A member's summary-sharing choice is durable Team-side consent. The bound
+// Personal Project identity is represented by a local-edge hash: Personal
+// Project UUIDs do not become Team-owned source identifiers.
+export const workspaceProjectSharePolicies = pgTable(
+  "workspace_project_share_policies",
+  {
+    id: id(),
+    workspaceProjectId: uuid("workspace_project_id")
+      .notNull()
+      .references(() => workspaceProjects.id),
+    sourceOwnerTeamMemberId: uuid("source_owner_team_member_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    deviceCredentialId: uuid("device_credential_id")
+      .notNull()
+      .references(() => deviceCredentials.id),
+    upstreamBackendId: text("upstream_backend_id").notNull(),
+    personalProjectBindingHash: text("personal_project_binding_hash").notNull(),
+    signingPublicKey: text("signing_public_key").notNull(),
+    status: text("status").notNull().default("active"),
+    version: integer("version").notNull().default(1),
+    initialManifestHash: text("initial_manifest_hash").notNull(),
+    initialManifest: jsonb("initial_manifest")
+      .$type<
+        Array<{
+          sessionId: string;
+          logicalMemoryId: string;
+          sourceRevision: number;
+          mappingRevision: number;
+        }>
+      >()
+      .notNull(),
+    approvedSessionIds: jsonb("approved_session_ids")
+      .$type<string[]>()
+      .notNull(),
+    enabledAt: timestamp("enabled_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("workspace_project_share_policy_member_unique").on(
+      table.workspaceProjectId,
+      table.sourceOwnerTeamMemberId
+    ),
+    foreignKey({
+      columns: [table.workspaceProjectId, table.sourceOwnerTeamMemberId],
+      foreignColumns: [
+        workspaceProjectMembers.workspaceProjectId,
+        workspaceProjectMembers.teamMemberId
+      ],
+      name: "workspace_project_share_policy_member_fk"
+    }),
+    index("workspace_project_share_policy_owner_idx").on(
+      table.ownerUserId,
+      table.status
+    ),
+    check(
+      "workspace_project_share_policy_status_check",
+      sql`${table.status} in ('active','revoked')`
+    ),
+    check(
+      "workspace_project_share_policy_version_check",
+      sql`${table.version} > 0`
+    ),
+    check(
+      "workspace_project_share_policy_manifest_hash_check",
+      sql`${table.initialManifestHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "workspace_project_share_policy_project_binding_hash_check",
+      sql`${table.personalProjectBindingHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "workspace_project_share_policy_manifest_bound_check",
+      sql`jsonb_typeof(${table.initialManifest}) = 'array' and jsonb_array_length(${table.initialManifest}) <= 100`
+    ),
+    check(
+      "workspace_project_share_policy_approved_bound_check",
+      sql`jsonb_typeof(${table.approvedSessionIds})='array' and jsonb_array_length(${table.approvedSessionIds})<=100`
+    ),
+    check(
+      "workspace_project_share_policy_revoked_shape_check",
+      sql`(${table.status} = 'active' and ${table.revokedAt} is null) or (${table.status} = 'revoked' and ${table.revokedAt} is not null)`
+    )
+  ]
+);
+
+// Prepared only by the authenticated owner local edge. The interactive
+// Action Grant carries this row's opaque ID and hash, never Session selectors.
+export const workspaceProjectSharePolicyManifests = pgTable(
+  "workspace_project_share_policy_manifests",
+  {
+    id: id(),
+    workspaceProjectId: uuid("workspace_project_id")
+      .notNull()
+      .references(() => workspaceProjects.id),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    deviceCredentialId: uuid("device_credential_id")
+      .notNull()
+      .references(() => deviceCredentials.id),
+    upstreamBackendId: text("upstream_backend_id").notNull(),
+    expectedPolicyVersion: integer("expected_policy_version").notNull(),
+    personalProjectBindingHash: text("personal_project_binding_hash").notNull(),
+    signingPublicKey: text("signing_public_key").notNull(),
+    manifestHash: text("manifest_hash").notNull(),
+    manifest: jsonb("manifest")
+      .$type<
+        Array<{
+          sessionId: string;
+          logicalMemoryId: string;
+          sourceRevision: number;
+          mappingRevision: number;
+        }>
+      >()
+      .notNull(),
+    eligibleSessionIds: jsonb("eligible_session_ids")
+      .$type<string[]>()
+      .notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    index("workspace_project_share_policy_manifest_owner_idx").on(
+      table.ownerUserId,
+      table.workspaceProjectId,
+      table.createdAt.desc()
+    ),
+    check(
+      "workspace_project_share_policy_manifest_version_check",
+      sql`${table.expectedPolicyVersion} >= 0`
+    ),
+    check(
+      "workspace_project_share_policy_manifest_hash_check",
+      sql`${table.manifestHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "workspace_project_share_policy_manifest_project_hash_check",
+      sql`${table.personalProjectBindingHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "workspace_project_share_policy_manifest_bound_check",
+      sql`jsonb_typeof(${table.manifest}) = 'array' and jsonb_array_length(${table.manifest}) <= 100`
+    ),
+    check(
+      "workspace_project_share_manifest_eligible_bound_check",
+      sql`jsonb_typeof(${table.eligibleSessionIds})='array' and jsonb_array_length(${table.eligibleSessionIds})<=100`
+    )
+  ]
+);
+
+// A policy may issue at most one Pending Share for an exact Captured Session.
+// The row is written in the same transaction as candidate preview and Pending
+// Share acceptance; later publication rechecks this row under lifecycle locks.
+export const workspaceProjectSharePolicyIssues = pgTable(
+  "workspace_project_share_policy_issues",
+  {
+    id: id(),
+    policyId: uuid("policy_id")
+      .notNull()
+      .references(() => workspaceProjectSharePolicies.id),
+    policyVersion: integer("policy_version").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
+    mappingRevision: integer("mapping_revision").notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    proofNonce: uuid("proof_nonce"),
+    pendingShareId: uuid("pending_share_id").references(
+      () => pendingShareOperations.id
+    ),
+    provenance: text("provenance").notNull(),
+    privateBlockedAt: timestamp("private_blocked_at", { withTimezone: true }),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    unique("workspace_project_share_policy_issue_session_unique").on(
+      table.policyId,
+      table.sessionId
+    ),
+    unique("workspace_project_share_policy_issue_pending_unique").on(
+      table.pendingShareId
+    ),
+    unique("workspace_project_share_policy_issue_nonce_unique").on(
+      table.proofNonce
+    ),
+    check(
+      "workspace_project_share_policy_issue_positive_check",
+      sql`${table.policyVersion}>0 and ${table.sourceRevision}>0 and ${table.mappingRevision}>0`
+    ),
+    check(
+      "workspace_project_share_policy_issue_provenance_check",
+      sql`${table.provenance} in ('initial','future')`
+    ),
+    check(
+      "workspace_project_share_policy_issue_hash_check",
+      sql`${table.sourceManifestHash} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
+// A private Conversation remains excluded from later captures and policy
+// versions until its owner explicitly reviews a fresh Share Again action.
+export const workspaceProjectSharePolicyExclusions = pgTable(
+  "workspace_project_share_policy_exclusions",
+  {
+    workspaceProjectId: uuid("workspace_project_id").notNull(),
+    sourceOwnerTeamMemberId: uuid("source_owner_team_member_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    markedAt: now()
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.workspaceProjectId,
+        table.sourceOwnerTeamMemberId,
+        table.sessionId
+      ]
+    }),
+    foreignKey({
+      columns: [table.workspaceProjectId],
+      foreignColumns: [workspaceProjects.id],
+      name: "project_policy_exclusion_project_fk"
+    }),
+    foreignKey({
+      columns: [table.sourceOwnerTeamMemberId],
+      foreignColumns: [teamMemberships.id],
+      name: "project_policy_exclusion_member_fk"
+    })
+  ]
+);
+
 export const workspaceProjectWorkItems = pgTable(
   "workspace_project_work_items",
   {
@@ -2044,6 +2572,35 @@ export const sessions = pgTable(
     projectAssignmentVersion: integer("project_assignment_version")
       .notNull()
       .default(1),
+    projectShareCapturePolicyVersion: integer(
+      "project_share_capture_policy_version"
+    ),
+    projectShareCaptureDeviceCredentialId: uuid(
+      "project_share_capture_device_credential_id"
+    ),
+    projectShareCaptureLinkEpoch: uuid("project_share_capture_link_epoch"),
+    projectShareCaptureContextVersion: integer(
+      "project_share_capture_context_version"
+    ),
+    projectShareCapturePreparedAt: timestamp(
+      "project_share_capture_prepared_at",
+      { withTimezone: true }
+    ),
+    projectShareCaptureWorkspaceProjectId: uuid(
+      "project_share_capture_workspace_project_id"
+    ),
+    projectSharePrivateAt: timestamp("project_share_private_at", {
+      withTimezone: true
+    }),
+    projectSharePrivatePendingAt: timestamp(
+      "project_share_private_pending_at",
+      {
+        withTimezone: true
+      }
+    ),
+    projectShareMovePendingAt: timestamp("project_share_move_pending_at", {
+      withTimezone: true
+    }),
     sourceKind: text("source_kind"),
     sourceAdapterVersion: text("source_adapter_version"),
     sourceFingerprint: text("source_fingerprint"),
@@ -2126,10 +2683,59 @@ export const sessions = pgTable(
       sql`(${table.projectOverrideId} is null and ${table.projectOverrideName} is null and ${table.projectOverridePath} is null and ${table.projectOverrideAt} is null and ${table.projectOverrideByUserId} is null)
         or (${table.projectOverrideId} is not null and ${table.projectOverrideName} is not null and ${table.projectOverrideAt} is not null and ${table.projectOverrideByUserId} is not null)`
     ),
+    check(
+      "sessions_project_share_capture_shape_check",
+      sql`(${table.projectShareCapturePolicyVersion} is null and ${table.projectShareCaptureWorkspaceProjectId} is null
+          and ${table.projectShareCaptureDeviceCredentialId} is null
+          and ${table.projectShareCaptureLinkEpoch} is null
+          and ${table.projectShareCaptureContextVersion} is null
+          and ${table.projectShareCapturePreparedAt} is null)
+        or (${table.projectShareCapturePolicyVersion} > 0 and ${table.projectShareCaptureWorkspaceProjectId} is not null
+          and ${table.projectShareCaptureDeviceCredentialId} is not null
+          and ${table.projectShareCaptureLinkEpoch} is not null
+          and ${table.projectShareCaptureContextVersion} > 0
+          and ${table.projectShareCapturePreparedAt} is not null)`
+    ),
     index("sessions_owner_effective_project_idx").on(
       table.ownerUserId,
       table.projectOverrideId,
       table.automaticProjectId
+    )
+  ]
+);
+
+// A private decision follows the owner's stable Conversation source identity
+// across later Captured Sessions. Sources without such an identity never gain
+// automatic Project policy eligibility.
+export const projectSharePrivateConversations = pgTable(
+  "project_share_private_conversations",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    sourceRuntime: sourceRuntime("source_runtime").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceAdapterVersion: text("source_adapter_version").notNull(),
+    externalConversationId: text("external_conversation_id").notNull(),
+    markedAt: timestamp("marked_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.ownerUserId,
+        table.sourceRuntime,
+        table.sourceKind,
+        table.sourceAdapterVersion,
+        table.externalConversationId
+      ]
+    }),
+    check(
+      "project_share_private_conversation_identity_check",
+      sql`length(trim(${table.sourceKind}))>0
+        and length(trim(${table.sourceAdapterVersion}))>0
+        and length(trim(${table.externalConversationId}))>0`
     )
   ]
 );
@@ -5461,6 +6067,20 @@ export const managedConversationExecutions = pgTable(
     projectId: text("project_id").notNull(),
     isProjectHq: boolean("is_project_hq").notNull().default(false),
     hqPrivatePath: text("hq_private_path"),
+    sharePolicyCaptureVersion: integer("share_policy_capture_version"),
+    sharePolicyCaptureWorkspaceProjectId: uuid(
+      "share_policy_capture_workspace_project_id"
+    ),
+    sharePolicyCaptureDeviceCredentialId: uuid(
+      "share_policy_capture_device_credential_id"
+    ),
+    sharePolicyCaptureLinkEpoch: uuid("share_policy_capture_link_epoch"),
+    sharePolicyCapturePreparedAt: timestamp(
+      "share_policy_capture_prepared_at",
+      {
+        withTimezone: true
+      }
+    ),
     provider: text("provider").notNull().default("codex"),
     aiClientInstanceId: text("ai_client_instance_id").notNull(),
     model: text("model").notNull(),
@@ -8805,7 +9425,7 @@ export const sharedMemoryCandidatePreviews = pgTable(
     check(
       "shared_memory_candidate_previews_values_check",
       sql`${table.previewRevision} = 1
-        and ${table.authoritySource} in ('browser_session','device_action_grant','continuous_consent')
+        and ${table.authoritySource} in ('browser_session','device_action_grant','continuous_consent','project_share_policy')
         and ${table.sourceRevision} >= 0
         and ${table.itemCount} between 1 and 100
         and ${table.excludedItemCount} >= 0
@@ -8862,6 +9482,9 @@ export const pendingShareOperations = pgTable(
       .notNull()
       .references(() => teams.id, { onDelete: "restrict" }),
     teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    workspaceProjectId: uuid("workspace_project_id").references(
+      () => workspaceProjects.id
+    ),
     sourceCapabilities: sharedMemoryRepresentation("source_capabilities")
       .array()
       .notNull(),
@@ -9040,7 +9663,7 @@ export const pendingShareOperations = pgTable(
       "pending_share_operations_values_check",
       sql`${table.previewRevision} > 0 and ${table.sourceRevision} >= 0
         and ${table.operationVersion} > 0 and ${table.attemptCount} >= 0
-        and ${table.authoritySource} in ('browser_session','device_action_grant')
+        and ${table.authoritySource} in ('browser_session','device_action_grant','project_share_policy')
         and ((${table.lastControlMutationId} is null and ${table.lastControlAction} is null)
           or (${table.lastControlMutationId} is not null and
               ${table.lastControlAction} in ('retry','pause','resume','revoke')))
@@ -9539,7 +10162,8 @@ export const teamMemoryShareGrants = pgTable(
     uniqueIndex("team_memory_share_grants_destination_unique")
       .on(table.logicalMemoryId, table.teamWorkspaceId)
       .where(
-        sql`${table.logicalMemoryId} is not null and ${table.frozenAt} is null`
+        sql`${table.logicalMemoryId} is not null and ${table.frozenAt} is null
+          and ${table.revokedAt} is null`
       ),
     index("team_memory_share_grants_workspace_active_idx")
       .on(table.teamWorkspaceId, table.createdAt.desc())
@@ -10815,7 +11439,11 @@ export const collaborationThreads = pgTable(
       .on(table.teamWorkspaceId, table.systemKey)
       .where(sql`${table.systemKey} is not null`),
     uniqueIndex("collaboration_threads_companion_unique")
-      .on(table.teamWorkspaceId, table.sharedLogicalMemoryId)
+      .on(
+        table.teamWorkspaceId,
+        table.sharedLogicalMemoryId,
+        table.shareGrantId
+      )
       .where(sql`${table.kind} = 'shared_session_discussion'`),
     index("collaboration_threads_team_activity_idx").on(
       table.teamId,

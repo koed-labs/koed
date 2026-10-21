@@ -236,7 +236,10 @@ export const registerDesktopCommandHandlers = (
         { operation: "personal.sessions.move_review"; ok: true }
       >["data"]
     >;
-    projects?: (request: ProjectsRequest) => Promise<ProjectsResult>;
+    projects?: (
+      request: ProjectsRequest,
+      context?: DesktopCommandContext
+    ) => Promise<ProjectsResult>;
     decks?: (request: DeckRequest) => Promise<DeckResult>;
     managedMemoryActions?: (
       request: ManagedMemoryActionRequest
@@ -745,7 +748,9 @@ export const registerDesktopCommandHandlers = (
       return projectsResultSchema.parse({ operation: "sourceReview", value });
     }
     if (!options.projects) throw new Error("Projects are unavailable.");
-    const result = projectsResultSchema.parse(await options.projects(request));
+    const result = projectsResultSchema.parse(
+      await options.projects(request, contextForSender(event.sender))
+    );
     if (result.operation !== request.operation)
       throw new Error("Invalid Projects operation correlation.");
     if (

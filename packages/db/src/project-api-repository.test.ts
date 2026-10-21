@@ -1256,4 +1256,99 @@ describe.skipIf(!testUrl)("Personal Project API lifecycle", () => {
       repository.markDeleteReady(localOwner, project.id, batchId)
     ).rejects.toBeInstanceOf(ProjectConflictError);
   });
+
+  it("retains a pending policy issue backend in the Project deletion manifest", async () => {
+    const localOwner = randomUUID();
+    await pool.query(`insert into users(id,email) values ($1,$2)`, [
+      localOwner,
+      `${localOwner}@example.test`
+    ]);
+    const project = await projects.create(localOwner, {
+      name: "Pending policy deletion",
+      idempotencyKey: "pending-policy-deletion"
+    });
+    const sessionId = randomUUID();
+    const logicalMemoryId = randomUUID();
+    const deployment = await pool.query<{ id: string }>(
+      `select id from deployment_identities where locality='local' limit 1`
+    );
+    await pool.query(
+      `insert into sessions(id,owner_user_id,source_runtime,capture_method,
+        automatic_personal_project_id) values ($1,$2,'codex-cli','api',$3)`,
+      [sessionId, localOwner, project.id]
+    );
+    const seed = await pool.connect();
+    try {
+      await seed.query("begin");
+      await seed.query(
+        `insert into logical_memories(id,protocol_logical_id,owner_user_id,
+          owner_principal_id,origin_deployment_identity_id,source_kind,logical_key)
+         values ($1,$1,$2,$2,$3,'captured_session',$4)`,
+        [
+          logicalMemoryId,
+          localOwner,
+          deployment.rows[0]!.id,
+          `captured-session:${sessionId}`
+        ]
+      );
+      await seed.query(
+        `insert into captured_session_logical_memories
+          (logical_memory_id,source_session_id,owner_principal_id)
+         values ($1,$2,$3)`,
+        [logicalMemoryId, sessionId, localOwner]
+      );
+      await seed.query(
+        `insert into local_captured_session_logical_memories
+          (logical_memory_id,local_session_id,owner_user_id) values ($1,$2,$3)`,
+        [logicalMemoryId, sessionId, localOwner]
+      );
+      await seed.query("commit");
+    } catch (error) {
+      await seed.query("rollback");
+      throw error;
+    } finally {
+      seed.release();
+    }
+    const linkEpoch = (
+      await pool.query<{ share_policy_link_epoch: string }>(
+        `select share_policy_link_epoch from projects where id=$1`,
+        [project.id]
+      )
+    ).rows[0]!.share_policy_link_epoch;
+    await pool.query(
+      `insert into project_share_local_issues
+        (owner_user_id,session_id,logical_memory_id,project_id,backend_id,
+         workspace_project_id,link_epoch,policy_version,mapping_revision,
+         source_revision,state)
+       values ($1,$2,$5,$3,'policy-team',$4,$6,1,1,1,'staged')`,
+      [
+        localOwner,
+        sessionId,
+        project.id,
+        randomUUID(),
+        logicalMemoryId,
+        linkEpoch
+      ]
+    );
+    const repository = createProjectApiRepository(pool, {
+      configuredBackendIds: () => []
+    });
+    const preview = await repository.deletePreview(localOwner, project.id);
+    await repository.beginDelete(localOwner, project.id, {
+      version: project.version,
+      batchId: randomUUID(),
+      executionSetHash: preview.executionSetHash
+    });
+    const operation = await repository.getDeleteOperation(
+      localOwner,
+      project.id
+    );
+    expect(operation?.sources).toEqual([
+      {
+        sessionId,
+        logicalMemoryId,
+        backends: [{ backendId: "policy-team", relationshipIds: [] }]
+      }
+    ]);
+  });
 });

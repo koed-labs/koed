@@ -3386,8 +3386,8 @@ const findNaturalThreadId = async (
     );
   } else {
     result = await client.query(
-      `select id from collaboration_threads where kind = 'shared_session_discussion' and team_workspace_id = $1 and shared_logical_memory_id = $2 limit 1`,
-      [input.teamWorkspaceId, input.sharedLogicalMemoryId]
+      `select id from collaboration_threads where kind = 'shared_session_discussion' and team_workspace_id = $1 and shared_logical_memory_id = $2 and share_grant_id = $3 limit 1`,
+      [input.teamWorkspaceId, input.sharedLogicalMemoryId, input.shareGrantId]
     );
   }
   return result.rows[0]?.id ?? null;

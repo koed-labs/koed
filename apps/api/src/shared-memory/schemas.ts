@@ -359,6 +359,7 @@ export const createPendingShareSchema = z
     logicalMemoryId: uuidSchema,
     teamId: uuidSchema,
     teamWorkspaceId: uuidSchema,
+    workspaceProjectId: uuidSchema.optional(),
     preview: sharedSourcePreviewReferenceSchema,
     previewRevision: positiveVersionSchema,
     mode: z.enum(["snapshot", "continuous"]),

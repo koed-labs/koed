@@ -21,6 +21,8 @@ import { registerDesktopCommandHandlers } from "./ipc/commands.js";
 import { reviewProjectSourceRemoval } from "./koed-server/project-source-native-review.js";
 import { reviewChatDeletion } from "./koed-server/chat-delete-native-review.js";
 import { reviewChatMove } from "./koed-server/chat-move-native-review.js";
+import { knownCanceledProjectMove } from "./koed-server/project-share-policy-service.js";
+import { showProjectSharePolicyNativeReview } from "./koed-server/project-share-policy-native-review.js";
 import {
   COLLABORATION_CONTRACT_VERSION,
   collaborationRendererCommandSchema,
@@ -300,6 +302,18 @@ const createServerManager = (
         ? await dialog.showMessageBox(mainWindow, options)
         : await dialog.showMessageBox(options);
       return result.response === 1;
+    },
+    confirmProjectSharePolicy: async (review, context) => {
+      if (!mainWindow)
+        throw new Error("Project summary sharing window changed");
+      return showProjectSharePolicyNativeReview({
+        review,
+        parent: mainWindow,
+        ownerId: context.ownerId,
+        signal: context.signal,
+        currentParent: () => mainWindow,
+        createWindow: (options) => new BrowserWindow(options)
+      });
     }
   });
 
@@ -535,6 +549,14 @@ const bootstrap = async () => {
       return { status };
     },
     reviewChatMove: async (sessionId, batchId, actionGrantId, context) => {
+      const reservationRef: {
+        current:
+          | Awaited<
+              ReturnType<typeof server.chatMoveNative.prepareReview>
+            >["reservation"]
+          | null;
+      } = { current: null };
+      let confirmedCancel = false;
       const dispatch = async (
         command:
           | "collaboration.await_action_grant"
@@ -567,12 +589,15 @@ const bootstrap = async () => {
         sessionId,
         batchId,
         actionGrantId,
-        prepare: () =>
-          server.chatMoveNative.prepareReview(
+        prepare: async () => {
+          const prepared = await server.chatMoveNative.prepareReview(
             sessionId,
             batchId,
             actionGrantId
-          ),
+          );
+          reservationRef.current ??= prepared.reservation;
+          return prepared;
+        },
         assertAuthority: (key, ownerId) =>
           server.chatMoveNative.assertAuthority(key, ownerId),
         awaitGrant: () =>
@@ -603,13 +628,31 @@ const bootstrap = async () => {
             : await dialog.showMessageBox(options);
           return response.response === 1;
         },
-        confirmGrant: (decision) =>
-          dispatch("collaboration.confirm_action_grant", {
+        confirmGrant: async (decision) => {
+          const result = await dispatch("collaboration.confirm_action_grant", {
             actionGrant: { id: actionGrantId },
             decision
-          }),
+          });
+          confirmedCancel =
+            decision === "cancel" && result.state === "canceled";
+          return result;
+        },
         advance: () => server.chatMoveNative.progress(sessionId, batchId)
       });
+      if (
+        knownCanceledProjectMove({
+          confirmedCancel,
+          reservation: reservationRef.current,
+          status
+        }) &&
+        reservationRef.current
+      ) {
+        await server.projectPolicyMoveNative.releaseCanceledMoveFence({
+          sessionId,
+          oldProjectId: reservationRef.current.oldProjectId,
+          mappingVersion: reservationRef.current.mappingVersion
+        });
+      }
       return { status };
     },
     projects: server.projects,

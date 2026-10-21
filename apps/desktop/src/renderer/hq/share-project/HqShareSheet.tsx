@@ -1,5 +1,5 @@
 import { Dialog, DialogPopup } from "@koed/ui";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Project } from "@koed/shared/project-contract";
 import type { ProjectsDesktopApi } from "../../../ipc/projects-protocol.js";
 import type { WorkspaceProjectShareContext } from "@koed/shared/workspace-project-contract";
@@ -10,6 +10,7 @@ import {
   createShareProjectFlow,
   type ShareProjectTarget
 } from "./share-project-flow.js";
+import { HqSharePolicy } from "./HqSharePolicy.js";
 import "./share-project.css";
 
 export function HqShareSheet({
@@ -17,6 +18,7 @@ export function HqShareSheet({
   project,
   projectsApi,
   collaboration,
+  identityKey,
   onClose,
   onShared,
   onOpenSettings
@@ -25,6 +27,7 @@ export function HqShareSheet({
   project: Project | null;
   projectsApi: ProjectsDesktopApi;
   collaboration: CollaborationRendererClient;
+  identityKey: string;
   onClose(): void;
   onShared(): void;
   onOpenSettings?(): void;
@@ -47,6 +50,14 @@ export function HqShareSheet({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [autoOfferToken, setAutoOfferToken] = useState<string | null>(null);
+  const requestGeneration = useRef(0);
+  const currentScope = useRef("");
+  const scope = `${identityKey}\u0000${project?.id ?? ""}\u0000${open}`;
+  if (currentScope.current !== scope) {
+    currentScope.current = scope;
+    requestGeneration.current += 1;
+  }
   const [invitationUrl, setInvitationUrl] = useState<string | null>(null);
   const [invitationError, setInvitationError] = useState<string | null>(null);
   const [members, setMembers] = useState<z.infer<
@@ -55,9 +66,11 @@ export function HqShareSheet({
   useEffect(() => {
     if (!open || !project) return;
     let alive = true;
+    const request = ++requestGeneration.current;
     setContext(null);
     setError(null);
     setDone(false);
+    setAutoOfferToken(null);
     setInvitationUrl(null);
     setInvitationError(null);
     setMembers(null);
@@ -67,19 +80,14 @@ export function HqShareSheet({
     void (async () => {
       try {
         const next = await flow.context();
-        if (!alive) return;
+        if (!alive || requestGeneration.current !== request) return;
         setContext(next);
         if (next.state !== "ready") return;
         if (project.workspaceProjectId && project.teamBackendId) {
-          const roster = await projectsApi.sharedMembers?.(
-            project.workspaceProjectId,
-            project.teamBackendId
-          );
-          if (alive && roster) setMembers(roster);
           return;
         }
         const attempt = await projectsApi.sharedPendingShare?.(project.id);
-        if (!alive || !attempt) return;
+        if (!alive || requestGeneration.current !== request || !attempt) return;
         setPending(true);
         setAttemptKey(attempt.shareAttemptKey);
         setTarget({
@@ -88,7 +96,7 @@ export function HqShareSheet({
           workspaceId: attempt.targetWorkspaceId
         });
       } catch (caught) {
-        if (alive)
+        if (alive && requestGeneration.current === request)
           setError(
             caught instanceof Error ? caught.message : "Sharing is unavailable."
           );
@@ -96,11 +104,33 @@ export function HqShareSheet({
     })();
     return () => {
       alive = false;
+      requestGeneration.current += 1;
     };
-  }, [open, project?.id, project?.workspaceProjectId, flow, projectsApi]);
+  }, [open, project?.id, identityKey, flow, projectsApi]);
+
+  useEffect(() => {
+    if (!open || !project?.workspaceProjectId || !project.teamBackendId) return;
+    const request = requestGeneration.current;
+    void projectsApi
+      .sharedMembers?.(project.workspaceProjectId, project.teamBackendId)
+      .then((roster) => {
+        if (requestGeneration.current === request && roster) setMembers(roster);
+      })
+      .catch(() => {
+        if (requestGeneration.current === request) setMembers(null);
+      });
+  }, [
+    open,
+    project?.id,
+    project?.workspaceProjectId,
+    project?.teamBackendId,
+    projectsApi,
+    identityKey
+  ]);
 
   const share = async () => {
     if (!project || busy || !context || context.state !== "ready") return;
+    const request = requestGeneration.current;
     setBusy(true);
     setError(null);
     try {
@@ -110,38 +140,44 @@ export function HqShareSheet({
         attemptKey,
         inviteEmail || undefined
       );
+      if (requestGeneration.current !== request) return;
       setInvitationUrl(result.invitationUrl);
       setInvitationError(result.invitationError);
       setDone(true);
+      setAutoOfferToken(crypto.randomUUID());
       onShared();
     } catch (caught) {
+      if (requestGeneration.current !== request) return;
       setError(
         caught instanceof Error
           ? caught.message
           : "This Project could not be shared."
       );
     } finally {
-      setBusy(false);
+      if (requestGeneration.current === request) setBusy(false);
     }
   };
   const cancelPending = async () => {
     if (!project || !pending || busy || !projectsApi.sharedCancelPendingShare)
       return;
+    const request = requestGeneration.current;
     setBusy(true);
     setError(null);
     try {
       await projectsApi.sharedCancelPendingShare(project.id);
+      if (requestGeneration.current !== request) return;
       setPending(false);
       setAttemptKey(crypto.randomUUID());
       setTarget({ kind: "new_team" });
     } catch (caught) {
+      if (requestGeneration.current !== request) return;
       setError(
         caught instanceof Error
           ? caught.message
           : "The pending share could not be canceled. It remains ready to resume."
       );
     } finally {
-      setBusy(false);
+      if (requestGeneration.current === request) setBusy(false);
     }
   };
   const eligibleTeams =
@@ -203,16 +239,32 @@ export function HqShareSheet({
               </>
             ) : null}
             {invitationError ? <p role="alert">{invitationError}</p> : null}
+            {project ? (
+              <HqSharePolicy
+                key={`${identityKey}:${project.id}`}
+                identityKey={identityKey}
+                personalProjectId={project.id}
+                projectsApi={projectsApi}
+                autoOfferToken={autoOfferToken}
+              />
+            ) : null}
             <button type="button" onClick={onClose}>
               Done
             </button>
           </div>
         ) : context?.state !== "ready" ? (
           <div className="hq-share-sheet__body">
-            <h3>Sign in to Koed cloud to share</h3>
+            <h3>
+              {!context && !error
+                ? "Checking Project sharing…"
+                : project?.workspaceProjectId
+                  ? "Team connection unavailable"
+                  : "Sign in to Koed cloud to share"}
+            </h3>
             <p>
-              Sharing needs a verified Team account and a configured Koed cloud
-              connection. Your Project stays private until both are ready.
+              {project?.workspaceProjectId
+                ? "The current Project roster and summary-sharing policy cannot be checked until the Team connection is ready."
+                : "Sharing needs a verified Team account and a configured Koed cloud connection. Your Project stays private until both are ready."}
             </p>
             {context?.state === "unavailable" ? (
               <p role="status">
@@ -252,6 +304,12 @@ export function HqShareSheet({
             <p className="hq-share-sheet__muted">
               Open the Team to change access.
             </p>
+            <HqSharePolicy
+              key={`${identityKey}:${project.id}`}
+              identityKey={identityKey}
+              personalProjectId={project.id}
+              projectsApi={projectsApi}
+            />
           </div>
         ) : (
           <div className="hq-share-sheet__body">
@@ -326,7 +384,10 @@ export function HqShareSheet({
               <h3>What the Team will see</h3>
               <ul>
                 <li>Project name, to-dos, and Source titles and metadata</li>
-                <li>Chat summaries only when you share them separately</li>
+                <li>
+                  Eligible captured chat summaries after your separate Native
+                  review
+                </li>
                 <li>Updates and safe Agent progress for shared to-dos</li>
               </ul>
               <p>

@@ -26,7 +26,8 @@ export const createWorkspaceProjectTransport = (input: {
     teamBackendId: string,
     family:
       | "team_workspace_read"
-      | "team_workspace_write" = "team_workspace_read"
+      | "team_workspace_write"
+      | "share_grant_management" = "team_workspace_read"
   ) => {
     const credential = readLocalEdgeClientCredentialAuthorization(
       input.koedHome,
@@ -38,10 +39,65 @@ export const createWorkspaceProjectTransport = (input: {
   };
   return {
     teamCredential,
-    async sendPersonal(path: string, init: RequestInit = { method: "GET" }) {
+    async sendProjectPolicy(
+      teamBackendId: string,
+      path: string,
+      init: RequestInit = { method: "GET" }
+    ) {
       const bound = await boundAuthority();
+      const authorization = teamCredential(
+        teamBackendId,
+        "share_grant_management"
+      );
+      const method = init.method ?? "GET";
       const remote = await fetchBoundedJson(
         input.fetch,
+        new URL("/v1/local-edge/upstream-operations", bound.apiOrigin),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            authorization
+          },
+          body: JSON.stringify({
+            operation_family: "share_grant_management",
+            upstream_backend_id: teamBackendId,
+            requested_mode: "live_upstream_proxy",
+            method,
+            path,
+            ...(method === "GET"
+              ? {}
+              : { body: JSON.parse(String(init.body ?? "{}")) })
+          })
+        },
+        { timeoutMs: 30_000, maxBytes: 8_000_000, readErrorBody: true }
+      );
+      await verifyAuthority(bound.key);
+      if (!remote.response.ok)
+        throw new WorkspaceProjectRemoteError(
+          remote.response.status,
+          "Project summary sharing request failed"
+        );
+      return remote.payload;
+    },
+    async sendPersonal(path: string, init: RequestInit = { method: "GET" }) {
+      const bound = await boundAuthority();
+      // fetchBoundedJson owns its timeout signal. For the background policy
+      // reconciler, combine that signal with Desktop stop/profile cancellation.
+      const boundedFetch: typeof input.fetch = init.signal
+        ? (((resource, requestInit) =>
+            input.fetch(resource, {
+              ...requestInit,
+              signal: AbortSignal.any([
+                requestInit?.signal ?? new AbortController().signal,
+                init.signal!
+              ])
+            })) as typeof input.fetch)
+        : input.fetch;
+      const remote = await fetchBoundedJson(
+        boundedFetch,
         new URL(path, bound.apiOrigin),
         {
           ...init,

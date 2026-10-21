@@ -33,6 +33,8 @@ import {
   createProjectApiRepository,
   createFlashcardDeckRepository,
   createWorkspaceProjectRepository,
+  createProjectSharePolicyRepository,
+  createPersonalProjectSharePolicyRepository,
   createPersonalWorkspaceProjectRepository,
   createScheduledJobRepository,
   type ScheduledJobTeamAuthority,
@@ -197,6 +199,7 @@ import {
   type WebTransportGateway
 } from "../realtime-transport/index.js";
 import { registerHighRiskRoutes } from "../high-risk/index.js";
+import { registerProjectSharePolicyRoutes } from "../shared-memory/project-share-policy-routes.js";
 import { registerSharedMemoryRoutes } from "../shared-memory/index.js";
 import { prepareSourceSyncRelationship } from "../cross-identity-sync/source-relationship-service.js";
 import { createTeamConversationSourceService } from "../team-conversation-source/index.js";
@@ -520,6 +523,15 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     : null;
   const workspaceProjectRepository = pool
     ? createWorkspaceProjectRepository(pool)
+    : null;
+  const projectSharePolicyRepository = pool
+    ? createProjectSharePolicyRepository(pool)
+    : null;
+  const personalProjectSharePolicyRepository = pool
+    ? createPersonalProjectSharePolicyRepository(
+        pool,
+        envelopeEncryptionProvider
+      )
     : null;
   const personalWorkspaceProjectRepository = pool
     ? createPersonalWorkspaceProjectRepository(pool)
@@ -2224,7 +2236,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     projectSourceRepository,
     () => void projectSourceIngestionService?.runNow(),
     flashcardDeckRepository,
-    collaborationRepository
+    collaborationRepository,
+    personalProjectSharePolicyRepository,
+    localSharedMemoryCandidatePreparation
   );
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: requireRepository,
@@ -2244,6 +2258,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
   registerHighRiskRoutes(app, {
     requireRepository,
+    projectSharePolicyRepository,
     hashSecret,
     authenticateSessionContext: authHelpers.authenticateSessionContext,
     authenticateDeviceCredential: authHelpers.authenticateDeviceCredential,
@@ -2252,6 +2267,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       deviceRead: rateLimitHandlers.memoryRead,
       deviceWrite: rateLimitHandlers.memoryWrite
     }
+  });
+  registerProjectSharePolicyRoutes(app, {
+    repository: projectSharePolicyRepository,
+    requireHighRiskRepository: requireRepository,
+    authenticateDeviceCredential: authHelpers.authenticateDeviceCredential,
+    writeRateLimit: rateLimitHandlers.memoryWrite
   });
   registerSharedMemoryRoutes(app, {
     requireSharedMemoryRepository: requireRepository,

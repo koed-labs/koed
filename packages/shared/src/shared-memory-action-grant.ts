@@ -95,6 +95,53 @@ export interface SharedMemoryActionGrantBinding {
   requestHash: string;
 }
 
+export const projectSharePolicyActionGrantBinding = (input: {
+  action:
+    | "shared_memory.project_share_policy.enable"
+    | "shared_memory.project_share_policy.revoke";
+  projectId: string;
+  teamId: string;
+  referenceId: string;
+  expectedPolicyVersion: number;
+  manifestId?: string;
+  manifestHash?: string;
+}): SharedMemoryActionGrantBinding => {
+  const enabling = input.action === "shared_memory.project_share_policy.enable";
+  if (enabling !== Boolean(input.manifestId && input.manifestHash))
+    throw new TypeError("Exact Project share policy manifest binding required");
+  const path = `/v1/workspace-projects/${input.projectId}/share-policy/${enabling ? "enable" : "revoke"}`;
+  const body = enabling
+    ? {
+        expectedPolicyVersion: input.expectedPolicyVersion,
+        manifestId: input.manifestId,
+        manifestHash: input.manifestHash,
+        authority: authorityBody(input.referenceId)
+      }
+    : {
+        expectedPolicyVersion: input.expectedPolicyVersion,
+        authority: authorityBody(input.referenceId)
+      };
+  return {
+    operationFamily: "share_grant_management",
+    action: input.action,
+    teamId: input.teamId,
+    targetId: input.projectId,
+    method: "POST",
+    path,
+    body,
+    scopeHash: sharedMemoryGrantManagementScopeHash({
+      action: input.action,
+      teamId: input.teamId,
+      targetId: input.projectId
+    }),
+    requestHash: sharedMemoryGrantManagementRequestHash({
+      method: "POST",
+      path,
+      body
+    })
+  };
+};
+
 export const sourceAdmissionActionGrantBinding = (input: {
   referenceId: string;
   source: SharedMemorySourceRef;
@@ -289,6 +336,7 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
   logicalMemoryId: string;
   teamId: string;
   teamWorkspaceId: string;
+  workspaceProjectId?: string;
   previewId: string;
   previewRevision: number;
   previewHash: string;
@@ -315,6 +363,9 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
       logicalMemoryId: input.logicalMemoryId,
       teamId: input.teamId,
       teamWorkspaceId: input.teamWorkspaceId,
+      ...(input.workspaceProjectId
+        ? { workspaceProjectId: input.workspaceProjectId }
+        : {}),
       preview: {
         previewId: input.previewId,
         previewHash: input.previewHash

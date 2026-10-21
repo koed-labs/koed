@@ -11,6 +11,7 @@ import type {
   SourceRuntime,
   Visibility
 } from "./types.js";
+import { stampManagedPolicyCapture } from "./managed-policy-capture.js";
 
 export interface CapturedSessionRepository {
   restoreTrashedCapturedSession(
@@ -972,6 +973,12 @@ export const createCapturedSessionRepository = (
         );
       }
       await ensureCapturedSessionLogicalMemory(client, actor.userId, row.id);
+      if (input.logicalSessionId)
+        await stampManagedPolicyCapture(
+          client,
+          actor.userId,
+          input.logicalSessionId
+        );
       if (ownsTransaction) {
         await client.query("commit");
       }

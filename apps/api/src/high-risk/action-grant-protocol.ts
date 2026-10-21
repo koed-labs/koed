@@ -58,7 +58,10 @@ import {
   bindSharedMemoryRevokeOperation,
   bindSharedMemoryFreezeOperation
 } from "./shared-memory-action-definitions.js";
-import { sourceAdmissionActionGrantBinding } from "@koed/shared";
+import {
+  sourceAdmissionActionGrantBinding,
+  projectSharePolicyActionGrantBinding
+} from "@koed/shared";
 import {
   bindConversationSourceDiscoveryOperation,
   bindConversationSourceDownloadOperation,
@@ -325,6 +328,7 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       logicalMemoryId: uuidSchema,
       teamId: uuidSchema,
       teamWorkspaceId: uuidSchema,
+      workspaceProjectId: uuidSchema.optional(),
       consentId: uuidSchema,
       previewId: uuidSchema,
       mode: createPendingShareSchema.shape.mode,
@@ -333,6 +337,24 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       previewRevision: z.number().int().safe().positive(),
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       expiresAt: z.string().datetime({ offset: true }).nullable()
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("shared_memory.project_share_policy.enable"),
+      teamId: uuidSchema,
+      projectId: uuidSchema,
+      expectedPolicyVersion: z.number().int().nonnegative(),
+      manifestId: uuidSchema,
+      manifestHash: z.string().regex(/^[0-9a-f]{64}$/)
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("shared_memory.project_share_policy.revoke"),
+      teamId: uuidSchema,
+      projectId: uuidSchema,
+      expectedPolicyVersion: z.number().int().positive()
     })
     .strict(),
   z
@@ -658,6 +680,22 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
   switch (intent.intent) {
     case "collaboration.create_team":
       return { action: "team.create", body: { name: intent.name } };
+    case "collaboration.project_share_policy_enable":
+      return {
+        action: "shared_memory.project_share_policy.enable",
+        teamId: intent.teamId,
+        projectId: intent.projectId,
+        expectedPolicyVersion: intent.expectedPolicyVersion,
+        manifestId: intent.manifestId,
+        manifestHash: intent.manifestHash
+      };
+    case "collaboration.project_share_policy_revoke":
+      return {
+        action: "shared_memory.project_share_policy.revoke",
+        teamId: intent.teamId,
+        projectId: intent.projectId,
+        expectedPolicyVersion: intent.expectedPolicyVersion
+      };
     case "collaboration.join_team": {
       const inviteToken = invitationTokenFromUrl(
         backendBaseUrl,
@@ -814,6 +852,9 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             logicalMemoryId: intent.logicalMemoryId,
             teamId: intent.teamId,
             teamWorkspaceId: intent.workspaceId,
+            ...(intent.workspaceProjectId
+              ? { workspaceProjectId: intent.workspaceProjectId }
+              : {}),
             consentId: intent.consentId,
             previewId: resolved.sharedMemoryPreviewId,
             mode: intent.mode,
@@ -1033,6 +1074,18 @@ export const resolveHighRiskActionGrantOperation = (input: {
       return bindSharedMemoryCandidatePreviewOperation(intent, clientRequestId);
     case "shared_memory.pending_share":
       return bindSharedMemoryPendingShareOperation(intent, clientRequestId);
+    case "shared_memory.project_share_policy.enable":
+    case "shared_memory.project_share_policy.revoke":
+      return projectSharePolicyActionGrantBinding({
+        action: intent.action,
+        teamId: intent.teamId,
+        projectId: intent.projectId,
+        referenceId: clientRequestId,
+        expectedPolicyVersion: intent.expectedPolicyVersion,
+        ...(intent.action === "shared_memory.project_share_policy.enable"
+          ? { manifestId: intent.manifestId, manifestHash: intent.manifestHash }
+          : {})
+      });
     case "shared_memory.revoke":
       return bindSharedMemoryRevokeOperation(intent, clientRequestId);
     case "shared_memory.grant.freeze":

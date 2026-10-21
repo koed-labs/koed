@@ -12,6 +12,7 @@ import {
   type ManagedConversationFileOperationResult
 } from "@koed/shared";
 import pg from "pg";
+import { stampManagedPolicyCapture } from "./managed-policy-capture.js";
 import {
   appendProjectActivityWithClient,
   decodeProjectActivityCursor
@@ -3003,6 +3004,29 @@ export const createManagedConversationRepository = (
             input.hqPrivatePath ?? null
           ]
         );
+        // The selected Personal Project is trusted before any source write.
+        // Snapshot only this new non-HQ execution; resuming it cannot mint a
+        // policy capture proof after the fact.
+        if (!input.hqProjectId)
+          await client.query(
+            `update managed_conversation_executions execution
+              set share_policy_capture_version=project.project_share_policy_version,
+                  share_policy_capture_workspace_project_id=project.workspace_project_id,
+                  share_policy_capture_device_credential_id=project.project_share_policy_device_credential_id,
+                  share_policy_capture_link_epoch=project.share_policy_link_epoch,
+                  share_policy_capture_prepared_at=execution.created_at
+             from projects project
+            where execution.id=$1 and execution.owner_user_id=$2
+              and execution.project_id=project.id::text
+              and project.owner_user_id=$2 and project.lifecycle='active'
+              and project.deletion_phase is null
+              and project.project_share_policy_version is not null
+              and project.project_share_policy_device_credential_id is not null
+              and project.team_backend_id is not null
+              and project.workspace_project_id is not null
+              and execution.share_policy_capture_version is null`,
+            [executionId, actor.userId]
+          );
         const encryptedPayload = input.initialPrompt
           ? await encryptPrompt({
               ownerUserId: actor.userId,
@@ -6195,6 +6219,11 @@ export const createManagedConversationRepository = (
             409
           );
         }
+        await stampManagedPolicyCapture(
+          client,
+          actor.userId,
+          input.logicalSessionId
+        );
         await appendManagedConversationEvent(client, {
           ownerUserId: actor.userId,
           executionId: input.executionId,

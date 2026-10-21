@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
@@ -20,6 +20,8 @@ import {
   crossIdentitySyncDeterministicUuid,
   personalNoteSourceRevisionHash,
   sharedMemoryGrantScopedSourceId,
+  sharedMemoryCandidatePreviewActionGrantBinding,
+  sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryRepresentationsForCeiling,
   extractSharedMemorySemanticClassificationFields,
   reconstructSharedMemorySemanticSanitizedItems,
@@ -64,6 +66,7 @@ import {
 import { createTeamConversationSourceRepository } from "../src/team-conversation-source-repository.js";
 import { createSavepointPool } from "../src/savepoint-pool.js";
 import { createMemorySourceRepository } from "../src/repository.js";
+import { createProjectSharePolicyRepository } from "../src/project-share-policy-repository.js";
 import { createCuratedMemoryRepository } from "../src/curated-memory-repository.js";
 import { upsertEncryptedFieldPayloadWithClient } from "../src/encrypted-payload-repository.js";
 import {
@@ -8098,6 +8101,790 @@ describeDb("Shared Memory repository", () => {
     expect(pendingIds).toHaveLength(3);
   });
 
+  it("publishes an exact Project policy summary to a teammate but blocks a private source before activation", async () => {
+    const fixture = await createWorkspaceFixture({
+      teamAllowed: ["lcm_leaves", "lcm_rollups"],
+      workspaceAllowed: ["lcm_leaves", "lcm_rollups"]
+    });
+    const available = await createSource(fixture, 1, "policy-publication");
+    const privateSource = await createSource(fixture, 1, "policy-private-race");
+    await putOwnerPolicy(fixture, available, ["lcm_leaves", "lcm_rollups"]);
+    await putOwnerPolicy(fixture, privateSource, ["lcm_leaves", "lcm_rollups"]);
+    const memberships = await pool.query<{ id: string; user_id: string }>(
+      `select id,user_id from team_memberships
+        where team_id=$1 and user_id=any($2::uuid[])`,
+      [fixture.teamId, [fixture.ownerUserId, fixture.readerUserId]]
+    );
+    const ownerMemberId = memberships.rows.find(
+      (row) => row.user_id === fixture.ownerUserId
+    )?.id;
+    const readerMemberId = memberships.rows.find(
+      (row) => row.user_id === fixture.readerUserId
+    )?.id;
+    if (!ownerMemberId || !readerMemberId)
+      throw new Error("Project policy fixture members unavailable");
+    const device = await pool.query<{ upstream_backend_id: string }>(
+      `select upstream_backend_id from device_credentials where id=$1`,
+      [fixture.deviceCredentialId]
+    );
+    const upstreamBackendId = device.rows[0]?.upstream_backend_id;
+    if (!upstreamBackendId)
+      throw new Error("Project policy fixture device unavailable");
+    const projectId = randomUUID();
+    await pool.query(
+      `insert into workspace_projects
+       (id,team_id,workspace_id,owner_team_member_id,name,key,share_attempt_key)
+       values ($1,$2,$3,$4,'Policy summary','POLICY',$5)`,
+      [
+        projectId,
+        fixture.teamId,
+        fixture.teamWorkspaceId,
+        ownerMemberId,
+        `policy-publication-${randomUUID()}`
+      ]
+    );
+    await pool.query(
+      `insert into workspace_project_members
+       (workspace_project_id,team_member_id,access)
+       values ($1,$2,'write'),($1,$3,'read')`,
+      [projectId, ownerMemberId, readerMemberId]
+    );
+    const policy = createProjectSharePolicyRepository(pool);
+    const policyActor = {
+      userId: fixture.ownerUserId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId
+    };
+    const bindingHash = hash(`policy-binding:${projectId}`);
+    const signingPublicKey = generateKeyPairSync("ed25519")
+      .publicKey.export({ type: "spki", format: "der" })
+      .toString("base64");
+    const entries = [available, privateSource].map((source) => ({
+      sessionId: source.sessionId,
+      logicalMemoryId: source.logicalMemoryId,
+      sourceRevision: source.currentRevision,
+      mappingRevision: 1,
+      reviewLabel: `${source.currentLabel} captured chat`
+    }));
+    const manifest = await policy.prepareInitialManifest(policyActor, {
+      projectId,
+      expectedPolicyVersion: 0,
+      personalProjectBindingHash: bindingHash,
+      signingPublicKey,
+      entries
+    });
+    const enabled = await policy.enable(policyActor, {
+      projectId,
+      expectedPolicyVersion: 0,
+      manifestId: manifest.manifestId,
+      manifestHash: manifest.manifestHash,
+      signingPublicKey,
+      currentEntries: entries
+    });
+    expect(enabled.version).toBe(1);
+    expect(enabled.eligible.map((entry) => entry.sessionId).sort()).toEqual(
+      entries.map((entry) => entry.sessionId).sort()
+    );
+    const stage = (source: SourceFixture) =>
+      policy.stageInitialBundle(policyActor, {
+        projectId,
+        expectedPolicyVersion: 1,
+        personalProjectBindingHash: bindingHash,
+        sessionId: source.sessionId,
+        mappingRevision: 1,
+        candidate: {
+          ...capturedSourceBinding(source, "lcm_leaves", [
+            "lcm_leaves",
+            "lcm_rollups"
+          ]),
+          logicalMemoryId: source.logicalMemoryId,
+          candidateHash: hash(`policy-candidate:${source.logicalMemoryId}`),
+          sourceRevision: source.currentRevision,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(source, "lcm_leaves"),
+          byteCount: 128
+        }
+      });
+    const positive = await stage(available);
+    expect(positive.state).toBe("staged");
+    if (positive.state !== "staged")
+      throw new Error("Expected policy Pending Share to stage");
+    const published = await processPendingSharesAfterPrivacy(
+      positive.pendingShareId,
+      { ensureCompanion: ensurePendingShareCompanion }
+    );
+    expect(published.activated).toBeGreaterThan(0);
+    const issued = await policy.getIssueStatus(policyActor, {
+      projectId,
+      sessionId: available.sessionId,
+      policyVersion: 1
+    });
+    expect(issued).toMatchObject({
+      state: "activated",
+      pendingShareId: positive.pendingShareId
+    });
+    if (!issued.shareGrantId)
+      throw new Error("Activated policy grant unavailable");
+    const publishedGrant = await pool.query<{
+      maximum_fidelity: string;
+      include_curated_memory: boolean;
+    }>(
+      `select maximum_fidelity,include_curated_memory
+         from team_memory_share_grants where id=$1`,
+      [issued.shareGrantId]
+    );
+    expect(publishedGrant.rows[0]).toEqual({
+      maximum_fidelity: "lcm_leaves",
+      include_curated_memory: false
+    });
+    const teammateRead = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId: issued.shareGrantId, representation: "lcm_leaves" }
+    );
+    expect(JSON.stringify(teammateRead?.items)).toContain(
+      available.leaf.summaryText
+    );
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: issued.shareGrantId,
+        representation: "memory_events"
+      })
+    ).resolves.toBeNull();
+    const positiveSourceAccess = await pool.query<{ count: string }>(
+      `select count(*)::text as count from team_conversation_source_grants
+        where share_grant_id=$1`,
+      [issued.shareGrantId]
+    );
+    expect(positiveSourceAccess.rows[0]?.count).toBe("0");
+
+    const raced = await stage(privateSource);
+    expect(raced.state).toBe("staged");
+    if (raced.state !== "staged")
+      throw new Error("Expected private-race Pending Share to stage");
+    await expect(
+      repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion
+      })
+    ).resolves.toMatchObject({ activated: 0, waiting: 1 });
+    const preparing = await pool.query<{ grant_id: string }>(
+      `select grant_id from pending_share_operations
+        where id=$1 and state='preparing' and stage='privacy_filtering'`,
+      [raced.pendingShareId]
+    );
+    const racedGrantId = preparing.rows[0]?.grant_id;
+    if (!racedGrantId)
+      throw new Error("Expected private-race grant to await privacy filtering");
+    const targets = await repository.listPendingSemanticPrivacyTargets({
+      shareGrantId: racedGrantId,
+      limit: 100
+    });
+    expect(targets.length).toBeGreaterThan(0);
+    for (const target of targets)
+      await prepareSanitizedSemanticPreview(target.ownerUserId, {
+        previewId: target.sourcePreviewId
+      });
+    await expect(
+      policy.excludeSession(policyActor, {
+        projectId,
+        sessionId: privateSource.sessionId,
+        expectedPolicyVersion: 1
+      })
+    ).resolves.toMatchObject({ blocked: true, withdrawalRequired: false });
+    await pool.query(
+      `update pending_share_outbox outbox set available_at=now()
+        from pending_share_operations pending
+       where pending.id=outbox.pending_share_id and pending.id=$1`,
+      [raced.pendingShareId]
+    );
+    const denied = await repository.processPendingShares({
+      ensureCompanion: ensurePendingShareCompanion
+    });
+    expect(denied.activated).toBe(0);
+    await expect(
+      policy.getIssueStatus(policyActor, {
+        projectId,
+        sessionId: privateSource.sessionId,
+        policyVersion: 1
+      })
+    ).resolves.toMatchObject({ state: "blocked", shareGrantId: null });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: racedGrantId,
+        representation: "lcm_leaves"
+      })
+    ).resolves.toBeNull();
+    const teamIndex = await repository.listWorkspaceGrants(
+      actor(fixture.readerUserId),
+      {
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        limit: 10,
+        offset: 0
+      }
+    );
+    expect(teamIndex.entries).toEqual([
+      expect.objectContaining({
+        shareGrantId: issued.shareGrantId,
+        activeRepresentation: "lcm_leaves",
+        lifecycle: "active"
+      })
+    ]);
+    const blockedPublication = await pool.query<{
+      available: string;
+      active: string;
+      vectors: string;
+      source_access: string;
+      curated: string;
+    }>(
+      `select
+         (select count(*)::text from team_memory_representations
+            where share_grant_id=$1 and state='available') as available,
+         (select count(*)::text from team_memory_share_grants
+            where id=$1 and lifecycle='active') as active,
+         (select count(*)::text from team_memory_semantic_vectors_384 vector_row
+            join team_memory_semantic_items item
+              on item.id=vector_row.semantic_item_id
+           where item.share_grant_id=$1) as vectors,
+         (select count(*)::text from team_conversation_source_grants
+           where share_grant_id=$1) as source_access,
+         (select count(*)::text from team_memory_semantic_items item
+            join team_memory_representations representation
+              on representation.id=item.representation_id
+           where item.share_grant_id=$1
+             and representation.representation='curated_assertions') as curated`,
+      [racedGrantId]
+    );
+    expect(blockedPublication.rows[0]).toEqual({
+      available: "0",
+      active: "0",
+      vectors: "0",
+      source_access: "0",
+      curated: "0"
+    });
+
+    await expect(
+      policy.revoke(policyActor, { projectId, expectedPolicyVersion: 1 })
+    ).resolves.toMatchObject({ version: 2 });
+    await seedAuthoritativeSourceRevision(
+      fixture,
+      available,
+      2,
+      "policy-publication-next"
+    );
+    const advanced = await repository.advanceContinuousGrantRepresentations({
+      remoteReplicaId: available.remoteReplicaId,
+      sourceRevision: 2
+    });
+    expect(advanced.advanced).toBeGreaterThan(0);
+    await flushSanitizedSemanticPublication();
+    const afterPolicyRevoke = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId: issued.shareGrantId, representation: "lcm_leaves" }
+    );
+    expect(afterPolicyRevoke?.representation).toMatchObject({
+      sourceRevision: 2,
+      state: "available"
+    });
+    expect(JSON.stringify(afterPolicyRevoke?.items)).toContain(
+      "policy-publication-next"
+    );
+    const originalGrantAfterRevoke = await pool.query<{
+      lifecycle: string;
+      revoked_at: Date | null;
+    }>(
+      `select lifecycle,revoked_at from team_memory_share_grants where id=$1`,
+      [issued.shareGrantId]
+    );
+    expect(originalGrantAfterRevoke.rows[0]).toEqual({
+      lifecycle: "active",
+      revoked_at: null
+    });
+
+    // Make private withdraws this one Project-bound grant. A later explicit
+    // Native decision must create a new Pending Share, never revive it.
+    const excluded = await policy.excludeSession(policyActor, {
+      projectId,
+      sessionId: available.sessionId,
+      expectedPolicyVersion: 2
+    });
+    expect(excluded).toMatchObject({
+      blocked: true,
+      withdrawalRequired: true,
+      withdrawalTarget: { shareGrantId: issued.shareGrantId }
+    });
+    if (!excluded.withdrawalTarget)
+      throw new Error("Exact Project grant withdrawal target unavailable");
+    await repository.revokeShareGrant(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      shareGrantId: excluded.withdrawalTarget.shareGrantId,
+      expectedGrantVersion: excluded.withdrawalTarget.grantVersion,
+      reasonCode: "owner_withdrawal",
+      authority: authority(fixture)
+    });
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: issued.shareGrantId,
+        representation: "lcm_leaves"
+      })
+    ).resolves.toBeNull();
+    const oldCompanion = await pool.query<{
+      id: string;
+      share_grant_id: string;
+    }>(
+      `select id,share_grant_id from collaboration_threads
+        where share_grant_id=$1 and kind='shared_session_discussion'`,
+      [issued.shareGrantId]
+    );
+    expect(oldCompanion.rows).toHaveLength(1);
+    await expect(
+      collaboration.getThread(actor(fixture.readerUserId), {
+        threadId: oldCompanion.rows[0]!.id
+      })
+    ).resolves.toBeNull();
+
+    const actionGrant = createHighRiskActionRepository(createDb(pool), {
+      pool,
+      envelopeEncryptionProvider: provider,
+      teamEnvelopeEncryptionProvider: provider
+    });
+    const sourceBinding = capturedSourceBinding(available, "lcm_leaves", [
+      "lcm_leaves",
+      "lcm_rollups"
+    ]);
+    const previewClientRequestId = randomUUID();
+    const candidateHash = hash(`manual-project-candidate:${randomUUID()}`);
+    const candidateInput = {
+      ...sourceBinding,
+      logicalMemoryId: available.logicalMemoryId,
+      candidateHash,
+      sourceRevision: available.currentRevision,
+      itemCount: 1,
+      excludedItemCount: 0,
+      manifest: candidateManifest(available, "lcm_leaves"),
+      byteCount: 128,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      maximumFidelity: "lcm_leaves" as const,
+      includeCuratedMemory: false,
+      mode: "continuous" as const
+    };
+    const previewBinding = sharedMemoryCandidatePreviewActionGrantBinding({
+      referenceId: previewClientRequestId,
+      source: sourceBinding.source,
+      sourceDeploymentProtocolId: sourceBinding.sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId: sourceBinding.sourceOwnerPrincipalId,
+      sourceCapabilities: sourceBinding.sourceCapabilities,
+      activationRepresentation: "lcm_leaves",
+      logicalMemoryId: available.logicalMemoryId,
+      candidateHash,
+      sourceRevision: available.currentRevision,
+      itemCount: 1,
+      excludedItemCount: 0,
+      manifest: candidateInput.manifest,
+      byteCount: 128,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      maximumFidelity: "lcm_leaves",
+      includeCuratedMemory: false,
+      mode: "continuous"
+    });
+    const previewOperation = {
+      ownerUserId: fixture.ownerUserId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId,
+      teamId: previewBinding.teamId,
+      operationFamily: previewBinding.operationFamily,
+      action: previewBinding.action,
+      targetId: previewBinding.targetId,
+      scopeHash: previewBinding.scopeHash,
+      requestHash: previewBinding.requestHash
+    };
+    const previewSecret = `hrg_${randomUUID().replaceAll("-", "")}`;
+    const previewIssued = await actionGrant.createActionGrant({
+      ...previewOperation,
+      clientRequestId: previewClientRequestId,
+      grantCommitment: highRiskActionGrantCommitment(previewSecret),
+      credentialOperationFamily: "share_grant_management",
+      approvalTier: "native_review",
+      review: {
+        version: 1,
+        title: "Preview exact Project summary?",
+        description: "Prepare only the captured summary candidate.",
+        consequence: "No Team summary is published by this preview.",
+        confirmLabel: "Prepare summary",
+        details: []
+      }
+    });
+    expect(previewIssued?.state).toBe("pending");
+    await actionGrant.decideNativeActionReview({
+      clientRequestId: previewClientRequestId,
+      ownerUserId: fixture.ownerUserId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId,
+      decision: "approve"
+    });
+    const previewReceipt = await actionGrant.executeActionGrant({
+      ...previewOperation,
+      actionGrant: previewSecret,
+      approvedRequest: {
+        method: previewBinding.method,
+        path: previewBinding.path,
+        body: previewBinding.body
+      },
+      execute: async ({ sharedMemory }) => {
+        const preview = await sharedMemory.createSharedMemoryCandidatePreview(
+          actor(fixture.ownerUserId),
+          {
+            ...candidateInput,
+            authority: {
+              action: SHARED_MEMORY_AUTHORITY,
+              source: "device_action_grant",
+              referenceId: previewClientRequestId
+            }
+          }
+        );
+        return preview ? { statusCode: 200, body: preview } : null;
+      }
+    });
+    const manualPreview = previewReceipt?.body;
+    if (!manualPreview)
+      throw new Error("Native Project summary preview unavailable");
+    const pendingClientRequestId = randomUUID();
+    const mutationId = randomUUID();
+    const logicalGrantId = randomUUID();
+    const consentId = randomUUID();
+    const pendingBinding = sharedMemoryPendingShareActionGrantBinding({
+      referenceId: pendingClientRequestId,
+      source: sourceBinding.source,
+      sourceCapabilities: sourceBinding.sourceCapabilities,
+      activationRepresentation: "lcm_leaves",
+      mutationId,
+      logicalGrantId,
+      consentId,
+      logicalMemoryId: available.logicalMemoryId,
+      teamId: fixture.teamId,
+      teamWorkspaceId: fixture.teamWorkspaceId,
+      workspaceProjectId: projectId,
+      previewId: manualPreview.previewId,
+      previewHash: manualPreview.previewHash,
+      previewRevision: manualPreview.previewRevision,
+      mode: "continuous",
+      maximumFidelity: "lcm_leaves",
+      includeCuratedMemory: false
+    });
+    const pendingOperation = {
+      ownerUserId: fixture.ownerUserId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId,
+      teamId: pendingBinding.teamId,
+      operationFamily: pendingBinding.operationFamily,
+      action: pendingBinding.action,
+      targetId: pendingBinding.targetId,
+      scopeHash: pendingBinding.scopeHash,
+      requestHash: pendingBinding.requestHash
+    };
+    const pendingSecret = `hrg_${randomUUID().replaceAll("-", "")}`;
+    const pendingIssued = await actionGrant.createActionGrant({
+      ...pendingOperation,
+      clientRequestId: pendingClientRequestId,
+      grantCommitment: highRiskActionGrantCommitment(pendingSecret),
+      credentialOperationFamily: "share_grant_management",
+      approvalTier: "native_review",
+      review: {
+        version: 1,
+        title: "Share this Project chat summary again?",
+        description: "Share only this captured chat summary with the Team.",
+        consequence: "A new grant will publish a continuous summary.",
+        confirmLabel: "Share summary",
+        details: []
+      }
+    });
+    expect(pendingIssued?.state).toBe("pending");
+    await actionGrant.decideNativeActionReview({
+      clientRequestId: pendingClientRequestId,
+      ownerUserId: fixture.ownerUserId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId,
+      decision: "approve"
+    });
+    const pendingReceipt = await actionGrant.executeActionGrant({
+      ...pendingOperation,
+      actionGrant: pendingSecret,
+      approvedRequest: {
+        method: pendingBinding.method,
+        path: pendingBinding.path,
+        body: pendingBinding.body
+      },
+      execute: async ({ sharedMemory }) => {
+        const pending = await sharedMemory.createPendingShare(
+          actor(fixture.ownerUserId),
+          {
+            mutationId,
+            logicalGrantId,
+            consentId,
+            source: sourceBinding.source,
+            sourceCapabilities: sourceBinding.sourceCapabilities,
+            activationRepresentation: "lcm_leaves",
+            logicalMemoryId: available.logicalMemoryId,
+            teamId: fixture.teamId,
+            teamWorkspaceId: fixture.teamWorkspaceId,
+            workspaceProjectId: projectId,
+            preview: {
+              previewId: manualPreview.previewId,
+              previewHash: manualPreview.previewHash
+            },
+            previewRevision: manualPreview.previewRevision,
+            mode: "continuous",
+            maximumFidelity: "lcm_leaves",
+            includeCuratedMemory: false,
+            authority: {
+              action: SHARED_MEMORY_AUTHORITY,
+              source: "device_action_grant",
+              referenceId: pendingClientRequestId
+            }
+          }
+        );
+        return { statusCode: 200, body: pending };
+      }
+    });
+    const manualPending = pendingReceipt?.body;
+    if (!manualPending)
+      throw new Error("Native Project Pending Share unavailable");
+    // Revision 2 already has a sanitized derivative from the original grant,
+    // so the fresh Native-approved Pending Share can activate immediately.
+    const manualPublication = await repository.processPendingShares({
+      ensureCompanion: ensurePendingShareCompanion
+    });
+    expect(manualPublication).toMatchObject({
+      claimed: 1,
+      activated: 1,
+      waiting: 0,
+      failed: 0
+    });
+    const manuallyBound = await pool.query<{
+      share_grant_id: string;
+      workspace_project_id: string;
+    }>(
+      `select binding.share_grant_id,binding.workspace_project_id
+         from workspace_project_share_grant_bindings binding
+         join pending_share_operations pending
+           on pending.grant_id=binding.share_grant_id
+        where pending.id=$1`,
+      [manualPending.id]
+    );
+    expect(manuallyBound.rows).toHaveLength(1);
+    const newGrantId = manuallyBound.rows[0]!.share_grant_id;
+    expect(newGrantId).not.toBe(issued.shareGrantId);
+    expect(manuallyBound.rows[0]!.workspace_project_id).toBe(projectId);
+    const newCompanion = await pool.query<{
+      id: string;
+      share_grant_id: string;
+    }>(
+      `select id,share_grant_id from collaboration_threads
+        where share_grant_id=$1 and kind='shared_session_discussion'`,
+      [newGrantId]
+    );
+    expect(newCompanion.rows).toHaveLength(1);
+    expect(newCompanion.rows[0]!.id).not.toBe(oldCompanion.rows[0]!.id);
+    expect(newCompanion.rows[0]!.share_grant_id).toBe(newGrantId);
+    await expect(
+      collaboration.getThread(actor(fixture.readerUserId), {
+        threadId: newCompanion.rows[0]!.id
+      })
+    ).resolves.toMatchObject({ id: newCompanion.rows[0]!.id });
+    await expect(
+      collaboration.getThread(actor(fixture.readerUserId), {
+        threadId: oldCompanion.rows[0]!.id
+      })
+    ).resolves.toBeNull();
+    const afterManual = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId: newGrantId, representation: "lcm_leaves" }
+    );
+    expect(afterManual?.representation).toMatchObject({
+      representation: "lcm_leaves",
+      state: "available"
+    });
+    const oldAfterManual = await pool.query<{ lifecycle: string }>(
+      `select lifecycle from team_memory_share_grants where id=$1`,
+      [issued.shareGrantId]
+    );
+    expect(oldAfterManual.rows[0]?.lifecycle).toBe("revoked");
+  });
+
+  it("refuses Bundled admission that would replace a richer source-wide policy or another Workspace grant", async () => {
+    const fixture = await createWorkspaceFixture();
+    const rich = await createGrant(fixture, {
+      representation: "memory_events",
+      ownerAllowed: allRepresentations,
+      label: "rich-other-workspace"
+    });
+    await materialize(fixture, rich);
+    const before = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId: rich.shareGrantId, representation: "memory_events" }
+    );
+    expect(before?.representation).toMatchObject({
+      representation: "memory_events",
+      state: "available"
+    });
+    const otherWorkspace = await pool.query<{ id: string }>(
+      `insert into team_workspaces(team_id,name) values ($1,$2) returning id`,
+      [fixture.teamId, `Policy destination ${randomUUID()}`]
+    );
+    const policyWorkspaceId = otherWorkspace.rows[0]!.id;
+    await pool.query(
+      `insert into team_workspace_access_grants
+       (team_workspace_id,team_id,user_id,access,can_share_owned_memory,granted_by_user_id)
+       values ($1,$2,$3,'write',true,$3),($1,$2,$4,'read',false,$3)`,
+      [
+        policyWorkspaceId,
+        fixture.teamId,
+        fixture.ownerUserId,
+        fixture.readerUserId
+      ]
+    );
+    await repository.putWorkspacePolicy(actor(fixture.ownerUserId), {
+      mutationId: randomUUID(),
+      teamId: fixture.teamId,
+      teamWorkspaceId: policyWorkspaceId,
+      expectedCurrentVersion: 0,
+      ...fidelityConsent(allRepresentations)
+    });
+    const members = await pool.query<{ id: string; user_id: string }>(
+      `select id,user_id from team_memberships
+         where team_id=$1 and user_id=any($2::uuid[])`,
+      [fixture.teamId, [fixture.ownerUserId, fixture.readerUserId]]
+    );
+    const ownerMemberId = members.rows.find(
+      ({ user_id }) => user_id === fixture.ownerUserId
+    )?.id;
+    const readerMemberId = members.rows.find(
+      ({ user_id }) => user_id === fixture.readerUserId
+    )?.id;
+    if (!ownerMemberId || !readerMemberId)
+      throw new Error("Policy destination members unavailable");
+    const projectId = randomUUID();
+    await pool.query(
+      `insert into workspace_projects
+       (id,team_id,workspace_id,owner_team_member_id,name,key,share_attempt_key)
+       values ($1,$2,$3,$4,'Other workspace policy','OTHER',$5)`,
+      [
+        projectId,
+        fixture.teamId,
+        policyWorkspaceId,
+        ownerMemberId,
+        `rich-policy-${randomUUID()}`
+      ]
+    );
+    await pool.query(
+      `insert into workspace_project_members(workspace_project_id,team_member_id,access)
+       values ($1,$2,'write'),($1,$3,'read')`,
+      [projectId, ownerMemberId, readerMemberId]
+    );
+    const device = await pool.query<{ upstream_backend_id: string }>(
+      `select upstream_backend_id from device_credentials where id=$1`,
+      [fixture.deviceCredentialId]
+    );
+    const upstreamBackendId = device.rows[0]?.upstream_backend_id;
+    if (!upstreamBackendId)
+      throw new Error("Project policy device unavailable");
+    const policy = createProjectSharePolicyRepository(pool);
+    const policyActor = {
+      userId: fixture.ownerUserId,
+      deviceCredentialId: fixture.deviceCredentialId,
+      upstreamBackendId
+    };
+    const bindingHash = hash(`rich-policy:${projectId}`);
+    const signingPublicKey = generateKeyPairSync("ed25519")
+      .publicKey.export({ type: "spki", format: "der" })
+      .toString("base64");
+    const entries = [
+      {
+        sessionId: rich.sessionId,
+        logicalMemoryId: rich.logicalMemoryId,
+        sourceRevision: rich.currentRevision,
+        mappingRevision: 1,
+        reviewLabel: "Rich source captured chat"
+      }
+    ];
+    const manifest = await policy.prepareInitialManifest(policyActor, {
+      projectId,
+      expectedPolicyVersion: 0,
+      personalProjectBindingHash: bindingHash,
+      signingPublicKey,
+      entries
+    });
+    await policy.enable(policyActor, {
+      projectId,
+      expectedPolicyVersion: 0,
+      manifestId: manifest.manifestId,
+      manifestHash: manifest.manifestHash,
+      signingPublicKey,
+      currentEntries: entries
+    });
+    await expect(
+      policy.stageInitialBundle(policyActor, {
+        projectId,
+        expectedPolicyVersion: 1,
+        personalProjectBindingHash: bindingHash,
+        sessionId: rich.sessionId,
+        mappingRevision: 1,
+        candidate: {
+          ...capturedSourceBinding(rich, "lcm_leaves", allRepresentations),
+          logicalMemoryId: rich.logicalMemoryId,
+          candidateHash: hash(`rich-policy-candidate:${rich.logicalMemoryId}`),
+          sourceRevision: rich.currentRevision,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(rich, "lcm_leaves"),
+          byteCount: 128
+        }
+      })
+    ).rejects.toThrow(
+      "Existing source-wide representation policy needs separate review"
+    );
+    const ownerPolicy = await pool.query<{
+      version: number;
+      maximum_fidelity: string;
+      include_curated_memory: boolean;
+    }>(
+      `select version,maximum_fidelity,include_curated_memory
+         from source_owner_representation_policies
+        where logical_memory_id=$1 and source_owner_principal_id=$2
+          and superseded_at is null`,
+      [rich.logicalMemoryId, fixture.sourceOwnerPrincipalId]
+    );
+    expect(ownerPolicy.rows).toEqual([
+      {
+        version: 1,
+        maximum_fidelity: "memory_events",
+        include_curated_memory: false
+      }
+    ]);
+    const stillReadable = await repository.readGrantRepresentation(
+      actor(fixture.readerUserId),
+      { shareGrantId: rich.shareGrantId, representation: "memory_events" }
+    );
+    expect(stillReadable?.items).toEqual(before?.items);
+    const otherWorkspaceGrants = await repository.listWorkspaceGrants(
+      actor(fixture.readerUserId),
+      {
+        teamId: fixture.teamId,
+        teamWorkspaceId: policyWorkspaceId,
+        limit: 10,
+        offset: 0
+      }
+    );
+    expect(otherWorkspaceGrants.entries).toEqual([]);
+    const existingGrant = await pool.query<{ lifecycle: string }>(
+      `select lifecycle from team_memory_share_grants where id=$1`,
+      [rich.shareGrantId]
+    );
+    expect(existingGrant.rows[0]?.lifecycle).toBe("active");
+  });
+
   it("surfaces a stalled Pending Share and resumes it idempotently after worker restart", async () => {
     const fixture = await createWorkspaceFixture();
     const source = await createSource(fixture, 1, "pending-retry");
@@ -11909,6 +12696,55 @@ describeDb("Shared Memory repository", () => {
       null,
       "unscoped"
     );
+    const workItem = await pool.query<{ id: string }>(
+      `insert into project_work_items (
+         owner_user_id,project_id,kind,title,goal,origin,
+         creation_payload_hash,created_by
+       ) values ($1,$2,'todo','Non-Conversation evidence',
+         'Must stay Personal','manual',$3,$1) returning id`,
+      [fixture.ownerUserId, project.rows[0]!.id, hash(randomUUID())]
+    );
+    const nonConversationAssertionId = randomUUID();
+    await pool.query(
+      `insert into curated_memory_assertions (
+         id,owner_user_id,visibility,assertion_text,normalized_assertion,
+         sensitivity,confidence,tags,metadata,status,observed_at,
+         scope,project_id
+       ) values ($1,$2,'personal','[koed encrypted curated memory]',
+         $3,'normal',95,'{}','{}','current',now(),'project',$4)`,
+      [
+        nonConversationAssertionId,
+        fixture.ownerUserId,
+        `encrypted:${randomUUID()}`,
+        project.rows[0]!.id
+      ]
+    );
+    await upsertEncryptedFieldPayloadWithClient(
+      pool,
+      actor(fixture.ownerUserId),
+      personal,
+      {
+        sourceTable: "curated_memory_assertions",
+        sourceId: nonConversationAssertionId,
+        sourceColumn: "payload",
+        plaintext: {
+          assertionText: "NON_CONVERSATION_CURATED_SENTINEL",
+          normalizedAssertion: "non_conversation_curated_sentinel",
+          tags: ["work item"],
+          metadata: {},
+          suppressionReason: null
+        },
+        visibility: "personal",
+        rowFamily: "curated_memory",
+        aad: { curatedMemoryId: nonConversationAssertionId }
+      }
+    );
+    await pool.query(
+      `insert into curated_memory_sources (
+         assertion_id,source_type,source_role,project_work_item_id,metadata
+       ) values ($1,'project_work_item','primary_evidence',$2,'{}')`,
+      [nonConversationAssertionId, workItem.rows[0]!.id]
+    );
 
     const created = await createConsent(fixture, source, {
       representation: "curated_assertions",
@@ -11983,9 +12819,11 @@ describeDb("Shared Memory repository", () => {
     ).toBe(false);
     expect(
       read?.items.some((item) =>
-        ["ME_SCOPE_CURATED_SENTINEL", "UNSCOPED_CURATED_SENTINEL"].includes(
-          String(item.content.assertionText)
-        )
+        [
+          "ME_SCOPE_CURATED_SENTINEL",
+          "UNSCOPED_CURATED_SENTINEL",
+          "NON_CONVERSATION_CURATED_SENTINEL"
+        ].includes(String(item.content.assertionText))
       )
     ).toBe(false);
     expect(
@@ -12357,6 +13195,32 @@ describeDb("Shared Memory repository", () => {
           authority: authority(fixture)
         }
       );
+      const enrollment = await pool.query<{ id: string }>(
+        `insert into collaboration_shared_memory_enrollments (
+           backend_id,local_owner_user_id,upstream_user_id,remote_device_id
+         ) values ($1,$2,$3,$4) returning id`,
+        [
+          backendIdentity.rows[0]!.upstream_backend_id,
+          fixture.ownerUserId,
+          fixture.sourceOwnerPrincipalId,
+          fixture.deviceCredentialId
+        ]
+      );
+      await pool.query(
+        `insert into collaboration_shared_memory_companion_bindings (
+           enrollment_id,share_grant_id,logical_memory_id,team_id,
+           team_workspace_id,companion_thread_id,shared_session_id
+         ) values ($1,$2,$3,$4,$5,$6,$7)`,
+        [
+          enrollment.rows[0]!.id,
+          grant.id,
+          source.logicalMemoryId,
+          fixture.teamId,
+          fixture.teamWorkspaceId,
+          randomUUID(),
+          randomUUID()
+        ]
+      );
       await prepareSanitizedSemanticPreview(
         fixture.ownerUserId,
         created.preview,
@@ -12616,19 +13480,53 @@ describeDb("Shared Memory repository", () => {
       expect(markers.rows.filter((row) => row.frozen_snapshot)).toHaveLength(
         legacyPublication ? 1 : 2
       );
-      const withdrawal = {
+      const classification = await curated.prepareCuratedClassification(
+        actor(fixture.ownerUserId),
+        { assertionId: secondId, expectedVersion: 1, scope: "me" }
+      );
+      expect(classification.manifest).toHaveLength(1);
+      const [group] = classification.manifest;
+      expect(group).toMatchObject({
+        backendId: backendIdentity.rows[0]!.upstream_backend_id,
         source: {
-          kind: "captured_session" as const,
-          sessionId: source.sessionId,
+          sessionId: source.localSessionId,
           logicalMemoryId: source.logicalMemoryId
-        },
+        }
+      });
+      await expect(
+        curated.commitCuratedClassification(
+          actor(fixture.ownerUserId),
+          classification.id
+        )
+      ).rejects.toThrow("withdrawal is pending");
+      expect(
+        (await read())?.items.map((item) => item.content.assertionText)
+      ).toEqual(["Frozen assertion two."]);
+      expect(await search()).toHaveLength(1);
+      const personalBeforeWithdrawal = await pool.query<{
+        scope: string;
+        project_id: string | null;
+      }>(`select scope,project_id from curated_memory_assertions where id=$1`, [
+        secondId
+      ]);
+      expect(personalBeforeWithdrawal.rows[0]).toEqual({
+        scope: "project",
+        project_id: project.rows[0]!.id
+      });
+      const withdrawal = {
+        source: group!.source,
         sourceDeploymentProtocolId: fixture.sourceProtocolDeploymentId,
         sourceOwnerPrincipalId: fixture.sourceOwnerPrincipalId,
         deviceCredentialId: fixture.deviceCredentialId,
-        mutationId: randomUUID(),
+        mutationId: crossIdentitySyncDeterministicUuid({
+          protocol: "koed.curated-withdrawal-group/v1",
+          operationId: classification.id,
+          backendId: group!.backendId,
+          sourceLogicalMemoryId: group!.source.logicalMemoryId
+        }),
         assertionId: secondId,
         classificationVersion: 1,
-        items: []
+        items: group!.items
       };
       const manifestHash = curatedWithdrawalManifestHash(withdrawal);
       const receipt = await repository.withdrawCuratedAssertionCopies(
@@ -12648,6 +13546,16 @@ describeDb("Shared Memory repository", () => {
       ).toEqual(receipt);
       expect((await read())?.items ?? []).toHaveLength(0);
       expect(await search()).toHaveLength(0);
+      const personalBeforeAck = await pool.query<{
+        scope: string;
+        project_id: string | null;
+      }>(`select scope,project_id from curated_memory_assertions where id=$1`, [
+        secondId
+      ]);
+      expect(personalBeforeAck.rows[0]).toEqual({
+        scope: "project",
+        project_id: project.rows[0]!.id
+      });
       const vectors = await pool.query<{ count: string }>(
         `select count(*)::text as count from team_memory_semantic_vectors_384 vector_row
           join team_memory_semantic_items item on item.id=vector_row.semantic_item_id
@@ -12673,6 +13581,31 @@ describeDb("Shared Memory repository", () => {
           vector: curatedVector
         })
       ).toBe(false);
+      const acknowledged = await curated.recordCuratedClassificationAck(
+        actor(fixture.ownerUserId),
+        classification.id,
+        group!.backendId,
+        group!.source.logicalMemoryId,
+        receipt,
+        manifestHash
+      );
+      expect(acknowledged.backendAcks).toHaveLength(1);
+      await expect(
+        curated.commitCuratedClassification(
+          actor(fixture.ownerUserId),
+          classification.id
+        )
+      ).resolves.toMatchObject({ state: "complete" });
+      const personalAfterAck = await pool.query<{
+        scope: string;
+        project_id: string | null;
+      }>(`select scope,project_id from curated_memory_assertions where id=$1`, [
+        secondId
+      ]);
+      expect(personalAfterAck.rows[0]).toEqual({
+        scope: "me",
+        project_id: null
+      });
       await expect(
         repository.withdrawCuratedAssertionCopies(actor(fixture.ownerUserId), {
           ...withdrawal,

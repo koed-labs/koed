@@ -26,6 +26,16 @@ export interface VerifiedLocalProjectContext {
   artifactId: string;
   minimumProviderCursorOffset: number;
   externalSessionId: string;
+  /** Snapshot from the trusted local edge before capture began. */
+  captureSharePolicy?: {
+    projectId: string;
+    workspaceProjectId: string;
+    policyVersion: number;
+    linkEpoch: string;
+    deviceCredentialId: string;
+    associationVersion: number;
+    preparedAt: string;
+  };
 }
 
 export interface ProjectAssociationResult {
@@ -50,6 +60,7 @@ type ContextRow = {
   git_dir_hash: string | null;
   folder_hash: string | null;
   association_state: "resolved" | "unresolved";
+  association_version: number;
   lifecycle: "active" | "deleted" | null;
   deletion_phase: string | null;
   last_confirmation_version: number;
@@ -74,8 +85,10 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
         automatic_personal_project_id: string | null;
         project_override_personal_project_id: string | null;
         project_override_id: string | null;
+        project_override_at: Date | null;
+        created_at: Date;
       }>(
-        `select id,logical_session_id,cwd, automatic_personal_project_id, project_override_personal_project_id, project_override_id
+        `select id,logical_session_id,cwd, automatic_personal_project_id, project_override_personal_project_id, project_override_id, project_override_at, created_at
            from sessions
           where id=$1 and owner_user_id=$2 and external_session_id=$3
             and visibility='personal' and invalidated_at is null
@@ -183,7 +196,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
         [`personal-project-owner-key:${input.ownerUserId}`]
       );
       const exact = await client.query<ContextRow>(
-        `select c.project_id,c.git_dir_hash,c.folder_hash,c.association_state,c.last_confirmation_version,p.lifecycle,p.deletion_phase
+        `select c.project_id,c.git_dir_hash,c.folder_hash,c.association_state,c.association_version,c.last_confirmation_version,p.lifecycle,p.deletion_phase
            from project_local_contexts c
            left join projects p on p.id=c.project_id and p.owner_user_id=c.owner_user_id
           where c.owner_user_id=$1 and c.device_id=$2 and c.local_project_id=$3
@@ -239,6 +252,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
         if (projectId) {
           await client.query(
             `update project_local_contexts set project_id=$4,association_state='resolved',
+               association_version=association_version+1,
                last_confirmation_version=$5,last_seen_at=now()
               where owner_user_id=$1 and device_id=$2 and local_project_id=$3`,
             [
@@ -253,7 +267,7 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
       } else if (!exact.rows[0] || confirmedSeparate) {
         const candidates = input.commonDirHash
           ? await client.query<ContextRow>(
-              `select c.project_id,c.git_dir_hash,c.folder_hash,c.association_state,p.lifecycle,p.deletion_phase
+              `select c.project_id,c.git_dir_hash,c.folder_hash,c.association_state,c.association_version,p.lifecycle,p.deletion_phase
                  from project_local_contexts c
                  left join projects p on p.id=c.project_id and p.owner_user_id=c.owner_user_id
                 where c.owner_user_id=$1 and c.device_id=$2 and c.common_dir_hash=$3
@@ -333,6 +347,11 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
            values ($1,$2,$3,$4,$5,$6,$7,$8,$10)
            on conflict (owner_user_id,device_id,local_project_id) do update
              set project_id=excluded.project_id,association_state=excluded.association_state,
+                 association_version=case
+                   when project_local_contexts.project_id is distinct from excluded.project_id
+                     or project_local_contexts.association_state is distinct from excluded.association_state
+                   then project_local_contexts.association_version+1
+                   else project_local_contexts.association_version end,
                  last_confirmation_version=greatest(project_local_contexts.last_confirmation_version,excluded.last_confirmation_version),last_seen_at=now()
            where project_local_contexts.association_state='unresolved'
               or $9::boolean
@@ -370,25 +389,97 @@ export const createProjectRepository = (pool: pg.Pool): ProjectRepository => ({
         assignableId &&
         found.automatic_personal_project_id === assignableId &&
         !found.project_override_personal_project_id &&
-        !found.project_override_id
+        !found.project_override_id &&
+        !found.project_override_at
       );
       let firstAssigned = false;
       if (
         assignableId &&
         !found.automatic_personal_project_id &&
         !found.project_override_personal_project_id &&
-        !found.project_override_id
+        !found.project_override_id &&
+        !found.project_override_at
       ) {
         const updated = await client.query(
           `update sessions set automatic_personal_project_id=$4,updated_at=now()
             where id=$1 and owner_user_id=$2 and external_session_id=$3
               and automatic_personal_project_id is null
               and project_override_personal_project_id is null
-              and project_override_id is null`,
+              and project_override_id is null
+              and project_override_at is null`,
           [found.id, input.ownerUserId, input.externalSessionId, assignableId]
         );
         assigned = Boolean(updated.rowCount);
         firstAssigned = assigned;
+      }
+      const capturePolicy = input.captureSharePolicy;
+      if (
+        assigned &&
+        exactActive &&
+        capturePolicy &&
+        exact.rows[0]?.project_id === capturePolicy.projectId &&
+        exact.rows[0]?.association_version ===
+          capturePolicy.associationVersion &&
+        assignableId === capturePolicy.projectId &&
+        Number.isSafeInteger(capturePolicy.policyVersion) &&
+        capturePolicy.policyVersion > 0 &&
+        typeof capturePolicy.linkEpoch === "string" &&
+        typeof capturePolicy.deviceCredentialId === "string" &&
+        !Number.isNaN(Date.parse(capturePolicy.preparedAt)) &&
+        found.created_at.getTime() >= Date.parse(capturePolicy.preparedAt) &&
+        !found.project_override_personal_project_id &&
+        !found.project_override_id
+      ) {
+        await client.query(
+          `update sessions s
+             set project_share_capture_policy_version=p.project_share_policy_version,
+                 project_share_capture_workspace_project_id=p.workspace_project_id,
+                 project_share_capture_device_credential_id=p.project_share_policy_device_credential_id,
+                 project_share_capture_link_epoch=p.share_policy_link_epoch,
+                 project_share_capture_context_version=$7,
+                 project_share_capture_prepared_at=$6::timestamptz,
+                 updated_at=now()
+            from projects p
+           where s.id=$1 and s.owner_user_id=$2
+             and p.id=$3 and p.owner_user_id=$2
+             and p.lifecycle='active' and p.deletion_phase is null
+             and p.project_share_policy_version=$4
+             and p.project_share_policy_device_credential_id=$8
+             and p.share_policy_link_epoch=$9
+             and p.workspace_project_id=$5
+             and p.project_share_policy_enabled_at <= $6::timestamptz
+             and s.created_at >= $6::timestamptz
+             and s.automatic_personal_project_id=p.id
+             and s.project_override_personal_project_id is null
+             and s.project_override_id is null
+             and s.project_override_at is null
+             and s.project_share_private_at is null
+             and s.source_kind is not null
+             and s.source_adapter_version is not null
+             and coalesce(s.external_thread_id,s.external_session_id) is not null
+             and not exists (
+               select 1 from project_share_private_conversations private
+                where private.owner_user_id=s.owner_user_id
+                  and private.source_runtime=s.source_runtime
+                  and private.source_kind=s.source_kind
+                  and private.source_adapter_version=s.source_adapter_version
+                  and private.external_conversation_id=coalesce(s.external_thread_id,s.external_session_id)
+             )
+             and s.project_share_capture_policy_version is null
+             and s.personal_deleted_at is null and s.invalidated_at is null
+             and s.trashed_at is null`,
+          [
+            found.id,
+            input.ownerUserId,
+            capturePolicy.projectId,
+            capturePolicy.policyVersion,
+            capturePolicy.workspaceProjectId,
+            capturePolicy.preparedAt,
+            capturePolicy.associationVersion,
+            capturePolicy.deviceCredentialId,
+            capturePolicy.linkEpoch
+          ]
+        );
       }
       if (projectId && (createdProjectId === projectId || firstAssigned))
         await appendCollaborationOutboxEventWithClient(client, {

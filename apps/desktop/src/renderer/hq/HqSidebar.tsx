@@ -153,6 +153,23 @@ export type HqSidebarProps = {
     sessionId: string,
     title: string
   ) => void;
+  chatShareScopeKey?: string;
+  onChatShareStatus?: (
+    personalProjectId: string,
+    sessionId: string
+  ) => Promise<"private" | "pending" | "shared" | "unshared" | "ineligible">;
+  onMakeChatPrivate?: (
+    personalProjectId: string,
+    sessionId: string
+  ) => Promise<{ state: "private" }>;
+  onShareChatAgain?: (
+    personalProjectId: string,
+    sessionId: string
+  ) => Promise<{ state: "pending" | "activated" | "canceled" }>;
+  onShareUnsharedChat?: (
+    personalProjectId: string,
+    sessionId: string
+  ) => Promise<{ state: "pending" | "activated" | "canceled" }>;
   onNewConversation?: () => void;
   onOpenNow?: () => void;
   nowActive?: boolean;
@@ -190,6 +207,11 @@ export function HqSidebar({
   sharedPeopleCounts,
   onDeleteConversation,
   onForgetConversation,
+  chatShareScopeKey,
+  onChatShareStatus,
+  onMakeChatPrivate,
+  onShareChatAgain,
+  onShareUnsharedChat,
   onNewConversation,
   onOpenNow,
   nowActive = false,
@@ -225,6 +247,217 @@ export function HqSidebar({
   const [conversationMenuId, setConversationMenuId] = useState<string | null>(
     null
   );
+  const [chatShare, setChatShare] = useState<{
+    key: string;
+    status:
+      | "loading"
+      | "private"
+      | "pending"
+      | "shared"
+      | "unshared"
+      | "ineligible";
+    busy: boolean;
+    error: string | null;
+    notice?: string | null;
+  } | null>(null);
+  const [privateChatKeys, setPrivateChatKeys] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const rememberPrivate = (key: string, confirmed: boolean) => {
+    setPrivateChatKeys((previous) => {
+      const next = new Set(previous);
+      if (confirmed) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+  const chatShareEpoch = useRef(0);
+  const chatShareKey = (personalProjectId: string, sessionId: string) => {
+    const project = personalProjects?.find(
+      ({ id }) => id === personalProjectId
+    );
+    if (
+      !project?.teamBackendId ||
+      !project.workspaceProjectId ||
+      !chatShareScopeKey
+    )
+      return null;
+    return JSON.stringify([
+      chatShareScopeKey,
+      personalProjectId,
+      project.teamBackendId,
+      project.workspaceProjectId,
+      project.version,
+      sessionId
+    ]);
+  };
+  const chatShareKeyRef = useRef(chatShareKey);
+  chatShareKeyRef.current = chatShareKey;
+  const chatShareProjectsKey = JSON.stringify(
+    personalProjects?.map((project) => [
+      project.id,
+      project.teamBackendId,
+      project.workspaceProjectId,
+      project.version
+    ]) ?? []
+  );
+  useEffect(() => {
+    chatShareEpoch.current++;
+    setChatShare(null);
+    setPrivateChatKeys(new Set());
+    setConversationMenuId(null);
+  }, [chatShareScopeKey, chatShareProjectsKey]);
+  const loadChatShare = (personalProjectId: string, sessionId: string) => {
+    const key = chatShareKey(personalProjectId, sessionId);
+    if (!key || !onChatShareStatus) return;
+    const epoch = ++chatShareEpoch.current;
+    rememberPrivate(key, false);
+    setChatShare({ key, status: "loading", busy: false, error: null });
+    void onChatShareStatus(personalProjectId, sessionId)
+      .then((status) => {
+        if (
+          chatShareEpoch.current !== epoch ||
+          chatShareKeyRef.current(personalProjectId, sessionId) !== key
+        )
+          return;
+        if (status === "ineligible") {
+          rememberPrivate(key, false);
+          setChatShare(null);
+          setConversationMenuId(null);
+          return;
+        }
+        rememberPrivate(key, status === "private");
+        setChatShare({ key, status, busy: false, error: null });
+      })
+      .catch((error: unknown) => {
+        if (
+          chatShareEpoch.current !== epoch ||
+          chatShareKeyRef.current(personalProjectId, sessionId) !== key
+        )
+          return;
+        rememberPrivate(key, false);
+        setChatShare({
+          key,
+          status: "loading",
+          busy: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Chat sharing status is unavailable."
+        });
+      });
+  };
+  const makeChatPrivate = (personalProjectId: string, sessionId: string) => {
+    const key = chatShareKey(personalProjectId, sessionId);
+    if (
+      !key ||
+      !onMakeChatPrivate ||
+      chatShare?.key !== key ||
+      (chatShare.status !== "shared" && chatShare.status !== "pending") ||
+      chatShare.busy
+    )
+      return;
+    const epoch = ++chatShareEpoch.current;
+    const status = chatShare.status;
+    setChatShare({ key, status, busy: true, error: null });
+    void onMakeChatPrivate(personalProjectId, sessionId)
+      .then((result) => {
+        if (
+          chatShareEpoch.current !== epoch ||
+          chatShareKeyRef.current(personalProjectId, sessionId) !== key
+        )
+          return;
+        if (result.state !== "private")
+          throw new Error("Private status was not confirmed.");
+        rememberPrivate(key, true);
+        setChatShare({ key, status: "private", busy: false, error: null });
+      })
+      .catch((error: unknown) => {
+        if (
+          chatShareEpoch.current !== epoch ||
+          chatShareKeyRef.current(personalProjectId, sessionId) !== key
+        )
+          return;
+        rememberPrivate(key, false);
+        setChatShare({
+          key,
+          status,
+          busy: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Chat could not be made private."
+        });
+      });
+  };
+  const offerChatSummary = (
+    personalProjectId: string,
+    sessionId: string,
+    expectedStatus: "private" | "unshared"
+  ) => {
+    const key = chatShareKey(personalProjectId, sessionId);
+    const offer =
+      expectedStatus === "private" ? onShareChatAgain : onShareUnsharedChat;
+    if (
+      !key ||
+      !offer ||
+      chatShare?.key !== key ||
+      chatShare.status !== expectedStatus ||
+      chatShare.busy
+    )
+      return;
+    const epoch = ++chatShareEpoch.current;
+    rememberPrivate(key, false);
+    setChatShare({ key, status: expectedStatus, busy: true, error: null });
+    void offer(personalProjectId, sessionId)
+      .then((result) => {
+        if (
+          chatShareEpoch.current !== epoch ||
+          chatShareKeyRef.current(personalProjectId, sessionId) !== key
+        )
+          return;
+        rememberPrivate(
+          key,
+          result.state === "canceled" && expectedStatus === "private"
+        );
+        setChatShare({
+          key,
+          status:
+            result.state === "activated"
+              ? "shared"
+              : result.state === "pending"
+                ? "pending"
+                : expectedStatus,
+          busy: false,
+          error: null,
+          notice:
+            result.state === "canceled"
+              ? expectedStatus === "private"
+                ? "Summary sharing was canceled. This chat remains private."
+                : "Summary sharing was canceled. This chat’s summary remains unshared."
+              : result.state === "pending"
+                ? "Summary sharing is pending. Check status before assuming it was shared."
+                : null
+        });
+      })
+      .catch((error: unknown) => {
+        if (
+          chatShareEpoch.current !== epoch ||
+          chatShareKeyRef.current(personalProjectId, sessionId) !== key
+        )
+          return;
+        rememberPrivate(key, false);
+        setChatShare({
+          key,
+          status: expectedStatus,
+          busy: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Chat summary sharing is unavailable."
+        });
+      });
+  };
   const [dragging, setDragging] = useState<{
     sessionId: string;
     projectId: string | null;
@@ -427,17 +660,35 @@ export function HqSidebar({
     const sessionId = sessionSelectionId(thread);
     const selected =
       selectedProjectId === projectId && selectedSessionId === sessionId;
+    const menuId = `${projectId}:${thread.sessionId ?? ""}`;
+    const shareKey =
+      personalProjectId && thread.sessionId && !thread.originDevice
+        ? chatShareKey(personalProjectId, thread.sessionId)
+        : null;
+    const canReviewSharing = Boolean(
+      shareKey && onChatShareStatus && onMakeChatPrivate
+    );
+    const shownShare =
+      shareKey && chatShare?.key === shareKey ? chatShare : null;
     return (
       <li
         className="hq-sidebar__conversation"
         key={`${projectId}:${thread.id}`}
         onContextMenu={(event) => {
-          if (!thread.sessionId || (!onDeleteConversation && !boundJobs.length))
+          if (
+            !thread.sessionId ||
+            (!onDeleteConversation && !boundJobs.length && !canReviewSharing)
+          )
             return;
           event.preventDefault();
-          setConversationMenuId(
-            conversationMenuId === thread.sessionId ? null : thread.sessionId
-          );
+          if (conversationMenuId === menuId) {
+            chatShareEpoch.current++;
+            setConversationMenuId(null);
+          } else {
+            setConversationMenuId(menuId);
+            if (canReviewSharing && personalProjectId)
+              loadChatShare(personalProjectId, thread.sessionId);
+          }
         }}
       >
         <button
@@ -485,6 +736,15 @@ export function HqSidebar({
             <Pixelkin agent={conversationAgents[thread.sessionId]!} size={16} />
           ) : null}
           <span>{thread.name || "Conversation"}</span>
+          {shareKey && privateChatKeys.has(shareKey) ? (
+            <span
+              aria-label="Chat summary private"
+              className="hq-sidebar__private-badge"
+              title="Private: this chat's summary is not shared"
+            >
+              <LockKeyhole aria-hidden="true" size={13} />
+            </span>
+          ) : null}
           {thread.sessionId && pendingDeletionIds?.has(thread.sessionId) ? (
             <small className="hq-sidebar__deletion-pending">
               Deletion pending
@@ -509,9 +769,9 @@ export function HqSidebar({
             <Trash2 aria-hidden="true" />
           </button>
         ) : null}
-        {conversationMenuId === thread.sessionId &&
+        {conversationMenuId === menuId &&
         thread.sessionId &&
-        (onDeleteConversation || boundJobs.length) ? (
+        (onDeleteConversation || boundJobs.length || canReviewSharing) ? (
           <div
             className="hq-sidebar__conversation-menu"
             role="menu"
@@ -552,6 +812,85 @@ export function HqSidebar({
                 </button>
               </div>
             ))}
+            {canReviewSharing && personalProjectId ? (
+              <div
+                className="hq-sidebar__chat-sharing"
+                role="group"
+                aria-label="Chat summary sharing"
+              >
+                {shownShare?.error ? (
+                  <p role="alert">{shownShare.error}</p>
+                ) : null}
+                {shownShare?.notice ? (
+                  <p role="status">{shownShare.notice}</p>
+                ) : null}
+                {shownShare?.error ? null : !shownShare ||
+                  shownShare.status === "loading" ? (
+                  <p role="status">Checking summary sharing…</p>
+                ) : shownShare.busy ? (
+                  <p role="status">Reviewing this chat’s summary sharing…</p>
+                ) : shownShare.status === "private" ? (
+                  <>
+                    <p role="status">This chat is private.</p>
+                    {onShareChatAgain ? (
+                      <button
+                        role="menuitem"
+                        type="button"
+                        onClick={() =>
+                          offerChatSummary(
+                            personalProjectId,
+                            thread.sessionId!,
+                            "private"
+                          )
+                        }
+                      >
+                        Share again
+                      </button>
+                    ) : null}
+                  </>
+                ) : shownShare.status === "unshared" ? (
+                  <>
+                    <p role="status">This chat’s summary is not shared.</p>
+                    {onShareUnsharedChat ? (
+                      <button
+                        role="menuitem"
+                        type="button"
+                        onClick={() =>
+                          offerChatSummary(
+                            personalProjectId,
+                            thread.sessionId!,
+                            "unshared"
+                          )
+                        }
+                      >
+                        Share a summary
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <button
+                    role="menuitem"
+                    type="button"
+                    onClick={() =>
+                      makeChatPrivate(personalProjectId, thread.sessionId!)
+                    }
+                  >
+                    Make private
+                  </button>
+                )}
+                {shownShare?.error ? (
+                  <button
+                    role="menuitem"
+                    type="button"
+                    onClick={() =>
+                      loadChatShare(personalProjectId, thread.sessionId!)
+                    }
+                  >
+                    Check summary status again
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             {onDeleteConversation ? (
               <button
                 role="menuitem"

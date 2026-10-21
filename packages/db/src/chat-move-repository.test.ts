@@ -85,6 +85,27 @@ describe.skipIf(!testUrl)("HQ-107 exact Project-policy move journal", () => {
   });
 
   it("captures only immutable old-policy provenance, blocks late binding and requires exact frozen ACK before detach", async () => {
+    await expect(
+      pool.query(
+        `insert into project_policy_session_grants(owner_user_id,session_id,project_id,backend_id,
+           logical_memory_id,team_id,team_workspace_id,share_grant_id,origin,
+           policy_generation,mapping_version,grant_version)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,'policy',null,1,1)`,
+        [
+          owner,
+          sessionId,
+          sourceProjectId,
+          backendId,
+          logicalMemoryId,
+          teamId,
+          workspaceId,
+          randomUUID()
+        ]
+      )
+    ).rejects.toMatchObject({
+      code: "23514",
+      constraint: "project_policy_session_grants_versions_check"
+    });
     const moves = createChatMoveRepository(pool);
     const pending = await moves.prepare(
       owner,
@@ -406,5 +427,75 @@ describe.skipIf(!testUrl)("HQ-107 exact Project-policy move journal", () => {
     await expect(
       moves.complete(owner, linkedSession, pending.batchId)
     ).rejects.toBeInstanceOf(ChatMoveConflictError);
+  });
+
+  it("keeps an unpublished policy issue attached until its Team fence is acknowledged", async () => {
+    const unpublished = randomUUID();
+    const linked = await pool.query<{
+      workspace_project_id: string;
+      share_policy_link_epoch: string;
+    }>(
+      `select workspace_project_id,share_policy_link_epoch from projects where id=$1`,
+      [sourceProjectId]
+    );
+    await pool.query(
+      `insert into sessions(id,owner_user_id,source_runtime,capture_method,automatic_personal_project_id)
+       values ($1,$2,'codex-cli','api',$3)`,
+      [unpublished, owner, sourceProjectId]
+    );
+    await pool.query(
+      `insert into project_share_local_issues
+       (owner_user_id,session_id,logical_memory_id,project_id,backend_id,
+        workspace_project_id,link_epoch,policy_version,mapping_revision,
+        source_revision,state)
+       values ($1,$2,$6,$3,$4,$5,$7,1,1,1,'staged')`,
+      [
+        owner,
+        unpublished,
+        sourceProjectId,
+        backendId,
+        linked.rows[0]!.workspace_project_id,
+        randomUUID(),
+        linked.rows[0]!.share_policy_link_epoch
+      ]
+    );
+    const moves = createChatMoveRepository(pool);
+    await expect(
+      moves.prepare(owner, unpublished, sourceProjectId, destinationProjectId)
+    ).rejects.toBeInstanceOf(ChatMoveConflictError);
+    await pool.query(
+      `update project_share_local_issues set state='frozen'
+        where owner_user_id=$1 and session_id=$2`,
+      [owner, unpublished]
+    );
+    await pool.query(
+      `update sessions set project_share_move_pending_at=now()
+        where id=$1 and owner_user_id=$2`,
+      [unpublished, owner]
+    );
+    await pool.query(
+      `insert into project_share_move_fences
+       (owner_user_id,session_id,project_id,backend_id,workspace_project_id,
+        link_epoch,mapping_version,state)
+       values ($1,$2,$3,$4,$5,$6,1,'acknowledged')`,
+      [
+        owner,
+        unpublished,
+        sourceProjectId,
+        backendId,
+        linked.rows[0]!.workspace_project_id,
+        linked.rows[0]!.share_policy_link_epoch
+      ]
+    );
+    const prepared = await moves.prepare(
+      owner,
+      unpublished,
+      sourceProjectId,
+      destinationProjectId
+    );
+    expect(prepared?.bindings).toEqual([]);
+    expect(await moves.complete(owner, unpublished, prepared!.batchId)).toBe(
+      destinationProjectId
+    );
   });
 });

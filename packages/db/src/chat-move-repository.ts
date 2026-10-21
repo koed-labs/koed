@@ -14,7 +14,9 @@ export type ProjectPolicyGrantBinding = {
   teamId: string;
   teamWorkspaceId: string;
   shareGrantId: string;
-  policyGeneration: number;
+  // Older policy binding manifests omit origin; preserve their approved hash.
+  origin?: "manual";
+  policyGeneration: number | null;
   mappingVersion: number;
   grantVersion: number;
 };
@@ -50,6 +52,42 @@ const nullableProjectId = (value: unknown): string | null => {
 
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const hasAcknowledgedMoveFence = async (
+  client: pg.Pool | pg.PoolClient,
+  ownerUserId: string,
+  sessionId: string,
+  projectId: string,
+  backendId: string,
+  workspaceProjectId: string,
+  mappingVersion: number
+): Promise<boolean> => {
+  const result = await client.query(
+    `select fence.id from project_share_move_fences fence
+       join projects project on project.id=fence.project_id
+         and project.owner_user_id=fence.owner_user_id
+         and project.team_backend_id=fence.backend_id
+         and project.workspace_project_id=fence.workspace_project_id
+         and project.share_policy_link_epoch=fence.link_epoch
+       join sessions session on session.id=fence.session_id
+         and session.owner_user_id=fence.owner_user_id
+         and session.project_assignment_version=fence.mapping_version
+         and session.project_share_move_pending_at is not null
+         and session.project_share_private_pending_at is null
+      where fence.owner_user_id=$1 and fence.session_id=$2
+        and fence.project_id=$3 and fence.backend_id=$4
+        and fence.workspace_project_id=$5 and fence.mapping_version=$6
+        and fence.state='acknowledged' limit 1`,
+    [
+      ownerUserId,
+      sessionId,
+      projectId,
+      backendId,
+      workspaceProjectId,
+      mappingVersion
+    ]
+  );
+  return Boolean(result.rows[0]);
+};
 const mapBinding = (
   row: Record<string, unknown>
 ): ProjectPolicyGrantBinding => ({
@@ -62,7 +100,9 @@ const mapBinding = (
   teamId: String(row.team_id),
   teamWorkspaceId: String(row.team_workspace_id),
   shareGrantId: String(row.share_grant_id),
-  policyGeneration: Number(row.policy_generation),
+  ...(row.origin === "manual" ? { origin: "manual" as const } : {}),
+  policyGeneration:
+    row.policy_generation == null ? null : Number(row.policy_generation),
   mappingVersion: Number(row.mapping_version),
   grantVersion: Number(row.grant_version)
 });
@@ -253,7 +293,24 @@ export const createChatMoveRepository = (
         )
           throw new ChatMoveConflictError("Reviewed move action changed");
       }
-      const bindings = (
+      const pendingIssues =
+        // A policy Pending Share can still publish before it has a grant
+        // binding. Do not move its owner-local source mapping until the
+        // coordinated Team withdrawal has fenced that issue.
+        (
+          await client.query<{ id: string }>(
+            `select id from project_share_local_issues
+            where owner_user_id=$1 and session_id=$2 and project_id=$3
+              and state in ('reserved','staged')
+            limit 1 for update`,
+            [ownerUserId, sessionId, currentId]
+          )
+        ).rows;
+      if (pendingIssues.length)
+        throw new ChatMoveConflictError(
+          "Project summary sharing must be withdrawn before this Conversation moves"
+        );
+      const grantBindings = (
         await client.query<Record<string, unknown>>(
           `select * from project_policy_session_grants where owner_user_id=$1 and session_id=$2
            and project_id=$3 order by backend_id,share_grant_id for share`,
@@ -261,8 +318,17 @@ export const createChatMoveRepository = (
         )
       ).rows.map(mapBinding);
       if (
-        !bindings.length ||
-        bindings.some(
+        (!grantBindings.length &&
+          !(await hasAcknowledgedMoveFence(
+            client,
+            ownerUserId,
+            sessionId,
+            String(currentId),
+            String(linked.team_backend_id),
+            String(linked.workspace_project_id),
+            Number(source.project_assignment_version)
+          ))) ||
+        grantBindings.some(
           (item) =>
             item.backendId !== linked.team_backend_id ||
             item.teamWorkspaceId !== linked.team_workspace_id
@@ -272,7 +338,7 @@ export const createChatMoveRepository = (
           "Exact old Project policy grant provenance is unavailable"
         );
       const batchId = randomUUID();
-      const manifestHash = hash(bindings);
+      const manifestHash = hash(grantBindings);
       const row = (
         await client.query<Record<string, unknown>>(
           `insert into chat_move_operations(batch_id,owner_user_id,session_id,old_project_id,
@@ -287,7 +353,7 @@ export const createChatMoveRepository = (
             Number(linked.version),
             targetProjectId,
             Number(source.project_assignment_version),
-            JSON.stringify(bindings),
+            JSON.stringify(grantBindings),
             manifestHash,
             textActionId ?? null
           ]
@@ -361,8 +427,10 @@ export const createChatMoveRepository = (
       String(source.effective_project_id) !== operation.oldProjectId ||
       Number(source.project_assignment_version) !==
         operation.sourceMappingVersion ||
-      oldProject.team_backend_id !== operation.bindings[0]?.backendId ||
-      oldProject.team_workspace_id !== operation.bindings[0]?.teamWorkspaceId ||
+      (operation.bindings.length > 0 &&
+        (oldProject.team_backend_id !== operation.bindings[0]?.backendId ||
+          oldProject.team_workspace_id !==
+            operation.bindings[0]?.teamWorkspaceId)) ||
       oldProject.workspace_project_id !== operation.oldWorkspaceProjectId ||
       Number(oldProject.version) !== operation.oldProjectVersion
     )
@@ -395,6 +463,28 @@ export const createChatMoveRepository = (
     ).rows.map(mapBinding);
     if (hash(currentBindings) !== operation.manifestHash)
       throw new ChatMoveConflictError("Conversation move grant set changed");
+    const pendingIssue = await pool.query(
+      `select 1 from project_share_local_issues
+        where owner_user_id=$1 and session_id=$2 and project_id=$3
+          and state in ('reserved','staged') limit 1`,
+      [ownerUserId, sessionId, operation.oldProjectId]
+    );
+    if (
+      pendingIssue.rows[0] ||
+      (!currentBindings.length &&
+        !(await hasAcknowledgedMoveFence(
+          pool,
+          ownerUserId,
+          sessionId,
+          operation.oldProjectId,
+          String(oldProject.team_backend_id),
+          operation.oldWorkspaceProjectId,
+          operation.sourceMappingVersion
+        )))
+    )
+      throw new ChatMoveConflictError(
+        "Project policy issue is not safely frozen"
+      );
     return operation;
   },
   async reviewReservation(
@@ -753,13 +843,12 @@ export const createChatMoveRepository = (
         !oldProject ||
         oldProject.lifecycle !== "active" ||
         oldProject.deletion_phase ||
+        oldProject.workspace_project_id !== operation.oldWorkspaceProjectId ||
+        Number(oldProject.version) !== operation.oldProjectVersion ||
         operation.bindings.some(
           (binding) =>
             binding.backendId !== oldProject.team_backend_id ||
-            binding.teamWorkspaceId !== oldProject.team_workspace_id ||
-            oldProject.workspace_project_id !==
-              operation.oldWorkspaceProjectId ||
-            Number(oldProject.version) !== operation.oldProjectVersion
+            binding.teamWorkspaceId !== oldProject.team_workspace_id
         )
       )
         throw new ChatMoveConflictError("Original shared Project link changed");
@@ -772,6 +861,28 @@ export const createChatMoveRepository = (
       ).rows.map(mapBinding);
       if (hash(currentBindings) !== operation.manifestHash)
         throw new ChatMoveConflictError("Policy grant set changed");
+      const unsettled = await client.query(
+        `select id from project_share_local_issues
+          where owner_user_id=$1 and session_id=$2 and project_id=$3
+            and state in ('reserved','staged') limit 1 for update`,
+        [ownerUserId, sessionId, operation.oldProjectId]
+      );
+      if (
+        unsettled.rows[0] ||
+        (!currentBindings.length &&
+          !(await hasAcknowledgedMoveFence(
+            client,
+            ownerUserId,
+            sessionId,
+            operation.oldProjectId,
+            String(oldProject.team_backend_id),
+            operation.oldWorkspaceProjectId,
+            operation.sourceMappingVersion
+          )))
+      )
+        throw new ChatMoveConflictError(
+          "Project policy issue is not safely frozen"
+        );
       const target =
         operation.targetProjectId === null
           ? null
@@ -811,7 +922,8 @@ export const createChatMoveRepository = (
       await client.query(
         `update sessions set project_override_id=$3::text,project_override_name=$4,
         project_override_path=$5,project_override_personal_project_id=$6,
-        project_override_at=now(),project_override_by_user_id=$1,updated_at=now()
+        project_override_at=now(),project_override_by_user_id=$1,
+        project_share_move_pending_at=null,updated_at=now()
         where owner_user_id=$1 and id=$2`,
         [
           ownerUserId,

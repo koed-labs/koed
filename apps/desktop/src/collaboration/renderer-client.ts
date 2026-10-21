@@ -1641,6 +1641,10 @@ export const createCollaborationRendererClient = (
     intent: CollaborationActionGrantIntent["intent"]
   ): string => {
     const labels: Record<CollaborationActionGrantIntent["intent"], string> = {
+      "collaboration.project_share_policy_enable":
+        "Enable Project summary sharing",
+      "collaboration.project_share_policy_revoke":
+        "Stop Project summary sharing",
       "collaboration.create_team": "Create Team",
       "collaboration.join_team": "Join Team",
       "collaboration.create_workspace": "Create Workspace",

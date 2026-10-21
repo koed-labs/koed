@@ -740,6 +740,34 @@ export const assertUpstreamOperationPathAllowed = (
     deny();
   }
 
+  if (operationFamily === "share_grant_management") {
+    if (
+      !parsed.search &&
+      canonicalV2Path &&
+      /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/share-policy\/(?:status|manifests|initial-bundles)$/i.test(
+        rawPathname
+      ) &&
+      ((method === "GET" && rawPathname.endsWith("/status")) ||
+        (method === "POST" && !rawPathname.endsWith("/status")))
+    )
+      return;
+    if (
+      method === "GET" &&
+      canonicalV2Path &&
+      /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/share-policy\/manifests\/[0-9a-f-]{36}\/review$/i.test(
+        rawPathname
+      ) &&
+      [...parsed.searchParams.keys()].sort().join(",") ===
+        "expectedPolicyVersion,manifestHash" &&
+      /^\d{1,10}$/.test(
+        parsed.searchParams.get("expectedPolicyVersion") ?? ""
+      ) &&
+      /^[0-9a-f]{64}$/.test(parsed.searchParams.get("manifestHash") ?? "")
+    )
+      return;
+    deny();
+  }
+
   if (operationFamily === "admin") {
     if (
       pathname === "/v1/teams" ||

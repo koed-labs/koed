@@ -176,6 +176,9 @@ export const bindSharedMemoryPendingShareOperation = (
     logicalMemoryId: intent.logicalMemoryId,
     teamId: intent.teamId,
     teamWorkspaceId: intent.teamWorkspaceId,
+    ...(intent.workspaceProjectId
+      ? { workspaceProjectId: intent.workspaceProjectId }
+      : {}),
     consentId: intent.consentId,
     previewId: intent.previewId,
     mode: intent.mode,
@@ -288,19 +291,28 @@ const shareReview = (
       ? "step_up"
       : "native_review",
     {
-      title: "Share Personal Memory with this Workspace?",
-      description: review.sourceOwnerPolicyWillActivate
-        ? "One decision activates the reviewed source policy, records exact consent, and creates the corresponding Share Grant."
-        : "One decision records the exact source-owner consent and creates the corresponding Share Grant.",
+      title: intent.workspaceProjectId
+        ? `Share a summary of this chat with ${review.team.name}?`
+        : "Share Personal Memory with this Workspace?",
+      description: intent.workspaceProjectId
+        ? "This exact Captured Session will have its own Project-bound Pending Share and consent."
+        : review.sourceOwnerPolicyWillActivate
+          ? "One decision activates the reviewed source policy, records exact consent, and creates the corresponding Share Grant."
+          : "One decision records the exact source-owner consent and creates the corresponding Share Grant.",
       consequence: review.sourceOwnerPolicyWillReplace
         ? "The new source policy pauses existing consent and invalidates other Share Grants before this Workspace receives the approved cumulative fidelity."
-        : "Authorized Workspace members can recall every complete Memory layer through the approved maximum fidelity under the exact mode and expiry.",
+        : intent.workspaceProjectId
+          ? "Project members can recall the approved summary. Future updates to this chat continue under this grant until it is withdrawn or frozen."
+          : "Authorized Workspace members can recall every complete Memory layer through the approved maximum fidelity under the exact mode and expiry.",
       confirmLabel: "Share Memory",
       details: [
         { label: "Personal Memory", value: sourceName(review) },
         { label: "Logical Memory", value: review.source.logicalMemoryId },
         { label: "Team", value: review.team.name },
         { label: "Workspace", value: review.workspace.name },
+        ...(intent.workspaceProjectId
+          ? [{ label: "Project", value: intent.workspaceProjectId }]
+          : []),
         {
           label: "Maximum fidelity",
           value: fidelityLabel(intent.maximumFidelity)

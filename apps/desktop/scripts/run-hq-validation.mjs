@@ -67,7 +67,8 @@ try {
         KOED_HQ306_DELEGATED_S07: "1",
         KOED_HQ307_DELEGATED_S18: "1",
         KOED_HQ308_DELEGATED_S19: "1",
-        KOED_HQ603_DELEGATED_S12_SCHEDULED: "1"
+        KOED_HQ603_DELEGATED_S12_SCHEDULED: "1",
+        KOED_HQ702_DELEGATED_S15_2: "1"
       },
       stdio: "inherit"
     });
@@ -974,6 +975,112 @@ try {
         assert.ok(report.screenshots.includes("deck-to-sources-dark.png"));
         process.stdout.write(
           "PASS S22.1.study and S22.1.text [HQ-802/HQ-803]: new-HQ study and generated Chapter 7 action receipt to exact Deck in light/dark. Compound shared two-user S22.1/I26.1 awaits HQ-713.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-702", "HQ702.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq702-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq702.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ702_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          {
+            id: report.id,
+            owner: report.owner,
+            status: report.status,
+            scope: report.scope
+          },
+          {
+            id: "HQ702.ui.native",
+            owner: "HQ-702",
+            status: "pass",
+            scope: "renderer-fixture"
+          }
+        );
+        assert.equal(report.nativeGrantAuthorityProved, false);
+        assert.equal(report.nativeReviewInterceptionProved, true);
+        assert.deepEqual(report.scenarioAssertions, [
+          {
+            id: "S15.2",
+            owner: "HQ-702",
+            status: "pass",
+            scope: "renderer-and-native-ui",
+            exactSummaryQuestion: true,
+            nativeApproveAndCancel: true,
+            separateTranscriptAndCuratedDisclosure: true,
+            conversationSourceAccessPublicationProved: false
+          }
+        ]);
+        assert.ok(
+          report.assertions.includes(
+            "exact chat-summary question in isolated Native review, approve and cancel"
+          )
+        );
+        assert.ok(
+          report.assertions.includes(
+            "full transcripts and Curated Memory require separate approval"
+          )
+        );
+        assert.ok(
+          report.assertions.includes(
+            "private badge remains scoped to its chat while another chat menu opens"
+          )
+        );
+        assert.ok(
+          report.assertions.includes(
+            "private-only Share again declined and confirmed through exact Project and chat selectors"
+          )
+        );
+        assert.ok(
+          report.assertions.includes(
+            "completed moved-in chat offer declined, then manually retried from unshared and left pending"
+          )
+        );
+        assert.deepEqual(report.screenshots, [
+          "summary-off-light.png",
+          "summary-on-light.png",
+          "summary-revoked-light.png",
+          "chat-summary-shared-light.png",
+          "chat-summary-canceled-light.png",
+          "chat-summary-private-light.png",
+          "chat-private-other-menu-light.png",
+          "chat-share-again-declined-light.png",
+          "chat-share-again-confirmed-light.png",
+          "chat-moved-in-declined-light.png",
+          "chat-moved-in-pending-light.png",
+          "summary-off-dark.png",
+          "summary-on-dark.png",
+          "summary-revoked-dark.png",
+          "chat-summary-shared-dark.png",
+          "chat-summary-canceled-dark.png",
+          "chat-summary-private-dark.png",
+          "chat-private-other-menu-dark.png",
+          "chat-share-again-declined-dark.png",
+          "chat-share-again-confirmed-dark.png",
+          "chat-moved-in-declined-dark.png",
+          "chat-moved-in-pending-dark.png",
+          "native-review-light.png",
+          "native-review-dark.png",
+          "native-chat-summary-light.png",
+          "native-chat-summary-dark.png"
+        ]);
+        process.stdout.write(
+          "PASS S15.2 UI [HQ-702]: exact summary question, separate transcript/Curated disclosure, and Native approve/cancel in new HQ light/dark. Real no-CSA publication is proved separately in PostgreSQL; compound S15.1/S15.3 and two-user acceptance remain pending.\n"
         );
       }
     } finally {

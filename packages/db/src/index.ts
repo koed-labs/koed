@@ -12,6 +12,21 @@ export {
   type WorkspaceProjectRepository
 } from "./workspace-project-repository.js";
 export {
+  createProjectSharePolicyRepository,
+  ProjectSharePolicyUnavailableError,
+  ProjectSharePolicyConflictError,
+  type ProjectSharePolicyRepository,
+  type ProjectSharePolicyActor,
+  type ProjectSharePolicyReview,
+  type ProjectShareManifestEntry
+} from "./project-share-policy-repository.js";
+export {
+  createPersonalProjectSharePolicyRepository,
+  PersonalProjectSharePolicyConflictError,
+  PersonalProjectSharePolicyUnavailableError,
+  type PersonalProjectSharePolicyRepository
+} from "./personal-project-share-policy-repository.js";
+export {
   createPersonalWorkspaceProjectRepository,
   PersonalWorkspaceProjectConflictError,
   PersonalWorkspaceProjectUnavailableError,

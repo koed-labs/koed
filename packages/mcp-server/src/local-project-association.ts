@@ -555,7 +555,10 @@ export const createLocalProjectAssociationService = (input: {
               : {}),
             sessionId: pending.sessionId!,
             artifactId: pending.artifactId!,
-            minimumProviderCursorOffset: pending.requiredSourceOffset
+            minimumProviderCursorOffset: pending.requiredSourceOffset,
+            ...(pending.captureSharePolicy && !requiresConfirmation
+              ? { captureSharePolicy: pending.captureSharePolicy }
+              : {})
           });
           if (result.state === "resolved") {
             const backfill =
@@ -722,6 +725,44 @@ export const createLocalProjectAssociationService = (input: {
         const state = readState(stateFile);
         const facts = await checkoutFacts(catalog, ownedHistory(state));
         if (!facts) return false;
+        // This snapshot is taken before capture. A later association cannot
+        // turn a pre-policy or moved-in Captured Session into a policy source.
+        type CaptureAssociation = {
+          project_id: string;
+          workspace_project_id: string;
+          project_share_policy_version: number;
+          project_share_policy_device_credential_id: string;
+          share_policy_link_epoch: string;
+          association_version: number;
+        };
+        let captureAssociationRows: CaptureAssociation[] = [];
+        try {
+          captureAssociationRows = (
+            await pool.query<CaptureAssociation>(
+              `select context.project_id,project.workspace_project_id,
+                  project.project_share_policy_version,
+                  project.project_share_policy_device_credential_id,
+                  project.share_policy_link_epoch,
+                  context.association_version
+             from project_local_contexts context
+             join projects project on project.id=context.project_id
+               and project.owner_user_id=context.owner_user_id
+            where context.owner_user_id=$1 and context.device_id=$2
+              and context.local_project_id=$3 and context.association_state='resolved'
+              and project.lifecycle='active' and project.deletion_phase is null
+              and project.project_share_policy_version is not null
+              and project.project_share_policy_device_credential_id is not null
+              and project.project_share_policy_enabled_at is not null
+              and project.workspace_project_id is not null
+              and project.team_backend_id is not null`,
+              [ownerUserId, deviceId, facts.localProjectId]
+            )
+          ).rows;
+        } catch {
+          // Preserve the Personal capture journal during a DB outage. No
+          // capture-time policy proof can be minted or backfilled later.
+        }
+        const preparedAt = new Date().toISOString();
         const existing = state.history.find(
           (row) =>
             row.ownerUserId === ownerUserId &&
@@ -742,7 +783,25 @@ export const createLocalProjectAssociationService = (input: {
           ...(existing?.confirmationVersion
             ? { confirmationVersion: existing.confirmationVersion }
             : {}),
-          createdAt: new Date().toISOString(),
+          createdAt: preparedAt,
+          ...(captureAssociationRows.length === 1
+            ? {
+                captureSharePolicy: {
+                  projectId: captureAssociationRows[0]!.project_id,
+                  workspaceProjectId:
+                    captureAssociationRows[0]!.workspace_project_id,
+                  policyVersion:
+                    captureAssociationRows[0]!.project_share_policy_version,
+                  linkEpoch: captureAssociationRows[0]!.share_policy_link_epoch,
+                  deviceCredentialId:
+                    captureAssociationRows[0]!
+                      .project_share_policy_device_credential_id,
+                  associationVersion:
+                    captureAssociationRows[0]!.association_version,
+                  preparedAt
+                }
+              }
+            : {}),
           ...(sameConfirmationFacts && existing?.confirmedProjectId
             ? { confirmedProjectId: existing.confirmedProjectId }
             : {}),

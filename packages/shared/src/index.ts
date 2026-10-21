@@ -944,6 +944,7 @@ export {
   sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
+  projectSharePolicyActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryFreezeActionGrantBinding,
   sourceAdmissionActionGrantBinding,
@@ -1912,6 +1913,8 @@ export {
 } from "./memory-answer-task-contract.js";
 export * from "./work-item-contract.js";
 export * from "./workspace-project-contract.js";
+export * from "./project-share-policy-contract.js";
+export * from "./project-share-policy-proof.js";
 export * from "./project-thread-contract.js";
 export * from "./agent-contract.js";
 export * from "./agent-delegation-contract.js";

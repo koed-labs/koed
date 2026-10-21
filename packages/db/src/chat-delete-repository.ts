@@ -213,14 +213,23 @@ const sourceManifest = async (
     }
   }
   const historical = await client.query<{ backend_id: string }>(
-    `select distinct backend_id from collaboration_shared_memory_enrollments
-      where local_owner_user_id=$1 order by backend_id`,
-    [ownerUserId]
+    `select distinct backend_id from (
+       select backend_id from collaboration_shared_memory_enrollments
+        where local_owner_user_id=$1
+       union all
+       select backend_id from project_share_local_issues
+        where owner_user_id=$1 and session_id=$2
+          and state in ('reserved','staged','activated')
+       union all
+       select backend_id from project_share_explicit_offers
+        where owner_user_id=$1 and session_id=$2
+          and state in ('prepared','pending','accepted','activated')
+     ) backend_history order by backend_id`,
+    [ownerUserId, sessionId]
   );
-  // Enrollment survives a missing local relationship and is the durable
-  // evidence that this owner could have published to a Team backend. Merely
-  // configuring a backend must not turn an unshared chat into an online-only
-  // deletion for an owner who has never enrolled there.
+  // Enrollment and a reserved policy issue survive a missing local
+  // relationship. Both prove that this source could publish to a Team backend.
+  // Mere backend configuration does not make an unshared chat online-only.
   const enrolledBackendIds = new Set(
     historical.rows.map((row) => row.backend_id)
   );

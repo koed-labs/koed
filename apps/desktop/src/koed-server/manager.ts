@@ -3,6 +3,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createChatLifecycleClient } from "./chat-lifecycle-client.js";
 import { createWorkspaceProjectDesktopService } from "./workspace-project-service.js";
 import { createWorkspaceProjectTransport } from "./workspace-project-transport.js";
+import { createProjectSharePolicyService } from "./project-share-policy-service.js";
+import { createProjectSharePolicyReadiness } from "./project-share-policy-readiness.js";
 import { createWorkspaceProjectPersonalClient } from "./workspace-project-personal-client.js";
 import {
   createWorkspaceProjectShareContextLoader,
@@ -303,6 +305,10 @@ export interface KoedServerManagerOptions {
   confirmSourceControlMutation?: (input: {
     operation: string;
   }) => Promise<boolean>;
+  confirmProjectSharePolicy?: (
+    review: import("@koed/shared").CollaborationApprovalReview,
+    context: DesktopCommandContext
+  ) => Promise<boolean>;
   confirmSourceControlMerge?: (
     prepared: Extract<
       SourceControlV2Result,
@@ -314,7 +320,10 @@ export interface KoedServerManagerOptions {
 export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
-  projects: (request: ProjectsRequest) => Promise<ProjectsResult>;
+  projects: (
+    request: ProjectsRequest,
+    context?: DesktopCommandContext
+  ) => Promise<ProjectsResult>;
   decks: (request: DeckRequest) => Promise<DeckResult>;
   managedMemoryActions: (
     request: ManagedMemoryActionRequest
@@ -328,6 +337,11 @@ export interface KoedServerManager {
   projectSourceNative: ReturnType<typeof createProjectSourceNativeClient>;
   chatDeleteNative: ReturnType<typeof createChatDeleteNativeClient>;
   chatMoveNative: ReturnType<typeof createChatMoveNativeClient>;
+  projectPolicyMoveNative: {
+    releaseCanceledMoveFence: ReturnType<
+      typeof createProjectSharePolicyService
+    >["releaseCanceledMoveFence"];
+  };
   projectHqConversation: (
     request: ProjectHqConversationRequest
   ) => Promise<ProjectHqConversationResult>;
@@ -1729,10 +1743,14 @@ export const createKoedServerManager = ({
   personalDevicePairingStore,
   managedConversationDraftStore,
   confirmSourceControlMutation,
+  confirmProjectSharePolicy,
   confirmSourceControlMerge
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
   let enrollmentReconciliation: Promise<void> | null = null;
+  let policyReadiness: ReturnType<
+    typeof createProjectSharePolicyReadiness
+  > | null = null;
   let projectMetadataReconciliation: Promise<void> | null = null;
   const pendingProjectMetadataPaths = new Set<string>();
   let retainedPersonalApiOrigin: string | null = null;
@@ -2086,6 +2104,7 @@ export const createKoedServerManager = ({
           message: "Koed status could not be read."
         });
     scheduleEnrollmentReconciliation(current);
+    policyReadiness?.observe(current);
     return withPackageComponent(current, packageStatus);
   };
 
@@ -2099,6 +2118,7 @@ export const createKoedServerManager = ({
       latest = isRenderableKoedServerStartupStatus(result)
         ? result
         : diagnosticStartupStatus("Koed startup status could not be read.");
+      policyReadiness?.observe(latest);
       if (setupStartupReady(latest)) {
         retainedPersonalApiOrigin = localPersonalMemoryOrigin(latest);
         await provisionLocalAppCredential();
@@ -4188,6 +4208,8 @@ export const createKoedServerManager = ({
   });
   const chatMovePlacement = createChatMovePlacementClient({
     authority: projectsAuthority,
+    beforeAssign: (request, bound) =>
+      projectPolicyService.beforeMove(request, bound),
     requestJson: async (path, init, bound) => {
       const remote = await fetchBoundedJsonObject(
         personalMemoryFetch,
@@ -4269,22 +4291,47 @@ export const createKoedServerManager = ({
     workspaceProjectTransport.sendPersonal,
     workspaceProjectTransport.teamCredential
   );
+  const loadProjectShareContext = createWorkspaceProjectShareContextLoader({
+    authority: projectsAuthority,
+    registryReader: () =>
+      readLocalEdgeUpstreamRegistry(
+        resolve(
+          resolveKoedHome(environment),
+          "config",
+          "upstream-backends.json"
+        )
+      ),
+    collaborationLoader: createWorkspaceProjectCollaborationLoader(
+      collaborationTransport
+    )
+  });
+  policyReadiness = createProjectSharePolicyReadiness({
+    koedHome: () => resolveKoedHome(environment)
+  });
+  const projectPolicyService = createProjectSharePolicyService({
+    identity: sharedProjectIdentity,
+    authority: projectsAuthority,
+    futureEligible: () => policyReadiness?.eligible() ?? false,
+    personal: workspaceProjectPersonal,
+    loadContext: loadProjectShareContext,
+    sendPolicy: workspaceProjectTransport.sendProjectPolicy,
+    sendCollaboration: (command, context) =>
+      collaborationTransport.request(command, context),
+    confirmNative: confirmProjectSharePolicy
+  });
+  const projectSharePolicy = projectPolicyService.policy;
+  const futurePolicyLoop = projectPolicyService.futureLoop;
+  const futurePolicySweep = projectPolicyService.futureSweep;
   const workspaceProjectService = createWorkspaceProjectDesktopService({
     identityKey: async () => (await projectsAuthority()).key,
-    loadShareContext: createWorkspaceProjectShareContextLoader({
-      authority: projectsAuthority,
-      registryReader: () =>
-        readLocalEdgeUpstreamRegistry(
-          resolve(
-            resolveKoedHome(environment),
-            "config",
-            "upstream-backends.json"
-          )
-        ),
-      collaborationLoader: createWorkspaceProjectCollaborationLoader(
-        collaborationTransport
-      )
-    }),
+    loadShareContext: loadProjectShareContext,
+    projectPolicyStatus: projectSharePolicy.status,
+    projectPolicyEnable: projectPolicyService.enable,
+    projectPolicyRevoke: projectPolicyService.revoke,
+    projectPolicyStageInitial: projectSharePolicy.stageInitial,
+    projectChatMakePrivate: projectPolicyService.makePrivate,
+    projectChatStatus: projectPolicyService.sessionStatus,
+    projectChatOffer: projectPolicyService.offerChat,
     loadPersonalCopy: workspaceProjectPersonal.loadPersonalCopy,
     loadPendingShare: workspaceProjectPersonal.pendingShare,
     cancelPendingShare: workspaceProjectPersonal.cancelPendingShare,
@@ -4306,7 +4353,8 @@ export const createKoedServerManager = ({
     sendTeam: workspaceProjectTransport.sendTeam
   });
   const projectsWithShared = async (
-    request: ProjectsRequest
+    request: ProjectsRequest,
+    context?: DesktopCommandContext
   ): Promise<ProjectsResult> =>
     request.operation === "sharedRefresh" ||
     request.operation === "sharedShareContext" ||
@@ -4322,10 +4370,21 @@ export const createKoedServerManager = ({
     request.operation === "sharedReadSource" ||
     request.operation === "sharedDispatchWorkItem" ||
     request.operation === "sharedDispatches" ||
+    request.operation === "sharedPolicyStatus" ||
+    request.operation === "sharedPolicyEnable" ||
+    request.operation === "sharedPolicyRevoke" ||
+    request.operation === "sharedPolicyStageInitial" ||
+    request.operation === "sharedChatMakePrivate" ||
+    request.operation === "sharedChatStatus" ||
+    request.operation === "sharedChatOffer" ||
     request.operation === "sharedCreateWorkItem" ||
     request.operation === "sharedPatchWorkItem"
       ? sharedProjectIdentity.run((await projectsAuthority()).key, () =>
-          workspaceProjectService(request)
+          context
+            ? projectPolicyService.runWithContext(context, () =>
+                workspaceProjectService(request)
+              )
+            : workspaceProjectService(request)
         )
       : projects(request);
 
@@ -5674,10 +5733,13 @@ export const createKoedServerManager = ({
       result !== null &&
       (result as { ok?: unknown }).ok === false
     ) {
+      futurePolicyLoop.stop();
       return result;
     }
     const ready = await pollUntilReady();
     await personalSyncStatusWithLanRelay().catch(() => undefined);
+    if (setupStartupReady(ready)) futurePolicyLoop.start();
+    else futurePolicyLoop.stop();
     return ready;
   };
 
@@ -5688,6 +5750,7 @@ export const createKoedServerManager = ({
       "last-verification.json"
     );
     if (!existsSync(verificationPath)) {
+      futurePolicyLoop.stop();
       return {
         ok: true,
         state: "not_configured",
@@ -5702,12 +5765,16 @@ export const createKoedServerManager = ({
         result !== null &&
         (result as { ok?: unknown }).ok === false
       ) {
+        futurePolicyLoop.stop();
         return result;
       }
       const ready = await pollUntilReady(30);
       await personalSyncStatusWithLanRelay().catch(() => undefined);
+      if (setupStartupReady(ready)) futurePolicyLoop.start();
+      else futurePolicyLoop.stop();
       return ready;
     } catch (error) {
+      futurePolicyLoop.stop();
       return {
         ok: false,
         state: "needs_attention",
@@ -5750,6 +5817,7 @@ export const createKoedServerManager = ({
         error: "Upstream registration did not return a backend id."
       };
     }
+    policyReadiness?.noteRegistered();
     const refreshResult = await runJson(
       ["upstream", "refresh", "--id", backendId],
       45_000
@@ -6015,6 +6083,8 @@ export const createKoedServerManager = ({
   });
 
   const stop = async () => {
+    futurePolicyLoop.stop();
+    futurePolicySweep.clear();
     for (const connection of managedTerminalConnections.values()) {
       connection.intentionalClose = true;
       connection.socket.close(1001, "Koed stopping");
@@ -6315,6 +6385,9 @@ export const createKoedServerManager = ({
     projectSourceNative,
     chatDeleteNative,
     chatMoveNative,
+    projectPolicyMoveNative: {
+      releaseCanceledMoveFence: projectPolicyService.releaseCanceledMoveFence
+    },
     projectHqConversation,
     agents,
     scheduledJobs,

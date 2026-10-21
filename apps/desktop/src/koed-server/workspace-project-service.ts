@@ -8,6 +8,25 @@ import { createWorkspaceProjectClient } from "./workspace-project-client.js";
 import { z } from "zod";
 import { workspaceProjectRecordSchema } from "@koed/shared/workspace-project-contract";
 import type { createWorkspaceProjectPersonalClient } from "./workspace-project-personal-client.js";
+import type {
+  ProjectPolicyInitialStage,
+  ProjectPolicyReview
+} from "./project-share-policy-client.js";
+
+export const projectPolicyRendererProjection = (
+  policy: ProjectPolicyReview,
+  pendingAction: "enable" | "revoke" | null = null,
+  reviewRequired = false
+) => ({
+  status: policy.status,
+  pendingAction,
+  reviewRequired,
+  eligibleCount: policy.eligibleCount,
+  reviewSources: policy.reviewSources.map(({ reviewLabel, eligible }) => ({
+    reviewLabel,
+    eligible
+  }))
+});
 
 const leaveStageSchema = z
   .object({
@@ -61,6 +80,33 @@ export class WorkspaceProjectRemoteError extends Error {
 }
 
 export const createWorkspaceProjectDesktopService = (input: {
+  projectPolicyStatus?(personalProjectId: string): Promise<{
+    policy: ProjectPolicyReview;
+    pendingAction: "enable" | "revoke" | null;
+    reviewRequired: boolean;
+  }>;
+  projectPolicyEnable?(personalProjectId: string): Promise<{
+    policy: ProjectPolicyReview;
+    initialStage: ProjectPolicyInitialStage;
+  }>;
+  projectPolicyRevoke?(personalProjectId: string): Promise<ProjectPolicyReview>;
+  projectPolicyStageInitial?(personalProjectId: string): Promise<{
+    policy: ProjectPolicyReview;
+    initialStage: ProjectPolicyInitialStage;
+  }>;
+  projectChatMakePrivate?(
+    personalProjectId: string,
+    sessionId: string
+  ): Promise<{ state: "private" }>;
+  projectChatStatus?(
+    personalProjectId: string,
+    sessionId: string
+  ): Promise<"private" | "pending" | "shared" | "unshared" | "ineligible">;
+  projectChatOffer?(
+    personalProjectId: string,
+    sessionId: string,
+    reason: "moved_in" | "share_again"
+  ): Promise<{ state: "pending" | "activated" | "canceled" }>;
   identityKey(): Promise<string>;
   loadShareContext?(): Promise<WorkspaceProjectShareContext>;
   loadPendingShare?: ReturnType<
@@ -204,11 +250,102 @@ export const createWorkspaceProjectDesktopService = (input: {
           | "sharedUploadSource"
           | "sharedReadSource"
           | "sharedDispatchWorkItem"
-          | "sharedDispatches";
+          | "sharedDispatches"
+          | "sharedPolicyStatus"
+          | "sharedPolicyEnable"
+          | "sharedPolicyRevoke"
+          | "sharedPolicyStageInitial"
+          | "sharedChatMakePrivate"
+          | "sharedChatStatus"
+          | "sharedChatOffer";
       }
     >
   ): Promise<ProjectsResult> => {
     const identityKey = await input.identityKey();
+    if (request.operation === "sharedPolicyStatus") {
+      if (!input.projectPolicyStatus)
+        throw new Error("Project summary sharing is unavailable");
+      const status = await checked(identityKey, () =>
+        input.projectPolicyStatus!(request.personalProjectId)
+      );
+      return {
+        operation: request.operation,
+        policy: projectPolicyRendererProjection(
+          status.policy,
+          status.pendingAction,
+          status.reviewRequired
+        )
+      };
+    }
+    if (request.operation === "sharedPolicyEnable") {
+      if (!input.projectPolicyEnable)
+        throw new Error("Project summary sharing is unavailable");
+      const result = await checked(identityKey, () =>
+        input.projectPolicyEnable!(request.personalProjectId)
+      );
+      return {
+        operation: request.operation,
+        policy: projectPolicyRendererProjection(result.policy),
+        initialStage: result.initialStage
+      };
+    }
+    if (request.operation === "sharedPolicyRevoke") {
+      if (!input.projectPolicyRevoke)
+        throw new Error("Project summary sharing is unavailable");
+      return {
+        operation: request.operation,
+        policy: projectPolicyRendererProjection(
+          await checked(identityKey, () =>
+            input.projectPolicyRevoke!(request.personalProjectId)
+          )
+        )
+      };
+    }
+    if (request.operation === "sharedPolicyStageInitial") {
+      if (!input.projectPolicyStageInitial)
+        throw new Error("Project summary sharing is unavailable");
+      const result = await checked(identityKey, () =>
+        input.projectPolicyStageInitial!(request.personalProjectId)
+      );
+      return {
+        operation: request.operation,
+        policy: projectPolicyRendererProjection(result.policy),
+        initialStage: result.initialStage
+      };
+    }
+    if (request.operation === "sharedChatMakePrivate") {
+      if (!input.projectChatMakePrivate)
+        throw new Error("Project chat privacy is unavailable");
+      const result = await checked(identityKey, () =>
+        input.projectChatMakePrivate!(
+          request.personalProjectId,
+          request.sessionId
+        )
+      );
+      return { operation: request.operation, state: result.state };
+    }
+    if (request.operation === "sharedChatStatus") {
+      if (!input.projectChatStatus)
+        throw new Error("Project chat sharing status is unavailable");
+      return {
+        operation: request.operation,
+        state: await checked(identityKey, () =>
+          input.projectChatStatus!(request.personalProjectId, request.sessionId)
+        )
+      };
+    }
+    if (request.operation === "sharedChatOffer") {
+      if (!input.projectChatOffer)
+        throw new Error("Project chat summary offer is unavailable");
+      const result = await checked(identityKey, () =>
+        input.projectChatOffer!(
+          request.personalProjectId,
+          request.sessionId,
+          request.reason
+        )
+      );
+      return { operation: request.operation, state: result.state };
+    }
     if (request.operation === "sharedShareContext") {
       if (!input.loadShareContext)
         throw new Error("Shared Project context is unavailable");
