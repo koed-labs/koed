@@ -671,3 +671,26 @@ coordinator, HQ-712 Workspace Project lifecycle paths, and HQ-801 Deck/card
 storage and collaboration routes exist. See [Flashcard Deck storage and API](./flashcard-decks.md).
 The human-only Project Thread is implemented. Project Share Policy, Deck
 study/Again learning, and two-user live Project validation remain follow-up work.
+
+HQ-704 exposes Project leave, member removal, owner deletion, and owner-only
+restoration from the new HQ surface. A Project owner who asks to leave is shown
+the separate Project deletion effect; the leave request itself is never treated
+as an approved deletion. An ordinary member's leave disables only that
+member's Project link. Removing another member and deleting a shared Project
+require exact Step-up review. An owner may discover deleted Projects for 30
+days and restore only Project metadata and its human thread under current Team
+membership and Workspace write authority. Restoration does not re-enable
+members, grants, links, children, or frozen publication.
+
+Group leave first checks the last-owner rule and the exact owned Project set.
+The owner reviews that set through Step-up before any Team record is copied to
+Personal storage. A prepared reservation fences included Team records while
+the local edge stores inactive copies for the departing owner. Security or
+governance changes cancel the reservation rather than blocking administrative
+revocation; inactive copies cannot become active without the exact finished
+receipt. Finished receipts remain read-only recoverable by the owner, including
+from a newly enrolled device if the original device was revoked after finish.
+A prepared operation can only be continued by its original enrolled device,
+or canceled from a fresh owner browser session before a new review. Leaving
+has no Undo. A new invitation is required to return, and previous Project
+links or grant advancement are not restored by rejoining.

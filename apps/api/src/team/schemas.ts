@@ -69,6 +69,10 @@ export const teamLeaveActionSchema = z
   .object({
     expectedVersion: z.number().int().positive(),
     expectedTeamVersion: z.number().int().positive().optional(),
+    copyManifestHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
     expectedOwnedWorkspaceProjects: z
       .array(
         z
@@ -78,7 +82,13 @@ export const teamLeaveActionSchema = z
       .max(100)
       .optional()
   })
-  .strict();
+  .strict()
+  .refine(
+    (input) =>
+      !input.expectedOwnedWorkspaceProjects?.length ||
+      Boolean(input.copyManifestHash),
+    { message: "Owned Team leave requires the reviewed copy manifest" }
+  );
 
 export const updateTeamMemberRoleSchema = z
   .object({

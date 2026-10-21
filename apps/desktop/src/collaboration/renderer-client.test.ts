@@ -778,7 +778,20 @@ const createBridge = (initial = fixture()) => {
         }
       }
     }
-    return success(input, current, versions);
+    const result = success(input, current, versions);
+    if (input.command === "collaboration.leave_team") {
+      current = collaborationSnapshotSchema.parse({
+        ...fixture(),
+        connection: current.connection,
+        navigation: {
+          ...current.navigation,
+          teams: current.navigation.teams.filter(
+            (team) => team.id !== input.input.teamId
+          )
+        }
+      });
+    }
+    return result;
   });
   const bridge: CollaborationRendererBridge = {
     command,
@@ -1752,6 +1765,7 @@ describe("collaboration renderer client", () => {
       expectedMembershipVersion: 1,
       expectedOwnedWorkspaceProjects: [],
       ownedSetHash: "a".repeat(64),
+      copyManifestHash: "a".repeat(64),
       stages: []
     }));
     const client = createCollaborationRendererClient(mock.bridge, {
@@ -1853,7 +1867,7 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
-  it("binds a complete owned Project set and finishes only staged Personal copies after Team leave", async () => {
+  it("binds the reviewed owned Project copy manifest before requesting Team leave approval", async () => {
     const mock = createBridge(fixture({ selectedTeam: true }));
     const owned = [
       { id: id(40), version: 2 },
@@ -1869,12 +1883,12 @@ describe("collaboration renderer client", () => {
           expectedMembershipVersion: 1,
           expectedOwnedWorkspaceProjects: owned,
           ownedSetHash: "b".repeat(64),
-          stages: [{ workspaceProjectId: owned[0]!.id, stageId: id(42) }]
+          copyManifestHash: "c".repeat(64),
+          stages: owned.map((project) => ({
+            workspaceProjectId: project.id,
+            payloadHash: "d".repeat(64)
+          }))
         };
-      },
-      teamLeaveFinish: async (_backend, stageIds) => {
-        order.push("finish");
-        expect(stageIds).toEqual([id(42)]);
       }
     });
     const originalCommand = mock.bridge.command;
@@ -1886,14 +1900,15 @@ describe("collaboration renderer client", () => {
     };
     await client.load();
     await client.leaveTeam({ teamId: ids.team, expectedVersion: 1 });
-    expect(order).toEqual(["stage", "grant", "leave", "finish"]);
+    expect(order).toEqual(["stage", "grant", "leave"]);
     const leave = mock.command.mock.calls.find(
       ([command]) => command.command === "collaboration.leave_team"
     )?.[0];
     expect(leave?.input).toMatchObject({
       expectedVersion: 1,
       expectedTeamVersion: 5,
-      expectedOwnedWorkspaceProjects: owned
+      expectedOwnedWorkspaceProjects: owned,
+      copyManifestHash: "c".repeat(64)
     });
     client.dispose();
   });
@@ -1907,6 +1922,7 @@ describe("collaboration renderer client", () => {
         expectedMembershipVersion: 2,
         expectedOwnedWorkspaceProjects: [],
         ownedSetHash: "b".repeat(64),
+        copyManifestHash: "b".repeat(64),
         stages: []
       })
     });

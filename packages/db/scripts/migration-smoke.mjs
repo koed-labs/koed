@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0077_backfill_member_leave_generation";
-const expectedLatestMigrationIndex = 77;
+const expectedLatestMigrationTag = "0083_managed_text_lifecycle_guard";
+const expectedLatestMigrationIndex = 83;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -1032,8 +1032,24 @@ const assertLatestSchema = async (pool) => {
       ["personal_project_id", "uuid", "NO"],
       ["team_backend_id", "text", "NO"],
       ["workspace_project_id", "uuid", "NO"],
+      ["leave_operation_id", "uuid", "YES"],
       ["owned_set_hash", "text", "NO"],
       ["payload_hash", "text", "NO"],
+      ["state", "text", "NO"]
+    ],
+    team_leave_operations: [
+      ["team_id", "uuid", "NO"],
+      ["membership_id", "uuid", "NO"],
+      ["owner_user_id", "uuid", "NO"],
+      ["device_credential_id", "uuid", "NO"],
+      ["device_credential_version", "integer", "NO"],
+      ["action_grant_id", "uuid", "NO"],
+      ["backend_origin_hash", "text", "NO"],
+      ["expected_team_version", "integer", "NO"],
+      ["expected_membership_version", "integer", "NO"],
+      ["owned_projects", "jsonb", "NO"],
+      ["copy_manifest_hash", "text", "NO"],
+      ["final_membership", "jsonb", "YES"],
       ["state", "text", "NO"]
     ],
     personal_workspace_project_principal_bindings: [
@@ -1086,6 +1102,9 @@ const assertLatestSchema = async (pool) => {
     );
   }
   const expectedConstraints = [
+    ["team_leave_operations", "team_leave_operations_action_grant_unique", "u"],
+    ["team_leave_operations", "team_leave_operations_state_check", "c"],
+    ["team_leave_operations", "team_leave_operations_hash_check", "c"],
     ["team_invites", "team_invites_recipient_generation_check", "c"],
     ["team_invites", "team_invites_issuance_membership_check", "c"],
     ["team_invites", "team_invites_lifecycle_shape_check", "c"],
@@ -1357,11 +1376,6 @@ const assertLatestSchema = async (pool) => {
     ],
     [
       "personal_workspace_project_copyback_stages",
-      "personal_workspace_project_copyback_stage_unique",
-      "u"
-    ],
-    [
-      "personal_workspace_project_copyback_stages",
       "personal_workspace_project_copyback_state_check",
       "c"
     ],
@@ -1557,6 +1571,34 @@ const assertLatestSchema = async (pool) => {
     and indexname in ('remote_mcp_oauth_credentials_grant_idx', 'remote_mcp_oauth_grants_user_idx')`);
   if (indexes.rows.length !== 2)
     throw new Error("Latest OAuth lookup indexes are missing");
+  const copyStageIndexes = await pool.query(
+    `select indexname,indexdef from pg_indexes where schemaname='public'
+       and tablename='personal_workspace_project_copyback_stages'
+       and indexname in ('personal_workspace_project_copyback_legacy_unique',
+                         'personal_workspace_project_copyback_operation_unique')`
+  );
+  for (const [name, keys, predicate] of [
+    [
+      "personal_workspace_project_copyback_legacy_unique",
+      "(owner_user_id, team_backend_id, workspace_project_id, reviewed_project_version)",
+      "WHERE (leave_operation_id IS NULL)"
+    ],
+    [
+      "personal_workspace_project_copyback_operation_unique",
+      "(owner_user_id, team_backend_id, leave_operation_id, workspace_project_id)",
+      "WHERE (leave_operation_id IS NOT NULL)"
+    ]
+  ]) {
+    const definition = copyStageIndexes.rows.find(
+      (index) => index.indexname === name
+    )?.indexdef;
+    if (
+      !definition?.includes("UNIQUE INDEX") ||
+      !definition.includes(keys) ||
+      !definition.includes(predicate)
+    )
+      throw new Error(`Personal copy stage uniqueness is missing: ${name}`);
+  }
   const workItemPageIndex = await pool.query(
     `select indexdef from pg_indexes where schemaname='public'
      and tablename='project_work_items' and indexname='project_work_items_page_idx'`
@@ -5987,6 +6029,26 @@ try {
         );
         await runDbMigrations(pool);
         await assertMigrationLedger(pool, fullRecords);
+        await assertLatestSchema(pool);
+        const lifecycle = await pool.query(`
+          select
+            to_regclass('public.team_leave_operations')::text as operations,
+            to_regclass('public.team_leave_operations_one_prepared_member')::text as one_prepared,
+            to_regclass('public.personal_workspace_project_copyback_operation_unique')::text as staged_identity,
+            count(*) filter (where trigger_name like 'team_leave_%')::int as fences
+          from information_schema.triggers
+          where trigger_schema='public'`);
+        if (
+          lifecycle.rows[0]?.operations !== "team_leave_operations" ||
+          lifecycle.rows[0]?.one_prepared !==
+            "team_leave_operations_one_prepared_member" ||
+          lifecycle.rows[0]?.staged_identity !==
+            "personal_workspace_project_copyback_operation_unique" ||
+          lifecycle.rows[0]?.fences < 10
+        )
+          throw new Error(
+            "0078-0082 leave reservation, receipt, or Personal stage schema missing"
+          );
       });
     }
   );

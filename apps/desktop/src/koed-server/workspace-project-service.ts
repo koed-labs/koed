@@ -37,8 +37,15 @@ const leaveStageSchema = z
       z.object({ id: z.uuid(), version: z.number().int().positive() }).strict()
     ),
     ownedSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+    copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+    pendingLeaveOperationId: z.uuid().nullable().optional(),
     stages: z.array(
-      z.object({ workspaceProjectId: z.uuid(), stageId: z.uuid() }).strict()
+      z
+        .object({
+          workspaceProjectId: z.uuid(),
+          payloadHash: z.string().regex(/^[a-f0-9]{64}$/)
+        })
+        .strict()
     )
   })
   .strict();

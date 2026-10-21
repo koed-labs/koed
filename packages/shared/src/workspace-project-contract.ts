@@ -1,6 +1,75 @@
 import { z } from "zod";
 
 export const workspaceProjectIdSchema = z.uuid();
+export const workspaceProjectRestoreRequestSchema = z
+  .object({ expectedProjectVersion: z.number().int().positive() })
+  .strict();
+export const workspaceProjectRestoreResultSchema = z
+  .object({
+    projectId: z.uuid(),
+    lifecycle: z.literal("active"),
+    version: z.number().int().positive()
+  })
+  .strict();
+export const workspaceProjectLifecycleReviewSchema = z
+  .object({
+    project: z
+      .object({
+        id: z.uuid(),
+        teamId: z.uuid(),
+        workspaceId: z.uuid(),
+        ownerTeamMemberId: z.uuid(),
+        name: z.string(),
+        key: z.string(),
+        lifecycle: z.literal("active"),
+        version: z.number().int().positive(),
+        copiedAt: z.unknown().nullable()
+      })
+      .strict(),
+    actorUserId: z.uuid(),
+    actorTeamMemberId: z.uuid(),
+    actorMemberVersion: z.number().int().positive(),
+    ownerUserId: z.uuid(),
+    targetUserId: z.uuid().nullable(),
+    targetTeamMemberId: z.uuid().nullable(),
+    targetMemberVersion: z.number().int().positive().nullable(),
+    targetAccess: z.enum(["read", "write", "disabled"]).nullable(),
+    actorAccess: z.enum(["read", "write"]),
+    actorWorkspaceAccess: z.enum(["read", "write"])
+  })
+  .strict();
+export const workspaceProjectLifecycleResultSchema = z.union([
+  z
+    .object({
+      projectId: z.uuid(),
+      memberId: z.uuid(),
+      access: z.literal("disabled")
+    })
+    .strict(),
+  z.object({ projectId: z.uuid(), lifecycle: z.literal("deleted") }).strict()
+]);
+export type WorkspaceProjectLifecycleReview = z.infer<
+  typeof workspaceProjectLifecycleReviewSchema
+>;
+export type WorkspaceProjectLifecycleResult = z.infer<
+  typeof workspaceProjectLifecycleResultSchema
+>;
+export const workspaceProjectRestorableListSchema = z
+  .array(
+    z
+      .object({
+        projectId: z.uuid(),
+        teamId: z.uuid(),
+        name: z.string().min(1),
+        version: z.number().int().positive(),
+        deletedAt: z.iso.datetime({ offset: true })
+      })
+      .strict()
+  )
+  .max(100);
+export type WorkspaceProjectRestorable = z.infer<
+  typeof workspaceProjectRestorableListSchema
+>[number];
 // Browser-safe Share Project projections. These contain Team identities and
 // source metadata only; private Personal IDs and content never cross this wire.
 export const workspaceProjectShareContextSchema = z
@@ -52,6 +121,7 @@ export const workspaceProjectMembersSchema = z
       z
         .object({
           teamMemberId: z.uuid(),
+          userId: z.uuid().optional(),
           displayName: z.string(),
           access: z.enum(["read", "write"])
         })

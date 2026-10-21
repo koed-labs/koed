@@ -1,7 +1,15 @@
 import { legacyTeamInvite } from "./invite-serialization.js";
 import {
   sharedMemoryGrantScopedSourceId,
-  teamPresenceStatusCatalogue
+  teamPresenceStatusCatalogue,
+  teamLeaveContinuationSchema,
+  teamLeaveFinishRequestSchema,
+  teamLeavePreparedOperationSchema,
+  teamLeaveOperationStatusSchema,
+  teamLeaveCancelResultSchema,
+  teamLeaveRecoverRequestSchema,
+  teamLeaveRecoveredOperationSchema,
+  teamLeaveFinishedProofSchema
 } from "@koed/shared";
 import {
   defaultFreshAuthenticationMaxAgeMs,
@@ -310,7 +318,13 @@ export const registerTeamRoutes = (
         Pick<
           MemorySourceRepository,
           "ensureLocalSyncDeployment" | "getVerifiedExternalAuthIdentityForUser"
-        >
+        >,
+      grantBinding?: {
+        actionGrantId: string;
+        deviceCredentialId: string;
+        deviceCredentialVersion: number;
+        upstreamBackendId: string;
+      }
     ) => Promise<{ statusCode: number; body: TBody } | null>,
     options: { requireVerifiedIdentity?: boolean } = {}
   ): Promise<{ statusCode: number; body: TBody }> => {
@@ -356,12 +370,12 @@ export const registerTeamRoutes = (
         path: requestPath(request),
         body: input.body
       },
-      execute: async ({ team, sync, externalAuth }) => {
+      execute: async ({ team, sync, externalAuth }, grantBinding) => {
         const repository = { ...team, ...sync, ...externalAuth };
         if (requireIdentity) {
           await requireVerifiedTeamIdentity(repository, actor.user);
         }
-        return execute(repository);
+        return execute(repository, grantBinding);
       }
     });
     if (!result) {
@@ -742,7 +756,18 @@ export const registerTeamRoutes = (
       const input = teamLeaveActionSchema.parse(request.body);
       return (
         await runVersioned(() =>
-          runHighRiskTeamWrite(
+          runHighRiskTeamWrite<
+            | {
+                operation: NonNullable<
+                  Awaited<ReturnType<TeamAccessRepository["prepareTeamLeave"]>>
+                >;
+              }
+            | {
+                membership: NonNullable<
+                  Awaited<ReturnType<TeamAccessRepository["leaveTeam"]>>
+                >;
+              }
+          >(
             request,
             actor,
             {
@@ -751,7 +776,37 @@ export const registerTeamRoutes = (
               targetId: teamId,
               body: request.body
             },
-            async (repo) => {
+            async (repo, grantBinding) => {
+              if (input.expectedOwnedWorkspaceProjects?.length) {
+                if (
+                  !grantBinding ||
+                  !input.expectedTeamVersion ||
+                  !input.copyManifestHash
+                )
+                  throw forbidden(
+                    "Owned Team departure needs an exact approved device action"
+                  );
+                const operation = await repo.prepareTeamLeave(
+                  { userId: actor.user.id },
+                  {
+                    teamId,
+                    expectedVersion: input.expectedVersion,
+                    expectedTeamVersion: input.expectedTeamVersion,
+                    expectedOwnedWorkspaceProjects:
+                      input.expectedOwnedWorkspaceProjects,
+                    copyManifestHash: input.copyManifestHash,
+                    grant: {
+                      ...grantBinding,
+                      backendOriginHash: backendOriginHash(
+                        verifiedLocalDeploymentId()
+                      )
+                    }
+                  }
+                );
+                return operation
+                  ? { statusCode: 200, body: { operation } }
+                  : null;
+              }
               const membership = await repo.leaveTeam(
                 { userId: actor.user.id },
                 { teamId, ...input }
@@ -764,6 +819,223 @@ export const registerTeamRoutes = (
           )
         )
       ).body;
+    }
+  );
+
+  app.post(
+    "/v1/teams/:teamId/leave-operations/recover",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      rejectApiToken(request);
+      const auth = await authenticateDeviceCredential(request);
+      if (!auth.credential.operationFamilies.includes("action_grant"))
+        throw forbidden(
+          "Device credential is not allowed for Team departure recovery"
+        );
+      const { teamId } = teamIdParamsSchema.parse(request.params);
+      const body = teamLeaveRecoverRequestSchema.parse(request.body);
+      const operations = await requireRepository().recoverTeamLeaveOperations({
+        teamId,
+        ownerUserId: auth.user.id,
+        deviceCredentialId: auth.credential.id,
+        upstreamBackendId: auth.credential.upstreamBackendId,
+        backendOriginHash: backendOriginHash(verifiedLocalDeploymentId()),
+        ...body
+      });
+      return {
+        operations: operations.map((operation) =>
+          teamLeaveRecoveredOperationSchema.parse(operation)
+        )
+      };
+    }
+  );
+  app.post(
+    "/v1/teams/:teamId/text-action-lifecycle-proof",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      rejectApiToken(request);
+      const auth = await authenticateDeviceCredential(request);
+      if (!auth.credential.operationFamilies.includes("team_workspace_read"))
+        throw forbidden("Enrolled Team read credential required");
+      const { teamId } = teamIdParamsSchema.parse(request.params);
+      const parsedBody = z
+        .object({
+          effectKey: z.uuid(),
+          targetId: z.uuid(),
+          action: z.enum(["workspace_project.leave", "team.leave"]),
+          expectedProjectVersion: z.number().int().positive().optional(),
+          expectedMemberVersion: z.number().int().positive().optional(),
+          expectedMembershipVersion: z.number().int().positive().optional(),
+          expectedTeamVersion: z.number().int().positive().optional()
+        })
+        .strict()
+        .safeParse(request.body);
+      if (!parsedBody.success)
+        throw badRequest("Invalid lifecycle receipt request");
+      const body = parsedBody.data;
+      const confirmed = await requireRepository().textActionLifecycleProof({
+        ...body,
+        teamId,
+        ownerUserId: auth.user.id,
+        upstreamBackendId: auth.credential.upstreamBackendId,
+        backendOriginHash: backendOriginHash(verifiedLocalDeploymentId())
+      });
+      return { confirmed };
+    }
+  );
+  app.post(
+    "/v1/teams/:teamId/leave-operations/:operationId/finished-proof",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      rejectApiToken(request);
+      const auth = await authenticateDeviceCredential(request);
+      if (!auth.credential.operationFamilies.includes("team_workspace_read"))
+        throw forbidden("Enrolled Team read credential required");
+      const { teamId, operationId } = z
+        .object({ teamId: z.uuid(), operationId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const proof = await requireRepository().finishedTeamLeaveProof({
+        teamId,
+        operationId,
+        ownerUserId: auth.user.id,
+        upstreamBackendId: auth.credential.upstreamBackendId,
+        backendOriginHash: backendOriginHash(verifiedLocalDeploymentId())
+      });
+      if (!proof) throw forbidden("Finished Team departure unavailable");
+      return { proof: teamLeaveFinishedProofSchema.parse(proof) };
+    }
+  );
+  app.post(
+    "/v1/teams/:teamId/leave-operations/:operationId/status",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      rejectApiToken(request);
+      const auth = await authenticateDeviceCredential(request);
+      if (!auth.credential.operationFamilies.includes("action_grant"))
+        throw forbidden("Device credential is not allowed for Team departure");
+      const params = z
+        .object({ teamId: z.uuid(), operationId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const body = teamLeaveContinuationSchema.parse(request.body);
+      const operation = await requireRepository().teamLeaveOperationStatus(
+        { userId: auth.user.id },
+        {
+          ...params,
+          continuation: body.continuation,
+          deviceCredentialId: auth.credential.id,
+          upstreamBackendId: auth.credential.upstreamBackendId,
+          backendOriginHash: backendOriginHash(verifiedLocalDeploymentId())
+        }
+      );
+      if (!operation) throw forbidden("Prepared Team departure unavailable");
+      return { operation: teamLeaveOperationStatusSchema.parse(operation) };
+    }
+  );
+  app.post(
+    "/v1/teams/:teamId/leave-operations/prepare-receipt",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      rejectApiToken(request);
+      const auth = await authenticateDeviceCredential(request);
+      if (!auth.credential.operationFamilies.includes("action_grant"))
+        throw forbidden("Device credential is not allowed for Team departure");
+      const { teamId } = teamIdParamsSchema.parse(request.params);
+      const body = z
+        .object({
+          clientRequestId: z.uuid(),
+          approvedBody: teamLeaveActionSchema
+        })
+        .strict()
+        .parse(request.body);
+      if (
+        !body.approvedBody.expectedOwnedWorkspaceProjects?.length ||
+        !body.approvedBody.copyManifestHash
+      )
+        throw badRequest(
+          "Owned Team departure receipt requires an exact manifest"
+        );
+      const exact = await requireRepository().reconcileActionGrantExecution<{
+        operation: {
+          operationId: string;
+          continuation: string;
+          copyManifestHash: string;
+          ownedSetHash: string;
+          state: "prepared";
+        };
+      }>({
+        clientRequestId: body.clientRequestId,
+        actionGrantId: body.clientRequestId,
+        ownerUserId: auth.user.id,
+        deviceCredentialId: auth.credential.id,
+        upstreamBackendId: auth.credential.upstreamBackendId,
+        teamId,
+        operationFamily: "admin",
+        action: "team.leave",
+        targetId: teamId,
+        scopeHash: teamAdminScopeHash({
+          action: "team.leave",
+          teamId,
+          targetId: teamId
+        }),
+        requestHash: teamAdminRequestHash({
+          method: "POST",
+          path: `/v1/teams/${teamId}/leave`,
+          body: body.approvedBody
+        })
+      });
+      const operation = exact.receipt?.body?.operation;
+      if (
+        !operation ||
+        operation.copyManifestHash !== body.approvedBody.copyManifestHash
+      )
+        throw conflict("Prepared Team departure receipt unavailable");
+      return { operation: teamLeavePreparedOperationSchema.parse(operation) };
+    }
+  );
+  app.post(
+    "/v1/teams/:teamId/leave-operations/:operationId/finish",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      rejectApiToken(request);
+      const auth = await authenticateDeviceCredential(request);
+      if (!auth.credential.operationFamilies.includes("action_grant"))
+        throw forbidden("Device credential is not allowed for Team departure");
+      const params = z
+        .object({ teamId: z.uuid(), operationId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const body = teamLeaveFinishRequestSchema.parse(request.body);
+      const result = await requireRepository().finishPreparedTeamLeave({
+        ...params,
+        ...body,
+        ownerUserId: auth.user.id,
+        deviceCredentialId: auth.credential.id,
+        upstreamBackendId: auth.credential.upstreamBackendId,
+        backendOriginHash: backendOriginHash(verifiedLocalDeploymentId())
+      });
+      if (!result)
+        throw conflict("Prepared Team departure changed; review again");
+      return result;
+    }
+  );
+  app.post(
+    "/v1/teams/:teamId/leave-operations/:operationId/cancel",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      rejectApiToken(request);
+      const user = await requireFreshSession(request);
+      const params = z
+        .object({ teamId: z.uuid(), operationId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const result = await requireRepository().cancelTeamLeaveOperation(
+        { userId: user.id },
+        params
+      );
+      if (!result) throw conflict("Prepared Team departure is unavailable");
+      return teamLeaveCancelResultSchema.parse(result);
     }
   );
 

@@ -25,6 +25,7 @@ import {
   externalAuthIdentities,
   externalAuthOrganizations,
   teamInvites,
+  teamLeaveOperations,
   teamBillingSeatStates,
   teamMemberships,
   teamRepresentationPolicies,
@@ -2690,6 +2691,241 @@ export const createTeamAccessRepository = (
       });
     },
 
+    async cancelTeamLeaveOperation(
+      actor: ActorContext,
+      input: { teamId: string; operationId: string }
+    ) {
+      return withTeamAccessTransaction(async (_tx, client) => {
+        await client.query("select id from teams where id=$1 for update", [
+          input.teamId
+        ]);
+        const row = await client.query<{ state: string }>(
+          `select state from team_leave_operations
+            where id=$1 and team_id=$2 and owner_user_id=$3 for update`,
+          [input.operationId, input.teamId, actor.userId]
+        );
+        if (!row.rows[0] || row.rows[0].state === "finished") return null;
+        if (row.rows[0].state === "prepared")
+          await client.query(
+            `update team_leave_operations set state='canceled',canceled_at=now(),
+                    canceled_reason='owner_canceled',updated_at=now()
+              where id=$1 and state='prepared'`,
+            [input.operationId]
+          );
+        return { operationId: input.operationId, state: "canceled" as const };
+      });
+    },
+
+    async teamLeaveOperationStatus(
+      actor: ActorContext,
+      input: {
+        teamId: string;
+        operationId: string;
+        continuation: string;
+        deviceCredentialId: string;
+        upstreamBackendId: string;
+        backendOriginHash: string;
+      }
+    ) {
+      const commitment = createHash("sha256")
+        .update(`koed:team-leave-continuation:v1\n${input.continuation}`)
+        .digest("hex");
+      const result = await pool.query<{
+        state: string;
+        copy_manifest_hash: string;
+        owned_set_hash: string;
+        expected_team_version: number;
+        expected_membership_version: number;
+        owned_projects: Array<{ id: string; version: number }>;
+        action_grant_id: string;
+        final_membership: TeamMembershipRecord | null;
+      }>(
+        `select operation.state,operation.copy_manifest_hash,operation.owned_set_hash,
+                operation.expected_team_version,operation.expected_membership_version,
+                operation.owned_projects,operation.action_grant_id,
+                operation.final_membership
+           from team_leave_operations operation
+           join device_credentials credential
+             on credential.id=operation.device_credential_id
+           join high_risk_device_action_grants action_grant
+             on action_grant.id=operation.action_grant_id
+           join high_risk_browser_confirmations confirmation
+             on confirmation.id=action_grant.confirmation_id
+          where operation.id=$1 and operation.team_id=$2
+            and operation.owner_user_id=$3 and operation.device_credential_id=$4
+            and operation.upstream_backend_id=$5 and operation.backend_origin_hash=$6
+            and operation.continuation_commitment=$7
+            and credential.owner_user_id=$3
+            and credential.credential_version=operation.device_credential_version
+            and credential.revoked_at is null
+            and (credential.expires_at is null or credential.expires_at>now())
+            and 'action_grant'=any(credential.operation_families)
+            and action_grant.owner_user_id=$3 and action_grant.device_credential_id=$4
+            and action_grant.upstream_backend_id=$5 and action_grant.team_id=$2
+            and action_grant.action='team.leave' and action_grant.state='consumed'
+            and action_grant.use_count=1 and action_grant.consumed_at is not null
+            and confirmation.state='approved' and confirmation.approval_tier='step_up'`,
+        [
+          input.operationId,
+          input.teamId,
+          actor.userId,
+          input.deviceCredentialId,
+          input.upstreamBackendId,
+          input.backendOriginHash,
+          commitment
+        ]
+      );
+      const row = result.rows[0];
+      return row
+        ? {
+            operationId: input.operationId,
+            state: row.state as "prepared" | "finished" | "canceled",
+            copyManifestHash: row.copy_manifest_hash,
+            ownedSetHash: row.owned_set_hash,
+            expectedTeamVersion: row.expected_team_version,
+            expectedMembershipVersion: row.expected_membership_version,
+            ownedProjects: row.owned_projects,
+            finalMembership: row.final_membership
+          }
+        : null;
+    },
+
+    async prepareTeamLeave(
+      actor: ActorContext,
+      input: {
+        teamId: string;
+        expectedVersion: number;
+        expectedTeamVersion: number;
+        expectedOwnedWorkspaceProjects: Array<{ id: string; version: number }>;
+        copyManifestHash: string;
+        grant: {
+          actionGrantId: string;
+          deviceCredentialId: string;
+          deviceCredentialVersion: number;
+          upstreamBackendId: string;
+          backendOriginHash: string;
+        };
+      }
+    ) {
+      return withTeamAccessTransaction(async (tx, client) => {
+        await lockTeamOwnerLifecycle(tx, input.teamId);
+        const team = await client.query<{
+          id: string;
+          version: number;
+          lifecycle: string;
+          entitlement_status: string;
+        }>(
+          "select id,version,lifecycle,entitlement_status from teams where id=$1 for update",
+          [input.teamId]
+        );
+        const member = await client.query<{
+          id: string;
+          version: number;
+          role: string;
+          status: string;
+          disabled_at: Date | null;
+        }>(
+          `select id,version,role,status,disabled_at from team_memberships
+             where team_id=$1 and user_id=$2 for update`,
+          [input.teamId, actor.userId]
+        );
+        const current = member.rows[0] ?? staleVersion();
+        if (
+          team.rows[0]?.lifecycle !== "active" ||
+          !["active", "grace"].includes(team.rows[0].entitlement_status) ||
+          team.rows[0].version !== input.expectedTeamVersion ||
+          current.status !== "enabled" ||
+          current.disabled_at ||
+          current.version !== input.expectedVersion
+        )
+          staleVersion();
+        if (current.role === "owner") {
+          const owners = await client.query<{ count: number }>(
+            `select count(*)::int as count from team_memberships
+              where team_id=$1 and role='owner' and status='enabled'
+                and disabled_at is null`,
+            [input.teamId]
+          );
+          if (owners.rows[0]!.count <= 1) staleVersion();
+        }
+        const owned = await ownedWorkspaceProjectSet(
+          client,
+          input.teamId,
+          current.id
+        );
+        const claimed = input.expectedOwnedWorkspaceProjects;
+        if (
+          owned.length === 0 ||
+          owned.length !== claimed.length ||
+          owned.some(
+            (project, index) =>
+              project.id !== claimed[index]?.id ||
+              project.version !== claimed[index]?.version
+          )
+        )
+          staleVersion();
+        for (const project of owned) {
+          const locked = await client.query<{ version: number }>(
+            `select version from workspace_projects where id=$1 and team_id=$2
+              and owner_team_member_id=$3 and lifecycle='active' for update`,
+            [project.id, input.teamId, current.id]
+          );
+          if (locked.rows[0]?.version !== project.version) staleVersion();
+        }
+        const credential = await client.query<{ credential_version: number }>(
+          `select credential_version from device_credentials where id=$1
+             and owner_user_id=$2 and upstream_backend_id=$3
+             and revoked_at is null and (expires_at is null or expires_at>now())
+             and 'action_grant'=any(operation_families) for update`,
+          [
+            input.grant.deviceCredentialId,
+            actor.userId,
+            input.grant.upstreamBackendId
+          ]
+        );
+        if (
+          credential.rows[0]?.credential_version !==
+          input.grant.deviceCredentialVersion
+        )
+          staleVersion();
+        const ownedSetHash = createHash("sha256")
+          .update(JSON.stringify(owned))
+          .digest("hex");
+        const continuation = randomUUID() + randomUUID();
+        const commitment = createHash("sha256")
+          .update(`koed:team-leave-continuation:v1\n${continuation}`)
+          .digest("hex");
+        const [operation] = await tx
+          .insert(teamLeaveOperations)
+          .values({
+            teamId: input.teamId,
+            membershipId: current.id,
+            ownerUserId: actor.userId,
+            deviceCredentialId: input.grant.deviceCredentialId,
+            deviceCredentialVersion: credential.rows[0]!.credential_version,
+            upstreamBackendId: input.grant.upstreamBackendId,
+            backendOriginHash: input.grant.backendOriginHash,
+            actionGrantId: input.grant.actionGrantId,
+            continuationCommitment: commitment,
+            expectedTeamVersion: input.expectedTeamVersion,
+            expectedMembershipVersion: input.expectedVersion,
+            ownedProjects: owned,
+            ownedSetHash,
+            copyManifestHash: input.copyManifestHash
+          })
+          .returning({ id: teamLeaveOperations.id });
+        return operation
+          ? {
+              operationId: operation.id,
+              continuation,
+              copyManifestHash: input.copyManifestHash,
+              ownedSetHash,
+              state: "prepared" as const
+            }
+          : null;
+      });
+    },
+
     async leaveTeam(
       actor: ActorContext,
       input: {
@@ -2907,6 +3143,44 @@ export const createTeamAccessRepository = (
           .returning();
         const disabledRow = disabledRows[0] ?? staleVersion();
         const disabledMembership = mapMembershipRecord(disabledRow);
+
+        // This cleanup is deliberately narrower than the leave-generation
+        // fence: only pending invitations for this Team and the User's current
+        // normalized address are revoked. Older-address invitations remain
+        // unusable because the membership generation advanced above.
+        const recipient = await tx
+          .select({ email: users.email })
+          .from(users)
+          .where(eq(users.id, actor.userId))
+          .limit(1)
+          .for("update");
+        const currentEmail = recipient[0]?.email?.trim().toLowerCase();
+        if (!currentEmail) throw new Error("Departing User email unavailable");
+        const revokedInvites = await tx
+          .update(teamInvites)
+          .set({
+            lifecycle: "revoked",
+            revokedAt: sql`now()`,
+            version: sql`${teamInvites.version} + 1`
+          })
+          .where(
+            and(
+              eq(teamInvites.teamId, input.teamId),
+              eq(teamInvites.normalizedEmail, currentEmail),
+              eq(teamInvites.lifecycle, "pending")
+            )
+          )
+          .returning();
+        for (const invite of revokedInvites) {
+          await appendCollaborationOutboxEvent(tx, {
+            family: "access_revoked",
+            teamId: input.teamId,
+            teamWorkspaceId: invite.defaultTeamWorkspaceId,
+            resourceType: "team_invite",
+            resourceId: invite.id,
+            actorUserId: actor.userId
+          });
+        }
 
         await insertTeamAudit(tx, {
           actorUserId: actor.userId,
@@ -4204,6 +4478,12 @@ export const createTeamAccessRepository = (
         teamId,
         row.membership.id
       );
+      const pending = await pool.query<{ id: string }>(
+        `select id from team_leave_operations
+          where team_id=$1 and owner_user_id=$2 and membership_id=$3
+            and state='prepared' limit 1`,
+        [teamId, actor.userId, row.membership.id]
+      );
       return {
         team: { id: row.teamId, name: row.teamName, version: row.teamVersion },
         membership: {
@@ -4215,7 +4495,8 @@ export const createTeamAccessRepository = (
         },
         activeOwnerCount: row.activeOwnerCount,
         ownedWorkspaceProjectCount: ownedProjects.length,
-        ownedWorkspaceProjects: ownedProjects
+        ownedWorkspaceProjects: ownedProjects,
+        pendingLeaveOperationId: pending.rows[0]?.id ?? null
       };
     },
 

@@ -570,10 +570,11 @@ export const createWorkspaceProjectRepository = (
         );
         const rows = await client.query<{
           team_member_id: string;
+          user_id: string;
           display_name: string | null;
           access: "read" | "write";
         }>(
-          `select membership.id as team_member_id,
+          `select membership.id as team_member_id,membership.user_id,
                   coalesce(account.display_name,account.email) as display_name,
                   association.access
              from workspace_project_members association
@@ -599,6 +600,7 @@ export const createWorkspaceProjectRepository = (
           version: Number(project.version),
           people: rows.rows.map((row) => ({
             teamMemberId: row.team_member_id,
+            userId: row.user_id,
             displayName: row.display_name ?? "Team member",
             access: row.access
           }))
@@ -2788,6 +2790,157 @@ export const createWorkspaceProjectRepository = (
           resourceId: projectId
         });
         return { projectId, lifecycle: "deleted" as const };
+      });
+    },
+
+    async listRestorableProjects(actorUserId: string) {
+      const rows = await pool.query<Row>(
+        `
+        select project.id,project.team_id,project.name,project.version,
+               project.deleted_at
+          from workspace_projects project
+          join team_memberships member
+            on member.id=project.owner_team_member_id
+           and member.team_id=project.team_id and member.user_id=$1
+           and member.status='enabled' and member.disabled_at is null
+          join users actor on actor.id=$1
+           and actor.disabled_at is null and actor.deleted_at is null
+          join teams team on team.id=project.team_id
+           and team.lifecycle='active' and team.entitlement_status in ('active','grace')
+          join team_workspaces workspace on workspace.id=project.workspace_id
+           and workspace.team_id=team.id and workspace.lifecycle='active'
+          join team_workspace_access_grants access
+            on access.team_workspace_id=workspace.id
+           and access.team_id=team.id and access.user_id=$1
+           and access.access='write' and access.disabled_at is null
+         where project.lifecycle='deleted'
+           and project.deleted_at>now()-interval '30 days'
+         order by project.deleted_at desc,project.id
+         limit 100`,
+        [actorUserId]
+      );
+      return rows.rows.map((row) => ({
+        projectId: String(row.id),
+        teamId: String(row.team_id),
+        name: String(row.name),
+        version: Number(row.version),
+        deletedAt:
+          row.deleted_at instanceof Date
+            ? row.deleted_at.toISOString()
+            : String(row.deleted_at)
+      }));
+    },
+
+    async restoreProject(
+      actorUserId: string,
+      projectId: string,
+      expectedProjectVersion: number
+    ) {
+      return transaction(pool, async (client) => {
+        const identity = await one(
+          client,
+          "select team_id,workspace_id from workspace_projects where id=$1",
+          [projectId]
+        );
+        if (!identity)
+          throw new WorkspaceProjectUnavailableError(
+            "Deleted Project unavailable"
+          );
+        const team = await one(
+          client,
+          "select lifecycle,entitlement_status from teams where id=$1 for update",
+          [identity.team_id]
+        );
+        const user = await one(
+          client,
+          "select disabled_at,deleted_at from users where id=$1 for update",
+          [actorUserId]
+        );
+        const member = await one(
+          client,
+          `select id,status,disabled_at from team_memberships
+             where team_id=$1 and user_id=$2 for update`,
+          [identity.team_id, actorUserId]
+        );
+        const workspace = await one(
+          client,
+          "select lifecycle from team_workspaces where id=$1 and team_id=$2 for update",
+          [identity.workspace_id, identity.team_id]
+        );
+        const access = await one(
+          client,
+          `select access,disabled_at from team_workspace_access_grants
+            where team_workspace_id=$1 and team_id=$2 and user_id=$3 for update`,
+          [identity.workspace_id, identity.team_id, actorUserId]
+        );
+        if (
+          team?.lifecycle !== "active" ||
+          !["active", "grace"].includes(String(team.entitlement_status)) ||
+          !user ||
+          user.disabled_at ||
+          user.deleted_at ||
+          member?.status !== "enabled" ||
+          member.disabled_at ||
+          workspace?.lifecycle !== "active" ||
+          access?.access !== "write" ||
+          access.disabled_at
+        )
+          throw new WorkspaceProjectUnavailableError(
+            "Current Project owner authority unavailable"
+          );
+        const row = await one(
+          client,
+          `select project.id,project.team_id,project.workspace_id,
+                  project.version,project.lifecycle,project.deleted_at,
+                  owner_member.user_id as owner_user_id
+             from workspace_projects project
+             join team_memberships owner_member
+               on owner_member.id=project.owner_team_member_id
+            where project.id=$1 and owner_member.user_id=$2
+              and owner_member.id=$3
+            for update of project`,
+          [projectId, actorUserId, member.id]
+        );
+        if (!row || row.lifecycle !== "deleted")
+          throw new WorkspaceProjectUnavailableError(
+            "Deleted Project owner authority unavailable"
+          );
+        if (Number(row.version) !== expectedProjectVersion)
+          throw new WorkspaceProjectConflictError(row);
+        const restored = await one(
+          client,
+          `update workspace_projects
+              set lifecycle='active',deleted_at=null,
+                  version=version+1,updated_at=now()
+            where id=$1 and lifecycle='deleted' and version=$2
+              and deleted_at > now() - interval '30 days'
+            returning version`,
+          [projectId, expectedProjectVersion]
+        );
+        if (!restored)
+          throw new WorkspaceProjectUnavailableError(
+            "Project restore window expired"
+          );
+        await client.query(
+          `update collaboration_threads
+              set lifecycle='active',archived_at=null,
+                  version=version+1,updated_at=now()
+            where workspace_project_id=$1 and scope='team'
+              and kind='project_thread' and lifecycle='archived'`,
+          [projectId]
+        );
+        await notifyProjectChange(client, {
+          teamId: String(row.team_id),
+          workspaceId: String(row.workspace_id),
+          actorUserId,
+          resourceType: "workspace_project",
+          resourceId: projectId
+        });
+        return {
+          projectId,
+          lifecycle: "active" as const,
+          version: Number(restored.version)
+        };
       });
     }
   };

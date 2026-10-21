@@ -646,6 +646,30 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: write
   },
+  "collaboration.review_project_lifecycle": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.leave_project": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.remove_project_member": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.delete_shared_project": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.restore_shared_project": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.list_restorable_projects": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
   "collaboration.delete_project_source": {
     scope: "team",
     desktopOperationFamily: write

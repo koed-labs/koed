@@ -12,6 +12,7 @@ const workspaceProjectId = randomUUID();
 const workItemId = randomUUID();
 const sourceOwnerTeamMemberId = randomUUID();
 const backendId = "team-vps";
+const teamId = randomUUID();
 const scope = {
   ownerUserId,
   projectId,
@@ -68,6 +69,27 @@ const fixture = () => {
       authorization: "Koed-Device sealed:secret"
     });
     const url = new URL(String(input));
+    if (
+      url.pathname.endsWith(`/teams/${teamId}/workspace-project-leave-review`)
+    )
+      return Response.json({
+        team: { id: teamId, version: 4 },
+        membership: { userId: principal, status: "enabled", version: 3 }
+      });
+    if (url.pathname.endsWith(`/teams/${teamId}/text-action-lifecycle-proof`))
+      return Response.json({
+        confirmed: JSON.parse(String(init?.body)).effectKey === workItemId
+      });
+    if (
+      url.pathname.endsWith(
+        `/workspace-projects/${workspaceProjectId}/lifecycle-review`
+      )
+    )
+      return Response.json({
+        project: { id: workspaceProjectId, teamId, version },
+        actorUserId: principal,
+        actorMemberVersion: 3
+      });
     if (url.pathname.endsWith("/proposal-proof"))
       return Response.json({
         projectId: workspaceProjectId,
@@ -157,6 +179,64 @@ afterEach(() => {
     rmSync(path, { recursive: true, force: true });
 });
 describe("Managed text action Team authority", () => {
+  it("binds group and Project leave proposals to the current enrolled Team principal", async () => {
+    const f = fixture();
+    await expect(
+      f.teamLeaveAuthority({ ownerUserId, teamId })
+    ).resolves.toEqual({
+      teamBackendId: backendId,
+      teamPrincipalUserId: await f.personal.principalBinding(),
+      expectedMembershipVersion: 3,
+      expectedTeamVersion: 4
+    });
+    await expect(
+      f.authority({ ...scope, name: "koed_project_leave" })
+    ).resolves.toMatchObject({
+      teamId,
+      teamProjectVersion: 7,
+      teamMemberVersion: 3
+    });
+    const principal = await f.personal.principalBinding();
+    await expect(
+      f.lifecycleReceipt({
+        ownerUserId,
+        teamBackendId: backendId,
+        teamPrincipalUserId: principal,
+        teamId,
+        targetId: teamId,
+        effectKey: workItemId,
+        name: "koed_workspace_leave",
+        expectedMembershipVersion: 3,
+        expectedTeamVersion: 4
+      })
+    ).resolves.toBe(true);
+    expect(f.fetch).toHaveBeenCalledWith(
+      expect.any(URL),
+      expect.objectContaining({
+        body: JSON.stringify({
+          effectKey: workItemId,
+          targetId: teamId,
+          action: "team.leave",
+          expectedMembershipVersion: 3,
+          expectedTeamVersion: 4
+        })
+      })
+    );
+    f.setPrincipal(randomUUID());
+    await expect(
+      f.lifecycleReceipt({
+        ownerUserId,
+        teamBackendId: backendId,
+        teamPrincipalUserId: principal,
+        teamId,
+        targetId: teamId,
+        effectKey: workItemId,
+        name: "koed_workspace_leave",
+        expectedMembershipVersion: 3,
+        expectedTeamVersion: 4
+      })
+    ).resolves.toBe(false);
+  });
   it("sends strict Team cards and verifies a same-device salted receipt", async () => {
     const f = fixture();
     const actionId = randomUUID();

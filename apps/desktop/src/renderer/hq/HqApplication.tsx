@@ -49,6 +49,8 @@ import {
 } from "./conversation/hq-conversation-threads.js";
 import { HqShell, type HqShellActions } from "./HqShell.js";
 import { HqSidebar, type HqAccountIdentity } from "./HqSidebar.js";
+import { HqTeamGroups } from "./HqTeamGroups.js";
+import { HqProjectLifecycle } from "./HqProjectLifecycle.js";
 import {
   HqChatDeleteControls,
   type ChatDeleteNotice,
@@ -164,6 +166,20 @@ export function HqApplication({
   }>({ route: { kind: "home" } });
   const [searchOpen, setSearchOpen] = useState(false);
   const [shareProjectId, setShareProjectId] = useState<string | null>(null);
+  const [teamGroupsOpen, setTeamGroupsOpen] = useState(false);
+  const [requestedLeaveTeamId, setRequestedLeaveTeamId] = useState<
+    string | null
+  >(null);
+  const [projectLeaveTextAction, setProjectLeaveTextAction] =
+    useState<KoedTextActionProjection | null>(null);
+  const [groupLeaveTextAction, setGroupLeaveTextAction] =
+    useState<KoedTextActionProjection | null>(null);
+  const [textLifecycleReviewError, setTextLifecycleReviewError] = useState<
+    string | null
+  >(null);
+  const [lifecycleProjectId, setLifecycleProjectId] = useState<string | null>(
+    null
+  );
   const [openDeckRequest, setOpenDeckRequest] = useState<{
     ownerId: string;
     profileKey: string;
@@ -174,6 +190,10 @@ export function HqApplication({
   const openDeckNonce = useRef(0);
   useEffect(() => {
     setShareProjectId(null);
+    setLifecycleProjectId(null);
+    setRequestedLeaveTeamId(null);
+    setProjectLeaveTextAction(null);
+    setGroupLeaveTextAction(null);
     setOpenDeckRequest(null);
   }, [visibilityOwnerId, visibilityProfileKey]);
   const [citationFocus, setCitationFocus] = useState<{
@@ -2070,6 +2090,46 @@ export function HqApplication({
       await personalMemoryStore?.loadProjects({ silent: true });
     return allComplete && stillCurrent();
   };
+  const declineOwnerLeave = async (action: KoedTextActionProjection) => {
+    const api = window.koedDesktop?.managedTextActions;
+    const owner = visibilityOwnerId,
+      profile = visibilityProfileKey;
+    const backend = action.snapshot.teamBackendId;
+    const principal = action.snapshot.teamPrincipalUserId;
+    const stillCurrent = () =>
+      projectsStore?.current()?.ownerId === owner &&
+      projectsStore?.current()?.profileKey === profile &&
+      (typeof backend !== "string" ||
+        (visibilityClient?.current()?.connection.backendId === backend &&
+          visibilityClient.current()?.navigation.teamPrincipal?.id ===
+            principal));
+    if (
+      !api ||
+      action.name !== "koed_project_leave" ||
+      action.ownerUserId !== owner ||
+      action.state !== "awaiting_review" ||
+      !stillCurrent()
+    )
+      throw new Error("Owner leave review changed.");
+    const latest = await api.get(action.executionId, action.id);
+    if (
+      !stillCurrent() ||
+      latest.id !== action.id ||
+      latest.ownerUserId !== action.ownerUserId ||
+      latest.name !== action.name ||
+      latest.effectKey !== action.effectKey ||
+      JSON.stringify(latest.snapshot) !== JSON.stringify(action.snapshot)
+    )
+      throw new Error("Owner leave review changed.");
+    if (latest.state === "declined") return;
+    if (
+      latest.state !== "awaiting_review" ||
+      latest.revision !== action.revision
+    )
+      throw new Error("Owner leave review changed.");
+    await api.review(action.executionId, action.id, latest.revision, "decline");
+    if (!stillCurrent()) throw new Error("Owner profile changed after review.");
+  };
   const reviewTextActionNative = (action: KoedTextActionProjection) => {
     if (
       action.ownerUserId !== visibilityOwnerId ||
@@ -2077,6 +2137,76 @@ export function HqApplication({
       action.reviewKind !== "native"
     )
       return;
+    if (
+      action.name === "koed_project_leave" &&
+      action.snapshot.privateOwner === true &&
+      typeof action.snapshot.projectId === "string"
+    ) {
+      const project = projectsStore
+        ?.current()
+        ?.projects.find(({ id }) => id === action.snapshot.projectId);
+      if (
+        project &&
+        !project.workspaceProjectId &&
+        project.version === action.snapshot.projectVersion
+      )
+        void declineOwnerLeave(action)
+          .then(() => {
+            if (
+              projectsStore?.current()?.ownerId === action.ownerUserId &&
+              projectsStore.current()?.profileKey === visibilityProfileKey &&
+              projectsStore
+                .current()
+                ?.projects.some(
+                  ({ id, version, workspaceProjectId }) =>
+                    id === project.id &&
+                    version === action.snapshot.projectVersion &&
+                    !workspaceProjectId
+                )
+            )
+              projectMenu.openDelete(project.id);
+          })
+          .catch((cause) =>
+            setTextLifecycleReviewError(
+              cause instanceof Error
+                ? cause.message
+                : "Owner leave review changed. Review again."
+            )
+          );
+      return;
+    }
+    if (
+      action.name === "koed_project_leave" &&
+      typeof action.snapshot.projectId === "string" &&
+      typeof action.snapshot.workspaceProjectId === "string" &&
+      typeof action.snapshot.teamBackendId === "string" &&
+      visibilityClient?.current()?.connection.backendId ===
+        action.snapshot.teamBackendId
+    ) {
+      const project = projectsStore
+        ?.current()
+        ?.projects.find(({ id }) => id === action.snapshot.projectId);
+      if (
+        project?.workspaceProjectId === action.snapshot.workspaceProjectId &&
+        project.teamBackendId === action.snapshot.teamBackendId
+      ) {
+        setProjectLeaveTextAction(action);
+        setLifecycleProjectId(project.id);
+      }
+      return;
+    }
+    if (
+      action.name === "koed_workspace_leave" &&
+      typeof action.snapshot.teamId === "string" &&
+      visibilityClient
+        ?.current()
+        ?.navigation.teams.some(({ id }) => id === action.snapshot.teamId)
+    ) {
+      setRequestedLeaveTeamId(action.snapshot.teamId);
+      setGroupLeaveTextAction(action);
+      setTeamGroupsOpen(true);
+      return;
+    }
     if (
       action.name === "koed_project_delete" &&
       typeof action.snapshot.projectId === "string" &&
@@ -2116,6 +2246,85 @@ export function HqApplication({
         action.effectKey
       );
     }
+  };
+  const executeTextLifecycle = async (
+    action: KoedTextActionProjection,
+    perform: (requestId: string) => Promise<unknown>
+  ) => {
+    const api = window.koedDesktop?.managedTextActions;
+    const client = visibilityClient;
+    if (
+      !api ||
+      !client ||
+      action.ownerUserId !== visibilityOwnerId ||
+      action.state !== "awaiting_review" ||
+      action.reviewKind !== "native"
+    )
+      throw new Error("Native Project review is unavailable.");
+    const backend = action.snapshot.teamBackendId;
+    const principal = action.snapshot.teamPrincipalUserId;
+    const owner = visibilityOwnerId,
+      profile = visibilityProfileKey;
+    const stillCurrent = () =>
+      projectsStore?.current()?.ownerId === owner &&
+      projectsStore?.current()?.profileKey === profile &&
+      client.current()?.connection.backendId === backend &&
+      client.current()?.navigation.teamPrincipal?.id === principal;
+    const sameLocalScope = () =>
+      projectsStore?.current()?.ownerId === owner &&
+      projectsStore?.current()?.profileKey === profile &&
+      client.current()?.connection.backendId === backend;
+    if (!stillCurrent())
+      throw new Error("Team identity changed. Review again.");
+    const latest = await api.get(action.executionId, action.id);
+    if (
+      !stillCurrent() ||
+      latest.id !== action.id ||
+      latest.name !== action.name ||
+      latest.ownerUserId !== owner ||
+      latest.revision !== action.revision ||
+      latest.state !== "awaiting_review" ||
+      latest.effectKey !== action.effectKey ||
+      JSON.stringify(latest.snapshot) !== JSON.stringify(action.snapshot)
+    )
+      throw new Error("Text action changed. Review again.");
+    const ready = await api.review(
+      action.executionId,
+      action.id,
+      latest.revision,
+      "approve"
+    );
+    if (!stillCurrent() || ready.state !== "ready")
+      throw new Error("Review changed before approval.");
+    const claimed = await api.claim(
+      action.executionId,
+      action.id,
+      ready.revision
+    );
+    if (
+      !stillCurrent() ||
+      claimed.state !== "claimed" ||
+      claimed.effectKey !== action.effectKey
+    )
+      throw new Error("Approved action changed before dispatch.");
+    await perform(action.effectKey);
+    if (!sameLocalScope())
+      throw new Error(
+        "Local identity changed after dispatch. Check exact result."
+      );
+    const completed = await api.complete(
+      action.executionId,
+      action.id,
+      claimed.revision
+    );
+    if (
+      completed.state !== "applied" ||
+      completed.id !== action.id ||
+      completed.effectKey !== action.effectKey
+    )
+      throw new Error(
+        "Exact Team receipt is pending. Check result; Koed will not repeat this action."
+      );
   };
   useEffect(() => {
     if (!renderSettings) return;
@@ -2618,11 +2827,53 @@ export function HqApplication({
             }
             onDeleteProject={
               projectsStore && firstClassLoaded
-                ? projectMenu.openDelete
+                ? (projectId) => {
+                    const project = projectsStore
+                      .current()
+                      ?.projects.find(({ id }) => id === projectId);
+                    if (project?.workspaceProjectId && project.teamBackendId)
+                      setLifecycleProjectId(projectId);
+                    else projectMenu.openDelete(projectId);
+                  }
+                : undefined
+            }
+            onReviewSharedProject={
+              visibilityClient && projectsStore
+                ? async (projectId) => {
+                    const project = projectsStore
+                      .current()
+                      ?.projects.find(({ id }) => id === projectId);
+                    if (
+                      !project?.workspaceProjectId ||
+                      !project.teamBackendId ||
+                      visibilityClient.current()?.connection.backendId !==
+                        project.teamBackendId
+                    )
+                      throw new Error("Project link changed");
+                    const review =
+                      await visibilityClient.reviewProjectLifecycle({
+                        projectId: project.workspaceProjectId
+                      });
+                    if (
+                      review.project.id !== project.workspaceProjectId ||
+                      visibilityClient.current()?.connection.backendId !==
+                        project.teamBackendId
+                    )
+                      throw new Error("Project review changed");
+                    return review.actorTeamMemberId ===
+                      review.project.ownerTeamMemberId
+                      ? "owner"
+                      : "member";
+                  }
                 : undefined
             }
             onShareProject={
               projectsApi && visibilityClient ? setShareProjectId : undefined
+            }
+            onOpenSharedGroup={
+              projectsApi && visibilityClient
+                ? () => setTeamGroupsOpen(true)
+                : undefined
             }
             onDeleteConversation={
               personalMemoryApi?.trashSession
@@ -3057,6 +3308,159 @@ export function HqApplication({
         />
       ) : null}
       {projectMenu.ui}
+      {textLifecycleReviewError ? (
+        <div className="hq-project-toast" role="alert" data-hq-shell="">
+          <span>{textLifecycleReviewError}</span>
+          <button
+            type="button"
+            aria-label="Dismiss review error"
+            onClick={() => setTextLifecycleReviewError(null)}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
+      {visibilityClient ? (
+        <HqProjectLifecycle
+          project={(() => {
+            const project = projectsStore
+              ?.current()
+              ?.projects.find(({ id }) => id === lifecycleProjectId);
+            return project?.workspaceProjectId && project.teamBackendId
+              ? {
+                  id: project.id,
+                  workspaceProjectId: project.workspaceProjectId,
+                  teamBackendId: project.teamBackendId,
+                  name: project.name
+                }
+              : null;
+          })()}
+          client={visibilityClient}
+          ownerId={visibilityOwnerId}
+          profileKey={visibilityProfileKey}
+          onClose={() => {
+            setLifecycleProjectId(null);
+            setProjectLeaveTextAction(null);
+          }}
+          onLeave={
+            projectLeaveTextAction && visibilityClient
+              ? async (review) => {
+                  if (
+                    projectLeaveTextAction.name !== "koed_project_leave" ||
+                    projectLeaveTextAction.snapshot.workspaceProjectId !==
+                      review.project.id ||
+                    projectLeaveTextAction.snapshot.teamId !==
+                      review.project.teamId ||
+                    projectLeaveTextAction.snapshot.teamProjectVersion !==
+                      review.project.version ||
+                    projectLeaveTextAction.snapshot.teamMemberVersion !==
+                      review.actorMemberVersion ||
+                    review.actorTeamMemberId ===
+                      review.project.ownerTeamMemberId
+                  )
+                    throw new Error("Project leave needs a fresh review.");
+                  await executeTextLifecycle(
+                    projectLeaveTextAction,
+                    (requestId) =>
+                      visibilityClient.leaveProject({
+                        teamId: review.project.teamId,
+                        projectId: review.project.id,
+                        expectedProjectVersion: review.project.version,
+                        expectedMemberVersion: review.actorMemberVersion,
+                        textActionRequestId: requestId
+                      })
+                  );
+                }
+              : undefined
+          }
+          onOwnerDelete={
+            projectLeaveTextAction && visibilityClient
+              ? async (review) => {
+                  if (
+                    projectLeaveTextAction.snapshot.workspaceProjectId !==
+                      review.project.id ||
+                    projectLeaveTextAction.snapshot.teamId !==
+                      review.project.teamId ||
+                    projectLeaveTextAction.snapshot.teamProjectVersion !==
+                      review.project.version ||
+                    projectLeaveTextAction.snapshot.teamMemberVersion !==
+                      review.actorMemberVersion ||
+                    projectLeaveTextAction.snapshot.teamPrincipalUserId !==
+                      review.actorUserId ||
+                    visibilityClient.current()?.navigation.teamPrincipal?.id !==
+                      review.actorUserId ||
+                    review.actorTeamMemberId !==
+                      review.project.ownerTeamMemberId
+                  )
+                    throw new Error("Owner Project review changed.");
+                  await declineOwnerLeave(projectLeaveTextAction);
+                  if (
+                    projectsStore?.current()?.ownerId !==
+                      projectLeaveTextAction.ownerUserId ||
+                    projectsStore.current()?.profileKey !==
+                      visibilityProfileKey ||
+                    visibilityClient.current()?.connection.backendId !==
+                      projectLeaveTextAction.snapshot.teamBackendId ||
+                    visibilityClient.current()?.navigation.teamPrincipal?.id !==
+                      review.actorUserId
+                  )
+                    throw new Error("Owner profile changed after review.");
+                  await visibilityClient.deleteSharedProject({
+                    teamId: review.project.teamId,
+                    projectId: review.project.id,
+                    expectedProjectVersion: review.project.version
+                  });
+                }
+              : undefined
+          }
+          onFinished={() => {
+            void projectsStore?.refresh();
+            setSharedRefreshSignal((value) => value + 1);
+          }}
+        />
+      ) : null}
+      {projectsApi && visibilityClient ? (
+        <HqTeamGroups
+          open={teamGroupsOpen}
+          onClose={() => {
+            setTeamGroupsOpen(false);
+            setRequestedLeaveTeamId(null);
+            setGroupLeaveTextAction(null);
+          }}
+          onFinished={() => {
+            void projectsStore?.refresh();
+            void personalMemoryStore?.loadProjects({ silent: true });
+            setSharedRefreshSignal((value) => value + 1);
+          }}
+          client={visibilityClient}
+          projectsApi={projectsApi}
+          ownerId={visibilityOwnerId}
+          profileKey={visibilityProfileKey}
+          requestedTeamId={requestedLeaveTeamId}
+          onLeave={
+            groupLeaveTextAction && visibilityClient
+              ? async (teamId, expectedVersion) => {
+                  if (
+                    groupLeaveTextAction.name !== "koed_workspace_leave" ||
+                    groupLeaveTextAction.snapshot.teamId !== teamId ||
+                    groupLeaveTextAction.snapshot.expectedMembershipVersion !==
+                      expectedVersion
+                  )
+                    throw new Error("Group leave needs a fresh review.");
+                  await executeTextLifecycle(
+                    groupLeaveTextAction,
+                    (requestId) =>
+                      visibilityClient.leaveTeam({
+                        teamId,
+                        expectedVersion,
+                        textActionRequestId: requestId
+                      })
+                  );
+                }
+              : undefined
+          }
+        />
+      ) : null}
       <HqSearch
         destinations={destinations}
         open={searchOpen}

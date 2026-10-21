@@ -13,6 +13,13 @@ import { HqShareSheet } from "./HqShareSheet.js";
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
+const collaborationFixture = {
+  current: () => null,
+  reviewProjectLifecycle: async () => {
+    throw new Error("No active Team owner review in this fixture");
+  }
+} as unknown as CollaborationRendererClient;
+
 describe("Share Project pending cancellation", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -72,7 +79,7 @@ describe("Share Project pending cancellation", () => {
           open
           project={project}
           projectsApi={projects}
-          collaboration={{} as CollaborationRendererClient}
+          collaboration={collaborationFixture}
           identityKey="owner:profile"
           onClose={() => undefined}
           onShared={() => undefined}
@@ -162,7 +169,7 @@ describe("Share Project pending cancellation", () => {
           open
           project={project}
           projectsApi={projects}
-          collaboration={{} as CollaborationRendererClient}
+          collaboration={collaborationFixture}
           identityKey="owner:profile"
           onClose={() => undefined}
           onShared={onShared}
@@ -251,7 +258,7 @@ describe("Share Project pending cancellation", () => {
           open
           project={oldProject}
           projectsApi={projects}
-          collaboration={{} as CollaborationRendererClient}
+          collaboration={collaborationFixture}
           identityKey="old-owner"
           onClose={() => undefined}
           onShared={() => undefined}
@@ -265,7 +272,7 @@ describe("Share Project pending cancellation", () => {
           open
           project={newProject}
           projectsApi={projects}
-          collaboration={{} as CollaborationRendererClient}
+          collaboration={collaborationFixture}
           identityKey="new-owner"
           onClose={() => undefined}
           onShared={() => undefined}

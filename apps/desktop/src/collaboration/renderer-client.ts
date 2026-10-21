@@ -44,6 +44,11 @@ import {
 } from "@koed/shared/collaboration";
 import type { ProjectThreadV2 } from "@koed/shared/project-thread-contract";
 import type {
+  WorkspaceProjectLifecycleReview,
+  WorkspaceProjectLifecycleResult,
+  WorkspaceProjectRestorable
+} from "@koed/shared/workspace-project-contract";
+import type {
   TeamCollaborationMessagePageV2,
   TeamCollaborationMessageV2Renderer
 } from "@koed/shared/collaboration";
@@ -69,7 +74,8 @@ type TeamLeaveStage = {
   expectedMembershipVersion: number;
   expectedOwnedWorkspaceProjects: Array<{ id: string; version: number }>;
   ownedSetHash: string;
-  stages: Array<{ workspaceProjectId: string; stageId: string }>;
+  copyManifestHash: string;
+  stages: Array<{ workspaceProjectId: string; payloadHash: string }>;
 };
 
 export type CollaborationClientUpdate = {
@@ -260,7 +266,37 @@ export interface CollaborationRendererClient {
   leaveTeam(input: {
     teamId: string;
     expectedVersion: number;
+    textActionRequestId?: string;
   }): Promise<CollaborationMembership>;
+  reviewProjectLifecycle(input: {
+    projectId: string;
+    targetUserId?: string;
+  }): Promise<WorkspaceProjectLifecycleReview>;
+  leaveProject(input: {
+    teamId: string;
+    projectId: string;
+    expectedProjectVersion: number;
+    expectedMemberVersion: number;
+    textActionRequestId?: string;
+  }): Promise<WorkspaceProjectLifecycleResult>;
+  removeProjectMember(input: {
+    teamId: string;
+    projectId: string;
+    targetUserId: string;
+    expectedProjectVersion: number;
+    expectedMemberVersion: number;
+  }): Promise<WorkspaceProjectLifecycleResult>;
+  deleteSharedProject(input: {
+    teamId: string;
+    projectId: string;
+    expectedProjectVersion: number;
+  }): Promise<WorkspaceProjectLifecycleResult>;
+  restoreSharedProject(input: {
+    teamId: string;
+    projectId: string;
+    expectedProjectVersion: number;
+  }): Promise<{ projectId: string; lifecycle: "active"; version: number }>;
+  listRestorableProjects(): Promise<WorkspaceProjectRestorable[]>;
   deleteWorkspaceProjectSource(input: {
     teamId: string;
     projectId: string;
@@ -1566,10 +1602,6 @@ export const createCollaborationRendererClient = (
       teamBackendId: string,
       teamId: string
     ) => Promise<TeamLeaveStage>;
-    teamLeaveFinish?: (
-      teamBackendId: string,
-      stageIds: string[]
-    ) => Promise<unknown>;
   } = {}
 ): CollaborationRendererClient => {
   let snapshot: CollaborationSnapshot | null = null;
@@ -1628,13 +1660,6 @@ export const createCollaborationRendererClient = (
       if (!stage) throw new Error("Team leave staging is unavailable.");
       return stage(teamBackendId, teamId);
     });
-  const teamLeaveFinish =
-    options.teamLeaveFinish ??
-    ((teamBackendId: string, stageIds: string[]) => {
-      const finish = window.koedDesktop?.projects?.sharedTeamLeaveFinish;
-      if (!finish) throw new Error("Team leave completion is unavailable.");
-      return finish(teamBackendId, stageIds);
-    });
   let pendingSharedSessionRecovery: {
     selection: Extract<CollaborationSelection, { kind: "shared_session" }>;
     expiresAt: number;
@@ -1667,6 +1692,9 @@ export const createCollaborationRendererClient = (
       "collaboration.update_member_role": "Change member role",
       "collaboration.disable_member": "Disable member",
       "collaboration.leave_team": "Leave Team",
+      "collaboration.leave_project": "Leave shared Project",
+      "collaboration.remove_project_member": "Remove Project member",
+      "collaboration.delete_shared_project": "Delete shared Project",
       "collaboration.delete_project_source": "Remove shared Project Source",
       "collaboration.archive_workspace": "Archive Workspace",
       "collaboration.restore_workspace": "Restore Workspace",
@@ -3425,6 +3453,123 @@ export const createCollaborationRendererClient = (
     return requireSnapshot();
   };
 
+  const projectAuthority = () => {
+    const generation = clientRuntime.authorityGeneration();
+    const backendId = requireSnapshot().connection.backendId;
+    if (!backendId) throw new CollaborationClientError(offlineError());
+    return () =>
+      clientRuntime.authorityIsCurrent(generation) &&
+      requireSnapshot().connection.backendId === backendId;
+  };
+
+  const approvedProjectLifecycle = async (
+    intent:
+      | "collaboration.leave_project"
+      | "collaboration.remove_project_member"
+      | "collaboration.delete_shared_project",
+    input: {
+      teamId: string;
+      projectId: string;
+      expectedProjectVersion: number;
+      expectedMemberVersion?: number;
+      targetUserId?: string;
+      textActionRequestId?: string;
+    }
+  ): Promise<WorkspaceProjectLifecycleResult> => {
+    const isCurrent = projectAuthority();
+    const reviewResponse = await command(
+      "collaboration.review_project_lifecycle",
+      {
+        projectId: input.projectId,
+        ...(input.targetUserId ? { targetUserId: input.targetUserId } : {})
+      }
+    );
+    if (!isCurrent()) throw new CollaborationClientError(accessRevokedError());
+    if (
+      !reviewResponse.ok ||
+      reviewResponse.command !== "collaboration.review_project_lifecycle"
+    )
+      throw new Error("Project review changed. Refresh and try again.");
+    const review = reviewResponse.data.review;
+    if (
+      review.project.teamId !== input.teamId ||
+      review.project.version !== input.expectedProjectVersion ||
+      (intent === "collaboration.leave_project" &&
+        (review.actorTeamMemberId === review.project.ownerTeamMemberId ||
+          review.actorMemberVersion !== input.expectedMemberVersion)) ||
+      (intent === "collaboration.remove_project_member" &&
+        (review.actorTeamMemberId !== review.project.ownerTeamMemberId ||
+          review.targetUserId !== input.targetUserId ||
+          review.targetMemberVersion !== input.expectedMemberVersion ||
+          review.targetTeamMemberId === review.actorTeamMemberId)) ||
+      (intent === "collaboration.delete_shared_project" &&
+        review.actorTeamMemberId !== review.project.ownerTeamMemberId)
+    )
+      throw new Error("Project review changed. Refresh and try again.");
+    const requestId = input.textActionRequestId ?? crypto.randomUUID();
+    const actionInput =
+      intent === "collaboration.delete_shared_project"
+        ? {
+            teamId: input.teamId,
+            projectId: input.projectId,
+            expectedProjectVersion: input.expectedProjectVersion
+          }
+        : intent === "collaboration.remove_project_member"
+          ? {
+              teamId: input.teamId,
+              projectId: input.projectId,
+              targetUserId: input.targetUserId!,
+              expectedProjectVersion: input.expectedProjectVersion,
+              expectedMemberVersion: input.expectedMemberVersion!
+            }
+          : {
+              teamId: input.teamId,
+              projectId: input.projectId,
+              expectedProjectVersion: input.expectedProjectVersion,
+              expectedMemberVersion: input.expectedMemberVersion!
+            };
+    const actionGrant = await waitForActionGrant({
+      intent,
+      commandRequestId: requestId,
+      ...actionInput
+    } as CollaborationActionGrantIntent & { commandRequestId: string });
+    if (!isCurrent()) throw new CollaborationClientError(accessRevokedError());
+    const result = await runApprovedAction(
+      collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId,
+        command: intent,
+        input: { ...actionInput, actionGrant }
+      }),
+      { retry: false }
+    );
+    if (!isCurrent()) throw new CollaborationClientError(accessRevokedError());
+    if (
+      !result.ok ||
+      result.command !== intent ||
+      (result.command !== "collaboration.leave_project" &&
+        result.command !== "collaboration.remove_project_member" &&
+        result.command !== "collaboration.delete_shared_project")
+    )
+      throw new Error("Project access changed. Refresh and review again.");
+    const expectedMemberId =
+      intent === "collaboration.leave_project"
+        ? review.actorTeamMemberId
+        : intent === "collaboration.remove_project_member"
+          ? review.targetTeamMemberId
+          : null;
+    if (
+      result.data.result.projectId !== input.projectId ||
+      (expectedMemberId !== null &&
+        (!("memberId" in result.data.result) ||
+          result.data.result.memberId !== expectedMemberId))
+    )
+      throw new Error("Project completion receipt did not match the review.");
+    await loadSnapshot(true);
+    if (!isCurrent()) throw new CollaborationClientError(accessRevokedError());
+    return result.data.result;
+  };
+
   return {
     async subscribeProjectThreadV2(input, listener) {
       const result = await command(
@@ -3785,9 +3930,7 @@ export const createCollaborationRendererClient = (
       }
       await publish(
         applyMembership(requireSnapshot(), result.data.membership),
-        {
-          kind: "command"
-        }
+        { kind: "command" }
       );
       return result.data.membership;
     },
@@ -3823,6 +3966,9 @@ export const createCollaborationRendererClient = (
       const teamBackendId = current.connection.backendId;
       if (!teamBackendId) throw new Error("Team connection is unavailable.");
       const stage = await teamLeaveStage(teamBackendId, input.teamId);
+      const sameAuthority = () =>
+        clientRuntime.authorityIsCurrent(leaveAuthorityGeneration) &&
+        requireSnapshot().connection.backendId === teamBackendId;
       const owned = stage.expectedOwnedWorkspaceProjects;
       if (
         stage.teamId !== input.teamId ||
@@ -3830,6 +3976,7 @@ export const createCollaborationRendererClient = (
         !Number.isSafeInteger(stage.expectedTeamVersion) ||
         stage.expectedTeamVersion < 1 ||
         !/^[a-f0-9]{64}$/.test(stage.ownedSetHash) ||
+        !/^[a-f0-9]{64}$/.test(stage.copyManifestHash) ||
         owned.some(
           (project, index) =>
             !Number.isSafeInteger(project.version) ||
@@ -3842,28 +3989,29 @@ export const createCollaborationRendererClient = (
             (index > 0 &&
               stage.stages[index - 1]!.workspaceProjectId >=
                 item.workspaceProjectId) ||
-            !item.stageId ||
-            stage.stages.findIndex(
-              (other) => other.stageId === item.stageId
-            ) !== index
+            !/^[a-f0-9]{64}$/.test(item.payloadHash)
         ) ||
-        requireSnapshot().connection.backendId !== teamBackendId ||
-        !clientRuntime.authorityIsCurrent(leaveAuthorityGeneration)
+        stage.stages.length !== owned.length ||
+        !sameAuthority()
       ) {
         throw new Error("Team leave review changed. Refresh and try again.");
       }
+      const { textActionRequestId, ...leaveInput } = input;
       const reviewedInput = {
-        ...input,
+        ...leaveInput,
         expectedTeamVersion: stage.expectedTeamVersion,
-        expectedOwnedWorkspaceProjects: owned
+        expectedOwnedWorkspaceProjects: owned,
+        ...(owned.length > 0
+          ? { copyManifestHash: stage.copyManifestHash }
+          : {})
       };
-      const commandRequestId = crypto.randomUUID();
+      const commandRequestId = textActionRequestId ?? crypto.randomUUID();
       const actionGrant = await waitForActionGrant({
         intent: "collaboration.leave_team",
         commandRequestId,
         ...reviewedInput
       });
-      if (!clientRuntime.authorityIsCurrent(leaveAuthorityGeneration)) {
+      if (!sameAuthority()) {
         throw new CollaborationClientError(accessRevokedError());
       }
       const result = await runApprovedAction(
@@ -3878,19 +4026,84 @@ export const createCollaborationRendererClient = (
       if (!result.ok || result.command !== "collaboration.leave_team") {
         throw new Error("Unexpected collaboration result.");
       }
-      await publish(
-        applyMembership(requireSnapshot(), result.data.membership),
-        {
-          kind: "command"
-        }
-      );
-      if (stage.stages.length > 0) {
-        await teamLeaveFinish(
-          teamBackendId,
-          stage.stages.map((item) => item.stageId)
+      if (!sameAuthority()) {
+        throw new CollaborationClientError(accessRevokedError());
+      }
+      const authoritative = await loadSnapshot(true);
+      if (!sameAuthority()) {
+        throw new CollaborationClientError(accessRevokedError());
+      }
+      if (
+        authoritative.navigation.teams.some((team) => team.id === input.teamId)
+      ) {
+        throw new Error(
+          "Team leave receipt is older than current Team membership."
         );
       }
       return result.data.membership;
+    },
+    async reviewProjectLifecycle(input) {
+      const isCurrent = projectAuthority();
+      const result = await command(
+        "collaboration.review_project_lifecycle",
+        input
+      );
+      if (!isCurrent())
+        throw new CollaborationClientError(accessRevokedError());
+      if (
+        !result.ok ||
+        result.command !== "collaboration.review_project_lifecycle"
+      )
+        throw new Error("Project review changed. Refresh and try again.");
+      return result.data.review;
+    },
+    async leaveProject(input) {
+      return approvedProjectLifecycle("collaboration.leave_project", input);
+    },
+    async removeProjectMember(input) {
+      return approvedProjectLifecycle(
+        "collaboration.remove_project_member",
+        input
+      );
+    },
+    async deleteSharedProject(input) {
+      return approvedProjectLifecycle(
+        "collaboration.delete_shared_project",
+        input
+      );
+    },
+    async restoreSharedProject(input) {
+      const isCurrent = projectAuthority();
+      const result = await command(
+        "collaboration.restore_shared_project",
+        input
+      );
+      if (!isCurrent())
+        throw new CollaborationClientError(accessRevokedError());
+      if (
+        !result.ok ||
+        result.command !== "collaboration.restore_shared_project"
+      )
+        throw new Error("Project restoration needs a fresh review.");
+      await loadSnapshot(true);
+      if (!isCurrent())
+        throw new CollaborationClientError(accessRevokedError());
+      return result.data.result;
+    },
+    async listRestorableProjects() {
+      const isCurrent = projectAuthority();
+      const result = await command(
+        "collaboration.list_restorable_projects",
+        {}
+      );
+      if (!isCurrent())
+        throw new CollaborationClientError(accessRevokedError());
+      if (
+        !result.ok ||
+        result.command !== "collaboration.list_restorable_projects"
+      )
+        throw new Error("Deleted Project list is unavailable.");
+      return result.data.projects;
     },
     async deleteWorkspaceProjectSource(input) {
       const authorityGeneration = clientRuntime.authorityGeneration();

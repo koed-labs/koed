@@ -48,6 +48,14 @@ const canonicalJson = (value: unknown): string => {
   return encoded;
 };
 
+export const workspaceProjectCopyBackPayloadHash = (
+  workItems: unknown,
+  decks: unknown[]
+): string =>
+  createHash("sha256")
+    .update(canonicalJson(decks.length ? { workItems, decks } : workItems))
+    .digest("hex");
+
 const deckAgainKeyHash = (sourceKey: string, cardId: string) =>
   createHash("sha256")
     .update(
@@ -502,6 +510,7 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
       reviewedMemberVersion: number;
       reviewedProjectVersion: number;
       ownedSetHash: string;
+      leaveOperationId?: string;
       workItems: Array<{
         id: string;
         sourceOwnerTeamMemberId: string;
@@ -517,9 +526,34 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
       decks?: CopyBackDeck[];
     }
   ) {
-    const payloadHash = createHash("sha256")
-      .update(canonicalJson(copyBackPayload(input.workItems, input.decks)))
-      .digest("hex");
+    const payloadHash = workspaceProjectCopyBackPayloadHash(
+      input.workItems,
+      input.decks ?? []
+    );
+    const conflict = input.leaveOperationId
+      ? `on conflict (owner_user_id,team_backend_id,leave_operation_id,workspace_project_id)
+           where leave_operation_id is not null
+         do update set updated_at=now()
+           where personal_workspace_project_copyback_stages.state='ready'
+             and personal_workspace_project_copyback_stages.personal_project_id=excluded.personal_project_id
+             and personal_workspace_project_copyback_stages.team_id=excluded.team_id
+             and personal_workspace_project_copyback_stages.owner_team_member_id=excluded.owner_team_member_id
+             and personal_workspace_project_copyback_stages.reviewed_team_version=excluded.reviewed_team_version
+             and personal_workspace_project_copyback_stages.reviewed_member_version=excluded.reviewed_member_version
+             and personal_workspace_project_copyback_stages.reviewed_project_version=excluded.reviewed_project_version
+             and personal_workspace_project_copyback_stages.payload_hash=excluded.payload_hash
+             and personal_workspace_project_copyback_stages.owned_set_hash=excluded.owned_set_hash`
+      : `on conflict (owner_user_id,team_backend_id,workspace_project_id,reviewed_project_version)
+           where leave_operation_id is null
+         do update set updated_at=now()
+           where personal_workspace_project_copyback_stages.state='staged'
+             and personal_workspace_project_copyback_stages.personal_project_id=excluded.personal_project_id
+             and personal_workspace_project_copyback_stages.team_id=excluded.team_id
+             and personal_workspace_project_copyback_stages.owner_team_member_id=excluded.owner_team_member_id
+             and personal_workspace_project_copyback_stages.reviewed_team_version=excluded.reviewed_team_version
+             and personal_workspace_project_copyback_stages.reviewed_member_version=excluded.reviewed_member_version
+             and personal_workspace_project_copyback_stages.payload_hash=excluded.payload_hash
+             and personal_workspace_project_copyback_stages.owned_set_hash=excluded.owned_set_hash`;
     const row = (
       await pool.query<{ id: string; payload_hash: string }>(
         `
@@ -527,17 +561,14 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         (id,owner_user_id,personal_project_id,team_backend_id,team_id,
          workspace_project_id,owner_team_member_id,reviewed_team_version,
          reviewed_member_version,reviewed_project_version,owned_set_hash,
-         payload_hash,work_items,decks)
-      select $1,$2,project.id,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb
+         payload_hash,work_items,decks,leave_operation_id,state)
+      select $1,$2,project.id,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15,
+             case when $15::uuid is null then 'staged' else 'ready' end
         from projects project
        where project.id=$3 and project.owner_user_id=$2
          and project.team_backend_id=$4 and project.workspace_project_id=$6
          and project.lifecycle='active'
-      on conflict (owner_user_id,team_backend_id,workspace_project_id,
-                   reviewed_project_version)
-      do update set updated_at=now()
-        where personal_workspace_project_copyback_stages.payload_hash=excluded.payload_hash
-          and personal_workspace_project_copyback_stages.owned_set_hash=excluded.owned_set_hash
+      ${conflict}
       returning id,payload_hash`,
         [
           randomUUID(),
@@ -553,7 +584,8 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           input.ownedSetHash,
           payloadHash,
           JSON.stringify(input.workItems),
-          JSON.stringify(input.decks ?? [])
+          JSON.stringify(input.decks ?? []),
+          input.leaveOperationId ?? null
         ]
       )
     ).rows[0];
@@ -576,6 +608,8 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         reviewed_member_version: number;
         reviewed_project_version: number;
         owned_set_hash: string;
+        payload_hash: string;
+        leave_operation_id: string | null;
         work_items: unknown;
         decks: unknown;
         state: string;
@@ -597,11 +631,50 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           reviewedMemberVersion: row.reviewed_member_version,
           reviewedProjectVersion: row.reviewed_project_version,
           ownedSetHash: row.owned_set_hash,
+          payloadHash: row.payload_hash,
+          leaveOperationId: row.leave_operation_id,
           workItems: row.work_items,
           decks: row.decks,
           state: row.state
         }
       : null;
+  },
+  async listTeamLeaveStageOperations(
+    ownerUserId: string,
+    teamBackendId: string,
+    teamId: string,
+    afterOperationId: string | null
+  ) {
+    const rows = await pool.query<{ leave_operation_id: string }>(
+      `select distinct leave_operation_id
+         from personal_workspace_project_copyback_stages
+        where owner_user_id=$1 and team_backend_id=$2 and team_id=$3
+          and leave_operation_id is not null
+          and state in ('ready','applied')
+          and ($4::uuid is null or leave_operation_id>$4::uuid)
+        order by leave_operation_id limit 20`,
+      [ownerUserId, teamBackendId, teamId, afterOperationId]
+    );
+    return rows.rows.map((row) => row.leave_operation_id);
+  },
+  async listTeamLeaveStageIds(
+    ownerUserId: string,
+    teamBackendId: string,
+    teamId: string,
+    operationId: string
+  ) {
+    const rows = await pool.query<{ id: string }>(
+      `select id from personal_workspace_project_copyback_stages
+        where owner_user_id=$1 and team_backend_id=$2 and team_id=$3
+          and leave_operation_id=$4 and state in ('ready','applied')
+        order by workspace_project_id limit 101`,
+      [ownerUserId, teamBackendId, teamId, operationId]
+    );
+    if (rows.rows.length > 100)
+      throw new PersonalWorkspaceProjectConflictError(
+        "Team leave stage set is too large"
+      );
+    return rows.rows.map((row) => row.id);
   },
   async getStagedCopyBackForProject(
     ownerUserId: string,
@@ -613,7 +686,7 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         `
       select id from personal_workspace_project_copyback_stages
        where owner_user_id=$1 and team_backend_id=$2 and workspace_project_id=$3
-         and state='staged'
+         and (state='staged' or (state='ready' and leave_operation_id is not null))
        order by created_at desc limit 1`,
         [ownerUserId, teamBackendId, workspaceProjectId]
       )
@@ -1030,9 +1103,11 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
             alreadyApplied: true
           };
         }
+        const activeStage = stage.rows[0];
         if (
-          stage.rows[0]?.state !== "staged" ||
-          stage.rows[0].payload_hash !==
+          !activeStage ||
+          !["staged", "ready"].includes(activeStage.state) ||
+          activeStage.payload_hash !==
             createHash("sha256")
               .update(
                 canonicalJson(copyBackPayload(input.workItems, input.decks))

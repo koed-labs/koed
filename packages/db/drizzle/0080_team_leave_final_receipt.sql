@@ -1,0 +1,5 @@
+ALTER TABLE "team_leave_operations" DROP CONSTRAINT "team_leave_operations_state_check";--> statement-breakpoint
+ALTER TABLE "team_leave_operations" ADD COLUMN "final_membership" jsonb;--> statement-breakpoint
+ALTER TABLE "team_leave_operations" ADD CONSTRAINT "team_leave_operations_state_check" CHECK (("team_leave_operations"."state" in ('prepared','finalizing') and "team_leave_operations"."completed_at" is null and "team_leave_operations"."canceled_at" is null and "team_leave_operations"."canceled_reason" is null and "team_leave_operations"."final_membership" is null)
+        or ("team_leave_operations"."state" = 'finished' and "team_leave_operations"."completed_at" is not null and "team_leave_operations"."canceled_at" is null and "team_leave_operations"."canceled_reason" is null and "team_leave_operations"."final_membership" is not null)
+        or ("team_leave_operations"."state" = 'canceled' and "team_leave_operations"."completed_at" is null and "team_leave_operations"."canceled_at" is not null and "team_leave_operations"."canceled_reason" is not null and "team_leave_operations"."final_membership" is null));

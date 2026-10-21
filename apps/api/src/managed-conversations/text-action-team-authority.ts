@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   fetchBoundedJson,
   readLocalEdgeUpstreamRegistry,
+  activeUpstreamBackend,
   upstreamBackendById,
   workspaceProjectWorkItemCreateSchema,
   workspaceProjectWorkItemSchema
@@ -58,6 +59,28 @@ export function createManagedTextActionTeamAdapter(
 ): {
   authority: ManagedTextActionTeamAuthority;
   receipt: ManagedTextActionTeamReceipt;
+  lifecycleReceipt: (input: {
+    ownerUserId: string;
+    teamBackendId: string;
+    teamPrincipalUserId: string;
+    teamId: string;
+    targetId: string;
+    effectKey: string;
+    name: "koed_project_leave" | "koed_workspace_leave";
+    expectedProjectVersion?: number;
+    expectedMemberVersion?: number;
+    expectedMembershipVersion?: number;
+    expectedTeamVersion?: number;
+  }) => Promise<boolean>;
+  teamLeaveAuthority: (input: {
+    ownerUserId: string;
+    teamId: string;
+  }) => Promise<{
+    teamBackendId: string;
+    teamPrincipalUserId: string;
+    expectedMembershipVersion: number;
+    expectedTeamVersion: number;
+  }>;
   applyTodoAdd: (input: {
     ownerUserId: string;
     projectId: string;
@@ -283,6 +306,40 @@ export function createManagedTextActionTeamAdapter(
     },
     authority: async (input) => {
       const lifecycle = await lifecycleAuthority(input);
+      if (input.name === "koed_project_leave") {
+        const { payload, principal } = await requestTeam(
+          input,
+          `/v1/workspace-projects/${input.workspaceProjectId}/lifecycle-review`
+        );
+        const review = z
+          .object({
+            project: z
+              .object({
+                id: z.uuid(),
+                teamId: z.uuid(),
+                version: z.number().int().positive()
+              })
+              .passthrough(),
+            actorUserId: z.uuid(),
+            actorMemberVersion: z.number().int().positive()
+          })
+          .passthrough()
+          .parse(payload);
+        if (
+          review.project.id !== input.workspaceProjectId ||
+          review.actorUserId !== principal ||
+          review.project.version !== lifecycle.projectVersion ||
+          review.actorMemberVersion !== lifecycle.memberVersion
+        )
+          throw new Error("Project leave review changed");
+        return {
+          ...lifecycle,
+          teamProjectVersion: lifecycle.projectVersion,
+          teamMemberVersion: lifecycle.memberVersion,
+          teamId: review.project.teamId,
+          teamPrincipalUserId: principal
+        };
+      }
       if (!input.workItemId)
         return {
           teamProjectVersion: lifecycle.projectVersion,
@@ -308,6 +365,127 @@ export function createManagedTextActionTeamAdapter(
         workItemVersion: item.workItemVersion,
         workItemTitle: item.workItemTitle
       };
+    },
+    teamLeaveAuthority: async (input) => {
+      if (!context.localEdge.remoteOperationsAllowed())
+        throw new Error("Team backend unavailable");
+      const backend = activeUpstreamBackend(
+        readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath)
+      );
+      if (!backend) throw new Error("Active Team backend unavailable");
+      const principal = await personal.principalBinding(
+        input.ownerUserId,
+        backend.id
+      );
+      const authorization =
+        context.localEdge.resolveUpstreamAuthorization(backend);
+      if (
+        !principal ||
+        !authorization ||
+        !/^Koed-Device\s+[^:\s]+:[^\s]+$/.test(authorization)
+      )
+        throw new Error("Enrolled Team identity unavailable");
+      const result = await fetchBoundedJson(
+        context.localEdge.fetch,
+        safeUpstreamProxyUrl(
+          backend,
+          `/v1/teams/${input.teamId}/workspace-project-leave-review`
+        ),
+        {
+          method: "GET",
+          redirect: "error",
+          headers: { accept: "application/json", authorization }
+        },
+        { timeoutMs: 15_000, maxBytes: 64_000 }
+      );
+      if (!result.response.ok) throw new Error("Team leave review unavailable");
+      const review = z
+        .object({
+          team: z
+            .object({ id: z.uuid(), version: z.number().int().positive() })
+            .passthrough(),
+          membership: z
+            .object({
+              userId: z.uuid(),
+              status: z.string(),
+              version: z.number().int().positive()
+            })
+            .passthrough()
+        })
+        .passthrough()
+        .parse(result.payload);
+      if (
+        review.team.id !== input.teamId ||
+        review.membership.userId !== principal ||
+        review.membership.status !== "enabled"
+      )
+        throw new Error("Team leave identity changed");
+      return {
+        teamBackendId: backend.id,
+        teamPrincipalUserId: principal,
+        expectedMembershipVersion: review.membership.version,
+        expectedTeamVersion: review.team.version
+      };
+    },
+    lifecycleReceipt: async (input) => {
+      if (!context.localEdge.remoteOperationsAllowed()) return false;
+      const backend = upstreamBackendById(
+        readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+        input.teamBackendId
+      );
+      const principal = await personal.principalBinding(
+        input.ownerUserId,
+        input.teamBackendId
+      );
+      if (!backend || !principal || principal !== input.teamPrincipalUserId)
+        return false;
+      const authorization =
+        context.localEdge.resolveUpstreamAuthorization(backend);
+      if (
+        !authorization ||
+        !/^Koed-Device\s+[^:\s]+:[^\s]+$/.test(authorization)
+      )
+        return false;
+      const body = {
+        effectKey: input.effectKey,
+        targetId: input.targetId,
+        action:
+          input.name === "koed_project_leave"
+            ? "workspace_project.leave"
+            : "team.leave",
+        ...(input.name === "koed_project_leave"
+          ? {
+              expectedProjectVersion: input.expectedProjectVersion,
+              expectedMemberVersion: input.expectedMemberVersion
+            }
+          : {
+              expectedMembershipVersion: input.expectedMembershipVersion,
+              expectedTeamVersion: input.expectedTeamVersion
+            })
+      };
+      const result = await fetchBoundedJson(
+        context.localEdge.fetch,
+        safeUpstreamProxyUrl(
+          backend,
+          `/v1/teams/${input.teamId}/text-action-lifecycle-proof`
+        ),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            authorization,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify(body)
+        },
+        { timeoutMs: 15_000, maxBytes: 8_000 }
+      );
+      return (
+        result.response.ok &&
+        z.object({ confirmed: z.boolean() }).strict().parse(result.payload)
+          .confirmed
+      );
     },
     receipt: async (input) => {
       if (input.name === "koed_deck_make") {

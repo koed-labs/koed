@@ -1667,6 +1667,113 @@ describe("Team lifecycle routes", () => {
     await fixture.app.close();
   });
 
+  it("serves finished-only owner proof to a current normal read device without exposing continuation", async () => {
+    const operationId = randomUUID();
+    const proof = {
+      operationId,
+      state: "finished" as const,
+      copyManifestHash: "a".repeat(64),
+      ownedSetHash: "b".repeat(64),
+      ownedProjects: [],
+      finalMembership: {
+        ...membership(),
+        status: "disabled",
+        version: 2,
+        disabledAt: now()
+      }
+    };
+    const finishedTeamLeaveProof = vi.fn(async () => proof);
+    const fixture = await createFixture({
+      deviceOperationFamilies: ["team_workspace_read"],
+      repository: { finishedTeamLeaveProof }
+    });
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/teams/${teamId}/leave-operations/${operationId}/finished-proof`,
+      headers: { authorization: "Koed-Device device-key:secret" },
+      payload: {}
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({ proof });
+    expect(response.body).not.toContain("continuation");
+    expect(finishedTeamLeaveProof).toHaveBeenCalledWith(
+      expect.objectContaining({
+        teamId,
+        operationId,
+        ownerUserId: user.id,
+        upstreamBackendId: "backend-1"
+      })
+    );
+    await fixture.app.close();
+    const deniedFixture = await createFixture({
+      deviceOperationFamilies: ["action_grant"],
+      repository: { finishedTeamLeaveProof }
+    });
+    const denied = await deniedFixture.app.inject({
+      method: "POST",
+      url: `/v1/teams/${teamId}/leave-operations/${operationId}/finished-proof`,
+      headers: { authorization: "Koed-Device device-key:secret" },
+      payload: {}
+    });
+    expect(denied.statusCode).toBe(403);
+    await deniedFixture.app.close();
+  });
+  it("reads a bounded exact text leave receipt only with a normal enrolled Team read credential", async () => {
+    const textActionLifecycleProof = vi.fn(async () => true);
+    const fixture = await createFixture({
+      deviceOperationFamilies: ["team_workspace_read"],
+      repository: { textActionLifecycleProof }
+    });
+    const effectKey = randomUUID();
+    const body = {
+      effectKey,
+      targetId: teamId,
+      action: "team.leave",
+      expectedMembershipVersion: 3,
+      expectedTeamVersion: 4
+    };
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/teams/${teamId}/text-action-lifecycle-proof`,
+      headers: { authorization: "Koed-Device device-key:secret" },
+      payload: body
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({ confirmed: true });
+    expect(textActionLifecycleProof).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        ...body,
+        teamId,
+        ownerUserId: user.id,
+        upstreamBackendId: "backend-1"
+      })
+    );
+    const forged = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/teams/${teamId}/text-action-lifecycle-proof`,
+      headers: { authorization: "Koed-Device device-key:secret" },
+      payload: { ...body, continuation: "forged" }
+    });
+    expect(forged.statusCode).toBe(400);
+    expect(textActionLifecycleProof).toHaveBeenCalledTimes(1);
+    await fixture.app.close();
+    const denied = await createFixture({
+      deviceOperationFamilies: ["action_grant"],
+      repository: { textActionLifecycleProof }
+    });
+    expect(
+      (
+        await denied.app.inject({
+          method: "POST",
+          url: `/v1/teams/${teamId}/text-action-lifecycle-proof`,
+          headers: { authorization: "Koed-Device device-key:secret" },
+          payload: body
+        })
+      ).statusCode
+    ).toBe(403);
+    await denied.app.close();
+  });
+
   it("allows a read-only Team member to leave their own membership with a reviewed grant", async () => {
     const member = { ...membership(), role: "member" as const };
     const leaveTeam = vi.fn(async () => ({

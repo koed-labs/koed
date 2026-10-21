@@ -854,6 +854,22 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       acceptedAt: at,
       disabledAt: at
     })),
+    reviewProjectLifecycle: vi.fn(async () => {
+      throw new Error("No shared Project review fixture");
+    }),
+    leaveProject: vi.fn(async () => {
+      throw new Error("No shared Project leave fixture");
+    }),
+    removeProjectMember: vi.fn(async () => {
+      throw new Error("No shared Project member fixture");
+    }),
+    deleteSharedProject: vi.fn(async () => {
+      throw new Error("No shared Project delete fixture");
+    }),
+    restoreSharedProject: vi.fn(async () => {
+      throw new Error("No shared Project restore fixture");
+    }),
+    listRestorableProjects: vi.fn(async () => []),
     deleteWorkspaceProjectSource: vi.fn(
       async ({ projectId, sourceId, expectedSourceVersion }) => ({
         projectId,

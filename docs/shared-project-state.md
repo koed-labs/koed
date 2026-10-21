@@ -2,9 +2,9 @@
 
 Status: Workspace Project state and lifecycle are implemented under
 [ADR 0062](./adr/0062-shared-project-state.md). Deck/card storage and
-collaboration routes and the human-only Project Thread are implemented. Project
-Share Policy, Deck study/Again learning, and two-user live Project validation
-remain follow-up work.
+collaboration routes, the human-only Project Thread, Project Share Policy,
+Deck study, and Again learning are implemented. Full two-user live Project
+validation remains follow-up work under HQ-713.
 Workspace Project Work Items, Source metadata, activity, member associations,
 and exact Project lifecycle actions use the Team backend; binaries, extracted
 Personal Note revisions, Conversations, and execution state stay Personal.
@@ -410,17 +410,42 @@ Workspace Project; independent grants are never inferred from a Personal
 Project ID. Verified parent actions freeze only bound grants affected by that
 Project and all departing-member grants on Team leave.
 
-The visible first-share and invite controls, default Note-grant choices, and
-additional grant policy UI belong to HQ-701/HQ-702. Scheduled Jobs and Decks
-must reuse the authoritative lifecycle gate when their implementations land;
-this code does not claim those producers are complete. Restore remains subject
-to its separate parent workflow and cannot resume a frozen grant.
+Visible first-share and invite controls, Note-grant choices, Project Share
+Policy, Scheduled Jobs, and Decks now use their scoped lifecycle paths.
+Restore remains subject to its separate parent workflow and cannot resume a
+frozen grant. The full two-user live Project acceptance remains HQ-713 work.
 
-The Desktop stages every owned Project before requesting Team leave. A missing
-verified Personal link blocks that flow. Work Items are paged against the exact
-reviewed Project version; changed versions or an incomplete bounded snapshot
-block leave rather than copying a partial set. A retry reuses the same durable
-stage, and a lost leave response is reconciled through read-only tombstone proof.
+Team leave first reads a bounded manifest without storing Team content in the
+Personal backend. A missing verified Personal link, the last Team-owner guard,
+or more than 100 owned Workspace Projects blocks the operation before approval
+or copy. The exact complete owned-Project ID/version set and copy manifest go
+through Step-up. After approval, the Team backend reserves that operation, and
+only the departing member's local edge stores inactive, operation-bound copies
+of their owned Work Items and Decks. No Personal Project is detached while the
+Team operation is prepared. Work Items are paged against the reviewed Project
+version; a changed child record, Project, member, or Team scope cancels the
+reservation and requires fresh review. The Team backend then commits the D9
+closure and disables the departing membership; only its finished receipt lets
+the local edge activate the complete staged Personal copy set. A lost response
+is resolved by reading the original consumed approval receipt and exact
+operation status, never by repeating an uncertain Team mutation. A current
+enrolled device of the same owner may later prove an already-finished operation
+and activate its own durable copies if the original device was revoked; it
+cannot finish or take over a prepared operation. A fresh owner browser session
+can cancel a prepared reservation before Team leave completes. Leaving has no
+Undo and returning requires a new invitation.
+
+The new HQ Project menu reads current Team ownership before offering Leave or
+Delete. The Who’s in sheet provides an exact named-member removal review.
+The Group sheet shows owned Project effects and pending cancellation or
+recovery. Deleted Projects remain discoverable to their owner during the
+30-day restoration window; restoring brings back only metadata and the
+human Project Thread, never member links, Workspace Access, grants, or frozen
+source advancement. The `koed_project_leave` and `koed_workspace_leave`
+text tools create Human-origin proposals. Their durable journal only records
+an applied leave after reading the exact consumed approval and Team execution
+receipt. A Project owner’s leave proposal is declined and offers a separate
+Delete review with a fresh operation identity.
 
 Team Source fields are the authenticated uploader's metadata assertions, not
 permission to read Personal storage or issue a Share Grant. The Desktop derives

@@ -18,7 +18,11 @@ import {
   workspaceProjectDispatchReceiptSchema,
   workspaceProjectDispatchProgressSchema,
   workspaceProjectActivitySeenSchema,
-  workspaceProjectActivityPageSchema
+  workspaceProjectActivityPageSchema,
+  workspaceProjectRestoreRequestSchema,
+  workspaceProjectRestoreResultSchema,
+  workspaceProjectLifecycleReviewSchema,
+  workspaceProjectRestorableListSchema
 } from "@koed/shared";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
@@ -212,6 +216,46 @@ export const registerWorkspaceProjectRoutes = (
       const { projectId } = projectParams.parse(request.params);
       try {
         return await repository().members(actor.id, projectId);
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
+    "/v1/workspace-projects/restorable",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      try {
+        return workspaceProjectRestorableListSchema.parse(
+          await repository().listRestorableProjects(actor.id)
+        );
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
+    "/v1/workspace-projects/:projectId/lifecycle-review",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { projectId } = projectParams.parse(request.params);
+      const { targetUserId } = z
+        .object({ targetUserId: z.uuid().optional() })
+        .strict()
+        .parse(request.query);
+      try {
+        const review = await repository().getLifecycleReview(
+          actor.id,
+          projectId,
+          targetUserId
+        );
+        if (!review)
+          throw new WorkspaceProjectUnavailableError(
+            "Project lifecycle review unavailable"
+          );
+        return workspaceProjectLifecycleReviewSchema.parse(review);
       } catch (error) {
         return reply.code(handle(error).statusCode).send(handle(error));
       }
@@ -879,6 +923,26 @@ export const registerWorkspaceProjectRoutes = (
               projectId,
               body.expectedProjectVersion
             )
+        );
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.post(
+    "/v1/workspace-projects/:projectId/restore",
+    { preHandler: input.writeRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, true);
+      const { projectId } = projectParams.parse(request.params);
+      const body = workspaceProjectRestoreRequestSchema.parse(request.body);
+      try {
+        return workspaceProjectRestoreResultSchema.parse(
+          await repository().restoreProject(
+            actor.id,
+            projectId,
+            body.expectedProjectVersion
+          )
         );
       } catch (error) {
         return reply.code(handle(error).statusCode).send(handle(error));

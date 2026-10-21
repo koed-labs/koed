@@ -466,6 +466,7 @@ describe("Team and membership action definitions", () => {
       body: {
         expectedVersion: 9,
         expectedTeamVersion: 4,
+        copyManifestHash: "a".repeat(64),
         expectedOwnedWorkspaceProjects: [
           { id: projectA, version: 2 },
           { id: projectB, version: 5 }
@@ -473,6 +474,12 @@ describe("Team and membership action definitions", () => {
       }
     } as const satisfies HighRiskActionGrantIntent;
     const admitted = await admit(exact, repository);
+    await expect(
+      admit(
+        { ...exact, body: { ...exact.body, copyManifestHash: undefined } },
+        repository
+      )
+    ).rejects.toBeInstanceOf(ActionApprovalPolicyError);
     expect(admitted).toMatchObject({
       operation: expectedOperation({
         action: "team.leave",

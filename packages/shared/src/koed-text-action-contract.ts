@@ -26,6 +26,8 @@ export const koedTextActionInputSchemas = {
     })
     .strict(),
   koed_project_delete: z.object({ projectId: uuid }).strict(),
+  koed_project_leave: z.object({ projectId: uuid }).strict(),
+  koed_workspace_leave: z.object({ teamId: uuid }).strict(),
   koed_chat_create: z.object({ projectId: uuid.optional() }).strict(),
   koed_chat_move: z
     .object({ sessionId: uuid, projectId: uuid.optional() })
@@ -87,8 +89,6 @@ export const koedTextActionNames = Object.keys(
 export const koedTextActionFutureNames = [
   "koed_project_share",
   "koed_invite_accept",
-  "koed_project_leave",
-  "koed_workspace_leave",
   "koed_job_run",
   "koed_deck_open"
 ] as const;

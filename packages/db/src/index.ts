@@ -30,6 +30,7 @@ export {
   createPersonalWorkspaceProjectRepository,
   PersonalWorkspaceProjectConflictError,
   PersonalWorkspaceProjectUnavailableError,
+  workspaceProjectCopyBackPayloadHash,
   type PersonalWorkspaceProjectRepository
 } from "./personal-workspace-project-repository.js";
 export {

@@ -36,6 +36,7 @@ import {
   Search,
   SquarePen,
   Trash2,
+  X,
   UserRoundPlus,
   UsersRound
 } from "lucide-react";
@@ -141,7 +142,9 @@ export type HqSidebarProps = {
   loading?: boolean;
   onCreateProject?: () => void;
   onDeleteProject?: (projectId: string) => void;
+  onReviewSharedProject?: (projectId: string) => Promise<"owner" | "member">;
   onShareProject?: (projectId: string) => void;
+  onOpenSharedGroup?: () => void;
   sharedPeopleCounts?: Readonly<Record<string, number>>;
   onDeleteConversation?: (
     projectId: string,
@@ -203,7 +206,9 @@ export function HqSidebar({
   loading = false,
   onCreateProject,
   onDeleteProject,
+  onReviewSharedProject,
   onShareProject,
+  onOpenSharedGroup,
   sharedPeopleCounts,
   onDeleteConversation,
   onForgetConversation,
@@ -244,6 +249,11 @@ export function HqSidebar({
     () => new Set()
   );
   const [projectMenuId, setProjectMenuId] = useState<string | null>(null);
+  const [projectLifecycleRole, setProjectLifecycleRole] = useState<{
+    id: string;
+    role: "owner" | "member";
+  } | null>(null);
+  const projectLifecycleReviewEpoch = useRef(0);
   const [conversationMenuId, setConversationMenuId] = useState<string | null>(
     null
   );
@@ -1055,6 +1065,21 @@ export function HqSidebar({
                   setProjectMenuId(
                     projectMenuId === project.id ? null : project.id
                   );
+                  projectLifecycleReviewEpoch.current++;
+                  setProjectLifecycleRole(null);
+                  if (
+                    projectMenuId !== project.id &&
+                    sharedProjectIds.has(project.id) &&
+                    onReviewSharedProject
+                  ) {
+                    const epoch = projectLifecycleReviewEpoch.current;
+                    void onReviewSharedProject(project.id)
+                      .then((role) => {
+                        if (projectLifecycleReviewEpoch.current === epoch)
+                          setProjectLifecycleRole({ id: project.id, role });
+                      })
+                      .catch(() => undefined);
+                  }
                 }}
                 type="button"
               >
@@ -1128,20 +1153,35 @@ export function HqSidebar({
                     }}
                   >
                     <UserRoundPlus aria-hidden="true" />
-                    Share
+                    {sharedProjectIds.has(project.id) ? "Who’s in" : "Share"}
                   </button>
                   <button
                     role="menuitem"
                     type="button"
-                    disabled={!onDeleteProject}
+                    disabled={
+                      !onDeleteProject ||
+                      (sharedProjectIds.has(project.id) &&
+                        projectLifecycleRole?.id !== project.id)
+                    }
                     className="hq-sidebar__project-menu-danger"
                     onClick={() => {
                       setProjectMenuId(null);
                       onDeleteProject?.(project.id);
                     }}
                   >
-                    <Trash2 aria-hidden="true" />
-                    Delete project
+                    {sharedProjectIds.has(project.id) &&
+                    projectLifecycleRole?.role === "member" ? (
+                      <X aria-hidden="true" />
+                    ) : (
+                      <Trash2 aria-hidden="true" />
+                    )}
+                    {sharedProjectIds.has(project.id)
+                      ? projectLifecycleRole?.id !== project.id
+                        ? "Checking access…"
+                        : projectLifecycleRole.role === "owner"
+                          ? "Delete project"
+                          : "Leave project"
+                      : "Delete project"}
                   </button>
                 </div>
               ) : null}
@@ -1386,33 +1426,45 @@ export function HqSidebar({
                   ) : null}
                 </ul>
               </li>
-              {sharedProjectRows.length ? (
+              {sharedProjectRows.length || onOpenSharedGroup ? (
                 <li className="hq-sidebar__group">
-                  <button
-                    aria-controls="hq-group-shared"
-                    aria-expanded={!groupFolded(SHARED_GROUP_ID)}
-                    className="hq-sidebar__group-heading"
-                    data-hq-sidebar-group="shared"
-                    onClick={() =>
-                      setGroupFolded(
-                        SHARED_GROUP_ID,
-                        !groupFolded(SHARED_GROUP_ID)
-                      )
-                    }
-                    type="button"
-                  >
-                    <ChevronDown
-                      aria-hidden="true"
-                      className="hq-sidebar__row-chevron-icon"
-                      data-hq-group-chevron=""
-                    />
-                    <UserRoundPlus
-                      aria-hidden="true"
-                      className="hq-sidebar__group-icon"
-                      data-hq-group-icon=""
-                    />
-                    <span className="hq-sidebar__group-title">Shared</span>
-                  </button>
+                  <div className="hq-sidebar__group-heading-row">
+                    <button
+                      aria-controls="hq-group-shared"
+                      aria-expanded={!groupFolded(SHARED_GROUP_ID)}
+                      className="hq-sidebar__group-heading"
+                      data-hq-sidebar-group="shared"
+                      onClick={() =>
+                        setGroupFolded(
+                          SHARED_GROUP_ID,
+                          !groupFolded(SHARED_GROUP_ID)
+                        )
+                      }
+                      type="button"
+                    >
+                      <ChevronDown
+                        aria-hidden="true"
+                        className="hq-sidebar__row-chevron-icon"
+                        data-hq-group-chevron=""
+                      />
+                      <UserRoundPlus
+                        aria-hidden="true"
+                        className="hq-sidebar__group-icon"
+                        data-hq-group-icon=""
+                      />
+                      <span className="hq-sidebar__group-title">Shared</span>
+                    </button>
+                    {onOpenSharedGroup ? (
+                      <button
+                        className="hq-sidebar__group-manage"
+                        type="button"
+                        aria-label="Manage shared groups"
+                        onClick={onOpenSharedGroup}
+                      >
+                        <MoreHorizontal aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </div>
                   <ul
                     className="hq-sidebar__group-children"
                     hidden={groupFolded(SHARED_GROUP_ID)}

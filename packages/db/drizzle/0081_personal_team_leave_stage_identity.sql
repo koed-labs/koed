@@ -1,0 +1,3 @@
+ALTER TABLE "personal_workspace_project_copyback_stages" DROP CONSTRAINT "personal_workspace_project_copyback_stage_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX "personal_workspace_project_copyback_legacy_unique" ON "personal_workspace_project_copyback_stages" USING btree ("owner_user_id","team_backend_id","workspace_project_id","reviewed_project_version") WHERE "personal_workspace_project_copyback_stages"."leave_operation_id" is null;--> statement-breakpoint
+CREATE UNIQUE INDEX "personal_workspace_project_copyback_operation_unique" ON "personal_workspace_project_copyback_stages" USING btree ("owner_user_id","team_backend_id","leave_operation_id","workspace_project_id") WHERE "personal_workspace_project_copyback_stages"."leave_operation_id" is not null;

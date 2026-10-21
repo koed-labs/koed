@@ -418,7 +418,10 @@ const teamLeaveActionDefinition = defineTeamAction<
       unavailable("Team leave");
     }
     if (actual.length > 0) {
-      if (intent.body.expectedTeamVersion !== review.team.version) {
+      if (
+        intent.body.expectedTeamVersion !== review.team.version ||
+        !intent.body.copyManifestHash
+      ) {
         unavailable("Team leave");
       }
       return stepUp({
@@ -431,6 +434,7 @@ const teamLeaveActionDefinition = defineTeamAction<
         details: [
           { label: "Team", value: review.team.name },
           { label: "Team version", value: String(review.team.version) },
+          { label: "Copy manifest", value: intent.body.copyManifestHash! },
           ...actual.map((project) => ({
             label: "Owned Project",
             value: `${project.id} (version ${project.version})`

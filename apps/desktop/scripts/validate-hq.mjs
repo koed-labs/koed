@@ -124,6 +124,8 @@ const approvedTwoUserIds = [
 
 const browserSkipReason =
   "This acceptance-map clause remains SKIP until every listed owning ticket is implemented and validated.";
+const delegatedProjectLifecycle =
+  process.env.KOED_HQ704_DELEGATED_LIFECYCLE === "1";
 const delegatedS09 = process.env.KOED_HQ205_DELEGATED_S09 === "1";
 const delegatedProjectHq = process.env.KOED_HQ207_DELEGATED_S01_S11 === "1";
 const delegatedMemoryScope = process.env.KOED_HQ304_DELEGATED_S18 === "1";
@@ -981,6 +983,15 @@ const runAssertion = async (name, assertion) => {
 
 const reportSkippedCases = () => {
   for (const entry of registry) {
+    if (
+      delegatedProjectLifecycle &&
+      ["S19.4", "S20.2", "S20.3", "S20.4", "N6.S"].includes(entry.id)
+    ) {
+      process.stdout.write(
+        `DELEGATED ${entry.id} UI [HQ-704]: exact owner/member controls, separate owner Delete review, group departure and metadata-only restore disclosure run in HQ704.ui.native. PostgreSQL proves current authority, inactive-copy recovery and retained frozen data separately. Compound real two-user I20.3/N6.I/I25 remains HQ-713; no simulated backend pass is claimed.\n`
+      );
+      continue;
+    }
     if (delegatedSummarySharingS15 && entry.id === "S15.2") {
       process.stdout.write(
         "DELEGATED S15.2 [HQ-702]: exact chat-summary question, separate transcript and Curated Memory disclosure, and Native approve/cancel UI run in HQ702.ui.native after this harness. Real Team publication and no Conversation Source Access are verified by separate PostgreSQL tests; S15.1, S15.3, and two-user acceptance remain pending.\n"

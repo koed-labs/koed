@@ -140,26 +140,36 @@ export interface ExecuteHighRiskActionGrantInput<
 > extends HighRiskOperationBinding {
   actionGrant: string;
   approvedRequest?: { method: string; path: string; body: unknown };
-  execute: (repositories: {
-    team: ReturnType<typeof createTeamAccessRepository>;
-    workspaceProject: ReturnType<typeof createWorkspaceProjectRepository>;
-    projectSharePolicy: ReturnType<typeof createProjectSharePolicyRepository>;
-    retention: ReturnType<typeof createRetentionLifecycleRepository>;
-    sharedMemory: ReturnType<typeof createSharedMemoryRepository>;
-    sync: ReturnType<typeof createCrossIdentitySyncRepository>;
-    sourceJournal: ReturnType<typeof createConversationSourceJournalRepository>;
-    teamConversationSource: ReturnType<
-      typeof createTeamConversationSourceRepository
-    >;
-    managedConversation: ReturnType<
-      typeof createManagedConversationRepository
-    > &
-      ReturnType<typeof createManagedConversationForkRepository> &
-      ReturnType<typeof createManagedConversationTransferRepository> &
-      ReturnType<typeof createDeviceCredentialRepository> &
-      ReturnType<typeof createPersonalDeviceSyncRepository>;
-    externalAuth: ReturnType<typeof createExternalAuthRepository>;
-  }) => Promise<HighRiskMutationReceipt<TBody> | null>;
+  execute: (
+    repositories: {
+      team: ReturnType<typeof createTeamAccessRepository>;
+      workspaceProject: ReturnType<typeof createWorkspaceProjectRepository>;
+      projectSharePolicy: ReturnType<typeof createProjectSharePolicyRepository>;
+      retention: ReturnType<typeof createRetentionLifecycleRepository>;
+      sharedMemory: ReturnType<typeof createSharedMemoryRepository>;
+      sync: ReturnType<typeof createCrossIdentitySyncRepository>;
+      sourceJournal: ReturnType<
+        typeof createConversationSourceJournalRepository
+      >;
+      teamConversationSource: ReturnType<
+        typeof createTeamConversationSourceRepository
+      >;
+      managedConversation: ReturnType<
+        typeof createManagedConversationRepository
+      > &
+        ReturnType<typeof createManagedConversationForkRepository> &
+        ReturnType<typeof createManagedConversationTransferRepository> &
+        ReturnType<typeof createDeviceCredentialRepository> &
+        ReturnType<typeof createPersonalDeviceSyncRepository>;
+      externalAuth: ReturnType<typeof createExternalAuthRepository>;
+    },
+    binding: {
+      actionGrantId: string;
+      deviceCredentialId: string;
+      deviceCredentialVersion: number;
+      upstreamBackendId: string;
+    }
+  ) => Promise<HighRiskMutationReceipt<TBody> | null>;
 }
 
 export interface ExecutedHighRiskActionGrant<
@@ -209,6 +219,67 @@ export interface HighRiskActionRepository {
   executeActionGrant<TBody>(
     input: ExecuteHighRiskActionGrantInput<TBody>
   ): Promise<ExecutedHighRiskActionGrant<TBody> | null>;
+  finishPreparedTeamLeave(input: {
+    operationId: string;
+    continuation: string;
+    ownerUserId: string;
+    teamId: string;
+    deviceCredentialId: string;
+    upstreamBackendId: string;
+    backendOriginHash: string;
+    copyManifestHash: string;
+  }): Promise<{
+    state: "finished";
+    membership: Awaited<
+      ReturnType<ReturnType<typeof createTeamAccessRepository>["leaveTeam"]>
+    >;
+  } | null>;
+  recoverTeamLeaveOperations(input: {
+    teamId: string;
+    ownerUserId: string;
+    deviceCredentialId: string;
+    upstreamBackendId: string;
+    backendOriginHash: string;
+    operationIds: string[];
+    includePrepared: boolean;
+  }): Promise<
+    Array<{
+      operationId: string;
+      continuation: string;
+      state: "prepared" | "finished" | "canceled";
+      copyManifestHash: string;
+      ownedSetHash: string;
+      ownedProjects: Array<{ id: string; version: number }>;
+      finalMembership: Record<string, unknown> | null;
+    }>
+  >;
+  finishedTeamLeaveProof(input: {
+    teamId: string;
+    operationId: string;
+    ownerUserId: string;
+    upstreamBackendId: string;
+    backendOriginHash: string;
+  }): Promise<{
+    operationId: string;
+    state: "finished";
+    copyManifestHash: string;
+    ownedSetHash: string;
+    ownedProjects: Array<{ id: string; version: number }>;
+    finalMembership: Record<string, unknown>;
+  } | null>;
+  textActionLifecycleProof(input: {
+    ownerUserId: string;
+    upstreamBackendId: string;
+    backendOriginHash: string;
+    teamId: string;
+    targetId: string;
+    effectKey: string;
+    action: "workspace_project.leave" | "team.leave";
+    expectedProjectVersion?: number;
+    expectedMemberVersion?: number;
+    expectedMembershipVersion?: number;
+    expectedTeamVersion?: number;
+  }): Promise<boolean>;
   lookupLegalHoldTeamId(holdId: string): Promise<string | null>;
   getLegalHoldApprovalReview(holdId: string): Promise<{
     id: string;
@@ -1596,7 +1667,11 @@ export const createHighRiskActionRepository = (
       // the common source fence. PostgreSQL may resolve that inversion with
       // 40P01 (or abort an RR snapshot with 40001). Retry the *whole* action
       // transaction so its one-use grant and receipt remain atomic.
-      const attempts = input.action === "shared_memory.grant.freeze" ? 3 : 1;
+      const attempts =
+        input.action === "shared_memory.grant.freeze" ||
+        input.action === "team.leave"
+          ? 3
+          : 1;
       for (let attempt = 0; attempt < attempts; attempt++) {
         const client = await pool.connect();
         try {
@@ -1618,7 +1693,10 @@ export const createHighRiskActionRepository = (
             return null;
           }
           const [activeCredential] = await tx
-            .select({ id: deviceCredentials.id })
+            .select({
+              id: deviceCredentials.id,
+              version: deviceCredentials.credentialVersion
+            })
             .from(deviceCredentials)
             .where(
               and(
@@ -1849,7 +1927,13 @@ export const createHighRiskActionRepository = (
               options.ownerPrivateReplicaEnvelopeEncryptionProvider,
               verifiedTeamFreezeParent,
               verifiedProjectFreezeParent
-            )
+            ),
+            {
+              actionGrantId: grant.id,
+              deviceCredentialId: grant.deviceCredentialId,
+              deviceCredentialVersion: activeCredential.version,
+              upstreamBackendId: grant.upstreamBackendId
+            }
           );
           if (!receipt) {
             await client.query("rollback");
@@ -1903,6 +1987,745 @@ export const createHighRiskActionRepository = (
           ) {
             continue;
           }
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
+      return null;
+    },
+
+    async finishedTeamLeaveProof(input) {
+      const pool = options.pool;
+      const provider = options.envelopeEncryptionProvider;
+      if (!pool || !provider)
+        throw new Error("Team departure proof custody unavailable");
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const result = await client.query<{
+          id: string;
+          copy_manifest_hash: string;
+          owned_set_hash: string;
+          owned_projects: Array<{ id: string; version: number }>;
+          final_membership: Record<string, unknown> | null;
+          action_grant_id: string;
+          continuation_commitment: string;
+          expected_team_version: number;
+          expected_membership_version: number;
+          request_hash: string;
+          confirmation_request_hash: string;
+          scope_hash: string;
+        }>(
+          `select operation.id,operation.copy_manifest_hash,operation.owned_set_hash,
+                  operation.owned_projects,operation.final_membership,
+                  operation.action_grant_id,operation.continuation_commitment,
+                  operation.expected_team_version,operation.expected_membership_version,
+                  action_grant.request_hash,confirmation.request_hash as confirmation_request_hash,
+                  action_grant.scope_hash
+             from team_leave_operations operation
+             join users owner_user on owner_user.id=operation.owner_user_id
+             join high_risk_device_action_grants action_grant on action_grant.id=operation.action_grant_id
+             join high_risk_browser_confirmations confirmation on confirmation.id=action_grant.confirmation_id
+            where operation.id=$1 and operation.team_id=$2 and operation.owner_user_id=$3
+              and operation.upstream_backend_id=$4 and operation.backend_origin_hash=$5
+              and operation.state='finished' and operation.final_membership is not null
+              and owner_user.disabled_at is null and owner_user.deleted_at is null
+              and action_grant.owner_user_id=$3 and action_grant.team_id=$2
+              and action_grant.device_credential_id=operation.device_credential_id
+              and action_grant.upstream_backend_id=$4 and action_grant.target_id=$2
+              and action_grant.action='team.leave' and action_grant.operation_family='admin'
+              and action_grant.state='consumed' and action_grant.use_count=1
+              and action_grant.consumed_at is not null
+              and confirmation.state='approved' and confirmation.approval_tier='step_up'
+              and confirmation.owner_user_id=$3
+              and confirmation.device_credential_id=operation.device_credential_id
+              and confirmation.upstream_backend_id=$4 and confirmation.team_id=$2
+              and confirmation.action='team.leave' and confirmation.operation_family='admin'
+            for update of operation`,
+          [
+            input.operationId,
+            input.teamId,
+            input.ownerUserId,
+            input.upstreamBackendId,
+            input.backendOriginHash
+          ]
+        );
+        const row = result.rows[0];
+        if (!row) {
+          await client.query("commit");
+          return null;
+        }
+        const approvedBody = {
+          expectedVersion: row.expected_membership_version,
+          expectedTeamVersion: row.expected_team_version,
+          expectedOwnedWorkspaceProjects: row.owned_projects,
+          copyManifestHash: row.copy_manifest_hash
+        };
+        const requestHash = highRiskActionGrantCanonicalHash(
+          HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+          {
+            method: "POST",
+            path: `/v1/teams/${input.teamId}/leave`,
+            body: approvedBody
+          }
+        );
+        const scopeHash = highRiskActionGrantCanonicalHash(
+          HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminScope,
+          {
+            operationFamily: "admin",
+            action: "team.leave",
+            teamId: input.teamId,
+            targetId: input.teamId
+          }
+        );
+        if (
+          row.request_hash !== requestHash ||
+          row.confirmation_request_hash !== requestHash ||
+          row.scope_hash !== scopeHash
+        )
+          throw new Error("Finished Team departure approval binding changed");
+        const tx = createDb(client);
+        const [stored] = await tx
+          .select()
+          .from(highRiskActionGrantExecutionReceipts)
+          .where(
+            eq(
+              highRiskActionGrantExecutionReceipts.actionGrantId,
+              row.action_grant_id
+            )
+          )
+          .limit(1);
+        const receipt = await decodeReceiptRow<{
+          operation: {
+            operationId: string;
+            continuation: string;
+            state: string;
+            copyManifestHash: string;
+            ownedSetHash: string;
+          };
+        }>(provider, stored ?? null);
+        const original = receipt?.body?.operation;
+        if (
+          receipt?.statusCode !== 200 ||
+          !original ||
+          original.operationId !== row.id ||
+          original.state !== "prepared" ||
+          original.copyManifestHash !== row.copy_manifest_hash ||
+          original.ownedSetHash !== row.owned_set_hash ||
+          createHash("sha256")
+            .update(`koed:team-leave-continuation:v1\n${original.continuation}`)
+            .digest("hex") !== row.continuation_commitment
+        )
+          throw new Error("Finished Team departure receipt changed");
+        await client.query("commit");
+        return {
+          operationId: row.id,
+          state: "finished",
+          copyManifestHash: row.copy_manifest_hash,
+          ownedSetHash: row.owned_set_hash,
+          ownedProjects: row.owned_projects,
+          finalMembership: row.final_membership!
+        };
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async textActionLifecycleProof(input) {
+      const pool = options.pool;
+      const provider = options.envelopeEncryptionProvider;
+      if (!pool || !provider)
+        throw new Error("Lifecycle receipt custody unavailable");
+      if (
+        input.action === "workspace_project.leave" &&
+        (!input.expectedProjectVersion || !input.expectedMemberVersion)
+      )
+        return false;
+      const rows = await pool.query<{
+        id: string;
+        request_hash: string;
+        confirmation_request_hash: string;
+        scope_hash: string;
+        status_code: number;
+        receipt_body: unknown;
+        receipt_hash: string;
+        operation_id: string | null;
+        operation_state: string | null;
+        operation_backend_origin_hash: string | null;
+        final_membership: unknown;
+        operation_expected_team_version: number | null;
+        operation_expected_membership_version: number | null;
+        operation_owned_projects: Array<{ id: string; version: number }> | null;
+        operation_copy_manifest_hash: string | null;
+      }>(
+        `
+        select action_grant.id,action_grant.request_hash,
+               confirmation.request_hash as confirmation_request_hash,
+               action_grant.scope_hash,receipt.status_code,receipt.receipt_body,
+               receipt.receipt_hash,operation.id as operation_id,
+               operation.state as operation_state,
+               operation.backend_origin_hash as operation_backend_origin_hash,
+               operation.final_membership,
+               operation.expected_team_version as operation_expected_team_version,
+               operation.expected_membership_version as operation_expected_membership_version,
+               operation.owned_projects as operation_owned_projects,
+               operation.copy_manifest_hash as operation_copy_manifest_hash
+          from high_risk_device_action_grants action_grant
+          join high_risk_browser_confirmations confirmation
+            on confirmation.id=action_grant.confirmation_id
+          join high_risk_action_grant_execution_receipts receipt
+            on receipt.action_grant_id=action_grant.id and receipt.owner_user_id=action_grant.owner_user_id
+          left join team_leave_operations operation
+            on operation.action_grant_id=action_grant.id
+         where confirmation.client_request_id=$1
+           and action_grant.owner_user_id=$2 and confirmation.owner_user_id=$2
+           and action_grant.upstream_backend_id=$3 and confirmation.upstream_backend_id=$3
+           and action_grant.team_id=$4 and confirmation.team_id=$4
+           and action_grant.target_id=$5 and confirmation.target_id=$5
+           and action_grant.action=$6 and confirmation.action=$6
+           and action_grant.operation_family='admin' and confirmation.operation_family='admin'
+           and action_grant.state='consumed' and action_grant.use_count=1 and action_grant.consumed_at is not null
+           and confirmation.state='approved'
+           and ((action_grant.action='team.leave' and operation.id is null
+                 and confirmation.approval_tier='native_review')
+             or ((action_grant.action='workspace_project.leave' or operation.id is not null)
+                 and confirmation.approval_tier='step_up'))
+           and receipt.status_code=200
+         limit 2`,
+        [
+          input.effectKey,
+          input.ownerUserId,
+          input.upstreamBackendId,
+          input.teamId,
+          input.targetId,
+          input.action
+        ]
+      );
+      if (rows.rows.length !== 1) return false;
+      const row = rows.rows[0]!;
+      const scopeHash = highRiskActionGrantCanonicalHash(
+        HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminScope,
+        {
+          operationFamily: "admin",
+          action: input.action,
+          teamId: input.teamId,
+          targetId: input.targetId
+        }
+      );
+      if (
+        row.scope_hash !== scopeHash ||
+        row.request_hash !== row.confirmation_request_hash
+      )
+        return false;
+      if (input.action === "workspace_project.leave") {
+        const requestHash = highRiskActionGrantCanonicalHash(
+          HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+          {
+            method: "POST",
+            path: `/v1/workspace-projects/${input.targetId}/leave`,
+            body: {
+              expectedProjectVersion: input.expectedProjectVersion,
+              expectedMemberVersion: input.expectedMemberVersion
+            }
+          }
+        );
+        if (row.request_hash !== requestHash) return false;
+      } else if (!row.operation_id) {
+        if (!input.expectedMembershipVersion || !input.expectedTeamVersion)
+          return false;
+        const requestHash = highRiskActionGrantCanonicalHash(
+          HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+          {
+            method: "POST",
+            path: `/v1/teams/${input.teamId}/leave`,
+            body: {
+              expectedVersion: input.expectedMembershipVersion,
+              expectedTeamVersion: input.expectedTeamVersion,
+              expectedOwnedWorkspaceProjects: []
+            }
+          }
+        );
+        if (row.request_hash !== requestHash) return false;
+      }
+      if (row.operation_id) {
+        if (
+          row.operation_state !== "finished" ||
+          row.operation_backend_origin_hash !== input.backendOriginHash ||
+          !row.final_membership ||
+          !row.operation_owned_projects ||
+          !row.operation_expected_team_version ||
+          !row.operation_expected_membership_version ||
+          row.operation_expected_team_version !== input.expectedTeamVersion ||
+          row.operation_expected_membership_version !==
+            input.expectedMembershipVersion ||
+          !row.operation_copy_manifest_hash
+        )
+          return false;
+        const requestHash = highRiskActionGrantCanonicalHash(
+          HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+          {
+            method: "POST",
+            path: `/v1/teams/${input.teamId}/leave`,
+            body: {
+              expectedVersion: row.operation_expected_membership_version,
+              expectedTeamVersion: row.operation_expected_team_version,
+              expectedOwnedWorkspaceProjects: row.operation_owned_projects,
+              copyManifestHash: row.operation_copy_manifest_hash
+            }
+          }
+        );
+        if (row.request_hash !== requestHash) return false;
+      }
+      const receipt = await decodeReceiptRow<Record<string, unknown>>(
+        provider,
+        {
+          statusCode: row.status_code,
+          receiptBody: row.receipt_body,
+          receiptHash: row.receipt_hash
+        }
+      );
+      if (!receipt || receipt.statusCode !== 200) return false;
+      if (input.action === "workspace_project.leave") {
+        const memberId = receipt.body.memberId;
+        if (
+          receipt.body.projectId !== input.targetId ||
+          receipt.body.access !== "disabled" ||
+          typeof memberId !== "string"
+        )
+          return false;
+        const membership = await pool.query<{ id: string }>(
+          `select id from team_memberships where id=$1 and team_id=$2 and user_id=$3`,
+          [memberId, input.teamId, input.ownerUserId]
+        );
+        return membership.rows.length === 1;
+      }
+      if (row.operation_id) {
+        const original = receipt.body.operation;
+        const final = row.final_membership as Record<string, unknown>;
+        return (
+          !!original &&
+          typeof original === "object" &&
+          (original as Record<string, unknown>).operationId ===
+            row.operation_id &&
+          final.teamId === input.teamId &&
+          final.userId === input.ownerUserId &&
+          final.status === "disabled"
+        );
+      }
+      const membership = receipt.body.membership as
+        | Record<string, unknown>
+        | undefined;
+      return (
+        membership?.teamId === input.teamId &&
+        membership.userId === input.ownerUserId &&
+        membership.status === "disabled"
+      );
+    },
+
+    async recoverTeamLeaveOperations(input) {
+      const pool = options.pool;
+      const provider = options.envelopeEncryptionProvider;
+      if (!pool || !provider)
+        throw new Error("Team departure recovery custody unavailable");
+      if (
+        input.operationIds.length > 20 ||
+        new Set(input.operationIds).size !== input.operationIds.length
+      )
+        throw new Error("Team departure recovery IDs are invalid");
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        // Locking the exact operation makes a read after an interrupted finish
+        // wait for its transaction, then observe its committed terminal state.
+        const rows = await client.query<{
+          id: string;
+          state: string;
+          copy_manifest_hash: string;
+          owned_set_hash: string;
+          owned_projects: Array<{ id: string; version: number }>;
+          final_membership: Record<string, unknown> | null;
+          action_grant_id: string;
+          expected_team_version: number;
+          expected_membership_version: number;
+          continuation_commitment: string;
+          request_hash: string;
+          confirmation_request_hash: string;
+          scope_hash: string;
+        }>(
+          `select operation.id,operation.state,operation.copy_manifest_hash,
+                  operation.owned_set_hash,operation.owned_projects,
+                  operation.final_membership,operation.action_grant_id,
+                  operation.expected_team_version,operation.expected_membership_version,
+                  operation.continuation_commitment,
+                  action_grant.request_hash,confirmation.request_hash as confirmation_request_hash,
+                  action_grant.scope_hash
+             from team_leave_operations operation
+             join device_credentials credential on credential.id=operation.device_credential_id
+             join users owner_user on owner_user.id=operation.owner_user_id
+             join high_risk_device_action_grants action_grant
+               on action_grant.id=operation.action_grant_id
+             join high_risk_browser_confirmations confirmation
+               on confirmation.id=action_grant.confirmation_id
+            where operation.team_id=$1 and operation.owner_user_id=$2
+              and operation.device_credential_id=$3
+              and operation.upstream_backend_id=$4
+              and operation.backend_origin_hash=$5
+              and ((operation.state='prepared' and $6::boolean)
+                or operation.id=any($7::uuid[]))
+              and credential.owner_user_id=$2
+              and credential.upstream_backend_id=$4
+              and credential.credential_version=operation.device_credential_version
+              and credential.revoked_at is null
+              and (credential.expires_at is null or credential.expires_at>now())
+              and 'action_grant'=any(credential.operation_families)
+              and owner_user.disabled_at is null and owner_user.deleted_at is null
+              and action_grant.owner_user_id=$2 and action_grant.device_credential_id=$3
+              and action_grant.upstream_backend_id=$4 and action_grant.team_id=$1
+              and action_grant.target_id=$1 and action_grant.action='team.leave'
+              and action_grant.operation_family='admin'
+              and action_grant.state='consumed' and action_grant.use_count=1
+              and action_grant.consumed_at is not null
+              and confirmation.state='approved' and confirmation.approval_tier='step_up'
+              and confirmation.owner_user_id=$2 and confirmation.device_credential_id=$3
+              and confirmation.upstream_backend_id=$4 and confirmation.team_id=$1
+              and confirmation.action='team.leave' and confirmation.operation_family='admin'
+            order by operation.created_at desc,operation.id desc
+            limit 22 for update of operation`,
+          [
+            input.teamId,
+            input.ownerUserId,
+            input.deviceCredentialId,
+            input.upstreamBackendId,
+            input.backendOriginHash,
+            input.includePrepared,
+            input.operationIds
+          ]
+        );
+        // Twenty explicit Personal stage IDs plus one currently prepared
+        // operation is the largest valid bounded request.
+        if (rows.rows.length > 21)
+          throw new Error("Team departure recovery is not bounded");
+        const tx = createDb(client);
+        const recovered = [];
+        for (const row of rows.rows) {
+          const approvedBody = {
+            expectedVersion: row.expected_membership_version,
+            expectedTeamVersion: row.expected_team_version,
+            expectedOwnedWorkspaceProjects: row.owned_projects,
+            copyManifestHash: row.copy_manifest_hash
+          };
+          const expectedHash = highRiskActionGrantCanonicalHash(
+            HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+            {
+              method: "POST",
+              path: `/v1/teams/${input.teamId}/leave`,
+              body: approvedBody
+            }
+          );
+          const expectedScope = highRiskActionGrantCanonicalHash(
+            HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminScope,
+            {
+              operationFamily: "admin",
+              action: "team.leave",
+              teamId: input.teamId,
+              targetId: input.teamId
+            }
+          );
+          if (
+            row.request_hash !== expectedHash ||
+            row.confirmation_request_hash !== expectedHash ||
+            row.scope_hash !== expectedScope
+          )
+            throw new Error("Team departure approval binding changed");
+          const [stored] = await tx
+            .select()
+            .from(highRiskActionGrantExecutionReceipts)
+            .where(
+              eq(
+                highRiskActionGrantExecutionReceipts.actionGrantId,
+                row.action_grant_id
+              )
+            )
+            .limit(1);
+          const receipt = await decodeReceiptRow<{
+            operation: {
+              operationId: string;
+              continuation: string;
+              state: string;
+              copyManifestHash: string;
+              ownedSetHash: string;
+            };
+          }>(provider, stored ?? null);
+          const operation = receipt?.body?.operation;
+          if (
+            receipt?.statusCode !== 200 ||
+            !operation ||
+            operation.operationId !== row.id ||
+            operation.state !== "prepared" ||
+            operation.copyManifestHash !== row.copy_manifest_hash ||
+            operation.ownedSetHash !== row.owned_set_hash ||
+            typeof operation.continuation !== "string" ||
+            createHash("sha256")
+              .update(
+                `koed:team-leave-continuation:v1\n${operation.continuation}`
+              )
+              .digest("hex") !== row.continuation_commitment
+          )
+            throw new Error(
+              "Team departure encrypted execution receipt changed"
+            );
+          recovered.push({
+            operationId: row.id,
+            continuation: operation.continuation,
+            state: row.state as "prepared" | "finished" | "canceled",
+            copyManifestHash: row.copy_manifest_hash,
+            ownedSetHash: row.owned_set_hash,
+            ownedProjects: row.owned_projects,
+            finalMembership: row.final_membership
+          });
+        }
+        await client.query("commit");
+        return recovered;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async finishPreparedTeamLeave(input) {
+      const pool = options.pool;
+      if (!pool)
+        throw new Error("Team departure needs an atomic database pool");
+      const commitment = createHash("sha256")
+        .update(`koed:team-leave-continuation:v1\n${input.continuation}`)
+        .digest("hex");
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const client = await pool.connect();
+        try {
+          await client.query("begin");
+          const team = await client.query<{
+            version: number;
+            lifecycle: string;
+            entitlement_status: string;
+          }>(
+            "select version,lifecycle,entitlement_status from teams where id=$1 for update",
+            [input.teamId]
+          );
+          const operation = await client.query<{
+            id: string;
+            membership_id: string;
+            owner_user_id: string;
+            device_credential_id: string;
+            device_credential_version: number;
+            upstream_backend_id: string;
+            backend_origin_hash: string;
+            action_grant_id: string;
+            continuation_commitment: string;
+            expected_team_version: number;
+            expected_membership_version: number;
+            owned_projects: Array<{ id: string; version: number }>;
+            owned_set_hash: string;
+            copy_manifest_hash: string;
+            state: string;
+          }>(
+            "select * from team_leave_operations where id=$1 and team_id=$2 for update",
+            [input.operationId, input.teamId]
+          );
+          const op = operation.rows[0];
+          if (
+            !op ||
+            op.owner_user_id !== input.ownerUserId ||
+            op.device_credential_id !== input.deviceCredentialId ||
+            op.upstream_backend_id !== input.upstreamBackendId ||
+            op.backend_origin_hash !== input.backendOriginHash ||
+            op.continuation_commitment !== commitment ||
+            op.copy_manifest_hash !== input.copyManifestHash ||
+            op.state !== "prepared" ||
+            team.rows[0]?.lifecycle !== "active" ||
+            !["active", "grace"].includes(team.rows[0].entitlement_status) ||
+            team.rows[0].version !== op.expected_team_version
+          ) {
+            await client.query("rollback");
+            return null;
+          }
+          const user = await client.query<{
+            disabled_at: Date | null;
+            deleted_at: Date | null;
+          }>(
+            "select disabled_at,deleted_at from users where id=$1 for update",
+            [input.ownerUserId]
+          );
+          const member = await client.query<{
+            id: string;
+            version: number;
+            status: string;
+            disabled_at: Date | null;
+          }>(
+            `select id,version,status,disabled_at from team_memberships
+              where id=$1 and team_id=$2 and user_id=$3 for update`,
+            [op.membership_id, input.teamId, input.ownerUserId]
+          );
+          const credential = await client.query<{
+            credential_version: number;
+            revoked_at: Date | null;
+            expires_at: Date | null;
+            operation_families: string[];
+          }>(
+            `select credential_version,revoked_at,expires_at,operation_families
+               from device_credentials where id=$1 and owner_user_id=$2
+                 and upstream_backend_id=$3 for update`,
+            [
+              input.deviceCredentialId,
+              input.ownerUserId,
+              input.upstreamBackendId
+            ]
+          );
+          if (
+            !user.rows[0] ||
+            user.rows[0].disabled_at ||
+            user.rows[0].deleted_at ||
+            member.rows[0]?.status !== "enabled" ||
+            member.rows[0].disabled_at ||
+            member.rows[0].version !== op.expected_membership_version ||
+            !credential.rows[0] ||
+            credential.rows[0].revoked_at ||
+            (credential.rows[0].expires_at &&
+              credential.rows[0].expires_at <= new Date()) ||
+            !credential.rows[0].operation_families.includes("action_grant") ||
+            credential.rows[0].credential_version !==
+              op.device_credential_version
+          ) {
+            await client.query("rollback");
+            return null;
+          }
+          const projects = await client.query<{ id: string; version: number }>(
+            `select id,version from workspace_projects
+               where team_id=$1 and owner_team_member_id=$2 and lifecycle='active'
+               order by id for update`,
+            [input.teamId, op.membership_id]
+          );
+          if (
+            JSON.stringify(projects.rows) !==
+              JSON.stringify(op.owned_projects) ||
+            createHash("sha256")
+              .update(JSON.stringify(projects.rows))
+              .digest("hex") !== op.owned_set_hash
+          ) {
+            await client.query("rollback");
+            return null;
+          }
+          const approvedBody = {
+            expectedVersion: op.expected_membership_version,
+            expectedTeamVersion: op.expected_team_version,
+            expectedOwnedWorkspaceProjects: op.owned_projects,
+            copyManifestHash: op.copy_manifest_hash
+          };
+          const expectedRequestHash = highRiskActionGrantCanonicalHash(
+            HIGH_RISK_ACTION_GRANT_HASH_DOMAINS.teamAdminRequest,
+            {
+              method: "POST",
+              path: `/v1/teams/${input.teamId}/leave`,
+              body: approvedBody
+            }
+          );
+          const grant = await client.query<{
+            id: string;
+            request_hash: string;
+            state: string;
+            use_count: number;
+            consumed_at: Date | null;
+            request_id: string;
+            approval_tier: string;
+          }>(
+            `select action_grant.id,action_grant.request_hash,action_grant.state,action_grant.use_count,action_grant.consumed_at,
+                    confirmation.client_request_id as request_id,confirmation.approval_tier
+               from high_risk_device_action_grants action_grant
+               join high_risk_browser_confirmations confirmation
+                 on confirmation.id=action_grant.confirmation_id
+               join high_risk_action_grant_execution_receipts receipt
+                 on receipt.action_grant_id=action_grant.id
+              where action_grant.id=$1 and action_grant.owner_user_id=$2
+                and action_grant.device_credential_id=$3 and action_grant.upstream_backend_id=$4
+                and action_grant.team_id=$5 and action_grant.target_id=$5 and action_grant.action='team.leave'
+                and confirmation.state='approved'
+                and confirmation.owner_user_id=$2
+                and confirmation.device_credential_id=$3
+                and confirmation.upstream_backend_id=$4
+              for update of action_grant,confirmation`,
+            [
+              op.action_grant_id,
+              input.ownerUserId,
+              input.deviceCredentialId,
+              input.upstreamBackendId,
+              input.teamId
+            ]
+          );
+          const approved = grant.rows[0];
+          if (
+            !approved ||
+            approved.state !== "consumed" ||
+            approved.use_count !== 1 ||
+            !approved.consumed_at ||
+            approved.approval_tier !== "step_up" ||
+            approved.request_hash !== expectedRequestHash
+          ) {
+            await client.query("rollback");
+            return null;
+          }
+          await client.query(
+            `update team_leave_operations set state='finalizing',updated_at=now()
+              where id=$1 and state='prepared'`,
+            [op.id]
+          );
+          const scoped = buildScopedRepositories(
+            client,
+            options.envelopeEncryptionProvider,
+            options.teamEnvelopeEncryptionProvider,
+            options.ownerPrivateReplicaEnvelopeEncryptionProvider,
+            {
+              action: "team.leave",
+              actorUserId: input.ownerUserId,
+              teamId: input.teamId,
+              targetId: input.teamId,
+              actionGrantId: approved.id,
+              requestId: approved.request_id,
+              requestHash: approved.request_hash,
+              approvalTier: "step_up",
+              requestBody: approvedBody
+            }
+          );
+          const membership = await scoped.team.leaveTeam(
+            { userId: input.ownerUserId },
+            {
+              teamId: input.teamId,
+              expectedVersion: op.expected_membership_version,
+              expectedTeamVersion: op.expected_team_version,
+              expectedOwnedWorkspaceProjects: op.owned_projects
+            }
+          );
+          if (!membership) {
+            await client.query("rollback");
+            return null;
+          }
+          await client.query(
+            `update team_leave_operations
+                set state='finished',final_membership=$2::jsonb,
+                    completed_at=now(),updated_at=now()
+              where id=$1 and state='finalizing'`,
+            [op.id, JSON.stringify(membership)]
+          );
+          await client.query("commit");
+          return { state: "finished" as const, membership };
+        } catch (error) {
+          await client.query("rollback");
+          const code = (error as { code?: unknown }).code;
+          if (attempt < 2 && (code === "40P01" || code === "40001")) continue;
           throw error;
         } finally {
           client.release();

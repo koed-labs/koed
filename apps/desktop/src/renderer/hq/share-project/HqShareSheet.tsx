@@ -4,6 +4,7 @@ import type { Project } from "@koed/shared/project-contract";
 import type { ProjectsDesktopApi } from "../../../ipc/projects-protocol.js";
 import type { WorkspaceProjectShareContext } from "@koed/shared/workspace-project-contract";
 import type { workspaceProjectMembersSchema } from "@koed/shared/workspace-project-contract";
+import type { WorkspaceProjectLifecycleReview } from "@koed/shared/workspace-project-contract";
 import type { z } from "zod";
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
 import {
@@ -53,7 +54,8 @@ export function HqShareSheet({
   const [autoOfferToken, setAutoOfferToken] = useState<string | null>(null);
   const requestGeneration = useRef(0);
   const currentScope = useRef("");
-  const scope = `${identityKey}\u0000${project?.id ?? ""}\u0000${open}`;
+  const principalId = collaboration.current()?.navigation.teamPrincipal?.id;
+  const scope = `${identityKey}\u0000${project?.id ?? ""}\u0000${principalId ?? ""}\u0000${open}`;
   if (currentScope.current !== scope) {
     currentScope.current = scope;
     requestGeneration.current += 1;
@@ -63,6 +65,16 @@ export function HqShareSheet({
   const [members, setMembers] = useState<z.infer<
     typeof workspaceProjectMembersSchema
   > | null>(null);
+  const [ownerReview, setOwnerReview] =
+    useState<WorkspaceProjectLifecycleReview | null>(null);
+  const [removeReview, setRemoveReview] = useState<{
+    name: string;
+    review: WorkspaceProjectLifecycleReview;
+  } | null>(null);
+  const lifecycleCurrent = (request: number) =>
+    requestGeneration.current === request &&
+    collaboration.current()?.connection.backendId === project?.teamBackendId &&
+    collaboration.current()?.navigation.teamPrincipal?.id === principalId;
   useEffect(() => {
     if (!open || !project) return;
     let alive = true;
@@ -74,6 +86,8 @@ export function HqShareSheet({
     setInvitationUrl(null);
     setInvitationError(null);
     setMembers(null);
+    setOwnerReview(null);
+    setRemoveReview(null);
     setAttemptKey(crypto.randomUUID());
     setTarget({ kind: "new_team" });
     setPending(false);
@@ -106,7 +120,7 @@ export function HqShareSheet({
       alive = false;
       requestGeneration.current += 1;
     };
-  }, [open, project?.id, identityKey, flow, projectsApi]);
+  }, [open, project?.id, identityKey, principalId, flow, projectsApi]);
 
   useEffect(() => {
     if (!open || !project?.workspaceProjectId || !project.teamBackendId) return;
@@ -126,6 +140,29 @@ export function HqShareSheet({
     project?.teamBackendId,
     projectsApi,
     identityKey
+  ]);
+  useEffect(() => {
+    if (!open || !project?.workspaceProjectId || !project.teamBackendId) return;
+    const request = requestGeneration.current;
+    void collaboration
+      .reviewProjectLifecycle({ projectId: project.workspaceProjectId })
+      .then((review) => {
+        if (
+          lifecycleCurrent(request) &&
+          review.actorUserId === principalId &&
+          review.project.id === project.workspaceProjectId &&
+          review.actorTeamMemberId === review.project.ownerTeamMemberId
+        )
+          setOwnerReview(review);
+      })
+      .catch(() => undefined);
+  }, [
+    open,
+    project?.workspaceProjectId,
+    project?.teamBackendId,
+    collaboration,
+    identityKey,
+    principalId
   ]);
 
   const share = async () => {
@@ -297,12 +334,134 @@ export function HqShareSheet({
                   <li key={person.teamMemberId}>
                     {person.displayName} ·{" "}
                     {person.access === "write" ? "Can edit" : "Can view"}
+                    {ownerReview &&
+                    person.userId &&
+                    person.teamMemberId !== ownerReview.actorTeamMemberId ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          void (async () => {
+                            if (
+                              !project.workspaceProjectId ||
+                              !project.teamBackendId ||
+                              collaboration.current()?.navigation.teamPrincipal
+                                ?.id !== principalId
+                            )
+                              return;
+                            const request = requestGeneration.current;
+                            setBusy(true);
+                            setError(null);
+                            try {
+                              const review =
+                                await collaboration.reviewProjectLifecycle({
+                                  projectId: project.workspaceProjectId,
+                                  targetUserId: person.userId
+                                });
+                              if (
+                                lifecycleCurrent(request) &&
+                                review.actorUserId === principalId &&
+                                review.targetTeamMemberId ===
+                                  person.teamMemberId &&
+                                review.targetAccess !== "disabled"
+                              )
+                                setRemoveReview({
+                                  name: person.displayName,
+                                  review
+                                });
+                            } catch (cause) {
+                              if (requestGeneration.current === request)
+                                setError(
+                                  cause instanceof Error
+                                    ? cause.message
+                                    : "Member review changed."
+                                );
+                            } finally {
+                              if (requestGeneration.current === request)
+                                setBusy(false);
+                            }
+                          })();
+                        }}
+                      >
+                        Remove
+                      </button>
+                    ) : null}
                   </li>
                 ))}
               </ul>
             ) : null}
+            {removeReview ? (
+              <div role="group" aria-label={`Remove ${removeReview.name}`}>
+                <p>
+                  Remove {removeReview.name} from this Project? Their access
+                  ends now. Team membership stays.
+                </p>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setRemoveReview(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    void (async () => {
+                      const { review } = removeReview;
+                      if (!review.targetUserId || !review.targetMemberVersion)
+                        return;
+                      const request = requestGeneration.current;
+                      if (
+                        !lifecycleCurrent(request) ||
+                        review.actorUserId !== principalId ||
+                        review.actorTeamMemberId !==
+                          ownerReview?.actorTeamMemberId ||
+                        review.project.id !== project.workspaceProjectId
+                      )
+                        return;
+                      setBusy(true);
+                      setError(null);
+                      try {
+                        await collaboration.removeProjectMember({
+                          teamId: review.project.teamId,
+                          projectId: review.project.id,
+                          targetUserId: review.targetUserId,
+                          expectedProjectVersion: review.project.version,
+                          expectedMemberVersion: review.targetMemberVersion
+                        });
+                        if (lifecycleCurrent(request)) {
+                          setRemoveReview(null);
+                          const roster = await projectsApi.sharedMembers?.(
+                            review.project.id,
+                            project!.teamBackendId!
+                          );
+                          if (lifecycleCurrent(request)) {
+                            if (roster) setMembers(roster);
+                            onShared();
+                          }
+                        }
+                      } catch (cause) {
+                        if (requestGeneration.current === request)
+                          setError(
+                            cause instanceof Error
+                              ? cause.message
+                              : "Member removal needs review."
+                          );
+                      } finally {
+                        if (requestGeneration.current === request)
+                          setBusy(false);
+                      }
+                    })();
+                  }}
+                >
+                  Remove {removeReview.name}
+                </button>
+              </div>
+            ) : null}
             <p className="hq-share-sheet__muted">
-              Open the Team to change access.
+              Project owners can remove members here. Team membership is managed
+              in Shared groups.
             </p>
             <HqSharePolicy
               key={`${identityKey}:${project.id}`}

@@ -610,6 +610,8 @@ export class PiManagedConversationSession {
             "koed_project_create",
             "koed_project_move_chats",
             "koed_project_delete",
+            "koed_project_leave",
+            "koed_workspace_leave",
             "koed_chat_create",
             "koed_chat_move",
             "koed_chat_delete",

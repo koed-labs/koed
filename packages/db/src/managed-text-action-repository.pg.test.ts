@@ -1151,6 +1151,243 @@ describe.skipIf(!testUrl)("HQ-504 exact managed text-action authority", () => {
     expect(move?.snapshot).toEqual({});
   }, 120_000);
 
+  it("keeps Project and group leave text proposals claimed until their exact Team receipt", async () => {
+    const group = await fixture("full_access");
+    const teamId = randomUUID(),
+      backendId = `backend-${randomUUID()}`;
+    let principal = group.owner,
+      receiptOwner = group.owner,
+      projectTarget: string | null = null,
+      confirmed = false;
+    const receipt = async (input: {
+      ownerUserId: string;
+      teamBackendId: string;
+      teamPrincipalUserId: string;
+      teamId: string;
+      targetId: string;
+      effectKey: string;
+      name: string;
+      expectedMembershipVersion?: number;
+      expectedTeamVersion?: number;
+      expectedProjectVersion?: number;
+      expectedMemberVersion?: number;
+    }) =>
+      confirmed &&
+      input.ownerUserId === receiptOwner &&
+      input.teamBackendId === backendId &&
+      input.teamPrincipalUserId === principal &&
+      input.teamId === teamId &&
+      (input.name === "koed_workspace_leave"
+        ? input.targetId === teamId &&
+          input.expectedMembershipVersion === 3 &&
+          input.expectedTeamVersion === 4
+        : input.targetId === projectTarget &&
+          input.expectedProjectVersion === 7 &&
+          input.expectedMemberVersion === 3);
+    const actions = createManagedTextActionRepository(pool, provider, {
+      teamLeaveAuthority: async () => ({
+        teamBackendId: backendId,
+        teamPrincipalUserId: principal,
+        expectedMembershipVersion: 3,
+        expectedTeamVersion: 4
+      }),
+      lifecycleReceipt: receipt
+    });
+    const proposed = await actions.enqueueManagedTextAction(group.actor, {
+      executionId: group.executionId,
+      commandId: group.commandId,
+      leaseToken: group.leaseToken,
+      executionGeneration: 1,
+      providerTurnId: "turn-group-leave",
+      toolCallId: "leave-group",
+      name: "koed_workspace_leave",
+      arguments: { teamId }
+    });
+    expect(proposed?.state).toBe("awaiting_review");
+    expect(proposed?.snapshot).toMatchObject({
+      teamId,
+      teamBackendId: backendId,
+      teamPrincipalUserId: group.owner,
+      expectedMembershipVersion: 3,
+      expectedTeamVersion: 4
+    });
+    const ready = await actions.decideManagedTextAction(group.actor, {
+      executionId: group.executionId,
+      actionId: proposed!.id,
+      expectedRevision: proposed!.revision,
+      decision: "approve"
+    });
+    principal = randomUUID();
+    expect(
+      await actions.claimManagedTextAction(group.actor, {
+        executionId: group.executionId,
+        actionId: proposed!.id,
+        expectedRevision: ready!.revision
+      })
+    ).toBeNull();
+    principal = group.owner;
+    const claimed = await actions.claimManagedTextAction(group.actor, {
+      executionId: group.executionId,
+      actionId: proposed!.id,
+      expectedRevision: ready!.revision
+    });
+    expect(claimed?.state).toBe("claimed");
+    expect(
+      await actions.completeManagedTextAction(group.actor, {
+        executionId: group.executionId,
+        actionId: proposed!.id,
+        expectedRevision: claimed!.revision
+      })
+    ).toBeNull();
+    confirmed = true;
+    const afterReload = await actions.reconcileManagedTextAction(group.actor, {
+      executionId: group.executionId,
+      actionId: proposed!.id
+    });
+    expect(afterReload?.state).toBe("claimed");
+    expect(
+      (
+        await actions.completeManagedTextAction(group.actor, {
+          executionId: group.executionId,
+          actionId: proposed!.id,
+          expectedRevision: afterReload!.revision
+        })
+      )?.state
+    ).toBe("applied");
+
+    const linked = await fixture("full_access");
+    const linkedProjectId = randomUUID();
+    await pool.query(
+      `update projects set team_backend_id=$2,
+      team_workspace_id=$3,workspace_project_id=$4 where id=$1`,
+      [linked.project.id, backendId, randomUUID(), linkedProjectId]
+    );
+    principal = linked.owner;
+    receiptOwner = linked.owner;
+    projectTarget = linkedProjectId;
+    confirmed = false;
+    const projectActions = createManagedTextActionRepository(pool, provider, {
+      teamAuthority: async () => ({
+        teamId,
+        teamPrincipalUserId: principal,
+        teamProjectVersion: 7,
+        teamMemberVersion: 3
+      }),
+      lifecycleReceipt: receipt
+    });
+    const project = await projectActions.enqueueManagedTextAction(
+      linked.actor,
+      {
+        executionId: linked.executionId,
+        commandId: linked.commandId,
+        leaseToken: linked.leaseToken,
+        executionGeneration: 1,
+        providerTurnId: "turn-project-leave",
+        toolCallId: "leave-project",
+        name: "koed_project_leave",
+        arguments: { projectId: linked.project.id }
+      }
+    );
+    expect(project?.state).toBe("awaiting_review");
+    expect(project?.snapshot).toMatchObject({
+      projectId: linked.project.id,
+      workspaceProjectId: linkedProjectId,
+      teamId,
+      teamBackendId: backendId,
+      teamPrincipalUserId: linked.owner,
+      teamProjectVersion: 7,
+      teamMemberVersion: 3
+    });
+    const projectReady = await projectActions.decideManagedTextAction(
+      linked.actor,
+      {
+        executionId: linked.executionId,
+        actionId: project!.id,
+        expectedRevision: project!.revision,
+        decision: "approve"
+      }
+    );
+    principal = randomUUID();
+    expect(
+      await projectActions.claimManagedTextAction(linked.actor, {
+        executionId: linked.executionId,
+        actionId: project!.id,
+        expectedRevision: projectReady!.revision
+      })
+    ).toBeNull();
+    principal = linked.owner;
+    const projectClaimed = await projectActions.claimManagedTextAction(
+      linked.actor,
+      {
+        executionId: linked.executionId,
+        actionId: project!.id,
+        expectedRevision: projectReady!.revision
+      }
+    );
+    expect(projectClaimed?.state).toBe("claimed");
+    expect(
+      await projectActions.completeManagedTextAction(linked.actor, {
+        executionId: linked.executionId,
+        actionId: project!.id,
+        expectedRevision: projectClaimed!.revision
+      })
+    ).toBeNull();
+    confirmed = true;
+    const projectAfterReload = await projectActions.reconcileManagedTextAction(
+      linked.actor,
+      {
+        executionId: linked.executionId,
+        actionId: project!.id
+      }
+    );
+    expect(projectAfterReload?.state).toBe("claimed");
+    expect(
+      (
+        await projectActions.completeManagedTextAction(linked.actor, {
+          executionId: linked.executionId,
+          actionId: project!.id,
+          expectedRevision: projectAfterReload!.revision
+        })
+      )?.state
+    ).toBe("applied");
+  }, 120_000);
+
+  it("records an owned Private Project leave refusal without deleting the Project", async () => {
+    const f = await fixture("full_access");
+    const proposal = await f.actions.enqueueManagedTextAction(f.actor, {
+      executionId: f.executionId,
+      commandId: f.commandId,
+      leaseToken: f.leaseToken,
+      executionGeneration: 1,
+      providerTurnId: "turn-owner-leave",
+      toolCallId: "owner-leave",
+      name: "koed_project_leave",
+      arguments: { projectId: f.project.id }
+    });
+    expect(proposal?.state).toBe("awaiting_review");
+    expect(proposal?.snapshot).toMatchObject({
+      projectId: f.project.id,
+      privateOwner: true
+    });
+    const declined = await f.actions.decideManagedTextAction(f.actor, {
+      executionId: f.executionId,
+      actionId: proposal!.id,
+      expectedRevision: proposal!.revision,
+      decision: "decline"
+    });
+    expect(declined?.state).toBe("declined");
+    expect(
+      await f.actions.claimManagedTextAction(f.actor, {
+        executionId: f.executionId,
+        actionId: proposal!.id,
+        expectedRevision: declined!.revision
+      })
+    ).toBeNull();
+    expect((await f.projects.get(f.owner, f.project.id))?.lifecycle).toBe(
+      "active"
+    );
+  }, 120_000);
+
   it("requires an exact placement receipt; a matching final destination is insufficient", async () => {
     const f = await fixture("full_access");
     const target = await f.projects.create(f.owner, {

@@ -6,6 +6,12 @@ import {
   collaborationMembershipSchema,
   collaborationSafeErrorMessages,
   collaborationSnapshotSchema,
+  teamLeavePreparedOperationSchema,
+  teamLeaveOperationStatusSchema,
+  workspaceProjectLifecycleReviewSchema,
+  workspaceProjectLifecycleResultSchema,
+  workspaceProjectRestoreResultSchema,
+  workspaceProjectRestorableListSchema,
   collaborationWorkspaceAccessSchema,
   collaborationWorkspaceSchema,
   fetchBoundedJsonObject,
@@ -43,6 +49,12 @@ export const collaborationTeamControlCommandNames = [
   "collaboration.update_member_role",
   "collaboration.disable_member",
   "collaboration.leave_team",
+  "collaboration.review_project_lifecycle",
+  "collaboration.leave_project",
+  "collaboration.remove_project_member",
+  "collaboration.delete_shared_project",
+  "collaboration.restore_shared_project",
+  "collaboration.list_restorable_projects",
   "collaboration.delete_project_source",
   "collaboration.archive_workspace",
   "collaboration.restore_workspace",
@@ -59,6 +71,7 @@ export type CollaborationTeamControlCommand = Extract<
 
 export type CollaborationTeamControlOperationFamily =
   | "team_workspace_read"
+  | "team_workspace_write"
   | "admin"
   | "action_grant";
 
@@ -113,6 +126,28 @@ export interface CollaborationTeamControlContext {
   resolveActionGrantSecret?(
     binding: CollaborationTeamControlActionBinding
   ): Promise<string | null>;
+  stagePreparedTeamLeave?(input: {
+    teamBackendId: string;
+    teamId: string;
+    operationId: string;
+    continuation: string;
+    copyManifestHash: string;
+  }): Promise<{
+    copyManifestHash: string;
+    stages: Array<{
+      workspaceProjectId: string;
+      payloadHash: string;
+      stageId?: string;
+    }>;
+  }>;
+  activateFinishedTeamLeave?(input: {
+    teamBackendId: string;
+    teamId: string;
+    operationId: string;
+    continuation: string;
+    copyManifestHash: string;
+    stageIds: string[];
+  }): Promise<void>;
   resolveInvitationAgentDisplayName?(input: {
     executionId: string;
     actionId: string;
@@ -438,8 +473,7 @@ const remoteRequest = async (
   operation: RemoteRequest
 ): Promise<Record<string, unknown>> => {
   const requiredCredentialFamily =
-    operation.operationFamily === "admin" &&
-    operation.authentication.actionGrant
+    operation.operationFamily === "admin"
       ? "action_grant"
       : operation.operationFamily;
   if (!context.operationFamilies.has(requiredCredentialFamily)) {
@@ -1194,7 +1228,10 @@ const dispatch = async (
         expectedVersion: command.input.expectedVersion,
         expectedTeamVersion: command.input.expectedTeamVersion,
         expectedOwnedWorkspaceProjects:
-          command.input.expectedOwnedWorkspaceProjects
+          command.input.expectedOwnedWorkspaceProjects,
+        ...(command.input.copyManifestHash
+          ? { copyManifestHash: command.input.copyManifestHash }
+          : {})
       };
       const grant = await actionGrantSecret(command, context, {
         reference: command.input.actionGrant,
@@ -1207,6 +1244,146 @@ const dispatch = async (
       });
       if (isDispatchResult(grant)) return grant;
       if (!grant) return failure(command, safeError("permission_denied"));
+      if (command.input.expectedOwnedWorkspaceProjects.length > 0) {
+        if (
+          !command.input.copyManifestHash ||
+          !context.stagePreparedTeamLeave ||
+          !context.activateFinishedTeamLeave
+        )
+          return failure(command, safeError("temporarily_unavailable"));
+        const operationSchema = teamLeavePreparedOperationSchema;
+        let prepared: z.infer<typeof operationSchema>;
+        try {
+          prepared = z
+            .object({ operation: operationSchema })
+            .strict()
+            .parse(
+              await remoteRequest(context, {
+                operationFamily: "admin",
+                method: "POST",
+                path,
+                body,
+                idempotencyKey: command.requestId,
+                authentication: { kind: "device", actionGrant: grant }
+              })
+            ).operation;
+        } catch (prepareError) {
+          // An unknown prepare outcome is only reconciled through the
+          // consumed grant's encrypted execution receipt. Never re-POST.
+          try {
+            prepared = z
+              .object({ operation: operationSchema })
+              .strict()
+              .parse(
+                await remoteRequest(context, {
+                  operationFamily: "admin",
+                  method: "POST",
+                  path: `/v1/teams/${command.input.teamId}/leave-operations/prepare-receipt`,
+                  body: {
+                    clientRequestId: command.requestId,
+                    approvedBody: body
+                  },
+                  authentication: { kind: "device" }
+                })
+              ).operation;
+          } catch {
+            throw prepareError;
+          }
+        }
+        if (prepared.copyManifestHash !== command.input.copyManifestHash)
+          return failure(command, safeError("conflict"));
+        const copy = await context.stagePreparedTeamLeave({
+          teamBackendId: context.backend.id,
+          teamId: command.input.teamId,
+          operationId: prepared.operationId,
+          continuation: prepared.continuation,
+          copyManifestHash: prepared.copyManifestHash
+        });
+        const sortedStages = [...copy.stages].sort((a, b) =>
+          a.workspaceProjectId.localeCompare(b.workspaceProjectId)
+        );
+        if (
+          copy.copyManifestHash !== prepared.copyManifestHash ||
+          sortedStages.length !==
+            command.input.expectedOwnedWorkspaceProjects.length ||
+          sortedStages.some(
+            (stage, index) =>
+              stage.workspaceProjectId !==
+                command.input.expectedOwnedWorkspaceProjects[index]?.id ||
+              !stage.stageId ||
+              sortedStages.findIndex(
+                (other) => other.stageId === stage.stageId
+              ) !== index
+          )
+        )
+          return failure(command, safeError("conflict"));
+        const statusPath = `/v1/teams/${command.input.teamId}/leave-operations/${prepared.operationId}/status`;
+        const readStatus = () =>
+          remoteRequest(context, {
+            operationFamily: "admin",
+            method: "POST",
+            path: statusPath,
+            body: { continuation: prepared.continuation },
+            authentication: { kind: "device" }
+          });
+        const beforeFinish = z
+          .object({ operation: teamLeaveOperationStatusSchema })
+          .strict()
+          .parse(await readStatus()).operation;
+        if (beforeFinish.copyManifestHash !== prepared.copyManifestHash)
+          return failure(command, safeError("conflict"));
+        if (beforeFinish.state === "canceled")
+          return failure(command, safeError("conflict"));
+        let membershipPayload: z.infer<typeof remoteMembershipSchema>;
+        if (beforeFinish.state === "finished" && beforeFinish.finalMembership) {
+          membershipPayload = remoteMembershipSchema.parse(
+            beforeFinish.finalMembership
+          );
+        } else
+          try {
+            membershipPayload = z
+              .object({
+                state: z.literal("finished"),
+                membership: remoteMembershipSchema
+              })
+              .strict()
+              .parse(
+                await remoteRequest(context, {
+                  operationFamily: "admin",
+                  method: "POST",
+                  path: `/v1/teams/${command.input.teamId}/leave-operations/${prepared.operationId}/finish`,
+                  body: {
+                    continuation: prepared.continuation,
+                    copyManifestHash: prepared.copyManifestHash
+                  },
+                  authentication: { kind: "device" }
+                })
+              ).membership;
+          } catch (finishError) {
+            const reconciled = z
+              .object({ operation: teamLeaveOperationStatusSchema })
+              .strict()
+              .parse(await readStatus()).operation;
+            if (reconciled.state !== "finished" || !reconciled.finalMembership)
+              throw finishError;
+            membershipPayload = reconciled.finalMembership;
+          }
+        await context.activateFinishedTeamLeave({
+          teamBackendId: context.backend.id,
+          teamId: command.input.teamId,
+          operationId: prepared.operationId,
+          continuation: prepared.continuation,
+          copyManifestHash: prepared.copyManifestHash,
+          stageIds: sortedStages.map((stage) => stage.stageId!)
+        });
+        const membership = mapMembership(membershipPayload);
+        return membership.teamId === command.input.teamId &&
+          membership.userId === context.principalUserId &&
+          membership.status === "disabled" &&
+          membership.version > command.input.expectedVersion
+          ? success(command, { membership })
+          : failure(command, safeError("internal_error"));
+      }
       const payload = z
         .object({ membership: remoteMembershipSchema })
         .strict()
@@ -1228,6 +1405,110 @@ const dispatch = async (
         membership.version > command.input.expectedVersion
         ? success(command, { membership })
         : failure(command, safeError("internal_error"));
+    }
+
+    case "collaboration.review_project_lifecycle": {
+      const path = queryPath(
+        `/v1/workspace-projects/${encodeURIComponent(command.input.projectId)}/lifecycle-review`,
+        command.input.targetUserId
+          ? { targetUserId: command.input.targetUserId }
+          : {}
+      );
+      const review = workspaceProjectLifecycleReviewSchema.parse(
+        await remoteRequest(context, {
+          operationFamily: "team_workspace_read",
+          method: "GET",
+          path,
+          authentication: { kind: "device" }
+        })
+      );
+      return review.project.id === command.input.projectId &&
+        review.actorUserId === context.principalUserId &&
+        review.targetUserId === (command.input.targetUserId ?? null)
+        ? success(command, { review })
+        : failure(command, safeError("conflict"));
+    }
+
+    case "collaboration.leave_project":
+    case "collaboration.remove_project_member":
+    case "collaboration.delete_shared_project": {
+      const action =
+        command.command === "collaboration.leave_project"
+          ? "workspace_project.leave"
+          : command.command === "collaboration.delete_shared_project"
+            ? "workspace_project.delete"
+            : "workspace_project.member_remove";
+      const path =
+        command.command === "collaboration.leave_project"
+          ? `/v1/workspace-projects/${command.input.projectId}/leave`
+          : command.command === "collaboration.delete_shared_project"
+            ? `/v1/workspace-projects/${command.input.projectId}/delete`
+            : `/v1/workspace-projects/${command.input.projectId}/members/${command.input.targetUserId}/remove`;
+      const body =
+        command.command === "collaboration.delete_shared_project"
+          ? { expectedProjectVersion: command.input.expectedProjectVersion }
+          : {
+              expectedProjectVersion: command.input.expectedProjectVersion,
+              expectedMemberVersion: command.input.expectedMemberVersion
+            };
+      const grant = await actionGrantSecret(command, context, {
+        reference: command.input.actionGrant,
+        action,
+        teamId: command.input.teamId,
+        targetId: command.input.projectId,
+        method: "POST",
+        path,
+        body
+      });
+      if (isDispatchResult(grant)) return grant;
+      if (!grant) return failure(command, safeError("permission_denied"));
+      const result = workspaceProjectLifecycleResultSchema.parse(
+        await remoteRequest(context, {
+          operationFamily: "admin",
+          method: "POST",
+          path,
+          body,
+          idempotencyKey: command.requestId,
+          authentication: { kind: "device", actionGrant: grant }
+        })
+      );
+      if (
+        result.projectId !== command.input.projectId ||
+        (action === "workspace_project.delete") !== "lifecycle" in result
+      )
+        return failure(command, safeError("internal_error"));
+      return success(command, { result });
+    }
+
+    case "collaboration.restore_shared_project": {
+      const path = `/v1/workspace-projects/${command.input.projectId}/restore`;
+      const result = workspaceProjectRestoreResultSchema.parse(
+        await remoteRequest(context, {
+          operationFamily: "team_workspace_write",
+          method: "POST",
+          path,
+          body: {
+            expectedProjectVersion: command.input.expectedProjectVersion
+          },
+          authentication: { kind: "device" }
+        })
+      );
+      return result.projectId === command.input.projectId &&
+        result.version > command.input.expectedProjectVersion
+        ? success(command, { result })
+        : failure(command, safeError("internal_error"));
+    }
+
+    case "collaboration.list_restorable_projects": {
+      const projects = workspaceProjectRestorableListSchema.parse(
+        await remoteRequest(context, {
+          operationFamily: "team_workspace_write",
+          method: "GET",
+          path: "/v1/workspace-projects/restorable",
+          authentication: { kind: "device" }
+        })
+      );
+      return success(command, { projects });
     }
 
     case "collaboration.delete_project_source": {

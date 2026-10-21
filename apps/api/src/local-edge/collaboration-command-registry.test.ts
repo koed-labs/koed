@@ -38,6 +38,12 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   "collaboration.create_team": { scope: "team", desktop: write },
   "collaboration.join_team": { scope: "team", desktop: write },
   "collaboration.create_workspace": { scope: "team", desktop: write },
+  "collaboration.review_project_lifecycle": { scope: "team", desktop: read },
+  "collaboration.leave_project": { scope: "team", desktop: write },
+  "collaboration.remove_project_member": { scope: "team", desktop: write },
+  "collaboration.delete_shared_project": { scope: "team", desktop: write },
+  "collaboration.restore_shared_project": { scope: "team", desktop: write },
+  "collaboration.list_restorable_projects": { scope: "team", desktop: read },
   "collaboration.create_personal_channel": {
     scope: "personal",
     desktop: write,

@@ -1,0 +1,2 @@
+DROP INDEX "team_leave_operations_one_prepared_team";--> statement-breakpoint
+CREATE UNIQUE INDEX "team_leave_operations_one_prepared_member" ON "team_leave_operations" USING btree ("team_id","membership_id") WHERE "team_leave_operations"."state" = 'prepared';

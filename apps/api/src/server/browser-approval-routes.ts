@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { z } from "zod";
 
 import { highRiskBrowserActivationParamsSchema } from "../high-risk/schemas.js";
 import { deviceEnrollmentChallengeParamsSchema } from "../local-edge/schemas.js";
@@ -69,6 +70,10 @@ export const registerBrowserApprovalRoutes = (
 
   app.get("/device-enrollment/:challengeId", async (request, reply) => {
     deviceEnrollmentChallengeParamsSchema.parse(request.params);
+    return sendPage(reply, assetRoot, "../browser-approval/");
+  });
+  app.get("/team-leave/:teamId", async (request, reply) => {
+    z.object({ teamId: z.uuid() }).strict().parse(request.params);
     return sendPage(reply, assetRoot, "../browser-approval/");
   });
 

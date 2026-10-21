@@ -536,6 +536,7 @@ export interface TeamLeaveReviewRecord {
   activeOwnerCount: number;
   ownedWorkspaceProjectCount: number;
   ownedWorkspaceProjects: Array<{ id: string; version: number }>;
+  pendingLeaveOperationId: string | null;
 }
 
 export interface TeamWorkspaceCreationReviewRecord {
@@ -2409,6 +2410,53 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: { teamId: string; expectedVersion: number }
   ): Promise<TeamMembershipRecord | null>;
+  prepareTeamLeave(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      expectedVersion: number;
+      expectedTeamVersion: number;
+      expectedOwnedWorkspaceProjects: Array<{ id: string; version: number }>;
+      copyManifestHash: string;
+      grant: {
+        actionGrantId: string;
+        deviceCredentialId: string;
+        deviceCredentialVersion: number;
+        upstreamBackendId: string;
+        backendOriginHash: string;
+      };
+    }
+  ): Promise<{
+    operationId: string;
+    continuation: string;
+    copyManifestHash: string;
+    ownedSetHash: string;
+    state: "prepared";
+  } | null>;
+  teamLeaveOperationStatus(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      operationId: string;
+      continuation: string;
+      deviceCredentialId: string;
+      upstreamBackendId: string;
+      backendOriginHash: string;
+    }
+  ): Promise<{
+    operationId: string;
+    state: "prepared" | "finished" | "canceled";
+    copyManifestHash: string;
+    ownedSetHash: string;
+    expectedTeamVersion: number;
+    expectedMembershipVersion: number;
+    ownedProjects: Array<{ id: string; version: number }>;
+    finalMembership: TeamMembershipRecord | null;
+  } | null>;
+  cancelTeamLeaveOperation(
+    actor: ActorContext,
+    input: { teamId: string; operationId: string }
+  ): Promise<{ operationId: string; state: "canceled" } | null>;
   disableTeamMember(
     actor: ActorContext,
     input: { teamId: string; userId: string; expectedVersion: number }

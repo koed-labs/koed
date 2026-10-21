@@ -68,7 +68,8 @@ try {
         KOED_HQ307_DELEGATED_S18: "1",
         KOED_HQ308_DELEGATED_S19: "1",
         KOED_HQ603_DELEGATED_S12_SCHEDULED: "1",
-        KOED_HQ702_DELEGATED_S15_2: "1"
+        KOED_HQ702_DELEGATED_S15_2: "1",
+        KOED_HQ704_DELEGATED_LIFECYCLE: "1"
       },
       stdio: "inherit"
     });
@@ -1132,6 +1133,47 @@ try {
         ]);
         process.stdout.write(
           "PASS S13.1/S14.1 UI [HQ-703]: recipient invitation, pre-join summary notice, and decision controls in new HQ light/dark. API authority and compound joined-state acceptance are proved separately.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-704", "HQ704.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq704-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq704.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ704_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.equal(report.id, "HQ704.ui.native");
+        assert.equal(report.owner, "HQ-704");
+        assert.equal(report.status, "pass");
+        assert.equal(report.scope, "renderer-fixture");
+        assert.equal(report.nativeGrantAuthorityProved, false);
+        assert.equal(report.realCopyBackProved, false);
+        assert.deepEqual(report.scenarioAssertions, [
+          "S19.4.ui",
+          "S20.2",
+          "S20.3.ui",
+          "S20.4",
+          "N6.S.ui"
+        ]);
+        for (const value of Object.values(report.coverage))
+          assert.equal(value, true);
+        process.stdout.write(
+          "PASS HQ704.ui.native [HQ-704]: owner text-leave refusal and separate delete, member Leave menu, group leave/no Undo, metadata-only restore disclosure in new HQ desktop light/dark. Real authority/copy-back are separate PostgreSQL proofs; compound two-user I20.3/N6.I/I25 remains HQ-713.\n"
         );
       }
     } finally {

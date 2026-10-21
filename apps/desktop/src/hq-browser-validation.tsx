@@ -88,9 +88,15 @@ const hq803Capture =
   new URLSearchParams(window.location.search).get("hq803Capture") === "yes";
 const hq802DeckCapture =
   new URLSearchParams(window.location.search).get("hq802DeckCapture") === "yes";
+const hq704Capture =
+  new URLSearchParams(window.location.search).get("hq704Capture") === "yes";
+const hq704Owner =
+  new URLSearchParams(window.location.search).get("hq704Owner") === "yes";
+const hq704Trace = { actions: [] as string[], deleted: false };
 const hq504Capture =
   new URLSearchParams(window.location.search).get("hq504Capture") === "yes" ||
-  hq802DeckCapture;
+  hq802DeckCapture ||
+  hq704Capture;
 const hq603ReviewCapture =
   new URLSearchParams(window.location.search).get("hq603ReviewCapture") ===
   "yes";
@@ -920,6 +926,101 @@ const publishHq105VisibilityUpdate = (update: CollaborationClientUpdate) => {
     void listener(settingsCollaborationSnapshot, update);
 };
 const settingsCollaborationClient = {
+  reviewProjectLifecycle: async ({
+    projectId,
+    targetUserId
+  }: {
+    projectId: string;
+    targetUserId?: string;
+  }) => {
+    if (!hq704Capture || projectId !== hq712WorkspaceProjectId)
+      throw new Error("Lifecycle fixture unavailable");
+    const project = {
+      ...hq712State().project,
+      ownerTeamMemberId: hq704Owner
+        ? "00000000-0000-4000-8000-000000007124"
+        : "00000000-0000-4000-8000-000000007127"
+    };
+    return {
+      project,
+      actorUserId: "00000000-0000-4000-8000-000000007110",
+      actorTeamMemberId: "00000000-0000-4000-8000-000000007124",
+      actorMemberVersion: 1,
+      ownerUserId: hq704Owner
+        ? "00000000-0000-4000-8000-000000007110"
+        : "00000000-0000-4000-8000-000000007127",
+      actorAccess: "write" as const,
+      actorWorkspaceAccess: "write" as const,
+      targetUserId: targetUserId ?? null,
+      targetTeamMemberId: targetUserId ?? null,
+      targetMemberVersion: targetUserId ? 1 : null,
+      targetAccess: targetUserId ? ("read" as const) : null
+    };
+  },
+  leaveProject: async () => {
+    hq704Trace.actions.push("leave_project");
+    return {
+      projectId: hq712WorkspaceProjectId,
+      memberId: "00000000-0000-4000-8000-000000007124",
+      access: "disabled" as const
+    };
+  },
+  removeProjectMember: async () => {
+    hq704Trace.actions.push("remove_project_member");
+    return {
+      projectId: hq712WorkspaceProjectId,
+      memberId: "00000000-0000-4000-8000-000000007127",
+      access: "disabled" as const
+    };
+  },
+  deleteSharedProject: async () => {
+    hq704Trace.actions.push("delete_shared_project");
+    hq704Trace.deleted = true;
+    return {
+      projectId: hq712WorkspaceProjectId,
+      lifecycle: "deleted" as const
+    };
+  },
+  restoreSharedProject: async () => {
+    hq704Trace.actions.push("restore_metadata_only");
+    hq704Trace.deleted = false;
+    return {
+      projectId: hq712WorkspaceProjectId,
+      lifecycle: "active" as const,
+      version: 3
+    };
+  },
+  listRestorableProjects: async () =>
+    hq704Capture && hq704Trace.deleted
+      ? [
+          {
+            projectId: hq712WorkspaceProjectId,
+            teamId: "00000000-0000-4000-8000-000000007120",
+            name: "New empty Project",
+            version: 2,
+            deletedAt: FIXTURE_TIME
+          }
+        ]
+      : [],
+  leaveTeam: async ({ teamId }: { teamId: string }) => {
+    hq704Trace.actions.push("leave_team");
+    settingsCollaborationSnapshot = {
+      ...settingsCollaborationSnapshot,
+      navigation: {
+        ...settingsCollaborationSnapshot.navigation,
+        teams: settingsCollaborationSnapshot.navigation.teams.filter(
+          ({ id }) => id !== teamId
+        )
+      }
+    };
+    publishHq105VisibilityUpdate({ kind: "command" });
+    return {
+      teamId,
+      userId: "00000000-0000-4000-8000-000000007110",
+      status: "disabled" as const,
+      version: 2
+    };
+  },
   reportTeamActivity: async () => [],
   listMyInvitations: async () => (hq703Capture ? [...hq703Invitations] : []),
   decideInvitation: async (
@@ -1264,6 +1365,26 @@ const hq504Actions: KoedTextActionProjection[] = [
       ]
     : [])
 ];
+if (hq704Capture)
+  hq504Actions.splice(0, hq504Actions.length, {
+    ...hq504ActionBase,
+    id: "00000000-0000-4000-8000-000000007041",
+    effectKey: "00000000-0000-4000-8000-000000007041",
+    name: "koed_project_leave",
+    arguments: { projectId: hq204ProjectId },
+    reviewKind: "native",
+    snapshot: {
+      projectId: hq204ProjectId,
+      projectName: "New empty Project",
+      projectVersion: 1,
+      workspaceProjectId: "00000000-0000-4000-8000-000000007122",
+      teamBackendId: "fixture-team-backend",
+      teamId: "00000000-0000-4000-8000-000000007120",
+      teamPrincipalUserId: "00000000-0000-4000-8000-000000007110",
+      teamProjectVersion: 1,
+      teamMemberVersion: 1
+    }
+  });
 const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
   list: async () => structuredClone(hq504Actions),
   get: async (_executionId, actionId) => {
@@ -1274,6 +1395,7 @@ const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
   review: async (_executionId, actionId, _revision, decision) => {
     const index = hq504Actions.findIndex((row) => row.id === actionId);
     if (index < 0) throw new Error("Unknown fixture text action");
+    if (hq704Capture) hq704Trace.actions.push(`text_${decision}`);
     hq504Actions[index] = {
       ...hq504Actions[index]!,
       state: decision === "decline" ? "declined" : "ready",
@@ -3558,6 +3680,20 @@ const sidebarProjectsApi = {
     hq702PolicyStatus = "revoked";
     return hq702Review();
   },
+  sharedTeamLeaveStage: async () => {
+    if (!hq704Capture) throw new Error("Group departure fixture unavailable");
+    return {
+      teamId: "00000000-0000-4000-8000-000000007120",
+      expectedTeamVersion: 1,
+      expectedMembershipVersion: 1,
+      expectedOwnedWorkspaceProjects: [
+        { id: hq712WorkspaceProjectId, version: 1 }
+      ],
+      ownedSetHash: "a".repeat(64),
+      copyManifestHash: "b".repeat(64),
+      stages: []
+    };
+  },
   sharedShareContext: async () => {
     if (!hq701Capture) throw new Error("Share fixture unavailable");
     return {
@@ -3613,6 +3749,7 @@ const sidebarProjectsApi = {
         },
         {
           teamMemberId: "00000000-0000-4000-8000-000000007127",
+          userId: "00000000-0000-4000-8000-000000007127",
           displayName: "Maya",
           access: "read" as const
         }
@@ -4538,6 +4675,11 @@ export function HqValidationApp() {
     }
     hq104SentPrompt = "";
     hq204Started = hq306Capture || hq406ActiveCapture || hq802DeckCapture;
+    if (hq704Capture)
+      Object.defineProperty(window, "__koedHq704Trace", {
+        configurable: true,
+        value: hq704Trace
+      });
     hq505Trace.catchUpCalls = 0;
     hq505Trace.retryCalls = 0;
     hq505Trace.promptDispatches = 0;

@@ -1276,10 +1276,18 @@ const buildTestServer = async (
       input: Parameters<HighRiskActionRepository["executeActionGrant"]>[0]
     ) {
       if (input.actionGrant !== "hrg_test_shared_memory_secret") return null;
-      const receipt = await input.execute({
-        sharedMemory: fixture.repository,
-        teamConversationSource: fixture.sourceRepository
-      } as never);
+      const receipt = await input.execute(
+        {
+          sharedMemory: fixture.repository,
+          teamConversationSource: fixture.sourceRepository
+        } as never,
+        {
+          actionGrantId: randomUUID(),
+          deviceCredentialId: randomUUID(),
+          deviceCredentialVersion: 1,
+          upstreamBackendId: "shared-memory-route-fixture"
+        }
+      );
       return receipt ? { ...receipt, replayed: false } : null;
     }
   } as unknown as Pick<HighRiskActionRepository, "executeActionGrant">;

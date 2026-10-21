@@ -2421,6 +2421,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             textActionTeam
               ? {
                   teamAuthority: textActionTeam.authority,
+                  teamLeaveAuthority: textActionTeam.teamLeaveAuthority,
+                  lifecycleReceipt: textActionTeam.lifecycleReceipt,
                   teamReceipt: textActionTeam.receipt
                 }
               : {}

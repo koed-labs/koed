@@ -3,6 +3,12 @@ import { workItemSchema } from "./work-item-contract.js";
 import { projectSchema } from "./project-contract.js";
 import { projectThreadV2Schema } from "./project-thread-contract.js";
 import {
+  workspaceProjectLifecycleReviewSchema,
+  workspaceProjectLifecycleResultSchema,
+  workspaceProjectRestoreResultSchema,
+  workspaceProjectRestorableListSchema
+} from "./workspace-project-contract.js";
+import {
   teamManualStatuses,
   teamPresenceStatusCatalogue
 } from "./team-presence.js";
@@ -1866,7 +1872,29 @@ export const collaborationActionGrantIntentSchema = z
       teamId: z.uuid(),
       expectedVersion: positiveVersionSchema,
       expectedTeamVersion: positiveVersionSchema,
-      expectedOwnedWorkspaceProjects: exactOwnedWorkspaceProjectsSchema
+      expectedOwnedWorkspaceProjects: exactOwnedWorkspaceProjectsSchema,
+      copyManifestHash: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional()
+    }),
+    actionGrantIntent("collaboration.leave_project", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      expectedProjectVersion: positiveVersionSchema,
+      expectedMemberVersion: positiveVersionSchema
+    }),
+    actionGrantIntent("collaboration.remove_project_member", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      targetUserId: z.uuid(),
+      expectedProjectVersion: positiveVersionSchema,
+      expectedMemberVersion: positiveVersionSchema
+    }),
+    actionGrantIntent("collaboration.delete_shared_project", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      expectedProjectVersion: positiveVersionSchema
     }),
     actionGrantIntent("collaboration.delete_project_source", {
       teamId: z.uuid(),
@@ -2325,6 +2353,98 @@ export const collaborationMembershipSchema = z
     updatedAt: collaborationTimestampSchema,
     acceptedAt: collaborationTimestampSchema.nullable(),
     disabledAt: collaborationTimestampSchema.nullable()
+  })
+  .strict();
+
+export const teamLeaveOwnedProjectSchema = z
+  .object({
+    id: z.uuid(),
+    version: positiveVersionSchema
+  })
+  .strict();
+export const teamLeaveContinuationSchema = z
+  .object({
+    continuation: z.string().min(1).max(160)
+  })
+  .strict();
+export const teamLeaveFinishRequestSchema = teamLeaveContinuationSchema
+  .extend({
+    copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/)
+  })
+  .strict();
+export const teamLeavePreparedOperationSchema = z
+  .object({
+    operationId: z.uuid(),
+    continuation: z.string().min(1).max(160),
+    copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+    ownedSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+    state: z.literal("prepared")
+  })
+  .strict();
+export const teamLeaveFinalMembershipSchema = z
+  .object({
+    id: z.uuid(),
+    teamId: z.uuid(),
+    userId: z.uuid(),
+    role: z.enum(["owner", "admin", "member"]),
+    status: z.literal("disabled"),
+    version: positiveVersionSchema,
+    leaveGeneration: z.number().int().nonnegative().nullable(),
+    createdAt: collaborationTimestampSchema,
+    updatedAt: collaborationTimestampSchema,
+    acceptedAt: collaborationTimestampSchema.nullable(),
+    disabledAt: collaborationTimestampSchema
+  })
+  .strict();
+export const teamLeaveOperationStatusSchema = z
+  .object({
+    operationId: z.uuid(),
+    state: z.enum(["prepared", "finished", "canceled"]),
+    copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+    ownedSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+    expectedTeamVersion: positiveVersionSchema,
+    expectedMembershipVersion: positiveVersionSchema,
+    ownedProjects: z.array(teamLeaveOwnedProjectSchema),
+    finalMembership: teamLeaveFinalMembershipSchema.nullable()
+  })
+  .strict();
+export const teamLeaveCancelResultSchema = z
+  .object({
+    operationId: z.uuid(),
+    state: z.literal("canceled")
+  })
+  .strict();
+export const teamLeaveRecoverRequestSchema = z
+  .object({
+    operationIds: z
+      .array(z.uuid())
+      .max(20)
+      .refine(
+        (ids) => new Set(ids).size === ids.length,
+        "Recovery operation IDs must be unique"
+      ),
+    includePrepared: z.boolean()
+  })
+  .strict();
+export const teamLeaveRecoveredOperationSchema = z
+  .object({
+    operationId: z.uuid(),
+    continuation: z.string().min(1).max(160),
+    state: z.enum(["prepared", "finished", "canceled"]),
+    copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+    ownedSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+    ownedProjects: z.array(teamLeaveOwnedProjectSchema),
+    finalMembership: teamLeaveFinalMembershipSchema.nullable()
+  })
+  .strict();
+export const teamLeaveFinishedProofSchema = z
+  .object({
+    operationId: z.uuid(),
+    state: z.literal("finished"),
+    copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+    ownedSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+    ownedProjects: z.array(teamLeaveOwnedProjectSchema),
+    finalMembership: teamLeaveFinalMembershipSchema
   })
   .strict();
 
@@ -2948,8 +3068,43 @@ export const collaborationRendererCommandSchema = z
       expectedVersion: positiveVersionSchema,
       expectedTeamVersion: positiveVersionSchema,
       expectedOwnedWorkspaceProjects: exactOwnedWorkspaceProjectsSchema,
+      copyManifestHash: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
+    command("collaboration.review_project_lifecycle", {
+      projectId: z.uuid(),
+      targetUserId: z.uuid().optional()
+    }),
+    command("collaboration.leave_project", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      expectedProjectVersion: positiveVersionSchema,
+      expectedMemberVersion: positiveVersionSchema,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.remove_project_member", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      targetUserId: z.uuid(),
+      expectedProjectVersion: positiveVersionSchema,
+      expectedMemberVersion: positiveVersionSchema,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.delete_shared_project", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      expectedProjectVersion: positiveVersionSchema,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.restore_shared_project", {
+      teamId: z.uuid(),
+      projectId: z.uuid(),
+      expectedProjectVersion: positiveVersionSchema
+    }),
+    command("collaboration.list_restorable_projects", {}),
     command("collaboration.delete_project_source", {
       teamId: z.uuid(),
       projectId: z.uuid(),
@@ -3279,6 +3434,12 @@ const commandNameSchema = z.enum([
   "collaboration.update_member_role",
   "collaboration.disable_member",
   "collaboration.leave_team",
+  "collaboration.review_project_lifecycle",
+  "collaboration.leave_project",
+  "collaboration.remove_project_member",
+  "collaboration.delete_shared_project",
+  "collaboration.restore_shared_project",
+  "collaboration.list_restorable_projects",
   "collaboration.delete_project_source",
   "collaboration.archive_workspace",
   "collaboration.restore_workspace",
@@ -3445,6 +3606,30 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.leave_team",
     z.object({ membership: collaborationMembershipSchema }).strict()
+  ),
+  successResult(
+    "collaboration.review_project_lifecycle",
+    z.object({ review: workspaceProjectLifecycleReviewSchema }).strict()
+  ),
+  successResult(
+    "collaboration.leave_project",
+    z.object({ result: workspaceProjectLifecycleResultSchema }).strict()
+  ),
+  successResult(
+    "collaboration.remove_project_member",
+    z.object({ result: workspaceProjectLifecycleResultSchema }).strict()
+  ),
+  successResult(
+    "collaboration.delete_shared_project",
+    z.object({ result: workspaceProjectLifecycleResultSchema }).strict()
+  ),
+  successResult(
+    "collaboration.restore_shared_project",
+    z.object({ result: workspaceProjectRestoreResultSchema }).strict()
+  ),
+  successResult(
+    "collaboration.list_restorable_projects",
+    z.object({ projects: workspaceProjectRestorableListSchema }).strict()
   ),
   successResult(
     "collaboration.delete_project_source",

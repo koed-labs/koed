@@ -1793,6 +1793,7 @@ export const personalWorkspaceProjectCopybackStages = pgTable(
     reviewedMemberVersion: integer("reviewed_member_version").notNull(),
     reviewedProjectVersion: integer("reviewed_project_version").notNull(),
     ownedSetHash: text("owned_set_hash").notNull(),
+    leaveOperationId: uuid("leave_operation_id"),
     payloadHash: text("payload_hash").notNull(),
     workItems: jsonb("work_items").notNull(),
     decks: jsonb("decks")
@@ -1804,15 +1805,25 @@ export const personalWorkspaceProjectCopybackStages = pgTable(
     updatedAt: updatedNow()
   },
   (table) => [
-    unique("personal_workspace_project_copyback_stage_unique").on(
-      table.ownerUserId,
-      table.teamBackendId,
-      table.workspaceProjectId,
-      table.reviewedProjectVersion
-    ),
+    uniqueIndex("personal_workspace_project_copyback_legacy_unique")
+      .on(
+        table.ownerUserId,
+        table.teamBackendId,
+        table.workspaceProjectId,
+        table.reviewedProjectVersion
+      )
+      .where(sql`${table.leaveOperationId} is null`),
+    uniqueIndex("personal_workspace_project_copyback_operation_unique")
+      .on(
+        table.ownerUserId,
+        table.teamBackendId,
+        table.leaveOperationId,
+        table.workspaceProjectId
+      )
+      .where(sql`${table.leaveOperationId} is not null`),
     check(
       "personal_workspace_project_copyback_state_check",
-      sql`${table.state} in ('staged','applied')`
+      sql`${table.state} in ('staged','ready','applied','abandoned')`
     )
   ]
 );
@@ -7929,6 +7940,77 @@ export const highRiskDeviceActionGrants = pgTable(
         and ${table.consumedAt} is null
         and ${table.revokedAt} is not null
       )`
+    )
+  ]
+);
+
+// A prepared owned-Project departure keeps Team state unchanged while the
+// owner's local edge makes an inactive, durable Personal copy. Completion is
+// tied to the original approved action and enrolled device. A prepared row
+// never expires silently: explicit cancellation or exact completion releases
+// its mutation fence.
+export const teamLeaveOperations = pgTable(
+  "team_leave_operations",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id),
+    membershipId: uuid("membership_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    deviceCredentialId: uuid("device_credential_id")
+      .notNull()
+      .references(() => deviceCredentials.id),
+    deviceCredentialVersion: integer("device_credential_version").notNull(),
+    upstreamBackendId: text("upstream_backend_id").notNull(),
+    backendOriginHash: text("backend_origin_hash").notNull(),
+    actionGrantId: uuid("action_grant_id")
+      .notNull()
+      .references(() => highRiskDeviceActionGrants.id),
+    continuationCommitment: text("continuation_commitment").notNull(),
+    expectedTeamVersion: integer("expected_team_version").notNull(),
+    expectedMembershipVersion: integer("expected_membership_version").notNull(),
+    ownedProjects: jsonb("owned_projects")
+      .$type<Array<{ id: string; version: number }>>()
+      .notNull(),
+    ownedSetHash: text("owned_set_hash").notNull(),
+    copyManifestHash: text("copy_manifest_hash").notNull(),
+    state: text("state").notNull().default("prepared"),
+    finalMembership: jsonb("final_membership").$type<Record<string, unknown>>(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    canceledAt: timestamp("canceled_at", { withTimezone: true }),
+    canceledReason: text("canceled_reason"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    uniqueIndex("team_leave_operations_one_prepared_member")
+      .on(table.teamId, table.membershipId)
+      .where(sql`${table.state} = 'prepared'`),
+    unique("team_leave_operations_action_grant_unique").on(table.actionGrantId),
+    unique("team_leave_operations_continuation_unique").on(
+      table.continuationCommitment
+    ),
+    check(
+      "team_leave_operations_versions_check",
+      sql`${table.expectedTeamVersion} > 0 and ${table.expectedMembershipVersion} > 0 and ${table.deviceCredentialVersion} > 0`
+    ),
+    check(
+      "team_leave_operations_hash_check",
+      sql`${table.ownedSetHash} ~ '^[0-9a-f]{64}$'
+        and ${table.copyManifestHash} ~ '^[0-9a-f]{64}$'
+        and ${table.continuationCommitment} ~ '^[0-9a-f]{64}$'
+        and ${table.backendOriginHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "team_leave_operations_state_check",
+      sql`(${table.state} in ('prepared','finalizing') and ${table.completedAt} is null and ${table.canceledAt} is null and ${table.canceledReason} is null and ${table.finalMembership} is null)
+        or (${table.state} = 'finished' and ${table.completedAt} is not null and ${table.canceledAt} is null and ${table.canceledReason} is null and ${table.finalMembership} is not null)
+        or (${table.state} = 'canceled' and ${table.completedAt} is null and ${table.canceledAt} is not null and ${table.canceledReason} is not null and ${table.finalMembership} is null)`
     )
   ]
 );

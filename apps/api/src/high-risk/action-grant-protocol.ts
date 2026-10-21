@@ -785,7 +785,40 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
         body: {
           expectedVersion: intent.expectedVersion,
           expectedTeamVersion: intent.expectedTeamVersion,
-          expectedOwnedWorkspaceProjects: intent.expectedOwnedWorkspaceProjects
+          expectedOwnedWorkspaceProjects: intent.expectedOwnedWorkspaceProjects,
+          ...(intent.copyManifestHash
+            ? { copyManifestHash: intent.copyManifestHash }
+            : {})
+        }
+      };
+    case "collaboration.leave_project":
+      return {
+        action: "workspace_project.leave",
+        teamId: intent.teamId,
+        projectId: intent.projectId,
+        body: {
+          expectedProjectVersion: intent.expectedProjectVersion,
+          expectedMemberVersion: intent.expectedMemberVersion
+        }
+      };
+    case "collaboration.remove_project_member":
+      return {
+        action: "workspace_project.member_remove",
+        teamId: intent.teamId,
+        projectId: intent.projectId,
+        targetUserId: intent.targetUserId,
+        body: {
+          expectedProjectVersion: intent.expectedProjectVersion,
+          expectedMemberVersion: intent.expectedMemberVersion
+        }
+      };
+    case "collaboration.delete_shared_project":
+      return {
+        action: "workspace_project.delete",
+        teamId: intent.teamId,
+        projectId: intent.projectId,
+        body: {
+          expectedProjectVersion: intent.expectedProjectVersion
         }
       };
     case "collaboration.delete_project_source":

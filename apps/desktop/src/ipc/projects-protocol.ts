@@ -555,9 +555,14 @@ export const projectsResultSchema = z.discriminatedUnion("operation", [
               .strict()
           ),
           ownedSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+          copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+          pendingLeaveOperationId: z.uuid().nullable().optional(),
           stages: z.array(
             z
-              .object({ workspaceProjectId: z.uuid(), stageId: z.uuid() })
+              .object({
+                workspaceProjectId: z.uuid(),
+                payloadHash: z.string().regex(/^[a-f0-9]{64}$/)
+              })
               .strict()
           )
         })
@@ -910,7 +915,9 @@ export interface ProjectsDesktopApi {
     expectedMembershipVersion: number;
     expectedOwnedWorkspaceProjects: Array<{ id: string; version: number }>;
     ownedSetHash: string;
-    stages: Array<{ workspaceProjectId: string; stageId: string }>;
+    copyManifestHash: string;
+    pendingLeaveOperationId?: string | null;
+    stages: Array<{ workspaceProjectId: string; payloadHash: string }>;
   }>;
   sharedTeamLeaveFinish?(
     teamBackendId: string,

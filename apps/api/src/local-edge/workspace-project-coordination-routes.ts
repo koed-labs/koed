@@ -7,12 +7,15 @@ import {
   projectSharePolicyRevokeSchema,
   projectSharePolicyReceiptReadSchema,
   collaborationActionGrantIntentSchema,
+  teamLeaveRecoveredOperationSchema,
+  teamLeaveFinishedProofSchema,
   verifyDesktopLocalCredentialAuthorization,
   verifyLocalEdgeClientCredentialAuthorization
 } from "@koed/shared";
 import {
   PersonalWorkspaceProjectConflictError,
   PersonalWorkspaceProjectUnavailableError,
+  workspaceProjectCopyBackPayloadHash,
   workspaceProjectCopyManifestHash,
   type PersonalWorkspaceProjectRepository,
   type PersonalProjectSharePolicyRepository,
@@ -174,12 +177,40 @@ const leaveStageSchema = z
     teamId: z.uuid()
   })
   .strict();
+const leaveCopySchema = leaveStageSchema
+  .extend({
+    operationId: z.uuid(),
+    continuation: z.string().min(1).max(160),
+    copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/)
+  })
+  .strict();
+const leaveRecoverySchema = leaveStageSchema
+  .extend({
+    afterOperationId: z.uuid().nullable().default(null)
+  })
+  .strict();
 const finishStageSchema = z
   .object({
     teamBackendId: z.string().trim().min(1).max(160),
-    stageIds: z.array(z.uuid()).max(100)
+    teamId: z.uuid(),
+    operationId: z.uuid(),
+    continuation: z.string().min(1).max(160).optional(),
+    finishedProofRecovery: z.literal(true).optional(),
+    copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+    stageIds: z
+      .array(z.uuid())
+      .max(100)
+      .refine(
+        (ids) => new Set(ids).size === ids.length,
+        "Each staged Project must be included exactly once"
+      )
   })
-  .strict();
+  .strict()
+  .refine(
+    (body) =>
+      Boolean(body.continuation) !== Boolean(body.finishedProofRecovery),
+    "One finished Team departure proof mode is required"
+  );
 const leaveReviewSchema = z
   .object({
     team: z
@@ -193,6 +224,7 @@ const leaveReviewSchema = z
       })
       .passthrough(),
     activeOwnerCount: z.number().int().nonnegative(),
+    pendingLeaveOperationId: z.uuid().nullable().optional(),
     ownedWorkspaceProjects: z.array(
       z
         .object({
@@ -308,6 +340,34 @@ export const registerWorkspaceProjectCoordinationRoutes = (
     );
     if (!remote.response.ok)
       denied("Authoritative Team Project state unavailable", 424);
+    return remote.payload;
+  };
+  const postTeam = async (backendId: string, path: string, body: unknown) => {
+    const backend = upstreamBackendById(
+      readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+      backendId
+    );
+    if (!backend) denied("Team backend is not enrolled", 424);
+    const authorization = context.localEdge.resolveUpstreamAuthorization(
+      backend!
+    );
+    if (!authorization) denied("Team upstream credential unavailable", 424);
+    const remote = await fetchBoundedJson(
+      context.localEdge.fetch,
+      safeUpstreamProxyUrl(backend!, path),
+      {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          authorization: authorization!
+        },
+        body: JSON.stringify(body)
+      },
+      { timeoutMs: 15_000, maxBytes: 64_000 }
+    );
+    if (!remote.response.ok) denied("Prepared Team departure unavailable", 409);
     return remote.payload;
   };
   const readExplicitRemote = async (
@@ -2954,6 +3014,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
     return principalSchema.parse(remote.payload).user.id;
   };
   const reconcileInactive = async (
+    request: FastifyRequest,
     ownerUserId: string,
     principal: string,
     personalProjectId: string,
@@ -2973,6 +3034,59 @@ export const registerWorkspaceProjectCoordinationRoutes = (
       );
     if (stage.personalProjectId !== personalProjectId)
       denied("Staged copy-back does not match linked Project", 409);
+    if (stage.leaveOperationId) {
+      // A finished Team departure may outlive its Desktop process or device.
+      // Recover the complete approved operation before normal reconciliation
+      // can clear any link needed to activate the owner's durable copies.
+      const proof = z
+        .object({ proof: teamLeaveFinishedProofSchema })
+        .strict()
+        .parse(
+          await postTeam(
+            teamBackendId,
+            `/v1/teams/${stage.teamId}/leave-operations/${stage.leaveOperationId}/finished-proof`,
+            {}
+          )
+        ).proof;
+      if (
+        proof.operationId !== stage.leaveOperationId ||
+        proof.finalMembership.userId !== principal ||
+        proof.finalMembership.teamId !== stage.teamId ||
+        proof.finalMembership.id !== stage.ownerTeamMemberId
+      )
+        denied("Finished departure does not match staged Project owner", 409);
+      const stageIds = await repo().listTeamLeaveStageIds(
+        ownerUserId,
+        teamBackendId,
+        stage.teamId,
+        stage.leaveOperationId
+      );
+      const teamHeader = request.headers["x-koed-team-client-credential"];
+      const activated = await app.inject({
+        method: "POST",
+        url: "/v1/local-edge/workspace-project-team-leave-finish",
+        headers: {
+          authorization: request.headers.authorization!,
+          "x-koed-team-client-credential": Array.isArray(teamHeader)
+            ? teamHeader[0]!
+            : teamHeader!
+        },
+        payload: {
+          teamBackendId,
+          teamId: stage.teamId,
+          operationId: stage.leaveOperationId,
+          finishedProofRecovery: true,
+          copyManifestHash: proof.copyManifestHash,
+          stageIds
+        }
+      });
+      if (activated.statusCode !== 200)
+        denied(
+          "Finished departure needs complete Personal copy recovery before detachment",
+          409
+        );
+      return { projectId: personalProjectId, cleared: true, stageId: stage.id };
+    }
     const proof = tombstoneSchema.parse(
       await requestTeam(
         teamBackendId,
@@ -3408,6 +3522,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         denied("Team Project lifecycle identity changed", 409);
       if (state.active) return { projectId, cleared: false, detached: 0 };
       return reconcileInactive(
+        request,
         authority.actor.id,
         principal,
         projectId,
@@ -3454,6 +3569,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         denied("Team Project lifecycle identity changed", 409);
       if (state.active) return { cleared: false, detached: 0 };
       return reconcileInactive(
+        request,
         authority.actor.id,
         principal,
         personalProjectId,
@@ -3462,184 +3578,446 @@ export const registerWorkspaceProjectCoordinationRoutes = (
       );
     }
   );
+  const collectTeamLeaveStage = async (
+    request: FastifyRequest,
+    body: z.infer<typeof leaveStageSchema>,
+    prepared?: { operationId: string; copyManifestHash: string }
+  ) => {
+    const authority = await authenticate(
+      request,
+      body.teamBackendId,
+      "team_workspace_read"
+    );
+    const principal = await teamPrincipal(body.teamBackendId);
+    const boundPrincipal = await repo().principalBinding(
+      authority.actor.id,
+      body.teamBackendId
+    );
+    if (boundPrincipal !== null && boundPrincipal !== principal)
+      denied("Enrolled Team principal changed", 409);
+    const review = leaveReviewSchema.parse(
+      await requestTeam(
+        body.teamBackendId,
+        `/v1/teams/${body.teamId}/workspace-project-leave-review`
+      )
+    );
+    if (
+      review.team.id !== body.teamId ||
+      review.membership.userId !== principal
+    )
+      denied("Team leave review belongs to another principal", 409);
+    if (review.membership.role === "owner" && review.activeOwnerCount <= 1)
+      denied("Last Team owner cannot leave", 409);
+    if (review.ownedWorkspaceProjects.length > 100)
+      denied("Owned Project departure exceeds the copy-back capacity", 413);
+    if (review.ownedWorkspaceProjects.length > 0 && boundPrincipal === null)
+      denied(
+        "Owned Project needs a verified Personal link before Team leave",
+        409
+      );
+    const ownedSetHash = createHash("sha256")
+      .update(JSON.stringify(review.ownedWorkspaceProjects))
+      .digest("hex");
+    const pending: Array<{
+      workspaceProjectId: string;
+      personalProjectId: string;
+      ownerTeamMemberId: string;
+      reviewedProjectVersion: number;
+      workItems: Array<{
+        id: string;
+        sourceOwnerTeamMemberId: string;
+        sourceWorkItemId: string | null;
+        kind: "todo" | "ticket";
+        key: string | null;
+        title: string;
+        goal: string;
+        status: "todo" | "doing" | "review" | "blocked" | "done";
+        dueOn: string | null;
+        doneAt: string | null;
+      }>;
+      decks: z.infer<typeof copyBackDecksSchema>;
+      payloadHash: string;
+    }> = [];
+    for (const project of review.ownedWorkspaceProjects) {
+      const personalProjectId =
+        (await repo().getLinkedPersonalProject(
+          authority.actor.id,
+          body.teamBackendId,
+          project.id
+        )) ??
+        denied(
+          "Owned Project needs a verified Personal link before Team leave",
+          409
+        );
+      const proof = proofSchema.parse(
+        await requestTeam(
+          body.teamBackendId,
+          `/v1/workspace-projects/${project.id}/link-proof`
+        )
+      );
+      if (
+        proof.projectId !== project.id ||
+        proof.teamId !== body.teamId ||
+        proof.ownerUserId !== principal ||
+        proof.projectVersion !== project.version
+      )
+        denied("Owned Project changed during Team leave staging", 409);
+      const items: z.infer<typeof workspaceProjectWorkItemSchema>[] = [];
+      const itemIds = new Set<string>();
+      let offset: number | null = 0;
+      let stagedBytes = 0;
+      while (offset !== null) {
+        const query = new URLSearchParams({
+          offset: String(offset),
+          expectedProjectVersion: String(project.version)
+        });
+        const page = z
+          .object({
+            items: z.array(workspaceProjectWorkItemSchema).max(50),
+            nextOffset: z.number().int().nonnegative().nullable(),
+            projectVersion: z.number().int().positive()
+          })
+          .strict()
+          .parse(
+            await requestTeam(
+              body.teamBackendId,
+              `/v1/workspace-projects/${project.id}/work-items?${query}`
+            )
+          );
+        if (
+          page.projectVersion !== project.version ||
+          (page.nextOffset !== null &&
+            (page.items.length !== 50 || page.nextOffset !== offset + 50))
+        )
+          denied("Owned Project changed during Team leave staging", 409);
+        for (const item of page.items) {
+          if (itemIds.has(item.id))
+            denied("Owned Project page contains duplicate Work Items", 409);
+          itemIds.add(item.id);
+        }
+        stagedBytes += Buffer.byteLength(JSON.stringify(page.items), "utf8");
+        if (items.length + page.items.length > 5_000 || stagedBytes > 7_000_000)
+          denied("Owned Project copy-back exceeds the staging limit", 413);
+        items.push(...page.items);
+        offset = page.nextOffset;
+      }
+      const deckPage = z
+        .object({
+          projectId: z.uuid(),
+          projectVersion: z.number().int().positive(),
+          decks: copyBackDecksSchema
+        })
+        .strict()
+        .parse(
+          await requestTeam(
+            body.teamBackendId,
+            `/v1/workspace-projects/${project.id}/copy-back-decks?expectedProjectVersion=${project.version}`
+          )
+        );
+      if (
+        deckPage.projectId !== project.id ||
+        deckPage.projectVersion !== project.version
+      )
+        denied("Owned Project Decks changed during Team leave staging", 409);
+      stagedBytes += Buffer.byteLength(JSON.stringify(deckPage.decks), "utf8");
+      if (stagedBytes > 7_000_000)
+        denied("Owned Project copy-back exceeds the staging limit", 413);
+      const workItems = items.map(
+        ({
+          id,
+          sourceOwnerTeamMemberId,
+          sourceWorkItemId,
+          kind,
+          key,
+          title,
+          goal,
+          status,
+          dueOn,
+          doneAt
+        }) => ({
+          id,
+          sourceOwnerTeamMemberId,
+          sourceWorkItemId,
+          kind,
+          key,
+          title,
+          goal,
+          status,
+          dueOn,
+          doneAt
+        })
+      );
+      pending.push({
+        workspaceProjectId: project.id,
+        personalProjectId,
+        ownerTeamMemberId: proof.ownerTeamMemberId,
+        reviewedProjectVersion: project.version,
+        workItems,
+        decks: deckPage.decks,
+        payloadHash: workspaceProjectCopyBackPayloadHash(
+          workItems,
+          deckPage.decks
+        )
+      });
+    }
+    const copyManifestHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          teamId: body.teamId,
+          teamVersion: review.team.version,
+          membershipVersion: review.membership.version,
+          ownedSetHash,
+          projects: pending.map((item) => ({
+            id: item.workspaceProjectId,
+            version: item.reviewedProjectVersion,
+            payloadHash: item.payloadHash
+          }))
+        })
+      )
+      .digest("hex");
+    if (prepared && prepared.copyManifestHash !== copyManifestHash)
+      denied("Owned Project copy manifest changed after approval", 409);
+    const stages: Array<{
+      workspaceProjectId: string;
+      payloadHash: string;
+      stageId?: string;
+    }> = [];
+    for (const item of pending) {
+      const staged = prepared
+        ? await repo().stageOwnedCopyBack(authority.actor.id, {
+            ...item,
+            teamBackendId: body.teamBackendId,
+            teamId: body.teamId,
+            reviewedTeamVersion: review.team.version,
+            reviewedMemberVersion: review.membership.version,
+            ownedSetHash,
+            leaveOperationId: prepared.operationId
+          })
+        : null;
+      stages.push({
+        workspaceProjectId: item.workspaceProjectId,
+        payloadHash: item.payloadHash,
+        ...(staged ? { stageId: staged.stageId } : {})
+      });
+    }
+    return {
+      teamId: body.teamId,
+      expectedTeamVersion: review.team.version,
+      expectedMembershipVersion: review.membership.version,
+      expectedOwnedWorkspaceProjects: review.ownedWorkspaceProjects,
+      ownedSetHash,
+      copyManifestHash,
+      pendingLeaveOperationId: review.pendingLeaveOperationId ?? null,
+      stages
+    };
+  };
   app.post(
     "/v1/local-edge/workspace-project-team-leave-stage",
     { preHandler: context.rateLimit.memoryWrite },
+    async (request) =>
+      collectTeamLeaveStage(request, leaveStageSchema.parse(request.body))
+  );
+  app.post(
+    "/v1/local-edge/workspace-project-team-leave-copy",
+    { preHandler: context.rateLimit.memoryWrite },
     async (request) => {
-      const body = leaveStageSchema.parse(request.body);
+      const body = leaveCopySchema.parse(request.body);
       const authority = await authenticate(
         request,
         body.teamBackendId,
         "team_workspace_read"
       );
       const principal = await teamPrincipal(body.teamBackendId);
-      const boundPrincipal = await repo().principalBinding(
-        authority.actor.id,
-        body.teamBackendId
-      );
-      if (boundPrincipal !== null && boundPrincipal !== principal)
-        denied("Enrolled Team principal changed", 409);
-      const review = leaveReviewSchema.parse(
-        await requestTeam(
-          body.teamBackendId,
-          `/v1/teams/${body.teamId}/workspace-project-leave-review`
-        )
-      );
       if (
-        review.team.id !== body.teamId ||
-        review.membership.userId !== principal
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== principal
       )
-        denied("Team leave review belongs to another principal", 409);
-      if (review.membership.role === "owner" && review.activeOwnerCount <= 1)
-        denied("Last Team owner cannot leave", 409);
-      if (review.ownedWorkspaceProjects.length > 0 && boundPrincipal === null)
-        denied(
-          "Owned Project needs a verified Personal link before Team leave",
-          409
-        );
-      const ownedSetHash = createHash("sha256")
-        .update(JSON.stringify(review.ownedWorkspaceProjects))
-        .digest("hex");
-      const stages: Array<{ workspaceProjectId: string; stageId: string }> = [];
-      for (const project of review.ownedWorkspaceProjects) {
-        const personalProjectId =
-          (await repo().getLinkedPersonalProject(
-            authority.actor.id,
-            body.teamBackendId,
-            project.id
-          )) ??
-          denied(
-            "Owned Project needs a verified Personal link before Team leave",
-            409
-          );
-        const proof = proofSchema.parse(
-          await requestTeam(
-            body.teamBackendId,
-            `/v1/workspace-projects/${project.id}/link-proof`
-          )
-        );
-        if (
-          proof.projectId !== project.id ||
-          proof.teamId !== body.teamId ||
-          proof.ownerUserId !== principal ||
-          proof.projectVersion !== project.version
-        )
-          denied("Owned Project changed during Team leave staging", 409);
-        const items: z.infer<typeof workspaceProjectWorkItemSchema>[] = [];
-        const itemIds = new Set<string>();
-        let offset: number | null = 0;
-        let stagedBytes = 0;
-        while (offset !== null) {
-          const query = new URLSearchParams({
-            offset: String(offset),
-            expectedProjectVersion: String(project.version)
-          });
-          const page = z
+        denied("Enrolled Team principal changed", 409);
+      const status = z
+        .object({
+          operation: z
             .object({
-              items: z.array(workspaceProjectWorkItemSchema).max(50),
-              nextOffset: z.number().int().nonnegative().nullable(),
-              projectVersion: z.number().int().positive()
-            })
-            .strict()
-            .parse(
-              await requestTeam(
-                body.teamBackendId,
-                `/v1/workspace-projects/${project.id}/work-items?${query}`
+              operationId: z.uuid(),
+              state: z.literal("prepared"),
+              copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+              ownedSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+              expectedTeamVersion: z.number().int().positive(),
+              expectedMembershipVersion: z.number().int().positive(),
+              ownedProjects: z.array(
+                z
+                  .object({
+                    id: z.uuid(),
+                    version: z.number().int().positive()
+                  })
+                  .strict()
               )
-            );
-          if (
-            page.projectVersion !== project.version ||
-            (page.nextOffset !== null &&
-              (page.items.length !== 50 || page.nextOffset !== offset + 50))
-          )
-            denied("Owned Project changed during Team leave staging", 409);
-          for (const item of page.items) {
-            if (itemIds.has(item.id))
-              denied("Owned Project page contains duplicate Work Items", 409);
-            itemIds.add(item.id);
-          }
-          stagedBytes += Buffer.byteLength(JSON.stringify(page.items), "utf8");
-          if (
-            items.length + page.items.length > 5_000 ||
-            stagedBytes > 7_000_000
-          )
-            denied("Owned Project copy-back exceeds the staging limit", 413);
-          items.push(...page.items);
-          offset = page.nextOffset;
-        }
-        const deckPage = z
-          .object({
-            projectId: z.uuid(),
-            projectVersion: z.number().int().positive(),
-            decks: copyBackDecksSchema
-          })
-          .strict()
-          .parse(
-            await requestTeam(
-              body.teamBackendId,
-              `/v1/workspace-projects/${project.id}/copy-back-decks?expectedProjectVersion=${project.version}`
-            )
-          );
-        if (
-          deckPage.projectId !== project.id ||
-          deckPage.projectVersion !== project.version
-        )
-          denied("Owned Project Decks changed during Team leave staging", 409);
-        stagedBytes += Buffer.byteLength(
-          JSON.stringify(deckPage.decks),
-          "utf8"
-        );
-        if (stagedBytes > 7_000_000)
-          denied("Owned Project copy-back exceeds the staging limit", 413);
-        const staged = await repo().stageOwnedCopyBack(authority.actor.id, {
-          personalProjectId,
-          teamBackendId: body.teamBackendId,
-          teamId: body.teamId,
-          workspaceProjectId: project.id,
-          ownerTeamMemberId: proof.ownerTeamMemberId,
-          reviewedTeamVersion: review.team.version,
-          reviewedMemberVersion: review.membership.version,
-          reviewedProjectVersion: project.version,
-          ownedSetHash,
-          workItems: items.map(
-            ({
-              id,
-              sourceOwnerTeamMemberId,
-              sourceWorkItemId,
-              kind,
-              key,
-              title,
-              goal,
-              status,
-              dueOn,
-              doneAt
-            }) => ({
-              id,
-              sourceOwnerTeamMemberId,
-              sourceWorkItemId,
-              kind,
-              key,
-              title,
-              goal,
-              status,
-              dueOn,
-              doneAt
             })
-          ),
-          decks: deckPage.decks
+            .passthrough()
+        })
+        .strict()
+        .parse(
+          await postTeam(
+            body.teamBackendId,
+            `/v1/teams/${body.teamId}/leave-operations/${body.operationId}/status`,
+            { continuation: body.continuation }
+          )
+        ).operation;
+      if (
+        status.operationId !== body.operationId ||
+        status.copyManifestHash !== body.copyManifestHash
+      )
+        denied("Prepared Team departure changed", 409);
+      const copied = await collectTeamLeaveStage(request, body, status);
+      if (
+        copied.expectedTeamVersion !== status.expectedTeamVersion ||
+        copied.expectedMembershipVersion !== status.expectedMembershipVersion ||
+        copied.ownedSetHash !== status.ownedSetHash ||
+        JSON.stringify(copied.expectedOwnedWorkspaceProjects) !==
+          JSON.stringify(status.ownedProjects) ||
+        copied.copyManifestHash !== status.copyManifestHash
+      )
+        denied("Prepared Team departure changed during copy", 409);
+      return copied;
+    }
+  );
+  app.post(
+    "/v1/local-edge/workspace-project-team-leave-recover",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const body = leaveRecoverySchema.parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "team_workspace_read"
+      );
+      const principal = await teamPrincipal(body.teamBackendId);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== principal
+      )
+        denied("Enrolled Team principal changed", 409);
+      const page = await repo().listTeamLeaveStageOperations(
+        authority.actor.id,
+        body.teamBackendId,
+        body.teamId,
+        body.afterOperationId
+      );
+      const ids = page.slice(0, 19);
+      const recovered = z
+        .object({
+          operations: z.array(teamLeaveRecoveredOperationSchema).max(21)
+        })
+        .strict()
+        .parse(
+          await postTeam(
+            body.teamBackendId,
+            `/v1/teams/${body.teamId}/leave-operations/recover`,
+            {
+              operationIds: ids,
+              includePrepared: body.afterOperationId === null
+            }
+          )
+        );
+      const summaries = [];
+      for (const operation of recovered.operations) {
+        if (operation.state !== "finished") {
+          summaries.push({
+            operationId: operation.operationId,
+            state: operation.state
+          });
+          continue;
+        }
+        if (!ids.includes(operation.operationId)) continue;
+        const stageIds = await repo().listTeamLeaveStageIds(
+          authority.actor.id,
+          body.teamBackendId,
+          body.teamId,
+          operation.operationId
+        );
+        if (stageIds.length !== operation.ownedProjects.length)
+          denied("Finished Team departure copy is incomplete", 409);
+        const teamHeader = request.headers["x-koed-team-client-credential"];
+        const activated = await app.inject({
+          method: "POST",
+          url: "/v1/local-edge/workspace-project-team-leave-finish",
+          headers: {
+            authorization: request.headers.authorization!,
+            "x-koed-team-client-credential": Array.isArray(teamHeader)
+              ? teamHeader[0]!
+              : teamHeader!
+          },
+          payload: {
+            teamBackendId: body.teamBackendId,
+            teamId: body.teamId,
+            operationId: operation.operationId,
+            continuation: operation.continuation,
+            copyManifestHash: operation.copyManifestHash,
+            stageIds
+          }
         });
-        stages.push({
-          workspaceProjectId: project.id,
-          stageId: staged.stageId
+        if (activated.statusCode !== 200)
+          denied("Finished Team departure awaits Personal activation", 409);
+        summaries.push({
+          operationId: operation.operationId,
+          state: "finished" as const
         });
       }
+      for (const operationId of ids) {
+        if (
+          recovered.operations.some((item) => item.operationId === operationId)
+        )
+          continue;
+        // The original device may have been revoked after Team finish. A
+        // current enrolled device may prove that completed fact, but it never
+        // receives the original continuation or permission to finish.
+        const proof = z
+          .object({ proof: teamLeaveFinishedProofSchema })
+          .strict()
+          .parse(
+            await postTeam(
+              body.teamBackendId,
+              `/v1/teams/${body.teamId}/leave-operations/${operationId}/finished-proof`,
+              {}
+            )
+          ).proof;
+        const stageIds = await repo().listTeamLeaveStageIds(
+          authority.actor.id,
+          body.teamBackendId,
+          body.teamId,
+          operationId
+        );
+        if (stageIds.length !== proof.ownedProjects.length)
+          denied("Finished Team departure copy is incomplete", 409);
+        const teamHeader = request.headers["x-koed-team-client-credential"];
+        const activated = await app.inject({
+          method: "POST",
+          url: "/v1/local-edge/workspace-project-team-leave-finish",
+          headers: {
+            authorization: request.headers.authorization!,
+            "x-koed-team-client-credential": Array.isArray(teamHeader)
+              ? teamHeader[0]!
+              : teamHeader!
+          },
+          payload: {
+            teamBackendId: body.teamBackendId,
+            teamId: body.teamId,
+            operationId,
+            finishedProofRecovery: true,
+            copyManifestHash: proof.copyManifestHash,
+            stageIds
+          }
+        });
+        if (activated.statusCode !== 200)
+          denied("Finished Team departure awaits Personal activation", 409);
+        summaries.push({ operationId, state: "finished" as const });
+      }
       return {
-        teamId: body.teamId,
-        expectedTeamVersion: review.team.version,
-        expectedMembershipVersion: review.membership.version,
-        expectedOwnedWorkspaceProjects: review.ownedWorkspaceProjects,
-        ownedSetHash,
-        stages
+        operations: summaries,
+        nextAfterOperationId: page.length === 20 ? ids.at(-1) : null
       };
     }
   );
@@ -3661,12 +4039,133 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         )) !== principal
       )
         denied("Enrolled Team principal changed", 409);
-      const completed = [];
-      for (const stageId of body.stageIds) {
+      const operationSchema = z
+        .object({
+          operationId: z.uuid(),
+          state: z.literal("finished"),
+          copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+          ownedProjects: z.array(
+            z
+              .object({ id: z.uuid(), version: z.number().int().positive() })
+              .strict()
+          )
+        })
+        .passthrough();
+      const operation = body.finishedProofRecovery
+        ? operationSchema.parse(
+            z
+              .object({ proof: teamLeaveFinishedProofSchema })
+              .strict()
+              .parse(
+                await postTeam(
+                  body.teamBackendId,
+                  `/v1/teams/${body.teamId}/leave-operations/${body.operationId}/finished-proof`,
+                  {}
+                )
+              ).proof
+          )
+        : z
+            .object({ operation: operationSchema })
+            .strict()
+            .parse(
+              await postTeam(
+                body.teamBackendId,
+                `/v1/teams/${body.teamId}/leave-operations/${body.operationId}/status`,
+                { continuation: body.continuation }
+              )
+            ).operation;
+      if (
+        operation.operationId !== body.operationId ||
+        operation.copyManifestHash !== body.copyManifestHash ||
+        operation.ownedProjects.length !== body.stageIds.length
+      )
+        denied("Finished Team departure receipt changed", 409);
+      const approvedProjects = new Map(
+        operation.ownedProjects.map((project) => [project.id, project.version])
+      );
+      if (approvedProjects.size !== operation.ownedProjects.length)
+        denied("Finished Team departure receipt changed", 409);
+      const stages = await Promise.all(
+        body.stageIds.map((stageId) =>
+          repo().getStagedCopyBack(authority.actor.id, stageId)
+        )
+      );
+      const stageProjects = new Set<string>();
+      for (const possibleStage of stages) {
         const stage =
-          (await repo().getStagedCopyBack(authority.actor.id, stageId)) ??
-          denied("Copy-back stage unavailable", 404);
-        if (stage.teamBackendId !== body.teamBackendId)
+          possibleStage ?? denied("Copy-back stage unavailable", 404);
+        if (
+          stage.teamBackendId !== body.teamBackendId ||
+          stage.teamId !== body.teamId ||
+          stage.leaveOperationId !== body.operationId ||
+          approvedProjects.get(stage.workspaceProjectId) !==
+            stage.reviewedProjectVersion ||
+          (stage.state !== "ready" && stage.state !== "applied") ||
+          stageProjects.has(stage.workspaceProjectId)
+        )
+          denied(
+            "Copy-back stage set does not match the finished Team departure",
+            409
+          );
+        stageProjects.add(stage.workspaceProjectId);
+      }
+      if (stageProjects.size !== approvedProjects.size)
+        denied(
+          "Copy-back stage set does not match the finished Team departure",
+          409
+        );
+      const orderedStages = stages
+        .filter((stage) => stage !== null)
+        .sort((a, b) =>
+          a.workspaceProjectId.localeCompare(b.workspaceProjectId)
+        );
+      const firstStage =
+        orderedStages[0] ??
+        denied("Finished Team departure copy is empty", 409);
+      for (const stage of orderedStages) {
+        if (
+          stage.reviewedTeamVersion !== firstStage.reviewedTeamVersion ||
+          stage.reviewedMemberVersion !== firstStage.reviewedMemberVersion ||
+          stage.ownedSetHash !== firstStage.ownedSetHash ||
+          stage.payloadHash !==
+            workspaceProjectCopyBackPayloadHash(
+              stage.workItems,
+              copyBackDecksSchema.parse(stage.decks)
+            )
+        )
+          denied("Finished Team departure copy manifest changed", 409);
+      }
+      const stageManifestHash = createHash("sha256")
+        .update(
+          JSON.stringify({
+            teamId: body.teamId,
+            teamVersion: firstStage.reviewedTeamVersion,
+            membershipVersion: firstStage.reviewedMemberVersion,
+            ownedSetHash: firstStage.ownedSetHash,
+            projects: orderedStages.map((stage) => ({
+              id: stage.workspaceProjectId,
+              version: stage.reviewedProjectVersion,
+              payloadHash: stage.payloadHash
+            }))
+          })
+        )
+        .digest("hex");
+      if (stageManifestHash !== operation.copyManifestHash)
+        denied("Finished Team departure copy manifest changed", 409);
+      const completed = [];
+      for (const [index, stageId] of body.stageIds.entries()) {
+        const stage =
+          stages[index] ?? denied("Copy-back stage unavailable", 404);
+        if (
+          stage.teamBackendId !== body.teamBackendId ||
+          stage.teamId !== body.teamId ||
+          stage.leaveOperationId !== body.operationId ||
+          !operation.ownedProjects.some(
+            (project) =>
+              project.id === stage.workspaceProjectId &&
+              project.version === stage.reviewedProjectVersion
+          )
+        )
           denied("Copy-back stage unavailable", 404);
         if (stage.state === "applied") {
           completed.push({ stageId, alreadyApplied: true });

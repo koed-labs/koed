@@ -139,6 +139,14 @@ describe.skipIf(!testUrl)("HQ-703 generation-bound Team invitations", () => {
     });
     expect(left?.leaveGeneration).toBe(1);
     expect(left?.status).toBe("disabled");
+    const cleaned = await pool.query<{ lifecycle: string; version: number }>(
+      "select lifecycle,version from team_invites where id=$1",
+      [old!.id]
+    );
+    expect(cleaned.rows[0]).toMatchObject({
+      lifecycle: "revoked",
+      version: old!.version + 1
+    });
     await pool.query("update users set email=$2 where id=$1", [
       recipient,
       `away-${recipient}@example.test`
@@ -443,7 +451,7 @@ describe.skipIf(!testUrl)("HQ-703 generation-bound Team invitations", () => {
         leaveGeneration: 1
       });
       expect(inviteState.rows).toMatchObject([
-        { lifecycle: "pending", version: pending!.version }
+        { lifecycle: "revoked", version: pending!.version + 1 }
       ]);
       expect(grantState.rows).toHaveLength(1);
       expect(grantState.rows[0]).toMatchObject({

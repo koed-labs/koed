@@ -13,6 +13,10 @@ const descriptions: Record<KoedTextActionName, string> = {
     "Request to move the User's selected Conversations into a Project. Koed checks each current owner and sharing effect before review.",
   koed_project_delete:
     "Request deletion of the User's Project. Koed uses its separate Native deletion review and lifecycle coordinator.",
+  koed_project_leave:
+    "Request a human review to leave a currently linked shared Project. A Project owner is shown a separate explicit delete proposal; no Team access changes from this tool call.",
+  koed_workspace_leave:
+    "Request a human review to leave the current shared group. Koed shows owned Project effects and requires exact confirmation; this tool call changes no Team access.",
   koed_chat_create:
     "Open a new chat composer, optionally with a Project selected. The User's first message creates the Conversation.",
   koed_chat_move:

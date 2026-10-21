@@ -877,6 +877,12 @@ describe("route identity contract", () => {
         "PATCH /v1/teams/{teamId}/members/{userId}/role",
         "POST /v1/teams/{teamId}/members/{userId}/disable",
         "POST /v1/teams/{teamId}/leave",
+        "POST /v1/teams/{teamId}/leave-operations/prepare-receipt",
+        "POST /v1/teams/{teamId}/leave-operations/recover",
+        "POST /v1/teams/{teamId}/leave-operations/{operationId}/finished-proof",
+        "POST /v1/teams/{teamId}/leave-operations/{operationId}/cancel",
+        "POST /v1/teams/{teamId}/leave-operations/{operationId}/finish",
+        "POST /v1/teams/{teamId}/leave-operations/{operationId}/status",
         "GET /v1/teams/{teamId}/invites",
         "POST /v1/teams/{teamId}/invites",
         "DELETE /v1/teams/{teamId}/invites/{inviteId}",
@@ -904,7 +910,8 @@ describe("route identity contract", () => {
         "GET /v1/high-risk/action-grants/{clientRequestId}/await",
         "DELETE /v1/high-risk/action-grants/{clientRequestId}",
         "GET /v1/high-risk/browser-activations/{selector}",
-        "POST /v1/high-risk/browser-activations/{selector}/decision"
+        "POST /v1/high-risk/browser-activations/{selector}/decision",
+        "POST /v1/teams/{teamId}/text-action-lifecycle-proof"
       ],
       retention: [
         "POST /v1/retention/teams/{teamId}/deletion-request",

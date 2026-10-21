@@ -9,6 +9,8 @@ const label: Record<KoedTextActionProjection["name"], string> = {
   koed_project_create: "Create Project",
   koed_project_move_chats: "Move chats",
   koed_project_delete: "Delete Project",
+  koed_project_leave: "Leave shared Project",
+  koed_workspace_leave: "Leave shared group",
   koed_chat_create: "Start chat",
   koed_chat_move: "Move chat",
   koed_chat_delete: "Delete chat",
@@ -44,6 +46,12 @@ const detail = (action: KoedTextActionProjection) => {
     }
     case "koed_project_delete":
       return `${String(action.snapshot.projectName ?? args.projectId ?? "Project")} · ${String(action.snapshot.activeExecutionCount ?? 0)} active Agent executions. Review Project deletion and its chats, to-dos, and memory.`;
+    case "koed_project_leave":
+      return action.snapshot.privateOwner === true
+        ? `You own ${String(action.snapshot.projectName ?? "this Project")}; leaving is unavailable. You can separately review deletion.`
+        : `Review leaving ${String(action.snapshot.projectName ?? "the shared Project")}. An owner must separately confirm deleting the shared Project.`;
+    case "koed_workspace_leave":
+      return "Review group departure, owned Project copy-back, and access effects. A separate confirmation is required.";
     case "koed_chat_delete":
       return `${String(action.snapshot.chatTitle ?? "This chat")} · Its memory stays available. Review the exact chat before deletion.`;
     case "koed_hq_open":
@@ -83,7 +91,9 @@ const hasDurableServiceReceipt = (action: KoedTextActionProjection) =>
     "koed_job_pause",
     "koed_deck_make",
     "koed_chat_move",
-    "koed_project_move_chats"
+    "koed_project_move_chats",
+    "koed_project_leave",
+    "koed_workspace_leave"
   ].includes(action.name);
 
 const jobReviewDetails = (action: KoedTextActionProjection) => {

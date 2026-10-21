@@ -15,7 +15,7 @@ export class BrowserApprovalRequestError extends Error {
 
 export const browserApprovalBasePath = (): string => {
   const match = window.location.pathname.match(
-    /^(.*)\/(?:high-risk\/browser-activations|device-enrollment)\/[^/]+\/?$/
+    /^(.*)\/(?:high-risk\/browser-activations|device-enrollment|team-leave)\/[^/]+\/?$/
   );
   return match?.[1] ?? "";
 };
@@ -134,6 +134,26 @@ export const decideDeviceEnrollmentChallenge = async (
   );
   return response.challenge;
 };
+
+export const loadTeamLeaveBrowserReview = (
+  teamId: string
+): Promise<{
+  team: { id: string; name: string };
+  membership: { userId: string; status: string };
+  pendingLeaveOperationId: string | null;
+}> =>
+  requestJson(
+    `/v1/teams/${encodeURIComponent(teamId)}/workspace-project-leave-review`
+  );
+
+export const cancelTeamLeaveBrowserOperation = (
+  teamId: string,
+  operationId: string
+): Promise<unknown> =>
+  requestJson(
+    `/v1/teams/${encodeURIComponent(teamId)}/leave-operations/${encodeURIComponent(operationId)}/cancel`,
+    { method: "POST", body: JSON.stringify({}) }
+  );
 
 export const approvalReturnPath = (): string =>
   `${window.location.pathname}${window.location.search}`;

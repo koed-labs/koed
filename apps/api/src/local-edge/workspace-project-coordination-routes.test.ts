@@ -125,6 +125,11 @@ describe.skipIf(!testUrl)(
     let staleLeavePage = false;
     let unlinkedOwnedProject = false;
     let noOwnedProjects = false;
+    let tooManyOwnedProjects = false;
+    const leaveOperationId = randomUUID();
+    const leaveContinuation = "approved-departure-continuation";
+    let leaveManifestHash = "";
+    let leaveSetHash = "";
     let teamDeckUnavailable = false;
     let teamDeckRevoked = false;
     let teamDeckMismatched = false;
@@ -516,16 +521,69 @@ describe.skipIf(!testUrl)(
               version: 2
             },
             activeOwnerCount,
-            ownedWorkspaceProjects: noOwnedProjects
-              ? []
-              : unlinkedOwnedProject
-                ? [
-                    { id: randomUUID(), version: 1 },
-                    { id: ids.workspaceProject, version: 1 }
-                  ]
-                : [{ id: ids.workspaceProject, version: 1 }]
+            ownedWorkspaceProjects: tooManyOwnedProjects
+              ? Array.from({ length: 101 }, () => ({
+                  id: randomUUID(),
+                  version: 1
+                }))
+              : noOwnedProjects
+                ? []
+                : unlinkedOwnedProject
+                  ? [
+                      { id: randomUUID(), version: 1 },
+                      { id: ids.workspaceProject, version: 1 }
+                    ]
+                  : [{ id: ids.workspaceProject, version: 1 }]
           };
         else if (
+          path ===
+          `/v1/teams/${ids.team}/leave-operations/${leaveOperationId}/status`
+        ) {
+          expect(JSON.parse(String(init?.body))).toEqual({
+            continuation: leaveContinuation
+          });
+          payload = {
+            operation: {
+              operationId: leaveOperationId,
+              state: tombstoneReady ? "finished" : "prepared",
+              copyManifestHash: leaveManifestHash,
+              ownedSetHash: leaveSetHash,
+              expectedTeamVersion: 3,
+              expectedMembershipVersion: 2,
+              ownedProjects: [{ id: ids.workspaceProject, version: 1 }]
+            }
+          };
+        } else if (path === `/v1/teams/${ids.team}/leave-operations/recover`) {
+          // A new device cannot recover the old device's continuation.
+          payload = { operations: [] };
+        } else if (
+          path ===
+          `/v1/teams/${ids.team}/leave-operations/${leaveOperationId}/finished-proof`
+        ) {
+          if (!tombstoneReady) return new Response("{}", { status: 409 });
+          payload = {
+            proof: {
+              operationId: leaveOperationId,
+              state: "finished",
+              copyManifestHash: leaveManifestHash,
+              ownedSetHash: leaveSetHash,
+              ownedProjects: [{ id: ids.workspaceProject, version: 1 }],
+              finalMembership: {
+                id: ids.ownerMember,
+                teamId: ids.team,
+                userId: ids.teamUser,
+                role: membershipRole,
+                status: "disabled",
+                version: 3,
+                leaveGeneration: 1,
+                createdAt: "2026-10-20T20:00:00.000Z",
+                updatedAt: "2026-10-20T20:00:00.000Z",
+                acceptedAt: null,
+                disabledAt: "2026-10-20T20:00:00.000Z"
+              }
+            }
+          };
+        } else if (
           path === `/v1/workspace-projects/${ids.workspaceProject}/work-items`
         ) {
           const offset = Number(url.searchParams.get("offset"));
@@ -726,6 +784,36 @@ describe.skipIf(!testUrl)(
         ).rows[0]?.n
       ).toBe(0);
       noOwnedProjects = false;
+    });
+
+    it("rejects 101 owned Projects before fetching or persisting any copy", async () => {
+      tooManyOwnedProjects = true;
+      const beforeCalls = teamCalls.length;
+      const beforeStages = (
+        await pool.query<{ n: number }>(
+          "select count(*)::int as n from personal_workspace_project_copyback_stages"
+        )
+      ).rows[0]!.n;
+      const response = await send(
+        "/v1/local-edge/workspace-project-team-leave-stage",
+        {
+          teamBackendId: backendId,
+          teamId: ids.team
+        }
+      );
+      tooManyOwnedProjects = false;
+      expect(response.statusCode, response.body).toBe(413);
+      expect(teamCalls.slice(beforeCalls)).toEqual([
+        `/v1/local-edge/device-credentials/status`,
+        `/v1/teams/${ids.team}/workspace-project-leave-review`
+      ]);
+      expect(
+        (
+          await pool.query<{ n: number }>(
+            "select count(*)::int as n from personal_workspace_project_copyback_stages"
+          )
+        ).rows[0]!.n
+      ).toBe(beforeStages);
     });
 
     it("keeps a pending Personal fence on uncertain Team cancellation and clears it only after an exact receipt", async () => {
@@ -1235,7 +1323,7 @@ describe.skipIf(!testUrl)(
       expect(claimed?.ownerUserId).toBe(ids.personalUser);
     }, 120000);
 
-    it("stages D9 invisibly, rejects unverified leave, then applies exactly once after Team tombstone", async () => {
+    it("reviews without copying, stages approved D9, and recovers finished leave exactly once", async () => {
       const stagePath = "/v1/local-edge/workspace-project-team-leave-stage";
       const finishPath = "/v1/local-edge/workspace-project-team-leave-finish";
       activeOwnerCount = 1;
@@ -1284,15 +1372,55 @@ describe.skipIf(!testUrl)(
         teamId: ids.team
       });
       expect(staged.statusCode, staged.body).toBe(200);
-      const stageId = (staged.json() as { stages: Array<{ stageId: string }> })
-        .stages[0]?.stageId;
-      expect(stageId).toBeDefined();
+      const review = staged.json() as {
+        copyManifestHash: string;
+        ownedSetHash: string;
+        stages: Array<{
+          workspaceProjectId: string;
+          payloadHash: string;
+          stageId?: string;
+        }>;
+      };
+      leaveManifestHash = review.copyManifestHash;
+      leaveSetHash = review.ownedSetHash;
+      expect(review.stages[0]?.stageId).toBeUndefined();
+      expect(
+        (
+          await pool.query(
+            "select count(*)::int as n from personal_workspace_project_copyback_stages"
+          )
+        ).rows[0]?.n
+      ).toBe(0);
       const repeatedStage = await send(stagePath, {
         teamBackendId: backendId,
         teamId: ids.team
       });
       expect(repeatedStage.statusCode, repeatedStage.body).toBe(200);
-      expect(repeatedStage.json()).toMatchObject({ stages: [{ stageId }] });
+      expect(repeatedStage.json()).toEqual(review);
+      const approvedCopy = {
+        teamBackendId: backendId,
+        teamId: ids.team,
+        operationId: leaveOperationId,
+        continuation: leaveContinuation,
+        copyManifestHash: leaveManifestHash
+      };
+      const copiedStage = await send(
+        "/v1/local-edge/workspace-project-team-leave-copy",
+        approvedCopy
+      );
+      expect(copiedStage.statusCode, copiedStage.body).toBe(200);
+      const stageId = (
+        copiedStage.json() as { stages: Array<{ stageId: string }> }
+      ).stages[0]!.stageId;
+      expect(stageId).toBeDefined();
+      expect(
+        (
+          await send(
+            "/v1/local-edge/workspace-project-team-leave-copy",
+            approvedCopy
+          )
+        ).json()
+      ).toEqual(copiedStage.json());
       const before = await pool.query(
         "select workspace_project_id from projects where id=$1",
         [projectId]
@@ -1304,7 +1432,7 @@ describe.skipIf(!testUrl)(
       );
       expect(initialItems.rows[0]?.n).toBe(1);
       const unverified = await send(finishPath, {
-        teamBackendId: backendId,
+        ...approvedCopy,
         stageIds: [stageId]
       });
       expect(unverified.statusCode).toBeGreaterThanOrEqual(400);
@@ -1315,11 +1443,63 @@ describe.skipIf(!testUrl)(
       expect(stillLinked.rows[0]?.workspace_project_id).toBe(
         ids.workspaceProject
       );
-      // The Team leave committed but its response was lost. No finish call or
-      // in-memory stage receipt survives: normal Project reconciliation must
-      // find the durable stage and recover only after a verified tombstone.
+      lifecycleActive = false;
+      const unknownDeparture = await send(
+        `/v1/local-edge/projects/${projectId}/workspace-project-reconcile`,
+        {}
+      );
+      expect(unknownDeparture.statusCode).toBeGreaterThanOrEqual(400);
+      expect(
+        (
+          await pool.query(
+            "select workspace_project_id from projects where id=$1",
+            [projectId]
+          )
+        ).rows[0]?.workspace_project_id
+      ).toBe(ids.workspaceProject);
+      expect(
+        (
+          await pool.query(
+            "select count(*)::int as n from project_work_items where project_id=$1 and origin='team_copy_back'",
+            [projectId]
+          )
+        ).rows[0]?.n
+      ).toBe(0);
+      lifecycleActive = true;
+      // The Team leave committed but its response was lost and the original
+      // device was revoked. Recovery finds durable ready stages and uses only
+      // an authenticated finished proof, never the old continuation or a
+      // repeated Team departure mutation.
       tombstoneReady = true;
       lifecycleActive = false;
+      const savedStage = (
+        await pool.query<{ work_items: unknown }>(
+          "select work_items from personal_workspace_project_copyback_stages where id=$1",
+          [stageId]
+        )
+      ).rows[0]!;
+      await pool.query(
+        "update personal_workspace_project_copyback_stages set work_items=jsonb_set(work_items,'{0,title}',to_jsonb($2::text),false) where id=$1",
+        [stageId, "Unapproved changed bytes"]
+      );
+      const changedCopy = await send(finishPath, {
+        ...approvedCopy,
+        stageIds: [stageId]
+      });
+      expect(changedCopy.statusCode, changedCopy.body).toBe(409);
+      expect(changedCopy.body).toContain("copy manifest changed");
+      expect(
+        (
+          await pool.query(
+            "select count(*)::int as n from project_work_items where project_id=$1 and origin='team_copy_back'",
+            [projectId]
+          )
+        ).rows[0]?.n
+      ).toBe(0);
+      await pool.query(
+        "update personal_workspace_project_copyback_stages set work_items=$2::jsonb where id=$1",
+        [stageId, JSON.stringify(savedStage.work_items)]
+      );
       const callsBeforeRecovery = teamCalls.length;
       const applied = await send(
         `/v1/local-edge/projects/${projectId}/workspace-project-reconcile`,
@@ -1331,13 +1511,14 @@ describe.skipIf(!testUrl)(
         cleared: true,
         stageId
       });
+      expect(applied.body).not.toContain(leaveContinuation);
       expect(teamCalls.slice(callsBeforeRecovery)).toContain(
         `/v1/workspace-projects/${ids.workspaceProject}/tombstone-proof`
       );
       expect(
         teamCalls
           .slice(callsBeforeRecovery)
-          .every((path) => !path.endsWith("/leave"))
+          .every((path) => !/\/(leave|finish)$/.test(path))
       ).toBe(true);
       const after = await pool.query(
         "select workspace_project_id from projects where id=$1",
@@ -1415,7 +1596,7 @@ describe.skipIf(!testUrl)(
         }
       ]);
       const retry = await send(finishPath, {
-        teamBackendId: backendId,
+        ...approvedCopy,
         stageIds: [stageId]
       });
       expect(retry.statusCode).toBe(200);

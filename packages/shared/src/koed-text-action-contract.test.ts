@@ -59,6 +59,33 @@ describe("Koed managed text actions", () => {
       'Koed koed_project_create request v1: {"status":"requested"}'
     );
   });
+  it("offers bounded Project and group leave proposals without caller authority", () => {
+    const id = "90fd9cee-d5b1-4dda-9675-c044e4613ed7";
+    expect(koedTextActionNames).toContain("koed_project_leave");
+    expect(koedTextActionNames).toContain("koed_workspace_leave");
+    expect(
+      koedTextActionInputSchemas.koed_project_leave.parse({ projectId: id })
+    ).toEqual({ projectId: id });
+    expect(
+      koedTextActionInputSchemas.koed_workspace_leave.parse({ teamId: id })
+    ).toEqual({ teamId: id });
+    expect(
+      koedTextActionInputSchemas.koed_project_leave.safeParse({
+        projectId: id,
+        approved: true,
+        backendId: id
+      }).success
+    ).toBe(false);
+    expect(
+      koedTextActionInputSchemas.koed_workspace_leave.safeParse({
+        teamId: id,
+        expectedMembershipVersion: 1
+      }).success
+    ).toBe(false);
+    expect(koedTextActionReceipt("koed_workspace_leave")).toBe(
+      'Koed koed_workspace_leave request v1: {"status":"requested"}'
+    );
+  });
   it("requires explicit bounded Deck scope and supplied cards, not model authority", () => {
     const request = {
       projectId: "90fd9cee-d5b1-4dda-9675-c044e4613ed7",

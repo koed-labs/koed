@@ -690,4 +690,78 @@ describe.skipIf(!testUrl)("Workspace Project Team state", () => {
     );
     expect(access.rows[0]?.access).toBe("write");
   });
+  it("restores owner metadata within 30 days without rejoining links or grants", async () => {
+    const project = (
+      await pool.query<{ id: string; version: number }>(
+        "select id,version from workspace_projects where team_id=$1",
+        [teamId]
+      )
+    ).rows[0]!;
+    await expect(
+      repo.restoreProject(alice, project.id, project.version)
+    ).rejects.toBeInstanceOf(WorkspaceProjectUnavailableError);
+    await pool.query(
+      "update team_memberships set status='enabled',disabled_at=null,disabled_reason=null where id=$1",
+      [aliceMember]
+    );
+    await pool.query(
+      "update team_workspace_access_grants set access='write',disabled_at=null,disabled_reason=null where team_workspace_id=$1 and user_id=$2",
+      [workspaceId, alice]
+    );
+    await pool.query(
+      "update workspace_projects set deleted_at=now()-interval '31 days' where id=$1",
+      [project.id]
+    );
+    await expect(
+      repo.restoreProject(alice, project.id, project.version)
+    ).rejects.toBeInstanceOf(WorkspaceProjectUnavailableError);
+    await pool.query(
+      "update workspace_projects set deleted_at=now() where id=$1",
+      [project.id]
+    );
+    await pool.query(
+      "update team_workspace_access_grants set access='read',can_share_owned_memory=false where team_workspace_id=$1 and user_id=$2",
+      [workspaceId, alice]
+    );
+    await expect(
+      repo.restoreProject(alice, project.id, project.version)
+    ).rejects.toBeInstanceOf(WorkspaceProjectUnavailableError);
+    await pool.query(
+      "update team_workspace_access_grants set access='write',can_share_owned_memory=true where team_workspace_id=$1 and user_id=$2",
+      [workspaceId, alice]
+    );
+    await pool.query(
+      "update teams set entitlement_status='suspended' where id=$1",
+      [teamId]
+    );
+    await expect(
+      repo.restoreProject(alice, project.id, project.version)
+    ).rejects.toBeInstanceOf(WorkspaceProjectUnavailableError);
+    await pool.query(
+      "update teams set entitlement_status='active' where id=$1",
+      [teamId]
+    );
+    await pool.query("update users set disabled_at=now() where id=$1", [alice]);
+    await expect(
+      repo.restoreProject(alice, project.id, project.version)
+    ).rejects.toBeInstanceOf(WorkspaceProjectUnavailableError);
+    await pool.query("update users set disabled_at=null where id=$1", [alice]);
+    await expect(
+      repo.restoreProject(bob, project.id, project.version)
+    ).rejects.toBeInstanceOf(WorkspaceProjectUnavailableError);
+    const restored = await repo.restoreProject(
+      alice,
+      project.id,
+      project.version
+    );
+    expect(restored).toMatchObject({
+      lifecycle: "active",
+      version: project.version + 1
+    });
+    const links = await pool.query<{ access: string }>(
+      "select access from workspace_project_members where workspace_project_id=$1",
+      [project.id]
+    );
+    expect(links.rows.every((link) => link.access === "disabled")).toBe(true);
+  });
 });

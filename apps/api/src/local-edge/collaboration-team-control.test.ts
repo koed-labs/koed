@@ -1244,6 +1244,106 @@ describe("member and lifecycle administration", () => {
     });
   });
 
+  it("copies every approved owned Project before finish and reconciles a lost finish response read-only", async () => {
+    const operationId = randomUUID();
+    const projectId = randomUUID();
+    const stageId = randomUUID();
+    const manifest = "a".repeat(64);
+    const ownedSet = "b".repeat(64);
+    const calls: string[] = [];
+    const approvedMembership = membershipRecord({
+      userId: ids.principal,
+      status: "disabled",
+      version: 2,
+      disabledAt: iso,
+      leaveGeneration: 1
+    });
+    const prepared = {
+      operationId,
+      continuation: "continued-exactly",
+      copyManifestHash: manifest,
+      ownedSetHash: ownedSet,
+      state: "prepared" as const
+    };
+    let statusReads = 0;
+    const fixture = context({
+      fetch: vi.fn(async (url: URL | string, init?: RequestInit) => {
+        const path = new URL(String(url)).pathname;
+        if (path.endsWith(`/teams/${ids.team}/leave`)) {
+          calls.push("prepare");
+          return jsonResponse({ operation: prepared });
+        }
+        if (path.endsWith(`/leave-operations/${operationId}/status`)) {
+          calls.push("status");
+          statusReads++;
+          return jsonResponse({
+            operation: {
+              operationId,
+              state: statusReads === 1 ? "prepared" : "finished",
+              copyManifestHash: manifest,
+              ownedSetHash: ownedSet,
+              expectedTeamVersion: 1,
+              expectedMembershipVersion: 1,
+              ownedProjects: [{ id: projectId, version: 1 }],
+              finalMembership: statusReads === 1 ? null : approvedMembership
+            }
+          });
+        }
+        if (path.endsWith(`/leave-operations/${operationId}/finish`)) {
+          calls.push("finish");
+          expect(
+            new Headers(init?.headers).get("x-koed-action-grant")
+          ).toBeNull();
+          throw new Error("response lost after Team commit");
+        }
+        throw new Error(`Unexpected Team request ${path}`);
+      }) as typeof fetch,
+      stagePreparedTeamLeave: async () => {
+        calls.push("copy-ready");
+        return {
+          copyManifestHash: manifest,
+          stages: [
+            {
+              workspaceProjectId: projectId,
+              payloadHash: "c".repeat(64),
+              stageId
+            }
+          ]
+        };
+      },
+      activateFinishedTeamLeave: async (input) => {
+        calls.push("activate");
+        expect(input.stageIds).toEqual([stageId]);
+      }
+    });
+    const command = parsedCommand({
+      command: "collaboration.leave_team",
+      input: {
+        teamId: ids.team,
+        expectedVersion: 1,
+        expectedTeamVersion: 1,
+        expectedOwnedWorkspaceProjects: [{ id: projectId, version: 1 }],
+        copyManifestHash: manifest,
+        actionGrant: { id: ids.actionGrant }
+      }
+    });
+    const result = handled(
+      await dispatchCollaborationTeamControlCommand(command, fixture)
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      data: { membership: { status: "disabled" } }
+    });
+    expect(calls).toEqual([
+      "prepare",
+      "copy-ready",
+      "status",
+      "finish",
+      "status",
+      "activate"
+    ]);
+  });
+
   it.each([
     { resolver: async () => null, label: "missing" },
     { resolver: async () => ids.actionGrant, label: "malformed" }

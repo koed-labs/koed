@@ -439,6 +439,16 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
   ),
   route(
     "GET",
+    "/v1/workspace-projects/restorable",
+    "session_or_device_credential",
+    "projects",
+    "List only the current member's owned deleted Projects still within their restoration window.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/workspace-projects/{projectId}",
     "session_or_device_credential",
     "projects",
@@ -453,6 +463,16 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
     "session_or_device_credential",
     "projects",
     "Current Team membership, Workspace access and Project association are rechecked before listing enabled members.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/lifecycle-review",
+    "session_or_device_credential",
+    "projects",
+    "Read only the acting member's current Project link, owner identity, and exact versions for a Project lifecycle review.",
     "request_time_team_workspace",
     "implemented",
     teamDeploymentModes
@@ -823,6 +843,16 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
     teamDeploymentModes
   ),
   route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/restore",
+    "session_or_device_credential",
+    "projects",
+    "Current Project owner restores Team metadata within 30 days; links and grants stay frozen.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "GET",
     "/v1/projects/{projectId}/workspace-project-share-snapshot",
     "session_or_device_credential",
@@ -1114,10 +1144,30 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
   ),
   route(
     "POST",
+    "/v1/local-edge/workspace-project-team-leave-copy",
+    "desktop_local_credential",
+    "projects",
+    "The approved exact Team operation and current bound Personal and Team credentials are rechecked before storing an inactive copy.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
     "/v1/local-edge/workspace-project-team-leave-finish",
     "desktop_local_credential",
     "projects",
     "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/workspace-project-team-leave-recover",
+    "desktop_local_credential",
+    "projects",
+    "The owner Personal credential and enrolled Team device read exact approved receipts; only finished operations activate their own durable staged copies.",
     "none",
     "implemented",
     localEdgeDeploymentModes
@@ -3340,9 +3390,79 @@ export const routeIdentityContracts = [
   route(
     "POST",
     "/v1/teams/{teamId}/leave",
-    "session",
+    "session_or_device_credential",
     "team_memory",
     "Leave a Team using a fresh browser session.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/teams/{teamId}/text-action-lifecycle-proof",
+    "device_credential",
+    "high_risk",
+    "Read only an exact consumed Project or Team leave approval and sealed receipt for the same owner and backend.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/teams/{teamId}/leave-operations/recover",
+    "device_credential",
+    "team_memory",
+    "Read bounded departure execution receipts for the same enrolled owner device and backend.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/teams/{teamId}/leave-operations/{operationId}/finished-proof",
+    "device_credential",
+    "team_memory",
+    "Read an exact finished owner departure proof using a current enrolled device; the original continuation is never returned.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/teams/{teamId}/leave-operations/{operationId}/status",
+    "device_credential",
+    "team_memory",
+    "Read the exact prepared departure using the enrolled device and bound continuation.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/teams/{teamId}/leave-operations/prepare-receipt",
+    "device_credential",
+    "team_memory",
+    "Read the encrypted consumed grant receipt for one exact approved departure request.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/teams/{teamId}/leave-operations/{operationId}/finish",
+    "device_credential",
+    "team_memory",
+    "Complete only the exact consumed departure grant on its enrolled device after current authority and copy manifest checks.",
+    "request_time_team_membership",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/teams/{teamId}/leave-operations/{operationId}/cancel",
+    "session",
+    "team_memory",
+    "A freshly authenticated owner may abandon only their unfinished departure operation.",
     "request_time_team_membership",
     "implemented",
     teamDeploymentModes

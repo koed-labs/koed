@@ -49,6 +49,8 @@ type Row = {
 type TeamProof = {
   teamBackendId: string;
   workspaceProjectId: string;
+  teamId?: string;
+  teamPrincipalUserId?: string;
   teamProjectVersion: number;
   teamMemberVersion: number;
   workItemId?: string;
@@ -60,8 +62,31 @@ export type ManagedTextActionTeamAuthority = (input: {
   projectId: string;
   teamBackendId: string;
   workspaceProjectId: string;
+  name?: KoedTextActionName;
   workItemId?: string;
 }) => Promise<Omit<TeamProof, "teamBackendId" | "workspaceProjectId">>;
+export type ManagedTextActionTeamLeaveAuthority = (input: {
+  ownerUserId: string;
+  teamId: string;
+}) => Promise<{
+  teamBackendId: string;
+  teamPrincipalUserId: string;
+  expectedMembershipVersion: number;
+  expectedTeamVersion: number;
+}>;
+export type ManagedTextActionLifecycleReceipt = (input: {
+  ownerUserId: string;
+  teamBackendId: string;
+  teamPrincipalUserId: string;
+  teamId: string;
+  targetId: string;
+  effectKey: string;
+  name: "koed_project_leave" | "koed_workspace_leave";
+  expectedProjectVersion?: number;
+  expectedMemberVersion?: number;
+  expectedMembershipVersion?: number;
+  expectedTeamVersion?: number;
+}) => Promise<boolean>;
 export type ManagedTextActionTeamReceipt = (input: {
   ownerUserId: string;
   projectId: string;
@@ -612,7 +637,8 @@ const targetSnapshot = async (
   name: KoedTextActionName,
   args: Record<string, unknown>,
   teamProof: TeamProof | null = null,
-  origin?: { logicalSessionId: string; executionId: string }
+  origin?: { logicalSessionId: string; executionId: string },
+  teamLeaveProof?: { teamBackendId: string; teamPrincipalUserId: string } | null
 ): Promise<Record<string, unknown> | null> => {
   type JobSessionRow = {
     id: string;
@@ -693,6 +719,7 @@ const targetSnapshot = async (
       project.workspace_project_id !== teamProof.workspaceProjectId ||
       ![
         "koed_todo_add",
+        "koed_project_leave",
         "koed_team_invite",
         "koed_todo_send",
         "koed_job_create",
@@ -863,6 +890,20 @@ const targetSnapshot = async (
   // chat.new/project.chat.new are UI operations. The effect is opening a
   // composer with the selected Project, not persisting a Conversation.
   if (name === "koed_chat_create") return base;
+  if (name === "koed_workspace_leave")
+    return origin && typeof args.teamId === "string" && teamLeaveProof
+      ? { teamId: args.teamId, ...teamLeaveProof }
+      : null;
+  if (name === "koed_project_leave")
+    return origin && project
+      ? project.workspace_project_id &&
+        teamProof?.teamId &&
+        teamProof.teamPrincipalUserId
+        ? { ...base, ...team }
+        : !project.workspace_project_id
+          ? { ...base, privateOwner: true }
+          : null
+      : null;
   if (name === "koed_project_delete") {
     const executions = await client.query<{
       id: string;
@@ -1032,6 +1073,8 @@ export const createManagedTextActionRepository = (
   encryptionProvider: EnvelopeEncryptionProvider,
   options: {
     teamAuthority?: ManagedTextActionTeamAuthority;
+    teamLeaveAuthority?: ManagedTextActionTeamLeaveAuthority;
+    lifecycleReceipt?: ManagedTextActionLifecycleReceipt;
     teamReceipt?: ManagedTextActionTeamReceipt;
   } = {}
 ): ManagedTextActionRepository => {
@@ -1044,6 +1087,7 @@ export const createManagedTextActionRepository = (
     if (
       ![
         "koed_todo_add",
+        "koed_project_leave",
         "koed_team_invite",
         "koed_todo_send",
         "koed_job_create",
@@ -1072,6 +1116,7 @@ export const createManagedTextActionRepository = (
         projectId,
         teamBackendId: row.team_backend_id,
         workspaceProjectId: row.workspace_project_id,
+        name,
         ...(name === "koed_todo_send"
           ? { workItemId: String(args.workItemId) }
           : {})
@@ -1081,6 +1126,26 @@ export const createManagedTextActionRepository = (
         workspaceProjectId: row.workspace_project_id,
         ...proof
       };
+    } catch {
+      return null;
+    }
+  };
+  const preflightTeamLeave = async (
+    ownerUserId: string,
+    name: KoedTextActionName,
+    args: Record<string, unknown>
+  ) => {
+    if (
+      name !== "koed_workspace_leave" ||
+      typeof args.teamId !== "string" ||
+      !options.teamLeaveAuthority
+    )
+      return null;
+    try {
+      return await options.teamLeaveAuthority({
+        ownerUserId,
+        teamId: args.teamId
+      });
     } catch {
       return null;
     }
@@ -1120,6 +1185,11 @@ export const createManagedTextActionRepository = (
         input.name,
         args,
         jobProject
+      );
+      const teamLeaveProof = await preflightTeamLeave(
+        actor.userId,
+        input.name,
+        args
       );
       const client = await pool.connect();
       try {
@@ -1187,7 +1257,8 @@ export const createManagedTextActionRepository = (
           {
             logicalSessionId: current.logical_session_id,
             executionId: input.executionId
-          }
+          },
+          teamLeaveProof
         );
         const id = randomUUID();
         const initial: Row = {
@@ -1207,6 +1278,8 @@ export const createManagedTextActionRepository = (
           revision: 1,
           review_kind:
             input.name === "koed_project_delete" ||
+            input.name === "koed_project_leave" ||
+            input.name === "koed_workspace_leave" ||
             input.name === "koed_chat_delete"
               ? "native"
               : input.name === "koed_project_create" ||
@@ -1260,7 +1333,7 @@ export const createManagedTextActionRepository = (
             initial.state,
             initial.review_kind,
             initial.review_kind === "native"
-              ? (args.projectId ?? args.sessionId)
+              ? (args.projectId ?? args.sessionId ?? args.teamId)
               : null,
             input.name === "koed_project_delete"
               ? (snapshot?.executionSetHash ?? null)
@@ -1405,7 +1478,9 @@ export const createManagedTextActionRepository = (
                 revision=revision+1,decided_at=now(),updated_at=now()
           where action.owner_user_id=$1 and action.execution_id=$2 and action.id=$3
             and action.revision=$4 and action.state='awaiting_review'
-            and action.review_kind='ask_first'
+            and (action.review_kind='ask_first' or
+                 (action.review_kind='native' and action.action_name in
+                   ('koed_project_leave','koed_workspace_leave')))
             and exists (
               select 1 from managed_conversation_executions execution
                join managed_conversation_commands command
@@ -1479,6 +1554,11 @@ export const createManagedTextActionRepository = (
         typeof preliminarySnapshot.projectId === "string"
           ? preliminarySnapshot.projectId
           : null
+      );
+      const teamLeaveProof = await preflightTeamLeave(
+        actor.userId,
+        preliminary.action_name,
+        preliminaryArgs
       );
       const client = await pool.connect();
       try {
@@ -1555,7 +1635,8 @@ export const createManagedTextActionRepository = (
           {
             logicalSessionId: row.logical_session_id,
             executionId: row.execution_id
-          }
+          },
+          teamLeaveProof
         );
         if (!fresh || digest(fresh) !== digest(pinned)) {
           await client.query("rollback");
@@ -1669,6 +1750,45 @@ export const createManagedTextActionRepository = (
               })
               .catch(() => null)
           : null;
+      const lifecycleReceipt =
+        (preliminary.action_name === "koed_project_leave" ||
+          preliminary.action_name === "koed_workspace_leave") &&
+        typeof preliminarySnapshot.teamBackendId === "string" &&
+        typeof preliminarySnapshot.teamPrincipalUserId === "string" &&
+        typeof preliminarySnapshot.teamId === "string" &&
+        options.lifecycleReceipt
+          ? await options
+              .lifecycleReceipt({
+                ownerUserId: actor.userId,
+                teamBackendId: preliminarySnapshot.teamBackendId,
+                teamPrincipalUserId: preliminarySnapshot.teamPrincipalUserId,
+                teamId: preliminarySnapshot.teamId,
+                targetId:
+                  preliminary.action_name === "koed_project_leave"
+                    ? String(preliminarySnapshot.workspaceProjectId)
+                    : preliminarySnapshot.teamId,
+                effectKey: preliminary.id,
+                name: preliminary.action_name,
+                ...(preliminary.action_name === "koed_project_leave"
+                  ? {
+                      expectedProjectVersion: Number(
+                        preliminarySnapshot.teamProjectVersion
+                      ),
+                      expectedMemberVersion: Number(
+                        preliminarySnapshot.teamMemberVersion
+                      )
+                    }
+                  : {
+                      expectedMembershipVersion: Number(
+                        preliminarySnapshot.expectedMembershipVersion
+                      ),
+                      expectedTeamVersion: Number(
+                        preliminarySnapshot.expectedTeamVersion
+                      )
+                    })
+              })
+              .catch(() => false)
+          : false;
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -1694,7 +1814,18 @@ export const createManagedTextActionRepository = (
         const args = await decrypt(encryptionProvider, row, "arguments");
         const snapshot = await decrypt(encryptionProvider, row, "snapshot");
         let proven = false;
-        if (snapshot.workspaceProjectId) {
+        if (
+          row.action_name === "koed_project_leave" ||
+          row.action_name === "koed_workspace_leave"
+        ) {
+          proven =
+            lifecycleReceipt &&
+            digest(snapshot) === digest(preliminarySnapshot) &&
+            digest(args) ===
+              digest(
+                await decrypt(encryptionProvider, preliminary, "arguments")
+              );
+        } else if (snapshot.workspaceProjectId) {
           if (row.action_name === "koed_todo_add") {
             const nonce = await readTeamNonce(
               client,

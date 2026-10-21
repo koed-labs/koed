@@ -251,6 +251,7 @@ interface TeamReadContext {
   upstreamDeviceCredentialId: string;
   operationFamilies: ReadonlySet<
     | "team_workspace_read"
+    | "team_workspace_write"
     | "team_chat_read"
     | "team_chat_write"
     | "admin"
@@ -268,6 +269,7 @@ interface RemoteRequestOptions {
     | "personal_collaboration_read"
     | "personal_collaboration_write"
     | "team_workspace_read"
+    | "team_workspace_write"
     | "team_chat_read"
     | "team_chat_write"
     | "admin"
@@ -3207,6 +3209,7 @@ export const registerCollaborationCommandRoute = (
   const resolveTeamReadContext = async (
     operationFamily:
       | "team_workspace_read"
+      | "team_workspace_write"
       | "team_chat_read"
       | "team_chat_write"
       | "admin"
@@ -3268,17 +3271,18 @@ export const registerCollaborationCommandRoute = (
     const parsedStatus = remoteDeviceStatusSchema.parse(status);
     const operationFamilies = new Set<
       | "team_workspace_read"
+      | "team_workspace_write"
       | "team_chat_read"
       | "team_chat_write"
       | "admin"
       | "action_grant"
       | "share_grant_management"
       | "managed_execution"
-      | "managed_execution"
     >();
     for (const family of parsedStatus.credential.operationFamilies) {
       if (
         family === "team_workspace_read" ||
+        family === "team_workspace_write" ||
         family === "team_chat_read" ||
         family === "team_chat_write" ||
         family === "admin" ||
@@ -3844,9 +3848,15 @@ export const registerCollaborationCommandRoute = (
       }
       if (isCollaborationTeamControlCommand(input.command)) {
         const operationFamily =
-          input.command.command === "collaboration.list_invitations"
+          input.command.command === "collaboration.list_invitations" ||
+          input.command.command === "collaboration.review_project_lifecycle"
             ? "team_workspace_read"
-            : "action_grant";
+            : input.command.command ===
+                  "collaboration.restore_shared_project" ||
+                input.command.command ===
+                  "collaboration.list_restorable_projects"
+              ? "team_workspace_write"
+              : "action_grant";
         const context = await resolveTeamReadContext(
           operationFamily,
           input.upstream_backend_id
@@ -3863,8 +3873,15 @@ export const registerCollaborationCommandRoute = (
             upstreamDeviceAuthorization: context.upstreamAuthorization,
             operationFamilies: new Set(
               [...context.operationFamilies].filter(
-                (family): family is "team_workspace_read" | "action_grant" =>
-                  family === "team_workspace_read" || family === "action_grant"
+                (
+                  family
+                ): family is
+                  | "team_workspace_read"
+                  | "team_workspace_write"
+                  | "action_grant" =>
+                  family === "team_workspace_read" ||
+                  family === "team_workspace_write" ||
+                  family === "action_grant"
               )
             ),
             fetch: options.fetch,
@@ -3907,6 +3924,61 @@ export const registerCollaborationCommandRoute = (
                   idempotencyKey: input.command.requestId
                 })
               ),
+            stagePreparedTeamLeave: async (leave) => {
+              const teamCredential = readLocalEdgeClientCredentialAuthorization(
+                options.koedHome,
+                input.upstream_backend_id
+              );
+              if (!teamCredential)
+                throw new Error("Enrolled Team client credential unavailable");
+              const response = await app.inject({
+                method: "POST",
+                url: "/v1/local-edge/workspace-project-team-leave-copy",
+                headers: {
+                  authorization: credential.authorization,
+                  "x-koed-team-client-credential": teamCredential.authorization
+                },
+                payload: { ...leave, teamBackendId: input.upstream_backend_id }
+              });
+              if (response.statusCode !== 200)
+                throw new Error("Prepared Team departure copy is unavailable");
+              return z
+                .object({
+                  copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+                  stages: z.array(
+                    z
+                      .object({
+                        workspaceProjectId: z.uuid(),
+                        payloadHash: z.string().regex(/^[a-f0-9]{64}$/),
+                        stageId: z.uuid()
+                      })
+                      .strict()
+                  )
+                })
+                .passthrough()
+                .parse(response.json());
+            },
+            activateFinishedTeamLeave: async (leave) => {
+              const teamCredential = readLocalEdgeClientCredentialAuthorization(
+                options.koedHome,
+                input.upstream_backend_id
+              );
+              if (!teamCredential)
+                throw new Error("Enrolled Team client credential unavailable");
+              const response = await app.inject({
+                method: "POST",
+                url: "/v1/local-edge/workspace-project-team-leave-finish",
+                headers: {
+                  authorization: credential.authorization,
+                  "x-koed-team-client-credential": teamCredential.authorization
+                },
+                payload: { ...leave, teamBackendId: input.upstream_backend_id }
+              });
+              if (response.statusCode !== 200)
+                throw new Error(
+                  "Finished Team departure awaits Personal activation"
+                );
+            },
             resolveInvitationAgentDisplayName: (invite) =>
               options
                 .requireCollaborationRepository()
