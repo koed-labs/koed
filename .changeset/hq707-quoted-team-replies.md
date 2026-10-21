@@ -1,5 +1,5 @@
 ---
-"@koed/desktop": minor
+"@koed/koed": minor
 ---
 
 Add quoted replies to the Project Team Thread, with reply dismissal and a jump to the original message.
