@@ -17,6 +17,7 @@ import {
   removeSmokeHome,
   createSmokeHome,
   smokeExecutionPlan,
+  withSmokeFailureDiagnostics,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import {
@@ -27,6 +28,45 @@ import {
   parseArgs,
   waitForHealthyStatus
 } from "./smoke-packaged-desktop-app.mjs";
+
+test("failure diagnostics read failing home before cleanup and retain original cause", async () => {
+  const home = createSmokeHome("koed-team-diagnostics-test-");
+  const failure = new Error("Team handshake failed");
+  writeFileSync(resolve(home, "failure.log"), "supervisor failure");
+  try {
+    await assert.rejects(
+      withSmokeFailureDiagnostics(
+        async () => {
+          throw failure;
+        },
+        () => {
+          assert.equal(existsSync(resolve(home, "failure.log")), true);
+          return "Team diagnostics preserved";
+        }
+      ),
+      (error) =>
+        error.cause === failure &&
+        /Team diagnostics preserved/.test(error.message)
+    );
+  } finally {
+    removeSmokeHome(home);
+  }
+  assert.equal(existsSync(home), false);
+});
+
+test("diagnostics failure does not replace original smoke failure", async () => {
+  await assert.rejects(
+    withSmokeFailureDiagnostics(
+      async () => {
+        throw new Error("Team handshake failed");
+      },
+      () => {
+        throw new Error("diagnostic read failed");
+      }
+    ),
+    /Team handshake failed[\s\S]*diagnostic read failed/
+  );
+});
 
 test("packaged smoke defaults health polling to five seconds", () => {
   assert.equal(parseArgs([]).pollIntervalMs, 5_000);

@@ -23,6 +23,7 @@ import {
   removeSmokeHome,
   createSmokeHome,
   smokeExecutionPlan,
+  withSmokeFailureDiagnostics,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
@@ -383,8 +384,19 @@ const readableDiagnostic = (label, path) => {
   }
 };
 
-const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
-  const status = runPackagedCommand(layout, koedHome, ["status", "--json"]);
+const preserveFailureDiagnostics = ({
+  layout,
+  koedHome,
+  diagnosticsDir,
+  extraEnv = {},
+  desktopOutput = ""
+}) => {
+  const status = runPackagedCommand(
+    layout,
+    koedHome,
+    ["status", "--json"],
+    extraEnv
+  );
   const supervisorLog = resolve(koedHome, "logs", "supervisor.log");
   const postgresLog = resolve(koedHome, "logs", "postgres.log");
   const runtimeState = resolve(koedHome, "run", "koed-server.json");
@@ -393,6 +405,11 @@ const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
     ? createOwnedDiagnosticsDir(diagnosticsDir)
     : undefined;
   if (ownedDiagnosticsDir) {
+    writeFileSync(
+      resolve(ownedDiagnosticsDir, "desktop-output.log"),
+      desktopOutput.slice(-65_536),
+      { mode: 0o600 }
+    );
     writeFileSync(
       resolve(ownedDiagnosticsDir, "status.json"),
       status.stdout || "{}",
@@ -421,6 +438,9 @@ const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
     readableDiagnostic("Postgres log", postgresLog),
     readableDiagnostic("Runtime state", runtimeState),
     `Last status:\n${status.stdout || status.stderr || "not available"}`,
+    ...(desktopOutput
+      ? [`Desktop output:\n${desktopOutput.slice(-65_536)}`]
+      : []),
     ...(ownedDiagnosticsDir
       ? [`Preserved diagnostics: ${ownedDiagnosticsDir}`]
       : [])
@@ -1334,36 +1354,48 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
   const koedHome = createSmokeHome("koed-desktop-team-smoke-");
   let desktop;
   try {
-    await prepareTeamSmokeHome(layout, koedHome, options);
-    desktop = launchPackagedDesktop({
-      executable: layout.executable,
-      env: createSmokeEnv(koedHome, {
-        KOED_TEAM_COLLABORATION_ENABLED: "true"
-      }),
-      koedHome,
-      timeoutMs: options.timeoutMs
-    });
-    await desktop.ready;
-    const start = await desktop.invoke("start_daemon");
-    if (typeof start?.startedPid === "number")
-      daemonPids.push(start.startedPid);
-    assertFailClosedTeamStart(start);
-    const status = await desktop.invoke("status");
-    assertNoSourceCheckoutResolution("Team manager status", status);
-    if (
-      status?.privacyService?.state === "healthy" ||
-      status?.api?.state === "healthy"
-    ) {
-      throw new Error(
-        `Team services became healthy without verified Privacy assets: ${JSON.stringify(status)}`
-      );
-    }
-    return {
-      startRejected: true,
-      privacyHealthy: false,
-      positiveProvisioning:
-        "not exercised: signed Privacy install requires separate acceptance"
-    };
+    return await withSmokeFailureDiagnostics(
+      async () => {
+        await prepareTeamSmokeHome(layout, koedHome, options);
+        desktop = launchPackagedDesktop({
+          executable: layout.executable,
+          env: createSmokeEnv(koedHome, {
+            KOED_TEAM_COLLABORATION_ENABLED: "true"
+          }),
+          koedHome,
+          timeoutMs: options.timeoutMs
+        });
+        await desktop.ready;
+        const start = await desktop.invoke("start_daemon");
+        if (typeof start?.startedPid === "number")
+          daemonPids.push(start.startedPid);
+        assertFailClosedTeamStart(start);
+        const status = await desktop.invoke("status");
+        assertNoSourceCheckoutResolution("Team manager status", status);
+        if (
+          status?.privacyService?.state === "healthy" ||
+          status?.api?.state === "healthy"
+        ) {
+          throw new Error(
+            `Team services became healthy without verified Privacy assets: ${JSON.stringify(status)}`
+          );
+        }
+        return {
+          startRejected: true,
+          privacyHealthy: false,
+          positiveProvisioning:
+            "not exercised: signed Privacy install requires separate acceptance"
+        };
+      },
+      () =>
+        preserveFailureDiagnostics({
+          layout,
+          koedHome,
+          diagnosticsDir: options.diagnosticsDir,
+          extraEnv: { KOED_TEAM_COLLABORATION_ENABLED: "true" },
+          desktopOutput: desktop?.output
+        })
+    );
   } finally {
     if (desktop) {
       try {

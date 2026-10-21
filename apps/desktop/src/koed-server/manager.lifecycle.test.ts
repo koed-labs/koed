@@ -60,6 +60,8 @@ const harness = (
   options: {
     failSupervisorStart?: boolean;
     startupFailure?: string;
+    managementStderr?: string;
+    invalidManagementHandshake?: boolean;
   } = {}
 ) => {
   const spawned: EventEmitter[] = [];
@@ -68,10 +70,25 @@ const harness = (
     const child = Object.assign(new EventEmitter(), {
       killed: false,
       connected: true,
+      stderr: new EventEmitter(),
       pid: 4000 + spawned.length,
       kill: vi.fn(() => true),
       send(message: Record<string, unknown>) {
         if (message.type === "koed.desktop.supervisor.init") {
+          if (
+            message.mode === "privacy-management" &&
+            options.managementStderr
+          ) {
+            queueMicrotask(() => {
+              if (options.invalidManagementHandshake) child.emit("message", {});
+              else child.emit("disconnect");
+              setTimeout(() => {
+                child.stderr.emit("data", options.managementStderr);
+                child.stderr.emit("close");
+              }, 0);
+            });
+            return;
+          }
           if (message.mode === undefined && options.startupFailure) {
             queueMicrotask(() => {
               observed.current = {
@@ -209,6 +226,30 @@ describe("Desktop manager shared lifecycle", () => {
     winner = true;
     observed.current = live(79);
     await expect(started).resolves.toMatchObject({ ok: true, adoptedPid: 79 });
+  });
+
+  it("includes bounded management stderr when its handshake fails", async () => {
+    const { manager } = harness(verifiedHome(), () => ({ ...stopped }), {
+      managementStderr: `${"x".repeat(5000)}\nError: runtime lifecycle is locked`
+    });
+    const result = await manager.handlers.start_daemon();
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("runtime lifecycle is locked")
+    });
+    expect(String((result as { error: string }).error).length).toBeLessThan(
+      4200
+    );
+  });
+
+  it("retains stderr for invalid management handshakes without reclassifying failure", async () => {
+    const { manager } = harness(verifiedHome(), () => ({ ...stopped }), {
+      managementStderr: "Error: malformed initialization",
+      invalidManagementHandshake: true
+    });
+    await expect(manager.handlers.start_daemon()).rejects.toThrow(
+      /handshake response is invalid[\s\S]*malformed initialization/
+    );
   });
 
   it("preserves supervisor startup failure when lifecycle stops during failed start", async () => {

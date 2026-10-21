@@ -5010,6 +5010,19 @@ export const createKoedServerManager = ({
       session.child.kill("SIGTERM");
     }
   };
+  const drainSupervisorStderr = async (child: ChildProcess) => {
+    const stream = child.stderr;
+    if (!stream || stream.readableEnded || stream.destroyed) return;
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        stream.off("close", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, 250);
+      stream.once("close", finish);
+    });
+  };
   const openStoppedPrivacySession = async () => {
     if (!createSupervisorInvocation || !packagedResourcesPath)
       throw new Error(
@@ -5022,12 +5035,27 @@ export const createKoedServerManager = ({
       stdio: ["ignore", "ignore", "pipe", "ipc"],
       detached: false
     });
-    return connectSupervisor(
-      child,
-      packagedResourcesPath,
-      "privacy-management",
-      30_000
-    );
+    let stderr = "";
+    const captureStderr = (chunk: Buffer | string) => {
+      stderr = `${stderr}${String(chunk)}`.slice(-4_000);
+    };
+    child.stderr?.on("data", captureStderr);
+    try {
+      return await connectSupervisor(
+        child,
+        packagedResourcesPath,
+        "privacy-management",
+        30_000
+      );
+    } catch (error) {
+      await drainSupervisorStderr(child);
+      if (error instanceof Error && stderr.trim()) {
+        error.message = `${error.message}\n${stderr.trim()}`;
+      }
+      throw error;
+    } finally {
+      child.stderr?.off("data", captureStderr);
+    }
   };
   let stoppedPrivacyOperation: PrivateSupervisorSession | null = null;
   const requestPrivacyRpc = async <T>(
