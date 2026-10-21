@@ -87,6 +87,32 @@ const assertParentExecutable = (managerPid: number): void => {
   }
 };
 
+export const sendDesktopSupervisorStartupFailure = async ({
+  nonce,
+  bundleDigest,
+  error
+}: {
+  nonce: string;
+  bundleDigest: string;
+  error: unknown;
+}): Promise<void> => {
+  if (!process.connected || typeof process.send !== "function") return;
+  const message = error instanceof Error ? error.message : String(error);
+  await new Promise<void>((resolve) => {
+    process.send?.(
+      {
+        type: "koed.desktop.supervisor.start-failed",
+        nonce,
+        childPid: process.pid,
+        bundleDigest,
+        mode: "runtime",
+        error: message.slice(0, 4_000)
+      },
+      () => resolve()
+    );
+  });
+};
+
 export const sendDesktopSupervisorStatus = (
   response: Record<string, unknown>
 ): void => {
@@ -223,6 +249,13 @@ export async function runDesktopSupervisorEntrypoint(): Promise<void> {
         });
       }
     });
+  } catch (error) {
+    await sendDesktopSupervisorStartupFailure({
+      nonce: handshake.nonce,
+      bundleDigest: capability.bundleDigest,
+      error
+    });
+    throw error;
   } finally {
     process.disconnect?.();
   }

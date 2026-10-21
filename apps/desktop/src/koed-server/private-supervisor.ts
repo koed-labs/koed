@@ -120,6 +120,19 @@ export async function connectSupervisor(
     const onMessage = (value: unknown) => {
       const item = record(value);
       if (
+        item?.type === "koed.desktop.supervisor.start-failed" &&
+        item.nonce === nonce &&
+        item.childPid === child.pid &&
+        typeof item.bundleDigest === "string" &&
+        /^[a-f0-9]{64}$/.test(item.bundleDigest) &&
+        item.mode === mode &&
+        typeof item.error === "string" &&
+        item.error.trim().length > 0
+      ) {
+        fail(new Error(item.error.slice(0, 4_000)));
+        return;
+      }
+      if (
         item?.type !== "koed.desktop.supervisor.ready" ||
         item.nonce !== nonce ||
         item.childPid !== child.pid ||

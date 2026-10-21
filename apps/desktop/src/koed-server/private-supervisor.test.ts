@@ -40,6 +40,43 @@ describe("private supervisor transport", () => {
     await expect(result).rejects.toThrow("disconnected");
     expect(child.listenerCount("message")).toBe(0);
   });
+  it("returns authenticated runtime startup failures from the handshake", async () => {
+    const { child, session } = childFixture();
+    const connected = connectSupervisor(session.child, "/resources");
+    const init = child.send.mock.calls[0]![0];
+    child.emit("message", {
+      type: "koed.desktop.supervisor.start-failed",
+      nonce: init.nonce,
+      childPid: child.pid,
+      bundleDigest: "a".repeat(64),
+      mode: "runtime",
+      error:
+        "Bundled-local Privacy Filter Service could not start: Privacy assets are missing."
+    });
+
+    await expect(connected).rejects.toThrow(
+      "Bundled-local Privacy Filter Service could not start: Privacy assets are missing."
+    );
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("rejects startup failures from a different supervisor identity", async () => {
+    const { child, session } = childFixture();
+    const connected = connectSupervisor(session.child, "/resources");
+    child.emit("message", {
+      type: "koed.desktop.supervisor.start-failed",
+      nonce: "b".repeat(64),
+      childPid: child.pid,
+      bundleDigest: "a".repeat(64),
+      mode: "runtime",
+      error: "Do not accept this message."
+    });
+
+    await expect(connected).rejects.toThrow(
+      "Desktop supervisor handshake response is invalid."
+    );
+  });
+
   it("requires stopped mode, nonce, child identity and digest in the handshake", async () => {
     const { child, session } = childFixture();
     const connected = connectSupervisor(
