@@ -161,6 +161,7 @@ describe("packaged AI Client setup authentication", () => {
         resolveClaudeExecutable: () => process.execPath,
         resolveCodexExecutable: () => process.execPath,
         checkPid: () => true,
+        delay: async () => undefined,
         now: () => new Date()
       },
       true
@@ -344,6 +345,7 @@ describe("packaged AI Client setup authentication", () => {
         resolveClaudeExecutable: () => process.execPath,
         resolveCodexExecutable: () => process.execPath,
         checkPid: () => true,
+        delay: async () => undefined,
         now: () => new Date()
       },
       true

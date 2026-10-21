@@ -186,6 +186,7 @@ describe("Codex installation status", () => {
         resolveClaudeExecutable: () => "/bin/sh",
         resolveCodexExecutable: () => "/opt/homebrew/bin/codex",
         checkPid: () => true,
+        delay: async () => undefined,
         now: () => new Date()
       },
       true
@@ -220,6 +221,7 @@ describe("Codex installation status", () => {
         resolveClaudeExecutable: () => "/bin/sh",
         resolveCodexExecutable: () => "/opt/homebrew/bin/codex",
         checkPid: () => true,
+        delay: async () => undefined,
         now: () => new Date()
       },
       true
