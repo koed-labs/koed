@@ -6,6 +6,7 @@ import {
 } from "./lifecycle-observer.js";
 import {
   connectSupervisor,
+  DesktopSupervisorStartupError,
   requestSupervisor,
   type PrivateSupervisorSession
 } from "./private-supervisor.js";
@@ -1665,11 +1666,28 @@ export const createKoedServerManager = ({
   // Bumped when this Desktop or an external CLI stops the instance, so an
   // older in-flight start or resume cannot revive it afterwards.
   let stopGeneration = 0;
+  let explicitStopGeneration = 0;
+  const startupFailureResults = new WeakSet<object>();
   const stoppedStartResult = () => ({
     ok: false as const,
     state: "stopped" as const,
     message: "Koed was stopped while this start was pending."
   });
+  const supervisorStartupFailureResult = (error: string) => {
+    const result = {
+      ok: false as const,
+      state: "needs_attention" as const,
+      error
+    };
+    startupFailureResults.add(result);
+    return result;
+  };
+  const isSupervisorStartupFailureResult = (
+    result: unknown
+  ): result is object =>
+    typeof result === "object" &&
+    result !== null &&
+    startupFailureResults.has(result);
   lifecycle.subscribe((next) => {
     if (next.state === "stopped") stopGeneration += 1;
   });
@@ -5104,9 +5122,22 @@ export const createKoedServerManager = ({
     };
   };
 
-  const requestDaemonStart = async (generation = captureStartGeneration()) => {
+  const requestDaemonStart = async (
+    generation = captureStartGeneration(),
+    explicitStopAtStart = explicitStopGeneration
+  ) => {
     if (createSupervisorInvocation && !desktopSupervisorProcess) {
-      const live = await inspectLiveInstance();
+      let live: Awaited<ReturnType<typeof inspectLiveInstance>>;
+      try {
+        live = await inspectLiveInstance();
+      } catch (error) {
+        if (error instanceof DesktopSupervisorStartupError) {
+          return explicitStopAtStart === explicitStopGeneration
+            ? supervisorStartupFailureResult(error.message)
+            : stoppedStartResult();
+        }
+        throw error;
+      }
       if (generation !== stopGeneration) return stoppedStartResult();
       if (live) {
         return "ok" in live ? live : adoptLiveInstance(live, generation);
@@ -5176,20 +5207,29 @@ export const createKoedServerManager = ({
         };
       } catch (error) {
         child.kill("SIGTERM");
-        if (generation !== stopGeneration) return stoppedStartResult();
+        const startupFailure = error instanceof DesktopSupervisorStartupError;
+        if (
+          generation !== stopGeneration &&
+          (!startupFailure || explicitStopAtStart !== explicitStopGeneration)
+        ) {
+          return stoppedStartResult();
+        }
         desktopSupervisorProcess = null;
         desktopSupervisorNonce = null;
         // Losing a simultaneous start to a Desktop-owned supervisor is not a
         // failure: reconnect to the single winner instead of reporting an error.
         const winner = await inspectLiveInstance().catch(() => null);
-        if (generation !== stopGeneration) return stoppedStartResult();
+        if (explicitStopAtStart !== explicitStopGeneration) {
+          return stoppedStartResult();
+        }
+        if (generation !== stopGeneration && !startupFailure) {
+          return stoppedStartResult();
+        }
         if (winner && !("ok" in winner))
           return adoptLiveInstance(winner, generation);
-        return {
-          ok: false,
-          state: "needs_attention",
-          error: `${error instanceof Error ? error.message : String(error)}${supervisorStderr.trim() ? `\n${supervisorStderr.trim()}` : ""}`
-        };
+        const message = `${error instanceof Error ? error.message : String(error)}${supervisorStderr.trim() ? `\n${supervisorStderr.trim()}` : ""}`;
+        if (startupFailure) return supervisorStartupFailureResult(message);
+        return { ok: false, state: "needs_attention", error: message };
       }
     }
     if (!existsSync(cliPath)) {
@@ -5201,9 +5241,15 @@ export const createKoedServerManager = ({
   };
 
   const start = async () => {
+    const explicitStopAtStart = explicitStopGeneration;
     const generation = captureStartGeneration();
-    const result = await requestDaemonStart(generation);
-    if (generation !== stopGeneration) return stoppedStartResult();
+    const result = await requestDaemonStart(generation, explicitStopAtStart);
+    if (generation !== stopGeneration) {
+      return isSupervisorStartupFailureResult(result) &&
+        explicitStopAtStart === explicitStopGeneration
+        ? result
+        : stoppedStartResult();
+    }
     if (
       typeof result === "object" &&
       result !== null &&
@@ -5231,10 +5277,16 @@ export const createKoedServerManager = ({
         message: "Fresh Desktop setup has not been verified yet."
       };
     }
+    const explicitStopAtStart = explicitStopGeneration;
     const generation = captureStartGeneration();
     try {
-      const result = await requestDaemonStart(generation);
-      if (generation !== stopGeneration) return stoppedStartResult();
+      const result = await requestDaemonStart(generation, explicitStopAtStart);
+      if (generation !== stopGeneration) {
+        return isSupervisorStartupFailureResult(result) &&
+          explicitStopAtStart === explicitStopGeneration
+          ? result
+          : stoppedStartResult();
+      }
       if (
         typeof result === "object" &&
         result !== null &&
@@ -5575,6 +5627,7 @@ export const createKoedServerManager = ({
 
   const stop = async () => {
     stopGeneration += 1;
+    explicitStopGeneration += 1;
     await closeDesktopServices();
     if (desktopSupervisorProcess && !desktopSupervisorProcess.killed) {
       const child = desktopSupervisorProcess;
@@ -5619,6 +5672,7 @@ export const createKoedServerManager = ({
   // adopted (for example one started by the installed CLI) outlives Desktop.
   const shutdown = async () => {
     stopGeneration += 1;
+    explicitStopGeneration += 1;
     lifecycle.stop();
     if (createSupervisorInvocation && !desktopSupervisorProcess) {
       await closeDesktopServices();

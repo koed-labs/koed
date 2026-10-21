@@ -57,7 +57,10 @@ const harness = (
   lifecycleResult: () =>
     | Record<string, unknown>
     | Promise<Record<string, unknown>>,
-  options: { failSupervisorStart?: boolean } = {}
+  options: {
+    failSupervisorStart?: boolean;
+    startupFailure?: string;
+  } = {}
 ) => {
   const spawned: EventEmitter[] = [];
   const actions: string[] = [];
@@ -69,6 +72,27 @@ const harness = (
       kill: vi.fn(() => true),
       send(message: Record<string, unknown>) {
         if (message.type === "koed.desktop.supervisor.init") {
+          if (message.mode === undefined && options.startupFailure) {
+            queueMicrotask(() => {
+              observed.current = {
+                state: "starting",
+                epoch: `${child.pid}:starting`,
+                pid: child.pid
+              };
+              manager.lifecycle.refresh();
+              observed.current = { ...stopped };
+              manager.lifecycle.refresh();
+              child.emit("message", {
+                type: "koed.desktop.supervisor.start-failed",
+                nonce: message.nonce,
+                childPid: child.pid,
+                bundleDigest: "a".repeat(64),
+                mode: "runtime",
+                error: options.startupFailure
+              });
+            });
+            return;
+          }
           if (message.mode === undefined && options.failSupervisorStart) {
             queueMicrotask(() => child.emit("exit", 0, null));
             return;
@@ -185,6 +209,17 @@ describe("Desktop manager shared lifecycle", () => {
     winner = true;
     observed.current = live(79);
     await expect(started).resolves.toMatchObject({ ok: true, adoptedPid: 79 });
+  });
+
+  it("preserves supervisor startup failure when lifecycle stops during failed start", async () => {
+    const home = verifiedHome();
+    const { manager } = harness(home, () => ({ ...stopped, owned: false }), {
+      startupFailure: "Team collaboration requires verified Privacy assets."
+    });
+    await expect(manager.handlers.start_daemon()).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Privacy")
+    });
   });
 
   it("does not start when stop lands while the start is inspecting the instance", async () => {

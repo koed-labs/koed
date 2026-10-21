@@ -1235,16 +1235,114 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   };
 };
 
-const smokeTeamFailClosed = async (layout, koedHome, options, daemonPids) => {
-  const desktop = launchPackagedDesktop({
-    executable: layout.executable,
-    env: createSmokeEnv(koedHome, {
-      KOED_TEAM_COLLABORATION_ENABLED: "true"
-    }),
-    koedHome,
-    timeoutMs: options.timeoutMs
-  });
+const installTeamSmokeRuntime = (layout, koedHome) => {
+  const install = runPackagedCommand(layout, koedHome, [
+    "runtime",
+    "install",
+    "--provider",
+    "packaged",
+    "--dependency-mode",
+    "bundled-local",
+    "--json"
+  ]);
+  if (install.status !== 0) {
+    throw new Error(
+      `Team runtime install failed: ${install.stderr || install.stdout}`
+    );
+  }
+  const result = parseJsonOutput("Team runtime install --json", install.stdout);
+  assertNoSourceCheckoutResolution("Team runtime install --json", result);
+  assertInstalled(result, "Team runtime install --json");
+};
+
+const installTeamEmbeddingModel = (layout, koedHome) => {
+  const status = runPackagedCommand(layout, koedHome, [
+    "models",
+    "status",
+    "--kind",
+    "embedding",
+    "--json"
+  ]);
+  if (status.status !== 0) {
+    throw new Error(
+      `Team embedding model status failed: ${status.stderr || status.stdout}`
+    );
+  }
+  const statusJson = parseJsonOutput(
+    "Team models status --kind embedding --json",
+    status.stdout
+  );
+  assertNoSourceCheckoutResolution(
+    "Team models status --kind embedding --json",
+    statusJson
+  );
+  if (statusJson.state === "installed") return;
+
+  const install = runPackagedCommand(layout, koedHome, [
+    "models",
+    "install",
+    "--kind",
+    "embedding",
+    "--json"
+  ]);
+  if (install.status !== 0) {
+    throw new Error(
+      `Team embedding model install failed: ${install.stderr || install.stdout}`
+    );
+  }
+  const result = parseJsonOutput(
+    "Team models install --kind embedding --json",
+    install.stdout
+  );
+  assertNoSourceCheckoutResolution(
+    "Team models install --kind embedding --json",
+    result
+  );
+  if (result.ok !== true) {
+    throw new Error(
+      `Team models install --kind embedding --json was not ok: ${JSON.stringify(result, null, 2)}`
+    );
+  }
+};
+
+const seedTeamSmokeDesktopGeneration = async (layout, koedHome) => {
+  const [
+    { pinDesktopBundleGenerationForStart },
+    { verifyDesktopRuntimeBundle },
+    { resolveKoedServerPaths }
+  ] = await Promise.all([
+    import("../../../packages/koed-server/dist/generation-lifecycle.js"),
+    import("../../../packages/koed-server/dist/desktop-runtime-capability.js"),
+    import("../../../packages/koed-server/dist/paths.js")
+  ]);
+  const paths = resolveKoedServerPaths({ KOED_HOME: koedHome });
+  const capability = verifyDesktopRuntimeBundle(layout.resourcesPath);
+  const pin = await pinDesktopBundleGenerationForStart(paths, capability);
+  await pin.release();
+};
+
+const prepareTeamSmokeHome = async (layout, koedHome, options) => {
+  if (options.embeddingModelSource) {
+    seedEmbeddingModel(koedHome, options.embeddingModelSource);
+  }
+  installTeamSmokeRuntime(layout, koedHome);
+  installTeamEmbeddingModel(layout, koedHome);
+  await seedTeamSmokeDesktopGeneration(layout, koedHome);
+};
+
+const smokeTeamFailClosed = async (layout, options, daemonPids) => {
+  const koedHome = createSmokeHome("koed-desktop-team-smoke-");
+  let desktop;
   try {
+    await prepareTeamSmokeHome(layout, koedHome, options);
+    desktop = launchPackagedDesktop({
+      executable: layout.executable,
+      env: createSmokeEnv(koedHome, {
+        KOED_TEAM_COLLABORATION_ENABLED: "true"
+      }),
+      koedHome,
+      timeoutMs: options.timeoutMs
+    });
     await desktop.ready;
     const start = await desktop.invoke("start_daemon");
     if (typeof start?.startedPid === "number")
@@ -1267,18 +1365,21 @@ const smokeTeamFailClosed = async (layout, koedHome, options, daemonPids) => {
         "not exercised: signed Privacy install requires separate acceptance"
     };
   } finally {
-    try {
-      const quit = await desktop.invoke("quit");
-      if (quit?.ok !== true) {
-        console.error(`Manager cleanup failed: ${JSON.stringify(quit)}`);
+    if (desktop) {
+      try {
+        const quit = await desktop.invoke("quit");
+        if (quit?.ok !== true) {
+          console.error(`Manager cleanup failed: ${JSON.stringify(quit)}`);
+          process.exitCode = 1;
+        }
+        await waitForPackagedDesktopExit(desktop.child, 30_000);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
+        killPidBestEffort(desktop.child.pid);
       }
-      await waitForPackagedDesktopExit(desktop.child, 30_000);
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-      killPidBestEffort(desktop.child.pid);
     }
+    removeSmokeHome(koedHome);
   }
 };
 
@@ -1384,7 +1485,6 @@ const run = async () => {
     desktop = undefined;
     const teamFailClosed = await smokeTeamFailClosed(
       layout,
-      koedHome,
       options,
       daemonPids
     );
