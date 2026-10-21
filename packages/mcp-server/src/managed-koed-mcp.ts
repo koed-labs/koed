@@ -37,6 +37,17 @@ export const managedKoedMcpServer = (
             KOED_MANAGED_DOC_API_URL: environment.KOED_MANAGED_DOC_API_URL
           }
         : {}),
+      ...(environment.KOED_MANAGED_RECALL_EXECUTION_ID &&
+      environment.KOED_MANAGED_RECALL_EXECUTION_GENERATION &&
+      environment.KOED_MANAGED_RECALL_API_URL
+        ? {
+            KOED_MANAGED_RECALL_EXECUTION_ID:
+              environment.KOED_MANAGED_RECALL_EXECUTION_ID,
+            KOED_MANAGED_RECALL_EXECUTION_GENERATION:
+              environment.KOED_MANAGED_RECALL_EXECUTION_GENERATION,
+            KOED_MANAGED_RECALL_API_URL: environment.KOED_MANAGED_RECALL_API_URL
+          }
+        : {}),
       ...(environment.ELECTRON_RUN_AS_NODE === "1"
         ? { ELECTRON_RUN_AS_NODE: "1" }
         : {})

@@ -471,6 +471,8 @@ export interface SearchMemoryInput {
   searchDomain?: MemorySearchDomain;
   sessionId?: string;
   projectId?: string;
+  /** Include Me-scoped Curated assertions alongside one Personal Project. */
+  personalProjectAndMe?: boolean;
   limit?: number;
   recentDays?: number;
   sourceAfter?: string;
@@ -660,6 +662,7 @@ export interface MemoryEngineRepository {
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
       projectId?: string;
+      personalProjectAndMe?: boolean;
       limit?: number;
       recentDays?: number;
       sourceAfter?: string;

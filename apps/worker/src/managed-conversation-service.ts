@@ -12,6 +12,7 @@ import { basename, dirname, relative, resolve, sep } from "node:path";
 import {
   DEVELOPMENT_WORKSPACE_SNAPSHOT_CHUNK_BYTES,
   DEVELOPMENT_WORKSPACE_SNAPSHOT_MAX_BYTES,
+  managedCitationBranchToolCallId,
   type ClaimedManagedConversationCommand,
   type ManagedConversationExecutionCheckpointRecord,
   type ManagedConversationExecutionRecord,
@@ -19,6 +20,7 @@ import {
   type ManagedConversationRepository,
   type ManagedConversationRuntimeBindingRecord,
   type ManagedConversationRuntimeItemKind,
+  type ManagedCitationReceiptInput,
   type MemorySourceRepository,
   type WorkflowTokenUsageInput
 } from "@koed/db";
@@ -396,6 +398,26 @@ export const managedCodexRuntimeEnvironment = (input: {
   });
 };
 
+export const managedRecallLaunchEnvironment = (
+  execution: Pick<
+    ManagedConversationExecutionRecord,
+    "id" | "projectId" | "executionGeneration"
+  >,
+  apiUrl: string
+): NodeJS.ProcessEnv =>
+  execution.projectId &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    execution.projectId
+  )
+    ? {
+        KOED_MANAGED_RECALL_EXECUTION_ID: execution.id,
+        KOED_MANAGED_RECALL_EXECUTION_GENERATION: String(
+          execution.executionGeneration
+        ),
+        KOED_MANAGED_RECALL_API_URL: apiUrl
+      }
+    : {};
+
 const managedConversationErrorCodePattern =
   /^(?:ManagedConversation|ExecutionCheckpoint|ExecutionCheckout|ExecutionFile)[A-Za-z0-9_.-]{0,100}$/;
 
@@ -581,6 +603,266 @@ const promptFileMentionsFrom = (
   });
 };
 
+export const createManagedCitationVerifier = (dependencies: {
+  memoryClient: Pick<
+    MemoryApiClient,
+    "teamMemoryCitation" | "personalMemoryCitation"
+  >;
+  teamAuthorization: (backendId: string) => string | null;
+}) => {
+  const { memoryClient, teamAuthorization } = dependencies;
+  const verifiedCompletedMemoryToolReceipts = async (
+    execution: ManagedConversationExecutionRecord,
+    tool: {
+      providerTurnId: string;
+      toolCallId: string;
+      toolName: string;
+      result: unknown;
+    },
+    command: { id: string; leaseToken: string },
+    combined?: ManagedCitationReceiptInput["combined"]
+  ): Promise<ManagedCitationReceiptInput[]> => {
+    if (
+      tool.toolName !== "memory_answer" &&
+      tool.toolName !== "memory_answer_result"
+    )
+      return [];
+    const envelope = record(tool.result);
+    if (envelope.isError === true) return [];
+    let details = record(envelope.structuredContent);
+    if (!Object.keys(details).length) {
+      const piDetails = record(envelope.details);
+      details = Object.keys(record(piDetails.value)).length
+        ? record(piDetails.value)
+        : Object.keys(piDetails).length
+          ? piDetails
+          : envelope;
+    }
+    if (Array.isArray(details.recalls)) {
+      if (
+        !details.recalls.length ||
+        details.recalls.length > 2 ||
+        typeof details.selected_team_backend_id !== "string" ||
+        typeof details.selected_team_workspace_id !== "string" ||
+        !/^[0-9a-f-]{36}$/i.test(details.selected_team_workspace_id) ||
+        typeof details.selected_personal_project_id !== "string" ||
+        !/^[0-9a-f-]{36}$/i.test(details.selected_personal_project_id) ||
+        typeof details.selected_workspace_project_id !== "string" ||
+        !/^[0-9a-f-]{36}$/i.test(details.selected_workspace_project_id) ||
+        !Number.isSafeInteger(details.selected_project_version) ||
+        tool.toolCallId.length > 512
+      )
+        throw new Error("Managed combined recall exceeded its source count");
+      const receipts: ManagedCitationReceiptInput[] = [];
+      const branchRecalls: unknown[] = details.recalls;
+      for (const [index, recall] of branchRecalls.entries()) {
+        const branch = index === 0 ? "personal" : "team";
+        const observed = record(recall);
+        if (
+          "recalls" in observed ||
+          observed.label !==
+            (index === 0 ? "Personal Project and Me" : "Team shared memory") ||
+          (branch === "personal" && observed.team_backend_id !== undefined) ||
+          (branch === "team" &&
+            observed.team_backend_id !== details.selected_team_backend_id)
+        )
+          throw new Error("Managed combined recall branch is invalid");
+        receipts.push(
+          ...(await verifiedCompletedMemoryToolReceipts(
+            execution,
+            {
+              ...tool,
+              toolCallId: managedCitationBranchToolCallId(
+                tool.toolCallId,
+                branch
+              ),
+              result: { structuredContent: observed }
+            },
+            command,
+            {
+              providerToolCallId: tool.toolCallId,
+              branch,
+              teamBackendId: details.selected_team_backend_id,
+              teamWorkspaceId: details.selected_team_workspace_id,
+              personalProjectId: details.selected_personal_project_id,
+              workspaceProjectId: details.selected_workspace_project_id,
+              projectVersion: Number(details.selected_project_version)
+            }
+          ))
+        );
+      }
+      if (receipts.length !== details.recalls.length)
+        throw new Error(
+          "Managed combined recall citation receipt is incomplete"
+        );
+      return receipts;
+    }
+    if (typeof details.question_id !== "string") {
+      const piDetails = record(envelope.details);
+      details = Object.keys(record(piDetails.value)).length
+        ? record(piDetails.value)
+        : piDetails;
+    }
+    if (
+      typeof details.question_id !== "string" ||
+      !Array.isArray(details.citations)
+    ) {
+      const blocks = Array.isArray(envelope.content) ? envelope.content : [];
+      for (const block of blocks) {
+        const text = record(block).text;
+        if (typeof text !== "string") continue;
+        const tagged = text.match(
+          /<koed-memory-answer-details>\s*([\s\S]*?)\s*<\/koed-memory-answer-details>/
+        );
+        if (!tagged) continue;
+        try {
+          details = record(JSON.parse(tagged[1]!));
+        } catch {
+          /* fail closed */
+        }
+        break;
+      }
+    }
+    if (
+      typeof details.question_id !== "string" ||
+      typeof details.citation_receipt_id !== "string" ||
+      !Array.isArray(details.citations)
+    )
+      return [];
+    const teamBackendId =
+      typeof details.team_backend_id === "string"
+        ? details.team_backend_id
+        : null;
+    let verifiedTeamSources:
+      | Array<{
+          sourceType: string;
+          sourceId: string;
+          teamWorkspaceId: string;
+          sourceOwnerPrincipalId: string;
+        }>
+      | undefined;
+    let verifiedPersonalSources:
+      | Array<{
+          sourceType: string;
+          sourceId: string;
+          sourceDeploymentId: string;
+          sourceOwnerPrincipalId: string;
+          title: string;
+          summary: string | null;
+        }>
+      | undefined;
+    if (teamBackendId) {
+      const authorization = teamAuthorization(teamBackendId);
+      if (!authorization)
+        throw new Error("Managed citation Team credential is unavailable");
+      verifiedTeamSources = [];
+      for (const [ordinal, observed] of details.citations.entries()) {
+        const canonical = record(
+          (
+            await memoryClient.teamMemoryCitation(
+              teamBackendId,
+              details.question_id,
+              ordinal,
+              authorization
+            )
+          ).detail
+        );
+        const observedRecord = record(observed);
+        const { citationId: _alias, ...observedSource } = observedRecord;
+        void _alias;
+        if (
+          JSON.stringify(observedSource) !==
+            JSON.stringify(canonical.citation) ||
+          observedRecord.citationId !==
+            `r${details.citation_receipt_id.replaceAll("-", "").toLowerCase()}c${ordinal + 1}`
+        )
+          throw new Error(
+            "Managed citation Team tool result does not match current source"
+          );
+        if (
+          typeof canonical.sourceType !== "string" ||
+          typeof canonical.sourceId !== "string" ||
+          typeof canonical.teamWorkspaceId !== "string" ||
+          typeof canonical.sourceOwnerPrincipalId !== "string"
+        )
+          throw new Error("Managed citation Team provenance unavailable");
+        verifiedTeamSources.push({
+          sourceType: canonical.sourceType,
+          sourceId: canonical.sourceId,
+          teamWorkspaceId: canonical.teamWorkspaceId,
+          sourceOwnerPrincipalId: canonical.sourceOwnerPrincipalId
+        });
+        if (combined && canonical.teamWorkspaceId !== combined.teamWorkspaceId)
+          throw new Error("Managed citation Team Workspace changed");
+      }
+    }
+    if (!teamBackendId) {
+      verifiedPersonalSources = [];
+      for (const [ordinal, observed] of details.citations.entries()) {
+        const canonical = record(
+          (
+            await memoryClient.personalMemoryCitation(
+              details.question_id,
+              ordinal
+            )
+          ).detail
+        );
+        const observedRecord = record(observed);
+        const { citationId: _alias, ...observedSource } = observedRecord;
+        void _alias;
+        if (
+          JSON.stringify(observedSource) !==
+            JSON.stringify(canonical.citation) ||
+          observedRecord.citationId !==
+            `r${details.citation_receipt_id.replaceAll("-", "").toLowerCase()}c${ordinal + 1}`
+        )
+          throw new Error(
+            "Managed citation Personal tool result does not match current source"
+          );
+        if (
+          typeof canonical.sourceType !== "string" ||
+          typeof canonical.sourceId !== "string" ||
+          typeof canonical.sourceDeploymentId !== "string" ||
+          typeof canonical.sourceOwnerPrincipalId !== "string"
+        )
+          throw new Error("Managed citation Personal provenance unavailable");
+        verifiedPersonalSources.push({
+          sourceType: canonical.sourceType,
+          sourceId: canonical.sourceId,
+          sourceDeploymentId: canonical.sourceDeploymentId,
+          sourceOwnerPrincipalId: canonical.sourceOwnerPrincipalId,
+          title:
+            typeof canonical.title === "string" ? canonical.title : "Memory",
+          summary:
+            typeof canonical.summary === "string" ? canonical.summary : null
+        });
+      }
+    }
+    return [
+      {
+        executionId: execution.id,
+        executionGeneration: execution.executionGeneration,
+        commandId: command.id,
+        leaseToken: command.leaseToken,
+        providerTurnId: tool.providerTurnId,
+        toolCallId: tool.toolCallId,
+        questionId: details.question_id,
+        receiptId: details.citation_receipt_id,
+        observedCitations: details.citations,
+        ...(teamBackendId && verifiedTeamSources
+          ? { questionBackendId: teamBackendId, verifiedTeamSources }
+          : {}),
+        ...(!teamBackendId && verifiedPersonalSources
+          ? { verifiedPersonalSources }
+          : {}),
+        ...(combined ? { combined } : {})
+      }
+    ];
+  };
+
+  return verifiedCompletedMemoryToolReceipts;
+};
+
 export const createManagedConversationService = (options: {
   repository: MemorySourceRepository;
   onKoedToolCompleted?: (input: {
@@ -688,6 +970,15 @@ export const createManagedConversationService = (options: {
     delete child.KOED_MANAGED_DOC_EXECUTION_GENERATION;
     delete child.KOED_MANAGED_DOC_API_URL;
     delete child.KOED_MANAGED_DOC_HELPER_URL;
+    delete child.KOED_MANAGED_RECALL_EXECUTION_ID;
+    delete child.KOED_MANAGED_RECALL_EXECUTION_GENERATION;
+    delete child.KOED_MANAGED_RECALL_API_URL;
+    // The owner-aware API resolver proves this UUID is still a current Project.
+    // Legacy source paths and unscoped executions keep their existing route.
+    Object.assign(
+      child,
+      managedRecallLaunchEnvironment(execution, options.apiUrl)
+    );
     if (options.onKoedToolCompleted && execution.projectId) {
       child.KOED_MANAGED_DOC_EXECUTION_ID = execution.id;
       child.KOED_MANAGED_DOC_EXECUTION_GENERATION = String(
@@ -1567,6 +1858,19 @@ export const createManagedConversationService = (options: {
     execution: ManagedConversationExecutionRecord
   ): string => resolveCodexHome(codexEnvironmentForExecution(execution));
 
+  const verifiedCompletedMemoryToolReceipts = createManagedCitationVerifier({
+    memoryClient,
+    teamAuthorization: (backendId) => {
+      const credential = readLocalEdgeClientCredentialAuthorization(
+        options.koedHome,
+        backendId
+      );
+      return credential?.operationFamilies.includes("team_workspace_read")
+        ? credential.authorization
+        : null;
+    }
+  });
+
   const recordCompletedMemoryTool = async (
     execution: ManagedConversationExecutionRecord,
     tool: {
@@ -1577,177 +1881,16 @@ export const createManagedConversationService = (options: {
     },
     command: { id: string; leaseToken: string }
   ): Promise<void> => {
-    if (
-      tool.toolName !== "memory_answer" &&
-      tool.toolName !== "memory_answer_result"
-    )
-      return;
-    const envelope = record(tool.result);
-    if (envelope.isError === true) return;
-    let details = record(envelope.structuredContent);
-    if (!Object.keys(details).length) details = envelope;
-    if (typeof details.question_id !== "string") {
-      const piDetails = record(envelope.details);
-      details = Object.keys(record(piDetails.value)).length
-        ? record(piDetails.value)
-        : piDetails;
-    }
-    if (
-      typeof details.question_id !== "string" ||
-      !Array.isArray(details.citations)
-    ) {
-      const blocks = Array.isArray(envelope.content) ? envelope.content : [];
-      for (const block of blocks) {
-        const text = record(block).text;
-        if (typeof text !== "string") continue;
-        const tagged = text.match(
-          /<koed-memory-answer-details>\s*([\s\S]*?)\s*<\/koed-memory-answer-details>/
-        );
-        if (!tagged) continue;
-        try {
-          details = record(JSON.parse(tagged[1]!));
-        } catch {
-          /* fail closed */
-        }
-        break;
-      }
-    }
-    if (
-      typeof details.question_id !== "string" ||
-      typeof details.citation_receipt_id !== "string" ||
-      !Array.isArray(details.citations)
-    )
-      return;
-    const teamBackendId =
-      typeof details.team_backend_id === "string"
-        ? details.team_backend_id
-        : null;
-    let verifiedTeamSources:
-      | Array<{
-          sourceType: string;
-          sourceId: string;
-          teamWorkspaceId: string;
-          sourceOwnerPrincipalId: string;
-        }>
-      | undefined;
-    let verifiedPersonalSources:
-      | Array<{
-          sourceType: string;
-          sourceId: string;
-          sourceDeploymentId: string;
-          sourceOwnerPrincipalId: string;
-          title: string;
-          summary: string | null;
-        }>
-      | undefined;
-    if (teamBackendId) {
-      const credential = readLocalEdgeClientCredentialAuthorization(
-        options.koedHome,
-        teamBackendId
-      );
-      if (!credential?.operationFamilies.includes("team_workspace_read"))
-        throw new Error("Managed citation Team credential is unavailable");
-      verifiedTeamSources = [];
-      for (const [ordinal, observed] of details.citations.entries()) {
-        const canonical = record(
-          (
-            await memoryClient.teamMemoryCitation(
-              teamBackendId,
-              details.question_id,
-              ordinal,
-              credential.authorization
-            )
-          ).detail
-        );
-        const observedRecord = record(observed);
-        const { citationId: _alias, ...observedSource } = observedRecord;
-        void _alias;
-        if (
-          JSON.stringify(observedSource) !==
-            JSON.stringify(canonical.citation) ||
-          observedRecord.citationId !==
-            `r${details.citation_receipt_id.replaceAll("-", "").toLowerCase()}c${ordinal + 1}`
-        )
-          throw new Error(
-            "Managed citation Team tool result does not match current source"
-          );
-        if (
-          typeof canonical.sourceType !== "string" ||
-          typeof canonical.sourceId !== "string" ||
-          typeof canonical.teamWorkspaceId !== "string" ||
-          typeof canonical.sourceOwnerPrincipalId !== "string"
-        )
-          throw new Error("Managed citation Team provenance unavailable");
-        verifiedTeamSources.push({
-          sourceType: canonical.sourceType,
-          sourceId: canonical.sourceId,
-          teamWorkspaceId: canonical.teamWorkspaceId,
-          sourceOwnerPrincipalId: canonical.sourceOwnerPrincipalId
-        });
-      }
-    }
-    if (!teamBackendId) {
-      verifiedPersonalSources = [];
-      for (const [ordinal, observed] of details.citations.entries()) {
-        const canonical = record(
-          (
-            await memoryClient.personalMemoryCitation(
-              details.question_id,
-              ordinal
-            )
-          ).detail
-        );
-        const observedRecord = record(observed);
-        const { citationId: _alias, ...observedSource } = observedRecord;
-        void _alias;
-        if (
-          JSON.stringify(observedSource) !==
-            JSON.stringify(canonical.citation) ||
-          observedRecord.citationId !==
-            `r${details.citation_receipt_id.replaceAll("-", "").toLowerCase()}c${ordinal + 1}`
-        )
-          throw new Error(
-            "Managed citation Personal tool result does not match current source"
-          );
-        if (
-          typeof canonical.sourceType !== "string" ||
-          typeof canonical.sourceId !== "string" ||
-          typeof canonical.sourceDeploymentId !== "string" ||
-          typeof canonical.sourceOwnerPrincipalId !== "string"
-        )
-          throw new Error("Managed citation Personal provenance unavailable");
-        verifiedPersonalSources.push({
-          sourceType: canonical.sourceType,
-          sourceId: canonical.sourceId,
-          sourceDeploymentId: canonical.sourceDeploymentId,
-          sourceOwnerPrincipalId: canonical.sourceOwnerPrincipalId,
-          title:
-            typeof canonical.title === "string" ? canonical.title : "Memory",
-          summary:
-            typeof canonical.summary === "string" ? canonical.summary : null
-        });
-      }
-    }
-    await options.repository.recordManagedConversationToolCitations(
-      { userId: execution.ownerUserId },
-      {
-        executionId: execution.id,
-        executionGeneration: execution.executionGeneration,
-        commandId: command.id,
-        leaseToken: command.leaseToken,
-        providerTurnId: tool.providerTurnId,
-        toolCallId: tool.toolCallId,
-        questionId: details.question_id,
-        receiptId: details.citation_receipt_id,
-        observedCitations: details.citations,
-        ...(teamBackendId && verifiedTeamSources
-          ? { questionBackendId: teamBackendId, verifiedTeamSources }
-          : {}),
-        ...(!teamBackendId && verifiedPersonalSources
-          ? { verifiedPersonalSources }
-          : {})
-      }
+    const receipts = await verifiedCompletedMemoryToolReceipts(
+      execution,
+      tool,
+      command
     );
+    if (receipts.length)
+      await options.repository.recordManagedConversationToolCitations(
+        { userId: execution.ownerUserId },
+        receipts
+      );
   };
 
   const completedKoedTool = async (

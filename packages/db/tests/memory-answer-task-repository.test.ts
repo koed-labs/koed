@@ -127,6 +127,39 @@ describeDb("durable Memory Answer task repository", () => {
     ).toMatchObject({ task: { id: accepted.id } });
   });
 
+  it("claims only the exact durable child ID while another eligible task precedes it", async () => {
+    const { actor } = await createActor("exact-child");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const first = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      maxQueued: 16,
+      request: { input: { query: "unrelated" } }
+    });
+    const child = await tasks.acceptMemoryAnswerTask(actor, {
+      origin: "mcp",
+      maxQueued: 16,
+      request: { input: { query: "exact" } }
+    });
+    const selected = await tasks.claimMemoryAnswerTask(actor, {
+      leaseOwner: `exact-${randomUUID()}`,
+      leaseMs: 60_000,
+      taskId: child.id
+    });
+    expect(selected.task?.id).toBe(child.id);
+    expect((await tasks.getMemoryAnswerTask(actor, first.id))?.status).toBe(
+      "accepted"
+    );
+    expect(
+      await tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: `exact-again-${randomUUID()}`,
+        leaseMs: 60_000,
+        taskId: child.id
+      })
+    ).toMatchObject({ task: null });
+  });
+
   it("reclaims expired leases, fences stale owners, and resolves cancellation races", async () => {
     const { actor } = await createActor("lease-owner");
     const tasks = createMemoryAnswerTaskRepository(pool, {
@@ -269,6 +302,131 @@ describeDb("durable Memory Answer task repository", () => {
         status: "failed",
         lastErrorMessage: errorSecret
       }
+    );
+  });
+
+  it("finalizes a managed UUID Project task only under its current link version", async () => {
+    const { actor } = await createActor("managed-project-answer");
+    const tasks = createMemoryAnswerTaskRepository(pool, {
+      envelopeEncryptionProvider: encryptionProvider
+    });
+    const personalProjectId = randomUUID();
+    const teamWorkspaceId = randomUUID();
+    const workspaceProjectId = randomUUID();
+    const executionId = randomUUID();
+    const logicalSessionId = randomUUID();
+    const project = await pool.query<{ version: number }>(
+      `insert into projects(id,owner_user_id,name,key,team_backend_id,team_workspace_id,workspace_project_id)
+       values($1,$2,'Managed recall',$3,'team-vps',$4,$5) returning version`,
+      [
+        personalProjectId,
+        actor.userId,
+        `managed-${randomUUID()}`,
+        teamWorkspaceId,
+        workspaceProjectId
+      ]
+    );
+    const version = project.rows[0]!.version;
+    await pool.query(
+      `insert into sessions(id,logical_session_id,owner_user_id,source_runtime,capture_method,automatic_personal_project_id)
+       values($1,$2,$3,'codex','api',$4)`,
+      [randomUUID(), logicalSessionId, actor.userId, personalProjectId]
+    );
+    await pool.query(
+      `insert into managed_conversation_executions
+       (id,owner_user_id,project_id,ai_client_instance_id,model,permission_mode,runner_kind,state,
+        fencing_token_hash,runner_deployment_id,runner_device_id,runner_id,runner_lease_expires_at,logical_session_id,provider_thread_id)
+       values($1,$2,$3,'codex','test','auto','local_device','running',$4,$5,$6,$7,now()+interval '1 hour',$8,'provider-thread')`,
+      [
+        executionId,
+        actor.userId,
+        personalProjectId,
+        "a".repeat(64),
+        randomUUID(),
+        randomUUID(),
+        randomUUID(),
+        logicalSessionId
+      ]
+    );
+    await pool.query(
+      `insert into managed_conversation_commands
+       (id,owner_user_id,execution_id,idempotency_key,sequence,command_kind,request_digest,
+        execution_generation,encrypted_payload,state,lease_token,lease_expires_at)
+       values($1,$2,$3,$4,1,'start',$5,1,'{}'::jsonb,'dispatching',$6,now()+interval '1 hour')`,
+      [
+        randomUUID(),
+        actor.userId,
+        executionId,
+        randomUUID(),
+        "b".repeat(64),
+        randomUUID()
+      ]
+    );
+    const accept = async (query: string) => {
+      const accepted = await tasks.acceptMemoryAnswerTask(actor, {
+        origin: "mcp",
+        invocationKey: randomUUID(),
+        maxQueued: 16,
+        request: {
+          input: {
+            query,
+            search_domain: "project",
+            project_id: personalProjectId,
+            managed_project_recall: {
+              execution_id: executionId,
+              execution_generation: 1
+            }
+          },
+          caller: { cwd: "/unrelated" }
+        }
+      });
+      const claim = await tasks.claimMemoryAnswerTask(actor, {
+        leaseOwner: `managed-${randomUUID()}`,
+        leaseMs: 60_000
+      });
+      expect(claim.task?.id).toBe(accepted.id);
+      return { accepted, claim: claim.task! };
+    };
+    const complete = (
+      task: Awaited<ReturnType<typeof accept>>,
+      query: string
+    ) =>
+      tasks.completeMemoryAnswerTask(actor, {
+        taskId: task.accepted.id,
+        leaseOwner: task.claim.leaseOwner,
+        fenceGeneration: task.claim.fenceGeneration,
+        finalQuestion: {
+          idempotencyKey: randomUUID(),
+          query,
+          searchDomain: "project",
+          projectId: personalProjectId,
+          status: "answered",
+          answerMarkdown: "Project answer"
+        },
+        result: {
+          status: "partial",
+          availability: "team_not_checked",
+          combined_text: "Team memory was not checked",
+          selected_personal_project_id: personalProjectId,
+          selected_project_version: version,
+          selected_team_backend_id: "team-vps",
+          selected_team_workspace_id: teamWorkspaceId,
+          recalls: [{ label: "Personal Project and Me" }]
+        }
+      });
+    const first = await accept("current link");
+    expect(await complete(first, "current link")).toMatchObject({
+      status: "completed"
+    });
+    expect(
+      (await tasks.getMemoryAnswerTask(actor, first.accepted.id))?.result
+    ).toMatchObject({ availability: "team_not_checked" });
+    const stale = await accept("stale link");
+    await pool.query("update projects set version=version+1 where id=$1", [
+      personalProjectId
+    ]);
+    await expect(complete(stale, "stale link")).rejects.toThrow(
+      "link version changed"
     );
   });
 

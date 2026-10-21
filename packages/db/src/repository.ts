@@ -11166,6 +11166,18 @@ export const createMemorySourceRepository = (
       if (searchDomain === "project" && !input.projectId) {
         throw new Error("Project-scoped memory search requires projectId");
       }
+      if (
+        input.personalProjectAndMe &&
+        (searchDomain !== "project" ||
+          !input.projectId ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+            input.projectId
+          ))
+      ) {
+        throw new Error(
+          "Project-plus-Me recall requires a Personal Project UUID"
+        );
+      }
       const requestedParentNodeIds = input.parentNodeIds?.filter(Boolean) ?? [];
       const visibleParentNodeIds = requestedParentNodeIds.length
         ? (
@@ -11579,6 +11591,7 @@ export const createMemorySourceRepository = (
                                   'unassigned'
                                 ) = $10
                                 or coalesce(boundary_session.project_override_path, boundary_session.automatic_project_path) = $10
+                                or ($15::boolean and (case when boundary_session.project_override_id is not null then boundary_session.project_override_personal_project_id else boundary_session.automatic_personal_project_id end)::text = $10)
                               )
                             )
                           )
@@ -11639,6 +11652,7 @@ export const createMemorySourceRepository = (
                                   'unassigned'
                                 ) = $10
                                 or coalesce(time_session.project_override_path, time_session.automatic_project_path) = $10
+                                or ($15::boolean and (case when time_session.project_override_id is not null then time_session.project_override_personal_project_id else time_session.automatic_personal_project_id end)::text = $10)
                               )
                             )
                           )
@@ -11822,6 +11836,9 @@ export const createMemorySourceRepository = (
                     or (
                       $8::text = 'project'
                       and (
+                        ($15::boolean and cma.scope = 'me')
+                        or ($15::boolean and cma.scope = 'project' and cma.project_id::text = $10)
+                        or (
                         (
                           ev.id is not null
                           and (
@@ -11832,6 +11849,7 @@ export const createMemorySourceRepository = (
                               'unassigned'
                             ) = $10
                             or coalesce(ev_session.project_override_path, ev_session.automatic_project_path) = $10
+                            or ($15::boolean and (case when ev_session.project_override_id is not null then ev_session.project_override_personal_project_id else ev_session.automatic_personal_project_id end)::text = $10)
                           )
                         )
                         or (
@@ -11839,6 +11857,7 @@ export const createMemorySourceRepository = (
                           and (
                             coalesce(msg_session.project_override_id, msg_session.automatic_project_id, 'unassigned') = $10
                             or coalesce(msg_session.project_override_path, msg_session.automatic_project_path) = $10
+                            or ($15::boolean and (case when msg_session.project_override_id is not null then msg_session.project_override_personal_project_id else msg_session.automatic_personal_project_id end)::text = $10)
                           )
                         )
                         or exists (
@@ -11856,6 +11875,7 @@ export const createMemorySourceRepository = (
                                 'unassigned'
                               ) = $10
                               or coalesce(filter_session.project_override_path, filter_session.automatic_project_path) = $10
+                              or ($15::boolean and (case when filter_session.project_override_id is not null then filter_session.project_override_personal_project_id else filter_session.automatic_personal_project_id end)::text = $10)
                             )
                         )
                         or (
@@ -11871,11 +11891,19 @@ export const createMemorySourceRepository = (
                               and (
                                 coalesce(project_cs.project_override_id, project_cs.automatic_project_id, 'unassigned') = $10
                                 or coalesce(project_cs.project_override_path, project_cs.automatic_project_path) = $10
+                                or ($15::boolean and (case when project_cs.project_override_id is not null then project_cs.project_override_personal_project_id else project_cs.automatic_personal_project_id end)::text = $10)
                               )
                           )
                         )
+                        )
                       )
                     )
+                  )
+                  and (
+                    not $15::boolean
+                    or cma.id is null
+                    or cma.scope <> 'project'
+                    or cma.project_id::text = $10
                   )
                   and (
                     ($12::timestamptz is null and $13::timestamptz is null)
@@ -11932,6 +11960,7 @@ export const createMemorySourceRepository = (
                                 'unassigned'
                               ) = $10
                               or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $10
+                              or ($15::boolean and (case when source_session.project_override_id is not null then source_session.project_override_personal_project_id else source_session.automatic_personal_project_id end)::text = $10)
                             )
                           )
                         )
@@ -12025,7 +12054,8 @@ export const createMemorySourceRepository = (
                   stage,
                   sourceAfter,
                   sourceBefore,
-                  parentNodeIds
+                  parentNodeIds,
+                  input.personalProjectAndMe === true
                 ]
               );
               const rows = await hydrateSearchRows(

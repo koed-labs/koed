@@ -117,6 +117,7 @@ export const acceptMemoryAnswerTaskSchema = z
 export const claimMemoryAnswerTaskSchema = z
   .object({
     scope_filter: z.enum(["personal", "team"]).optional(),
+    task_id: z.string().uuid().optional(),
     lease_owner: z.string().trim().min(16).max(256),
     lease_ms: z.number().int().min(1_000).max(300_000)
   })

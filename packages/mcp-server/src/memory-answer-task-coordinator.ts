@@ -14,7 +14,7 @@ import type {
   MemoryAnswerTaskApi,
   MemoryAnswerTaskExecutionContext
 } from "./memory-answer-task-scheduler.js";
-import { memoryAnswerInputSchema } from "./memory-tool-schemas.js";
+import { managedMemoryAnswerExecutionSchema } from "./memory-tool-schemas.js";
 import { resolveProjectTeamWorkspaceRoute } from "./project-team-workspace-links.js";
 import {
   backendForDiscoveredWorkspace,
@@ -159,6 +159,23 @@ export class MemoryAnswerTaskCoordinator implements MemoryAnswerTaskApi {
   async claimMemoryAnswerTask(
     input: Parameters<MemoryAnswerTaskApi["claimMemoryAnswerTask"]>[0]
   ) {
+    if (input.task_id) {
+      const backend = await this.locate(input.task_id);
+      if (backend.scope !== "team" || input.scope_filter !== "team")
+        throw unavailable("Combined child task must use its Team backend");
+      const response = await backend.api.claimMemoryAnswerTask(input);
+      if (response.task) {
+        if (
+          response.task.id !== input.task_id ||
+          response.task.executionAuthority?.scope !== "team" ||
+          response.task.executionAuthority.teamWorkspaceId !==
+            response.task.teamWorkspaceId
+        )
+          throw unavailable("Combined child claim authority is ambiguous");
+        this.remember(response.task, backend);
+      }
+      return response;
+    }
     const backends = await this.backends();
     const reconciled: MemoryAnswerTask[] = [];
     const start = this.cursor;
@@ -248,7 +265,23 @@ export class MemoryAnswerTaskCoordinator implements MemoryAnswerTaskApi {
     const taskBackend = route ? this.retrieval.get(route) : undefined;
     if (!taskBackend)
       throw unavailable("Memory Answer execution route is unavailable");
-    return { getExecutionAuthority, taskBackend };
+    return {
+      getExecutionAuthority,
+      taskBackend,
+      startCombinedTeamChild: async (input, caller, invocationKey) =>
+        (
+          await this.acceptMemoryAnswerTask({
+            origin: "mcp",
+            invocation_key: invocationKey,
+            request: { input, caller },
+            max_queued: 16
+          })
+        ).task,
+      getCombinedTeamChild: async (taskId) =>
+        (await this.getMemoryAnswerTask(taskId)).task,
+      cancelCombinedTeamChild: async (taskId) =>
+        (await this.cancelMemoryAnswerTask(taskId)).task
+    };
   };
 }
 
@@ -433,21 +466,28 @@ export const createMemoryAnswerTaskCoordinator = (
   return new MemoryAnswerTaskCoordinator({
     backends,
     resolveStart: async (request) => {
-      const input = memoryAnswerInputSchema.parse(request.request.input);
+      const input = managedMemoryAnswerExecutionSchema.parse(
+        request.request.input
+      );
       const caller = request.request.caller as { cwd?: string } | undefined;
       const projectRoot =
-        input.search_domain === "project"
+        input.search_domain === "project" &&
+        !input.personal_project_and_me &&
+        !input.managed_project_recall
           ? input.project_id &&
             (path.isAbsolute(input.project_id) ||
               path.win32.isAbsolute(input.project_id))
             ? input.project_id
             : path.resolve(caller?.cwd ?? "")
           : undefined;
-      const route = resolveProjectTeamWorkspaceRoute({
-        projectRoot,
-        requestedTeamWorkspaceId: input.team_workspace_id,
-        env: environment
-      });
+      const route =
+        input.personal_project_and_me || input.managed_project_recall
+          ? { teamWorkspaceId: undefined, backendId: undefined }
+          : resolveProjectTeamWorkspaceRoute({
+              projectRoot,
+              requestedTeamWorkspaceId: input.team_workspace_id,
+              env: environment
+            });
       if (!route.teamWorkspaceId) {
         if (input.team_backend_id)
           throw unavailable(

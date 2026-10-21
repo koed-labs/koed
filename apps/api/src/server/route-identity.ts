@@ -1638,6 +1638,16 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/managed-conversations/{executionId}/recall-context",
+    "desktop_local_credential",
+    "personal_memory",
+    "Resolve the current owner-managed logical Session to its exact linked Personal and Team Project context.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/managed-conversations/{executionId}/work-items-from-doc/read",
     "desktop_local_credential",
     "projects",

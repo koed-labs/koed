@@ -87,6 +87,7 @@ export interface MemoryAnswerTaskRepository {
       leaseMs: number;
       allowTeam?: boolean;
       scopeFilter?: "personal" | "team";
+      taskId?: string;
     }
   ): Promise<MemoryAnswerTaskClaimBatch>;
   heartbeatMemoryAnswerTask(
@@ -568,6 +569,7 @@ export const createMemoryAnswerTaskRepository = (
             where owner_user_id = $1 and visibility = 'personal'
               and ((team_workspace_id is null and $3) or (team_workspace_id is not null and $2))
               and ($4::text is null or ($4 = 'personal' and team_workspace_id is null) or ($4 = 'team' and team_workspace_id is not null))
+              and ($5::uuid is null or id = $5::uuid)
               and ((status = 'accepted' and available_at <= now())
                 or (status = 'cancel_requested' and lease_until < now())
                 or (status = 'running' and lease_until < now()
@@ -577,7 +579,8 @@ export const createMemoryAnswerTaskRepository = (
               actor.userId,
               input.allowTeam === true && actor.allowTeam === true,
               actor.allowPersonal !== false,
-              input.scopeFilter ?? "personal"
+              input.scopeFilter ?? "personal",
+              input.taskId ?? null
             ]
           );
           const candidate = eligible.rows[0];
@@ -795,7 +798,64 @@ export const createMemoryAnswerTaskRepository = (
           );
         }
         let expectedProject = snapshot.project_id;
-        if (
+        if (snapshot.managed_project_recall) {
+          const selector = snapshot.managed_project_recall as Record<
+            string,
+            unknown
+          >;
+          if (
+            typeof selector.execution_id !== "string" ||
+            !Number.isSafeInteger(selector.execution_generation)
+          )
+            throw new Error("Managed Project recall task selector is invalid");
+          const currentProject = await client.query<{
+            personal_project_id: string;
+            team_backend_id: string | null;
+            team_workspace_id: string | null;
+            project_version: number;
+          }>(
+            `select p.id as personal_project_id,p.team_backend_id,p.team_workspace_id,p.version as project_version
+               from managed_conversation_executions e
+               join projects p on p.id::text=e.project_id and p.owner_user_id=e.owner_user_id
+               join sessions s on s.owner_user_id=e.owner_user_id
+                 and s.logical_session_id=e.logical_session_id
+                 and (case when s.project_override_id is not null then s.project_override_personal_project_id else s.automatic_personal_project_id end)=p.id
+              where e.id=$1 and e.owner_user_id=$2 and e.execution_generation=$3
+                and e.state in ('starting','running','reconciling')
+                and p.lifecycle='active' and p.deletion_phase is null
+                and s.visibility='personal' and s.invalidated_at is null
+                and s.trashed_at is null and s.personal_deleted_at is null
+                and s.delete_batch_id is null and s.forget_batch_id is null
+                and exists (select 1 from managed_conversation_commands command
+                  where command.execution_id=e.id and command.owner_user_id=e.owner_user_id
+                    and command.execution_generation=e.execution_generation
+                    and command.state='dispatching' and command.lease_expires_at>clock_timestamp())
+              limit 1 for share of p,s,e`,
+            [selector.execution_id, actor.userId, selector.execution_generation]
+          );
+          const bound = currentProject.rows[0];
+          if (!bound)
+            throw new Error("Managed Project recall authority changed");
+          const returned = input.result as Record<string, unknown>;
+          if (
+            (Array.isArray(returned.recalls)
+              ? returned.selected_project_version
+              : returned.managed_project_version) !== bound.project_version
+          )
+            throw new Error("Managed Project recall link version changed");
+          if (
+            Array.isArray(returned.recalls) &&
+            (returned.selected_team_backend_id !== bound.team_backend_id ||
+              returned.selected_team_workspace_id !== bound.team_workspace_id)
+          )
+            throw new Error("Managed Project recall Team link changed");
+          if (
+            !Array.isArray(returned.recalls) &&
+            (bound.team_backend_id || bound.team_workspace_id)
+          )
+            throw new Error("Managed Project recall Team link changed");
+          expectedProject = bound.personal_project_id;
+        } else if (
           snapshot.search_domain === "project" &&
           (typeof expectedProject !== "string" ||
             (!path.isAbsolute(expectedProject) &&

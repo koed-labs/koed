@@ -37,6 +37,10 @@ import { registerReviewRequestMergeProposalTool } from "./review-request-merge-p
 import { registerMemoryActionTools } from "./memory-action-tools.js";
 import { registerKoedTextActionTools } from "./koed-text-action-tools.js";
 import {
+  managedRecallSelector,
+  readManagedProjectRecallContext
+} from "./managed-project-recall-context.js";
+import {
   allTools,
   exposedTools,
   MEMORY_ANSWER_RETRIEVAL_META,
@@ -245,6 +249,7 @@ export const createKoedMcpServer = async (
   }: CreateKoedMcpServerOptions = {}
 ): Promise<McpServer> => {
   const invocationNamespace = randomUUID();
+  const managedSelector = managedRecallSelector(environment);
   let runtimeCapabilities: RuntimeToolCapabilities;
   let runtimeAvailable = true;
   let capabilitiesNeedRefresh = false;
@@ -312,6 +317,7 @@ export const createKoedMcpServer = async (
           if (
             toolName === "memory_workspaces" ||
             (toolName === "memory_answer" &&
+              !managedSelector &&
               (input as Record<string, unknown>).team_backend_id !== undefined)
           ) {
             runtimeCapabilities = await backendToolCapabilities(runtimeClient);
@@ -328,6 +334,79 @@ export const createKoedMcpServer = async (
           const invocationKey = `${context.sessionId ?? invocationNamespace}:${String(context.mcpReq.id)}`;
           const answerInput = input as Record<string, unknown>;
           const delivery = splitMemoryAnswerDeliveryInput(answerInput);
+          if (toolName === "memory_answer" && managedSelector) {
+            const linked =
+              await readManagedProjectRecallContext(managedSelector);
+            const requested = memoryAnswerInputSchema.parse(
+              delivery.executionInput
+            );
+            const {
+              project_id: _project,
+              session_id: _session,
+              team_workspace_id: _workspace,
+              team_backend_id: _backend,
+              ...untrustedFree
+            } = requested;
+            void _project;
+            void _session;
+            void _workspace;
+            void _backend;
+            const managedRequest = {
+              ...untrustedFree,
+              search_domain: "project",
+              project_id: linked.personalProjectId,
+              personal_project_and_me: true,
+              managed_project_recall: {
+                execution_id: managedSelector.executionId,
+                execution_generation: managedSelector.generation
+              },
+              response_detail: "with_citations"
+            };
+            if (delivery.requestedMode === "non_blocking") {
+              const task = await runtimeClient.startMemoryAnswerTask(
+                managedRequest,
+                caller,
+                invocationKey,
+                context.mcpReq.signal
+              );
+              validateMemoryAnswerTask(task);
+              await markRuntimeAvailable();
+              return jsonResponse({ ...pendingMemoryAnswerTask(task) });
+            }
+            const result = await runtimeClient.callTool(
+              "memory_answer",
+              managedRequest,
+              caller,
+              context.mcpReq.signal,
+              invocationKey
+            );
+            await markRuntimeAvailable();
+            if (linked.linked) {
+              if (
+                !Array.isArray(result.recalls) ||
+                typeof result.combined_text !== "string"
+              )
+                throw new Error("Managed combined recall result is incomplete");
+              return {
+                content: [
+                  { type: "text" as const, text: result.combined_text }
+                ],
+                structuredContent: result
+              };
+            }
+            const personal = withCitationAliases(result);
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: formatMemoryAnswerCompletion(personal, "completed", {
+                    includeDetails: true
+                  })
+                }
+              ],
+              structuredContent: personal
+            };
+          }
           if (
             toolName === "memory_answer" &&
             delivery.requestedMode === "non_blocking"
@@ -494,6 +573,18 @@ export const createKoedMcpServer = async (
               });
             }
             const presentation = presentMemoryAnswerTask(task);
+            if (
+              task.status === "completed" &&
+              Array.isArray(task.result?.recalls) &&
+              typeof task.result?.combined_text === "string"
+            ) {
+              return {
+                content: [
+                  { type: "text" as const, text: task.result.combined_text }
+                ],
+                structuredContent: task.result
+              };
+            }
             if (
               presentation.status === "completed" &&
               "text" in presentation &&

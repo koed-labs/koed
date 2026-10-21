@@ -27,6 +27,7 @@ export {
   type RemoteMemoryApiClient
 } from "./remote-backend-runtime-client.js";
 export { memoryAnswerInputSchema } from "./memory-tool-schemas.js";
+export { managedMemoryAnswerExecutionSchema } from "./memory-tool-schemas.js";
 export {
   LOCAL_AI_RUNTIME_DEFAULT_MAX_ACTIVE_ANSWERS,
   LOCAL_AI_RUNTIME_DEFAULT_MAX_QUEUED_ANSWERS,

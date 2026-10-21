@@ -108,6 +108,212 @@ const coordinator = (
   });
 
 describe("Memory Answer task coordinator", () => {
+  for (const parentCount of [1, 2]) {
+    it(`runs ${parentCount} combined parent task(s) and exact Team children with every capacity slot occupied`, async () => {
+      const parents = Array.from({ length: parentCount }, () => task());
+      const children = new Map<string, MemoryAnswerTask>();
+      const personal = backend("personal", parents[0]!);
+      const teamWorkspaceId = randomUUID();
+      const team = backend("team", { ...task(true), teamWorkspaceId });
+      const rows = new Map(parents.map((row) => [row.id, row]));
+      vi.mocked(personal.api.getMemoryAnswerTask).mockImplementation(
+        async (id) => {
+          const row = rows.get(id);
+          if (!row) throw notFound();
+          return { task: row };
+        }
+      );
+      vi.mocked(team.api.getMemoryAnswerTask).mockImplementation(async (id) => {
+        const row = children.get(id);
+        if (!row) throw notFound();
+        return { task: row };
+      });
+      vi.mocked(personal.api.claimMemoryAnswerTask).mockImplementation(
+        async () => {
+          const row = [...rows.values()].find(
+            (item) => item.status === "accepted"
+          );
+          if (!row) return { task: null, reconciled: [] };
+          rows.set(row.id, { ...row, status: "running" });
+          return { task: claim(row), reconciled: [] };
+        }
+      );
+      vi.mocked(team.api.acceptMemoryAnswerTask).mockImplementation(
+        async () => {
+          const row = { ...task(true), teamWorkspaceId };
+          children.set(row.id, row);
+          return { task: row };
+        }
+      );
+      vi.mocked(team.api.claimMemoryAnswerTask).mockImplementation(
+        async (input) => {
+          const row = input.task_id ? children.get(input.task_id) : undefined;
+          if (!row || row.status !== "accepted")
+            return { task: null, reconciled: [] };
+          children.set(row.id, { ...row, status: "running" });
+          return { task: claim(row), reconciled: [] };
+        }
+      );
+      vi.mocked(team.api.completeMemoryAnswerTask).mockImplementation(
+        async (id, input) => {
+          const row = children.get(id)!;
+          const completed = {
+            ...row,
+            status: "completed" as const,
+            result: input.result
+          };
+          children.set(id, completed);
+          return { task: completed };
+        }
+      );
+      vi.mocked(personal.api.completeMemoryAnswerTask).mockImplementation(
+        async (id, input) => {
+          const row = rows.get(id)!;
+          const completed = {
+            ...row,
+            status: "completed" as const,
+            result: input.result
+          };
+          rows.set(id, completed);
+          return { task: completed };
+        }
+      );
+      const adapter = coordinator(() => [personal, team]);
+      const scheduler = new MemoryAnswerTaskScheduler(
+        adapter,
+        {
+          async executeMemoryAnswerTask(
+            _input,
+            caller,
+            id,
+            signal,
+            progress,
+            context
+          ) {
+            if (context?.getExecutionAuthority().scope === "team") {
+              progress?.("Team child complete");
+              return {
+                finalQuestion: { query: "Team" },
+                result: { markdown: "Team evidence" }
+              };
+            }
+            const child = await context!.startCombinedTeamChild!(
+              {
+                query: "Team",
+                team_workspace_id: teamWorkspaceId
+              },
+              caller,
+              `child:${id}`
+            );
+            await context!.runCombinedTeamChild!(child.id, signal);
+            const completed = await context!.getCombinedTeamChild!(child.id);
+            expect(completed.status).toBe("completed");
+            progress?.("Combined complete");
+            return {
+              finalQuestion: { query: "Combined" },
+              result: { markdown: "Personal and Team evidence" }
+            };
+          }
+        },
+        {
+          maxActive: parentCount,
+          executionContextForTask: adapter.executionContextForTask,
+          reconcileMs: 60_000
+        }
+      );
+      try {
+        await vi.waitFor(
+          () => {
+            expect(
+              [...rows.values()].filter((row) => row.status === "completed")
+            ).toHaveLength(parentCount);
+            expect(
+              [...children.values()].filter((row) => row.status === "completed")
+            ).toHaveLength(parentCount);
+          },
+          { timeout: 5_000 }
+        );
+        expect(
+          vi
+            .mocked(team.api.claimMemoryAnswerTask)
+            .mock.calls.every(
+              ([input]) => !input.task_id || children.has(input.task_id)
+            )
+        ).toBe(true);
+      } finally {
+        await scheduler.close();
+      }
+    });
+  }
+
+  it("retries a nested Team child when the parent runtime shuts down", async () => {
+    const parent = task();
+    const child = task(true);
+    const personal = backend("personal", parent);
+    const team = backend("team", child);
+    vi.mocked(personal.api.claimMemoryAnswerTask).mockResolvedValueOnce({
+      task: claim(parent),
+      reconciled: []
+    });
+    vi.mocked(team.api.acceptMemoryAnswerTask).mockResolvedValue({
+      task: child
+    });
+    vi.mocked(team.api.claimMemoryAnswerTask).mockImplementation(
+      async (input) =>
+        input.task_id === child.id
+          ? { task: claim(child), reconciled: [] }
+          : { task: null, reconciled: [] }
+    );
+    const adapter = coordinator(() => [personal, team]);
+    let childStarted!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      childStarted = resolve;
+    });
+    const scheduler = new MemoryAnswerTaskScheduler(
+      adapter,
+      {
+        async executeMemoryAnswerTask(
+          _input,
+          caller,
+          id,
+          signal,
+          _progress,
+          context
+        ) {
+          if (id === child.id) {
+            childStarted();
+            await new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener("abort", () => reject(signal.reason), {
+                once: true
+              });
+            });
+          }
+          const accepted = await context!.startCombinedTeamChild!(
+            { query: "Team", team_workspace_id: child.teamWorkspaceId },
+            caller,
+            `child:${id}`
+          );
+          await context!.runCombinedTeamChild!(accepted.id, signal);
+          return { finalQuestion: {}, result: {} };
+        }
+      },
+      {
+        maxActive: 1,
+        executionContextForTask: adapter.executionContextForTask,
+        reconcileMs: 60_000
+      }
+    );
+    await entered;
+    await scheduler.close();
+    expect(team.api.failMemoryAnswerTask).toHaveBeenCalledWith(
+      child.id,
+      expect.objectContaining({
+        error_code: "shutdown",
+        retry: true
+      })
+    );
+    expect(team.api.cancelMemoryAnswerTask).not.toHaveBeenCalled();
+  });
   it("routes Personal and Team acceptance to their authorized backend", async () => {
     const personal = backend("personal", task());
     const teamTask = task(true);

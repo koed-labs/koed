@@ -8,7 +8,10 @@ import {
   runDbMigrations
 } from "../src/index.js";
 import { createMemoryQuestionRepository } from "../src/memory-question-repository.js";
-import { createManagedConversationCitationRepository } from "../src/managed-conversation-citation-repository.js";
+import {
+  createManagedConversationCitationRepository,
+  managedCitationBranchToolCallId
+} from "../src/managed-conversation-citation-repository.js";
 
 const databaseUrl = process.env.HQ306_TEST_DATABASE_URL;
 describe.skipIf(!databaseUrl)(
@@ -42,6 +45,9 @@ describe.skipIf(!databaseUrl)(
       });
       const actor = { userId: owner.id };
       const executionId = randomUUID();
+      const personalProjectId = randomUUID();
+      const linkedWorkspaceId = randomUUID();
+      const linkedWorkspaceProjectId = randomUUID();
       const logicalSessionId = randomUUID();
       const sessionId = randomUUID();
       const deploymentId = randomUUID();
@@ -58,16 +64,28 @@ describe.skipIf(!databaseUrl)(
         alias: string;
       }> = [];
       try {
+        const project = await pool.query<{ version: number }>(
+          `insert into projects(id,owner_user_id,name,key,team_backend_id,team_workspace_id,workspace_project_id)
+            values($1,$2,'Citation project',$3,'team-vps',$4,$5) returning version`,
+          [
+            personalProjectId,
+            owner.id,
+            `citation-${randomUUID()}`,
+            linkedWorkspaceId,
+            linkedWorkspaceProjectId
+          ]
+        );
+        const projectVersion = project.rows[0]!.version;
         await pool.query(
-          `insert into sessions(id,logical_session_id,owner_user_id,source_runtime,capture_method)
-         values($1,$2,$3,'codex','api')`,
-          [sessionId, logicalSessionId, owner.id]
+          `insert into sessions(id,logical_session_id,owner_user_id,source_runtime,capture_method,automatic_personal_project_id)
+         values($1,$2,$3,'codex','api',$4)`,
+          [sessionId, logicalSessionId, owner.id, personalProjectId]
         );
         await pool.query(
           `insert into managed_conversation_executions
           (id,owner_user_id,project_id,ai_client_instance_id,model,permission_mode,runner_kind,state,
            fencing_token_hash,runner_deployment_id,runner_device_id,runner_id,runner_lease_expires_at,logical_session_id,provider_thread_id)
-         values ($1,$2,'/fixture','codex','test','auto','local_device','running',$3,$4,$5,$6,now()+interval '1 hour',$7,'provider-thread')`,
+         values ($1,$2,$8,'codex','test','auto','local_device','running',$3,$4,$5,$6,now()+interval '1 hour',$7,'provider-thread')`,
           [
             executionId,
             owner.id,
@@ -75,7 +93,8 @@ describe.skipIf(!databaseUrl)(
             deploymentId,
             deviceId,
             runnerId,
-            logicalSessionId
+            logicalSessionId,
+            personalProjectId
           ]
         );
         await pool.query(
@@ -92,6 +111,19 @@ describe.skipIf(!databaseUrl)(
             leaseToken
           ]
         );
+        expect(
+          await repository.getManagedConversationRecallContext(actor, {
+            executionId,
+            executionGeneration: 1
+          })
+        ).toMatchObject({
+          linked: true,
+          personalProjectId,
+          teamBackendId: "team-vps",
+          teamWorkspaceId: linkedWorkspaceId,
+          workspaceProjectId: linkedWorkspaceProjectId,
+          projectVersion
+        });
         for (let ordinal = 0; ordinal < 2; ordinal++) {
           const sourceId = randomUUID();
           const source = {
@@ -537,6 +569,143 @@ describe.skipIf(!databaseUrl)(
             .filter((row) => row.provider_turn_id === nextTurnId)
             .every((row) => row.source_generation_id === nextSourceGenerationId)
         ).toBe(true);
+
+        const combinedCall = `provider-${randomUUID()}`;
+        const combinedWorkspace = linkedWorkspaceId;
+        const combinedTeamSource = randomUUID();
+        const personalReceipt = randomUUID();
+        const combinedTeamReceipt = randomUUID();
+        const binding = {
+          providerToolCallId: combinedCall,
+          teamBackendId: "team-vps",
+          teamWorkspaceId: combinedWorkspace,
+          personalProjectId,
+          workspaceProjectId: linkedWorkspaceProjectId,
+          projectVersion
+        };
+        const combinedPersonal = {
+          executionId,
+          executionGeneration: 1,
+          commandId,
+          leaseToken,
+          providerTurnId: nextTurnId,
+          toolCallId: managedCitationBranchToolCallId(combinedCall, "personal"),
+          questionId: recalled[0]!.id,
+          receiptId: personalReceipt,
+          observedCitations: [
+            {
+              ...recalled[0]!.source,
+              citationId: `r${personalReceipt.replaceAll("-", "")}c1`
+            }
+          ],
+          verifiedPersonalSources: [
+            {
+              sourceType: "memory_node",
+              sourceId: recalled[0]!.source.sourceId!,
+              sourceDeploymentId,
+              sourceOwnerPrincipalId: owner.id,
+              title: "Source 1",
+              summary: "Evidence 1"
+            }
+          ],
+          combined: { ...binding, branch: "personal" as const }
+        };
+        const combinedTeam = {
+          executionId,
+          executionGeneration: 1,
+          commandId,
+          leaseToken,
+          providerTurnId: nextTurnId,
+          toolCallId: managedCitationBranchToolCallId(combinedCall, "team"),
+          questionId: randomUUID(),
+          receiptId: combinedTeamReceipt,
+          questionBackendId: "team-vps",
+          observedCitations: [
+            {
+              sourceType: "memory_node",
+              sourceId: combinedTeamSource,
+              representation: "lcm_leaves",
+              visibility: "team",
+              citationId: `r${combinedTeamReceipt.replaceAll("-", "")}c1`
+            }
+          ],
+          verifiedTeamSources: [
+            {
+              sourceType: "memory_node",
+              sourceId: combinedTeamSource,
+              teamWorkspaceId: combinedWorkspace,
+              sourceOwnerPrincipalId: randomUUID()
+            }
+          ],
+          combined: { ...binding, branch: "team" as const }
+        };
+        const combinedListed =
+          await citations.recordManagedConversationToolCitations(actor, [
+            combinedPersonal,
+            combinedTeam
+          ]);
+        expect(
+          combinedListed.filter(
+            (item) =>
+              item.alias ===
+                combinedPersonal.observedCitations[0]!.citationId ||
+              item.alias === combinedTeam.observedCitations[0]!.citationId
+          )
+        ).toMatchObject([
+          { visibility: "personal", detailAvailable: true },
+          { visibility: "team", detailAvailable: false }
+        ]);
+        await expect(
+          citations.recordManagedConversationToolCitations(actor, [
+            combinedPersonal,
+            { ...combinedTeam, questionId: randomUUID() }
+          ])
+        ).rejects.toThrow("immutable");
+        const rollbackCall = `provider-${randomUUID()}`;
+        const rollbackReceipt = randomUUID();
+        await expect(
+          citations.recordManagedConversationToolCitations(actor, [
+            {
+              ...combinedPersonal,
+              toolCallId: managedCitationBranchToolCallId(
+                rollbackCall,
+                "personal"
+              ),
+              receiptId: rollbackReceipt,
+              observedCitations: [
+                {
+                  ...recalled[0]!.source,
+                  citationId: `r${rollbackReceipt.replaceAll("-", "")}c1`
+                }
+              ],
+              combined: {
+                ...binding,
+                providerToolCallId: rollbackCall,
+                branch: "personal"
+              }
+            },
+            {
+              ...combinedTeam,
+              toolCallId: managedCitationBranchToolCallId(rollbackCall, "team"),
+              combined: {
+                ...binding,
+                providerToolCallId: rollbackCall,
+                branch: "team"
+              }
+            }
+          ])
+        ).rejects.toThrow();
+        expect(
+          (
+            await pool.query(
+              "select id from managed_conversation_turn_citations where execution_id=$1 and tool_call_id=$2",
+              [
+                executionId,
+                managedCitationBranchToolCallId(rollbackCall, "personal")
+              ]
+            )
+          ).rowCount
+        ).toBe(0);
 
         await pool.query("update sessions set forget_batch_id=$2 where id=$1", [
           sessionId,

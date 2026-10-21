@@ -279,6 +279,7 @@ export const registerRecallRoutes = (
         searchDomain: input.search_domain,
         sessionId: input.session_id,
         projectId: input.project_id,
+        personalProjectAndMe: input.personal_project_and_me,
         limit: input.limit,
         recentDays: input.recent_days,
         sourceAfter: input.source_after?.toISOString(),

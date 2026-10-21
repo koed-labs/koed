@@ -63,6 +63,35 @@ export const memoryAnswerInputSchema = z
     "session_id is required for session search"
   );
 
+/** Set only by the managed MCP adapter after resolving an owner-bound execution. */
+export const managedMemoryAnswerExecutionSchema = memoryAnswerInputSchema
+  .safeExtend({
+    personal_project_and_me: z.boolean().optional(),
+    managed_project_recall: z
+      .object({
+        execution_id: uuidSchema,
+        execution_generation: z.number().int().positive()
+      })
+      .strict()
+      .optional()
+  })
+  .refine(
+    (input) =>
+      !input.personal_project_and_me ||
+      (input.search_domain === "project" &&
+        !!input.project_id &&
+        uuidSchema.safeParse(input.project_id).success &&
+        !input.team_workspace_id &&
+        !input.team_backend_id),
+    "Project-plus-Me execution requires one Personal Project UUID and no Team selector"
+  )
+  .refine(
+    (input) =>
+      !input.managed_project_recall ||
+      (!input.team_workspace_id && !input.team_backend_id),
+    "Managed Project recall cannot carry a Team selector"
+  );
+
 // The runtime and durable worker retain the strict execution schema above.
 export const memoryAnswerAdapterInputSchema =
   memoryAnswerInputSchema.safeExtend({

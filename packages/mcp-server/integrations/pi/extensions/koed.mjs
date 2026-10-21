@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { URL } from "node:url";
 import process from "node:process";
 import { Type } from "typebox";
 import { resolveInstalledKoedHome } from "../koed-home.mjs";
@@ -25,6 +26,54 @@ import { workItemCompletionRequest } from "../work-item-completion-request.mjs";
 import { memoryActionRequest } from "../memory-action-request.mjs";
 
 const koedHome = resolveInstalledKoedHome(process.env, import.meta.url);
+const launchDefaultDelivery =
+  process.env.KOED_PI_MEMORY_ANSWER_MODE === "non_blocking"
+    ? "non_blocking"
+    : "blocking";
+const launchRecallSelector = (() => {
+  const executionId = process.env.KOED_MANAGED_RECALL_EXECUTION_ID;
+  const generation = Number(
+    process.env.KOED_MANAGED_RECALL_EXECUTION_GENERATION
+  );
+  const apiUrl = process.env.KOED_MANAGED_RECALL_API_URL;
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      executionId ?? ""
+    ) ||
+    !Number.isSafeInteger(generation) ||
+    generation < 1 ||
+    !apiUrl
+  )
+    return null;
+  try {
+    const url = new URL(apiUrl);
+    if (
+      url.protocol !== "http:" ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+    )
+      return null;
+  } catch {
+    return null;
+  }
+  return Object.freeze({ executionId, generation });
+})();
+const managedRecallInput = (params) => {
+  const input = { ...params };
+  delete input.delivery_mode;
+  if (!launchRecallSelector) return input;
+  delete input.project_id;
+  delete input.session_id;
+  delete input.team_workspace_id;
+  delete input.team_backend_id;
+  return {
+    ...input,
+    search_domain: "project",
+    managed_project_recall: {
+      execution_id: launchRecallSelector.executionId,
+      execution_generation: launchRecallSelector.generation
+    }
+  };
+};
 const signalDirectory = join(koedHome, "run", "pi-transcript-signals");
 const wakePath = join(koedHome, "run", "pi-transcript-watcher.wake");
 
@@ -205,10 +254,12 @@ export default function koedExtension(pi) {
           let result;
           if (
             name === "memory_answer" &&
-            params.delivery_mode === "non_blocking"
+            (params.delivery_mode === "non_blocking" ||
+              ((params.delivery_mode === undefined ||
+                params.delivery_mode === "auto") &&
+                launchDefaultDelivery === "non_blocking"))
           ) {
-            const input = { ...params };
-            delete input.delivery_mode;
+            const input = managedRecallInput(params);
             const task = await port.start(
               input,
               {
@@ -255,7 +306,10 @@ export default function koedExtension(pi) {
               };
             } else result = presentMemoryAnswerTask(task);
           } else {
-            const input = { ...params };
+            const input =
+              name === "memory_answer"
+                ? managedRecallInput(params)
+                : { ...params };
             delete input.delivery_mode;
             result = await callTool(name, input, ctx, combined, invocation);
           }
@@ -263,7 +317,9 @@ export default function koedExtension(pi) {
             name === "memory_answer" &&
             params.delivery_mode !== "non_blocking"
           )
-            result = withCitationAliases(result);
+            result = Array.isArray(result.recalls)
+              ? result
+              : withCitationAliases(result);
           return {
             content: [
               {
@@ -271,18 +327,20 @@ export default function koedExtension(pi) {
                 text:
                   name === "memory_answer" &&
                   params.delivery_mode !== "non_blocking"
-                    ? formatMemoryAnswerCompletion(result, "completed", {
-                        includeDetails:
-                          params.include_evidence === true ||
-                          params.response_detail === "with_citations" ||
-                          params.response_detail === "with_evidence"
-                      })
+                    ? typeof result.combined_text === "string"
+                      ? result.combined_text
+                      : formatMemoryAnswerCompletion(result, "completed", {
+                          includeDetails:
+                            params.include_evidence === true ||
+                            params.response_detail === "with_citations" ||
+                            params.response_detail === "with_evidence"
+                        })
                     : typeof result.text === "string"
                       ? result.text
                       : JSON.stringify(result)
               }
             ],
-            details: result
+            details: result.details ?? result
           };
         } catch (error) {
           if (error?.code === "runtime_feature_unavailable") {

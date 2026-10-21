@@ -35,6 +35,20 @@ describe("route identity contract", () => {
       });
     }
   });
+  it("inventories exact owner-local managed Project recall context authority", () => {
+    const path = "/v1/managed-conversations/{executionId}/recall-context";
+    expect(routeIdentityFor("GET", path)).toMatchObject({
+      identity: "desktop_local_credential",
+      domain: "personal_memory",
+      teamAuthority: "none",
+      status: "implemented",
+      deploymentModes: ["developer", "local_personal"]
+    });
+    expect(openApiPaths[path]?.get).toMatchObject({
+      "x-koed-identity": "desktop_local_credential",
+      "x-koed-deployment-modes": ["developer", "local_personal"]
+    });
+  });
   it("inventories exact Share Project recovery and current Team target routes", () => {
     for (const [method, path] of [
       ["GET", "/v1/teams/{teamId}/workspaces/{workspaceId}/share-target"],

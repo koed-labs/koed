@@ -671,6 +671,25 @@ export interface ManagedConversationRepository {
     actor: ActorContext,
     logicalSessionId: string
   ): Promise<ManagedConversationExecutionRecord | null>;
+  getManagedConversationRecallContext(
+    actor: ActorContext,
+    input: { executionId: string; executionGeneration: number }
+  ): Promise<
+    | {
+        linked: false;
+        personalProjectId: string;
+        projectVersion: number;
+      }
+    | {
+        linked: true;
+        personalProjectId: string;
+        teamBackendId: string;
+        teamWorkspaceId: string;
+        workspaceProjectId: string;
+        projectVersion: number;
+      }
+    | null
+  >;
   hasScheduledJobDispatchForCommand(
     actor: ActorContext,
     commandId: string
@@ -5137,6 +5156,60 @@ export const createManagedConversationRepository = (
         [actor.userId, logicalSessionId]
       );
       return result.rows[0] ? mapExecution(result.rows[0]) : null;
+    },
+
+    async getManagedConversationRecallContext(actor, input) {
+      const result = await pool.query<{
+        personal_project_id: string;
+        team_backend_id: string | null;
+        team_workspace_id: string | null;
+        workspace_project_id: string | null;
+        project_version: number;
+      }>(
+        `select p.id as personal_project_id,p.team_backend_id,
+                p.team_workspace_id,p.workspace_project_id,p.version as project_version
+           from managed_conversation_executions e
+           join projects p on p.id::text=e.project_id and p.owner_user_id=e.owner_user_id
+           join sessions s on s.owner_user_id=e.owner_user_id
+            and s.logical_session_id=e.logical_session_id
+            and (case when s.project_override_id is not null
+                      then s.project_override_personal_project_id
+                      else s.automatic_personal_project_id end)=p.id
+          where e.owner_user_id=$1 and e.id=$2 and e.execution_generation=$3
+            and e.state in ('starting','running','reconciling')
+            and p.lifecycle='active' and p.deletion_phase is null
+            and s.visibility='personal' and s.invalidated_at is null
+            and s.trashed_at is null and s.personal_deleted_at is null
+            and s.delete_batch_id is null and s.forget_batch_id is null
+          limit 1`,
+        [actor.userId, input.executionId, input.executionGeneration]
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      if (
+        !row.team_backend_id &&
+        !row.team_workspace_id &&
+        !row.workspace_project_id
+      )
+        return {
+          linked: false,
+          personalProjectId: row.personal_project_id,
+          projectVersion: row.project_version
+        };
+      if (
+        !row.team_backend_id ||
+        !row.team_workspace_id ||
+        !row.workspace_project_id
+      )
+        return null;
+      return {
+        linked: true,
+        personalProjectId: row.personal_project_id,
+        teamBackendId: row.team_backend_id,
+        teamWorkspaceId: row.team_workspace_id,
+        workspaceProjectId: row.workspace_project_id,
+        projectVersion: row.project_version
+      };
     },
 
     async hasScheduledJobDispatchForCommand(actor, commandId) {

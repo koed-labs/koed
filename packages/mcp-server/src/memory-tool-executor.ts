@@ -1,4 +1,6 @@
 import path from "node:path";
+import { setTimeout as waitFor } from "node:timers/promises";
+import { withCitationAliases } from "../integrations/pi/memory-answer-presentation.mjs";
 import {
   answerWithMemoryWorker,
   type MemoryAnswerConversationTurn,
@@ -32,6 +34,7 @@ import {
 import {
   memoryAccessCheckInputSchema,
   memoryAnswerInputSchema,
+  managedMemoryAnswerExecutionSchema,
   memoryExpandInputSchema,
   memoryIntakeProposeInputSchema,
   memorySearchInputSchema,
@@ -40,6 +43,8 @@ import {
 } from "./memory-tool-schemas.js";
 import { resolveProjectTeamWorkspaceRoute } from "./project-team-workspace-links.js";
 import { discoverTeamWorkspaces } from "./team-workspace-discovery.js";
+import { presentManagedCombinedRecall } from "./managed-combined-recall.js";
+import { readManagedProjectRecallContext } from "./managed-project-recall-context.js";
 import type {
   LocalRuntimeCallerContext,
   LocalRuntimeToolName
@@ -197,11 +202,13 @@ export class MemoryToolExecutor {
     rawInput: Record<string, unknown>,
     caller: LocalRuntimeCallerContext
   ): boolean {
-    const input = memoryAnswerInputSchema.parse(rawInput);
+    const input = managedMemoryAnswerExecutionSchema.parse(rawInput);
     const projectId =
       input.search_domain === "project"
         ? normalizeProjectId(input.project_id, caller)
         : input.project_id;
+    if (input.personal_project_and_me || input.managed_project_recall)
+      return true;
     return !resolveProjectTeamWorkspaceRoute({
       projectRoot: input.search_domain === "project" ? projectId : undefined,
       requestedTeamWorkspaceId: input.team_workspace_id,
@@ -333,7 +340,7 @@ export class MemoryToolExecutor {
   }
 
   async executeMemoryAnswerTask(
-    input: MemoryAnswerToolInput,
+    input: Record<string, unknown>,
     caller: LocalRuntimeCallerContext,
     taskId: string,
     signal?: AbortSignal,
@@ -343,13 +350,156 @@ export class MemoryToolExecutor {
     finalQuestion: Record<string, unknown>;
     result: Record<string, unknown>;
   }> {
-    input = memoryAnswerInputSchema.parse(input);
+    const parsedInput = managedMemoryAnswerExecutionSchema.parse(input);
+    if (parsedInput.managed_project_recall) {
+      const selection = parsedInput.managed_project_recall;
+      const koedHome = this.environment.KOED_HOME;
+      if (
+        !koedHome ||
+        !context ||
+        context.getExecutionAuthority().scope !== "personal"
+      )
+        throw new Error("Managed Project recall owner context is unavailable");
+      const selector = {
+        executionId: selection.execution_id,
+        generation: selection.execution_generation,
+        koedHome,
+        apiUrl: new URL(this.client.config.apiUrl)
+      };
+      const linked = await readManagedProjectRecallContext(selector);
+      const {
+        managed_project_recall: _managed,
+        project_id: _requestedProject,
+        session_id: _requestedSession,
+        team_workspace_id: _requestedWorkspace,
+        team_backend_id: _requestedBackend,
+        personal_project_and_me: _requestedUnion,
+        ...sharedInput
+      } = parsedInput;
+      void _managed;
+      void _requestedProject;
+      void _requestedSession;
+      void _requestedWorkspace;
+      void _requestedBackend;
+      void _requestedUnion;
+      const personalInput = {
+        ...sharedInput,
+        search_domain: "project" as const,
+        project_id: linked.personalProjectId,
+        personal_project_and_me: true,
+        response_detail: "with_citations" as const
+      };
+      const personal = await this.executeMemoryAnswerTask(
+        personalInput,
+        caller,
+        taskId,
+        signal,
+        onProgress,
+        context
+      );
+      if (signal?.aborted) throw signal.reason;
+      if (
+        (
+          personal.result.localMemoryWorker as
+            | { usedFallback?: boolean }
+            | undefined
+        )?.usedFallback
+      )
+        throw new Error("Managed Personal Project recall is unavailable");
+      if (!linked.linked) {
+        const after = await readManagedProjectRecallContext(selector);
+        if (JSON.stringify(after) !== JSON.stringify(linked))
+          throw new Error(
+            "Managed Project recall link changed during retrieval"
+          );
+        return {
+          ...personal,
+          result: {
+            ...personal.result,
+            managed_project_version: linked.projectVersion
+          }
+        };
+      }
+      if (
+        JSON.stringify(await readManagedProjectRecallContext(selector)) !==
+        JSON.stringify(linked)
+      )
+        throw new Error("Managed Project recall link changed during retrieval");
+      let team: Record<string, unknown> | null;
+      let childId: string | null = null;
+      try {
+        if (!context.startCombinedTeamChild || !context.getCombinedTeamChild)
+          throw new Error("Team child task coordinator unavailable");
+        const {
+          project_id: _project,
+          personal_project_and_me: _union,
+          ...shared
+        } = personalInput;
+        void _project;
+        void _union;
+        const child = await context.startCombinedTeamChild(
+          {
+            ...shared,
+            search_domain: "global",
+            team_workspace_id: linked.teamWorkspaceId,
+            team_backend_id: linked.teamBackendId,
+            response_detail: "with_citations"
+          },
+          caller,
+          `managed-combined:${taskId}:team`
+        );
+        childId = child.id;
+        await context.runCombinedTeamChild?.(child.id, signal);
+        let current = await context.getCombinedTeamChild(child.id);
+        while (!["completed", "failed", "cancelled"].includes(current.status)) {
+          await waitFor(1000, undefined, { signal });
+          const next = await context.getCombinedTeamChild(child.id);
+          if (
+            next.version > current.version &&
+            (next.status !== current.status ||
+              next.lastProgressAt !== current.lastProgressAt)
+          )
+            onProgress?.("linked Team memory advanced");
+          current = next;
+        }
+        if (current.status !== "completed" || !current.result)
+          throw new Error("Linked Team Memory Answer is unavailable");
+        team = withCitationAliases(current.result);
+        if (
+          (team.localMemoryWorker as { usedFallback?: boolean } | undefined)
+            ?.usedFallback
+        )
+          throw new Error("Linked Team recall is unavailable");
+        if (team.team_backend_id !== linked.teamBackendId)
+          throw new Error("Linked Team backend changed");
+      } catch (error) {
+        if (signal?.aborted) {
+          if (childId && context.isUserCancellation?.())
+            await context
+              .cancelCombinedTeamChild?.(childId)
+              .catch(() => undefined);
+          throw error;
+        }
+        team = null;
+      }
+      const after = await readManagedProjectRecallContext(selector);
+      if (JSON.stringify(after) !== JSON.stringify(linked))
+        throw new Error("Managed Project recall link changed during retrieval");
+      return {
+        finalQuestion: personal.finalQuestion,
+        result: presentManagedCombinedRecall(
+          withCitationAliases(personal.result),
+          team,
+          linked
+        )
+      };
+    }
     const authority = context?.getExecutionAuthority() ?? {
       scope: "personal" as const
     };
     if (
       authority.scope === "personal" &&
-      !this.personalMemoryAnswerEligible(input, caller)
+      !this.personalMemoryAnswerEligible(parsedInput, caller)
     ) {
       throw Object.assign(
         new Error(
@@ -363,8 +513,8 @@ export class MemoryToolExecutor {
     }
     if (
       authority.scope === "team" &&
-      input.team_workspace_id &&
-      input.team_workspace_id !== authority.teamWorkspaceId
+      parsedInput.team_workspace_id &&
+      parsedInput.team_workspace_id !== authority.teamWorkspaceId
     ) {
       throw Object.assign(
         new Error(
@@ -375,7 +525,7 @@ export class MemoryToolExecutor {
     }
     let finalQuestion: Record<string, unknown> | undefined;
     const result = await this.executeMemoryAnswer(
-      input,
+      parsedInput,
       caller,
       {
         origin: "mcp_memory_answer",
@@ -395,7 +545,7 @@ export class MemoryToolExecutor {
   }
 
   async executeMemoryAnswer(
-    input: MemoryAnswerToolInput,
+    input: MemoryAnswerToolInput & { personal_project_and_me?: boolean },
     caller: LocalRuntimeCallerContext,
     execution: TrustedMemoryAnswerExecutionOptions,
     signal?: AbortSignal
@@ -409,6 +559,7 @@ export class MemoryToolExecutor {
       (input.team_workspace_id ||
         input.team_backend_id ||
         (!taskAuthority &&
+          !input.personal_project_and_me &&
           resolveProjectTeamWorkspaceRoute({
             projectRoot:
               input.search_domain === "project"
@@ -470,8 +621,9 @@ export class MemoryToolExecutor {
         { memoryAnswerTaskErrorCode: "invalid_project_scope", retryable: false }
       );
     }
-    const projectId =
-      input.search_domain === "project"
+    const projectId = input.personal_project_and_me
+      ? input.project_id
+      : input.search_domain === "project"
         ? normalizeProjectId(input.project_id, caller)
         : input.project_id;
     const teamWorkspaceId =
@@ -497,6 +649,13 @@ export class MemoryToolExecutor {
     const progressAwareRetrievalClient: MemoryAnswerRetrievalClient = {
       search: async (searchInput) => {
         const authority = currentTeamAuthority();
+        if (
+          input.personal_project_and_me &&
+          (authority ||
+            searchInput.search_domain !== "project" ||
+            searchInput.project_id !== projectId)
+        )
+          throw new Error("Managed Personal Project recall boundary changed");
         const result = await retrievalClient.search(
           authority
             ? {
@@ -504,7 +663,12 @@ export class MemoryToolExecutor {
                 team_workspace_id: authority.teamWorkspaceId,
                 authorization_boundary: authority.authorizationBoundary
               }
-            : searchInput
+            : {
+                ...searchInput,
+                ...(input.personal_project_and_me
+                  ? { personal_project_and_me: true }
+                  : {})
+              }
         );
         execution.onProgress?.("retrieval search completed");
         return result;

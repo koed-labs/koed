@@ -68,6 +68,7 @@ import {
 import { registerApiTokenRoutes } from "../api-tokens/index.js";
 import { registerWorkItemRoutes } from "../work-items/routes.js";
 import { registerWorkItemsFromDocumentRoutes } from "../work-items/from-document-routes.js";
+import { registerManagedRecallContextRoutes } from "../memory/managed-recall-context-routes.js";
 import { registerAgentRoutes } from "../agents/routes.js";
 import { registerProjectRoutes } from "../projects/routes.js";
 import { registerDeckRoutes } from "../projects/deck-routes.js";
@@ -2098,6 +2099,13 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     koedHome: config.koedHome,
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite
+  });
+  registerManagedRecallContextRoutes(app, {
+    repository,
+    auth: authHelpers,
+    deploymentProfile: config.deploymentProfile,
+    koedHome: config.koedHome,
+    readRateLimit: rateLimitHandlers.memoryRead
   });
   registerAgentRoutes(app, {
     repository: agentsRepository,

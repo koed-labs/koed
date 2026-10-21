@@ -152,6 +152,8 @@ export type {
 } from "./managed-text-action-contract.js";
 export {
   createManagedConversationCitationRepository,
+  managedCitationBranchToolCallId,
+  type ManagedCitationReceiptInput,
   type ManagedConversationCitationRepository,
   type ManagedConversationTurnCitation
 } from "./managed-conversation-citation-repository.js";

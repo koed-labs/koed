@@ -13,6 +13,7 @@ export const searchMemorySchema = z
     search_domain: searchDomainSchema.default("global"),
     session_id: z.string().uuid().optional(),
     project_id: z.string().min(1).optional(),
+    personal_project_and_me: z.boolean().optional(),
     team_workspace_id: z.string().uuid().optional(),
     authorization_boundary: z.string().min(1).max(32768).optional(),
     exact_hints: memoryRetrievalExactHintsSchema.optional(),
@@ -35,6 +36,20 @@ export const searchMemorySchema = z
     strict_limit: queryBooleanSchema.optional()
   })
   .superRefine((input, context) => {
+    if (
+      input.personal_project_and_me &&
+      (input.team_workspace_id ||
+        input.search_domain !== "project" ||
+        !input.project_id ||
+        !z.string().uuid().safeParse(input.project_id).success)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["personal_project_and_me"],
+        message:
+          "Project-plus-Me requires one Personal Project UUID and no Team Workspace"
+      });
+    }
     if (input.authorization_boundary && !input.team_workspace_id) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

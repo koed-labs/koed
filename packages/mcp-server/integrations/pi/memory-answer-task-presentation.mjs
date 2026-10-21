@@ -108,6 +108,16 @@ export const presentMemoryAnswerTask = (task) => {
   )
     return pendingMemoryAnswerTask(task);
   if (task.status === "completed") {
+    if (
+      Array.isArray(task.result?.recalls) &&
+      typeof task.result?.combined_text === "string"
+    )
+      return {
+        status: task.result.status,
+        task_id: task.id,
+        text: task.result.combined_text,
+        details: task.result
+      };
     // Execution already projects the result to the requested detail level.
     // The shared formatter includes only supported answer fields, not task metadata.
     return {

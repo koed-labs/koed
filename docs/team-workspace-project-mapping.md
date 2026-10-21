@@ -84,6 +84,19 @@ node packages/koed-server/dist/cli.js team workspace remove --project-root "$PWD
 
 ## Recall From MCP
 
+Managed Project HQ Conversations use a separate first-party recall route. The
+local runner binds each MCP or Pi launch to its execution id and generation.
+At task execution, Koed resolves the owned logical Session to its effective
+Personal Project, then reads that Project's current explicit Team link. The
+Personal branch searches that Project plus Me assertions. A linked Team branch
+searches the selected Workspace globally, using the enrolled backend and the
+Team task's independent authorization boundary. It does not send the Personal
+Project id as a Team project filter. The combined result records both branch
+questions and citations; if Team cannot be checked, it includes an explicit
+Team-not-checked notice. The durable non-blocking task follows the same route.
+Legacy path mappings below remain for ordinary external MCP callers and never
+select the Workspace for a managed Project HQ Conversation.
+
 Call `memory_workspaces` with `{}` to discover authorized Team Workspaces across
 enrolled backends. The tool reads `/v1/team-context` through the existing local
 edge and returns Team/Workspace names, access, `team_workspace_id`, and
@@ -125,6 +138,26 @@ Discovery and recall use the same enrollment under `KOED_HOME` as Desktop.
 Electron does not need to be running. Headless `koed-server` enrollment,
 existing MCP configuration, and explicit Project mappings remain supported.
 Opening a Workspace in Electron does not select MCP scope.
+
+In a managed Desktop conversation linked to a Personal Project, Koed captures
+the execution identity and generation when it launches the provider. Recall
+then resolves that owned execution to its current Personal Project and exact
+Project-to-Team link. The Personal branch searches that Project plus the
+owner's `Me` assertions; the Team branch searches the linked Workspace with
+`search_domain=global`, without a Project filter. Model-supplied Project and
+Workspace selectors cannot replace the captured link. A generic MCP process
+without this managed identity retains the existing explicit routing behavior.
+
+Deferred combined recall is one durable parent task with a separately leased
+Team child. The scheduler executes that exact child under the parent's capacity
+slot and retains the Team child's own signed authorization, lease, and fence.
+After a restart it can reclaim eligible tasks. A missing or revoked Team route
+leaves Personal evidence available but records **Team not checked** in the
+completed result, including after reload. Managed citations store separate
+Personal and Team branch receipts tied to the observed provider tool call;
+aliases identify evidence but do not authorize later detail access. Detail
+reads recheck current source authority, so a revoked Team citation remains
+listed with its details unavailable.
 
 The Local AI Runtime advertises its supported tools and Team backend selection
 capability. An upgraded MCP adapter omits `memory_workspaces` when an older

@@ -283,6 +283,18 @@ export class PiManagedConversationSession {
             ).href
           }
         : {}),
+      ...(this.config.env.KOED_MANAGED_RECALL_EXECUTION_ID &&
+      this.config.env.KOED_MANAGED_RECALL_EXECUTION_GENERATION &&
+      this.config.env.KOED_MANAGED_RECALL_API_URL
+        ? {
+            KOED_MANAGED_RECALL_EXECUTION_ID:
+              this.config.env.KOED_MANAGED_RECALL_EXECUTION_ID,
+            KOED_MANAGED_RECALL_EXECUTION_GENERATION:
+              this.config.env.KOED_MANAGED_RECALL_EXECUTION_GENERATION,
+            KOED_MANAGED_RECALL_API_URL:
+              this.config.env.KOED_MANAGED_RECALL_API_URL
+          }
+        : {}),
       KOED_MANAGED_PERMISSION_MODE: this.config.permissionMode,
       // This session presents only the turn it prompted. A deferred completion
       // would start a later turn that has no output owner, so recall blocks.

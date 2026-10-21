@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
 import {
   serveStdio,
   type StdioServerHandle
 } from "@modelcontextprotocol/server/stdio";
-import type { MemoryAnswerTask } from "@koed/shared";
+import {
+  storeDesktopLocalCredential,
+  type MemoryAnswerTask
+} from "@koed/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createKoedMcpServer,
@@ -16,12 +22,16 @@ import { localRuntimeToolNames } from "../src/local-runtime-protocol.js";
 import { collectMemoryAnswerTask } from "../integrations/pi/memory-answer-task-presentation.mjs";
 
 const connections: Array<{ client: Client; server: StdioServerHandle }> = [];
+const homes: string[] = [];
 afterEach(async () => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   for (const { client, server } of connections.splice(0)) {
     await client.close();
     await server.close();
   }
+  for (const home of homes.splice(0))
+    rmSync(home, { recursive: true, force: true });
 });
 
 const task = (overrides: Partial<MemoryAnswerTask> = {}): MemoryAnswerTask => ({
@@ -50,7 +60,10 @@ const task = (overrides: Partial<MemoryAnswerTask> = {}): MemoryAnswerTask => ({
   ...overrides
 });
 
-const connect = async (overrides: Partial<KoedMcpRuntimeClient> = {}) => {
+const connect = async (
+  overrides: Partial<KoedMcpRuntimeClient> = {},
+  environment: NodeJS.ProcessEnv = {}
+) => {
   const current = task();
   const runtime = {
     capabilities: vi.fn(async () => ({
@@ -70,7 +83,7 @@ const connect = async (overrides: Partial<KoedMcpRuntimeClient> = {}) => {
     InMemoryTransport.createLinkedPair();
   const server = serveStdio(
     (context) =>
-      createKoedMcpServer(context, { runtimeClient: runtime, environment: {} }),
+      createKoedMcpServer(context, { runtimeClient: runtime, environment }),
     { transport: serverTransport, legacy: "reject" }
   );
   const client = new Client(
@@ -89,6 +102,180 @@ const submit = (client: Client, extra: Record<string, unknown> = {}) =>
   });
 const collect = (client: Client, id: string) =>
   client.callTool({ name: "memory_answer_result", arguments: { task_id: id } });
+
+const managedLaunch = (linked: boolean) => {
+  const home = mkdtempSync(join(tmpdir(), "koed-managed-recall-mcp-"));
+  homes.push(home);
+  const ownerUserId = randomUUID();
+  const credential = storeDesktopLocalCredential(home, {
+    ownerUserId,
+    operationFamilies: ["managed_execution", "personal_collaboration_read"]
+  });
+  const executionId = randomUUID();
+  const personalProjectId = randomUUID();
+  const teamWorkspaceId = randomUUID();
+  const teamBackendId = "linked-backend";
+  const workspaceProjectId = randomUUID();
+  const context = linked
+    ? {
+        linked: true,
+        personalProjectId,
+        teamBackendId,
+        teamWorkspaceId,
+        workspaceProjectId,
+        projectVersion: 3
+      }
+    : { linked: false, personalProjectId, projectVersion: 3 };
+  const fetchContext = vi.fn<typeof fetch>(async (url, init) => {
+    expect(String(url)).toBe(
+      `http://127.0.0.1:32123/v1/managed-conversations/${executionId}/recall-context?executionGeneration=2`
+    );
+    expect(init?.headers).toMatchObject({
+      authorization: credential.authorization
+    });
+    return new Response(JSON.stringify(context), { status: 200 });
+  });
+  vi.stubGlobal("fetch", fetchContext);
+  return {
+    context,
+    fetchContext,
+    personalProjectId,
+    teamWorkspaceId,
+    environment: {
+      KOED_HOME: home,
+      KOED_MANAGED_RECALL_EXECUTION_ID: executionId,
+      KOED_MANAGED_RECALL_EXECUTION_GENERATION: "2",
+      KOED_MANAGED_RECALL_API_URL: "http://127.0.0.1:32123"
+    }
+  };
+};
+
+describe("managed MCP Project recall entry", () => {
+  it("uses the launch owner link and returns combined structured content despite model selectors", async () => {
+    const launch = managedLaunch(true);
+    const combined = {
+      status: "completed",
+      availability: "team_checked",
+      recalls: [
+        { label: "Personal Project and Me" },
+        { label: "Team shared memory" }
+      ],
+      combined_text: "Owner and linked Team evidence"
+    };
+    const { client, runtime } = await connect(
+      {
+        callTool: vi.fn(async () => combined)
+      },
+      launch.environment
+    );
+    const result = await client.callTool({
+      name: "memory_answer",
+      arguments: {
+        query: "Shared decision",
+        delivery_mode: "blocking",
+        search_domain: "global",
+        project_id: randomUUID(),
+        team_workspace_id: randomUUID(),
+        team_backend_id: "model-selected"
+      }
+    });
+    expect(result.structuredContent).toEqual(combined);
+    expect(JSON.stringify(result.content)).toContain(
+      "Owner and linked Team evidence"
+    );
+    expect(runtime.callTool).toHaveBeenCalledWith(
+      "memory_answer",
+      expect.objectContaining({
+        query: "Shared decision",
+        search_domain: "project",
+        project_id: launch.personalProjectId,
+        personal_project_and_me: true
+      }),
+      expect.any(Object),
+      expect.anything(),
+      expect.any(String)
+    );
+    const input = vi.mocked(runtime.callTool).mock.calls[0]![1];
+    if (!input) throw new Error("Managed runtime request was not observed");
+    expect(input.managed_project_recall).toEqual({
+      execution_id: launch.environment.KOED_MANAGED_RECALL_EXECUTION_ID,
+      execution_generation: 2
+    });
+    expect(input).not.toHaveProperty("team_workspace_id");
+    expect(input).not.toHaveProperty("team_backend_id");
+    expect(launch.fetchContext).toHaveBeenCalledOnce();
+  });
+
+  it("keeps explicit nonblocking delivery durable and collects its combined result", async () => {
+    const launch = managedLaunch(true);
+    const completed = task({
+      status: "completed",
+      result: {
+        status: "partial",
+        availability: "team_not_checked",
+        team_not_checked_notice:
+          "Team memory was not checked because the Team backend is unavailable.",
+        recalls: [{ label: "Personal Project and Me" }],
+        combined_text: "Personal evidence. Team memory was not checked."
+      }
+    });
+    const { client, runtime } = await connect(
+      {
+        startMemoryAnswerTask: vi.fn(async () => completed),
+        getMemoryAnswerTask: vi.fn(async () => completed)
+      },
+      launch.environment
+    );
+    const pending = await submit(client, {
+      project_id: randomUUID(),
+      team_workspace_id: randomUUID()
+    });
+    expect(pending.structuredContent).toMatchObject({
+      status: "pending",
+      task_id: completed.id
+    });
+    expect(runtime.startMemoryAnswerTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_id: launch.personalProjectId,
+        personal_project_and_me: true
+      }),
+      expect.any(Object),
+      expect.any(String),
+      expect.anything()
+    );
+    expect(runtime.callTool).not.toHaveBeenCalled();
+    const collected = await collect(client, completed.id);
+    expect(JSON.stringify(collected)).toContain("Team memory was not checked");
+  });
+
+  it("keeps an unlinked managed execution on Personal Project recall without cwd Team mapping", async () => {
+    const launch = managedLaunch(false);
+    const { client, runtime } = await connect(
+      { callTool: vi.fn(async () => ({ markdown: "Owner only" })) },
+      launch.environment
+    );
+    await client.callTool({
+      name: "memory_answer",
+      arguments: {
+        query: "Owner context",
+        delivery_mode: "blocking",
+        search_domain: "global",
+        project_id: randomUUID(),
+        team_workspace_id: randomUUID(),
+        team_backend_id: "model-selected"
+      }
+    });
+    const input = vi.mocked(runtime.callTool).mock.calls[0]![1];
+    expect(input).toMatchObject({
+      search_domain: "project",
+      project_id: launch.personalProjectId,
+      personal_project_and_me: true
+    });
+    expect(input).not.toHaveProperty("team_workspace_id");
+    expect(input).not.toHaveProperty("team_backend_id");
+    expect(launch.fetchContext).toHaveBeenCalledOnce();
+  });
+});
 
 describe("ordinary MCP non-blocking Memory Answer", () => {
   it("accepts before a gated worker finishes, and collection never waits", async () => {

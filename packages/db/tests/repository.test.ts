@@ -32023,6 +32023,15 @@ describeDb("memory repository visibility", () => {
         captureMethod: "transcript"
       }
     );
+    const personalProjectId = randomUUID();
+    await pool.query(
+      `insert into projects(id,owner_user_id,name,key) values($1,$2,'Provenance project',$3)`,
+      [personalProjectId, owner.id, `provenance-${randomUUID()}`]
+    );
+    await pool.query(
+      `update sessions set automatic_personal_project_id=$2 where id=$1`,
+      [session.id, personalProjectId]
+    );
     const capturedAt = "2026-08-10T10:00:00.000Z";
     const occurredAt = "2026-08-09T09:30:00.000Z";
     const event = await repo.createMemoryEvent(
@@ -32124,6 +32133,34 @@ describeDb("memory repository visibility", () => {
           visibility: "personal"
         }
       });
+      const scoped = await repo.searchMemoryNodes(
+        { userId: owner.id },
+        {
+          scope: "personal",
+          query: "kingfisher",
+          searchDomain: "project",
+          projectId: personalProjectId,
+          personalProjectAndMe: true,
+          retrievalStage: "leaf_search",
+          limit: 5
+        }
+      );
+      expect(scoped.results.map((item) => item.sourceId)).toContain(leaf.id);
+      const otherProject = await repo.searchMemoryNodes(
+        { userId: owner.id },
+        {
+          scope: "personal",
+          query: "kingfisher",
+          searchDomain: "project",
+          projectId: randomUUID(),
+          personalProjectAndMe: true,
+          retrievalStage: "leaf_search",
+          limit: 5
+        }
+      );
+      expect(otherProject.results.map((item) => item.sourceId)).not.toContain(
+        leaf.id
+      );
       const expanded = await repo.expandMemoryNode(leaf.id, {
         userId: owner.id
       });
@@ -34852,6 +34889,38 @@ describeDb("memory repository visibility", () => {
       createdByModel: "gpt-5.4-mini",
       createdByPromptVersion: "curated-memory-local-review-v1"
     });
+    const meSource = await repo.getEmbeddableSource(
+      "curated_memory",
+      processed.assertionId!
+    );
+    await repo.upsertSourceEmbedding({
+      ...testEmbeddingCompatibility,
+      source: meSource!,
+      model: "qwen3-0.6b",
+      dimensions: 1024,
+      version: "qwen3-0.6b",
+      vector: Array.from({ length: 1024 }, (_, index) => (index === 0 ? 1 : 0))
+    });
+    const meFetch = mockEmbeddingQuery();
+    try {
+      const meUnion = await repo.searchMemoryNodes(
+        { userId: owner.id },
+        {
+          scope: "personal",
+          query: "window seats",
+          searchDomain: "project",
+          projectId: randomUUID(),
+          personalProjectAndMe: true,
+          retrievalStage: "curated_memory_search",
+          limit: 5
+        }
+      );
+      expect(meUnion.results.map((item) => item.sourceId)).toContain(
+        processed.assertionId
+      );
+    } finally {
+      meFetch.mockRestore();
+    }
 
     const reviewedFollowup = async (
       decision: "store" | "supersede" | "conflict",

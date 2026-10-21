@@ -17,6 +17,7 @@ import type {
   ManagedConversationRuntimeBindingRecord,
   MemorySourceRepository
 } from "@koed/db";
+import { managedCitationBranchToolCallId } from "@koed/db";
 import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -28,7 +29,9 @@ import {
   ManagedConversationSourceReplicaPendingError,
   assertManagedConversationExecutionOwner,
   createManagedConversationService,
+  createManagedCitationVerifier,
   managedCodexRuntimeEnvironment,
+  managedRecallLaunchEnvironment,
   managedWorkItemCompletionEnvironment,
   managedConversationTokenUsageInput,
   managedClaudeRuntimeHome,
@@ -40,6 +43,33 @@ import {
   shouldRequestManagedConversationSourceRestore,
   shouldRecoverForkPreparationFailure
 } from "./managed-conversation-service.js";
+
+describe("managed Project recall launch selection", () => {
+  it("passes only first-class Project UUID executions to the owner resolver", () => {
+    const id = randomUUID();
+    const base = { id, executionGeneration: 7 };
+    const apiUrl = "http://127.0.0.1:3300";
+    expect(
+      managedRecallLaunchEnvironment(
+        { ...base, projectId: randomUUID() },
+        apiUrl
+      )
+    ).toEqual({
+      KOED_MANAGED_RECALL_EXECUTION_ID: id,
+      KOED_MANAGED_RECALL_EXECUTION_GENERATION: "7",
+      KOED_MANAGED_RECALL_API_URL: apiUrl
+    });
+    expect(
+      managedRecallLaunchEnvironment(
+        { ...base, projectId: "/legacy/project" },
+        apiUrl
+      )
+    ).toEqual({});
+    expect(
+      managedRecallLaunchEnvironment({ ...base, projectId: "" }, apiUrl)
+    ).toEqual({});
+  });
+});
 import { captureExecutionCheckpoint } from "./execution-checkpoint.js";
 import {
   createGitExecutionCheckoutDriver,
@@ -287,6 +317,151 @@ describe("managed Work Item child environment", () => {
 });
 
 describe("managed citation persistence after provider tool observation", () => {
+  it.each(["codex", "claude", "pi"] as const)(
+    "verifies both %s combined branches before one atomic receipt batch",
+    async (provider) => {
+      const personalProjectId = randomUUID();
+      const teamWorkspaceId = randomUUID();
+      const workspaceProjectId = randomUUID();
+      const personalReceiptId = randomUUID();
+      const teamReceiptId = randomUUID();
+      const personalQuestionId = randomUUID();
+      const teamQuestionId = randomUUID();
+      const personalCitation = {
+        sourceType: "memory_node",
+        sourceId: randomUUID(),
+        visibility: "personal",
+        title: "Owner fact"
+      };
+      const teamCitation = {
+        sourceType: "memory_node",
+        sourceId: randomUUID(),
+        visibility: "team",
+        title: "Shared fact"
+      };
+      const alias = (id: string) => `r${id.replaceAll("-", "")}c1`;
+      const combined = {
+        selected_team_backend_id: "team-one",
+        selected_team_workspace_id: teamWorkspaceId,
+        selected_personal_project_id: personalProjectId,
+        selected_workspace_project_id: workspaceProjectId,
+        selected_project_version: 3,
+        recalls: [
+          {
+            label: "Personal Project and Me",
+            question_id: personalQuestionId,
+            citation_receipt_id: personalReceiptId,
+            citations: [
+              { ...personalCitation, citationId: alias(personalReceiptId) }
+            ]
+          },
+          {
+            label: "Team shared memory",
+            question_id: teamQuestionId,
+            citation_receipt_id: teamReceiptId,
+            team_backend_id: "team-one",
+            citations: [{ ...teamCitation, citationId: alias(teamReceiptId) }]
+          }
+        ]
+      };
+      const personalMemoryCitation = vi.fn(async () => ({
+        detail: {
+          citation: personalCitation,
+          sourceType: personalCitation.sourceType,
+          sourceId: personalCitation.sourceId,
+          sourceDeploymentId: randomUUID(),
+          sourceOwnerPrincipalId: randomUUID(),
+          title: personalCitation.title,
+          summary: "Owner evidence"
+        }
+      }));
+      const teamMemoryCitation = vi.fn(async () => ({
+        detail: {
+          citation: teamCitation,
+          sourceType: teamCitation.sourceType,
+          sourceId: teamCitation.sourceId,
+          teamWorkspaceId,
+          sourceOwnerPrincipalId: randomUUID()
+        }
+      }));
+      const verify = createManagedCitationVerifier({
+        memoryClient: { personalMemoryCitation, teamMemoryCitation } as never,
+        teamAuthorization: () => "team-credential"
+      });
+      const execution = {
+        ...terminalExecutionFixture({
+          ownerUserId: randomUUID(),
+          executionId: randomUUID(),
+          deploymentId: randomUUID(),
+          deviceId: randomUUID()
+        }),
+        provider
+      };
+      const toolCallId = `call-${randomUUID()}`;
+      const result =
+        provider === "pi"
+          ? { details: { value: combined } }
+          : { structuredContent: combined };
+      const tool = {
+        providerTurnId: "turn-1",
+        toolCallId,
+        toolName: "memory_answer",
+        result
+      };
+      const command = { id: randomUUID(), leaseToken: randomUUID() };
+      const recordedBatches: unknown[] = [];
+      const recordBatch = vi.fn(async (receiptBatch: unknown) => {
+        recordedBatches.push(receiptBatch);
+      });
+      const receipts = await verify(execution, tool, command);
+      await recordBatch(receipts);
+      expect(recordBatch).toHaveBeenCalledOnce();
+      expect(recordedBatches).toEqual([receipts]);
+      expect(receipts).toHaveLength(2);
+      expect(receipts.map((receipt) => receipt.toolCallId)).toEqual([
+        managedCitationBranchToolCallId(toolCallId, "personal"),
+        managedCitationBranchToolCallId(toolCallId, "team")
+      ]);
+      expect(receipts[0]).toMatchObject({
+        questionId: personalQuestionId,
+        combined: { providerToolCallId: toolCallId, branch: "personal" }
+      });
+      expect(receipts[1]).toMatchObject({
+        questionId: teamQuestionId,
+        questionBackendId: "team-one",
+        combined: { providerToolCallId: toolCallId, branch: "team" }
+      });
+      expect(teamMemoryCitation).toHaveBeenCalledWith(
+        "team-one",
+        teamQuestionId,
+        0,
+        "team-credential"
+      );
+      teamMemoryCitation.mockRejectedValueOnce(new Error("Team revoked"));
+      recordBatch.mockClear();
+      await persistManagedCitationAfterObserver(async () => {
+        await recordBatch(await verify(execution, tool, command));
+      }, vi.fn());
+      expect(recordBatch).not.toHaveBeenCalled();
+      const nested = {
+        ...combined,
+        recalls: [{ ...combined.recalls[0], recalls: [] }, combined.recalls[1]]
+      };
+      await expect(
+        verify(
+          execution,
+          {
+            ...tool,
+            result:
+              provider === "pi"
+                ? { details: { value: nested } }
+                : { structuredContent: nested }
+          },
+          command
+        )
+      ).rejects.toThrow("branch is invalid");
+    }
+  );
   it("awaits successful persistence before completing the provider callback", async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => {

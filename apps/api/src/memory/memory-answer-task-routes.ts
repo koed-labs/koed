@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { MemorySourceRepository } from "@koed/db";
 import type { MemoryAnswerTaskExecutionAuthority } from "@koed/shared";
-import { memoryAnswerInputSchema } from "@koed/mcp-server/runtime-contracts";
+import { managedMemoryAnswerExecutionSchema } from "@koed/mcp-server/runtime-contracts";
 import { finalMemoryQuestionSchema } from "./questions-schemas.js";
 import {
   issueMemoryAnswerAuthorizationBoundary,
@@ -65,7 +65,9 @@ export const registerMemoryAnswerTaskRoutes = (
     { preHandler: memoryWrite },
     async (request) => {
       const input = acceptMemoryAnswerTaskSchema.parse(request.body);
-      const toolInput = memoryAnswerInputSchema.parse(input.request.input);
+      const toolInput = managedMemoryAnswerExecutionSchema.parse(
+        input.request.input
+      );
       const actor = actorFor(
         await authenticateMemoryAnswerTask(
           request,
@@ -116,7 +118,8 @@ export const registerMemoryAnswerTaskRoutes = (
         leaseOwner: input.lease_owner,
         leaseMs: input.lease_ms,
         allowTeam: input.scope_filter === "team" && actor.allowTeam,
-        scopeFilter: input.scope_filter ?? "personal"
+        scopeFilter: input.scope_filter ?? "personal",
+        taskId: input.task_id
       });
       if (batch.task?.teamWorkspaceId && !batch.teamAuthority)
         throw Object.assign(new Error("Team task authority is unavailable"), {

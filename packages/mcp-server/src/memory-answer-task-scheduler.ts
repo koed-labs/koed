@@ -19,7 +19,20 @@ export type { MemoryAnswerTaskExecutionAuthority } from "@koed/shared";
 
 export interface MemoryAnswerTaskExecutionContext {
   getExecutionAuthority(): MemoryAnswerTaskExecutionAuthority;
+  /** Only an explicit task cancellation may cancel the separately durable child. */
+  isUserCancellation?: () => boolean;
   taskBackend?: MemoryAnswerRetrievalClient;
+  startCombinedTeamChild?: (
+    input: Record<string, unknown>,
+    caller: LocalRuntimeCallerContext,
+    invocationKey: string
+  ) => Promise<MemoryAnswerTask>;
+  getCombinedTeamChild?: (taskId: string) => Promise<MemoryAnswerTask>;
+  cancelCombinedTeamChild?: (taskId: string) => Promise<MemoryAnswerTask>;
+  runCombinedTeamChild?: (
+    taskId: string,
+    parentSignal?: AbortSignal
+  ) => Promise<void>;
 }
 export type MemoryAnswerTaskApi = Pick<
   MemoryApiClient,
@@ -374,7 +387,8 @@ export class MemoryAnswerTaskScheduler {
 
   private async executeClaim(
     task: ClaimedMemoryAnswerTask,
-    attempt: MemoryAnswerAttemptControl
+    attempt: MemoryAnswerAttemptControl,
+    reportProgress?: (status: string) => void
   ): Promise<void> {
     let authority = memoryAnswerTaskExecutionAuthoritySchema.parse(
       task.executionAuthority ?? { scope: "personal" }
@@ -454,12 +468,49 @@ export class MemoryAnswerTaskScheduler {
         task,
         getExecutionAuthority
       ) ?? { getExecutionAuthority };
+      context.isUserCancellation = () => attempt.endReason === "cancelled";
+      if (context.startCombinedTeamChild && context.getCombinedTeamChild) {
+        context.runCombinedTeamChild = async (taskId, parentSignal) => {
+          if (parentSignal?.aborted) throw parentSignal.reason;
+          const batch = await this.apiClient.claimMemoryAnswerTask({
+            task_id: taskId,
+            scope_filter: "team",
+            lease_owner: this.leaseOwner,
+            lease_ms: this.leaseMs
+          });
+          for (const reconciled of batch.reconciled) this.publish(reconciled);
+          if (!batch.task) return;
+          if (batch.task.id !== taskId || batch.task.teamWorkspaceId === null)
+            throw new Error("Combined Team child claim mismatch");
+          const childAttempt = new MemoryAnswerAttemptControl();
+          const onParentAbort = () =>
+            childAttempt.stop(
+              attempt.endReason ?? "execution_failed",
+              parentSignal?.reason
+            );
+          parentSignal?.addEventListener("abort", onParentAbort, {
+            once: true
+          });
+          try {
+            await this.executeClaim(
+              claimedTask(batch.task),
+              childAttempt,
+              (status) => attempt.progress(`linked Team: ${status}`)
+            );
+          } finally {
+            parentSignal?.removeEventListener("abort", onParentAbort);
+          }
+        };
+      }
       const completed = await this.executor.executeMemoryAnswerTask(
         task.request.input,
         task.request.caller,
         task.id,
         attempt.controller.signal,
-        (status) => attempt.progress(status),
+        (status) => {
+          attempt.progress(status);
+          reportProgress?.(status);
+        },
         context
       );
       finishing = true;
