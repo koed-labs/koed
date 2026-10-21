@@ -48,6 +48,48 @@ const canonicalJson = (value: unknown): string => {
   return encoded;
 };
 
+const deckAgainKeyHash = (sourceKey: string, cardId: string) =>
+  createHash("sha256")
+    .update(
+      `koed:collaboration:personal-note-idempotency:v1\ndeck-again:${sourceKey}:${cardId}`,
+      "utf8"
+    )
+    .digest("hex");
+const remapDeckAgainNote = async (
+  client: pg.PoolClient,
+  ownerUserId: string,
+  oldSourceKey: string,
+  oldCardId: string,
+  nextSourceKey: string,
+  nextCardId: string
+) => {
+  const oldHash = deckAgainKeyHash(oldSourceKey, oldCardId);
+  const nextHash = deckAgainKeyHash(nextSourceKey, nextCardId);
+  const notes = await client.query<{
+    id: string;
+    idempotency_key_hash: string;
+  }>(
+    `select id,idempotency_key_hash from personal_notes
+      where owner_user_id=$1 and idempotency_key_hash in ($2,$3)
+        and lifecycle='active' for update`,
+    [ownerUserId, oldHash, nextHash]
+  );
+  const source = notes.rows.find((row) => row.idempotency_key_hash === oldHash);
+  const destination = notes.rows.find(
+    (row) => row.idempotency_key_hash === nextHash
+  );
+  if (source && destination && source.id !== destination.id)
+    throw new PersonalWorkspaceProjectConflictError(
+      "Deck learning Note identity changed"
+    );
+  if (!source || oldHash === nextHash) return;
+  await client.query(
+    `update personal_notes set idempotency_key_hash=$3,updated_at=now()
+       where owner_user_id=$1 and id=$4 and idempotency_key_hash=$2 and lifecycle='active'`,
+    [ownerUserId, oldHash, nextHash, source.id]
+  );
+};
+
 const deckSnapshot = async (
   client: pg.Pool | pg.PoolClient,
   ownerUserId: string,
@@ -882,7 +924,7 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         throw new PersonalWorkspaceProjectConflictError(
           "Team Deck copy map changed"
         );
-      for (const mapped of copyMap)
+      for (const mapped of copyMap) {
         await client.query(
           `update deck_card_progress
         set team_backend_id=$3,workspace_project_id=$4,deck_id=$5,card_id=$6,updated_at=now()
@@ -898,6 +940,15 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
             mapped.sourceCardId
           ]
         );
+        await remapDeckAgainNote(
+          client,
+          ownerUserId,
+          `${projectId}:personal`,
+          mapped.sourceCardId,
+          `${projectId}:${input.teamBackendId}:${input.workspaceProjectId}`,
+          mapped.cardId
+        );
+      }
       const updated = await client.query<{ version: number }>(
         `
         update projects
@@ -1168,6 +1219,14 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           await client.query(
             `update deck_card_progress set deck_id=$5,card_id=$6,team_backend_id=null,workspace_project_id=null,updated_at=now() where owner_user_id=$1 and personal_project_id=$2 and deck_id=$3 and card_id=$4`,
             [ownerUserId, projectId, deck.id, card.id, localDeckId, localCardId]
+          );
+          await remapDeckAgainNote(
+            client,
+            ownerUserId,
+            `${projectId}:${project.rows[0].team_backend_id}:${project.rows[0].workspace_project_id}`,
+            card.id,
+            `${projectId}:personal`,
+            localCardId
           );
         }
       }

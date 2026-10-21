@@ -481,6 +481,10 @@ export interface CollaborationRepository {
     actor: ActorContext,
     input: { noteId: string }
   ): Promise<PersonalNoteRecord | null>;
+  findPersonalNoteByIdempotencyKey(
+    actor: ActorContext,
+    input: { idempotencyKey: string }
+  ): Promise<PersonalNoteRecord | null>;
   renamePersonalNote(
     actor: ActorContext,
     input: { noteId: string; expectedTitleVersion: number; title: string }
@@ -5470,6 +5474,20 @@ export const createCollaborationRepository = (
             and note.lifecycle='active'
           limit 1`,
         [input.noteId, actor.userId]
+      );
+      return result.rows[0]
+        ? decryptPersonalNote(pool, actor, requireProvider(), result.rows[0])
+        : null;
+    },
+    async findPersonalNoteByIdempotencyKey(actor, input) {
+      const result = await pool.query<PersonalNoteRow>(
+        `${selectPersonalNoteSql}
+          where note.owner_user_id=$1 and note.idempotency_key_hash=$2
+            and note.lifecycle='active' limit 1`,
+        [
+          actor.userId,
+          hashDomain("personal-note-idempotency", input.idempotencyKey)
+        ]
       );
       return result.rows[0]
         ? decryptPersonalNote(pool, actor, requireProvider(), result.rows[0])

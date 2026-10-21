@@ -17,6 +17,7 @@ import type {
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type { ProjectsDesktopApi } from "./ipc/projects-protocol.js";
+import type { DeckDesktopApi } from "./ipc/deck-protocol.js";
 import type { ManagedMemoryActionDesktopApi } from "./ipc/managed-memory-action-protocol.js";
 import type { ManagedTextActionDesktopApi } from "./ipc/managed-text-action-protocol.js";
 import type { CuratedMemoryDesktopApi } from "./ipc/curated-memory-protocol.js";
@@ -173,6 +174,7 @@ export interface DesktopApi {
   ) => Promise<T>;
   personalMemory?: PersonalDesktopApi;
   projects?: ProjectsDesktopApi;
+  decks?: DeckDesktopApi;
   curatedMemory?: CuratedMemoryDesktopApi;
   managedMemoryActions?: ManagedMemoryActionDesktopApi;
   managedTextActions?: ManagedTextActionDesktopApi;

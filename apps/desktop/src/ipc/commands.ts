@@ -14,6 +14,13 @@ import {
 } from "./managed-text-action-protocol.js";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
+  deckCommandChannel,
+  deckRequestSchema,
+  deckResultSchema,
+  type DeckRequest,
+  type DeckResult
+} from "./deck-protocol.js";
+import {
   curatedMemoryCommandChannel,
   curatedMemoryRequestSchema,
   curatedMemoryResultSchema,
@@ -230,6 +237,7 @@ export const registerDesktopCommandHandlers = (
       >["data"]
     >;
     projects?: (request: ProjectsRequest) => Promise<ProjectsResult>;
+    decks?: (request: DeckRequest) => Promise<DeckResult>;
     managedMemoryActions?: (
       request: ManagedMemoryActionRequest
     ) => Promise<ManagedMemoryActionResult>;
@@ -644,6 +652,24 @@ export const registerDesktopCommandHandlers = (
     );
     if (result.operation !== request.operation)
       throw new Error("Invalid memory operation correlation.");
+    return result;
+  });
+
+  ipcMain.handle(deckCommandChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (!options.decks) throw new Error("Deck study is unavailable.");
+    const request = deckRequestSchema.parse(value);
+    const result = deckResultSchema.parse(await options.decks(request));
+    if (
+      result.operation !== request.operation ||
+      result.projectId !== request.projectId ||
+      ("deckId" in request &&
+        (!("deckId" in result) || request.deckId !== result.deckId)) ||
+      ("cardId" in request &&
+        (!("cardId" in result) || request.cardId !== result.cardId))
+    )
+      throw new Error("Invalid Deck response correlation.");
     return result;
   });
 

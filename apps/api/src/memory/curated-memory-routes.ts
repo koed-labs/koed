@@ -195,6 +195,16 @@ export const registerCuratedMemoryRoutes = (
           .status(404)
           .send({ error: "Curated Memory proposal not found" });
       }
+      if (
+        proposalRecord.createdByPromptVersion === "deck-first-again-v1" &&
+        (input.scope !== "me" ||
+          input.kind !== "learning" ||
+          input.operation !== "store")
+      ) {
+        return reply
+          .status(409)
+          .send({ error: "Deck learning review must remain a Me learning." });
+      }
       const sensitivityRank = {
         normal: 0,
         sensitive: 1,

@@ -613,6 +613,7 @@ const bootstrap = async () => {
       return { status };
     },
     projects: server.projects,
+    decks: server.decks,
     curatedMemory: server.curatedMemory,
     managedMemoryActions: server.managedMemoryActions,
     managedTextActions: server.managedTextActions,

@@ -607,6 +607,40 @@ export const createCuratedMemoryProposalTransitionMethods = ({
         return mapProposal(proposal);
       }
       if (
+        proposal.created_by_prompt_version === "deck-first-again-v1" &&
+        input.decision !== "skip"
+      ) {
+        const eventId = proposal.evidence_memory_event_ids[0];
+        const source =
+          eventId &&
+          proposal.evidence_memory_event_ids.length === 1 &&
+          proposal.evidence_conversation_item_ids.length === 0 &&
+          (
+            await client.query(
+              `select 1 from personal_note_revisions revision
+               join personal_notes note on note.id=revision.note_id
+              where revision.owner_user_id=$1 and revision.memory_event_id=$2
+                and revision.revision=1 and note.owner_user_id=$1
+                and note.current_revision=1 and note.lifecycle='active'`,
+              [actor.userId, eventId]
+            )
+          ).rowCount;
+        if (
+          !source ||
+          input.expectedAttemptCount === undefined ||
+          input.decision !== "store" ||
+          input.assertion?.scope !== "me" ||
+          input.assertion?.kind !== "learning" ||
+          proposal.scope_hint !== "me" ||
+          proposal.kind_hint !== "learning" ||
+          proposal.operation !== "store"
+        )
+          throw Object.assign(
+            new Error("Deck learning must remain a source-backed Me learning"),
+            { statusCode: 409 }
+          );
+      }
+      if (
         input.decision !== "skip" &&
         input.expectedAttemptCount !== undefined &&
         input.assertion

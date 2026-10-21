@@ -35,6 +35,7 @@ import type {
   ManagedConversationRuntimeItem
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ProjectsDesktopApi } from "../../../ipc/projects-protocol.js";
+import type { DeckDesktopApi } from "../../../ipc/deck-protocol.js";
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
 import type { ManagedConversationLifecycle } from "../../state/use-managed-conversation-lifecycle.js";
@@ -42,6 +43,7 @@ import { hqRuntimeItemTitle } from "../conversation/hq-runtime-item-title.js";
 import { projectNavigation } from "../project-navigation.js";
 import { nowInspectableExecutions, type NowNeed } from "../now/now-model.js";
 import { HqProjectSources } from "./HqProjectSources.js";
+import { HqDecks } from "./HqDecks.js";
 import { HqLearnedToday } from "./HqLearnedToday.js";
 import { HqProjectPullRequests } from "./HqProjectPullRequests.js";
 import { WhatKoedKnows } from "../memory/WhatKoedKnows.js";
@@ -131,6 +133,9 @@ export function HqProjectView({
   personalProjects,
   graphProjects,
   projectsApi,
+  decksApi,
+  openDeckId,
+  openDeckNonce,
   focusWorkItemId,
   onFocusWorkItemHandled,
   curatedMemoryApi,
@@ -143,6 +148,7 @@ export function HqProjectView({
   ownedAgents,
   panelHost,
   onSourcesOpenChange,
+  onDeckDismissed,
   onContextChange,
   onMakeWorkItems,
   chiefName,
@@ -164,6 +170,9 @@ export function HqProjectView({
   personalProjects: readonly Project[];
   graphProjects: readonly DesktopProject[];
   projectsApi: ProjectsDesktopApi;
+  decksApi?: DeckDesktopApi | null;
+  openDeckId?: string | null;
+  openDeckNonce?: number;
   focusWorkItemId?: string | null;
   onFocusWorkItemHandled?: () => void;
   curatedMemoryApi?: CuratedMemoryDesktopApi | null;
@@ -176,6 +185,7 @@ export function HqProjectView({
   ownedAgents?: readonly { id: string; name: string }[];
   panelHost?: HTMLElement | null;
   onSourcesOpenChange?: (open: boolean) => void;
+  onDeckDismissed?: () => void;
   onContextChange?: (label: string | null) => void;
   onMakeWorkItems?: (
     source: { id: string; name: string },
@@ -251,6 +261,15 @@ export function HqProjectView({
   );
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [sourceCloseSignal, setSourceCloseSignal] = useState(0);
+  const deckPanelOpen = useRef(false);
+  const deckDismissToken = useRef(0);
+  const [deckDismissSignal, setDeckDismissSignal] = useState(0);
+  const dismissDeck = () => {
+    deckDismissToken.current++;
+    setDeckDismissSignal(deckDismissToken.current);
+    deckPanelOpen.current = false;
+    onDeckDismissed?.();
+  };
   const [memoryCountState, setMemoryCountState] = useState<{
     key: number;
     count: string | null;
@@ -975,6 +994,7 @@ export function HqProjectView({
         )
           openWorkItem(result.item);
         else {
+          dismissDeck();
           setMemoryOpen(false);
           setSourceCloseSignal((value) => value + 1);
           setBriefFor(item.id);
@@ -1105,6 +1125,7 @@ export function HqProjectView({
     />
   );
   const openWorkItem = (item: WorkItem) => {
+    dismissDeck();
     setMemoryPanelRow(null);
     setMemoryOpen(false);
     setSourceCloseSignal((value) => value + 1);
@@ -1141,6 +1162,7 @@ export function HqProjectView({
     onFocusWorkItemHandled?.();
   }, [focusWorkItemId, visibleInventory, linked]);
   const openMemoryPanel = (rowKey: string) => {
+    dismissDeck();
     setMemoryPanelRow(rowKey);
     setMemoryOpen(false);
     setBriefFor(null);
@@ -1229,6 +1251,33 @@ export function HqProjectView({
         ) : null}
       </header>
       <div className="hq-project-view__keys">
+        {decksApi ? (
+          <HqDecks
+            api={decksApi}
+            agentNames={Object.fromEntries(
+              (ownedAgents ?? []).map((agent) => [agent.id, agent.name])
+            )}
+            projectId={project.id}
+            ownerId={ownerId}
+            profileKey={profileKey}
+            panelHost={panelHost}
+            openDeckId={openDeckId}
+            openDeckNonce={openDeckNonce}
+            closeSignal={closeSignal}
+            dismissSignal={deckDismissSignal}
+            dismissToken={deckDismissToken}
+            onOpenChange={(open) => {
+              deckPanelOpen.current = open;
+              if (open) {
+                setMemoryOpen(false);
+                setBriefFor(null);
+                setSourceCloseSignal((value) => value + 1);
+              }
+              onSourcesOpenChange?.(open);
+            }}
+            onContextChange={onContextChange}
+          />
+        ) : null}
         {linked && sharedIdentity && sharedProjectStore ? (
           <SharedProjectSources
             store={sharedProjectStore}
@@ -1237,11 +1286,17 @@ export function HqProjectView({
             panelHost={panelHost}
             onOpenChange={(value) => {
               if (value) {
+                dismissDeck();
                 setMemoryPanelRow(null);
                 setMemoryOpen(false);
                 setBriefFor(null);
                 onSourcesOpenChange?.(true);
-              } else if (!memoryOpen && !briefFor && !memoryPanelRow) {
+              } else if (
+                !deckPanelOpen.current &&
+                !memoryOpen &&
+                !briefFor &&
+                !memoryPanelRow
+              ) {
                 onSourcesOpenChange?.(false);
               }
             }}
@@ -1260,11 +1315,17 @@ export function HqProjectView({
             panelHost={panelHost}
             onOpenChange={(value) => {
               if (value) {
+                dismissDeck();
                 setMemoryPanelRow(null);
                 setMemoryOpen(false);
                 setBriefFor(null);
                 onSourcesOpenChange?.(true);
-              } else if (!memoryOpen && !briefFor && !memoryPanelRow) {
+              } else if (
+                !deckPanelOpen.current &&
+                !memoryOpen &&
+                !briefFor &&
+                !memoryPanelRow
+              ) {
                 onSourcesOpenChange?.(false);
               }
             }}
@@ -1282,6 +1343,7 @@ export function HqProjectView({
             className="hq-project-view__memory"
             aria-label="What Koed knows"
             onClick={() => {
+              dismissDeck();
               setMemorySelection(null);
               setSourceCloseSignal((value) => value + 1);
               setMemoryOpen(true);
@@ -2060,6 +2122,7 @@ export function HqProjectView({
                   memoryRevision={memoryRevision}
                   ownedAgents={ownedAgents}
                   onOpenItem={(item) => {
+                    dismissDeck();
                     setMemorySelection({
                       key: memoryKey,
                       id: ++memorySelectionId.current,

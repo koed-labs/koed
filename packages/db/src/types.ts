@@ -2064,6 +2064,10 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: { noteId: string; memoryEventId: string; claim: string }
   ): Promise<CuratedMemoryProposalRecord>;
+  createDeckLearningProposal(
+    actor: ActorContext,
+    input: { noteId: string; memoryEventId: string; claim: string }
+  ): Promise<CuratedMemoryProposalRecord>;
   listCuratedMemoryProposals(
     actor: ActorContext,
     input?: { status?: CuratedMemoryProposalStatus; limit?: number }

@@ -9,6 +9,8 @@ import {
   createWorkspaceProjectCollaborationLoader
 } from "./workspace-project-share-context.js";
 import { createCuratedMemoryClient } from "./curated-memory-client.js";
+import { createDeckClient } from "./deck-client.js";
+import type { DeckRequest, DeckResult } from "../ipc/deck-protocol.js";
 import type {
   CuratedMemoryRequest,
   CuratedMemoryResult
@@ -313,6 +315,7 @@ export interface KoedServerManager {
   handlers: Record<DesktopCommandName, DesktopCommandHandler>;
   personalMemory: PersonalMemoryDesktopHandler;
   projects: (request: ProjectsRequest) => Promise<ProjectsResult>;
+  decks: (request: DeckRequest) => Promise<DeckResult>;
   managedMemoryActions: (
     request: ManagedMemoryActionRequest
   ) => Promise<ManagedMemoryActionResult>;
@@ -4251,6 +4254,17 @@ export const createKoedServerManager = ({
     fetch: personalMemoryFetch,
     koedHome: resolveKoedHome(environment)
   });
+  const deckCommand = createDeckClient({
+    authority: projectsAuthority,
+    sendPersonal: workspaceProjectTransport.sendPersonal,
+    sendTeam: workspaceProjectTransport.sendTeam,
+    teamCredential: (backendId) =>
+      workspaceProjectTransport.teamCredential(backendId, "team_workspace_read")
+  });
+  const decks = async (request: DeckRequest) =>
+    sharedProjectIdentity.run((await projectsAuthority()).key, () =>
+      deckCommand(request)
+    );
   const workspaceProjectPersonal = createWorkspaceProjectPersonalClient(
     workspaceProjectTransport.sendPersonal,
     workspaceProjectTransport.teamCredential
@@ -6294,6 +6308,7 @@ export const createKoedServerManager = ({
     managedConversation,
     managedProject,
     projects: projectsWithShared,
+    decks,
     curatedMemory,
     managedMemoryActions,
     managedTextActions,

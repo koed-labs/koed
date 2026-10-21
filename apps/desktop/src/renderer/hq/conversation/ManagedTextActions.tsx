@@ -35,8 +35,10 @@ const detail = (action: KoedTextActionProjection) => {
       return `${String(args.title ?? "Scheduled Job")} · ${String(action.snapshot.agentName ?? "Agent")}`;
     case "koed_job_pause":
       return `${args.paused ? "Pause" : "Resume"} ${String(args.title ?? "Scheduled Job")}`;
-    case "koed_deck_make":
-      return `${String(args.title ?? "Flashcard Deck")} · ${String(args.scope ?? "")} · ${Array.isArray(args.cards) ? args.cards.length : 0} cards`;
+    case "koed_deck_make": {
+      const count = Array.isArray(args.cards) ? args.cards.length : 0;
+      return `${String(args.title ?? "Flashcard Deck")} · ${String(args.scope ?? "")} · ${count} ${count === 1 ? "card" : "cards"}`;
+    }
     case "koed_project_delete":
       return `${String(action.snapshot.projectName ?? args.projectId ?? "Project")} · ${String(action.snapshot.activeExecutionCount ?? 0)} active Agent executions. Review Project deletion and its chats, to-dos, and memory.`;
     case "koed_chat_delete":

@@ -1,0 +1,327 @@
+.hq-decks__keys {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.hq-decks__chip,
+.hq-decks__retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 29px;
+  padding: 4px 10px;
+  border: 1px solid var(--hq-border);
+  border-radius: 7px;
+  background: var(--hq-bg);
+  color: var(--hq-fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.hq-decks__chip small {
+  color: var(--hq-muted);
+}
+.hq-decks__empty {
+  color: var(--hq-muted);
+  font-size: 12px;
+}
+.hq-decks__panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 17px 18px;
+  background: var(--hq-bg);
+  color: var(--hq-fg);
+  overflow: auto;
+}
+.hq-decks__head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--hq-muted);
+  font-size: 12px;
+}
+.hq-decks__head span {
+  flex: 1;
+  color: var(--hq-fg);
+  font-size: 16px;
+  font-weight: 600;
+}
+.hq-decks__head button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.hq-decks__panel h2 {
+  margin: 20px 0 3px;
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+.hq-decks__scope {
+  margin: 0 0 20px;
+  color: var(--hq-muted);
+  font-size: 12px;
+}
+.hq-decks__tabs {
+  display: flex;
+  gap: 22px;
+  border-bottom: 1px solid var(--hq-border);
+}
+.hq-decks__tabs button {
+  padding: 0 0 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--hq-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.hq-decks__tabs button[aria-selected="true"] {
+  border-bottom-color: currentColor;
+  color: var(--hq-fg);
+  font-weight: 650;
+}
+.hq-decks__tabs span {
+  color: var(--hq-muted);
+}
+.hq-decks__count {
+  margin: 20px 0 12px;
+  color: var(--hq-muted);
+  font-size: 12px;
+}
+.hq-decks__card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 270px;
+  padding: 24px;
+  border: 1px solid var(--hq-border);
+  border-radius: 11px;
+  background: var(--hq-card);
+  color: var(--hq-fg);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 5px 18px #0000000a;
+}
+.hq-decks__card small {
+  color: var(--hq-muted);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+.hq-decks__card span {
+  align-self: center;
+  font-size: 20px;
+  line-height: 1.4;
+  text-align: center;
+  white-space: pre-wrap;
+}
+.hq-decks__card em {
+  align-self: center;
+  color: var(--hq-muted);
+  font-size: 11px;
+  font-style: normal;
+}
+.hq-decks__ratings {
+  display: flex;
+  gap: 8px;
+  margin-top: 15px;
+}
+.hq-decks__ratings button {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 9px 3px;
+  border: 1px solid var(--hq-border);
+  border-radius: 7px;
+  background: var(--hq-bg);
+  color: var(--hq-fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.hq-decks__ratings button:first-child {
+  color: #aa5649;
+}
+.hq-decks__ratings button:last-child {
+  color: #4e8264;
+}
+.hq-decks__ratings small {
+  color: var(--hq-muted);
+  font-size: 10px;
+}
+.hq-decks__done {
+  margin: auto;
+  text-align: center;
+  color: var(--hq-muted);
+}
+.hq-decks__done svg {
+  margin: auto;
+}
+.hq-decks__done h3 {
+  color: var(--hq-fg);
+  font-size: 16px;
+}
+.hq-decks__done p {
+  font-size: 12px;
+}
+.hq-decks__all {
+  display: grid;
+  gap: 9px;
+  padding-top: 17px;
+}
+.hq-decks__all article {
+  padding: 13px;
+  border: 1px solid var(--hq-border);
+  border-radius: 8px;
+}
+.hq-decks__all small {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--hq-muted);
+  font-size: 10px;
+}
+.hq-decks__all strong {
+  font-size: 12px;
+  font-weight: 620;
+}
+.hq-decks__all p {
+  margin: 7px 0 0;
+  color: var(--hq-muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.hq-decks__error {
+  color: #aa5649;
+  font-size: 12px;
+}
+
+/* The study controls follow the compact, tonal v50 right-panel layout. */
+.hq-decks__chip {
+  border: 0;
+  border-radius: 999px;
+  background: var(--hq-surface-hover);
+}
+.hq-decks__panel {
+  padding: 16px;
+}
+.hq-decks__panel h2 {
+  margin: 13px 0 3px;
+  font-size: 17px;
+}
+.hq-decks__scope {
+  margin-bottom: 15px;
+}
+.hq-decks__tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 6px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--hq-card);
+}
+.hq-decks__tabs button {
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.hq-decks__tabs button[aria-selected="true"] {
+  background: var(--hq-surface-hover);
+  font-weight: 500;
+}
+.hq-decks__count {
+  margin: 4px 0 8px;
+}
+.hq-decks__card {
+  gap: 14px;
+  justify-content: center;
+  min-height: 200px;
+  padding: 26px 22px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--hq-card);
+  box-shadow: inset 0 0 0 1px var(--hq-bg);
+}
+.hq-decks__card strong {
+  font-size: 18px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+.hq-decks__card--revealed strong {
+  color: var(--hq-muted);
+  font-size: 15px;
+  font-weight: 500;
+}
+.hq-decks__card span {
+  align-self: stretch;
+  padding-top: 12px;
+  border-top: 1px dashed var(--hq-bg);
+  font-size: 15.5px;
+  text-align: left;
+}
+.hq-decks__card em {
+  align-self: stretch;
+  font-size: 12.5px;
+}
+.hq-decks__ratings {
+  margin-top: 12px;
+}
+.hq-decks__ratings button {
+  justify-content: center;
+  min-height: 52px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--hq-card);
+}
+.hq-decks__done {
+  margin: 0;
+  padding: 36px 16px;
+  border-radius: 18px;
+  background: var(--hq-card);
+}
+.hq-decks__all {
+  gap: 6px;
+  padding-top: 0;
+}
+.hq-decks__all article {
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--hq-card);
+}
+.hq-decks__all article small:last-child {
+  font-size: 11.5px;
+}
+.hq-decks__all strong {
+  font-size: 14px;
+}
+.hq-decks__all p {
+  font-size: 13.5px;
+}
+.hq-decks__learning {
+  color: var(--hq-muted);
+  font-size: 12px;
+}
+.hq-decks__learning button {
+  border: 0;
+  background: transparent;
+  color: var(--hq-fg);
+  text-decoration: underline;
+  cursor: pointer;
+}

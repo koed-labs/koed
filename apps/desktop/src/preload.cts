@@ -11,6 +11,7 @@ import {
 } from "@koed/shared/collaboration";
 import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js";
 import { createProjectsPreloadApi } from "./ipc/projects-preload.js";
+import { createDeckPreloadApi } from "./ipc/deck-preload.js";
 import { createManagedMemoryActionPreloadApi } from "./ipc/managed-memory-action-preload.js";
 import { createManagedTextActionPreloadApi } from "./ipc/managed-text-action-preload.js";
 import { createCuratedMemoryPreloadApi } from "./ipc/curated-memory-preload.js";
@@ -59,6 +60,9 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     }
   ),
   projects: createProjectsPreloadApi((channel, request) =>
+    ipcRenderer.invoke(channel, request)
+  ),
+  decks: createDeckPreloadApi((channel, request) =>
     ipcRenderer.invoke(channel, request)
   ),
   managedMemoryActions: createManagedMemoryActionPreloadApi(

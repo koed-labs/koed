@@ -3,6 +3,7 @@ import { registerMergeProposalDecisionRoutes } from "../work-items/merge-proposa
 import { registerWorkItemPrReconciliationRoutes } from "../work-items/pr-reconciliation-routes.js";
 import { registerManagedMemoryActionRoutes } from "../managed-conversations/memory-action-routes.js";
 import { registerOnboardingPreferenceRoutes } from "../memory/onboarding-preference-routes.js";
+import { registerDeckLearningRoutes } from "../memory/deck-learning-routes.js";
 import { registerManagedTextActionRoutes } from "../managed-conversations/text-action-routes.js";
 import { resolveTerminalExecutionAuthority } from "../managed-conversations/terminal-execution-authority.js";
 import { publishSharedWorkItemProgress } from "../managed-conversations/shared-work-item-dispatch.js";
@@ -2222,7 +2223,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     personalWorkspaceProjectRepository,
     projectSourceRepository,
     () => void projectSourceIngestionService?.runNow(),
-    flashcardDeckRepository
+    flashcardDeckRepository,
+    collaborationRepository
   );
   registerCollaborationRoutes(app, {
     requireCollaborationRepository: requireRepository,
@@ -2369,6 +2371,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     app,
     routeContext,
     collaborationRepository
+  );
+  registerDeckLearningRoutes(
+    app,
+    routeContext,
+    collaborationRepository,
+    flashcardDeckRepository
   );
   registerConversationSourceJournalRoutes(
     app,

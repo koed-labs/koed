@@ -13,6 +13,8 @@ import {
   type ProjectSourceRepository,
   type createFlashcardDeckRepository
 } from "@koed/db";
+import type { CollaborationRepository } from "@koed/db";
+import { ensureDeckLearning } from "../memory/deck-learning-routes.js";
 import type { ApiRouteContext } from "../server/context.js";
 import { workspaceProjectWorkItemSchema } from "@koed/shared/workspace-project-contract";
 import {
@@ -215,7 +217,13 @@ export const registerWorkspaceProjectCoordinationRoutes = (
   repository: PersonalWorkspaceProjectRepository | null,
   sourceRepository: ProjectSourceRepository | null,
   requestSourceIngestion?: () => void,
-  deckRepository?: ReturnType<typeof createFlashcardDeckRepository> | null
+  deckRepository?: ReturnType<typeof createFlashcardDeckRepository> | null,
+  personalNotes?: Pick<
+    CollaborationRepository,
+    | "createPersonalNote"
+    | "findPersonalNoteByIdempotencyKey"
+    | "getPersonalNote"
+  > | null
 ) => {
   const repo = () =>
     repository ?? denied("Personal Workspace Project state unavailable", 503);
@@ -373,6 +381,49 @@ export const registerWorkspaceProjectCoordinationRoutes = (
           }
         )
       );
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/decks/:deckId/cards/:cardId/learning",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const { projectId, deckId, cardId } = z
+        .object({ projectId: z.uuid(), deckId: z.uuid(), cardId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const { mode, expectedDeckVersion, expectedCardVersion } = z
+        .object({
+          mode: z.enum(["begin", "reconcile"]),
+          expectedDeckVersion: z.number().int().positive(),
+          expectedCardVersion: z.number().int().positive()
+        })
+        .strict()
+        .parse(request.body);
+      const current = await linkedDeck(request, projectId, deckId, true);
+      const card = current.deck.cards.find((item) => item.id === cardId);
+      if (
+        mode === "begin" &&
+        (current.deck.version !== expectedDeckVersion ||
+          card?.version !== expectedCardVersion)
+      )
+        denied("Deck Card changed before first Again", 409);
+      const local = await deckRepo().progress(current.ownerUserId, projectId);
+      if (
+        !personalNotes ||
+        !card ||
+        local.link.teamBackendId !== current.link.teamBackendId ||
+        local.link.workspaceProjectId !== current.link.workspaceProjectId
+      )
+        denied("Deck Card is unavailable", 409);
+      return ensureDeckLearning({
+        context,
+        notes: personalNotes!,
+        ownerId: current.ownerUserId,
+        cardId,
+        question: card!.question,
+        sourceKey: `${projectId}:${current.link.teamBackendId}:${current.link.workspaceProjectId}`,
+        mode
+      });
     }
   );
   const cancelTeamAttempt = async (

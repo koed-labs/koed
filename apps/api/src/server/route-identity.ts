@@ -818,6 +818,26 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
     localEdgeDeploymentModes
   ),
   route(
+    "POST",
+    "/v1/projects/:projectId/decks/:deckId/cards/:cardId/learning",
+    "desktop_local_credential",
+    "personal_memory",
+    "Propose an owner-backed Deck learning from a current Personal Note after Again.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/projects/:projectId/decks/:deckId/cards/:cardId/learning",
+    "desktop_local_credential",
+    "personal_memory",
+    "Propose owner-backed learning after a live Team Deck read and Personal progress check.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
     "GET",
     "/v1/local-edge/projects/{projectId}/workspace-project-sources/{teamSourceId}/content",
     "desktop_local_credential",

@@ -936,6 +936,50 @@ try {
       await rm(profile, { recursive: true, force: true });
     }
   }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-803", "browser-report.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq803-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq803.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ803_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ803.native", owner: "HQ-803", status: "pass" }
+        );
+        assert.deepEqual(report.assertions, [
+          { id: "S22.1.study", owner: "HQ-803", status: "pass" },
+          { id: "S22.1.text", owner: "HQ-802/HQ-803", status: "pass" }
+        ]);
+        assert.deepEqual(report.coverage, {
+          chipOpensDeck: true,
+          studyAndAllCards: true,
+          flip: true,
+          againStaysDue: true,
+          goodAdvances: true,
+          lightAndDark: true,
+          generatedActionReceiptOpensExactDeck: true,
+          deckYieldsPanelToSources: true
+        });
+        assert.ok(report.screenshots.includes("deck-to-sources-dark.png"));
+        process.stdout.write(
+          "PASS S22.1.study and S22.1.text [HQ-802/HQ-803]: new-HQ study and generated Chapter 7 action receipt to exact Deck in light/dark. Compound shared two-user S22.1/I26.1 awaits HQ-713.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
 } finally {
   await rm(userDataPath, { recursive: true, force: true });
 }

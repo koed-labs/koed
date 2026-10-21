@@ -560,6 +560,14 @@ const createCollaborationFixture = () => {
       const note = notes.get(input.noteId);
       return note && noteOwners.get(note.noteId) === actor.userId ? note : null;
     },
+    async findPersonalNoteByIdempotencyKey(actor, input) {
+      const request = noteRequests.get(
+        `${actor.userId}:${input.idempotencyKey}`
+      );
+      return request
+        ? this.getPersonalNote(actor, { noteId: request.noteId })
+        : null;
+    },
     async createPersonalNote(actor, input) {
       const requestKey = `${actor.userId}:${input.idempotencyKey}`;
       const existing = noteRequests.get(requestKey);

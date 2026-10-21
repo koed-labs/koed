@@ -387,26 +387,49 @@ const run = async () => {
     );
     await waitFor(
       window,
-      `Boolean(document.querySelector('.personal-session-detail')) && document.body.textContent.includes(${JSON.stringify(genericPrompt)}) && Boolean(document.querySelector('button[aria-label="Send prompt"]'))`,
+      `(() => {
+        const trace = window.__koedManagedConversationTrace;
+        const start = trace?.starts[0];
+        const firstSend = trace?.sends[0];
+        const detail = document.querySelector('.personal-session-detail');
+        return trace?.starts.length === 1 &&
+          start?.contextKind === 'project' &&
+          start.projectId === 'browser-project' &&
+          trace.sends.length === 1 &&
+          firstSend?.executionId === start.executionId &&
+          firstSend.prompt === ${JSON.stringify(genericPrompt)} &&
+          detail?.textContent?.includes(${JSON.stringify(genericPrompt)}) &&
+          Boolean(detail.querySelector('.personal-managed-composer textarea')) &&
+          Boolean(detail.querySelector('button[aria-label="Send prompt"]'));
+      })()`,
       "Project Conversation first message"
     );
     await window.webContents.executeJavaScript(`(() => {
-      const textarea = document.querySelector('.personal-managed-composer textarea');
+      const textarea = document.querySelector('.personal-session-detail .personal-managed-composer textarea');
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
       setter?.call(textarea, ${JSON.stringify(followUpPrompt)});
       textarea?.dispatchEvent(new Event('input', { bubbles: true }));
     })()`);
     await waitFor(
       window,
-      `!document.querySelector('button[aria-label="Send prompt"]')?.disabled`,
+      `!document.querySelector('.personal-session-detail button[aria-label="Send prompt"]')?.disabled`,
       "enabled follow-up send"
     );
     await window.webContents.executeJavaScript(
-      `document.querySelector('button[aria-label="Send prompt"]')?.click()`
+      `document.querySelector('.personal-session-detail button[aria-label="Send prompt"]')?.click()`
     );
     await waitFor(
       window,
-      `document.body.textContent.includes(${JSON.stringify(followUpPrompt)}) && window.__koedManagedConversationTrace?.sends.length === 2`,
+      `(() => {
+        const trace = window.__koedManagedConversationTrace;
+        const start = trace?.starts[0];
+        const followUp = trace?.sends[1];
+        const detail = document.querySelector('.personal-session-detail');
+        return trace?.starts.length === 1 && trace.sends.length === 2 &&
+          followUp?.executionId === start?.executionId &&
+          followUp.prompt === ${JSON.stringify(followUpPrompt)} &&
+          detail?.textContent?.includes(${JSON.stringify(followUpPrompt)});
+      })()`,
       "Project Conversation follow-up"
     );
 

@@ -7,6 +7,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createCollaborationRepository,
+  createCuratedMemoryRepository,
   createFlashcardDeckRepository,
   createMemorySourceRepository,
   createPersonalWorkspaceProjectRepository,
@@ -107,6 +108,9 @@ describe.skipIf(!testUrl)(
     let uploaderProofReads = 0;
     let publishedNoteId: string | null = null;
     let publishedNoteRevisionId: string | null = null;
+    let deckLearningNoteId = "";
+    let deckLearningProposalId = "";
+    let deckLearningMemoryEventId = "";
     let changeSourceVersionOnSecondRead = false;
     let revokeUploaderProofOnSecondRead = false;
     let tombstoneReady = false;
@@ -241,6 +245,62 @@ describe.skipIf(!testUrl)(
         deckIds.personalCard,
         { box: 3, nextAt: null, misses: 1 }
       );
+      const notes = createCollaborationRepository(pool, {
+        envelopeEncryptionProvider: encryptionProvider
+      });
+      const firstAgain = await notes.createPersonalNote(
+        { userId: ids.personalUser },
+        {
+          body: "Needs another look: Original question",
+          idempotencyKey: `deck-again:${projectId}:personal:${deckIds.personalCard}`
+        }
+      );
+      deckLearningNoteId = firstAgain.noteId;
+      await projectPersonalNoteToMemory(
+        {
+          repository: {
+            ...createMemorySourceRepository(pool, {
+              envelopeEncryptionProvider: encryptionProvider
+            }),
+            ...notes
+          },
+          enqueueEmbedding: async () => ({
+            queued: false,
+            inline: false,
+            reason: "test"
+          })
+        },
+        { ownerUserId: ids.personalUser, note: firstAgain }
+      );
+      const projected = await notes.getPersonalNote(
+        { userId: ids.personalUser },
+        { noteId: deckLearningNoteId }
+      );
+      const curated = createCuratedMemoryRepository(pool, {
+        envelopeEncryptionProvider: encryptionProvider
+      });
+      const proposal = await curated.createDeckLearningProposal(
+        { userId: ids.personalUser },
+        {
+          noteId: deckLearningNoteId,
+          memoryEventId: projected!.memoryEventId!,
+          claim: firstAgain.body
+        }
+      );
+      deckLearningProposalId = proposal.id;
+      deckLearningMemoryEventId = projected!.memoryEventId!;
+      expect(
+        (
+          await curated.createDeckLearningProposal(
+            { userId: ids.personalUser },
+            {
+              noteId: deckLearningNoteId,
+              memoryEventId: projected!.memoryEventId!,
+              claim: firstAgain.body
+            }
+          )
+        ).id
+      ).toBe(deckLearningProposalId);
       const repository = createPersonalWorkspaceProjectRepository(pool);
       manifestHash = workspaceProjectCopyManifestHash(
         await repository.shareSnapshot(ids.personalUser, projectId)
@@ -565,6 +625,56 @@ describe.skipIf(!testUrl)(
       if (home) rmSync(home, { recursive: true, force: true });
     });
 
+    it("rejects Project classification for the real first-Again Note proposal", async () => {
+      const curated = createCuratedMemoryRepository(pool, {
+        envelopeEncryptionProvider: encryptionProvider
+      });
+      await expect(
+        curated.processCuratedMemoryProposal(
+          { userId: ids.personalUser },
+          {
+            proposalId: deckLearningProposalId,
+            decision: "store",
+            assertion: {
+              assertionText: "Needs another look: Original question",
+              scope: "project",
+              kind: "learning",
+              sources: []
+            }
+          }
+        )
+      ).rejects.toThrow(/Me learning/);
+      await expect(
+        curated.processCuratedMemoryProposal(
+          { userId: ids.personalUser },
+          {
+            proposalId: deckLearningProposalId,
+            decision: "store",
+            assertion: {
+              assertionText: "Needs another look: Original question",
+              scope: "me",
+              kind: "learning",
+              sources: [
+                {
+                  sourceType: "memory_event",
+                  sourceRole: "primary_evidence",
+                  memoryEventId: deckLearningMemoryEventId
+                }
+              ]
+            }
+          }
+        )
+      ).rejects.toThrow(/Me learning/);
+      expect(
+        (
+          await curated.getCuratedMemoryProposal(
+            { userId: ids.personalUser },
+            deckLearningProposalId
+          )
+        )?.status
+      ).toBe("pending");
+    });
+
     it("requires two independently enrolled credentials on local loopback", async () => {
       expect(ids.personalUser).not.toBe(ids.teamUser);
       const path = `/v1/local-edge/projects/${projectId}/workspace-project-confirm`;
@@ -832,6 +942,28 @@ describe.skipIf(!testUrl)(
           workspace_project_id: ids.workspaceProject
         }
       ]);
+      const sharedNote = await createCollaborationRepository(pool, {
+        envelopeEncryptionProvider: encryptionProvider
+      }).findPersonalNoteByIdempotencyKey(
+        { userId: ids.personalUser },
+        {
+          idempotencyKey: `deck-again:${projectId}:${backendId}:${ids.workspaceProject}:${deckIds.teamCard}`
+        }
+      );
+      expect(sharedNote?.noteId).toBe(deckLearningNoteId);
+      expect(sharedNote?.body).toBe("Needs another look: Original question");
+      expect(
+        await createCuratedMemoryRepository(pool, {
+          envelopeEncryptionProvider: encryptionProvider
+        }).getCuratedMemoryProposal(
+          { userId: ids.personalUser },
+          deckLearningProposalId
+        )
+      ).toMatchObject({
+        scopeHint: "me",
+        kindHint: "learning",
+        status: "pending"
+      });
       const principal = await pool.query(
         `select local_user_id,team_backend_id,team_principal_user_id
       from personal_workspace_project_principal_bindings where local_user_id=$1`,
@@ -1257,6 +1389,15 @@ describe.skipIf(!testUrl)(
           workspace_project_id: null
         }
       ]);
+      const copyBackNote = await createCollaborationRepository(pool, {
+        envelopeEncryptionProvider: encryptionProvider
+      }).findPersonalNoteByIdempotencyKey(
+        { userId: ids.personalUser },
+        {
+          idempotencyKey: `deck-again:${projectId}:personal:${deckIds.personalCard}`
+        }
+      );
+      expect(copyBackNote?.noteId).toBe(deckLearningNoteId);
       const receipt = await pool.query(
         `select owner_user_id,personal_project_id,team_backend_id,
                 workspace_project_id,reason
@@ -1299,6 +1440,55 @@ describe.skipIf(!testUrl)(
           )
         ).rows[0]?.n
       ).toBe(1);
+    });
+    it("stores the real first-Again Note proposal only as source-backed Me learning after copy-back", async () => {
+      const curated = createCuratedMemoryRepository(pool, {
+        envelopeEncryptionProvider: encryptionProvider
+      });
+      const [claimed] = await curated.claimPendingCuratedMemoryProposals(
+        { userId: ids.personalUser },
+        { proposalId: deckLearningProposalId, leaseSeconds: 60 }
+      );
+      expect(claimed).toBeTruthy();
+      const processed = await curated.processCuratedMemoryProposal(
+        { userId: ids.personalUser },
+        {
+          proposalId: deckLearningProposalId,
+          decision: "store",
+          expectedAttemptCount: claimed!.proposal.attemptCount,
+          evidenceRevisions: claimed!.evidence.map((evidence) => ({
+            sourceType: evidence.sourceType,
+            sourceId: evidence.sourceId,
+            sourceHash: evidence.sourceHash
+          })),
+          selectedEvidenceIds: [deckLearningMemoryEventId],
+          candidateAssertionIds: [],
+          assertion: {
+            assertionText: "Needs another look: Original question",
+            scope: "me",
+            kind: "learning",
+            sources: [
+              {
+                sourceType: "memory_event",
+                sourceRole: "primary_evidence",
+                memoryEventId: deckLearningMemoryEventId
+              }
+            ]
+          }
+        }
+      );
+      expect(processed.status).toBe("stored");
+      expect(processed.assertionId).toBeTruthy();
+      const assertion = await curated.getCuratedMemoryAssertion(
+        { userId: ids.personalUser },
+        processed.assertionId!
+      );
+      expect(assertion).toMatchObject({ scope: "me", kind: "learning" });
+      expect(assertion?.sources).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ memoryEventId: deckLearningMemoryEventId })
+        ])
+      );
     });
   }
 );

@@ -474,6 +474,9 @@ const createRepositoryFixture = () => {
     async markProjectThreadRead() {
       return null;
     },
+    async findPersonalNoteByIdempotencyKey() {
+      return null;
+    },
     async createPersonalNote() {
       throw new Error("unused");
     },

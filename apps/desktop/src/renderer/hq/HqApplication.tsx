@@ -164,8 +164,17 @@ export function HqApplication({
   }>({ route: { kind: "home" } });
   const [searchOpen, setSearchOpen] = useState(false);
   const [shareProjectId, setShareProjectId] = useState<string | null>(null);
+  const [openDeckRequest, setOpenDeckRequest] = useState<{
+    ownerId: string;
+    profileKey: string;
+    projectId: string;
+    deckId: string;
+    nonce: number;
+  } | null>(null);
+  const openDeckNonce = useRef(0);
   useEffect(() => {
     setShareProjectId(null);
+    setOpenDeckRequest(null);
   }, [visibilityOwnerId, visibilityProfileKey]);
   const [citationFocus, setCitationFocus] = useState<{
     projectId: string;
@@ -418,6 +427,16 @@ export function HqApplication({
     personalProjectsSnapshot?.profileKey === visibilityProfileKey
       ? (personalProjectsSnapshot?.projects ?? emptyPersonalProjects)
       : emptyPersonalProjects;
+  const deckAuthority = useRef({
+    ownerId: visibilityOwnerId,
+    profileKey: visibilityProfileKey,
+    projectIds: new Set(personalProjects.map(({ id }) => id))
+  });
+  deckAuthority.current = {
+    ownerId: visibilityOwnerId,
+    profileKey: visibilityProfileKey,
+    projectIds: new Set(personalProjects.map(({ id }) => id))
+  };
   const [sharedPeopleCounts, setSharedPeopleCounts] = useState<
     Record<string, number>
   >({});
@@ -698,6 +717,11 @@ export function HqApplication({
     setBlankOpen(false);
     setBlankLaunchPending(false);
     setAttachAfterStart(null);
+    setOpenDeckRequest((current) =>
+      next.kind === "project" && current?.projectId === next.projectId
+        ? current
+        : null
+    );
     setSelection({
       route: next,
       project:
@@ -705,6 +729,35 @@ export function HqApplication({
           ? undefined
           : citationProjectsRef.current.find(({ id }) => id === next.projectId)
     });
+  };
+  const openActionDeck = (sourceProjectId: string) => {
+    const ownerId = visibilityOwnerId;
+    const profileKey = visibilityProfileKey;
+    const routeGeneration = routeEpoch.current;
+    return ({ projectId, deckId }: { projectId: string; deckId: string }) => {
+      const authority = deckAuthority.current;
+      const currentRoute = routeRef.current;
+      if (
+        !ownerId ||
+        !profileKey ||
+        authority.ownerId !== ownerId ||
+        authority.profileKey !== profileKey ||
+        !authority.projectIds.has(projectId) ||
+        projectId !== sourceProjectId ||
+        routeEpoch.current !== routeGeneration ||
+        currentRoute.kind === "home" ||
+        currentRoute.projectId !== sourceProjectId
+      )
+        return;
+      selectRoute({ kind: "project", projectId });
+      setOpenDeckRequest({
+        ownerId,
+        profileKey,
+        projectId,
+        deckId,
+        nonce: ++openDeckNonce.current
+      });
+    };
   };
   const openCitationMessage = async (
     target: HqCitationMessageTarget
@@ -1997,6 +2050,7 @@ export function HqApplication({
         onTextActionApply={applyTextAction}
         onTextActionNativeReview={reviewTextActionNative}
         onTextActionResumeMove={resumeTextActionMove}
+        onOpenDeck={openActionDeck(project.id)}
         ownerId={visibilityOwnerId ?? undefined}
         profileKey={visibilityProfileKey ?? undefined}
         inspectorOpen={sourcesOpen}
@@ -2504,6 +2558,15 @@ export function HqApplication({
               personalProjects={personalProjects}
               graphProjects={projects}
               projectsApi={projectsApi}
+              decksApi={window.koedDesktop?.decks}
+              openDeckId={
+                openDeckRequest?.ownerId === visibilityOwnerId &&
+                openDeckRequest?.profileKey === visibilityProfileKey &&
+                openDeckRequest?.projectId === personalProject.id
+                  ? openDeckRequest.deckId
+                  : null
+              }
+              openDeckNonce={openDeckRequest?.nonce}
               sharedProjectStore={sharedProjectStore}
               onOpenTeamTab={
                 projectTeamIdentity && visibilityClient
@@ -2550,7 +2613,9 @@ export function HqApplication({
               onSourcesOpenChange={(open) => {
                 setSourcesOpen(open);
                 if (open) shellActions.current?.showContext();
+                else setOpenDeckRequest(null);
               }}
+              onDeckDismissed={() => setOpenDeckRequest(null)}
               onContextChange={setArtifactContext}
               onMakeWorkItems={(source, kind) => {
                 setDocumentWorkItemIntent({
@@ -2603,6 +2668,7 @@ export function HqApplication({
               onTextActionApply={applyTextAction}
               onTextActionNativeReview={reviewTextActionNative}
               onTextActionResumeMove={resumeTextActionMove}
+              onOpenDeck={openActionDeck(project.id)}
               visibilityProfileKey={visibilityProfileKey ?? undefined}
               focusEventId={
                 citationFocus?.generation ===

@@ -35,6 +35,7 @@ import type { ScheduledJobsDesktopApi } from "./ipc/scheduled-jobs-protocol.js";
 import { scheduledJobRunSchema } from "@koed/shared/scheduled-job-contract";
 import type { z } from "zod";
 import type { ManagedTextActionDesktopApi } from "./ipc/managed-text-action-protocol.js";
+import type { DeckDesktopApi } from "./ipc/deck-protocol.js";
 import type { KoedTextActionProjection } from "@koed/shared";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type {
@@ -83,8 +84,13 @@ const hq505Capture =
 const hq505Outcome = new URLSearchParams(window.location.search).get(
   "hq505Outcome"
 );
+const hq803Capture =
+  new URLSearchParams(window.location.search).get("hq803Capture") === "yes";
+const hq802DeckCapture =
+  new URLSearchParams(window.location.search).get("hq802DeckCapture") === "yes";
 const hq504Capture =
-  new URLSearchParams(window.location.search).get("hq504Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq504Capture") === "yes" ||
+  hq802DeckCapture;
 const hq603ReviewCapture =
   new URLSearchParams(window.location.search).get("hq603ReviewCapture") ===
   "yes";
@@ -217,6 +223,7 @@ const hq106Deleted = new Map<string, string>();
 const hq106Forgotten = new Map<string, string>();
 const hq207Capture =
   new URLSearchParams(window.location.search).get("hq207Capture") === "yes" ||
+  hq803Capture ||
   hq209Capture ||
   hq403Capture ||
   hq712Capture ||
@@ -1000,6 +1007,41 @@ const hq504Actions: KoedTextActionProjection[] = [
     revision: 3,
     reviewKind: "ask_first"
   },
+  ...(hq802DeckCapture
+    ? [
+        {
+          ...hq504ActionBase,
+          id: "00000000-0000-4000-8000-000000008021",
+          effectKey: "00000000-0000-4000-8000-000000008021",
+          toolCallId: "fixture-deck-chapter-7",
+          name: "koed_deck_make" as const,
+          arguments: {
+            projectId: hq204ProjectId,
+            title: "Chapter 7 flashcards",
+            scope: "Chapter 7; exclude topics not on the midterm",
+            madeFrom: "Course pack Chapter 7",
+            cards: [
+              {
+                question: "What shifts supply?",
+                answer: "Input costs, technology, and expectations.",
+                sourceRef: "Chapter 7"
+              }
+            ]
+          },
+          snapshot: {
+            projectId: hq204ProjectId,
+            projectName: "Econ 101",
+            projectVersion: 1,
+            conversationSessionId: hq204SessionId,
+            conversationProjectAssignmentVersion: 1
+          },
+          state: "applied" as const,
+          reviewKind: "ask_first" as const,
+          revision: 4,
+          decidedAt: FIXTURE_TIME
+        }
+      ]
+    : []),
   ...(hq603ReviewCapture
     ? [
         {
@@ -1053,6 +1095,19 @@ const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
   },
   applyTeamTodoAdd: async () => {
     throw new Error("No Team effect fixture");
+  },
+  deckResult: async (executionId, actionId) => {
+    hq802DeckTrace.receiptCalls++;
+    if (
+      !hq802DeckCapture ||
+      executionId !== hq204ExecutionId ||
+      actionId !== "00000000-0000-4000-8000-000000008021"
+    )
+      throw new Error("Unknown Deck action receipt");
+    return {
+      state: "applied",
+      result: { projectId: hq204ProjectId, deckId: hq802GeneratedDeckId }
+    };
   }
 };
 const hq603OwnerId = "00000000-0000-4000-8000-000000000109";
@@ -1182,10 +1237,157 @@ const hq603ScheduledJobs = {
   }
 } as ScheduledJobsDesktopApi;
 
+const hq803DeckId = "00000000-0000-4000-8000-000000008031";
+const hq803CardId = "00000000-0000-4000-8000-000000008032";
+const hq802GeneratedDeckId = "00000000-0000-4000-8000-000000008022";
+const hq802DeckTrace = { receiptCalls: 0, generatedOpens: 0 };
+const hq802GeneratedDeck = {
+  id: hq802GeneratedDeckId,
+  projectId: hq204ProjectId,
+  title: "Chapter 7 flashcards",
+  scope: "Chapter 7; exclude topics not on the midterm",
+  madeFrom: "Course pack Chapter 7",
+  createdByAgentId: null,
+  uses: 0,
+  version: 1,
+  createdAt: FIXTURE_TIME,
+  updatedAt: FIXTURE_TIME,
+  cards: [
+    {
+      id: "00000000-0000-4000-8000-000000008023",
+      deckId: hq802GeneratedDeckId,
+      question: "What shifts supply?",
+      answer: "Input costs, technology, and expectations.",
+      sourceRef: "Chapter 7",
+      topicLabel: "Supply",
+      version: 1,
+      createdAt: FIXTURE_TIME,
+      updatedAt: FIXTURE_TIME
+    }
+  ]
+};
+const hq803Deck = {
+  id: hq803DeckId,
+  projectId: hq204ProjectId,
+  title: "Midterm flashcards",
+  scope: "chapters 1–6",
+  madeFrom: "the Course pack and lecture notes",
+  createdByAgentId: null,
+  uses: 1,
+  version: 1,
+  createdAt: FIXTURE_TIME,
+  updatedAt: FIXTURE_TIME,
+  cards: [
+    {
+      id: hq803CardId,
+      deckId: hq803DeckId,
+      question: "What is opportunity cost?",
+      answer: "The value of the next best alternative.",
+      sourceRef: "Course pack",
+      topicLabel: "Foundations",
+      version: 1,
+      createdAt: FIXTURE_TIME,
+      updatedAt: FIXTURE_TIME
+    },
+    ...[
+      "What is scarcity?",
+      "What shifts demand?",
+      "How is elasticity measured?",
+      "What is a marginal cost?"
+    ].map((question, index) => ({
+      id: `00000000-0000-4000-8000-${String(8033 + index).padStart(12, "0")}`,
+      deckId: hq803DeckId,
+      question,
+      answer: "Review the Course pack.",
+      sourceRef: "Course pack",
+      topicLabel: "Foundations",
+      version: 1,
+      createdAt: FIXTURE_TIME,
+      updatedAt: FIXTURE_TIME
+    }))
+  ]
+};
+let hq803Progress: Array<{
+  cardId: string;
+  box: number;
+  nextAt: string | null;
+  misses: number;
+}> = [];
+const hq803Trace = { grades: [] as string[], learning: [] as string[] };
+const hq803DeckApi: DeckDesktopApi = {
+  list: async (projectId) => ({
+    decks:
+      projectId === hq204ProjectId
+        ? [
+            structuredClone(hq803Deck),
+            ...(hq802DeckCapture ? [structuredClone(hq802GeneratedDeck)] : [])
+          ]
+        : []
+  }),
+  open: async (projectId, deckId) => {
+    if (projectId !== hq204ProjectId) throw new Error("Unknown Deck");
+    if (hq802DeckCapture && deckId === hq802GeneratedDeckId) {
+      hq802DeckTrace.generatedOpens++;
+      return structuredClone(hq802GeneratedDeck);
+    }
+    if (deckId !== hq803DeckId) throw new Error("Unknown Deck");
+    return structuredClone(hq803Deck);
+  },
+  progress: async (projectId, deckId) => {
+    if (
+      projectId !== hq204ProjectId ||
+      (deckId !== hq803DeckId &&
+        (!hq802DeckCapture || deckId !== hq802GeneratedDeckId))
+    )
+      throw new Error("Unknown Deck");
+    return {
+      progress: deckId === hq803DeckId ? structuredClone(hq803Progress) : []
+    };
+  },
+  learning: async (_projectId, _deckId, cardId) => {
+    hq803Trace.learning.push(cardId);
+    return "pending";
+  },
+  grade: async (
+    _projectId,
+    _deckId,
+    cardId,
+    rating,
+    expectedBox,
+    expectedMisses
+  ) => {
+    const current = hq803Progress.find((row) => row.cardId === cardId);
+    if (
+      (current?.box ?? 0) !== expectedBox ||
+      (current?.misses ?? 0) !== expectedMisses
+    )
+      throw new Error("Stale progress");
+    hq803Trace.grades.push(rating);
+    const box = rating === "again" ? 0 : Math.min(expectedBox + 1, 5);
+    const misses = expectedMisses + Number(rating === "again");
+    const nextAt =
+      rating === "again"
+        ? new Date(Date.now() - 1000).toISOString()
+        : new Date(
+            Date.now() + 86_400_000 * (rating === "good" ? 1 : 3)
+          ).toISOString();
+    const progress = { cardId, box, misses, nextAt };
+    hq803Progress = [
+      ...hq803Progress.filter((row) => row.cardId !== cardId),
+      progress
+    ];
+    return {
+      progress,
+      learningStatus: rating === "again" ? "pending" : "not_applicable"
+    };
+  }
+};
+
 const installSettingsDesktop = () => {
   const originalDesktop = window.koedDesktop;
   window.koedDesktop = {
     ...originalDesktop,
+    ...(hq803Capture ? { decks: hq803DeckApi } : {}),
     ...(hq307Capture ? { managedMemoryActions: hq307MemoryActionsApi } : {}),
     ...(hq504Capture ? { managedTextActions: hq504ManagedTextActions } : {}),
     ...(hq603Capture ? { scheduledJobs: hq603ScheduledJobs } : {}),
@@ -2500,7 +2702,10 @@ const initialSidebarPersonalProjects = sidebarProjectGroups
   );
 if (hq203Empty || hq204Capture || hq207Capture)
   initialSidebarPersonalProjects.push({
-    ...sidebarProjectRecord(hq204ProjectId, "New empty Project"),
+    ...sidebarProjectRecord(
+      hq204ProjectId,
+      hq803Capture ? "Econ 101" : "New empty Project"
+    ),
     folderPath: hq207Capture ? "/fixtures/koed" : null,
     ...(hq712Capture
       ? {
@@ -3871,6 +4076,19 @@ export function HqValidationApp() {
   const restoreDesktop = useMemo(installSettingsDesktop, []);
 
   useLayoutEffect(() => {
+    hq803Progress = [];
+    hq803Trace.grades.length = 0;
+    hq803Trace.learning.length = 0;
+    hq802DeckTrace.receiptCalls = 0;
+    hq802DeckTrace.generatedOpens = 0;
+    if (hq802DeckCapture)
+      (
+        window as Window & { __koedHq802DeckTrace?: typeof hq802DeckTrace }
+      ).__koedHq802DeckTrace = hq802DeckTrace;
+    if (hq803Capture)
+      (
+        window as Window & { __koedHq803Trace?: typeof hq803Trace }
+      ).__koedHq803Trace = hq803Trace;
     hq106Pending.clear();
     hq106Deleted.clear();
     hq106Forgotten.clear();
@@ -3910,7 +4128,7 @@ export function HqValidationApp() {
       ).__koedHq603Trace = hq603Trace;
     }
     hq104SentPrompt = "";
-    hq204Started = hq306Capture || hq406ActiveCapture;
+    hq204Started = hq306Capture || hq406ActiveCapture || hq802DeckCapture;
     hq505Trace.catchUpCalls = 0;
     hq505Trace.retryCalls = 0;
     hq505Trace.promptDispatches = 0;
@@ -4042,6 +4260,9 @@ export function HqValidationApp() {
       delete (window as Window & { __koedHq504Trace?: typeof hq504Trace })
         .__koedHq504Trace;
       delete (
+        window as Window & { __koedHq802DeckTrace?: typeof hq802DeckTrace }
+      ).__koedHq802DeckTrace;
+      delete (
         window as Window & {
           __koedHqVisibilityReads?: typeof hq105VisibilityReads;
         }
@@ -4052,6 +4273,8 @@ export function HqValidationApp() {
         }
       ).__koedHqVisibilityFixture;
       delete document.documentElement.dataset.hqFixtureReady;
+      delete (window as Window & { __koedHq803Trace?: typeof hq803Trace })
+        .__koedHq803Trace;
       delete document.documentElement.dataset.browserValidationReady;
     };
   }, [fixture, restoreDesktop]);

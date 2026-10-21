@@ -109,6 +109,10 @@ export interface CuratedMemoryRepository {
     actor: ActorContext,
     input: { noteId: string; memoryEventId: string; claim: string }
   ): Promise<CuratedMemoryProposalRecord>;
+  createDeckLearningProposal(
+    actor: ActorContext,
+    input: { noteId: string; memoryEventId: string; claim: string }
+  ): Promise<CuratedMemoryProposalRecord>;
   listCuratedMemoryProposals(
     actor: ActorContext,
     input?: { status?: CuratedMemoryProposalStatus; limit?: number }
@@ -239,22 +243,24 @@ export const createCuratedMemoryRepository = (
     onCuratedMemoryChanged: options.onCuratedMemoryChanged
   };
   const records = createCuratedMemoryRecordMethods(context);
-  return {
-    ...records,
-    async createOnboardingPreferenceProposal(actor, input) {
-      // The Personal Note's event is the durable retry key. Keep the lock,
-      // evidence check, and insert on one client so parallel retries cannot
-      // consume the pool while waiting for each other.
-      const client = await pool.connect();
-      const lockKey = `onboarding-preference:${actor.userId}:${input.memoryEventId}`;
-      try {
-        await client.query("begin");
-        await client.query(
-          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
-          [lockKey]
-        );
-        const source = await client.query(
-          `select 1 from personal_notes note
+  const createNoteEvidenceProposal = async (
+    actor: ActorContext,
+    input: { noteId: string; memoryEventId: string; claim: string },
+    kind: "preference" | "learning"
+  ): Promise<CuratedMemoryProposalRecord> => {
+    // The Personal Note's event is the durable retry key. Keep the lock,
+    // evidence check, and insert on one client so parallel retries cannot
+    // consume the pool while waiting for each other.
+    const client = await pool.connect();
+    const lockKey = `personal-note-proposal:${actor.userId}:${input.memoryEventId}`;
+    try {
+      await client.query("begin");
+      await client.query(
+        "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [lockKey]
+      );
+      const source = await client.query(
+        `select 1 from personal_notes note
              join personal_note_revisions revision
                on revision.note_id=note.id
               and revision.owner_user_id=note.owner_user_id
@@ -265,103 +271,118 @@ export const createCuratedMemoryRepository = (
               and revision.forgotten_at is null
               and revision.memory_event_id=$3
             for share of note,revision`,
-          [input.noteId, actor.userId, input.memoryEventId]
+        [input.noteId, actor.userId, input.memoryEventId]
+      );
+      if (!source.rows[0])
+        throw Object.assign(
+          new Error("Current Personal Note evidence changed"),
+          {
+            statusCode: 409
+          }
         );
-        if (!source.rows[0])
-          throw Object.assign(
-            new Error("Current Personal Note evidence changed"),
-            {
-              statusCode: 409
-            }
-          );
-        const existing = await client.query<ProposalRow>(
-          `select ${proposalSelect} from curated_memory_proposals
+      const existing = await client.query<ProposalRow>(
+        `select ${proposalSelect} from curated_memory_proposals
             where owner_user_id=$1 and visibility='personal'
-              and scope_hint='me' and kind_hint='preference'
+              and scope_hint='me' and kind_hint=$3
               and evidence_conversation_item_ids='{}'::uuid[]
               and evidence_memory_event_ids=array[$2::uuid]
             order by created_at limit 1`,
-          [actor.userId, input.memoryEventId]
-        );
-        if (existing.rows[0]) {
-          const proposal = mapProposal(
-            await hydrateProposalRow(
-              client,
-              actor,
-              options.envelopeEncryptionProvider,
-              existing.rows[0]
-            )
-          );
-          if (proposal.proposedClaim !== input.claim)
-            throw Object.assign(
-              new Error(
-                "Onboarding preference evidence already has another proposal"
-              ),
-              { statusCode: 409 }
-            );
-          await client.query("commit");
-          return proposal;
-        }
-        await verifyCuratedMemorySourcesWithClient(client, actor, [
-          {
-            sourceType: "memory_event",
-            sourceRole: "primary_evidence",
-            memoryEventId: input.memoryEventId
-          }
-        ]);
-        const protectPayload = protectedCuratedMemoryPayloadsRequired();
-        if (protectPayload)
-          requireEncryptionProvider(options.envelopeEncryptionProvider);
-        const result = await client.query<ProposalRow>(
-          `insert into curated_memory_proposals (
-             owner_user_id, visibility, proposed_claim, scope_hint, kind_hint,
-             evidence_conversation_item_ids, evidence_memory_event_ids, operation
-           ) values ($1, 'personal', $2, 'me', 'preference', '{}'::uuid[],
-             array[$3::uuid], 'store') returning ${proposalSelect}`,
-          [
-            actor.userId,
-            protectPayload ? ENCRYPTED_CURATED_MEMORY_TEXT : input.claim,
-            input.memoryEventId
-          ]
-        );
-        const row = result.rows[0]!;
-        if (protectPayload) {
-          await persistCuratedMemoryPayload(
-            client,
-            actor,
-            options.envelopeEncryptionProvider,
-            {
-              sourceTable: "curated_memory_proposals",
-              sourceId: row.id,
-              plaintext: {
-                proposedClaim: input.claim,
-                proposedTopic: null,
-                rationale: null,
-                tags: [],
-                expiresAt: null,
-                decisionReason: null,
-                workerResult: null
-              }
-            }
-          );
-        }
+        [actor.userId, input.memoryEventId, kind]
+      );
+      if (existing.rows[0]) {
         const proposal = mapProposal(
           await hydrateProposalRow(
             client,
             actor,
             options.envelopeEncryptionProvider,
-            row
+            existing.rows[0]
           )
         );
+        if (
+          kind === "learning" &&
+          proposal.createdByPromptVersion !== "deck-first-again-v1"
+        )
+          throw Object.assign(
+            new Error("Personal Note evidence has another proposal"),
+            { statusCode: 409 }
+          );
+        if (proposal.proposedClaim !== input.claim)
+          throw Object.assign(
+            new Error("Personal Note evidence already has another proposal"),
+            { statusCode: 409 }
+          );
         await client.query("commit");
         return proposal;
-      } catch (error) {
-        await client.query("rollback");
-        throw error;
-      } finally {
-        client.release();
       }
-    },
+      await verifyCuratedMemorySourcesWithClient(client, actor, [
+        {
+          sourceType: "memory_event",
+          sourceRole: "primary_evidence",
+          memoryEventId: input.memoryEventId
+        }
+      ]);
+      const protectPayload = protectedCuratedMemoryPayloadsRequired();
+      if (protectPayload)
+        requireEncryptionProvider(options.envelopeEncryptionProvider);
+      const result = await client.query<ProposalRow>(
+        `insert into curated_memory_proposals (
+             owner_user_id, visibility, proposed_claim, scope_hint, kind_hint,
+             evidence_conversation_item_ids, evidence_memory_event_ids, operation, tags,
+             created_by_prompt_version
+           ) values ($1, 'personal', $2, 'me', $4::curated_memory_kind, '{}'::uuid[],
+             array[$3::uuid], 'store', case when $4::text='learning' then array['koed_deck_first_again']::text[] else '{}'::text[] end,
+             case when $4::text='learning' then 'deck-first-again-v1' else null end) returning ${proposalSelect}`,
+        [
+          actor.userId,
+          protectPayload ? ENCRYPTED_CURATED_MEMORY_TEXT : input.claim,
+          input.memoryEventId,
+          kind
+        ]
+      );
+      const row = result.rows[0]!;
+      if (protectPayload) {
+        await persistCuratedMemoryPayload(
+          client,
+          actor,
+          options.envelopeEncryptionProvider,
+          {
+            sourceTable: "curated_memory_proposals",
+            sourceId: row.id,
+            plaintext: {
+              proposedClaim: input.claim,
+              proposedTopic: null,
+              rationale: null,
+              tags: kind === "learning" ? ["koed_deck_first_again"] : [],
+              expiresAt: null,
+              decisionReason: null,
+              workerResult: null
+            }
+          }
+        );
+      }
+      const proposal = mapProposal(
+        await hydrateProposalRow(
+          client,
+          actor,
+          options.envelopeEncryptionProvider,
+          row
+        )
+      );
+      await client.query("commit");
+      return proposal;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+  return {
+    ...records,
+    createOnboardingPreferenceProposal: (actor, input) =>
+      createNoteEvidenceProposal(actor, input, "preference"),
+    createDeckLearningProposal: (actor, input) =>
+      createNoteEvidenceProposal(actor, input, "learning"),
     ...createCuratedMemoryProposalTransitionMethods(context),
     ...createCuratedMemoryRecallMethods(context),
     ...createCuratedMemoryPolicyMethods(context),
