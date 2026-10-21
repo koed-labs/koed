@@ -125,6 +125,7 @@ const hq705Trace = {
   reads: 0,
   sends: 0,
   mentions: [] as string[],
+  lastReplyToMessageId: null as string | null,
   publishIncoming: () => {
     const message = {
       ...hq705Messages[0]!,
@@ -835,18 +836,21 @@ const settingsCollaborationClient = {
     threadId: string;
     clientMessageId: string;
     body: string;
+    replyToMessageId: string | null;
     mentionsUserIds: string[];
   }) => {
     if (!hq705Capture || input.threadId !== hq705ThreadId)
       throw new Error("Project Thread unavailable in fixture");
     hq705Trace.sends++;
     hq705Trace.mentions = input.mentionsUserIds;
+    hq705Trace.lastReplyToMessageId = input.replyToMessageId;
     const message = {
       ...hq705Messages[0]!,
       id: crypto.randomUUID(),
       clientMessageId: input.clientMessageId,
       sequence: hq705Messages.length + 1,
       body: input.body,
+      replyToMessageId: input.replyToMessageId,
       sender: {
         id: "00000000-0000-4000-8000-000000007124",
         displayName: "You",

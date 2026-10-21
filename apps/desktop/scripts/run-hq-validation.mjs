@@ -659,6 +659,40 @@ try {
     }
   }
   if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-707", "HQ707.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq707-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq707.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ707_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ707.native", owner: "HQ-707", status: "pass" }
+        );
+        assert.equal(report.assertions.length, 4);
+        for (const theme of ["light", "dark"]) {
+          assert.ok(report.screenshots.includes(`reply-chip-${theme}.png`));
+          assert.ok(report.screenshots.includes(`quoted-reply-${theme}.png`));
+        }
+        process.stdout.write(
+          "PASS HQ707.native [HQ-707]: reply chip, dismissals, V2 reply target, quote jump, desktop light/dark.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
     const reportPath = resolve(scratchDir, "hq-712", "HQ712.native.json");
     await rm(reportPath, { force: true });
     const profile = await mkdtemp(

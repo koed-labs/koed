@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Reply, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import type { ProjectThreadV2 } from "@koed/shared/project-thread-contract";
 import type { TeamCollaborationMessageV2Renderer } from "@koed/shared/collaboration";
@@ -20,6 +20,10 @@ const timeLabel = (iso: string) =>
     hour: "2-digit",
     minute: "2-digit"
   }).format(new Date(iso));
+const quoteText = (body: string) => {
+  const singleLine = body.replace(/\s+/g, " ").trim();
+  return singleLine.length > 90 ? `${singleLine.slice(0, 88)}…` : singleLine;
+};
 
 export function HqProjectThread({
   client,
@@ -69,6 +73,15 @@ export function HqProjectThread({
   const currentPeople =
     collaboration?.navigation.teams.find((team) => team.id === teamId)
       ?.people ?? [];
+  const teamPrincipalId = collaboration?.navigation.teamPrincipal?.id;
+  const ownTeamUserId =
+    teamPrincipalId &&
+    currentPeople.some(
+      (person) =>
+        person.id === teamPrincipalId && person.membershipState === "enabled"
+    )
+      ? teamPrincipalId
+      : null;
   const [thread, setThread] = useState<ProjectThreadV2 | null>(null);
   const [messages, setMessages] = useState<
     TeamCollaborationMessageV2Renderer[]
@@ -77,6 +90,8 @@ export function HqProjectThread({
   const [draft, setDraft] = useState("");
   const [mentions, setMentions] = useState<string[]>([]);
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
+  const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
+  const [jumpTargetId, setJumpTargetId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
@@ -85,23 +100,60 @@ export function HqProjectThread({
     threadId: string;
     body: string;
     mentionsKey: string;
+    replyToMessageId: string | null;
     clientMessageId: string;
   } | null>(null);
   const draftRef = useRef(draft);
   const mentionsRef = useRef(mentions);
+  const replyRef = useRef(replyToMessageId);
   draftRef.current = draft;
   mentionsRef.current = mentions;
+  replyRef.current = replyToMessageId;
   const sectionRef = useRef<HTMLElement | null>(null);
   const activeRef = useRef(active);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const refreshRef = useRef<(() => void) | null>(null);
+  const jumpGeneration = useRef(0);
   activeRef.current = active;
 
   useEffect(() => {
     if (active) refreshRef.current?.();
+    else {
+      replyRef.current = null;
+      setReplyToMessageId(null);
+      jumpGeneration.current++;
+    }
   }, [active]);
 
   useEffect(() => {
+    if (!replyToMessageId || !active) return;
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      replyRef.current = null;
+      setReplyToMessageId(null);
+      pendingSendRef.current = null;
+    };
+    document.addEventListener("keydown", dismiss);
+    return () => document.removeEventListener("keydown", dismiss);
+  }, [replyToMessageId, active]);
+
+  useEffect(() => {
+    if (!jumpTargetId) return;
+    const target = [
+      ...(sectionRef.current?.querySelectorAll<HTMLElement>(
+        ".hq-project-thread__message"
+      ) ?? [])
+    ].find((element) => element.dataset.messageId === jumpTargetId);
+    if (!target) return;
+    target.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    target.focus({ preventScroll: true });
+    setJumpTargetId(null);
+  }, [jumpTargetId, messages]);
+
+  useEffect(() => {
     const current = ++generation.current;
+    jumpGeneration.current++;
     threadRef.current = null;
     pendingSendRef.current = null;
     setThread(null);
@@ -110,6 +162,9 @@ export function HqProjectThread({
     setDraft("");
     setMentions([]);
     setMentionPickerOpen(false);
+    setReplyToMessageId(null);
+    replyRef.current = null;
+    setJumpTargetId(null);
     setError("");
     setBusy(false);
     onUnread?.({ unreadCount: 0, latestSequence: 0, lastReadSequence: 0 });
@@ -169,10 +224,16 @@ export function HqProjectThread({
                   releaseRealtime = null;
                   realtimeStarted = false;
                   if (event.reason === "access_revoked") {
+                    generation.current++;
                     threadRef.current = null;
                     setThread(null);
                     setMessages([]);
                     setOlderCursor(null);
+                    jumpGeneration.current++;
+                    replyRef.current = null;
+                    setReplyToMessageId(null);
+                    setJumpTargetId(null);
+                    pendingSendRef.current = null;
                     onPeople?.([]);
                     onUnread?.({
                       unreadCount: 0,
@@ -251,6 +312,11 @@ export function HqProjectThread({
         setThread(null);
         onPeople?.([]);
         setMessages([]);
+        jumpGeneration.current++;
+        replyRef.current = null;
+        setReplyToMessageId(null);
+        setJumpTargetId(null);
+        pendingSendRef.current = null;
         setError(
           cause instanceof Error
             ? cause.message
@@ -269,6 +335,7 @@ export function HqProjectThread({
     void refresh();
     return () => {
       generation.current++;
+      jumpGeneration.current++;
       refreshRef.current = null;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       releaseRealtime?.();
@@ -293,17 +360,20 @@ export function HqProjectThread({
     const body = draft.trim();
     const mentionsUserIds = [...mentions];
     const mentionsKey = JSON.stringify(mentionsUserIds);
+    const replyTarget = replyToMessageId;
     const prior = pendingSendRef.current;
     const clientMessageId =
       prior?.threadId === selected.id &&
       prior.body === body &&
-      prior.mentionsKey === mentionsKey
+      prior.mentionsKey === mentionsKey &&
+      prior.replyToMessageId === replyTarget
         ? prior.clientMessageId
         : crypto.randomUUID();
     pendingSendRef.current = {
       threadId: selected.id,
       body,
       mentionsKey,
+      replyToMessageId: replyTarget,
       clientMessageId
     };
     setBusy(true);
@@ -314,7 +384,7 @@ export function HqProjectThread({
         threadId: selected.id,
         clientMessageId,
         body,
-        replyToMessageId: null,
+        replyToMessageId: replyTarget,
         mentionsUserIds
       });
       if (generation.current === current) {
@@ -322,10 +392,13 @@ export function HqProjectThread({
           pendingSendRef.current = null;
           if (
             draftRef.current.trim() === body &&
-            JSON.stringify(mentionsRef.current) === mentionsKey
+            JSON.stringify(mentionsRef.current) === mentionsKey &&
+            replyRef.current === replyTarget
           ) {
             setDraft("");
             setMentions([]);
+            replyRef.current = null;
+            setReplyToMessageId(null);
           }
         }
         const page = await client.loadProjectThreadMessagesV2({
@@ -354,6 +427,67 @@ export function HqProjectThread({
     } finally {
       if (generation.current === current) setBusy(false);
     }
+  };
+
+  const jumpToOriginal = async (messageId: string) => {
+    const selected = threadRef.current;
+    if (!selected || !teamId) return;
+    const current = generation.current;
+    const jump = ++jumpGeneration.current;
+    let known = messages;
+    let cursor = olderCursor;
+    const seenCursors = new Set<string>();
+    while (
+      !known.some((message) => message.id === messageId) &&
+      cursor &&
+      !seenCursors.has(cursor) &&
+      seenCursors.size < 200
+    ) {
+      seenCursors.add(cursor);
+      try {
+        const requestedCursor = cursor;
+        const page = await client.loadProjectThreadMessagesV2({
+          teamId,
+          workspaceProjectId: identity.workspaceProjectId,
+          threadId: selected.id,
+          direction: "older",
+          cursor: requestedCursor
+        });
+        if (
+          generation.current !== current ||
+          jumpGeneration.current !== jump ||
+          page.threadId !== selected.id
+        )
+          return;
+        const byId = new Map(known.map((message) => [message.id, message]));
+        for (const message of page.items) byId.set(message.id, message);
+        known = [...byId.values()].sort(
+          (left, right) => left.sequence - right.sequence
+        );
+        setMessages((previous) => {
+          const all = new Map(previous.map((message) => [message.id, message]));
+          for (const message of page.items) all.set(message.id, message);
+          return [...all.values()].sort(
+            (left, right) => left.sequence - right.sequence
+          );
+        });
+        cursor = page.hasOlder ? page.olderCursor : null;
+        setOlderCursor((previous) =>
+          previous === requestedCursor ? cursor : previous
+        );
+      } catch (cause) {
+        if (generation.current === current && jumpGeneration.current === jump)
+          setError(
+            cause instanceof Error ? cause.message : "History is unavailable."
+          );
+        return;
+      }
+    }
+    if (generation.current !== current || jumpGeneration.current !== jump)
+      return;
+    if (known.some((message) => message.id === messageId))
+      setJumpTargetId(messageId);
+    else setError("The original message is unavailable.");
   };
 
   const loadOlder = async () => {
@@ -466,12 +600,21 @@ export function HqProjectThread({
                   ? dayLabel(messages[index - 1]!.createdAt)
                   : null;
                 const name = message.sender.displayName ?? "Team member";
+                const senderLabel =
+                  message.sender.id === ownTeamUserId ? "You" : name;
+                const original = messages.find(
+                  (candidate) => candidate.id === message.replyToMessageId
+                );
                 return (
                   <div key={message.id}>
                     {day !== previousDay ? (
                       <div className="hq-project-thread__day">{day}</div>
                     ) : null}
-                    <article className="hq-project-thread__message">
+                    <article
+                      className={`hq-project-thread__message${replyToMessageId === message.id ? " hq-project-thread__message--replying" : ""}`}
+                      data-message-id={message.id}
+                      tabIndex={-1}
+                    >
                       <span
                         className="hq-project-thread__avatar"
                         aria-hidden="true"
@@ -484,7 +627,43 @@ export function HqProjectThread({
                           <time dateTime={message.createdAt}>
                             {timeLabel(message.createdAt)}
                           </time>
+                          <button
+                            type="button"
+                            className="hq-project-thread__reply"
+                            aria-label={`Reply to ${senderLabel === "You" ? "your message" : senderLabel}`}
+                            title="Reply"
+                            onClick={() => {
+                              pendingSendRef.current = null;
+                              replyRef.current = message.id;
+                              setReplyToMessageId(message.id);
+                              composerRef.current?.focus();
+                            }}
+                          >
+                            <Reply size={14} aria-hidden="true" />
+                          </button>
                         </div>
+                        {message.replyToMessageId ? (
+                          <button
+                            type="button"
+                            className="hq-project-thread__quote"
+                            aria-label={`Jump to original message${original ? ` from ${original.sender.id === ownTeamUserId ? "You" : (original.sender.displayName ?? "Team member")}` : ""}`}
+                            onClick={() =>
+                              void jumpToOriginal(message.replyToMessageId!)
+                            }
+                          >
+                            <strong>
+                              {original
+                                ? original.sender.id === ownTeamUserId
+                                  ? "You"
+                                  : (original.sender.displayName ??
+                                    "Team member")
+                                : "Earlier message"}
+                            </strong>
+                            {original ? (
+                              <span>{quoteText(original.body)}</span>
+                            ) : null}
+                          </button>
+                        ) : null}
                         <p>{message.body}</p>
                       </div>
                     </article>
@@ -498,6 +677,38 @@ export function HqProjectThread({
             )}
           </div>
           <div className="hq-project-thread__composer">
+            {replyToMessageId ? (
+              <div className="hq-project-thread__reply-chip">
+                <Reply size={14} aria-hidden="true" />
+                <span>
+                  Replying to{" "}
+                  <strong>
+                    {messages.find((message) => message.id === replyToMessageId)
+                      ?.sender.id === ownTeamUserId
+                      ? "yourself"
+                      : (messages.find(
+                          (message) => message.id === replyToMessageId
+                        )?.sender.displayName ?? "a team member")}
+                  </strong>
+                  {messages.find((message) => message.id === replyToMessageId)
+                    ? `: ${quoteText(messages.find((message) => message.id === replyToMessageId)!.body)}`
+                    : ""}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Cancel reply"
+                  title="Cancel reply"
+                  onClick={() => {
+                    replyRef.current = null;
+                    setReplyToMessageId(null);
+                    pendingSendRef.current = null;
+                    composerRef.current?.focus();
+                  }}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </div>
+            ) : null}
             <label
               className="hq-project-thread__composer-label"
               htmlFor="hq-project-thread-message"
@@ -505,6 +716,7 @@ export function HqProjectThread({
               Message your team
             </label>
             <textarea
+              ref={composerRef}
               id="hq-project-thread-message"
               placeholder="Message the team"
               value={draft}
