@@ -37,6 +37,10 @@ import type {
   CuratedMemoryDesktopApi
 } from "./ipc/curated-memory-protocol.js";
 import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
+import {
+  initialHqOnboarding,
+  writeHqOnboarding
+} from "./renderer/hq/onboarding/onboarding-preference.js";
 
 const FIXTURE_ID = "hq-approved-map-fixture-v1";
 const FIXTURE_TIME = "2026-10-19T09:00:00.000Z";
@@ -63,6 +67,8 @@ const hq503ColdCapture =
   new URLSearchParams(window.location.search).get("hq503Cold") === "yes";
 const hq502Capture =
   new URLSearchParams(window.location.search).get("hq502Capture") === "yes";
+const hq506Capture =
+  new URLSearchParams(window.location.search).get("hq506Capture") === "yes";
 const hq701Linked =
   new URLSearchParams(window.location.search).get("hq701Linked") === "yes";
 const hq712Capture =
@@ -715,7 +721,7 @@ const installSettingsDesktop = () => {
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
     ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
     ...(hq106Capture ? { personalMemory: sidebarPersonalMemoryApi } : {}),
-    ...(hq204Capture || hq205Capture || hq207Capture
+    ...(hq204Capture || hq205Capture || hq207Capture || hq506Capture
       ? {
           agents: {
             list: async () => [
@@ -769,6 +775,23 @@ const installSettingsDesktop = () => {
             // Every fixture exposes the current Agent IPC contract; only the
             // HQ503 scenario supplies an actual delegated child.
             delegations: async () => [],
+            ...(hq506Capture
+              ? {
+                  ensureChief: async () => ({
+                    id: "00000000-0000-4000-8000-000000002046",
+                    ownerUserId: "00000000-0000-4000-8000-000000000109",
+                    isChiefOfStaff: true,
+                    aiClientInstanceId: "codex.fixture"
+                  }),
+                  patch: async (_id: string, value: object) => ({
+                    id: "00000000-0000-4000-8000-000000002046",
+                    ownerUserId: "00000000-0000-4000-8000-000000000109",
+                    isChiefOfStaff: true,
+                    aiClientInstanceId: "codex.fixture",
+                    ...value
+                  })
+                }
+              : {}),
             ...(hq503Capture
               ? {
                   delegations: async () => [...hq503Trace.delegations],
@@ -892,6 +915,52 @@ const installSettingsDesktop = () => {
                 commandState: "queued" as const
               };
             }
+          }
+        }
+      : {}),
+    ...(hq506Capture
+      ? {
+          localAiClients: {
+            list: async () => ({
+              readModel: {
+                defaults: {
+                  conversations: {
+                    available: true,
+                    assignment: {
+                      ai_client_instance_id: "codex.fixture",
+                      provider: "codex"
+                    }
+                  }
+                },
+                instances: [
+                  {
+                    instanceId: "codex.fixture",
+                    driverId: "codex",
+                    enabled: true
+                  }
+                ]
+              }
+            }),
+            refresh: async () => ({
+              readModel: {
+                defaults: {
+                  conversations: {
+                    available: true,
+                    assignment: {
+                      ai_client_instance_id: "codex.fixture",
+                      provider: "codex"
+                    }
+                  }
+                },
+                instances: [
+                  {
+                    instanceId: "codex.fixture",
+                    driverId: "codex",
+                    enabled: true
+                  }
+                ]
+              }
+            })
           }
         }
       : {}),
@@ -3236,6 +3305,20 @@ declare global {
 }
 
 export function HqValidationApp() {
+  useMemo(() => {
+    if (hq506Capture) return;
+    // Existing HQ fixtures represent an owner who already finished setup.
+    // The HQ506 fixture alone exercises the actual first-run gate.
+    for (const ownerId of [
+      "00000000-0000-4000-8000-000000000109",
+      "00000000-0000-4000-8000-000000005099"
+    ])
+      writeHqOnboarding(
+        ownerId,
+        "hq-renderer-fixture|fixture-epoch|https://fixture.example.test",
+        { ...initialHqOnboarding, completed: true }
+      );
+  }, []);
   const fixture = useMemo(createHqBrowserFixture, []);
   const restoreDesktop = useMemo(installSettingsDesktop, []);
 

@@ -37,6 +37,22 @@ export const createCuratedMemoryClient =
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
     });
+    if (request.operation === "onboardingPreference") {
+      const payload = await send(
+        "/v1/memory/curated/onboarding-preference",
+        json("POST", {
+          role: request.role,
+          noteId: request.noteId,
+          memoryEventId: request.memoryEventId
+        })
+      );
+      return curatedMemoryResultSchema.parse({
+        operation: "onboardingPreference",
+        proposalId: payload.proposalId,
+        status: payload.status,
+        reviewedAssertionId: payload.reviewedAssertionId
+      });
+    }
     if (request.operation === "list") {
       if (request.scope === "project" && !request.projectId)
         throw new Error("Project is required for Project memory.");

@@ -22,6 +22,19 @@ export const createCuratedMemoryPreloadApi = (
     return result;
   };
   return Object.freeze({
+    proposeOnboardingPreference: async (
+      input: Parameters<
+        NonNullable<CuratedMemoryDesktopApi["proposeOnboardingPreference"]>
+      >[0]
+    ) => {
+      const result = await command({
+        operation: "onboardingPreference",
+        ...input
+      });
+      if (result.operation !== "onboardingPreference")
+        throw new Error("Invalid onboarding preference result.");
+      return result;
+    },
     page: async (
       scope: "project" | "me" | "unscoped",
       projectId?: string,

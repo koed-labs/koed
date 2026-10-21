@@ -46,6 +46,18 @@ capture or `memory_answer`.
 The proposal tool never writes canonical Curated Memory directly. It only
 persists async local review work.
 
+HQ first-run onboarding can propose the User's chosen role as a Me preference
+only after the User selects **Remember my answer**. The Desktop creates a
+Personal Note with the exact role statement, waits for its current projected
+Memory Event, then calls the owner-local onboarding preference route. That
+route requires the current Desktop credential to have both Personal read and
+write access, checks the Note and Event again, and creates one pending proposal
+per Note Event across retries. Changing the role in Settings changes local
+examples and the suggested Project name immediately; remembering the new role
+requires a new explicit choice and new Note. Neither the Note nor the proposal
+is a canonical Curated Memory assertion. The normal AI Client review remains
+required before the preference becomes Memory.
+
 A proposal may contain at most 12 evidence sources in total. The proposal,
 review lease, accepted result, and terminal rejection contracts share this
 limit, so an oversized proposal cannot become permanently pending between
@@ -330,5 +342,9 @@ Team semantic search and expansion expose only grant-scoped pseudonymous
 lineage from the encrypted Team representation. Canonical Personal assertion
 IDs, source IDs, and plaintext routing metadata are not Team search fields.
 
-API Tokens remain personal-memory credentials. Curated Memory routes use the
-same personal API-token boundary as the existing MCP and capture endpoints.
+API Tokens remain personal-memory credentials. Existing Curated Memory routes
+keep the personal API-token boundary used by MCP and capture. The separate
+`POST /v1/memory/curated/onboarding-preference` route is owner-local Desktop
+only: it requires loopback access and both Personal read and write credential
+families. It accepts only the current Personal Note's exact role claim and
+projected Event, and creates a pending proposal rather than canonical Memory.

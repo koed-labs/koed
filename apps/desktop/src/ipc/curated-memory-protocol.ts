@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { hqOnboardingPreferenceRequestSchema } from "@koed/shared/hq-onboarding-contract";
 
 export const curatedMemoryCommandChannel = "koed:curated-memory:command";
 const id = z.uuid();
@@ -52,6 +53,9 @@ export const curatedAssertionSchema = z
 export type CuratedAssertion = z.infer<typeof curatedAssertionSchema>;
 
 export const curatedMemoryRequestSchema = z.discriminatedUnion("operation", [
+  hqOnboardingPreferenceRequestSchema
+    .extend({ operation: z.literal("onboardingPreference") })
+    .strict(),
   z
     .object({
       operation: z.literal("list"),
@@ -84,6 +88,21 @@ export type CuratedMemoryRequest = z.infer<typeof curatedMemoryRequestSchema>;
 export const curatedMemoryResultSchema = z.discriminatedUnion("operation", [
   z
     .object({
+      operation: z.literal("onboardingPreference"),
+      proposalId: id,
+      status: z.enum([
+        "pending",
+        "stored",
+        "merged",
+        "superseded",
+        "conflicted",
+        "skipped"
+      ]),
+      reviewedAssertionId: id.nullable()
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal("list"),
       assertions: z.array(curatedAssertionSchema),
       nextCursor: memoryCursorSchema.nullable()
@@ -114,6 +133,13 @@ export const curatedMemoryResultSchema = z.discriminatedUnion("operation", [
 ]);
 export type CuratedMemoryResult = z.infer<typeof curatedMemoryResultSchema>;
 export interface CuratedMemoryDesktopApi {
+  proposeOnboardingPreference?(input: {
+    role: "software" | "studying" | "other";
+    noteId: string;
+    memoryEventId: string;
+  }): Promise<
+    Extract<CuratedMemoryResult, { operation: "onboardingPreference" }>
+  >;
   page(
     scope: "project" | "me" | "unscoped",
     projectId?: string,

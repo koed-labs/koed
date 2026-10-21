@@ -2075,6 +2075,16 @@ export const routeIdentityContracts = [
     "Create a source-linked Curated Memory proposal from an AI-client integration."
   ),
   route(
+    "POST",
+    "/v1/memory/curated/onboarding-preference",
+    "desktop_local_credential",
+    "personal_memory",
+    "Propose an explicitly consented Personal Note preference for AI Client review.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
     "GET",
     "/v1/memory/curated/proposals",
     "api_token",

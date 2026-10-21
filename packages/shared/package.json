@@ -59,6 +59,10 @@
       "types": "./dist/agent-contract.d.ts",
       "import": "./dist/agent-contract.js"
     },
+    "./hq-onboarding-contract": {
+      "types": "./dist/hq-onboarding-contract.d.ts",
+      "import": "./dist/hq-onboarding-contract.js"
+    },
     "./agent-delegation-contract": {
       "types": "./dist/agent-delegation-contract.d.ts",
       "import": "./dist/agent-delegation-contract.js"

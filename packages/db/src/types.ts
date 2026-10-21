@@ -2059,6 +2059,10 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: CuratedMemoryProposalInput
   ): Promise<CuratedMemoryProposalRecord>;
+  createOnboardingPreferenceProposal(
+    actor: ActorContext,
+    input: { noteId: string; memoryEventId: string; claim: string }
+  ): Promise<CuratedMemoryProposalRecord>;
   listCuratedMemoryProposals(
     actor: ActorContext,
     input?: { status?: CuratedMemoryProposalStatus; limit?: number }

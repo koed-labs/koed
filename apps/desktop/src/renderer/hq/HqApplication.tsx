@@ -21,6 +21,11 @@ import type { ManagedProjectDesktopApi } from "../../ipc/managed-project-protoco
 import type { ProjectsDesktopApi } from "../../ipc/projects-protocol.js";
 import { ProjectsStore } from "./useProjects.js";
 import { AgentsStore } from "./agents/agents-store.js";
+import { HqOnboarding } from "./onboarding/HqOnboarding.js";
+import {
+  hqSuggestedProjectName,
+  readHqOnboarding
+} from "./onboarding/onboarding-preference.js";
 import { visibleHqProjects } from "./project-navigation.js";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import type {
@@ -133,6 +138,7 @@ export function HqApplication({
     itemId: string;
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [onboardingRevision, setOnboardingRevision] = useState(0);
   const [chatDeleteRequest, setChatDeleteRequest] =
     useState<ChatDeleteRequest | null>(null);
   const [chatDeleteNotice, setChatDeleteNotice] =
@@ -1073,6 +1079,12 @@ export function HqApplication({
     store: projectsStore,
     ownerId: visibilityOwnerId,
     profileKey: visibilityProfileKey,
+    suggestedProjectName:
+      visibilityOwnerId && visibilityProfileKey
+        ? hqSuggestedProjectName(
+            readHqOnboarding(visibilityOwnerId, visibilityProfileKey).role
+          )
+        : undefined,
     onOpenProject: (projectId) => selectRoute({ kind: "project", projectId })
   });
   const personalProject =
@@ -1487,6 +1499,33 @@ export function HqApplication({
       if (current()) moveBusyRef.current = false;
     }
   };
+  const needsOnboarding = Boolean(
+    agentsApi &&
+    visibilityOwnerId &&
+    visibilityProfileKey &&
+    !readHqOnboarding(visibilityOwnerId, visibilityProfileKey).completed
+  );
+  void onboardingRevision;
+  if (needsOnboarding && visibilityOwnerId && visibilityProfileKey)
+    return (
+      <div className="hq-onboarding-shell">
+        <HqShell title="Getting started" contextAvailable={false}>
+          <HqOnboarding
+            key={`${visibilityOwnerId}:${visibilityProfileKey}`}
+            ownerId={visibilityOwnerId}
+            profileKey={visibilityProfileKey}
+            agentsApi={agentsApi}
+            localAiClients={localAiClients}
+            personalMemoryApi={personalMemoryApi}
+            curatedMemoryApi={window.koedDesktop?.curatedMemory}
+            onComplete={() => {
+              void agentsStore?.refresh();
+              setOnboardingRevision((value) => value + 1);
+            }}
+          />
+        </HqShell>
+      </div>
+    );
   return (
     <>
       <HqShell

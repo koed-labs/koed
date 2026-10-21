@@ -36,12 +36,14 @@ export function useProjectMenuActions({
   store,
   ownerId,
   profileKey,
+  suggestedProjectName,
   onOpenProject
 }: {
   api: ProjectsDesktopApi | null | undefined;
   store: ProjectsStore | null;
   ownerId: string | null | undefined;
   profileKey: string | null | undefined;
+  suggestedProjectName?: string;
   onOpenProject: (projectId: string) => void;
 }): {
   openCreate: () => void;
@@ -107,7 +109,7 @@ export function useProjectMenuActions({
         : null;
     setCreate({
       key: crypto.randomUUID(),
-      name: "",
+      name: suggestedProjectName ?? "",
       folderPath: null,
       submitted: false,
       error: null,

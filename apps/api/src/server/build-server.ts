@@ -2,6 +2,7 @@ import { createWorkItemPrReconciler } from "../work-items/pr-reconciliation.js";
 import { registerMergeProposalDecisionRoutes } from "../work-items/merge-proposal-decision-routes.js";
 import { registerWorkItemPrReconciliationRoutes } from "../work-items/pr-reconciliation-routes.js";
 import { registerManagedMemoryActionRoutes } from "../managed-conversations/memory-action-routes.js";
+import { registerOnboardingPreferenceRoutes } from "../memory/onboarding-preference-routes.js";
 import { resolveTerminalExecutionAuthority } from "../managed-conversations/terminal-execution-authority.js";
 import { publishSharedWorkItemProgress } from "../managed-conversations/shared-work-item-dispatch.js";
 import cors from "@fastify/cors";
@@ -2292,6 +2293,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     app,
     routeContext,
     curatedClassificationCoordinator
+  );
+  registerOnboardingPreferenceRoutes(
+    app,
+    routeContext,
+    collaborationRepository
   );
   registerConversationSourceJournalRoutes(
     app,

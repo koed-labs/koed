@@ -9,6 +9,7 @@ import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
 import type { DesktopThemePreference } from "../../../window/theme-preference.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { HqSettingsAgents } from "./HqSettingsAgents.js";
+import { HqRolePreferenceSettings } from "../onboarding/HqRolePreferenceSettings.js";
 import { HqSettingsServices } from "./HqSettingsServices.js";
 import { HqSettingsDeleted } from "./HqSettingsDeleted.js";
 import "./hq-settings.css";
@@ -155,10 +156,17 @@ export function HqSettings(props: HqSettingsProps) {
           </>
         ) : null}
         {section === "agents" ? (
-          <HqSettingsAgents
-            statusStore={props.statusStore}
-            localAiClients={props.localAiClients}
-          />
+          <>
+            <HqRolePreferenceSettings
+              key={props.personalMemoryAuthorityKey}
+              authorityKey={props.personalMemoryAuthorityKey}
+              personalMemoryApi={props.personalMemoryApi}
+            />
+            <HqSettingsAgents
+              statusStore={props.statusStore}
+              localAiClients={props.localAiClients}
+            />
+          </>
         ) : null}
         {section === "teams" ? (
           <Teams
