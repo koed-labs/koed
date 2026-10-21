@@ -137,6 +137,7 @@ export const createManagedConversationRuntimeCoordinator = (options: {
         !command ||
         execution.executionGeneration !== event.execution.executionGeneration ||
         command.executionId !== execution.id ||
+        (command.commandKind !== "start" && command.commandKind !== "prompt") ||
         command.state !== "dispatching" ||
         command.leaseToken !== event.command.leaseToken
       )

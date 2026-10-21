@@ -290,6 +290,7 @@ export {
   type ManagedConversationExecutionCheckpointRecord,
   type ManagedConversationExecutionDiffRecord,
   type ManagedConversationExecutionState,
+  type ProjectHqTeamCatchUpWindow,
   type ManagedConversationRepository,
   type ManagedConversationRuntimeBindingRecord,
   type ManagedConversationRuntimeItemKind,

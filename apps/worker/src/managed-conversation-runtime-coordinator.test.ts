@@ -208,6 +208,7 @@ describe("Managed Conversation runtime coordinator", () => {
     const command = {
       id: commandId,
       executionId,
+      commandKind: "prompt",
       leaseToken: "00000000-0000-4000-8000-000000000024",
       execution: { id: executionId }
     };
@@ -305,6 +306,19 @@ describe("Managed Conversation runtime coordinator", () => {
         payload: { sharedWorkItemCompletion: "accepted" }
       })
     );
+    localRepository.getManagedConversationCommand.mockResolvedValueOnce({
+      ...command,
+      commandKind: "hq_catch_up",
+      state: "dispatching"
+    });
+    await completedTool?.({ ...event, toolCallId: "catch-up-tool" });
+    expect(
+      putRuntimeItem.mock.calls.filter(
+        (call) =>
+          (call[1] as { payload?: { sharedWorkItemCompletion?: string } })
+            .payload?.sharedWorkItemCompletion === "accepted"
+      )
+    ).toHaveLength(1);
     allowed = false;
     const acceptedBeforeRevoke = putRuntimeItem.mock.calls.filter(
       (call) =>

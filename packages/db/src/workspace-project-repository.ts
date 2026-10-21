@@ -106,6 +106,52 @@ const appendActivity = async (
   );
 };
 
+const encodeActivityCursor = (
+  projectId: string,
+  memberId: string,
+  sequence: string
+) =>
+  Buffer.from(JSON.stringify({ v: 1, projectId, memberId, sequence })).toString(
+    "base64url"
+  );
+
+const decodeActivityCursor = (
+  cursor: string,
+  projectId: string,
+  memberId: string
+): string => {
+  if (
+    !/^[A-Za-z0-9_-]{1,500}$/u.test(cursor) ||
+    Buffer.from(cursor, "base64url").toString("base64url") !== cursor
+  )
+    throw new WorkspaceProjectUnavailableError(
+      "Project activity cursor is invalid"
+    );
+  let value: unknown;
+  try {
+    value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new WorkspaceProjectUnavailableError(
+      "Project activity cursor is invalid"
+    );
+  }
+  const row = value as Record<string, unknown>;
+  if (
+    !row ||
+    Object.keys(row).sort().join(",") !== "memberId,projectId,sequence,v" ||
+    row.v !== 1 ||
+    row.projectId !== projectId ||
+    row.memberId !== memberId ||
+    typeof row.sequence !== "string" ||
+    !/^(0|[1-9][0-9]{0,18})$/u.test(row.sequence) ||
+    BigInt(row.sequence) > 9223372036854775807n
+  )
+    throw new WorkspaceProjectUnavailableError(
+      "Project activity cursor is invalid"
+    );
+  return row.sequence;
+};
+
 const currentMember = async (
   client: Client,
   userId: string,
@@ -164,6 +210,7 @@ const currentMember = async (
     select project.*, member.id as actor_team_member_id,
            association.access as project_access,
            association.version as project_member_version,
+           association.created_at as project_member_created_at,
            workspace_access.access as workspace_access
       from workspace_projects project
       join team_memberships member
@@ -1204,6 +1251,178 @@ export const createWorkspaceProjectRepository = (
           items: rows.slice(0, 50).map(workItemRecord),
           nextOffset: hasMore ? input.offset + 50 : null,
           projectVersion: Number(project.version)
+        };
+      });
+    },
+    async activitySeen(actorUserId: string, projectId: string) {
+      return transaction(pool, async (client) => {
+        const member = await currentMember(
+          client,
+          actorUserId,
+          projectId,
+          true
+        );
+        const memberId = String(member.actor_team_member_id);
+        const row = await one(
+          client,
+          `select seen_sequence,seen_at,welcome_delivered_at
+           from workspace_project_seen
+          where workspace_project_id=$1 and team_member_id=$2`,
+          [projectId, memberId]
+        );
+        // A newly admitted member starts at their Project membership frontier,
+        // not at the beginning of another member's historical activity.
+        const initial = row
+          ? null
+          : await one(
+              client,
+              `select coalesce(max(sequence),0) as sequence
+                 from workspace_project_activity
+                where workspace_project_id=$1 and at < $2`,
+              [projectId, member.project_member_created_at]
+            );
+        return {
+          cursor: encodeActivityCursor(
+            projectId,
+            memberId,
+            textValue(row?.seen_sequence ?? initial?.sequence ?? "0")
+          ),
+          seenAt: row?.seen_at
+            ? new Date(row.seen_at as Date).toISOString()
+            : null,
+          welcomeDue: !row?.welcome_delivered_at,
+          memberId
+        };
+      });
+    },
+    async activityPage(
+      actorUserId: string,
+      projectId: string,
+      input: { after: string; limit: number }
+    ) {
+      if (
+        !Number.isSafeInteger(input.limit) ||
+        input.limit < 1 ||
+        input.limit > 100
+      )
+        throw new WorkspaceProjectUnavailableError(
+          "Project activity limit is invalid"
+        );
+      return transaction(pool, async (client) => {
+        const member = await currentMember(
+          client,
+          actorUserId,
+          projectId,
+          true
+        );
+        const memberId = String(member.actor_team_member_id);
+        const after = decodeActivityCursor(input.after, projectId, memberId);
+        const rows = await client.query<{
+          sequence: string;
+          actor_team_member_id: string;
+          kind: string;
+          ref: string;
+          at: Date;
+        }>(
+          `select sequence,actor_team_member_id,kind,ref,at
+           from workspace_project_activity
+          where workspace_project_id=$1 and sequence>$2
+            and kind in ('work_item_created','work_item_done','source_added','pr_merged')
+          order by sequence limit $3`,
+          [projectId, after, input.limit + 1]
+        );
+        const selected = rows.rows.slice(0, input.limit);
+        const items = selected.map((row) => ({
+          cursor: encodeActivityCursor(projectId, memberId, row.sequence),
+          actorTeamMemberId: row.actor_team_member_id,
+          kind: row.kind as
+            | "work_item_created"
+            | "work_item_done"
+            | "source_added"
+            | "pr_merged",
+          ref: row.ref,
+          at: row.at.toISOString()
+        }));
+        return {
+          projectId,
+          memberId,
+          items,
+          hasMore: rows.rows.length > input.limit,
+          nextCursor: items.at(-1)?.cursor ?? null
+        };
+      });
+    },
+    async acknowledgeActivity(
+      actorUserId: string,
+      projectId: string,
+      cursor: string,
+      welcomeDelivered: boolean
+    ) {
+      return transaction(pool, async (client) => {
+        const member = await currentMember(
+          client,
+          actorUserId,
+          projectId,
+          true
+        );
+        const memberId = String(member.actor_team_member_id);
+        const sequence = decodeActivityCursor(cursor, projectId, memberId);
+        const prior = await one(
+          client,
+          `select seen_sequence from workspace_project_seen
+            where workspace_project_id=$1 and team_member_id=$2`,
+          [projectId, memberId]
+        );
+        if (!prior) {
+          const initial = await one(
+            client,
+            `select coalesce(max(sequence),0) as sequence
+               from workspace_project_activity
+              where workspace_project_id=$1 and at < $2`,
+            [projectId, member.project_member_created_at]
+          );
+          if (BigInt(sequence) < BigInt(textValue(initial?.sequence ?? "0")))
+            throw new WorkspaceProjectUnavailableError(
+              "Project activity cursor predates membership"
+            );
+        }
+        if (sequence !== "0") {
+          const exists = await one(
+            client,
+            `select 1 from workspace_project_activity
+              where workspace_project_id=$1 and sequence=$2`,
+            [projectId, sequence]
+          );
+          if (!exists)
+            throw new WorkspaceProjectUnavailableError(
+              "Project activity cursor is not committed"
+            );
+        }
+        const row = await one(
+          client,
+          `insert into workspace_project_seen
+            (workspace_project_id,team_member_id,seen_sequence,seen_at,welcome_delivered_at)
+           values ($1,$2,$3,now(),case when $4 then now() else null end)
+           on conflict (workspace_project_id,team_member_id) do update
+             set seen_sequence=greatest(workspace_project_seen.seen_sequence,excluded.seen_sequence),
+                 seen_at=case when excluded.seen_sequence>workspace_project_seen.seen_sequence
+                   then now() else workspace_project_seen.seen_at end,
+                 welcome_delivered_at=coalesce(workspace_project_seen.welcome_delivered_at,
+                   excluded.welcome_delivered_at)
+           returning seen_sequence,seen_at,welcome_delivered_at`,
+          [projectId, memberId, sequence, welcomeDelivered]
+        );
+        return {
+          cursor: encodeActivityCursor(
+            projectId,
+            memberId,
+            String(row!.seen_sequence)
+          ),
+          seenAt: row!.seen_at
+            ? new Date(row!.seen_at as Date).toISOString()
+            : null,
+          welcomeDue: !row!.welcome_delivered_at,
+          memberId
         };
       });
     },

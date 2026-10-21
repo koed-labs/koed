@@ -389,7 +389,7 @@ describe.skipIf(!testUrl)("Personal Project activity", () => {
     }
   });
 
-  it("writes Source readiness once per attempt and rejects unimplemented and Team kinds", async () => {
+  it("writes Source readiness once per attempt and rejects unknown and Team kinds", async () => {
     const client = await pool.connect();
     try {
       await client.query("begin");
@@ -419,7 +419,7 @@ describe.skipIf(!testUrl)("Personal Project activity", () => {
         written.map((item) => ({ kind: item.kind, ref: item.ref }))
       ).toEqual(attempts);
       await client.query("begin");
-      for (const kind of ["assertion_created", "member_joined"] as const)
+      for (const kind of ["unknown_project_event", "member_joined"] as const)
         await expect(
           appendProjectActivityWithClient(client, {
             ownerUserId: owner,

@@ -27,6 +27,39 @@ const project = (id: string) => ({
 });
 
 describe("Projects main client", () => {
+  it("reads Personal activity from the owner cursor and only acknowledges explicitly", async () => {
+    const id = randomUUID();
+    const cursor = "owner-cursor";
+    const request = vi.fn(async (path: string, init: RequestInit) => {
+      if (path.endsWith("/seen")) return { cursor, at: now };
+      expect(init.method).toBe("GET");
+      return { items: [], hasMore: false, nextCursor: null };
+    });
+    const client = createProjectsClient(request, async () =>
+      auth("owner-profile-a")
+    );
+    await expect(
+      client({ operation: "activitySeen", projectId: id })
+    ).resolves.toMatchObject({
+      value: { cursor }
+    });
+    await expect(
+      client({ operation: "activityPage", projectId: id, after: cursor })
+    ).resolves.toMatchObject({
+      value: { hasMore: false }
+    });
+    expect(request).toHaveBeenCalledWith(
+      `/v1/projects/${id}/activity?after=${cursor}`,
+      { method: "GET" },
+      expect.objectContaining({ key: "owner-profile-a" })
+    );
+    expect(request.mock.calls.every(([, init]) => init.method === "GET")).toBe(
+      true
+    );
+    await client({ operation: "activityAcknowledge", projectId: id, cursor });
+    expect(request.mock.calls.at(-1)?.[1]).toMatchObject({ method: "PUT" });
+  });
+
   it("reads every owner page and rejects a profile change during pagination", async () => {
     const first = project(randomUUID());
     const second = project(randomUUID());

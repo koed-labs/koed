@@ -170,6 +170,44 @@ describe.skipIf(!testUrl)(
           }
         ]
       };
+      const previewRequest = {
+        ownerUserId: owner,
+        projectId,
+        sourceId: request.sourceId,
+        sourceRevisionId: request.sourceRevisionId,
+        noteRevisionId: request.noteRevisionId,
+        sourceText: request.sourceText,
+        proposals: request.proposals.map(
+          ({ lineNumber, sourceLine, title }) => ({
+            lineNumber,
+            sourceLine,
+            title
+          })
+        )
+      };
+      expect(await items.previewFromDocument(previewRequest)).toMatchObject({
+        newCount: 1,
+        alreadyExistingCount: 0,
+        removedCount: 0,
+        candidates: [{ status: "new" }]
+      });
+      expect(
+        await items.previewFromDocument({
+          ...previewRequest,
+          proposals: [
+            previewRequest.proposals[0]!,
+            { ...previewRequest.proposals[0]!, title: "Second phrasing" }
+          ]
+        })
+      ).toMatchObject({ newCount: 1, candidates: [{ status: "new" }] });
+      await expect(
+        items.previewFromDocument({
+          ...previewRequest,
+          proposals: [
+            { ...previewRequest.proposals[0]!, sourceLine: "Invented line" }
+          ]
+        })
+      ).rejects.toThrow("line evidence changed");
       const first = await items.createFromDocument(request);
       expect(first).toMatchObject({ created: 1, alreadyExisting: 0 });
       expect(first.items[0]).toMatchObject({
@@ -190,6 +228,16 @@ describe.skipIf(!testUrl)(
       });
       expect(rerun).toMatchObject({ created: 0, alreadyExisting: 1 });
       expect(rerun.items[0]?.id).toBe(first.items[0]?.id);
+      expect(
+        await items.previewFromDocument({
+          ...previewRequest,
+          proposals: [{ ...previewRequest.proposals[0]!, title: "New wording" }]
+        })
+      ).toMatchObject({
+        newCount: 0,
+        alreadyExistingCount: 1,
+        candidates: [{ status: "already_existing" }]
+      });
       // A concurrent human prompt owns this execution before it reads the
       // Project. Document apply must release its Project lock immediately,
       // rather than deadlock while waiting in the opposite order.
@@ -408,6 +456,13 @@ describe.skipIf(!testUrl)(
       await expect(
         items.createFromDocument({ ...request, sourceId: randomUUID() })
       ).rejects.toThrow("revision changed");
+      await items.deleteTodo(owner, first.items[0]!.id);
+      expect(await items.previewFromDocument(previewRequest)).toMatchObject({
+        newCount: 0,
+        alreadyExistingCount: 0,
+        removedCount: 1,
+        candidates: [{ status: "removed" }]
+      });
       const second = await sources.uploadDocument(owner, projectId, {
         name: "Syllabus.txt",
         mediaType: "text/plain",

@@ -20,6 +20,8 @@ import {
   workItemsFromDocListPageSchema,
   workItemsFromDocListSchema,
   workItemsFromDocParamsSchema,
+  workItemsFromDocPreviewSchema,
+  workItemsFromDocPreviewResultSchema,
   workItemsFromDocReadPageSchema,
   workItemsFromDocReadSchema
 } from "@koed/shared";
@@ -300,6 +302,69 @@ export function registerWorkItemsFromDocumentRoutes(
   );
 
   app.post(
+    "/v1/managed-conversations/:executionId/work-items-from-doc/preview",
+    { preHandler: input.readRateLimit },
+    async (request) => {
+      const { actor, managed, sources, items } = await authorize(
+        request,
+        false
+      );
+      const { executionId } = workItemsFromDocParamsSchema.parse(
+        request.params
+      );
+      const body = workItemsFromDocPreviewSchema.parse(request.body);
+      const before = await current(
+        managed,
+        actor.id,
+        executionId,
+        body.executionGeneration
+      );
+      if (
+        before.command.payload?.selectedDocumentSourceId &&
+        before.command.payload.selectedDocumentSourceId !== body.sourceId
+      )
+        return error("Selected Project Source cannot be changed", 409);
+      const source = await sources
+        .readDocument(actor.id, before.execution.projectId, body.sourceId)
+        .catch(documentError);
+      if (
+        source.sourceRevisionId !== body.sourceRevisionId ||
+        source.noteRevisionId !== body.noteRevisionId
+      )
+        return error("Project Source revision changed", 409);
+      const preview = await items
+        .previewFromDocument({
+          ownerUserId: actor.id,
+          projectId: before.execution.projectId,
+          sourceId: body.sourceId,
+          sourceRevisionId: body.sourceRevisionId,
+          noteRevisionId: body.noteRevisionId,
+          sourceText: source.text,
+          proposals: body.proposals.map((proposal) => ({
+            lineNumber: proposal.lineNumber,
+            sourceLine: proposal.sourceLine,
+            title: proposal.title
+          }))
+        })
+        .catch(documentError);
+      const after = await current(
+        managed,
+        actor.id,
+        executionId,
+        body.executionGeneration
+      );
+      if (
+        after.command.id !== before.command.id ||
+        after.command.leaseToken !== before.command.leaseToken ||
+        after.command.payload?.selectedDocumentSourceId !==
+          before.command.payload?.selectedDocumentSourceId
+      )
+        return error("Managed Agent command changed", 409);
+      return workItemsFromDocPreviewResultSchema.parse(preview);
+    }
+  );
+
+  app.post(
     "/v1/managed-conversations/:executionId/work-items-from-doc/apply",
     { preHandler: input.writeRateLimit },
     async (request) => {
@@ -314,6 +379,8 @@ export function registerWorkItemsFromDocumentRoutes(
         executionId,
         body.executionGeneration
       );
+      if (command.commandKind !== "start" && command.commandKind !== "prompt")
+        return error("Document Work Item apply needs a User command", 409);
       if (
         command.id !== body.commandId ||
         command.leaseToken !== body.leaseToken

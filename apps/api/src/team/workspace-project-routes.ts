@@ -16,7 +16,9 @@ import {
   workspaceProjectWorkItemCreateSchema,
   workspaceProjectHumanWorkItemPatchSchema,
   workspaceProjectDispatchReceiptSchema,
-  workspaceProjectDispatchProgressSchema
+  workspaceProjectDispatchProgressSchema,
+  workspaceProjectActivitySeenSchema,
+  workspaceProjectActivityPageSchema
 } from "@koed/shared";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
@@ -360,6 +362,70 @@ export const registerWorkspaceProjectRoutes = (
         .parse(request.query);
       try {
         return await repository().listWorkItems(actor.id, projectId, query);
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
+    "/v1/workspace-projects/:projectId/activity/seen",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { projectId } = projectParams.parse(request.params);
+      try {
+        return workspaceProjectActivitySeenSchema.parse(
+          await repository().activitySeen(actor.id, projectId)
+        );
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
+    "/v1/workspace-projects/:projectId/activity",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { projectId } = projectParams.parse(request.params);
+      const query = z
+        .object({
+          after: z.string().min(1).max(500),
+          limit: z.coerce.number().int().min(1).max(100).default(100)
+        })
+        .strict()
+        .parse(request.query);
+      try {
+        return workspaceProjectActivityPageSchema.parse(
+          await repository().activityPage(actor.id, projectId, query)
+        );
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.put(
+    "/v1/workspace-projects/:projectId/activity/seen",
+    { preHandler: input.writeRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { projectId } = projectParams.parse(request.params);
+      const body = z
+        .object({
+          cursor: z.string().min(1).max(500),
+          welcomeDelivered: z.boolean()
+        })
+        .strict()
+        .parse(request.body);
+      try {
+        return workspaceProjectActivitySeenSchema.parse(
+          await repository().acknowledgeActivity(
+            actor.id,
+            projectId,
+            body.cursor,
+            body.welcomeDelivered
+          )
+        );
       } catch (error) {
         return reply.code(handle(error).statusCode).send(handle(error));
       }

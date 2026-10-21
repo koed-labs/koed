@@ -59,6 +59,40 @@ export const workspaceProjectMembersSchema = z
     )
   })
   .strict();
+export const workspaceProjectActivitySeenSchema = z
+  .object({
+    cursor: z.string().min(1).max(500),
+    seenAt: z.iso.datetime({ offset: true }).nullable(),
+    welcomeDue: z.boolean(),
+    memberId: z.uuid()
+  })
+  .strict();
+export const workspaceProjectActivityPageSchema = z
+  .object({
+    projectId: z.uuid(),
+    memberId: z.uuid(),
+    items: z
+      .array(
+        z
+          .object({
+            cursor: z.string().min(1).max(500),
+            actorTeamMemberId: z.uuid(),
+            kind: z.enum([
+              "work_item_created",
+              "work_item_done",
+              "source_added",
+              "pr_merged"
+            ]),
+            ref: z.string().min(1),
+            at: z.iso.datetime({ offset: true })
+          })
+          .strict()
+      )
+      .max(100),
+    hasMore: z.boolean(),
+    nextCursor: z.string().min(1).max(500).nullable()
+  })
+  .strict();
 // Leaves headroom for the authenticated local-edge envelope around the copy.
 // Both proxy and Team copy routes accept at most 8 MiB request bodies.
 export const workspaceProjectCopyMaxBytes = 7_000_000;

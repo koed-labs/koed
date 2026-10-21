@@ -517,6 +517,62 @@ export const createProjectSourceRepository = (
       );
       return result.rows.map(map);
     },
+    async resolveActivityOutcomes(
+      ownerUserId: string,
+      projectId: string,
+      attemptIds: readonly string[]
+    ) {
+      if (attemptIds.length === 0) return [];
+      if (
+        attemptIds.length > 100 ||
+        attemptIds.some(
+          (id) =>
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+              id
+            )
+        )
+      )
+        throw new ProjectCapabilityError("Project Source attempts are invalid");
+      await project(pool, ownerUserId, projectId, false, true);
+      const result = await pool.query<{
+        attempt_id: string;
+        source_id: string;
+        name: string;
+        status: "ready" | "failed";
+      }>(
+        `select revision.id as attempt_id,source.id as source_id,
+                source.name,source.status
+           from project_source_revisions revision
+           join project_sources source
+             on source.owner_user_id=revision.owner_user_id
+            and source.id=revision.source_id
+           join projects project
+             on project.owner_user_id=source.owner_user_id
+            and project.id=source.project_id
+          where revision.owner_user_id=$1 and source.project_id=$2
+            and revision.id=any($3::uuid[])
+            and project.lifecycle='active' and project.deletion_phase is null
+            and source.deleted_at is null and source.remove_batch_id is null
+            and source.pending_revision_id is null
+            and source.status in ('ready','failed')
+            and revision.state=source.status
+            and not exists (
+              select 1 from project_source_revisions newer
+               where newer.owner_user_id=revision.owner_user_id
+                 and newer.source_id=revision.source_id
+                 and newer.revision>revision.revision
+            )
+            and (source.status='failed' or
+                 source.current_revision_id=revision.note_revision_id)`,
+        [ownerUserId, projectId, attemptIds]
+      );
+      return result.rows.map((row) => ({
+        attemptId: row.attempt_id,
+        sourceId: row.source_id,
+        name: row.name,
+        status: row.status
+      }));
+    },
     async create(
       ownerUserId: string,
       projectId: string,

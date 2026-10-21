@@ -3,25 +3,32 @@ import managedPermissions from "../integrations/pi/managed-permissions.mjs";
 
 type PermissionApi = Parameters<typeof managedPermissions>[0];
 
-function fixture(mode: string) {
+function fixture(mode: string, catchUpReadOnly = false) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  managedPermissions(
-    {
-      on: ((name: string, handler: (...args: never[]) => unknown) => {
-        handlers.set(name, handler as (...args: unknown[]) => unknown);
-      }) as PermissionApi["on"]
-    },
-    { KOED_MANAGED_PERMISSION_MODE: mode }
-  );
+  const setActiveTools = vi.fn();
+  const api = {
+    on: ((name: string, handler: (...args: never[]) => unknown) => {
+      handlers.set(name, handler as (...args: unknown[]) => unknown);
+    }) as PermissionApi["on"],
+    setActiveTools
+  };
+  managedPermissions(api, {
+    KOED_MANAGED_PERMISSION_MODE: mode,
+    ...(catchUpReadOnly ? { KOED_MANAGED_CATCH_UP_READ_ONLY: "1" } : {})
+  });
   const select = vi.fn().mockResolvedValue("Decline");
   const controller = new AbortController();
   return {
     handlers,
     select,
+    setActiveTools,
     controller,
-    call: (toolName: string) =>
+    call: (
+      toolName: string,
+      input: Record<string, unknown> = { command: "echo hello" }
+    ) =>
       handlers.get("tool_call")!(
-        { toolName, toolCallId: "call-1", input: { command: "echo hello" } },
+        { toolName, toolCallId: "call-1", input },
         { hasUI: true, signal: controller.signal, ui: { select } }
       )
   };
@@ -66,5 +73,30 @@ describe("managed Pi tool permissions", () => {
       return "Approve";
     });
     expect(await f.call("bash")).toMatchObject({ block: true });
+  });
+  it("uses a strict catch-up tool set even when the User selected full access", async () => {
+    const f = fixture("full_access", true);
+    f.handlers.get("session_start")!();
+    expect(f.setActiveTools).toHaveBeenCalledWith([
+      "memory_answer",
+      "memory_answer_result",
+      "memory_answer_cancel",
+      "work_items_from_doc"
+    ]);
+    for (const name of [
+      "bash",
+      "read",
+      "write",
+      "memory_forget",
+      "work_item_complete"
+    ])
+      expect(await f.call(name)).toMatchObject({ block: true });
+    for (const mode of ["list", "read", "preview"])
+      expect(await f.call("work_items_from_doc", { mode })).toBeUndefined();
+    expect(
+      await f.call("work_items_from_doc", { mode: "apply" })
+    ).toMatchObject({ block: true });
+    expect(await f.call("memory_answer")).toBeUndefined();
+    expect(f.select).not.toHaveBeenCalled();
   });
 });

@@ -7,6 +7,10 @@ import {
 } from "./approval-activity-sql.js";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
 import {
+  appendProjectActivityWithClient,
+  lockProjectActivityParentNowait
+} from "./project-activity-repository.js";
+import {
   activeCuratedMemoryEvidencePredicate,
   verifyCuratedMemorySourcesWithClient
 } from "./curated-memory-policy.js";
@@ -124,11 +128,27 @@ const reviewClassificationWithClient = async (
         { statusCode: 409 }
       );
     }
-    const project = await client.query<{ id: string }>(
-      `select id from projects where id=$1 and owner_user_id=$2
-         and lifecycle='active' and deletion_phase is null for update`,
-      [projectContextId, actor.userId]
-    );
+    let project: pg.QueryResult<{ id: string }>;
+    try {
+      project = await client.query<{ id: string }>(
+        `select id from projects where id=$1 and owner_user_id=$2
+         and lifecycle='active' and deletion_phase is null
+         for update${input.kind === "decision" ? " nowait" : ""}`,
+        [projectContextId, actor.userId]
+      );
+    } catch (error) {
+      if (
+        input.kind === "decision" &&
+        (error as { code?: string }).code === "55P03"
+      )
+        throw Object.assign(
+          new Error(
+            "Project changed during Curated Memory review; retry the review."
+          ),
+          { statusCode: 409 }
+        );
+      throw error;
+    }
     if (!project.rows[0]) {
       throw Object.assign(new Error("Curated Memory Project is unavailable"), {
         statusCode: 409
@@ -814,6 +834,18 @@ export const createCuratedMemoryProposalTransitionMethods = ({
               targetPreview?.project_id ?? null
             )
           : undefined;
+      if (
+        classification?.scope === "project" &&
+        classification.kind === "decision" &&
+        classification.projectId &&
+        input.decision !== "skip" &&
+        input.decision !== "conflict"
+      )
+        await lockProjectActivityParentNowait(
+          client,
+          actor.userId,
+          classification.projectId
+        );
       if (targetAssertionId) {
         const targetResult = await client.query<AssertionRow>(
           `
@@ -1034,6 +1066,27 @@ export const createCuratedMemoryProposalTransitionMethods = ({
         updated.rows[0]!
       );
       if (assertionId) {
+        if (nextStatus === "stored" || nextStatus === "superseded") {
+          const currentDecision = await client.query<{ project_id: string }>(
+            `select cma.project_id from curated_memory_assertions cma
+             where cma.id=$1 and cma.owner_user_id=$2
+               and cma.visibility='personal' and cma.scope='project'
+               and cma.kind='decision' and cma.project_id is not null
+               and cma.status='current' and cma.suppressed_at is null
+               and (cma.expires_at is null or cma.expires_at > now())
+               and ${activeCuratedMemoryEvidencePredicate("cma")}`,
+            [assertionId, actor.userId]
+          );
+          if (currentDecision.rows[0])
+            await appendProjectActivityWithClient(client, {
+              ownerUserId: actor.userId,
+              projectId: currentDecision.rows[0].project_id,
+              actorUserId: actor.userId,
+              kind: "assertion_created",
+              ref: assertionId,
+              nowait: true
+            });
+        }
         const linked = await client.query<{ id: string }>(
           `select linked.id
              from curated_memory_assertions changed

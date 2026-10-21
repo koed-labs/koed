@@ -21,6 +21,14 @@ export const projectActivityPageSchema = z
           actorUserId: z.uuid(),
           kind: projectActivityKindSchema,
           ref: z.string().min(1),
+          sourceOutcome: z
+            .object({
+              sourceId: z.uuid(),
+              name: z.string().min(1),
+              status: z.enum(["ready", "failed"])
+            })
+            .strict()
+            .optional(),
           at: z.iso.datetime({ offset: true })
         })
         .strict()

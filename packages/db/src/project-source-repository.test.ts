@@ -120,6 +120,66 @@ describe.skipIf(!testUrl)("owner-scoped Project Sources", () => {
     ).toEqual([folder.id]);
   });
 
+  it("resolves only the latest current extraction attempt in the exact owner Project", async () => {
+    const projects = createProjectApiRepository(pool);
+    const sources = createProjectSourceRepository(pool);
+    const project = await projects.create(owner, {
+      name: "Activity outcomes",
+      idempotencyKey: `activity-outcomes-${randomUUID()}`
+    });
+    const source = await sources.create(owner, project.id, {
+      kind: "folder",
+      name: "Current source",
+      uri: "/current-source"
+    });
+    const oldAttempt = randomUUID();
+    const latestAttempt = randomUUID();
+    for (const [id, revision] of [
+      [oldAttempt, 1],
+      [latestAttempt, 2]
+    ] as const)
+      await pool.query(
+        `insert into project_source_revisions
+          (id,owner_user_id,source_id,revision,idempotency_key_hash,content_hash,byte_length,media_type,state,failure_reason)
+         values ($1,$2,$3,$4,$5,$6,1,'text/plain','failed','parse_error')`,
+        [
+          id,
+          owner,
+          source.id,
+          revision,
+          String(revision).repeat(64),
+          "b".repeat(64)
+        ]
+      );
+    await pool.query(
+      `update project_sources set status='failed',failure_reason='parse_error' where id=$1 and owner_user_id=$2`,
+      [source.id, owner]
+    );
+    expect(
+      await sources.resolveActivityOutcomes(owner, project.id, [
+        oldAttempt,
+        latestAttempt
+      ])
+    ).toEqual([
+      {
+        attemptId: latestAttempt,
+        sourceId: source.id,
+        name: "Current source",
+        status: "failed"
+      }
+    ]);
+    await expect(
+      sources.resolveActivityOutcomes(other, project.id, [latestAttempt])
+    ).rejects.toBeInstanceOf(ProjectNotFoundError);
+    await pool.query(
+      `update project_sources set deleted_at=now() where id=$1 and owner_user_id=$2`,
+      [source.id, owner]
+    );
+    expect(
+      await sources.resolveActivityOutcomes(owner, project.id, [latestAttempt])
+    ).toEqual([]);
+  });
+
   it("deletes only active references in its exact batch and Undo preserves prior trash", async () => {
     const projects = createProjectApiRepository(pool);
     const sources = createProjectSourceRepository(pool);

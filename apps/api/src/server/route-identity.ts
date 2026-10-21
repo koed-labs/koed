@@ -539,6 +539,36 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
   ),
   route(
     "GET",
+    "/v1/workspace-projects/{projectId}/activity/seen",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this shared Project activity read.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/activity",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked for this public Project activity page.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/workspace-projects/{projectId}/activity/seen",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked before advancing this member's cursor.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/workspace-projects/{projectId}/work-items/{itemId}/dispatch-proof",
     "session_or_device_credential",
     "projects",
@@ -1207,6 +1237,26 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/projects/{id}/hq/catch-up",
+    "desktop_local_credential",
+    "projects",
+    "Queue server-derived Personal activity and current linked Team public activity in the owner's existing HQ with exact local Desktop Managed authority and sealed Team read authority.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/projects/{id}/hq/catch-up/retry",
+    "desktop_local_credential",
+    "projects",
+    "Explicitly retry a proven pre-send HQ catch-up on the same Conversation with a fresh generation, stable request ID and current linked Team read authority.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
     "/v1/projects/{id}/hq/conversation:start",
     "session_or_device_credential",
     "projects",
@@ -1258,6 +1308,16 @@ export const routeIdentityContracts = [
     "desktop_local_credential",
     "projects",
     "Read bounded lines from one current owner Project Source Note for a leased managed AI Client.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/work-items-from-doc/preview",
+    "session_or_device_credential",
+    "projects",
+    "Read-only exact-line duplicate preview for an active owner-bound document command.",
     "none",
     "implemented",
     localEdgeDeploymentModes

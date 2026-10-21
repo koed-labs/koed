@@ -4328,6 +4328,14 @@ export const createKoedServerManager = ({
 
   const projectHqConversation = createProjectHqConversationClient({
     authority: projectsAuthority,
+    teamCredential: (backendId) => {
+      if (environment.KOED_DESKTOP_HQ_ENABLED !== "true")
+        throw new Error("Project HQ Team catch-up is unavailable.");
+      return workspaceProjectTransport.teamCredential(
+        backendId,
+        "team_workspace_read"
+      );
+    },
     requestJson: async (path, init, authority: ProjectHqAuthority) => {
       const remote = await fetchBoundedJsonObject(
         personalMemoryFetch,

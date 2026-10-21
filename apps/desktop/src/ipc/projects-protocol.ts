@@ -17,6 +17,10 @@ import {
 } from "@koed/shared/project-source-contract";
 import { z } from "zod";
 import {
+  projectActivityPageSchema,
+  projectSeenSchema
+} from "@koed/shared/project-activity-contract";
+import {
   workspaceProjectShareContextSchema,
   workspaceProjectPendingShareSchema,
   workspaceProjectMembersSchema,
@@ -171,6 +175,23 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("list") }).strict(),
   z.object({ operation: z.literal("pickFolder") }).strict(),
   z.object({ operation: z.literal("hq"), projectId: z.uuid() }).strict(),
+  z
+    .object({ operation: z.literal("activitySeen"), projectId: z.uuid() })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("activityPage"),
+      projectId: z.uuid(),
+      after: z.string().min(1).max(500).optional()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("activityAcknowledge"),
+      projectId: z.uuid(),
+      cursor: z.string().min(1).max(500)
+    })
+    .strict(),
   z
     .object({ operation: z.literal("workItemList"), projectId: z.uuid() })
     .strict(),
@@ -503,6 +524,27 @@ export const projectsResultSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("hq"), value: projectHqSchema }).strict(),
   z
     .object({
+      operation: z.literal("activitySeen"),
+      projectId: z.uuid(),
+      value: projectSeenSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("activityPage"),
+      projectId: z.uuid(),
+      value: projectActivityPageSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("activityAcknowledge"),
+      projectId: z.uuid(),
+      value: projectSeenSchema
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal("workItemList"),
       projectId: z.uuid(),
       items: z.array(workItemSchema)
@@ -814,6 +856,15 @@ export interface ProjectsDesktopApi {
   list(): Promise<z.infer<typeof projectSchema>[]>;
   pickFolder(): Promise<string | null>;
   hq(projectId: string): Promise<z.infer<typeof projectHqSchema>>;
+  activitySeen?(projectId: string): Promise<z.infer<typeof projectSeenSchema>>;
+  activityPage?(
+    projectId: string,
+    after?: string
+  ): Promise<z.infer<typeof projectActivityPageSchema>>;
+  activityAcknowledge?(
+    projectId: string,
+    cursor: string
+  ): Promise<z.infer<typeof projectSeenSchema>>;
   create(
     value: z.infer<typeof createProjectSchema>
   ): Promise<z.infer<typeof projectSchema>>;

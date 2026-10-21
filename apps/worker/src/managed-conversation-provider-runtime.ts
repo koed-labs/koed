@@ -7,6 +7,18 @@ import type {
 
 export type ManagedConversationProvider = "codex" | "claude" | "pi";
 
+export const managedConversationPolicySettingsKey = (
+  base: string,
+  readOnly: boolean
+): string => (readOnly ? `${base}:catch_up_read_only` : base);
+
+export const matchesManagedConversationPolicySettingsKey = (
+  actual: string | undefined,
+  base: string
+): boolean =>
+  actual === base ||
+  actual === managedConversationPolicySettingsKey(base, true);
+
 type ProviderSession = {
   codex: CodexManagedConversationSession & ManagedConversationCommandSession;
   claude: ClaudeManagedConversationSession & ManagedConversationCommandSession;
@@ -76,7 +88,7 @@ export class ManagedConversationRuntimeRegistry {
   ): void {
     const previous = this.#sessions.get(executionId);
     if (previous && previous.session !== entry.session) {
-      void previous.session.closeAndWait().catch(() => undefined);
+      throw new Error("ManagedConversationRuntimeStillActiveError");
     }
     this.#sessions.set(executionId, {
       provider,
@@ -86,6 +98,17 @@ export class ManagedConversationRuntimeRegistry {
 
   delete(provider: ManagedConversationProvider, executionId: string): boolean {
     if (this.#sessions.get(executionId)?.provider !== provider) return false;
+    return this.#sessions.delete(executionId);
+  }
+
+  deleteIfSession(
+    provider: ManagedConversationProvider,
+    executionId: string,
+    session: ProviderSession[ManagedConversationProvider]
+  ): boolean {
+    const current = this.#sessions.get(executionId);
+    if (current?.provider !== provider || current.session !== session)
+      return false;
     return this.#sessions.delete(executionId);
   }
 
@@ -101,15 +124,29 @@ export class ManagedConversationRuntimeRegistry {
     return this.#sessions.entries();
   }
 
-  clear(closeSessions = true): void {
-    if (closeSessions) {
-      for (const entry of this.#sessions.values()) {
-        void entry.session.closeAndWait().catch(() => undefined);
-      }
-    }
-    this.#sessions.clear();
+  async clear(closeSessions = true): Promise<void> {
+    if (!closeSessions && this.#sessions.size)
+      throw new Error("ManagedConversationRuntimeStillActiveError");
+    for (const [executionId, entry] of this.#sessions)
+      await quiesceManagedConversationRuntimeSession(
+        this,
+        entry.provider,
+        executionId
+      );
   }
 }
+
+/** Do not evict a possibly live process or start one with a different tool policy. */
+export const quiesceManagedConversationRuntimeSession = async (
+  registry: ManagedConversationRuntimeRegistry,
+  provider: ManagedConversationProvider,
+  executionId: string
+): Promise<void> => {
+  const previous = registry.get(provider, executionId);
+  if (!previous) return;
+  await previous.session.closeAndWait();
+  registry.deleteIfSession(provider, executionId, previous.session);
+};
 
 export const runWithManagedConversationLease = async <Session, Result>(input: {
   session: Session;
@@ -121,24 +158,47 @@ export const runWithManagedConversationLease = async <Session, Result>(input: {
 }): Promise<Result> => {
   let leaseLost = false;
   let stoppedHeartbeat = false;
+  const heartbeatState: {
+    inFlight: Promise<void> | null;
+    closeFailure: unknown;
+  } = {
+    inFlight: null,
+    closeFailure: null
+  };
   const heartbeat = async (): Promise<void> => {
-    if (stoppedHeartbeat || leaseLost) return;
-    try {
-      if (await input.renew()) return;
-    } catch {
-      // Renewal failures fence the provider session just like an explicit loss.
-    }
-    leaseLost = true;
-    await input.close(input.session).catch(() => undefined);
+    if (stoppedHeartbeat || leaseLost || heartbeatState.inFlight) return;
+    const work = (async () => {
+      try {
+        if (await input.renew()) return;
+      } catch {
+        // Renewal failures fence the provider session just like an explicit loss.
+      }
+      leaseLost = true;
+      try {
+        await input.close(input.session);
+      } catch (error) {
+        heartbeatState.closeFailure = error;
+      }
+    })();
+    heartbeatState.inFlight = work;
+    await work;
+    if (heartbeatState.inFlight === work) heartbeatState.inFlight = null;
   };
   const heartbeatTimer = setInterval(() => void heartbeat(), input.heartbeatMs);
   heartbeatTimer.unref?.();
+  let result: Result | undefined;
+  let operationFailure: unknown = null;
   try {
-    const result = await input.operation(input.session);
-    if (leaseLost) throw input.leaseLostError();
-    return result;
+    result = await input.operation(input.session);
+  } catch (error) {
+    operationFailure = error;
   } finally {
     stoppedHeartbeat = true;
     clearInterval(heartbeatTimer);
+    if (heartbeatState.inFlight) await heartbeatState.inFlight;
   }
+  if (heartbeatState.closeFailure) throw heartbeatState.closeFailure;
+  if (operationFailure) throw operationFailure;
+  if (leaseLost) throw input.leaseLostError();
+  return result as Result;
 };

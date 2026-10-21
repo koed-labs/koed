@@ -43,6 +43,41 @@ export const createProjectHqConversationPreloadApi = (
         throw new Error("Invalid Project HQ Conversation identity.");
       return result.value;
     },
+    catchUp: async (projectId: string) => {
+      const result = await command({ operation: "catch_up", projectId });
+      if (result.operation !== "catch_up" || result.projectId !== projectId)
+        throw new Error("Invalid Project HQ catch-up identity.");
+      return {
+        projectId: result.projectId,
+        status: result.status,
+        executionId: result.executionId,
+        commandId: result.commandId
+      };
+    },
+    retryCatchUp: async (
+      projectId: string,
+      failedCommandId: string,
+      retryRequestId: string
+    ) => {
+      const result = await command({
+        operation: "retry_catch_up",
+        projectId,
+        failedCommandId,
+        retryRequestId
+      });
+      if (
+        result.operation !== "retry_catch_up" ||
+        result.projectId !== projectId
+      )
+        throw new Error("Invalid Project HQ retry identity.");
+      return {
+        projectId: result.projectId,
+        status: result.status,
+        executionId: result.executionId,
+        commandId: result.commandId,
+        commandState: result.commandState
+      };
+    },
     start: async (
       projectId: string,
       prompt: string,

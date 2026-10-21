@@ -2025,6 +2025,7 @@ export interface MemorySourceRepository
       | "prepareLegacyCuratedActivationBatch"
       | "prepareCuratedClassification"
       | "getCuratedMemoryReplacementChain"
+      | "resolveActivityDecisions"
       | "unsuppressCuratedMemoryAssertion"
       | "deferCuratedClassificationRetry"
       | "listPendingCuratedClassificationWork"

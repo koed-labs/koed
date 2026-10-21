@@ -301,6 +301,139 @@ export const createWorkItemRepository = (
         }
       : null;
   },
+  async previewFromDocument(input: {
+    ownerUserId: string;
+    projectId: string;
+    sourceId: string;
+    sourceRevisionId: string;
+    noteRevisionId: string;
+    sourceText: string;
+    proposals: Array<{
+      lineNumber: number;
+      sourceLine: string;
+      title: string;
+    }>;
+  }): Promise<{
+    newCount: number;
+    alreadyExistingCount: number;
+    removedCount: number;
+    candidates: Array<{
+      lineNumber: number;
+      title: string;
+      status: "new" | "already_existing" | "removed";
+    }>;
+  }> {
+    if (input.proposals.length < 1 || input.proposals.length > 30)
+      throw new WorkItemConflictError("Document preview is invalid", null);
+    const client = await pool.connect();
+    try {
+      await client.query(
+        "begin transaction isolation level repeatable read read only"
+      );
+      const project = await client.query(
+        `select 1 from projects where id=$1 and owner_user_id=$2
+           and lifecycle='active' and deletion_phase is null
+           and team_backend_id is null and team_workspace_id is null
+           and workspace_project_id is null
+           and not exists (
+             select 1 from personal_workspace_project_share_attempts attempt
+              where attempt.personal_project_id=projects.id and attempt.state='pending'
+           )`,
+        [input.projectId, input.ownerUserId]
+      );
+      if (!project.rowCount)
+        throw new WorkItemUnavailableError("Project is unavailable");
+      const source = await client.query(
+        `select 1 from project_sources source
+           join project_source_revisions revision
+             on revision.source_id=source.id
+            and revision.owner_user_id=source.owner_user_id
+            and revision.note_revision_id=source.current_revision_id
+           join personal_note_revisions note_revision
+             on note_revision.id=revision.note_revision_id
+            and note_revision.owner_user_id=source.owner_user_id
+           join personal_notes note
+             on note.id=note_revision.note_id
+            and note.owner_user_id=source.owner_user_id
+          where source.id=$1 and source.project_id=$2
+            and source.owner_user_id=$3 and source.kind='doc'
+            and source.status='ready' and source.deleted_at is null
+            and source.remove_batch_id is null and source.pending_revision_id is null
+            and revision.id=$4 and revision.note_revision_id=$5
+            and note_revision.projection_state='available'
+            and note_revision.forgotten_at is null and note.lifecycle='active'`,
+        [
+          input.sourceId,
+          input.projectId,
+          input.ownerUserId,
+          input.sourceRevisionId,
+          input.noteRevisionId
+        ]
+      );
+      if (!source.rowCount)
+        throw new WorkItemConflictError(
+          "Project Source revision changed",
+          null
+        );
+      const lines = input.sourceText.replace(/\r\n?/g, "\n").split("\n");
+      const candidates: Array<{
+        lineNumber: number;
+        title: string;
+        status: "new" | "already_existing" | "removed";
+      }> = [];
+      const seen = new Set<string>();
+      for (const proposal of input.proposals) {
+        if (
+          !Number.isInteger(proposal.lineNumber) ||
+          proposal.lineNumber < 1 ||
+          lines[proposal.lineNumber - 1] !== proposal.sourceLine ||
+          proposal.sourceLine.length > 4_000 ||
+          !proposal.sourceLine.trim()
+        )
+          throw new WorkItemConflictError(
+            "Document line evidence changed",
+            null
+          );
+        const key = workItemPlanLineKey(
+          input.sourceRevisionId,
+          proposal.sourceLine
+        );
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const existing = await client.query<{ deleted_at: Date | null }>(
+          `select deleted_at from project_work_items
+            where owner_user_id=$1 and project_id=$2
+              and origin='plan' and idempotency_key=$3 limit 1`,
+          [input.ownerUserId, input.projectId, key]
+        );
+        candidates.push({
+          lineNumber: proposal.lineNumber,
+          title: proposal.title,
+          status: existing.rows[0]
+            ? existing.rows[0].deleted_at
+              ? "removed"
+              : "already_existing"
+            : "new"
+        });
+      }
+      await client.query("commit");
+      return {
+        newCount: candidates.filter((item) => item.status === "new").length,
+        alreadyExistingCount: candidates.filter(
+          (item) => item.status === "already_existing"
+        ).length,
+        removedCount: candidates.filter((item) => item.status === "removed")
+          .length,
+        candidates
+      };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
   async createFromDocument(input: {
     ownerUserId: string;
     projectId: string;
@@ -337,6 +470,7 @@ export const createWorkItemRepository = (
            on execution.id=command.execution_id and execution.owner_user_id=command.owner_user_id
          where command.id=$1 and command.owner_user_id=$2 and command.execution_id=$3
            and command.execution_generation=$4 and command.lease_token=$5
+           and command.command_kind in ('start','prompt')
            and command.state='dispatching' and command.lease_expires_at>clock_timestamp()
            and execution.project_id=$6 and execution.execution_generation=$4
            and execution.state in ('starting','running','reconciling')
@@ -691,7 +825,8 @@ export const createWorkItemRepository = (
         `select 1 from managed_conversation_commands
          where id=$1 and owner_user_id=$2 and execution_id=$3
            and lease_token=$4 and lease_expires_at>now()
-           and state='dispatching' and execution_generation=$5 for update`,
+           and state='dispatching' and command_kind in ('start','prompt')
+           and execution_generation=$5 for update`,
         [
           input.commandId,
           input.ownerUserId,

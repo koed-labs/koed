@@ -4,6 +4,22 @@ import { createProjectsPreloadApi } from "./projects-preload.js";
 import { projectsCommandChannel } from "./projects-protocol.js";
 
 describe("Projects preload", () => {
+  it("rejects a cross-Project activity result before the renderer can use it", async () => {
+    const id = randomUUID();
+    const other = randomUUID();
+    const invoke = vi.fn(async () => ({
+      operation: "activitySeen",
+      projectId: other,
+      value: { cursor: "cursor", at: null }
+    }));
+    const api = createProjectsPreloadApi(invoke);
+    await expect(api.activitySeen!(id)).rejects.toThrow("activity seen result");
+    expect(invoke).toHaveBeenCalledWith(projectsCommandChannel, {
+      operation: "activitySeen",
+      projectId: id
+    });
+  });
+
   it("validates both directions and operation correlation", async () => {
     const invoke = vi.fn(
       async (channel: string, request: unknown): Promise<unknown> => {

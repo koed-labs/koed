@@ -96,6 +96,27 @@ const connect = async ({
 };
 
 describe("Koed MCP 2026-07-28 protocol", () => {
+  it("advertises only catch-up recall and document preview tools despite normal mutation flags", async () => {
+    const { client } = await connect({
+      environment: {
+        KOED_MANAGED_CATCH_UP_READ_ONLY: "1",
+        KOED_MANAGED_MEMORY_ACTIONS: "1",
+        KOED_MANAGED_WORK_ITEM_COMPLETION: "1",
+        KOED_MANAGED_MERGE_PROPOSAL: "1",
+        KOED_MANAGED_DOC_EXECUTION_ID: "00000000-0000-4000-8000-000000000001",
+        KOED_MANAGED_DOC_EXECUTION_GENERATION: "1",
+        KOED_MANAGED_DOC_API_URL: "http://127.0.0.1:9"
+      }
+    });
+    expect(
+      (await client.listTools()).tools.map((tool) => tool.name).sort()
+    ).toEqual([
+      "memory_answer",
+      "memory_answer_cancel",
+      "memory_answer_result",
+      "work_items_from_doc"
+    ]);
+  });
   it("only advertises managed memory action requests for a bound managed client", async () => {
     const ordinary = await connect();
     expect(

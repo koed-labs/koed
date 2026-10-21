@@ -73,10 +73,16 @@ const hq502Capture =
   new URLSearchParams(window.location.search).get("hq502Capture") === "yes";
 const hq506Capture =
   new URLSearchParams(window.location.search).get("hq506Capture") === "yes";
+const hq505Capture =
+  new URLSearchParams(window.location.search).get("hq505Capture") === "yes";
+const hq505Outcome = new URLSearchParams(window.location.search).get(
+  "hq505Outcome"
+);
 const hq701Linked =
   new URLSearchParams(window.location.search).get("hq701Linked") === "yes";
 const hq705Capture =
-  new URLSearchParams(window.location.search).get("hq705Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq705Capture") === "yes" ||
+  hq505Capture;
 const hq712Capture =
   new URLSearchParams(window.location.search).get("hq712Capture") === "yes" ||
   hq701Linked ||
@@ -90,6 +96,7 @@ const hq407Capture =
   new URLSearchParams(window.location.search).get("hq407Capture") === "yes";
 const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes" ||
+  hq505Capture ||
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
   hq307Capture ||
   hq308Capture ||
@@ -171,6 +178,7 @@ const hq205Capture =
   new URLSearchParams(window.location.search).get("hq205Capture") === "yes";
 const hq209Capture =
   new URLSearchParams(window.location.search).get("hq209Capture") === "yes" ||
+  hq505Capture ||
   hq406Capture;
 const hq404Capture =
   new URLSearchParams(window.location.search).get("hq404Capture") === "yes";
@@ -599,7 +607,33 @@ const hq306Citations = [
   }
 ];
 const hq306Answer = `Here's a draft. Nothing before 9am, as you prefer [m:${hq306Citations[0]!.alias}].\n\n- **Mon** · deep work on koed-main, 9:30–12:30\n- **Tue** · investor calls from 10:00\n- **Wed** · sync with Mark, 11:00\n- **Thu** · deck review with Sam, 14:00 (lead with the memory story [m:${hq306Citations[1]!.alias}])\n- **Fri** · weekly review, 16:30\n\nWant me to send the invites?`;
+const hq505Citations = [
+  {
+    ...hq306Citations[0]!,
+    providerTurnId: "hq505-retained-turn",
+    sourceType: "memory_node" as const,
+    sourceId: "00000000-0000-4000-8000-000000003042",
+    title: "Owner Plan.md"
+  },
+  {
+    ...hq306Citations[1]!,
+    providerTurnId: "hq505-retained-turn",
+    sourceType: "curated_memory" as const,
+    sourceId: "00000000-0000-4000-8000-000000003041",
+    title: "Ship the smaller launch first"
+  }
+];
 let hq204Started = false;
+const hq505StorageKey = "koed-hq505-validation-catch-up";
+let hq505PendingUntil = 0;
+const hq505Trace = {
+  catchUpCalls: 0,
+  retryCalls: 0,
+  promptDispatches: 0,
+  get durableDispatches() {
+    return Number(window.sessionStorage.getItem(hq505StorageKey) ?? "0");
+  }
+};
 const hq204Trace = {
   reserve: 0,
   reserveByProject: {} as Record<string, number>,
@@ -1057,6 +1091,56 @@ const installSettingsDesktop = () => {
                 createdAt: FIXTURE_TIME
               };
             },
+            catchUp: async (projectId: string) => ({
+              projectId,
+              status: "nothing" as const,
+              executionId: null,
+              commandId: null
+            }),
+            retryCatchUp: async () => {
+              throw new Error("No retryable catch-up exists in this fixture.");
+            },
+            ...(hq505Capture
+              ? {
+                  catchUp: async (projectId: string) => {
+                    if (projectId !== hq204ProjectId)
+                      throw new Error("Wrong Project for the HQ505 fixture.");
+                    hq505Trace.catchUpCalls++;
+                    if (hq505Outcome === "uncertain")
+                      return {
+                        projectId,
+                        status: "reconciliation_required" as const,
+                        executionId: hq204ExecutionId,
+                        commandId: "00000000-0000-4000-8000-000000005051"
+                      };
+                    if (hq505Trace.durableDispatches === 0) {
+                      window.sessionStorage.setItem(hq505StorageKey, "1");
+                      hq505PendingUntil = Date.now() + 750;
+                      hq505Trace.promptDispatches++;
+                    }
+                    if (Date.now() < hq505PendingUntil)
+                      return {
+                        projectId,
+                        status: "queued" as const,
+                        executionId: hq204ExecutionId,
+                        commandId: "00000000-0000-4000-8000-000000005051"
+                      };
+                    hq204Started = true;
+                    return {
+                      projectId,
+                      status: "recovered" as const,
+                      executionId: hq204ExecutionId,
+                      commandId: "00000000-0000-4000-8000-000000005051"
+                    };
+                  },
+                  retryCatchUp: async () => {
+                    hq505Trace.retryCalls++;
+                    throw new Error(
+                      "The fixture only retries after proven pre-send failure."
+                    );
+                  }
+                }
+              : {}),
             read: async (projectId: string) => ({
               conversation: {
                 projectId,
@@ -1413,7 +1497,7 @@ const hq104ManagedConversations = {
 
 const hq204ManagedConversations = {
   ...hq104ManagedConversations,
-  ...(hq306Capture
+  ...(hq306Capture || hq505Capture
     ? {
         turnCitations: async (
           executionId: string,
@@ -1438,8 +1522,8 @@ const hq204ManagedConversations = {
             operation: "turn_citations" as const,
             executionId,
             providerTurnId,
-            citations: hq306Citations.filter((citation) =>
-              aliases?.includes(citation.alias)
+            citations: (hq505Capture ? hq505Citations : hq306Citations).filter(
+              (citation) => aliases?.includes(citation.alias)
             )
           };
         },
@@ -1454,21 +1538,28 @@ const hq204ManagedConversations = {
             executionId,
             providerTurnId,
             alias,
-            citation: hq306Citations.find(
+            citation: (hq505Capture ? hq505Citations : hq306Citations).find(
               (citation) => citation.alias === alias
             )
               ? {
-                  ...hq306Citations.find(
+                  ...(hq505Capture ? hq505Citations : hq306Citations).find(
                     (citation) => citation.alias === alias
                   )!,
-                  title:
-                    alias === hq306Citations[0]!.alias
+                  title: hq505Capture
+                    ? alias === hq505Citations[0]!.alias
+                      ? "Owner Plan.md"
+                      : "Ship the smaller launch first"
+                    : alias === hq306Citations[0]!.alias
                       ? "Never book meetings before 9am."
                       : "Deck outline",
-                  kind:
-                    alias === hq306Citations[0]!.alias ? "preference" : null,
-                  provenance:
-                    alias === hq306Citations[0]!.alias
+                  kind: hq505Capture
+                    ? "decision"
+                    : alias === hq306Citations[0]!.alias
+                      ? "preference"
+                      : null,
+                  provenance: hq505Capture
+                    ? "Your Project memory"
+                    : alias === hq306Citations[0]!.alias
                       ? "Chat · Plan my week · You · 9d ago"
                       : "Your memory summary",
                   replaces: null,
@@ -3226,54 +3317,70 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
   listProjectMetadata: async () => structuredClone(sidebarProjectMetadata),
   loadEventPage: async ({ threadId }) =>
     threadId === "hq204-fixture-thread" && hq204Started
-      ? [
-          {
-            id: "hq204-first-user",
-            actor: "user",
-            eventType: "message",
-            timestamp: FIXTURE_TIME,
-            sourceEventTime: FIXTURE_TIME,
-            sourceSequence: 1,
-            content: hq204Trace.firstPrompt,
-            contentPreview: hq204Trace.firstPrompt,
-            invalidatedAt: null,
-            metadata: {}
-          },
-          ...(hq306Capture
-            ? [
-                {
-                  id: "hq306-captured-assistant",
-                  actor: "assistant" as const,
-                  eventType: "message" as const,
-                  timestamp: FIXTURE_TIME,
-                  sourceEventTime: FIXTURE_TIME,
-                  sourceSequence: 2,
-                  content: hq306Answer,
-                  contentPreview: "Here's a draft. Nothing before 9am",
-                  invalidatedAt: null,
-                  // Claude/Pi captured history need not carry worker turn IDs.
-                  metadata: {}
-                }
-              ]
-            : hq207Capture
+      ? hq505Capture
+        ? [
+            {
+              id: "hq505-retained-assistant",
+              actor: "assistant" as const,
+              eventType: "message" as const,
+              timestamp: FIXTURE_TIME,
+              sourceEventTime: FIXTURE_TIME,
+              sourceSequence: 1,
+              content: `Project catch-up: the launch scope is ready for review. Source: Owner Plan.md [m:${hq505Citations[0]!.alias}]. Decision: ship the smaller launch first [m:${hq505Citations[1]!.alias}]. I can outline 2 next steps for your review.`,
+              contentPreview:
+                "Project catch-up: the launch scope is ready for review.",
+              invalidatedAt: null,
+              metadata: {}
+            }
+          ]
+        : [
+            {
+              id: "hq204-first-user",
+              actor: "user",
+              eventType: "message",
+              timestamp: FIXTURE_TIME,
+              sourceEventTime: FIXTURE_TIME,
+              sourceSequence: 1,
+              content: hq204Trace.firstPrompt,
+              contentPreview: hq204Trace.firstPrompt,
+              invalidatedAt: null,
+              metadata: {}
+            },
+            ...(hq306Capture
               ? [
                   {
-                    id: "hq207-plan-answer",
+                    id: "hq306-captured-assistant",
                     actor: "assistant" as const,
                     eventType: "message" as const,
                     timestamp: FIXTURE_TIME,
                     sourceEventTime: FIXTURE_TIME,
                     sourceSequence: 2,
-                    content:
-                      "For Plan.md, review the goals and choose the next task.",
-                    contentPreview:
-                      "For Plan.md, review the goals and choose the next task.",
+                    content: hq306Answer,
+                    contentPreview: "Here's a draft. Nothing before 9am",
                     invalidatedAt: null,
+                    // Claude/Pi captured history need not carry worker turn IDs.
                     metadata: {}
                   }
                 ]
-              : [])
-        ]
+              : hq207Capture
+                ? [
+                    {
+                      id: "hq207-plan-answer",
+                      actor: "assistant" as const,
+                      eventType: "message" as const,
+                      timestamp: FIXTURE_TIME,
+                      sourceEventTime: FIXTURE_TIME,
+                      sourceSequence: 2,
+                      content:
+                        "For Plan.md, review the goals and choose the next task.",
+                      contentPreview:
+                        "For Plan.md, review the goals and choose the next task.",
+                      invalidatedAt: null,
+                      metadata: {}
+                    }
+                  ]
+                : [])
+          ]
       : threadId === "hq103-loose-conversation-91"
         ? [
             {
@@ -3536,6 +3643,10 @@ export function HqValidationApp() {
     fixture.reset();
     hq104SentPrompt = "";
     hq204Started = hq306Capture || hq406ActiveCapture;
+    hq505Trace.catchUpCalls = 0;
+    hq505Trace.retryCalls = 0;
+    hq505Trace.promptDispatches = 0;
+    hq505PendingUntil = 0;
     hq503Trace.calls.length = 0;
     hq503Trace.delegations.length = 0;
     (
@@ -3574,6 +3685,10 @@ export function HqValidationApp() {
     (
       window as Window & { __koedHq204Trace?: typeof hq204Trace }
     ).__koedHq204Trace = hq204Trace;
+    if (hq505Capture)
+      (
+        window as Window & { __koedHq505Trace?: typeof hq505Trace }
+      ).__koedHq505Trace = hq505Trace;
     hq306Trace.aliasLookups = 0;
     hq306Trace.detailOpens = 0;
     hq306Trace.raceComplete = false;
@@ -3644,6 +3759,8 @@ export function HqValidationApp() {
         .__koedHq701Trace;
       delete (window as Window & { __koedHq705Trace?: typeof hq705Trace })
         .__koedHq705Trace;
+      delete (window as Window & { __koedHq505Trace?: typeof hq505Trace })
+        .__koedHq505Trace;
       delete (
         window as Window & {
           __koedHqVisibilityReads?: typeof hq105VisibilityReads;

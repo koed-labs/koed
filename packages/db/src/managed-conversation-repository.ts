@@ -12,7 +12,10 @@ import {
   type ManagedConversationFileOperationResult
 } from "@koed/shared";
 import pg from "pg";
-import { appendProjectActivityWithClient } from "./project-activity-repository.js";
+import {
+  appendProjectActivityWithClient,
+  decodeProjectActivityCursor
+} from "./project-activity-repository.js";
 import {
   managedConversationSettingsKey,
   parseManagedConversationSettings,
@@ -28,6 +31,7 @@ import {
 } from "./conversation-presentation-policy.js";
 import type { ActorContext } from "./types.js";
 import { ScheduledJobConflict } from "./scheduled-job-repository.js";
+import { activeCuratedMemoryEvidencePredicate } from "./curated-memory-policy.js";
 
 export type ManagedConversationExecutionState =
   | "starting"
@@ -52,6 +56,7 @@ export type ManagedConversationCommandState =
 export type ManagedConversationCommandKind =
   | "start"
   | "prompt"
+  | "hq_catch_up"
   | "interrupt"
   | "quiesce"
   | "stop"
@@ -244,6 +249,67 @@ export interface ManagedConversationCommandRecord {
   completedAt: string | null;
 }
 
+export type ProjectHqCatchUpDisposition =
+  | "none"
+  | "active"
+  | "completed"
+  | "proven_no_send"
+  | "needs_reconciliation";
+
+export type ProjectHqTeamCatchUpWindow = Readonly<{
+  teamBackendId: string;
+  workspaceProjectId: string;
+  teamPrincipalUserId: string;
+  memberId: string;
+  projectVersion: number;
+  memberVersion: number;
+  seenCursor: string;
+  highCursor: string;
+  welcomeDue: boolean;
+  events: ReadonlyArray<{
+    kind: "work_item_created" | "work_item_done" | "source_added" | "pr_merged";
+    ref: string;
+    at: string;
+  }>;
+}>;
+
+const isProjectHqTeamCatchUpWindow = (
+  value: unknown
+): value is ProjectHqTeamCatchUpWindow => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.teamBackendId === "string" &&
+    item.teamBackendId.length > 0 &&
+    typeof item.workspaceProjectId === "string" &&
+    typeof item.teamPrincipalUserId === "string" &&
+    typeof item.memberId === "string" &&
+    Number.isSafeInteger(item.projectVersion) &&
+    Number(item.projectVersion) > 0 &&
+    Number.isSafeInteger(item.memberVersion) &&
+    Number(item.memberVersion) > 0 &&
+    typeof item.seenCursor === "string" &&
+    typeof item.highCursor === "string" &&
+    typeof item.welcomeDue === "boolean" &&
+    Array.isArray(item.events) &&
+    item.events.length <= 100 &&
+    item.events.every(
+      (event: unknown) =>
+        event !== null &&
+        typeof event === "object" &&
+        !Array.isArray(event) &&
+        [
+          "work_item_created",
+          "work_item_done",
+          "source_added",
+          "pr_merged"
+        ].includes(String((event as Record<string, unknown>).kind)) &&
+        typeof (event as Record<string, unknown>).ref === "string" &&
+        typeof (event as Record<string, unknown>).at === "string"
+    )
+  );
+};
+
 export interface ClaimedManagedConversationCommand extends ManagedConversationCommandRecord {
   execution: ManagedConversationExecutionRecord;
 }
@@ -398,6 +464,87 @@ export interface ManagedConversationRepository {
       };
     }
   ): Promise<ManagedConversationCommandRecord>;
+  /** Only the trusted local HQ coordinator may supply server-derived input. */
+  enqueueManagedConversationCatchUp(
+    actor: ActorContext,
+    input: {
+      projectId: string;
+      executionId: string;
+      executionGeneration: number;
+      seenCursor: string;
+      highWater: string;
+      events: readonly (
+        | {
+            cursor: string;
+            kind: "source_ready" | "source_failed";
+            attemptId: string;
+            sourceId: string;
+            name: string;
+            at: string;
+          }
+        | {
+            cursor: string;
+            kind: "assertion_created";
+            assertionId: string;
+            text: string;
+            classificationVersion: number;
+            updatedAt: string;
+            at: string;
+          }
+      )[];
+      teamWindow?: ProjectHqTeamCatchUpWindow | null;
+      prompt: string;
+      inputDigest: string;
+    }
+  ): Promise<ManagedConversationCommandRecord>;
+  inspectProjectHqCatchUp(
+    actor: ActorContext,
+    input: { projectId: string; executionId: string }
+  ): Promise<{
+    disposition: ProjectHqCatchUpDisposition;
+    command: ManagedConversationCommandRecord | null;
+  }>;
+  pendingProjectHqTeamAck(
+    actor: ActorContext,
+    input: { projectId: string; executionId: string }
+  ): Promise<{
+    commandId: string;
+    teamWindow: ProjectHqTeamCatchUpWindow;
+  } | null>;
+  markProjectHqTeamAck(
+    actor: ActorContext,
+    input: {
+      projectId: string;
+      executionId: string;
+      commandId: string;
+      teamWindow: ProjectHqTeamCatchUpWindow;
+    }
+  ): Promise<boolean>;
+  getProjectHqCatchUpRetry(
+    actor: ActorContext,
+    input: {
+      projectId: string;
+      executionId: string;
+      failedCommandId: string;
+      retryRequestId: string;
+    }
+  ): Promise<ManagedConversationCommandRecord | null>;
+  recoverProjectHqCatchUp(
+    actor: ActorContext,
+    input: { projectId: string; executionId: string; commandId: string }
+  ): Promise<boolean>;
+  retryProjectHqCatchUp(
+    actor: ActorContext,
+    input: Parameters<
+      ManagedConversationRepository["enqueueManagedConversationCatchUp"]
+    >[1] & {
+      failedCommandId: string;
+      retryRequestId: string;
+    }
+  ): Promise<{
+    execution: ManagedConversationExecutionRecord;
+    command: ManagedConversationCommandRecord;
+  }>;
   enqueueManagedConversationFileOperation(
     actor: ActorContext,
     input: {
@@ -630,6 +777,21 @@ export interface ManagedConversationRepository {
     commandId: string;
     leaseToken: string;
     result?: Record<string, unknown>;
+  }): Promise<boolean>;
+  completeManagedConversationCatchUp(input: {
+    commandId: string;
+    leaseToken: string;
+    localSessionId: string;
+    sourceKind: "codex" | "pi" | "claude-code";
+    externalSessionId: string;
+    sourceGenerationId: string;
+    sourceToLine: number;
+    providerTurnId: string | null;
+  }): Promise<boolean>;
+  markManagedConversationCatchUpSendStarted(input: {
+    commandId: string;
+    leaseToken: string;
+    executionGeneration: number;
   }): Promise<boolean>;
   markManagedConversationCheckpointPending(input: {
     commandId: string;
@@ -1434,6 +1596,204 @@ export const createManagedConversationRepository = (
       }
     });
 
+  const checkedCatchUpInput = (
+    ownerUserId: string,
+    input: Parameters<
+      ManagedConversationRepository["enqueueManagedConversationCatchUp"]
+    >[1]
+  ) => {
+    const seenSequence = decodeProjectActivityCursor(
+      input.seenCursor,
+      ownerUserId,
+      input.projectId
+    );
+    const highSequence = decodeProjectActivityCursor(
+      input.highWater,
+      ownerUserId,
+      input.projectId
+    );
+    const computedDigest = sha256(
+      JSON.stringify({
+        ownerUserId,
+        projectId: input.projectId,
+        seenCursor: input.seenCursor,
+        highWater: input.highWater,
+        events: input.events,
+        ...(input.teamWindow ? { teamWindow: input.teamWindow } : {})
+      })
+    );
+    if (
+      (input.teamWindow !== null &&
+        input.teamWindow !== undefined &&
+        !isProjectHqTeamCatchUpWindow(input.teamWindow)) ||
+      seenSequence > highSequence ||
+      (!input.teamWindow && seenSequence === highSequence) ||
+      (input.events.length < 1 &&
+        (!input.teamWindow ||
+          (!input.teamWindow.welcomeDue &&
+            !input.teamWindow.events.some(
+              (event) =>
+                event.kind === "work_item_created" ||
+                event.kind === "source_added"
+            )))) ||
+      input.events.length > 100 ||
+      !input.prompt.trim() ||
+      input.prompt.length > 256_000 ||
+      computedDigest !== input.inputDigest
+    )
+      throw statusError("Project HQ catch-up input changed", 409);
+    return { seenSequence, highSequence };
+  };
+
+  const assertCurrentCatchUpProject = async (
+    client: pg.PoolClient,
+    ownerUserId: string,
+    projectId: string,
+    teamWindow: ProjectHqTeamCatchUpWindow | null | undefined
+  ) => {
+    const project = await client.query(
+      `select 1 from projects where id=$1 and owner_user_id=$2
+         and lifecycle='active' and deletion_phase is null
+         and (
+           ($3::text is null and team_backend_id is null
+              and workspace_project_id is null)
+           or (team_backend_id=$3 and workspace_project_id=$4::uuid)
+         )
+         and not exists (
+           select 1 from personal_workspace_project_share_attempts attempt
+            where attempt.personal_project_id=projects.id
+              and attempt.state='pending'
+         ) for share nowait`,
+      [
+        projectId,
+        ownerUserId,
+        teamWindow?.teamBackendId ?? null,
+        teamWindow?.workspaceProjectId ?? null
+      ]
+    );
+    if (!project.rowCount)
+      throw statusError("Project HQ catch-up Project changed", 409);
+    if (teamWindow) {
+      const binding = await client.query(
+        `select 1 from personal_workspace_project_principal_bindings
+          where local_user_id=$1 and team_backend_id=$2
+            and team_principal_user_id=$3`,
+        [ownerUserId, teamWindow.teamBackendId, teamWindow.teamPrincipalUserId]
+      );
+      if (!binding.rowCount)
+        throw statusError("Project HQ Team principal changed", 409);
+    }
+  };
+
+  const assertCurrentCatchUpRange = async (
+    client: pg.PoolClient,
+    ownerUserId: string,
+    input: Parameters<
+      ManagedConversationRepository["enqueueManagedConversationCatchUp"]
+    >[1],
+    seenSequence: bigint,
+    highSequence: bigint,
+    allowSeenAdvance = false
+  ) => {
+    const seen = await client.query<{ seen_sequence: string }>(
+      `select seen_sequence from project_seen
+        where owner_user_id=$1 and project_id=$2 for update nowait`,
+      [ownerUserId, input.projectId]
+    );
+    const currentSeen = BigInt(seen.rows[0]?.seen_sequence ?? "0");
+    if (
+      currentSeen !== seenSequence &&
+      (!allowSeenAdvance || currentSeen < seenSequence)
+    )
+      throw statusError("Project HQ seen cursor changed", 409);
+    const highWater = await client.query(
+      `select 1 from project_activity
+        where owner_user_id=$1 and project_id=$2 and sequence=$3`,
+      [ownerUserId, input.projectId, highSequence.toString()]
+    );
+    if (highSequence > seenSequence && !highWater.rowCount)
+      throw statusError("Project HQ activity changed", 409);
+    const checked = new Set<string>();
+    for (const event of input.events) {
+      const sequence = decodeProjectActivityCursor(
+        event.cursor,
+        ownerUserId,
+        input.projectId
+      );
+      if (
+        sequence <= seenSequence ||
+        sequence > highSequence ||
+        checked.has(sequence.toString())
+      )
+        throw statusError("Project HQ activity range changed", 409);
+      checked.add(sequence.toString());
+      if (event.kind === "assertion_created") {
+        const decision = await client.query(
+          `select 1 from project_activity activity
+           join curated_memory_assertions cma
+             on cma.id::text=activity.ref and cma.owner_user_id=activity.owner_user_id
+           where activity.owner_user_id=$1 and activity.project_id=$2
+             and activity.sequence=$3 and activity.kind='assertion_created'
+             and activity.ref=$4 and cma.id=$5 and cma.scope='project'
+             and cma.project_id=activity.project_id and cma.kind='decision'
+             and cma.visibility='personal' and cma.status='current'
+             and cma.classification_version=$6
+             and cma.updated_at=$7::timestamptz
+             and cma.suppressed_at is null
+             and (cma.expires_at is null or cma.expires_at>now())
+             and ${activeCuratedMemoryEvidencePredicate("cma")}`,
+          [
+            ownerUserId,
+            input.projectId,
+            sequence.toString(),
+            event.assertionId,
+            event.assertionId,
+            event.classificationVersion,
+            event.updatedAt
+          ]
+        );
+        if (!decision.rowCount)
+          throw statusError("Project HQ decision changed", 409);
+        continue;
+      }
+      const actual = await client.query(
+        `select 1 from project_activity activity
+          join project_source_revisions revision
+            on revision.id::text=activity.ref
+           and revision.owner_user_id=activity.owner_user_id
+          join project_sources source
+            on source.id=revision.source_id
+           and source.owner_user_id=revision.owner_user_id
+           and source.project_id=activity.project_id
+         where activity.owner_user_id=$1 and activity.project_id=$2
+           and activity.sequence=$3 and activity.kind=$4 and activity.ref=$5
+           and revision.id::text=$5 and source.id::text=$6 and source.name=$7
+           and source.deleted_at is null and source.remove_batch_id is null
+           and source.pending_revision_id is null
+           and revision.state=source.status
+           and source.status=case when $4='source_ready' then 'ready' else 'failed' end
+           and not exists (
+             select 1 from project_source_revisions newer
+              where newer.owner_user_id=revision.owner_user_id
+                and newer.source_id=revision.source_id
+                and newer.revision>revision.revision
+           )
+           and (source.status='failed' or
+                source.current_revision_id=revision.note_revision_id)`,
+        [
+          ownerUserId,
+          input.projectId,
+          sequence.toString(),
+          event.kind,
+          event.attemptId,
+          event.sourceId,
+          event.name
+        ]
+      );
+      if (!actual.rowCount) throw statusError("Project HQ Source changed", 409);
+    }
+  };
+
   const assertCurrentWorkItemSources = async (
     client: pg.PoolClient,
     ownerUserId: string,
@@ -1665,6 +2025,37 @@ export const createManagedConversationRepository = (
     );
     if (blocked.rowCount)
       throw statusError("Conversation lifecycle blocks new work", 409);
+  };
+
+  const assertHqCatchUpSessionWritable = async (
+    client: pg.PoolClient,
+    execution: Pick<
+      ExecutionRow,
+      "owner_user_id" | "logical_session_id" | "provider_thread_id"
+    >,
+    localSessionId: string | null
+  ) => {
+    if (
+      !execution.logical_session_id ||
+      !execution.provider_thread_id ||
+      !localSessionId
+    )
+      throw statusError("Project HQ capture is not ready", 409);
+    // Captured-session lifecycle paths can hold Session before Execution.
+    // A catch-up already holding Execution must never wait for Session.
+    const sessions = await client.query<{
+      deleted: boolean;
+    }>(
+      `select (delete_batch_id is not null or forget_batch_id is not null
+                 or trashed_at is not null or personal_deleted_at is not null)
+                 as deleted
+         from sessions
+        where owner_user_id=$1 and logical_session_id=$2 and id=$3
+        for share nowait`,
+      [execution.owner_user_id, execution.logical_session_id, localSessionId]
+    );
+    if (!sessions.rows.length || sessions.rows.some((row) => row.deleted))
+      throw statusError("Project HQ capture changed", 409);
   };
 
   return {
@@ -3152,6 +3543,496 @@ export const createManagedConversationRepository = (
       }
     },
 
+    async inspectProjectHqCatchUp(actor, input) {
+      const latest = await pool.query<CommandRow>(
+        `select command.*
+           from managed_conversation_commands command
+           join managed_conversation_executions execution
+             on execution.id=command.execution_id
+            and execution.owner_user_id=command.owner_user_id
+          where execution.id=$1 and execution.owner_user_id=$2
+            and execution.project_id=$3 and execution.is_project_hq
+            and command.command_kind='hq_catch_up'
+          order by command.sequence desc, command.created_at desc
+          limit 1`,
+        [input.executionId, actor.userId, input.projectId]
+      );
+      const row = latest.rows[0];
+      if (!row) return { disposition: "none", command: null };
+      const command = mapCommand(row);
+      const disposition: ProjectHqCatchUpDisposition =
+        row.state === "completed" && row.result?.assistantPersisted === true
+          ? "completed"
+          : ["queued", "blocked", "dispatching"].includes(row.state)
+            ? "active"
+            : row.state === "failed" && row.result?.phase !== "send_started"
+              ? "proven_no_send"
+              : "needs_reconciliation";
+      return { disposition, command };
+    },
+
+    async pendingProjectHqTeamAck(actor, input) {
+      const rows = await pool.query<CommandRow>(
+        `select command.* from managed_conversation_commands command
+           join managed_conversation_executions execution
+             on execution.id=command.execution_id
+            and execution.owner_user_id=command.owner_user_id
+          where execution.id=$1 and execution.owner_user_id=$2
+            and execution.project_id=$3 and execution.is_project_hq
+            and command.command_kind='hq_catch_up'
+            and command.state='completed'
+            and command.result->>'assistantPersisted'='true'
+            and command.result ? 'teamWindow'
+            and not (command.result ? 'teamAckedAt')
+          order by command.sequence asc limit 1`,
+        [input.executionId, actor.userId, input.projectId]
+      );
+      const command = rows.rows[0];
+      if (!command) return null;
+      const window = command.result?.teamWindow;
+      const assistantId = command.result?.assistantMessageId;
+      if (
+        !isProjectHqTeamCatchUpWindow(window) ||
+        typeof assistantId !== "string"
+      )
+        throw statusError("Project HQ Team receipt is invalid", 409);
+      const retained = await pool.query(
+        `select 1 from messages message
+           join sessions session on session.id=message.session_id
+           join managed_conversation_executions execution
+             on execution.logical_session_id=session.logical_session_id
+            and execution.owner_user_id=message.owner_user_id
+          where message.id=$1 and message.owner_user_id=$2
+            and execution.id=$3 and execution.project_id=$4
+            and message.role='assistant' and message.visibility='personal'
+            and message.invalidated_at is null limit 1`,
+        [assistantId, actor.userId, input.executionId, input.projectId]
+      );
+      if (!retained.rowCount)
+        throw statusError("Project HQ Team reply is no longer retained", 409);
+      return { commandId: command.id, teamWindow: window };
+    },
+
+    async markProjectHqTeamAck(actor, input) {
+      const updated = await pool.query(
+        `update managed_conversation_commands command
+            set result=command.result || jsonb_build_object(
+                  'teamAckedAt', to_char(now() at time zone 'UTC',
+                    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')),
+                updated_at=now()
+          where command.id=$1 and command.owner_user_id=$2
+            and command.execution_id=$3 and command.state='completed'
+            and command.command_kind='hq_catch_up'
+            and command.result->>'assistantPersisted'='true'
+            and command.result->'teamWindow'=$5::jsonb
+            and exists (
+              select 1 from managed_conversation_executions execution
+               where execution.id=command.execution_id
+                 and execution.owner_user_id=command.owner_user_id
+                 and execution.project_id=$4 and execution.is_project_hq
+            )`,
+        [
+          input.commandId,
+          actor.userId,
+          input.executionId,
+          input.projectId,
+          JSON.stringify(input.teamWindow)
+        ]
+      );
+      return updated.rowCount === 1;
+    },
+
+    async getProjectHqCatchUpRetry(actor, input) {
+      const key = `project-hq-catch-up-retry:${input.failedCommandId}:${input.retryRequestId}`;
+      const found = await pool.query<CommandRow>(
+        `select command.* from managed_conversation_commands command
+           join managed_conversation_executions execution
+             on execution.id=command.execution_id
+            and execution.owner_user_id=command.owner_user_id
+          where execution.id=$1 and execution.owner_user_id=$2
+            and execution.project_id=$3 and execution.is_project_hq
+            and command.idempotency_key=$4
+            and command.command_kind='hq_catch_up' limit 1`,
+        [input.executionId, actor.userId, input.projectId, key]
+      );
+      return found.rows[0] ? mapCommand(found.rows[0]) : null;
+    },
+
+    async enqueueManagedConversationCatchUp(actor, input) {
+      const { seenSequence, highSequence } = checkedCatchUpInput(
+        actor.userId,
+        input
+      );
+      const teamRangeKey = input.teamWindow
+        ? `:team:${sha256(
+            JSON.stringify({
+              backendId: input.teamWindow.teamBackendId,
+              projectId: input.teamWindow.workspaceProjectId,
+              memberId: input.teamWindow.memberId,
+              seenCursor: input.teamWindow.seenCursor,
+              highCursor: input.teamWindow.highCursor,
+              welcomeDue: input.teamWindow.welcomeDue
+            })
+          )}`
+        : "";
+      const idempotencyKey = `project-hq-catch-up:${input.projectId}:${seenSequence}:${highSequence}${teamRangeKey}`;
+      const requestDigest = sha256(
+        JSON.stringify({
+          kind: "hq_catch_up",
+          executionId: input.executionId,
+          generation: input.executionGeneration,
+          inputDigest: input.inputDigest
+        })
+      );
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const execution = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+            where id=$1 and owner_user_id=$2 and project_id=$3
+              and is_project_hq and state='running'
+              and execution_generation=$4 for update`,
+          [
+            input.executionId,
+            actor.userId,
+            input.projectId,
+            input.executionGeneration
+          ]
+        );
+        if (!execution.rows[0])
+          throw statusError("Project HQ is not running", 409);
+        // The human prompt path locks execution before Project, but other
+        // lifecycle paths use different parent orders. Never wait for a
+        // Project lock while holding this execution; report a retryable 409.
+        await assertCurrentCatchUpProject(
+          client,
+          actor.userId,
+          input.projectId,
+          input.teamWindow
+        );
+        const binding = await client.query<{
+          local_session_id: string | null;
+          provider_thread_id: string | null;
+        }>(
+          `select local_session_id,provider_thread_id
+             from managed_conversation_runtime_bindings
+            where execution_id=$1 and owner_user_id=$2
+              and execution_generation=$3 for share nowait`,
+          [input.executionId, actor.userId, input.executionGeneration]
+        );
+        if (
+          !binding.rows[0] ||
+          binding.rows[0].provider_thread_id !==
+            execution.rows[0]!.provider_thread_id
+        )
+          throw statusError("Project HQ runtime identity changed", 409);
+        await assertHqCatchUpSessionWritable(
+          client,
+          execution.rows[0]!,
+          binding.rows[0].local_session_id
+        );
+        const existing = await client.query<CommandRow>(
+          `select ${COMMAND_COLUMNS} from managed_conversation_commands
+            where owner_user_id=$1 and idempotency_key=$2 limit 1`,
+          [actor.userId, idempotencyKey]
+        );
+        if (existing.rows[0]) {
+          if (existing.rows[0].request_digest !== requestDigest)
+            throw statusError("Project HQ catch-up range changed", 409);
+          await client.query("commit");
+          return mapCommand(
+            existing.rows[0],
+            await decryptPayload(existing.rows[0])
+          );
+        }
+        await assertCurrentCatchUpRange(
+          client,
+          actor.userId,
+          input,
+          seenSequence,
+          highSequence
+        );
+        const active = await client.query(
+          `select 1 from managed_conversation_commands
+             where owner_user_id=$1 and execution_id=$2
+               and state not in ('completed','failed','canceled') limit 1`,
+          [actor.userId, input.executionId]
+        );
+        if (active.rowCount) throw statusError("Project HQ is busy", 409);
+        const sequence = await client.query<{ sequence: number }>(
+          `select coalesce(max(sequence),-1)+1 as sequence
+             from managed_conversation_commands where execution_id=$1`,
+          [input.executionId]
+        );
+        const commandId = randomUUID();
+        const encryptedPayload = await encryptCommandPayload({
+          ownerUserId: actor.userId,
+          executionId: input.executionId,
+          commandId,
+          objectClass: "managed_conversation_prompt",
+          value: {
+            prompt: input.prompt,
+            projectId: input.projectId,
+            seenCursor: input.seenCursor,
+            highWater: input.highWater,
+            events: input.events,
+            ...(input.teamWindow ? { teamWindow: input.teamWindow } : {}),
+            inputDigest: input.inputDigest
+          }
+        });
+        const inserted = await client.query<CommandRow>(
+          `insert into managed_conversation_commands
+            (id,owner_user_id,execution_id,idempotency_key,sequence,
+             command_kind,request_digest,client_user_message_id,
+             execution_generation,encrypted_payload,state)
+           values($1,$2,$3,$4,$5,'hq_catch_up',$6,$7,$8,$9::jsonb,'queued')
+           returning ${COMMAND_COLUMNS}`,
+          [
+            commandId,
+            actor.userId,
+            input.executionId,
+            idempotencyKey,
+            sequence.rows[0]!.sequence,
+            requestDigest,
+            randomUUID(),
+            input.executionGeneration,
+            encryptedPayload
+          ]
+        );
+        await appendManagedConversationEvent(client, {
+          ownerUserId: actor.userId,
+          executionId: input.executionId,
+          mutationId: `managed-conversation-command:${commandId}:queued`
+        });
+        await notifyManagedConversationCommand(client, input.executionId);
+        await client.query("commit");
+        return mapCommand(inserted.rows[0]!, {
+          prompt: input.prompt,
+          projectId: input.projectId,
+          seenCursor: input.seenCursor,
+          highWater: input.highWater,
+          events: [...input.events],
+          ...(input.teamWindow ? { teamWindow: input.teamWindow } : {}),
+          inputDigest: input.inputDigest
+        });
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        if ((error as { code?: string }).code === "55P03")
+          throw statusError("Project HQ catch-up authority is busy", 409);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async retryProjectHqCatchUp(actor, input) {
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+          input.retryRequestId
+        )
+      )
+        throw statusError("Project HQ retry request is invalid", 400);
+      const { seenSequence, highSequence } = checkedCatchUpInput(
+        actor.userId,
+        input
+      );
+      const idempotencyKey = `project-hq-catch-up-retry:${input.failedCommandId}:${input.retryRequestId}`;
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const found = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+            where id=$1 and owner_user_id=$2 and project_id=$3
+              and is_project_hq for update`,
+          [input.executionId, actor.userId, input.projectId]
+        );
+        const execution = found.rows[0];
+        if (!execution) throw statusError("Project HQ identity changed", 409);
+        const previousRetry = await client.query<CommandRow>(
+          `select ${COMMAND_COLUMNS} from managed_conversation_commands
+            where owner_user_id=$1 and idempotency_key=$2 limit 1`,
+          [actor.userId, idempotencyKey]
+        );
+        if (previousRetry.rows[0]) {
+          const command = previousRetry.rows[0];
+          if (
+            command.execution_id !== execution.id ||
+            command.command_kind !== "hq_catch_up"
+          )
+            throw statusError("Project HQ retry key changed", 409);
+          await client.query("commit");
+          return {
+            execution: mapExecution(execution),
+            command: mapCommand(command, await decryptPayload(command))
+          };
+        }
+        if (
+          execution.state !== "failed" ||
+          execution.execution_generation !== input.executionGeneration ||
+          (execution.runner_lease_expires_at &&
+            new Date(execution.runner_lease_expires_at).getTime() > Date.now())
+        )
+          throw statusError("Project HQ retry is not ready", 409);
+        await assertCurrentCatchUpProject(
+          client,
+          actor.userId,
+          input.projectId,
+          input.teamWindow
+        );
+        const original = await client.query<CommandRow>(
+          `select ${COMMAND_COLUMNS} from managed_conversation_commands
+            where id=$1 and owner_user_id=$2 and execution_id=$3
+              and command_kind='hq_catch_up' for update nowait`,
+          [input.failedCommandId, actor.userId, input.executionId]
+        );
+        const failed = original.rows[0];
+        if (
+          !failed ||
+          failed.state !== "failed" ||
+          failed.result?.phase === "send_started" ||
+          failed.execution_generation !== execution.execution_generation
+        )
+          throw statusError("Project HQ outcome needs reconciliation", 409);
+        const later = await client.query(
+          `select 1 from managed_conversation_commands
+            where owner_user_id=$1 and execution_id=$2 and sequence>$3 limit 1`,
+          [actor.userId, input.executionId, failed.sequence]
+        );
+        if (later.rowCount)
+          throw statusError("Project HQ changed after the failed turn", 409);
+        const binding = await client.query<RuntimeBindingRow>(
+          `select ${RUNTIME_BINDING_COLUMNS}
+             from managed_conversation_runtime_bindings
+            where execution_id=$1 and owner_user_id=$2 for update nowait`,
+          [execution.id, actor.userId]
+        );
+        const runtime = binding.rows[0];
+        if (
+          !runtime ||
+          runtime.execution_generation !== execution.execution_generation ||
+          runtime.deployment_id !== execution.runner_deployment_id ||
+          runtime.device_id !== execution.runner_device_id ||
+          runtime.provider_thread_id !== execution.provider_thread_id ||
+          !runtime.local_session_id
+        )
+          throw statusError("Project HQ runtime identity changed", 409);
+        await assertHqCatchUpSessionWritable(
+          client,
+          execution,
+          runtime.local_session_id
+        );
+        await assertCurrentCatchUpRange(
+          client,
+          actor.userId,
+          input,
+          seenSequence,
+          highSequence
+        );
+        const generation = execution.execution_generation + 1;
+        const commandId = randomUUID();
+        const requestDigest = sha256(
+          JSON.stringify({
+            kind: "hq_catch_up",
+            executionId: execution.id,
+            generation,
+            inputDigest: input.inputDigest,
+            retryOfCommandId: failed.id,
+            retryRequestId: input.retryRequestId
+          })
+        );
+        const encryptedPayload = await encryptCommandPayload({
+          ownerUserId: actor.userId,
+          executionId: execution.id,
+          commandId,
+          objectClass: "managed_conversation_prompt",
+          value: {
+            prompt: input.prompt,
+            projectId: input.projectId,
+            seenCursor: input.seenCursor,
+            highWater: input.highWater,
+            events: input.events,
+            ...(input.teamWindow ? { teamWindow: input.teamWindow } : {}),
+            inputDigest: input.inputDigest,
+            retryOfCommandId: failed.id,
+            retryRequestId: input.retryRequestId
+          }
+        });
+        const changed = await client.query<ExecutionRow>(
+          `update managed_conversation_executions set
+             execution_generation=$3,state='running',state_version=state_version+1,
+             fencing_token_hash=$4,runner_id=null,runner_lease_expires_at=null,
+             last_error_code=null,stopped_at=null,updated_at=now()
+           where id=$1 and owner_user_id=$2 and state='failed'
+             and execution_generation=$3-1
+           returning ${EXECUTION_COLUMNS}`,
+          [
+            execution.id,
+            actor.userId,
+            generation,
+            sha256(randomBytes(32).toString("base64url"))
+          ]
+        );
+        if (!changed.rows[0])
+          throw statusError("Project HQ retry generation changed", 409);
+        const rebound = await client.query(
+          `update managed_conversation_runtime_bindings set
+             execution_generation=$3,start_authority_acknowledged_at=null,
+             updated_at=now()
+           where execution_id=$1 and owner_user_id=$2
+             and execution_generation=$3-1`,
+          [execution.id, actor.userId, generation]
+        );
+        if (rebound.rowCount !== 1)
+          throw statusError("Project HQ runtime generation changed", 409);
+        const command = await client.query<CommandRow>(
+          `insert into managed_conversation_commands
+            (id,owner_user_id,execution_id,idempotency_key,sequence,
+             command_kind,request_digest,client_user_message_id,
+             execution_generation,encrypted_payload,state)
+           values($1,$2,$3,$4,$5,'hq_catch_up',$6,$7,$8,$9::jsonb,'queued')
+           returning ${COMMAND_COLUMNS}`,
+          [
+            commandId,
+            actor.userId,
+            execution.id,
+            idempotencyKey,
+            failed.sequence + 1,
+            requestDigest,
+            randomUUID(),
+            generation,
+            encryptedPayload
+          ]
+        );
+        await appendManagedConversationEvent(client, {
+          ownerUserId: actor.userId,
+          executionId: execution.id,
+          mutationId: `managed-conversation-command:${commandId}:queued`
+        });
+        await notifyManagedConversationCommand(client, execution.id);
+        await client.query("commit");
+        return {
+          execution: mapExecution(changed.rows[0]),
+          command: mapCommand(command.rows[0]!, {
+            prompt: input.prompt,
+            projectId: input.projectId,
+            seenCursor: input.seenCursor,
+            highWater: input.highWater,
+            events: [...input.events],
+            inputDigest: input.inputDigest,
+            retryOfCommandId: failed.id,
+            retryRequestId: input.retryRequestId
+          })
+        };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        if ((error as { code?: string }).code === "55P03")
+          throw statusError("Project HQ retry authority is busy", 409);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
     async enqueueManagedConversationFileOperation(actor, input) {
       if (!input.idempotencyKey.trim()) {
         throw statusError(
@@ -4198,7 +5079,7 @@ export const createManagedConversationRepository = (
               or (
                 command.state = 'dispatching'
                 and command.lease_expires_at <= now()
-                and command.command_kind not in ('prompt','fork_create')
+                and command.command_kind not in ('prompt','fork_create','hq_catch_up')
               )
             )
               and command.command_kind not in (
@@ -4660,7 +5541,7 @@ export const createManagedConversationRepository = (
               and execution.owner_user_id = command.owner_user_id
             where command.state = 'dispatching'
               and command.lease_expires_at <= now()
-              and command.command_kind in ('prompt','fork_create')
+              and command.command_kind in ('prompt','fork_create','hq_catch_up')
               and ($1::uuid is null or command.owner_user_id = $1)
               and (
                 (command.target_device_id is null
@@ -4678,6 +5559,62 @@ export const createManagedConversationRepository = (
         );
         let reconciled = 0;
         for (const command of abandoned.rows) {
+          if (command.command_kind === "hq_catch_up") {
+            // Command was locked first by the abandoned-lease scanner. Never
+            // wait for Execution, which normal dispatch paths lock first.
+            const execution = await client.query<ExecutionRow>(
+              `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+                where id=$1 and owner_user_id=$2 for update skip locked`,
+              [command.execution_id, command.owner_user_id]
+            );
+            if (!execution.rows[0]) continue;
+            const sent = command.result?.phase === "send_started";
+            const state = sent ? "indeterminate" : "failed";
+            await client.query(
+              `update managed_conversation_commands set
+                 state=$3,lease_token=null,lease_expires_at=null,
+                 completed_at=now(),last_error_code=$4,updated_at=now()
+               where id=$1 and owner_user_id=$2 and state='dispatching'
+                 and lease_expires_at<=now()`,
+              [
+                command.id,
+                command.owner_user_id,
+                state,
+                sent
+                  ? "ProjectHqCatchUpOutcomeUnknownError"
+                  : "ProjectHqCatchUpNotSentError"
+              ]
+            );
+            if (
+              execution.rows[0].execution_generation ===
+                command.execution_generation &&
+              execution.rows[0].state === "running"
+            )
+              await client.query(
+                `update managed_conversation_executions set
+                   state=$3,state_version=state_version+1,
+                   runner_id=null,runner_lease_expires_at=null,
+                   last_error_code=$4,updated_at=now()
+                 where id=$1 and owner_user_id=$2 and state='running'
+                   and execution_generation=$5`,
+                [
+                  command.execution_id,
+                  command.owner_user_id,
+                  sent ? "reconciling" : "failed",
+                  sent
+                    ? "ProjectHqCatchUpOutcomeUnknownError"
+                    : "ProjectHqCatchUpNotSentError",
+                  command.execution_generation
+                ]
+              );
+            await appendManagedConversationEvent(client, {
+              ownerUserId: command.owner_user_id,
+              executionId: command.execution_id,
+              mutationId: `managed-conversation-command:${command.id}:${state}`
+            });
+            reconciled += 1;
+            continue;
+          }
           let completed = false;
           let checkpointPending = false;
           let result: Record<string, unknown> | null = null;
@@ -5225,6 +6162,7 @@ export const createManagedConversationRepository = (
                 last_error_code = null,
                 updated_at = now()
           where id = $1 and lease_token = $2 and state = 'dispatching'
+            and command_kind <> 'hq_catch_up'
         returning owner_user_id, execution_id, execution_generation, command_kind`,
           [input.commandId, input.leaseToken, input.result ?? null]
         );
@@ -5260,6 +6198,754 @@ export const createManagedConversationRepository = (
       } finally {
         client.release();
       }
+    },
+
+    async completeManagedConversationCatchUp(input) {
+      if (!Number.isSafeInteger(input.sourceToLine) || input.sourceToLine <= 0)
+        return false;
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const authority = await client.query<
+          CommandRow & {
+            project_id: string;
+            current_generation: number;
+            logical_session_id: string | null;
+            provider_thread_id: string | null;
+            local_session_id: string | null;
+          }
+        >(
+          `select command.*, execution.project_id,
+                  execution.logical_session_id,execution.provider_thread_id,
+                  binding.local_session_id,
+                  execution.execution_generation as current_generation
+             from managed_conversation_commands command
+             join managed_conversation_executions execution
+               on execution.id=command.execution_id
+              and execution.owner_user_id=command.owner_user_id
+             join managed_conversation_runtime_bindings binding
+               on binding.execution_id=execution.id
+              and binding.owner_user_id=execution.owner_user_id
+              and binding.execution_generation=command.execution_generation
+            where command.id=$1 and command.lease_token=$2
+              and command.state='dispatching'
+              and command.lease_expires_at>now()
+              and command.command_kind='hq_catch_up'
+              and execution.is_project_hq and execution.state='running'
+              and execution.execution_generation=command.execution_generation
+              and execution.runner_lease_expires_at>now()
+              and binding.local_session_id=$3
+              and binding.provider_thread_id=$4
+              and binding.source_generation_id=$5
+              and execution.source_generation_id=$5
+            for update of command,execution`,
+          [
+            input.commandId,
+            input.leaseToken,
+            input.localSessionId,
+            input.externalSessionId,
+            input.sourceGenerationId
+          ]
+        );
+        const command = authority.rows[0];
+        if (!command) {
+          await client.query("rollback");
+          return false;
+        }
+        const payload = await decryptPayload(command);
+        const projectId = command.project_id;
+        if (
+          !payload ||
+          payload.projectId !== projectId ||
+          typeof payload.seenCursor !== "string" ||
+          typeof payload.highWater !== "string" ||
+          typeof payload.inputDigest !== "string" ||
+          (typeof payload.retryOfCommandId === "string") !==
+            (typeof payload.retryRequestId === "string") ||
+          !Array.isArray(payload.events) ||
+          (payload.events.length < 1 && !payload.teamWindow) ||
+          payload.events.length > 100 ||
+          (payload.teamWindow !== undefined &&
+            !isProjectHqTeamCatchUpWindow(payload.teamWindow)) ||
+          !command.client_user_message_id
+        )
+          throw statusError("Project HQ catch-up payload is invalid", 409);
+        const verifiedInputDigest = sha256(
+          JSON.stringify({
+            ownerUserId: command.owner_user_id,
+            projectId,
+            seenCursor: payload.seenCursor,
+            highWater: payload.highWater,
+            events: payload.events,
+            ...(payload.teamWindow ? { teamWindow: payload.teamWindow } : {})
+          })
+        );
+        const verifiedRequestDigest = sha256(
+          JSON.stringify({
+            kind: "hq_catch_up",
+            executionId: command.execution_id,
+            generation: command.execution_generation,
+            inputDigest: payload.inputDigest,
+            ...(typeof payload.retryOfCommandId === "string" &&
+            typeof payload.retryRequestId === "string"
+              ? {
+                  retryOfCommandId: payload.retryOfCommandId,
+                  retryRequestId: payload.retryRequestId
+                }
+              : {})
+          })
+        );
+        if (
+          verifiedInputDigest !== payload.inputDigest ||
+          verifiedRequestDigest !== command.request_digest
+        )
+          throw statusError("Project HQ catch-up command changed", 409);
+        const seenSequence = decodeProjectActivityCursor(
+          payload.seenCursor,
+          command.owner_user_id,
+          projectId
+        );
+        const highSequence = decodeProjectActivityCursor(
+          payload.highWater,
+          command.owner_user_id,
+          projectId
+        );
+        if (
+          seenSequence > highSequence ||
+          (seenSequence === highSequence && !payload.teamWindow)
+        )
+          throw statusError("Project HQ catch-up range is invalid", 409);
+        await assertCurrentCatchUpProject(
+          client,
+          command.owner_user_id,
+          projectId,
+          (payload.teamWindow as ProjectHqTeamCatchUpWindow | undefined) ?? null
+        );
+        await assertHqCatchUpSessionWritable(
+          client,
+          command,
+          command.local_session_id
+        );
+        for (const unknownEvent of payload.events) {
+          const event = unknownEvent as Record<string, unknown>;
+          if (event.kind === "assertion_created") {
+            if (
+              typeof event.cursor !== "string" ||
+              typeof event.assertionId !== "string" ||
+              !Number.isSafeInteger(event.classificationVersion) ||
+              typeof event.updatedAt !== "string"
+            )
+              throw statusError("Project HQ decision changed", 409);
+            const sequence = decodeProjectActivityCursor(
+              event.cursor,
+              command.owner_user_id,
+              projectId
+            );
+            if (sequence <= seenSequence || sequence > highSequence)
+              throw statusError("Project HQ catch-up range changed", 409);
+            const current = await client.query(
+              `select 1 from project_activity activity
+                 join curated_memory_assertions cma
+                   on cma.id::text=activity.ref
+                  and cma.owner_user_id=activity.owner_user_id
+                where activity.owner_user_id=$1 and activity.project_id=$2
+                  and activity.sequence=$3 and activity.kind='assertion_created'
+                  and activity.ref=$4 and cma.id=$4::uuid
+                  and cma.scope='project' and cma.project_id=activity.project_id
+                  and cma.kind='decision' and cma.visibility='personal'
+                  and cma.status='current' and cma.classification_version=$5
+                  and cma.updated_at=$6::timestamptz
+                  and cma.suppressed_at is null
+                  and (cma.expires_at is null or cma.expires_at>now())
+                  and ${activeCuratedMemoryEvidencePredicate("cma")}`,
+              [
+                command.owner_user_id,
+                projectId,
+                sequence.toString(),
+                event.assertionId,
+                event.classificationVersion,
+                event.updatedAt
+              ]
+            );
+            if (!current.rowCount)
+              throw statusError("Project HQ decision changed", 409);
+            continue;
+          }
+          if (
+            typeof event.cursor !== "string" ||
+            !["source_ready", "source_failed"].includes(String(event.kind)) ||
+            typeof event.attemptId !== "string" ||
+            typeof event.sourceId !== "string" ||
+            typeof event.name !== "string"
+          )
+            throw statusError("Project HQ catch-up Source changed", 409);
+          const sequence = decodeProjectActivityCursor(
+            event.cursor,
+            command.owner_user_id,
+            projectId
+          );
+          if (sequence <= seenSequence || sequence > highSequence)
+            throw statusError("Project HQ catch-up range changed", 409);
+          const current = await client.query(
+            `select 1 from project_activity activity
+               join project_source_revisions revision
+                 on revision.id::text=activity.ref
+                and revision.owner_user_id=activity.owner_user_id
+               join project_sources source
+                 on source.id=revision.source_id
+                and source.owner_user_id=revision.owner_user_id
+                and source.project_id=activity.project_id
+              where activity.owner_user_id=$1 and activity.project_id=$2
+                and activity.sequence=$3 and activity.kind=$4 and activity.ref=$5
+                and source.id::text=$6 and source.name=$7
+                and source.deleted_at is null and source.remove_batch_id is null
+                and source.pending_revision_id is null
+                and revision.state=source.status
+                and source.status=case when $4='source_ready' then 'ready' else 'failed' end
+                and not exists (
+                  select 1 from project_source_revisions newer
+                   where newer.owner_user_id=revision.owner_user_id
+                     and newer.source_id=revision.source_id
+                     and newer.revision>revision.revision
+                )
+                and (source.status='failed' or
+                     source.current_revision_id=revision.note_revision_id)`,
+            [
+              command.owner_user_id,
+              projectId,
+              sequence.toString(),
+              event.kind,
+              event.attemptId,
+              event.sourceId,
+              event.name
+            ]
+          );
+          if (!current.rowCount)
+            throw statusError("Project HQ catch-up Source changed", 409);
+        }
+        const origin = await client.query<{
+          id: string;
+          source_line_number: number | null;
+          external_turn_id: string | null;
+          source_fingerprint: string | null;
+        }>(
+          `select item.id,item.source_line_number,item.external_turn_id,
+                  item.source_fingerprint
+             from conversation_items item
+             join sessions session on session.id=item.session_id
+               and session.owner_user_id=item.owner_user_id
+             join managed_conversation_executions execution
+               on execution.logical_session_id=session.logical_session_id
+               and execution.id=$2 and execution.owner_user_id=item.owner_user_id
+            where item.owner_user_id=$1 and item.session_id=$3
+              and item.source_kind=$4 and item.external_session_id=$5
+              and exists (
+                select 1 from conversation_source_artifacts artifact
+                 where artifact.session_id=session.id
+                   and artifact.owner_user_id=item.owner_user_id
+                   and artifact.source_kind=$4
+                   and artifact.external_session_id=$5
+                   and artifact.source_generation_id=$6
+                   and artifact.source_component_role='primary'
+                   and artifact.lifecycle='active'
+                   and artifact.source_fingerprint=item.source_fingerprint
+              )
+              and item.projection_status='raw_only'
+              and (case when $4='codex'
+                   then item.metadata->>'transcriptType'='user_message'
+                   else item.source_event_type='user_message' end)
+              and item.metadata->>'managedKoedCatchUpCommandId'=$7
+              and item.metadata->>'managedClientUserMessageId'=$8
+              and ($4<>'codex' or item.canonical_stable_item_id=
+                   'koed-user-message:' || $8)
+              and item.source_line_number<$9
+              and item.personal_deleted_at is null
+            limit 2`,
+          [
+            command.owner_user_id,
+            command.execution_id,
+            input.localSessionId,
+            input.sourceKind,
+            input.externalSessionId,
+            input.sourceGenerationId,
+            command.id,
+            command.client_user_message_id,
+            input.sourceToLine
+          ]
+        );
+        if (origin.rows.length !== 1)
+          throw statusError("Project HQ catch-up origin is unverified", 409);
+        const user = origin.rows[0]!;
+        if (
+          user.source_line_number === null ||
+          input.sourceToLine - user.source_line_number > 5000 ||
+          (input.sourceKind === "codex" &&
+            (!input.providerTurnId ||
+              user.external_turn_id !== input.providerTurnId))
+        )
+          throw statusError("Project HQ catch-up turn changed", 409);
+        const assistant = await client.query<{ assistant_message_id: string }>(
+          `select message.id as assistant_message_id from conversation_items item
+             join messages message
+               on message.owner_user_id=item.owner_user_id
+              and message.session_id=item.session_id
+              and message.visibility='personal'
+              and message.role='assistant'
+              and message.invalidated_at is null
+              and message.idempotency_key=('message:' ||
+                coalesce(item.metadata->>'canonicalConversationItemKey',
+                         item.canonical_item_key,item.logical_source_id,item.id::text))
+            where item.owner_user_id=$1 and item.session_id=$2
+              and item.source_kind=$3 and item.external_session_id=$4
+              and item.source_fingerprint=$5
+              and item.source_line_number>$6
+              and item.source_line_number<$7
+              and item.source_line_number-$6<=5000
+              and item.projection_status='projected'
+              and item.personal_deleted_at is null
+              and ($8::text is null or item.external_turn_id=$8)
+            limit 1`,
+          [
+            command.owner_user_id,
+            input.localSessionId,
+            input.sourceKind,
+            input.externalSessionId,
+            user.source_fingerprint,
+            user.source_line_number,
+            input.sourceToLine,
+            input.sourceKind === "pi"
+              ? null
+              : input.sourceKind === "codex"
+                ? input.providerTurnId
+                : user.external_turn_id
+          ]
+        );
+        if (!assistant.rowCount)
+          throw statusError("Project HQ catch-up reply is not persisted", 409);
+        await client.query(
+          `insert into project_seen(owner_user_id,project_id,seen_sequence)
+           values($1,$2,$3)
+           on conflict(owner_user_id,project_id) do update set
+             seen_sequence=greatest(project_seen.seen_sequence,excluded.seen_sequence),
+             seen_at=case when excluded.seen_sequence>project_seen.seen_sequence
+               then now() else project_seen.seen_at end`,
+          [command.owner_user_id, projectId, highSequence.toString()]
+        );
+        const completed = await client.query(
+          `update managed_conversation_commands set
+             state='completed',result=$3::jsonb,lease_token=null,
+             lease_expires_at=null,completed_at=now(),last_error_code=null,
+             updated_at=now()
+           where id=$1 and lease_token=$2 and state='dispatching'
+             and command_kind='hq_catch_up'`,
+          [
+            command.id,
+            input.leaseToken,
+            JSON.stringify({
+              turnId: input.providerTurnId ?? user.external_turn_id,
+              highWater: payload.highWater,
+              assistantPersisted: true,
+              assistantMessageId: assistant.rows[0]!.assistant_message_id,
+              ...(payload.teamWindow ? { teamWindow: payload.teamWindow } : {})
+            })
+          ]
+        );
+        if (completed.rowCount !== 1)
+          throw statusError("Project HQ catch-up completion changed", 409);
+        await appendManagedConversationEvent(client, {
+          ownerUserId: command.owner_user_id,
+          executionId: command.execution_id,
+          mutationId: `managed-conversation-command:${command.id}:completed`
+        });
+        await client.query("commit");
+        return true;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        if ((error as { code?: string }).code === "55P03")
+          throw statusError("Project HQ catch-up completion is busy", 409);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async recoverProjectHqCatchUp(actor, input) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const selected = await client.query<ExecutionRow>(
+          `select ${EXECUTION_COLUMNS} from managed_conversation_executions
+            where id=$1 and owner_user_id=$2 and project_id=$3
+              and is_project_hq for update nowait`,
+          [input.executionId, actor.userId, input.projectId]
+        );
+        const execution = selected.rows[0];
+        if (!execution) throw statusError("Project HQ identity changed", 409);
+        const commands = await client.query<CommandRow>(
+          `select ${COMMAND_COLUMNS} from managed_conversation_commands
+            where id=$1 and owner_user_id=$2 and execution_id=$3
+              and command_kind='hq_catch_up' for update nowait`,
+          [input.commandId, actor.userId, execution.id]
+        );
+        const command = commands.rows[0];
+        if (!command) throw statusError("Project HQ command changed", 409);
+        if (command.state === "completed") {
+          await client.query("commit");
+          return command.result?.assistantPersisted === true;
+        }
+        if (
+          !["failed", "indeterminate"].includes(command.state) ||
+          command.result?.phase !== "send_started" ||
+          command.execution_generation !== execution.execution_generation ||
+          !["failed", "reconciling"].includes(execution.state) ||
+          (execution.runner_lease_expires_at &&
+            new Date(execution.runner_lease_expires_at).getTime() > Date.now())
+        ) {
+          await client.query("rollback");
+          return false;
+        }
+        const later = await client.query(
+          `select 1 from managed_conversation_commands
+            where owner_user_id=$1 and execution_id=$2 and sequence>$3 limit 1`,
+          [actor.userId, execution.id, command.sequence]
+        );
+        if (later.rowCount) {
+          await client.query("rollback");
+          return false;
+        }
+        const runtime = await client.query<RuntimeBindingRow>(
+          `select ${RUNTIME_BINDING_COLUMNS}
+             from managed_conversation_runtime_bindings
+            where execution_id=$1 and owner_user_id=$2
+              and execution_generation=$3 for share nowait`,
+          [execution.id, actor.userId, execution.execution_generation]
+        );
+        const binding = runtime.rows[0];
+        if (
+          !binding ||
+          !binding.local_session_id ||
+          !binding.source_generation_id ||
+          binding.provider_thread_id !== execution.provider_thread_id ||
+          binding.source_generation_id !== execution.source_generation_id
+        ) {
+          await client.query("rollback");
+          return false;
+        }
+        await assertHqCatchUpSessionWritable(
+          client,
+          execution,
+          binding.local_session_id
+        );
+        const payload = await decryptPayload(command);
+        if (
+          !payload ||
+          payload.projectId !== input.projectId ||
+          typeof payload.seenCursor !== "string" ||
+          typeof payload.highWater !== "string" ||
+          typeof payload.inputDigest !== "string" ||
+          typeof payload.prompt !== "string" ||
+          !Array.isArray(payload.events) ||
+          (payload.events.length < 1 && !payload.teamWindow) ||
+          payload.events.length > 100 ||
+          (payload.teamWindow !== undefined &&
+            !isProjectHqTeamCatchUpWindow(payload.teamWindow)) ||
+          (typeof payload.retryOfCommandId === "string") !==
+            (typeof payload.retryRequestId === "string") ||
+          !command.client_user_message_id
+        )
+          throw statusError("Project HQ catch-up payload changed", 409);
+        await assertCurrentCatchUpProject(
+          client,
+          actor.userId,
+          input.projectId,
+          (payload.teamWindow as ProjectHqTeamCatchUpWindow | undefined) ?? null
+        );
+        const events = payload.events.map((unknownEvent) => {
+          const event = unknownEvent as Record<string, unknown>;
+          if (
+            event &&
+            typeof event === "object" &&
+            event.kind === "assertion_created" &&
+            typeof event.cursor === "string" &&
+            typeof event.assertionId === "string" &&
+            typeof event.text === "string" &&
+            Number.isSafeInteger(event.classificationVersion) &&
+            typeof event.updatedAt === "string" &&
+            typeof event.at === "string"
+          )
+            return event as {
+              cursor: string;
+              kind: "assertion_created";
+              assertionId: string;
+              text: string;
+              classificationVersion: number;
+              updatedAt: string;
+              at: string;
+            };
+          if (
+            !event ||
+            typeof event !== "object" ||
+            !["source_ready", "source_failed"].includes(String(event.kind)) ||
+            typeof event.cursor !== "string" ||
+            typeof event.attemptId !== "string" ||
+            typeof event.sourceId !== "string" ||
+            typeof event.name !== "string" ||
+            typeof event.at !== "string"
+          )
+            throw statusError("Project HQ catch-up Source changed", 409);
+          return event as {
+            cursor: string;
+            kind: "source_ready" | "source_failed";
+            attemptId: string;
+            sourceId: string;
+            name: string;
+            at: string;
+          };
+        });
+        const oldInput = {
+          projectId: input.projectId,
+          executionId: execution.id,
+          executionGeneration: execution.execution_generation,
+          seenCursor: payload.seenCursor,
+          highWater: payload.highWater,
+          events,
+          ...(payload.teamWindow ? { teamWindow: payload.teamWindow } : {}),
+          prompt: payload.prompt,
+          inputDigest: payload.inputDigest
+        };
+        const { seenSequence, highSequence } = checkedCatchUpInput(
+          actor.userId,
+          oldInput
+        );
+        const digest = sha256(
+          JSON.stringify({
+            kind: "hq_catch_up",
+            executionId: execution.id,
+            generation: execution.execution_generation,
+            inputDigest: payload.inputDigest,
+            ...(typeof payload.retryOfCommandId === "string" &&
+            typeof payload.retryRequestId === "string"
+              ? {
+                  retryOfCommandId: payload.retryOfCommandId,
+                  retryRequestId: payload.retryRequestId
+                }
+              : {})
+          })
+        );
+        if (digest !== command.request_digest)
+          throw statusError("Project HQ catch-up command changed", 409);
+        await assertCurrentCatchUpRange(
+          client,
+          actor.userId,
+          oldInput,
+          seenSequence,
+          highSequence,
+          true
+        );
+        const sourceKind =
+          execution.provider === "claude" ? "claude-code" : execution.provider;
+        if (!["codex", "pi", "claude-code"].includes(sourceKind))
+          throw statusError("Project HQ AI Client changed", 409);
+        const artifact = await client.query<{
+          source_fingerprint: string;
+          provider_cursor_line: number;
+        }>(
+          `select source_fingerprint,provider_cursor_line
+             from conversation_source_artifacts
+            where session_id=$1 and owner_user_id=$2
+              and source_kind=$3 and external_session_id=$4
+              and source_generation_id=$5
+              and source_component_role='primary' and lifecycle='active'
+            limit 1`,
+          [
+            binding.local_session_id,
+            actor.userId,
+            sourceKind,
+            binding.provider_thread_id,
+            binding.source_generation_id
+          ]
+        );
+        const currentArtifact = artifact.rows[0];
+        if (!currentArtifact) {
+          await client.query("rollback");
+          return false;
+        }
+        const origins = await client.query<{
+          id: string;
+          source_line_number: number | null;
+          external_turn_id: string | null;
+          source_fingerprint: string | null;
+        }>(
+          `select id,source_line_number,external_turn_id,source_fingerprint
+             from conversation_items
+            where owner_user_id=$1 and session_id=$2
+              and source_kind=$3 and external_session_id=$4
+              and projection_status='raw_only'
+              and (case when $3='codex'
+                   then metadata->>'transcriptType'='user_message'
+                   else source_event_type='user_message' end)
+              and metadata->>'managedKoedCatchUpCommandId'=$5
+              and metadata->>'managedClientUserMessageId'=$6
+              and source_fingerprint=$7
+              and ($3<>'codex' or canonical_stable_item_id=
+                   'koed-user-message:' || $6)
+              and personal_deleted_at is null
+            limit 2`,
+          [
+            actor.userId,
+            binding.local_session_id,
+            sourceKind,
+            binding.provider_thread_id,
+            command.id,
+            command.client_user_message_id,
+            currentArtifact.source_fingerprint
+          ]
+        );
+        if (origins.rows.length !== 1) {
+          await client.query("rollback");
+          return false;
+        }
+        const origin = origins.rows[0]!;
+        if (
+          origin.source_line_number === null ||
+          origin.source_line_number >= currentArtifact.provider_cursor_line
+        ) {
+          await client.query("rollback");
+          return false;
+        }
+        const assistant = await client.query<{
+          assistant_message_id: string;
+          external_turn_id: string | null;
+          source_line_number: number | null;
+        }>(
+          `select message.id as assistant_message_id,
+                  item.external_turn_id,item.source_line_number
+             from conversation_items item
+             join messages message
+               on message.owner_user_id=item.owner_user_id
+              and message.session_id=item.session_id
+              and message.visibility='personal'
+              and message.role='assistant'
+              and message.invalidated_at is null
+              and message.idempotency_key=('message:' ||
+                coalesce(item.metadata->>'canonicalConversationItemKey',
+                         item.canonical_item_key,item.logical_source_id,item.id::text))
+            where item.owner_user_id=$1 and item.session_id=$2
+              and item.source_kind=$3 and item.external_session_id=$4
+              and item.projection_status='projected'
+              and item.personal_deleted_at is null
+              and item.source_fingerprint=$5
+              and item.source_line_number>$6
+              and item.source_line_number<$7
+              and item.source_line_number-$6<=5000
+              and ($3='pi' or (item.external_turn_id is not null
+                and item.external_turn_id=$8))
+              and ($3<>'pi' or not exists (
+                select 1 from conversation_items later_user
+                 where later_user.owner_user_id=item.owner_user_id
+                   and later_user.session_id=item.session_id
+                   and later_user.source_kind=item.source_kind
+                   and later_user.external_session_id=item.external_session_id
+                   and later_user.source_fingerprint=item.source_fingerprint
+                   and later_user.source_line_number>$6
+                   and later_user.source_line_number<item.source_line_number
+                   and later_user.source_event_type='user_message'
+              ))
+            order by item.source_line_number desc nulls last
+            limit 1`,
+          [
+            actor.userId,
+            binding.local_session_id,
+            sourceKind,
+            binding.provider_thread_id,
+            currentArtifact.source_fingerprint,
+            origin.source_line_number,
+            currentArtifact.provider_cursor_line,
+            origin.external_turn_id
+          ]
+        );
+        if (assistant.rows.length !== 1) {
+          await client.query("rollback");
+          return false;
+        }
+        await client.query(
+          `insert into project_seen(owner_user_id,project_id,seen_sequence)
+           values($1,$2,$3)
+           on conflict(owner_user_id,project_id) do update set
+             seen_sequence=greatest(project_seen.seen_sequence,excluded.seen_sequence),
+             seen_at=case when excluded.seen_sequence>project_seen.seen_sequence
+               then now() else project_seen.seen_at end`,
+          [actor.userId, input.projectId, highSequence.toString()]
+        );
+        await client.query(
+          `update managed_conversation_commands set
+             state='completed',result=$3::jsonb,last_error_code=null,
+             completed_at=now(),updated_at=now()
+           where id=$1 and owner_user_id=$2 and command_kind='hq_catch_up'
+             and state in ('failed','indeterminate')`,
+          [
+            command.id,
+            actor.userId,
+            JSON.stringify({
+              highWater: payload.highWater,
+              assistantPersisted: true,
+              assistantMessageId: assistant.rows[0]!.assistant_message_id,
+              ...(payload.teamWindow ? { teamWindow: payload.teamWindow } : {}),
+              turnId: assistant.rows[0]!.external_turn_id,
+              reconciledBy: "projected_assistant"
+            })
+          ]
+        );
+        await client.query(
+          `update managed_conversation_executions set
+             state='running',state_version=state_version+1,
+             fencing_token_hash=$3,runner_id=null,runner_lease_expires_at=null,
+             last_error_code=null,stopped_at=null,updated_at=now()
+           where id=$1 and owner_user_id=$2
+             and state in ('failed','reconciling')
+             and execution_generation=$4`,
+          [
+            execution.id,
+            actor.userId,
+            sha256(randomBytes(32).toString("base64url")),
+            execution.execution_generation
+          ]
+        );
+        await appendManagedConversationEvent(client, {
+          ownerUserId: actor.userId,
+          executionId: execution.id,
+          mutationId: `managed-conversation-command:${command.id}:recovered`
+        });
+        await client.query("commit");
+        return true;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        if ((error as { code?: string }).code === "55P03")
+          throw statusError("Project HQ reconciliation is busy", 409);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async markManagedConversationCatchUpSendStarted(input) {
+      const changed = await pool.query(
+        `update managed_conversation_commands command
+            set result=jsonb_build_object('phase','send_started'),
+                updated_at=now()
+           from managed_conversation_executions execution
+          where command.id=$1 and command.lease_token=$2
+            and command.command_kind='hq_catch_up'
+            and command.state='dispatching'
+            and command.lease_expires_at>now()
+            and command.execution_generation=$3
+            and execution.id=command.execution_id
+            and execution.owner_user_id=command.owner_user_id
+            and execution.execution_generation=$3
+            and execution.state='running'`,
+        [input.commandId, input.leaseToken, input.executionGeneration]
+      );
+      return changed.rowCount === 1;
     },
 
     async markManagedConversationCheckpointPending(input) {
@@ -5305,13 +6991,15 @@ export const createManagedConversationRepository = (
         }>(
           `update managed_conversation_commands
             set state = case
+                  when command_kind = 'hq_catch_up' then 'failed'
                   when $3 = 'indeterminate'
                     and result->>'phase' = 'checkpoint_pending'
                     then 'queued'
                   else $3
                 end,
                 last_error_code = case
-                  when $3 = 'indeterminate'
+                  when command_kind <> 'hq_catch_up'
+                    and $3 = 'indeterminate'
                     and result->>'phase' = 'checkpoint_pending'
                     then 'ExecutionCheckpointRecoveryPendingError'
                   else $4
@@ -5319,9 +7007,10 @@ export const createManagedConversationRepository = (
                 lease_token = null,
                 lease_expires_at = null,
                 completed_at = case
-                  when $3 = 'queued'
-                    or ($3 = 'indeterminate'
-                      and result->>'phase' = 'checkpoint_pending')
+                  when command_kind <> 'hq_catch_up'
+                    and ($3 = 'queued'
+                      or ($3 = 'indeterminate'
+                        and result->>'phase' = 'checkpoint_pending'))
                     then null
                   else now()
                 end,
@@ -5406,6 +7095,7 @@ export const createManagedConversationRepository = (
                  and binding.execution_generation = execution.execution_generation
                where command.id = $1
                  and command.state = 'indeterminate'
+                 and command.command_kind <> 'hq_catch_up'
                  and execution.id = command.execution_id
                  and execution.owner_user_id = command.owner_user_id
                  and coalesce(

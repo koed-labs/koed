@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
@@ -861,6 +862,80 @@ const configFor = (
 };
 
 describe("Codex managed conversation coordinator", () => {
+  it.skipIf(
+    spawnSync("codex", ["--version"], { encoding: "utf8" }).status !== 0
+  )(
+    "disables an extra configured MCP server in the restricted catch-up process",
+    () => {
+      const home = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-catchup-codex-")
+      );
+      try {
+        const project = path.join(home, "project");
+        fs.mkdirSync(path.join(project, ".codex"), { recursive: true });
+        fs.writeFileSync(
+          path.join(home, "config.toml"),
+          `[mcp_servers.extra]\ncommand = "echo"\nargs = ["mutation-tool"]\n[projects.${JSON.stringify(fs.realpathSync(project))}]\ntrust_level = "trusted"\n`
+        );
+        fs.writeFileSync(
+          path.join(project, ".codex", "config.toml"),
+          '[mcp_servers.project_extra]\ncommand = "echo"\nargs = ["project-mutation-tool"]\n'
+        );
+        const overrides = managedConversationKoedMcpConfigOverrides(
+          {
+            CODEX_HOME: home,
+            KOED_HOME: home,
+            KOED_MANAGED_CATCH_UP_READ_ONLY: "1"
+          },
+          spawnSync("which", ["codex"], { encoding: "utf8" }).stdout.trim(),
+          project
+        );
+        expect(overrides).toContain("mcp_servers.extra.enabled=false");
+        expect(overrides).toContain("mcp_servers.project_extra.enabled=false");
+        expect(overrides).toContain("features.plugins=false");
+        expect(overrides).toContain("features.apps=false");
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    }
+  );
+  it("uses the bound cwd and filtered environment for restricted MCP inventory", () => {
+    const home = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-catchup-inventory-")
+    );
+    const project = path.join(home, "project");
+    const inventory = path.join(home, "inventory.json");
+    const binary = path.join(home, "inventory.mjs");
+    fs.mkdirSync(project);
+    fs.writeFileSync(
+      binary,
+      `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(inventory)}, JSON.stringify({ cwd: process.cwd(), hostOnly: process.env.KOED_HOST_ONLY_MUTATION_TOOL ?? null })); console.log(JSON.stringify([{ name: "unexpected" }]));`
+    );
+    const previous = process.env.KOED_HOST_ONLY_MUTATION_TOOL;
+    process.env.KOED_HOST_ONLY_MUTATION_TOOL = "must-not-leak";
+    try {
+      expect(() =>
+        managedConversationKoedMcpConfigOverrides(
+          {
+            CODEX_HOME: home,
+            KOED_HOME: home,
+            KOED_MANAGED_CATCH_UP_READ_ONLY: "1"
+          },
+          binary,
+          project
+        )
+      ).toThrow("Restricted Codex MCP inventory is invalid");
+      expect(JSON.parse(fs.readFileSync(inventory, "utf8"))).toEqual({
+        cwd: fs.realpathSync(project),
+        hostOnly: null
+      });
+    } finally {
+      if (previous === undefined)
+        delete process.env.KOED_HOST_ONLY_MUTATION_TOOL;
+      else process.env.KOED_HOST_ONLY_MUTATION_TOOL = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
   it("connects managed recall to the selected Koed runtime", () => {
     const overrides = managedConversationKoedMcpConfigOverrides({
       KOED_HOME: "/tmp/koed home",
@@ -875,6 +950,11 @@ describe("Codex managed conversation coordinator", () => {
     expect(overrides[0]).toContain("enabled=true");
     expect(overrides[0]).toContain("required=true");
     expect(managedConversationKoedMcpConfigOverrides({})).toEqual([]);
+    expect(() =>
+      managedConversationKoedMcpConfigOverrides({
+        KOED_MANAGED_CATCH_UP_READ_ONLY: "1"
+      })
+    ).toThrow("Restricted Codex Koed MCP configuration is unavailable");
   });
 
   it.each([false, true])(

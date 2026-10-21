@@ -294,6 +294,31 @@ describe("Pi managed RPC conversation", () => {
     await session.closeAndWait();
   });
 
+  it("forwards read-only catch-up to the actual managed Pi child only", async () => {
+    const restricted = fixture(0, true);
+    restricted.config.env.KOED_MANAGED_CONVERSATION = "1";
+    restricted.config.env.KOED_MANAGED_CATCH_UP_READ_ONLY = "1";
+    await restricted.session.start();
+    const restrictedEnv = (
+      mocks.spawn.mock.calls.at(-1)?.[2] as {
+        env: NodeJS.ProcessEnv;
+      }
+    ).env;
+    expect(restrictedEnv.KOED_MANAGED_CATCH_UP_READ_ONLY).toBe("1");
+    await restricted.session.closeAndWait();
+
+    const normal = fixture(0, true);
+    normal.config.env.KOED_MANAGED_CONVERSATION = "1";
+    await normal.session.start();
+    const normalEnv = (
+      mocks.spawn.mock.calls.at(-1)?.[2] as {
+        env: NodeJS.ProcessEnv;
+      }
+    ).env;
+    expect(normalEnv.KOED_MANAGED_CATCH_UP_READ_ONLY).toBeUndefined();
+    await normal.session.closeAndWait();
+  });
+
   it("resolves the public SDK for a bundled native launcher", async () => {
     const { session } = fixture(0, true);
     await expect(session.start()).resolves.toMatchObject({

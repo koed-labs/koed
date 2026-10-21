@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { nodeCliInvocation, nodeCliProcessEnvironment } from "@koed/shared";
 import { managedKoedMcpServer } from "./managed-koed-mcp.js";
 
 import {
@@ -112,16 +114,94 @@ export interface CodexManagedConversationStartResult {
 }
 
 export const managedConversationKoedMcpConfigOverrides = (
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  appServerBinary?: string,
+  cwd?: string
 ): string[] => {
-  const server = managedKoedMcpServer(env);
-  if (!server) return [];
+  const server = managedKoedMcpServer(
+    env,
+    env.KOED_MANAGED_CATCH_UP_READ_ONLY === "1"
+  );
+  if (!server) {
+    if (env.KOED_MANAGED_CATCH_UP_READ_ONLY === "1")
+      throw new Error("Restricted Codex Koed MCP configuration is unavailable");
+    return [];
+  }
   const environment = Object.entries(server.env)
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
     .join(", ");
-  return [
-    `mcp_servers.koed={command=${JSON.stringify(server.command)}, args=${JSON.stringify(server.args)}, env={${environment}}, enabled=true, required=true}`
+  const koedOverride = `mcp_servers.koed={command=${JSON.stringify(server.command)}, args=${JSON.stringify(server.args)}, env={${environment}}, enabled=true, required=true}`;
+  if (env.KOED_MANAGED_CATCH_UP_READ_ONLY !== "1") return [koedOverride];
+  if (!appServerBinary || !cwd)
+    throw new Error("Restricted Codex MCP configuration is unavailable");
+  const featureOverrides = [
+    "features.plugins=false",
+    "features.apps=false",
+    "features.remote_plugin=false"
   ];
+  const inspect = (overrides: readonly string[]) => {
+    const invocation = nodeCliInvocation(appServerBinary, [
+      ...overrides.flatMap((value) => ["--config", value]),
+      "mcp",
+      "list",
+      "--json"
+    ]);
+    const result = spawnSync(invocation.command, invocation.args, {
+      cwd,
+      env: nodeCliProcessEnvironment(invocation, env, env),
+      timeout: 5_000,
+      maxBuffer: 256_000,
+      encoding: "utf8"
+    });
+    if (result.status !== 0 || result.error)
+      throw new Error("Restricted Codex MCP inventory is unavailable");
+    const parsed: unknown = JSON.parse(result.stdout);
+    if (!Array.isArray(parsed))
+      throw new Error("Restricted Codex MCP inventory is invalid");
+    if (
+      (parsed as unknown[]).some((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item))
+          return true;
+        const row = item as Record<string, unknown>;
+        return (
+          typeof row.name !== "string" ||
+          !row.name.trim() ||
+          typeof row.enabled !== "boolean"
+        );
+      })
+    )
+      throw new Error("Restricted Codex MCP inventory is invalid");
+    return parsed as Array<Record<string, unknown>>;
+  };
+  const configured = inspect(featureOverrides);
+  const disabled = configured
+    .filter((item) => typeof item.name === "string" && item.name !== "koed")
+    .map((item) => {
+      const name = item.name as string;
+      if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name))
+        throw new Error("Restricted Codex MCP configuration is not isolated");
+      return `mcp_servers.${name}.enabled=false`;
+    });
+  const overrides = [...featureOverrides, ...disabled, koedOverride];
+  const effective = inspect(overrides);
+  const enabled = effective.filter((item) => item.enabled === true);
+  const only = enabled[0];
+  const transport = only?.transport as Record<string, unknown> | undefined;
+  const actualEnv = transport?.env as Record<string, unknown> | undefined;
+  const expectedEnv = server.env as Record<string, string>;
+  const expectedEnvKeys = Object.keys(expectedEnv).sort();
+  if (
+    enabled.length !== 1 ||
+    only?.name !== "koed" ||
+    transport?.command !== server.command ||
+    JSON.stringify(transport.args) !== JSON.stringify(server.args) ||
+    !actualEnv ||
+    JSON.stringify(Object.keys(actualEnv).sort()) !==
+      JSON.stringify(expectedEnvKeys) ||
+    expectedEnvKeys.some((key) => actualEnv[key] !== expectedEnv[key])
+  )
+    throw new Error("Restricted Codex MCP configuration is not isolated");
+  return overrides;
 };
 
 export interface CodexManagedConversationSealedSource {
@@ -529,8 +609,11 @@ export class CodexManagedConversationSession {
           maxTurnStates: this.config.maxTurnStates,
           maxTurnBytes: this.config.maxTurnBytes,
           maxLineBytes: this.config.maxLineBytes,
-          configOverrides:
-            managedConversationKoedMcpConfigOverrides(appServerEnv),
+          configOverrides: managedConversationKoedMcpConfigOverrides(
+            appServerEnv,
+            this.config.appServer.appServerBinary,
+            this.config.appServer.cwd
+          ),
           transientEventHandler: (event) => this.handleTransientEvent(event),
           onExit: (exit) => this.handleClientExit(createdClient, exit)
         }
@@ -735,10 +818,11 @@ export class CodexManagedConversationSession {
   async runTurn(
     prompt: string,
     timeoutMs: number,
-    clientUserMessageId?: string
+    clientUserMessageId?: string,
+    options: { catchUpReadOnly?: boolean } = {}
   ): Promise<CodexAppServerRunResult> {
     const operation = this.turnQueue.then(() =>
-      this.runTurnSerialized(prompt, timeoutMs, clientUserMessageId)
+      this.runTurnSerialized(prompt, timeoutMs, clientUserMessageId, options)
     );
     this.turnQueue = operation.then(
       () => undefined,
@@ -882,7 +966,8 @@ export class CodexManagedConversationSession {
   private async runTurnSerialized(
     prompt: string,
     timeoutMs: number,
-    requestedClientUserMessageId?: string
+    requestedClientUserMessageId?: string,
+    options: { catchUpReadOnly?: boolean } = {}
   ): Promise<CodexAppServerRunResult> {
     await this.start();
     const client = this.appServerClient();
@@ -916,7 +1001,13 @@ export class CodexManagedConversationSession {
         client.startTurn(
           thread.id,
           prompt,
-          this.config.appServer,
+          options.catchUpReadOnly
+            ? {
+                ...this.config.appServer,
+                sandboxMode: "read-only",
+                approvalPolicy: "never"
+              }
+            : this.config.appServer,
           clientUserMessageId
         ),
         timeoutPromise

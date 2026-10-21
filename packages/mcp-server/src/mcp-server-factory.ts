@@ -520,6 +520,11 @@ export const createKoedMcpServer = async (
     capabilities: RuntimeToolCapabilities
   ): void => {
     for (const name of exposedTools(toolExposure, capabilities)) {
+      if (
+        environment.KOED_MANAGED_CATCH_UP_READ_ONLY === "1" &&
+        name !== "memory_answer"
+      )
+        continue;
       if (!allTools.includes(name)) continue;
       if (!supportsRuntimeTool(capabilities, name)) continue;
       registerTool(name as LocalRuntimeToolName);
@@ -528,9 +533,20 @@ export const createKoedMcpServer = async (
   };
 
   registerExposedTools(runtimeCapabilities);
+  // This complete branch is the managed catch-up tool boundary. Keep all
+  // future Koed registrations below it so unknown tools are denied by default.
+  if (environment.KOED_MANAGED_CATCH_UP_READ_ONLY === "1") {
+    if (
+      environment.KOED_MANAGED_DOC_EXECUTION_ID &&
+      environment.KOED_MANAGED_DOC_EXECUTION_GENERATION &&
+      environment.KOED_MANAGED_DOC_API_URL
+    )
+      registerWorkItemsFromDocTool(server, environment);
+    return server;
+  }
   if (environment.KOED_MANAGED_MEMORY_ACTIONS === "1")
     registerMemoryActionTools(server);
-  if (process.env.KOED_MANAGED_WORK_ITEM_COMPLETION === "1")
+  if (environment.KOED_MANAGED_WORK_ITEM_COMPLETION === "1")
     registerWorkItemCompletionTool(server);
   if (
     environment.KOED_MANAGED_DOC_EXECUTION_ID &&
@@ -538,7 +554,7 @@ export const createKoedMcpServer = async (
     environment.KOED_MANAGED_DOC_API_URL
   )
     registerWorkItemsFromDocTool(server, environment);
-  if (process.env.KOED_MANAGED_MERGE_PROPOSAL === "1")
+  if (environment.KOED_MANAGED_MERGE_PROPOSAL === "1")
     registerReviewRequestMergeProposalTool(server);
 
   return server;

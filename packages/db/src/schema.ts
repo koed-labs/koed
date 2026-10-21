@@ -1724,6 +1724,34 @@ export const workspaceProjectActivity = pgTable(
   ]
 );
 
+// One current Project membership's activity frontier. Team Chat read state is
+// intentionally separate and is never an Agent input.
+export const workspaceProjectSeen = pgTable(
+  "workspace_project_seen",
+  {
+    workspaceProjectId: uuid("workspace_project_id")
+      .notNull()
+      .references(() => workspaceProjects.id),
+    teamMemberId: uuid("team_member_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    seenSequence: bigint("seen_sequence", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    seenAt: timestamp("seen_at", { withTimezone: true }),
+    welcomeDeliveredAt: timestamp("welcome_delivered_at", {
+      withTimezone: true
+    })
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceProjectId, table.teamMemberId] }),
+    check(
+      "workspace_project_seen_sequence_nonnegative",
+      sql`${table.seenSequence} >= 0`
+    )
+  ]
+);
+
 export const teamWorkspaceAccessGrants = pgTable(
   "team_workspace_access_grants",
   {
@@ -5765,6 +5793,7 @@ export const managedConversationCommands = pgTable(
       sql`${table.commandKind} in (
         'start',
         'prompt',
+        'hq_catch_up',
         'interrupt',
         'quiesce',
         'stop',
@@ -5817,12 +5846,12 @@ export const managedConversationCommands = pgTable(
             and ${table.blockedOnId} is null)
         )
         and (${table.commandKind} not in (
-            'prompt','checkpoint_restore','file_browse','file_read','file_search','file_mention'
+            'prompt','hq_catch_up','checkpoint_restore','file_browse','file_read','file_search','file_mention'
           ) or ${table.encryptedPayload} is not null)
         and (
-          (${table.commandKind} = 'prompt'
+          (${table.commandKind} in ('prompt','hq_catch_up')
             and ${table.clientUserMessageId} is not null)
-          or (${table.commandKind} <> 'prompt' and ${table.clientUserMessageId} is null)
+          or (${table.commandKind} not in ('prompt','hq_catch_up') and ${table.clientUserMessageId} is null)
         )
         and (
           (${table.commandKind} in ('verify_target','restore','fork_create')

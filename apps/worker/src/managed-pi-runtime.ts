@@ -21,10 +21,13 @@ export async function captureManagedPiTurn(input: {
   sessionDirectory: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  /** Internal Koed-origin turn: verify its synthetic input before projection. */
+  holdProjection?: boolean;
 }): Promise<{
   artifact: Record<string, unknown>;
   transcriptPath: string;
   managedHome: string;
+  terminalOffset: number;
 }> {
   const managedHome = await realpath(input.sessionDirectory);
   const transcriptPath = await realpath(input.transcriptPath);
@@ -94,26 +97,33 @@ export async function captureManagedPiTurn(input: {
     if (cursor.sourceOffset === artifact.providerCursorOffset) {
       if (typeof artifact.sessionId !== "string")
         throw new Error("ManagedConversationPiCaptureUnavailableError");
-      const released = await input.client.releaseManagedJournalProjection({
-        sessionId: artifact.sessionId,
-        artifactId: artifact.id,
-        sourceOffset: turnBoundary
-      });
-      for (
-        let index = 0;
-        index < released.conversationItemIds.length;
-        index += 1000
-      ) {
-        const conversationItemIds = released.conversationItemIds.slice(
-          index,
-          index + 1000
-        );
-        await input.client.projectConversationItems({
-          conversationItemIds,
-          limit: conversationItemIds.length
+      if (!input.holdProjection) {
+        const released = await input.client.releaseManagedJournalProjection({
+          sessionId: artifact.sessionId,
+          artifactId: artifact.id,
+          sourceOffset: turnBoundary
         });
+        for (
+          let index = 0;
+          index < released.conversationItemIds.length;
+          index += 1000
+        ) {
+          const conversationItemIds = released.conversationItemIds.slice(
+            index,
+            index + 1000
+          );
+          await input.client.projectConversationItems({
+            conversationItemIds,
+            limit: conversationItemIds.length
+          });
+        }
       }
-      return { artifact, transcriptPath, managedHome };
+      return {
+        artifact,
+        transcriptPath,
+        managedHome,
+        terminalOffset: turnBoundary
+      };
     }
     previousOffset = cursor.sourceOffset;
   }

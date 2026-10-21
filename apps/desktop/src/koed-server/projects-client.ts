@@ -12,6 +12,10 @@ import {
   type ProjectsRequest,
   type ProjectsResult
 } from "../ipc/projects-protocol.js";
+import {
+  projectActivityPageSchema,
+  projectSeenSchema
+} from "@koed/shared/project-activity-contract";
 import { createProjectSourceClient } from "./project-source-client.js";
 import { createProjectWorkItemClient } from "./project-work-item-client.js";
 
@@ -81,6 +85,42 @@ export const createProjectsClient = (
       if (parsed.project.id !== request.projectId)
         throw new Error("Project HQ identity mismatch.");
       return projectsResultSchema.parse({ operation: "hq", value: parsed });
+    }
+    if (request.operation === "activitySeen") {
+      const parsed = projectSeenSchema.parse(
+        await send(`${projectPath(request.projectId)}/activity/seen`)
+      );
+      return projectsResultSchema.parse({
+        operation: "activitySeen",
+        projectId: request.projectId,
+        value: parsed
+      });
+    }
+    if (request.operation === "activityPage") {
+      const query = request.after
+        ? `?after=${encodeURIComponent(request.after)}`
+        : "";
+      const parsed = projectActivityPageSchema.parse(
+        await send(`${projectPath(request.projectId)}/activity${query}`)
+      );
+      return projectsResultSchema.parse({
+        operation: "activityPage",
+        projectId: request.projectId,
+        value: parsed
+      });
+    }
+    if (request.operation === "activityAcknowledge") {
+      const parsed = projectSeenSchema.parse(
+        await send(
+          `${projectPath(request.projectId)}/activity/seen`,
+          json("PUT", { cursor: request.cursor })
+        )
+      );
+      return projectsResultSchema.parse({
+        operation: "activityAcknowledge",
+        projectId: request.projectId,
+        value: parsed
+      });
     }
     if (
       request.operation === "workItemList" ||

@@ -533,6 +533,65 @@ try {
     }
   }
   if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-505", "HQ505.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq505-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq505.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ505_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 90_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ505.native", owner: "HQ-505", status: "pass" }
+        );
+        assert.equal(report.assertions.length, 7);
+        assert.equal(report.cases.length, 2);
+        for (const theme of ["light", "dark"]) {
+          assert.ok(
+            report.screenshots.includes(`catch-up-waiting-${theme}.png`)
+          );
+          assert.ok(
+            report.screenshots.includes(`catch-up-recovered-${theme}.png`)
+          );
+          assert.ok(
+            report.screenshots.includes(`catch-up-citation-${theme}.png`)
+          );
+          assert.ok(
+            report.screenshots.includes(`catch-up-open-team-${theme}.png`)
+          );
+          assert.ok(
+            report.screenshots.includes(`catch-up-reloaded-${theme}.png`)
+          );
+          assert.ok(
+            report.screenshots.includes(
+              `linked-team-source-no-make-${theme}.png`
+            )
+          );
+          assert.ok(
+            report.screenshots.includes(`catch-up-reconcile-${theme}.png`)
+          );
+          assert.ok(
+            report.screenshots.includes(`personal-source-action-${theme}.png`)
+          );
+        }
+        process.stdout.write(
+          "PASS HQ505.native [HQ-505]: linked catch-up and Open Team, reconciliation, separate Personal Source action, desktop light/dark.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
     const reportPath = resolve(scratchDir, "hq-506", "HQ506.native.json");
     await rm(reportPath, { force: true });
     const profile = await mkdtemp(

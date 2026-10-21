@@ -13,6 +13,17 @@ export const projectHqConversationRequestSchema = z.discriminatedUnion(
     z.object({ operation: z.literal("reserve"), projectId: z.uuid() }).strict(),
     z.object({ operation: z.literal("read"), projectId: z.uuid() }).strict(),
     z
+      .object({ operation: z.literal("catch_up"), projectId: z.uuid() })
+      .strict(),
+    z
+      .object({
+        operation: z.literal("retry_catch_up"),
+        projectId: z.uuid(),
+        failedCommandId: z.uuid(),
+        retryRequestId: z.uuid()
+      })
+      .strict(),
+    z
       .object({
         operation: z.literal("start"),
         projectId: z.uuid(),
@@ -47,6 +58,41 @@ export const projectHqConversationResultSchema = z.discriminatedUnion(
       .strict(),
     z
       .object({
+        operation: z.literal("catch_up"),
+        projectId: z.uuid(),
+        status: z.enum([
+          "nothing",
+          "starting",
+          "waiting",
+          "queued",
+          "recovered",
+          "retry_available",
+          "reconciliation_required"
+        ]),
+        executionId: z.uuid().nullable(),
+        commandId: z.uuid().nullable()
+      })
+      .strict(),
+    z
+      .object({
+        operation: z.literal("retry_catch_up"),
+        projectId: z.uuid(),
+        status: z.enum(["queued", "completed"]),
+        executionId: z.uuid(),
+        commandId: z.uuid(),
+        commandState: z.enum([
+          "queued",
+          "blocked",
+          "dispatching",
+          "completed",
+          "failed",
+          "indeterminate",
+          "canceled"
+        ])
+      })
+      .strict(),
+    z
+      .object({
         operation: z.literal("start"),
         projectId: z.uuid(),
         executionId: z.uuid(),
@@ -71,6 +117,37 @@ export interface ProjectHqConversationDesktopApi {
   reserve(
     projectId: string
   ): Promise<z.infer<typeof projectHqConversationSchema>>;
+  catchUp(projectId: string): Promise<{
+    projectId: string;
+    status:
+      | "nothing"
+      | "starting"
+      | "waiting"
+      | "queued"
+      | "recovered"
+      | "retry_available"
+      | "reconciliation_required";
+    executionId: string | null;
+    commandId: string | null;
+  }>;
+  retryCatchUp(
+    projectId: string,
+    failedCommandId: string,
+    retryRequestId: string
+  ): Promise<{
+    projectId: string;
+    status: "queued" | "completed";
+    executionId: string;
+    commandId: string;
+    commandState:
+      | "queued"
+      | "blocked"
+      | "dispatching"
+      | "completed"
+      | "failed"
+      | "indeterminate"
+      | "canceled";
+  }>;
   start(
     projectId: string,
     prompt: string,

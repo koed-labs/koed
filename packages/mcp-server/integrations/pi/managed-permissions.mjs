@@ -4,15 +4,37 @@ import process from "node:process";
 const modes = new Set(["supervised", "auto_edit", "auto", "full_access"]);
 const reads = new Set(["read", "grep", "find", "ls"]);
 const edits = new Set(["write", "edit"]);
+const catchUpTools = new Set([
+  "memory_answer",
+  "memory_answer_result",
+  "memory_answer_cancel",
+  "work_items_from_doc"
+]);
 
 // Loaded explicitly by the managed runner, not by normal Pi discovery.
 export default function managedPermissions(pi, environment = process.env) {
   const mode = environment.KOED_MANAGED_PERMISSION_MODE;
   if (!modes.has(mode)) throw new Error("Invalid managed Pi permission mode.");
+  const catchUpReadOnly = environment.KOED_MANAGED_CATCH_UP_READ_ONLY === "1";
   const sessionGrants = new Set();
-  pi.on("session_start", () => sessionGrants.clear());
+  pi.on("session_start", () => {
+    sessionGrants.clear();
+    if (catchUpReadOnly) pi.setActiveTools([...catchUpTools]);
+  });
   pi.on("session_shutdown", () => sessionGrants.clear());
   pi.on("tool_call", async (event, context) => {
+    if (catchUpReadOnly) {
+      if (
+        !catchUpTools.has(event.toolName) ||
+        (event.toolName === "work_items_from_doc" &&
+          !["list", "read", "preview"].includes(event.input?.mode))
+      )
+        return {
+          block: true,
+          reason: "Koed catch-up allows only recall and document preview."
+        };
+      return;
+    }
     if (mode === "full_access") return;
     if (context.signal?.aborted)
       return { block: true, reason: "Request canceled." };

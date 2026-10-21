@@ -56,6 +56,7 @@ export const createCuratedMemoryRecordMethods = ({
   | "exportCuratedMemoryRecords"
   | "listCuratedMemoryAssertions"
   | "getCuratedMemoryAssertion"
+  | "resolveActivityDecisions"
   | "getCuratedMemoryReplacementChain"
 > => ({
   async createCuratedMemoryProposal(actor, input) {
@@ -955,6 +956,49 @@ export const createCuratedMemoryRecordMethods = ({
       actor,
       envelopeEncryptionProvider,
       assertionId
+    );
+  },
+
+  async resolveActivityDecisions(actor, projectId, assertionIds) {
+    if (assertionIds.length === 0) return [];
+    if (assertionIds.length > 100)
+      throw new Error("Too many Project decision references");
+    const result = await pool.query<
+      AssertionRow & { updated_at_precise: string }
+    >(
+      `select ${assertionSelect},
+         to_char(cma.updated_at at time zone 'UTC',
+           'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as updated_at_precise
+       from curated_memory_assertions cma
+       left join curated_memory_topics cmt on cmt.id=cma.topic_id
+       join projects p on p.id=cma.project_id and p.owner_user_id=cma.owner_user_id
+         and p.lifecycle='active' and p.deletion_phase is null
+       where cma.id=any($3::uuid[]) and cma.owner_user_id=$1
+         and cma.visibility='personal' and cma.scope='project'
+         and cma.project_id=$2 and cma.kind='decision'
+         and cma.status='current' and cma.suppressed_at is null
+         and (cma.expires_at is null or cma.expires_at > now())
+         and ${activeCuratedMemoryEvidencePredicate("cma")}`,
+      [actor.userId, projectId, assertionIds]
+    );
+    return Promise.all(
+      result.rows.map(async (row) => {
+        const assertion = mapAssertion(
+          await hydrateAssertionRow(
+            pool,
+            actor,
+            envelopeEncryptionProvider,
+            row
+          )
+        );
+        return {
+          assertionId: assertion.id,
+          text: assertion.assertionText,
+          classificationVersion: assertion.classificationVersion,
+          updatedAt: row.updated_at_precise,
+          at: assertion.createdAt
+        };
+      })
     );
   },
 

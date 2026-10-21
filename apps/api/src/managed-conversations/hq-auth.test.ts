@@ -340,7 +340,11 @@ describe("HQ managed start HTTP admission", () => {
         })
       } as unknown as ApiRouteContext,
       { list: vi.fn() } as never,
-      { getForRealtime } as never
+      { getForRealtime } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      true
     );
     try {
       const credential = storeDesktopLocalCredential(home, {
@@ -358,6 +362,28 @@ describe("HQ managed start HTTP admission", () => {
         expect(response.json()).toMatchObject({
           message: expect.stringContaining("remote Managed Conversations")
         });
+      }
+      for (const [url, payload] of [
+        [
+          `/v1/projects/${projectId}/hq/conversation:start`,
+          { prompt: "Hello" }
+        ],
+        [`/v1/projects/${projectId}/hq/catch-up`, {}],
+        [
+          `/v1/projects/${projectId}/hq/catch-up/retry`,
+          { failedCommandId: randomUUID(), retryRequestId: randomUUID() }
+        ]
+      ] as const) {
+        const response = await app.inject({
+          method: "POST",
+          url,
+          headers: { authorization: credential.authorization },
+          payload
+        });
+        expect(response.statusCode, response.body).toBe(503);
+        expect(response.json().message).toContain(
+          "remote Managed Conversations"
+        );
       }
       expect(getForRealtime).not.toHaveBeenCalled();
       expect(createManagedConversation).not.toHaveBeenCalled();
@@ -722,170 +748,213 @@ describe("HQ managed start HTTP admission", () => {
     }
   });
 
-  it("starts with the exact first prompt and a private owner-bound Project HQ path", async () => {
-    const owner = randomUUID();
-    const projectId = randomUUID();
-    const executionId = randomUUID();
-    const commandId = randomUUID();
-    const deploymentId = randomUUID();
-    const deviceId = randomUUID();
-    const home = mkdtempSync(join(tmpdir(), "koed-hq-launch-"));
-    homes.push(home);
-    const app = Fastify();
-    app.setErrorHandler((error, _request, reply) => {
-      const typed = error as Error & { statusCode?: number };
-      return reply
-        .code(typed.name === "ZodError" ? 400 : (typed.statusCode ?? 500))
-        .send({ message: typed.message });
-    });
-    const createdAt = "2026-10-20T00:00:00.000Z";
-    const createManagedConversation = vi.fn(
-      async (_actor: unknown, selection: Record<string, unknown>) => ({
-        execution: {
-          id: executionId,
-          projectId: selection.projectId,
-          provider: selection.provider,
-          aiClientInstanceId: selection.aiClientInstanceId,
-          model: selection.model,
-          reasoningEffort: selection.reasoningEffort,
-          permissionMode: selection.permissionMode,
-          runnerKind: selection.runnerKind,
-          state: "starting",
-          stateVersion: 1,
-          executionGeneration: 1,
-          logicalSessionId: null,
-          providerThreadId: null,
-          providerCliVersion: null,
-          lastErrorCode: null,
-          createdAt,
-          updatedAt: createdAt,
-          startedAt: null,
-          quiescedAt: null,
-          stoppedAt: null
-        },
-        command: { id: commandId, state: "queued" }
-      })
-    );
-    const upsertBinding = vi.fn(async () => undefined);
-    const repository = {
-      listAiClientInstances: vi.fn(async () => [
-        {
-          instanceId: "codex.default",
-          driverId: "codex",
-          displayName: "Codex",
-          enabled: true,
-          configIdentityHash: "f".repeat(64)
-        }
-      ]),
-      listCurrentAiClientCapabilitySnapshots: vi.fn(async () => [
-        {
-          instanceId: "codex.default",
-          installationIdentityHash: "f".repeat(64),
-          authenticationState: "authenticated",
-          healthState: "healthy",
-          expiresAt: "2099-01-01T00:00:00.000Z",
-          capabilities: {
-            descriptors: {
-              managed_conversation_start: {
-                support: "supported",
-                readiness: "ready"
-              }
-            }
+  it.each(["human start", "cold catch-up won the HQ race"] as const)(
+    "starts with the exact first prompt and a private owner-bound Project HQ path: %s",
+    async (scenario) => {
+      const owner = randomUUID();
+      const projectId = randomUUID();
+      const executionId = randomUUID();
+      const commandId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      const home = mkdtempSync(join(tmpdir(), "koed-hq-launch-"));
+      homes.push(home);
+      const app = Fastify();
+      app.setErrorHandler((error, _request, reply) => {
+        const typed = error as Error & { statusCode?: number };
+        return reply
+          .code(typed.name === "ZodError" ? 400 : (typed.statusCode ?? 500))
+          .send({ message: typed.message });
+      });
+      const createdAt = "2026-10-20T00:00:00.000Z";
+      const createManagedConversation = vi.fn(
+        async (_actor: unknown, selection: Record<string, unknown>) => ({
+          execution: {
+            id: executionId,
+            projectId: selection.projectId,
+            provider: selection.provider,
+            aiClientInstanceId: selection.aiClientInstanceId,
+            model: selection.model,
+            reasoningEffort: selection.reasoningEffort,
+            permissionMode: selection.permissionMode,
+            runnerKind: selection.runnerKind,
+            state: "starting",
+            stateVersion: 1,
+            executionGeneration: 1,
+            logicalSessionId: null,
+            providerThreadId: null,
+            providerCliVersion: null,
+            lastErrorCode: null,
+            createdAt,
+            updatedAt: createdAt,
+            startedAt: null,
+            quiescedAt: null,
+            stoppedAt: null
           },
-          models: [
-            {
-              id: "gpt-test",
-              provenance: "reported",
-              supportedReasoningEfforts: ["low"]
+          command: {
+            id: commandId,
+            state: "queued",
+            payload: {
+              ...(scenario === "human start"
+                ? { prompt: selection.initialPrompt }
+                : {})
             }
-          ]
+          }
+        })
+      );
+      const upsertBinding = vi.fn(async () => undefined);
+      const enqueuePrompt = vi.fn(async () => ({
+        id: randomUUID(),
+        state: "queued"
+      }));
+      const repository = {
+        listAiClientInstances: vi.fn(async () => [
+          {
+            instanceId: "codex.default",
+            driverId: "codex",
+            displayName: "Codex",
+            enabled: true,
+            configIdentityHash: "f".repeat(64)
+          }
+        ]),
+        listCurrentAiClientCapabilitySnapshots: vi.fn(async () => [
+          {
+            instanceId: "codex.default",
+            installationIdentityHash: "f".repeat(64),
+            authenticationState: "authenticated",
+            healthState: "healthy",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+            capabilities: {
+              descriptors: {
+                managed_conversation_start: {
+                  support: "supported",
+                  readiness: "ready"
+                }
+              }
+            },
+            models: [
+              {
+                id: "gpt-test",
+                provenance: "reported",
+                supportedReasoningEfforts: ["low"]
+              }
+            ]
+          }
+        ]),
+        createManagedConversation,
+        enqueueManagedConversationPrompt: enqueuePrompt,
+        upsertManagedConversationRuntimeBinding: upsertBinding,
+        getManagedConversationRuntimeBinding: vi.fn(async () => null)
+      };
+      const list = vi.fn(async () => [
+        {
+          isChiefOfStaff: true,
+          aiClientInstanceId: "codex.default",
+          defaultModel: "gpt-test"
         }
-      ]),
-      createManagedConversation,
-      upsertManagedConversationRuntimeBinding: upsertBinding,
-      getManagedConversationRuntimeBinding: vi.fn(async () => null)
-    };
-    const list = vi.fn(async () => [
-      {
-        isChiefOfStaff: true,
-        aiClientInstanceId: "codex.default",
-        defaultModel: "gpt-test"
-      }
-    ]);
-    registerManagedConversationRoutes(
-      app,
-      {
-        config: { deploymentProfile: "local_personal", koedHome: home },
-        encryption: { envelopeEncryptionProvider: {} },
-        auth: { authenticateSessionOrDeviceCredential: vi.fn() },
-        deploymentIdentity: {
-          inspect: () => ({
-            health: "healthy",
-            deploymentId,
-            deviceInstanceId: deviceId
+      ]);
+      registerManagedConversationRoutes(
+        app,
+        {
+          config: { deploymentProfile: "local_personal", koedHome: home },
+          encryption: { envelopeEncryptionProvider: {} },
+          auth: { authenticateSessionOrDeviceCredential: vi.fn() },
+          deploymentIdentity: {
+            inspect: () => ({
+              health: "healthy",
+              deploymentId,
+              deviceInstanceId: deviceId
+            })
+          },
+          rateLimit: {
+            memoryRead: async () => undefined,
+            memoryWrite: async () => undefined,
+            managedConversationRead: async () => undefined,
+            managedConversationWrite: async () => undefined
+          },
+          localEdge: {
+            upstreamBackendsPath: join(home, "upstreams.json"),
+            resolveUpstreamAuthorization: () => null,
+            fetch: vi.fn()
+          },
+          requireRepository: () => repository
+        } as unknown as ApiRouteContext,
+        { list } as never,
+        undefined,
+        undefined,
+        undefined,
+        {
+          readHqConversation: vi.fn(async () => ({ conversation: null }))
+        } as never
+      );
+      try {
+        const credential = storeDesktopLocalCredential(home, {
+          ownerUserId: owner,
+          operationFamilies: [
+            "personal_collaboration_write",
+            "managed_execution"
+          ]
+        });
+        const prompt = "  Review the Project plan.\nKeep these exact words.  ";
+        const response = await app.inject({
+          method: "POST",
+          url: `/v1/projects/${projectId}/hq/conversation:start`,
+          headers: { authorization: credential.authorization },
+          payload: { prompt }
+        });
+        expect(response.statusCode, response.body).toBe(202);
+        expect(response.json()).toMatchObject({
+          execution: {
+            id: executionId,
+            projectId,
+            model: "gpt-test",
+            permissionMode: "supervised"
+          },
+          command: {
+            id:
+              scenario === "human start"
+                ? commandId
+                : (await enqueuePrompt.mock.results[0]?.value)?.id
+          }
+        });
+        expect(list).toHaveBeenCalledExactlyOnceWith(owner);
+        expect(createManagedConversation).toHaveBeenCalledWith(
+          { userId: owner },
+          expect.objectContaining({
+            hqProjectId: projectId,
+            initialPrompt: prompt,
+            projectId,
+            contextKind: "independent",
+            permissionMode: "supervised",
+            runnerDeploymentId: deploymentId,
+            runnerDeviceId: deviceId,
+            deferUntilRuntimeBinding: true,
+            hqPrivatePath: expect.stringContaining(`${owner}/${projectId}`)
           })
-        },
-        rateLimit: {
-          memoryRead: async () => undefined,
-          memoryWrite: async () => undefined,
-          managedConversationRead: async () => undefined,
-          managedConversationWrite: async () => undefined
-        },
-        localEdge: {
-          upstreamBackendsPath: join(home, "upstreams.json"),
-          resolveUpstreamAuthorization: () => null,
-          fetch: vi.fn()
-        },
-        requireRepository: () => repository
-      } as unknown as ApiRouteContext,
-      { list } as never
-    );
-    try {
-      const credential = storeDesktopLocalCredential(home, {
-        ownerUserId: owner,
-        operationFamilies: ["personal_collaboration_write", "managed_execution"]
-      });
-      const prompt = "  Review the Project plan.\nKeep these exact words.  ";
-      const response = await app.inject({
-        method: "POST",
-        url: `/v1/projects/${projectId}/hq/conversation:start`,
-        headers: { authorization: credential.authorization },
-        payload: { prompt }
-      });
-      expect(response.statusCode, response.body).toBe(202);
-      expect(response.json()).toMatchObject({
-        execution: {
-          id: executionId,
-          projectId,
-          model: "gpt-test",
-          permissionMode: "supervised"
-        },
-        command: { id: commandId }
-      });
-      expect(list).toHaveBeenCalledExactlyOnceWith(owner);
-      expect(createManagedConversation).toHaveBeenCalledWith(
-        { userId: owner },
-        expect.objectContaining({
-          hqProjectId: projectId,
-          initialPrompt: prompt,
-          projectId,
-          contextKind: "independent",
-          permissionMode: "supervised",
-          runnerDeploymentId: deploymentId,
-          runnerDeviceId: deviceId,
-          deferUntilRuntimeBinding: true,
-          hqPrivatePath: expect.stringContaining(`${owner}/${projectId}`)
-        })
-      );
-      expect(upsertBinding).toHaveBeenCalledExactlyOnceWith(
-        { userId: owner },
-        expect.objectContaining({
-          executionId,
-          projectPath: expect.stringContaining(`${owner}/${projectId}`)
-        })
-      );
-    } finally {
-      await app.close();
+        );
+        if (scenario === "human start") {
+          expect(upsertBinding).toHaveBeenCalledExactlyOnceWith(
+            { userId: owner },
+            expect.objectContaining({
+              executionId,
+              projectPath: expect.stringContaining(`${owner}/${projectId}`)
+            })
+          );
+          expect(enqueuePrompt).not.toHaveBeenCalled();
+        } else {
+          expect(upsertBinding).not.toHaveBeenCalled();
+          expect(enqueuePrompt).toHaveBeenCalledWith(
+            { userId: owner },
+            expect.objectContaining({
+              executionId,
+              idempotencyKey: `project-hq-first-user:${projectId}`,
+              prompt
+            })
+          );
+        }
+      } finally {
+        await app.close();
+      }
     }
-  });
+  );
 });

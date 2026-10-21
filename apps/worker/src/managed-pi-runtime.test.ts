@@ -42,14 +42,15 @@ async function fixture(providerOffset = 100, offsets = [100]) {
   return {
     artifact,
     client,
-    run: () =>
+    run: (holdProjection = false) =>
       captureManagedPiTurn({
         client: client as unknown as MemoryApiClient,
         sessionId: "native-session",
         transcriptPath,
         sessionDirectory: home,
         cwd: "/receiving-workspace",
-        env: {}
+        env: {},
+        holdProjection
       })
   };
 }
@@ -82,6 +83,13 @@ describe("managed Pi canonical capture", () => {
     await expect(f.run()).rejects.toThrow(
       "ManagedConversationPiCaptureIncompleteError"
     );
+  });
+
+  it("holds Koed-origin input until its exact command can be verified", async () => {
+    const f = await fixture();
+    expect((await f.run(true)).terminalOffset).toBe(100);
+    expect(f.client.releaseManagedJournalProjection).not.toHaveBeenCalled();
+    expect(f.client.projectConversationItems).not.toHaveBeenCalled();
   });
 
   it("fails closed when terminal verification rejects the journal", async () => {

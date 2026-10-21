@@ -23,6 +23,18 @@ const openApiSecuritySchemes = openApiDocument.components
   .securitySchemes as Record<string, Record<string, unknown>>;
 
 describe("route identity contract", () => {
+  it("inventories exact owner-local HQ catch-up and retry authority", () => {
+    for (const path of [
+      "/v1/projects/{id}/hq/catch-up",
+      "/v1/projects/{id}/hq/catch-up/retry"
+    ]) {
+      expect(routeIdentityFor("POST", path)).toMatchObject({
+        identity: "desktop_local_credential",
+        domain: "projects",
+        deploymentModes: ["developer", "local_personal"]
+      });
+    }
+  });
   it("inventories exact Share Project recovery and current Team target routes", () => {
     for (const [method, path] of [
       ["GET", "/v1/teams/{teamId}/workspaces/{workspaceId}/share-target"],

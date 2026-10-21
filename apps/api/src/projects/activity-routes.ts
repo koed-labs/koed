@@ -1,5 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type { ProjectActivityRepository } from "@koed/db";
+import type {
+  ProjectActivityRepository,
+  ProjectSourceRepository
+} from "@koed/db";
 import {
   ProjectActivityCursorError,
   ProjectActivityUnavailableError
@@ -24,6 +27,7 @@ export const registerProjectActivityRoutes = (
   app: FastifyInstance,
   input: {
     repository: ProjectActivityRepository | null;
+    sourceRepository?: ProjectSourceRepository | null;
     deploymentProfile: string;
     koedHome?: string;
     auth: ApiRouteContext["auth"];
@@ -68,9 +72,41 @@ export const registerProjectActivityRoutes = (
           .code(400)
           .send({ message: "Invalid Project activity page" });
       try {
-        return projectActivityPageSchema.parse(
-          await repository().list(user.id, id, query.data)
+        const listed = await repository().list(user.id, id, query.data);
+        const attempts = listed.items
+          .filter(
+            (item) =>
+              item.kind === "source_ready" || item.kind === "source_failed"
+          )
+          .map((item) => item.ref);
+        const outcomes = input.sourceRepository
+          ? await input.sourceRepository.resolveActivityOutcomes(
+              user.id,
+              id,
+              attempts
+            )
+          : [];
+        const byAttempt = new Map(
+          outcomes.map((item) => [item.attemptId, item])
         );
+        return projectActivityPageSchema.parse({
+          ...listed,
+          items: listed.items.map((item) => {
+            const source = byAttempt.get(item.ref);
+            return source &&
+              ((item.kind === "source_ready" && source.status === "ready") ||
+                (item.kind === "source_failed" && source.status === "failed"))
+              ? {
+                  ...item,
+                  sourceOutcome: {
+                    sourceId: source.sourceId,
+                    name: source.name,
+                    status: source.status
+                  }
+                }
+              : item;
+          })
+        });
       } catch (error) {
         return handle(reply, error);
       }

@@ -252,6 +252,10 @@ export class PiManagedConversationSession {
       ...(this.config.env.KOED_MANAGED_CONVERSATION === "1"
         ? { KOED_MANAGED_CONVERSATION: "1" }
         : {}),
+      ...(this.config.env.KOED_MANAGED_CONVERSATION === "1" &&
+      this.config.env.KOED_MANAGED_CATCH_UP_READ_ONLY === "1"
+        ? { KOED_MANAGED_CATCH_UP_READ_ONLY: "1" }
+        : {}),
       ...(this.config.env.KOED_MANAGED_MEMORY_ACTIONS === "1"
         ? { KOED_MANAGED_MEMORY_ACTIONS: "1" }
         : {}),

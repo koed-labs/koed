@@ -11,6 +11,41 @@
 .hq-project-conversation__header[hidden] {
   display: none;
 }
+.hq-project-conversation__catch-up {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 35px;
+  padding: 5px 16px;
+  border-bottom: 1px solid var(--hq-line);
+  color: var(--hq-muted);
+  font-size: 12px;
+}
+.hq-project-conversation__catch-up button {
+  margin-left: auto;
+  color: var(--hq-fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.hq-project-conversation__catch-up button:focus-visible {
+  outline: 2px solid var(--hq-accent);
+  outline-offset: 2px;
+}
+.hq-project-conversation__team-unread {
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--hq-line);
+  color: var(--hq-muted);
+  font-size: 12px;
+}
+.hq-project-conversation__team-unread button {
+  color: var(--hq-fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.hq-project-conversation__team-unread button:focus-visible {
+  outline: 2px solid var(--hq-accent);
+  outline-offset: 2px;
+}
 .hq-project-conversation {
   display: flex;
   flex-direction: column;

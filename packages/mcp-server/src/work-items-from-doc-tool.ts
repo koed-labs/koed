@@ -3,8 +3,10 @@ import {
   readDesktopLocalCredentialAuthorization,
   workItemsFromDocListPageSchema,
   workItemsFromDocReadPageSchema,
+  workItemsFromDocPreviewResultSchema,
   workItemsFromDocToolInputSchema,
   workItemsFromDocToolListSchema,
+  workItemsFromDocToolPreviewSchema,
   workItemsFromDocToolReadSchema
 } from "@koed/shared";
 import { z } from "zod";
@@ -121,7 +123,65 @@ export const listWorkItemsFromDocSources = async (
   return workItemsFromDocListPageSchema.parse(JSON.parse(raw));
 };
 
-/** A read returns only bounded, owner-checked Note lines. An apply is a lease-checked request. */
+export const previewWorkItemsFromDoc = async (
+  input: {
+    source_id: string;
+    source_revision_id: string;
+    note_revision_id: string;
+    proposals: Array<{
+      line_number: number;
+      source_line: string;
+      title: string;
+      goal: string;
+      due_text: string | null;
+    }>;
+  },
+  environment: NodeJS.ProcessEnv = process.env,
+  send: typeof fetch = fetch
+) => {
+  const parsed = workItemsFromDocToolPreviewSchema.parse({
+    mode: "preview",
+    ...input
+  });
+  const bound = selector(environment);
+  const url = new URL(
+    `/v1/managed-conversations/${bound.executionId}/work-items-from-doc/preview`,
+    bound.apiUrl
+  );
+  const response = await send(url, {
+    method: "POST",
+    redirect: "error",
+    headers: {
+      authorization: bound.authorization,
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      executionGeneration: bound.executionGeneration,
+      sourceId: parsed.source_id,
+      sourceRevisionId: parsed.source_revision_id,
+      noteRevisionId: parsed.note_revision_id,
+      proposals: parsed.proposals.map((proposal) => ({
+        lineNumber: proposal.line_number,
+        sourceLine: proposal.source_line,
+        title: proposal.title,
+        goal: proposal.goal,
+        dueText: proposal.due_text
+      }))
+    }),
+    signal: AbortSignal.timeout(15_000)
+  });
+  if (!response.ok)
+    throw new Error(
+      `Document Work Item preview is unavailable (${response.status})`
+    );
+  const raw = await response.text();
+  if (raw.length > 32_000)
+    throw new Error("Document Work Item preview exceeded its limit");
+  return workItemsFromDocPreviewResultSchema.parse(JSON.parse(raw));
+};
+
+/** List/read/preview are bounded owner-checked reads; apply requests a write. */
 export const registerWorkItemsFromDocTool = (
   server: McpServer,
   environment: NodeJS.ProcessEnv = process.env,
@@ -132,12 +192,22 @@ export const registerWorkItemsFromDocTool = (
     {
       title: "Make Work Items from a document",
       description:
-        "For a typed request, first use list to find current Project documents by name; continue while nextCursor is present. If names are ambiguous, ask the User which document. A Project HQ selection lists only its selected document. Then read the chosen source_id in pages (or omit it for a selected document), identify actionable lines, and call apply with exact revision IDs and verbatim line evidence. Koed verifies source evidence, current Agent lease and duplicate lines before writing. Works without a to-tickets skill.",
+        "For a typed request, first use list to find current Project documents by name; continue while nextCursor is present. If names are ambiguous, ask the User which document. A Project HQ selection lists only its selected document. Then read the chosen source_id in pages (or omit it for a selected document) and identify actionable lines. Use preview with exact revision IDs and verbatim line evidence to count new versus existing Plan Work Items without writing. A Koed catch-up may offer the new count, but must not apply; apply is only for a User start or prompt. Koed verifies source evidence, current Agent lease and duplicate lines before writing. Works without a to-tickets skill.",
       inputSchema: workItemsFromDocInput
     },
     async (input) => {
       const parsed = workItemsFromDocInput.parse(input);
       if (parsed.mode === "apply") {
+        if (environment.KOED_MANAGED_CATCH_UP_READ_ONLY === "1")
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text: "Koed catch-up cannot apply document Work Items."
+              }
+            ]
+          };
         return {
           structuredContent: { status: "requested" },
           content: [
@@ -154,6 +224,17 @@ export const registerWorkItemsFromDocTool = (
         return {
           structuredContent: page,
           content: [{ type: "text" as const, text: JSON.stringify(page) }]
+        };
+      }
+      if (parsed.mode === "preview") {
+        const preview = await previewWorkItemsFromDoc(
+          parsed,
+          environment,
+          send
+        );
+        return {
+          structuredContent: preview,
+          content: [{ type: "text" as const, text: JSON.stringify(preview) }]
         };
       }
       const page = await readWorkItemsFromDocPage(parsed, environment, send);

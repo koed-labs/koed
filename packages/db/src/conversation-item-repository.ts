@@ -12,6 +12,7 @@ import {
 import {
   combineStorageSanitizationCounts,
   codexCanonicalConversationItemKey,
+  decryptEnvelopeToUtf8,
   metadataWithStorageSanitization,
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES,
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
@@ -20,6 +21,7 @@ import {
   projectionWorkClassForSourceTransport,
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
+import type { EncryptedPayloadEnvelope } from "@koed/shared";
 import type {
   ActorContext,
   CaptureMethod,
@@ -78,6 +80,122 @@ type ConversationItemSessionRow = {
   project_override_id: string | null;
   cwd: string | null;
   metadata: Record<string, unknown> | null;
+};
+
+/** A provider-supplied marker is never origin authority by itself. */
+export const codexCatchUpOrigin = async (input: {
+  client: pg.PoolClient;
+  ownerUserId: string;
+  item: ConversationItemInput;
+  session: ConversationItemSessionRow | null;
+  encryptionProvider?: EnvelopeEncryptionProvider;
+}): Promise<{
+  status: "ordinary" | "held" | "raw_only";
+  commandId?: string;
+}> => {
+  const { item, session } = input;
+  const marker = /^koed-user-message:([0-9a-f-]{36})$/iu.exec(
+    item.canonicalStableItemId ?? ""
+  );
+  if (
+    !marker ||
+    item.sourceKind !== "codex" ||
+    item.metadata?.transcriptType !== "user_message" ||
+    item.observationOnly ||
+    !item.externalTurnId ||
+    !session ||
+    session.capture_method !== "api" ||
+    session.metadata?.managedConversation !== true
+  )
+    return { status: "ordinary" };
+  const commands = await input.client.query<{
+    id: string;
+    execution_id: string;
+    state: string;
+    execution_generation: number;
+    lease_expires_at: Date | null;
+    has_lease: boolean;
+    encrypted_payload: Record<string, unknown> | null;
+    result: Record<string, unknown> | null;
+    current_generation: number;
+    current_state: string;
+    runner_lease_expires_at: Date | null;
+    local_session_id: string | null;
+    provider_thread_id: string | null;
+  }>(
+    `select command.id,command.execution_id,command.state,command.execution_generation,
+            command.lease_expires_at,command.lease_token is not null as has_lease,
+            command.encrypted_payload,command.result,
+            execution.execution_generation as current_generation,
+            execution.state as current_state,execution.runner_lease_expires_at,
+            binding.local_session_id,binding.provider_thread_id
+       from managed_conversation_commands command
+       join managed_conversation_executions execution
+         on execution.id=command.execution_id and execution.owner_user_id=command.owner_user_id
+        and execution.is_project_hq
+       join sessions session on session.id=$3 and session.owner_user_id=command.owner_user_id
+        and session.logical_session_id=execution.logical_session_id
+       left join managed_conversation_runtime_bindings binding
+         on binding.execution_id=execution.id and binding.owner_user_id=execution.owner_user_id
+        and binding.execution_generation=command.execution_generation
+      where command.owner_user_id=$1 and command.client_user_message_id=$2
+        and command.command_kind='hq_catch_up'
+      limit 2`,
+    [input.ownerUserId, marker[1], session.id]
+  );
+  if (commands.rows.length === 0) return { status: "ordinary" };
+  if (commands.rows.length !== 1) return { status: "held" };
+  const command = commands.rows[0]!;
+  const encrypted =
+    command.encrypted_payload as EncryptedPayloadEnvelope | null;
+  if (
+    !encrypted ||
+    !input.encryptionProvider ||
+    encrypted.scope?.tenantId !== input.ownerUserId ||
+    encrypted.scope?.objectClass !== "managed_conversation_prompt" ||
+    encrypted.provenance?.rowFamily !== "managed_conversation_commands" ||
+    encrypted.provenance?.sourceId !== command.id ||
+    encrypted.ciphertextLocation !==
+      "managed_conversation_commands.encrypted_payload" ||
+    encrypted.aad?.ownerUserId !== input.ownerUserId ||
+    encrypted.aad?.executionId !== command.execution_id ||
+    encrypted.aad?.commandId !== command.id
+  )
+    return { status: "held" };
+  const plaintext = await decryptEnvelopeToUtf8(
+    input.encryptionProvider,
+    encrypted
+  );
+  let payload: unknown;
+  try {
+    payload = JSON.parse(plaintext);
+  } catch {
+    return { status: "held" };
+  }
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload) ||
+    (payload as Record<string, unknown>).prompt !== item.rawText
+  )
+    return { status: "ordinary" };
+  const live =
+    command.state === "dispatching" &&
+    command.has_lease &&
+    command.lease_expires_at !== null &&
+    command.lease_expires_at.getTime() > Date.now() &&
+    command.execution_generation === command.current_generation &&
+    command.current_state === "running" &&
+    command.runner_lease_expires_at !== null &&
+    command.runner_lease_expires_at.getTime() > Date.now() &&
+    command.local_session_id === session.id &&
+    command.provider_thread_id === item.externalThreadId;
+  const completed =
+    command.state === "completed" &&
+    command.result?.turnId === item.externalTurnId;
+  return live || completed
+    ? { status: "raw_only", commandId: command.id }
+    : { status: "held" };
 };
 
 type ConversationItemRow = {
@@ -158,6 +276,8 @@ const SAFE_CONVERSATION_METADATA_KEYS = new Set([
   "managedConversationSourceRole",
   "appServerItemType",
   "clientUserMessageId",
+  "managedClientUserMessageId",
+  "managedKoedCatchUpCommandId",
   "phase",
   "sourceEventTimeAccuracy",
   "canonicalIdentityBasis",
@@ -1991,6 +2111,29 @@ export const createConversationItemRepository = (
         );
         assertManagedTranscriptTerminal(item, verifiedSession);
         item = withAuthoritativeSessionMetadata(item, verifiedSession);
+        // This origin field is repository-owned, never an ingestion claim.
+        const suppliedMetadata = { ...(item.metadata ?? {}) };
+        delete suppliedMetadata.managedKoedCatchUpCommandId;
+        item = { ...item, metadata: suppliedMetadata };
+        const catchUpOrigin = await codexCatchUpOrigin({
+          client,
+          ownerUserId,
+          item,
+          session: verifiedSession,
+          encryptionProvider: options.envelopeEncryptionProvider
+        });
+        if (catchUpOrigin.status === "raw_only")
+          item = {
+            ...item,
+            metadata: {
+              ...(item.metadata ?? {}),
+              managedKoedCatchUpCommandId: catchUpOrigin.commandId,
+              managedClientUserMessageId: item.canonicalStableItemId?.replace(
+                /^koed-user-message:/u,
+                ""
+              )
+            }
+          };
         if (
           normalizedImportAttestation &&
           isRecord(item.metadata?.normalizedImportAttestation)
@@ -2134,6 +2277,7 @@ export const createConversationItemRepository = (
           );
           managedProjectionHold = terminal.rows[0]?.reconciled !== true;
         }
+        if (catchUpOrigin.status === "held") managedProjectionHold = true;
 
         if (item.observationOnly) {
           await persistConversationItemObservation({
@@ -2383,6 +2527,7 @@ export const createConversationItemRepository = (
           ),
           projection_status = case
             when excluded.projection_status = 'pending'
+              and not (conversation_items.metadata ? 'managedKoedCatchUpCommandId')
               and (
                 excluded.canonical_source_priority > conversation_items.canonical_source_priority
                 or conversation_items.projection_status = 'raw_only'
@@ -2499,12 +2644,14 @@ export const createConversationItemRepository = (
           canonicalItemKey,
           canonicalItemKey,
           canonicalSourcePriority,
-          managedProjectionHold
-            ? "held"
-            : item.sourceTransport === "historical_import" &&
-                item.projectionStatus === "raw_only"
-              ? "raw_only"
-              : "pending",
+          catchUpOrigin.status === "raw_only"
+            ? "raw_only"
+            : managedProjectionHold
+              ? "held"
+              : item.sourceTransport === "historical_import" &&
+                  item.projectionStatus === "raw_only"
+                ? "raw_only"
+                : "pending",
           projectionWorkClassForSourceTransport(item.sourceTransport),
           item.projectionVersion ?? null,
           item.projectionError ?? null,

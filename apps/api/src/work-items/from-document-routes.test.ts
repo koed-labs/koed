@@ -33,6 +33,7 @@ const fixture = () => {
     ownerUserId: owner,
     executionId,
     executionGeneration: 1,
+    commandKind: "prompt",
     state: "dispatching",
     leaseToken,
     leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -73,6 +74,14 @@ const fixture = () => {
     list: vi.fn(async () => documents)
   };
   const items = {
+    previewFromDocument: vi.fn(async () => ({
+      newCount: 1,
+      alreadyExistingCount: 0,
+      removedCount: 0,
+      candidates: [
+        { lineNumber: 1, title: "Write seminar paper", status: "new" }
+      ]
+    })),
     createFromDocument: vi.fn(async () => ({
       items: [],
       created: 0,
@@ -127,6 +136,73 @@ const fixture = () => {
 };
 
 describe("managed document read and apply authority", () => {
+  it("lets catch-up inspect a document but reserves apply for a User start or prompt", async () => {
+    const f = fixture();
+    f.command.commandKind = "hq_catch_up";
+    expect((await f.list()).statusCode).toBe(200);
+    expect((await f.read()).statusCode).toBe(200);
+    const preview = await f.app.inject({
+      method: "POST",
+      url: `${f.path}/preview`,
+      headers: { authorization: "Koed-Desktop test" },
+      payload: {
+        executionGeneration: 1,
+        sourceId: f.source.sourceId,
+        sourceRevisionId: f.source.sourceRevisionId,
+        noteRevisionId: f.source.noteRevisionId,
+        proposals: [
+          {
+            lineNumber: 1,
+            sourceLine: "Seminar paper due 22 Oct 2026",
+            title: "Write seminar paper",
+            goal: "Submit the paper",
+            dueText: "22 Oct 2026"
+          }
+        ]
+      }
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().newCount).toBe(1);
+    expect(f.items.previewFromDocument).toHaveBeenCalledOnce();
+    expect(f.items.createFromDocument).not.toHaveBeenCalled();
+    const body = {
+      commandId: f.command.id,
+      leaseToken: f.command.leaseToken,
+      executionGeneration: 1,
+      sourceId: f.source.sourceId,
+      sourceRevisionId: f.source.sourceRevisionId,
+      noteRevisionId: f.source.noteRevisionId,
+      timeZone: "Europe/Oslo",
+      proposals: [
+        {
+          lineNumber: 1,
+          sourceLine: "Seminar paper due 22 Oct 2026",
+          title: "Write seminar paper",
+          goal: "Submit the paper",
+          dueText: "22 Oct 2026"
+        }
+      ]
+    };
+    const denied = await f.app.inject({
+      method: "POST",
+      url: `${f.path}/apply`,
+      headers: { authorization: "Koed-Desktop test" },
+      payload: body
+    });
+    expect(denied.statusCode).toBe(409);
+    expect(f.items.createFromDocument).not.toHaveBeenCalled();
+    f.command.commandKind = "start";
+    const firstUser = await f.app.inject({
+      method: "POST",
+      url: `${f.path}/apply`,
+      headers: { authorization: "Koed-Desktop test" },
+      payload: body
+    });
+    expect(firstUser.statusCode).toBe(200);
+    expect(f.items.createFromDocument).toHaveBeenCalledOnce();
+    await f.app.close();
+  });
+
   it("lists bounded current document metadata for typed requests, without Source text", async () => {
     const f = fixture();
     for (let index = 0; index < 31; index++)
@@ -156,6 +232,55 @@ describe("managed document read and apply authority", () => {
     expect(last.json().documents).toHaveLength(2);
     expect(last.json().nextCursor).toBeNull();
     expect(f.sources.readDocument).not.toHaveBeenCalled();
+    await f.app.close();
+  });
+
+  it("withholds a preview when the selected Source, revision, or command lease changes", async () => {
+    const f = fixture();
+    const payload = () => ({
+      executionGeneration: 1,
+      sourceId: f.source.sourceId,
+      sourceRevisionId: f.source.sourceRevisionId,
+      noteRevisionId: f.source.noteRevisionId,
+      proposals: [
+        {
+          lineNumber: 1,
+          sourceLine: "Seminar paper due 22 Oct 2026",
+          title: "Write seminar paper",
+          goal: "Submit the paper",
+          dueText: "22 Oct 2026"
+        }
+      ]
+    });
+    const preview = (body = payload()) =>
+      f.app.inject({
+        method: "POST",
+        url: `${f.path}/preview`,
+        headers: { authorization: "Koed-Desktop test" },
+        payload: body
+      });
+    f.command.payload.selectedDocumentSourceId = randomUUID();
+    expect((await preview()).statusCode).toBe(409);
+    expect(f.sources.readDocument).not.toHaveBeenCalled();
+    f.command.payload.selectedDocumentSourceId = f.source.sourceId;
+    expect(
+      (await preview({ ...payload(), noteRevisionId: randomUUID() })).statusCode
+    ).toBe(409);
+    expect(f.items.previewFromDocument).not.toHaveBeenCalled();
+    f.items.previewFromDocument.mockImplementationOnce(async () => {
+      f.command.leaseToken = randomUUID();
+      return {
+        newCount: 1,
+        alreadyExistingCount: 0,
+        removedCount: 0,
+        candidates: [
+          { lineNumber: 1, title: "Write seminar paper", status: "new" }
+        ]
+      };
+    });
+    const stale = await preview();
+    expect(stale.statusCode).toBe(409);
+    expect(stale.body).not.toContain("Write seminar paper");
     await f.app.close();
   });
 

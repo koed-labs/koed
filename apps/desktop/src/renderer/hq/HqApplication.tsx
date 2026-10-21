@@ -98,7 +98,8 @@ export function HqApplication({
   authorizeManagedConversationTransfer,
   localAiClients,
   projectTeamTabRequest,
-  onProjectTeamUnreadChange
+  onProjectTeamUnreadChange,
+  catchUpEnabled = true
 }: {
   personalMemoryStore: PersonalMemoryStore | null;
   personalMemoryReady: boolean;
@@ -137,6 +138,7 @@ export function HqApplication({
     latestSequence: number;
     lastReadSequence: number;
   }) => void;
+  catchUpEnabled?: boolean;
 }) {
   const [selection, setSelection] = useState<{
     route: HqRoute;
@@ -1474,6 +1476,28 @@ export function HqApplication({
         agentsApi={agentsApi}
         helperAgents={ownedAgents}
         ownerIdentity={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}`}
+        catchUpEnabled={catchUpEnabled}
+        activityRevision={`${visibilityRevision ?? ""}:${sharedRefreshSignal}`}
+        foreground={documentVisible && projectTab === "hq"}
+        teamUnreadCount={
+          projectTeamIdentity?.personalProjectId === project.id
+            ? projectTeamUnread.unreadCount
+            : 0
+        }
+        onOpenTeam={
+          projectTeamIdentity?.personalProjectId === project.id
+            ? () => {
+                if (
+                  projectTeamIdentity.personalProjectId !== project.id ||
+                  route.kind !== "project" ||
+                  route.projectId !== project.id
+                )
+                  return;
+                setProjectTab("team");
+                shellActions.current?.showContext();
+              }
+            : undefined
+        }
         chiefInstanceId={chiefAgent?.aiClientInstanceId ?? null}
         api={projectHqConversation}
         managedConversations={managedConversations}

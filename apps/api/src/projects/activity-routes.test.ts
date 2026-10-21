@@ -4,6 +4,60 @@ import { describe, expect, it, vi } from "vitest";
 import { registerProjectActivityRoutes } from "./activity-routes.js";
 
 describe("Project activity HTTP authority", () => {
+  it("resolves only current owner-bound Source attempt outcomes without treating an attempt as a Source ID", async () => {
+    const app = Fastify();
+    const owner = randomUUID();
+    const project = randomUUID();
+    const attempt = randomUUID();
+    const sourceId = randomUUID();
+    const at = new Date().toISOString();
+    const repository = {
+      list: vi.fn(async () => ({
+        items: [
+          {
+            cursor: "one",
+            actorUserId: owner,
+            kind: "source_ready",
+            ref: attempt,
+            at
+          }
+        ],
+        hasMore: false,
+        nextCursor: null
+      }))
+    };
+    const resolveActivityOutcomes = vi.fn(async () => [
+      { attemptId: attempt, sourceId, name: "Plan.md", status: "ready" }
+    ]);
+    registerProjectActivityRoutes(app, {
+      repository: repository as never,
+      sourceRepository: { resolveActivityOutcomes } as never,
+      deploymentProfile: "developer",
+      auth: {
+        authenticateSessionOrDeviceCredential: async () => ({ id: owner })
+      } as never,
+      readRateLimit: async () => undefined,
+      writeRateLimit: async () => undefined
+    });
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${project}/activity`
+      });
+      expect(response.statusCode).toBe(200);
+      expect(resolveActivityOutcomes).toHaveBeenCalledWith(owner, project, [
+        attempt
+      ]);
+      expect(response.json().items[0].sourceOutcome).toEqual({
+        sourceId,
+        name: "Plan.md",
+        status: "ready"
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("uses owner-scoped session/device authority, denies API Tokens, and never appends from HTTP", async () => {
     const app = Fastify();
     const owner = randomUUID();

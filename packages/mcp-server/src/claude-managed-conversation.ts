@@ -1115,14 +1115,17 @@ export class ClaudeManagedConversationSession {
     };
   }
 
-  async prompt(prompt: string): Promise<ClaudeManagedConversationResult> {
+  async prompt(
+    prompt: string,
+    options: { catchUpReadOnly?: boolean } = {}
+  ): Promise<ClaudeManagedConversationResult> {
     const normalizedPrompt = assertNonEmpty(prompt, "Claude prompt");
     this.assertOpen();
     if (!this.started) {
       await this.start();
     }
     const operation = this.turnQueue.then(() =>
-      this.runPrompt(normalizedPrompt)
+      this.runPrompt(normalizedPrompt, options)
     );
     this.turnQueue = operation.then(
       () => undefined,
@@ -1132,14 +1135,22 @@ export class ClaudeManagedConversationSession {
   }
 
   private async runPrompt(
-    prompt: string
+    prompt: string,
+    options: { catchUpReadOnly?: boolean }
   ): Promise<ClaudeManagedConversationResult> {
     this.assertOpen();
     const abortController = new AbortController();
     const shouldResume = this.resumed || this.submittedQuery;
     let stream: Query;
     try {
-      const koedMcp = managedKoedMcpServer(this.config.env ?? process.env);
+      const koedMcp = managedKoedMcpServer(
+        this.config.env ?? process.env,
+        options.catchUpReadOnly === true
+      );
+      if (options.catchUpReadOnly && !koedMcp)
+        throw new Error(
+          "Restricted Claude Koed MCP configuration is unavailable"
+        );
       stream = query({
         prompt,
         options: {
@@ -1151,23 +1162,36 @@ export class ClaudeManagedConversationSession {
           ...(this.config.reasoningEffort
             ? { effort: claudeAgentSdkEffort(this.config.reasoningEffort) }
             : {}),
-          ...(this.config.permissionMode === "default"
-            ? {}
-            : { permissionMode: this.config.permissionMode }),
-          ...(this.config.permissionMode === "bypassPermissions"
+          ...(options.catchUpReadOnly
+            ? { permissionMode: "dontAsk" as const }
+            : this.config.permissionMode === "default"
+              ? {}
+              : { permissionMode: this.config.permissionMode }),
+          ...(!options.catchUpReadOnly &&
+          this.config.permissionMode === "bypassPermissions"
             ? { allowDangerouslySkipPermissions: true }
             : {}),
-          tools: this.config.tools ?? [],
-          ...(this.config.canUseTool
+          tools: options.catchUpReadOnly ? [] : (this.config.tools ?? []),
+          ...(!options.catchUpReadOnly && this.config.canUseTool
             ? { canUseTool: this.config.canUseTool }
             : {}),
-          allowedTools: this.config.allowedTools ?? [],
+          allowedTools: options.catchUpReadOnly
+            ? [
+                "mcp__koed__memory_answer",
+                "mcp__koed__memory_answer_result",
+                "mcp__koed__memory_answer_cancel",
+                "mcp__koed__work_items_from_doc"
+              ]
+            : (this.config.allowedTools ?? []),
           mcpServers: {
-            ...this.config.mcpServers,
+            ...(options.catchUpReadOnly ? {} : this.config.mcpServers),
             ...(koedMcp ? { koed: koedMcp } : {})
           },
           strictMcpConfig: true,
-          settingSources: this.config.settingSources ?? [],
+          settingSources: options.catchUpReadOnly
+            ? []
+            : (this.config.settingSources ?? []),
+          ...(options.catchUpReadOnly ? { plugins: [] } : {}),
           sessionStore: this.sessionStore,
           persistSession: true,
           maxTurns: this.config.maxTurns ?? 1,

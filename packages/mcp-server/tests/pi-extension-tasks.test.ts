@@ -177,6 +177,37 @@ describe("Pi installed document Work Item tool", () => {
     expect(String(send.mock.calls[1]?.[0])).toContain(
       `/${executionId}/work-items-from-doc/read`
     );
+    send.mockImplementationOnce(
+      async () =>
+        new Response(
+          JSON.stringify({
+            newCount: 1,
+            alreadyExistingCount: 0,
+            removedCount: 0,
+            candidates: [{ lineNumber: 1, title: "Paper", status: "new" }]
+          }),
+          { status: 200 }
+        )
+    );
+    const preview = await managed.invoke("work_items_from_doc", {
+      mode: "preview",
+      source_id: sourceId,
+      source_revision_id: executionId,
+      note_revision_id: executionId,
+      proposals: [
+        {
+          line_number: 1,
+          source_line: "Paper due Friday",
+          title: "Paper",
+          goal: "Write paper",
+          due_text: null
+        }
+      ]
+    });
+    expect(preview.details).toMatchObject({ newCount: 1 });
+    expect(String(send.mock.calls[2]?.[0])).toContain(
+      `/${executionId}/work-items-from-doc/preview`
+    );
     const apply = await managed.invoke("work_items_from_doc", {
       mode: "apply",
       source_id: sourceId,
@@ -193,7 +224,7 @@ describe("Pi installed document Work Item tool", () => {
       ]
     });
     expect(apply.details).toEqual({ status: "requested" });
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(3);
     send.mockImplementationOnce(
       async () => new Response("{}", { status: 409 })
     );

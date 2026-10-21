@@ -1,4 +1,5 @@
 import {
+  projectHqSchema,
   projectHqConversationSchema,
   projectHqConversationReadSchema
 } from "@koed/shared/project-contract";
@@ -30,9 +31,43 @@ const startResponseSchema = z
   })
   .passthrough();
 
+const catchUpResponseSchema = z
+  .object({
+    status: z.enum([
+      "nothing",
+      "starting",
+      "waiting",
+      "queued",
+      "recovered",
+      "retry_available",
+      "reconciliation_required"
+    ]),
+    executionId: z.uuid().optional(),
+    commandId: z.uuid().optional()
+  })
+  .strict();
+
+const retryCatchUpResponseSchema = z
+  .object({
+    status: z.enum(["queued", "completed"]),
+    executionId: z.uuid(),
+    commandId: z.uuid(),
+    commandState: z.enum([
+      "queued",
+      "blocked",
+      "dispatching",
+      "completed",
+      "failed",
+      "indeterminate",
+      "canceled"
+    ])
+  })
+  .strict();
+
 export const createProjectHqConversationClient =
   (input: {
     authority: () => Promise<ProjectHqAuthority>;
+    teamCredential?: (backendId: string) => string;
     requestJson: (
       path: string,
       init: RequestInit,
@@ -45,7 +80,9 @@ export const createProjectHqConversationClient =
     const request = projectHqConversationRequestSchema.parse(value);
     const authority = await input.authority();
     const required =
-      request.operation === "start"
+      request.operation === "start" ||
+      request.operation === "catch_up" ||
+      request.operation === "retry_catch_up"
         ? ["personal_collaboration_write", "managed_execution"]
         : [
             request.operation === "read"
@@ -61,12 +98,51 @@ export const createProjectHqConversationClient =
         throw new Error("Project HQ profile changed during request.");
     };
     const path = `/v1/projects/${encodeURIComponent(request.projectId)}/hq/conversation`;
+    let teamAuthorization: string | null = null;
+    if (
+      request.operation === "catch_up" ||
+      request.operation === "retry_catch_up"
+    ) {
+      await current();
+      const hq = projectHqSchema.parse(
+        await input.requestJson(
+          `/v1/projects/${encodeURIComponent(request.projectId)}/hq`,
+          { method: "GET" },
+          authority
+        )
+      );
+      await current();
+      if (hq.project.id !== request.projectId)
+        throw new Error("Project HQ identity mismatch.");
+      if (hq.project.teamBackendId || hq.project.workspaceProjectId) {
+        if (
+          !hq.project.teamBackendId ||
+          !hq.project.workspaceProjectId ||
+          !input.teamCredential
+        )
+          throw new Error("Linked Team Project authority is unavailable.");
+        teamAuthorization = input.teamCredential(hq.project.teamBackendId);
+        if (!/^Koed-Device\s+[^:\s]+:[^\s]+$/i.test(teamAuthorization))
+          throw new Error("Linked Team Project authority is unavailable.");
+      }
+    }
     await current();
     const payload = await input.requestJson(
-      request.operation === "start" ? `${path}:start` : path,
+      request.operation === "start"
+        ? `${path}:start`
+        : request.operation === "catch_up"
+          ? `/v1/projects/${encodeURIComponent(request.projectId)}/hq/catch-up`
+          : request.operation === "retry_catch_up"
+            ? `/v1/projects/${encodeURIComponent(request.projectId)}/hq/catch-up/retry`
+            : path,
       {
         method: request.operation === "read" ? "GET" : "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          ...(teamAuthorization
+            ? { "x-koed-team-client-credential": teamAuthorization }
+            : {})
+        },
         ...(request.operation === "read"
           ? {}
           : {
@@ -84,7 +160,12 @@ export const createProjectHqConversationClient =
                         ? { permissionMode: request.permissionMode }
                         : {})
                     }
-                  : {}
+                  : request.operation === "retry_catch_up"
+                    ? {
+                        failedCommandId: request.failedCommandId,
+                        retryRequestId: request.retryRequestId
+                      }
+                    : {}
               )
             })
       },
@@ -110,6 +191,24 @@ export const createProjectHqConversationClient =
       return projectHqConversationResultSchema.parse({
         operation: "reserve",
         value: conversation
+      });
+    }
+    if (request.operation === "catch_up") {
+      const result = catchUpResponseSchema.parse(payload);
+      return projectHqConversationResultSchema.parse({
+        operation: "catch_up",
+        projectId: request.projectId,
+        status: result.status,
+        executionId: result.executionId ?? null,
+        commandId: result.commandId ?? null
+      });
+    }
+    if (request.operation === "retry_catch_up") {
+      const result = retryCatchUpResponseSchema.parse(payload);
+      return projectHqConversationResultSchema.parse({
+        operation: "retry_catch_up",
+        projectId: request.projectId,
+        ...result
       });
     }
     const started = startResponseSchema.parse(payload);

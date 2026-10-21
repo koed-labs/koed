@@ -476,6 +476,35 @@ export const createProjectsPreloadApi = (
         throw new Error("Invalid Project HQ result.");
       return result.value;
     },
+    activitySeen: async (projectId) => {
+      const result = await command({ operation: "activitySeen", projectId });
+      if (result.operation !== "activitySeen" || result.projectId !== projectId)
+        throw new Error("Invalid Project activity seen result.");
+      return result.value;
+    },
+    activityPage: async (projectId, after) => {
+      const result = await command({
+        operation: "activityPage",
+        projectId,
+        ...(after ? { after } : {})
+      });
+      if (result.operation !== "activityPage" || result.projectId !== projectId)
+        throw new Error("Invalid Project activity page result.");
+      return result.value;
+    },
+    activityAcknowledge: async (projectId, cursor) => {
+      const result = await command({
+        operation: "activityAcknowledge",
+        projectId,
+        cursor
+      });
+      if (
+        result.operation !== "activityAcknowledge" ||
+        result.projectId !== projectId
+      )
+        throw new Error("Invalid Project activity acknowledgement.");
+      return result.value;
+    },
     create: async (value) => {
       const result = await command({ operation: "create", value });
       if (result.operation !== "create")

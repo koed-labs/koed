@@ -376,9 +376,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             "req.query.request",
             "request.query.request",
             "req.headers.authorization",
+            "req.headers['x-koed-team-client-credential']",
             "req.headers.cookie",
             "res.headers.set-cookie",
             "request.headers.authorization",
+            "request.headers['x-koed-team-client-credential']",
             "request.headers.cookie",
             "response.headers.set-cookie"
           ],
@@ -2162,6 +2164,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
   registerProjectActivityRoutes(app, {
     repository: projectActivityRepository,
+    sourceRepository: projectSourceRepository,
     deploymentProfile: config.deploymentProfile,
     koedHome: config.koedHome,
     auth: authHelpers,
@@ -2267,7 +2270,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     routeContext,
     agentsRepository,
     workItemRepository,
-    projectSourceRepository
+    projectSourceRepository,
+    projectActivityRepository,
+    projectApiRepository,
+    true,
+    personalWorkspaceProjectRepository
   );
   registerSourceControlRoutes(app, routeContext);
   registerMergeProposalDecisionRoutes(app, routeContext);

@@ -637,8 +637,12 @@ export const createManagedMemoryActionRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
-        const authority = await client.query<{ id: string }>(
-          `select command.id from managed_conversation_commands command
+        const authority = await client.query<{
+          id: string;
+          command_kind: string;
+          encrypted_payload: Record<string, unknown> | null;
+        }>(
+          `select command.id,command.command_kind,command.encrypted_payload from managed_conversation_commands command
            join managed_conversation_executions execution
              on execution.id=command.execution_id and execution.owner_user_id=command.owner_user_id
            join managed_conversation_runtime_bindings binding
@@ -653,6 +657,7 @@ export const createManagedMemoryActionRepository = (
               and artifact.source_generation_id=$10 and artifact.provider_cursor_line >= $11
               and artifact.source_component_role='primary' and artifact.lifecycle='active'
            where command.id=$2 and command.owner_user_id=$1 and command.execution_id=$3
+             and command.command_kind in ('prompt','hq_catch_up')
              and command.execution_generation=$4 and command.lease_token=$5
              and command.lease_expires_at>now() and command.state='dispatching'
              and command.client_user_message_id=$7
@@ -678,6 +683,46 @@ export const createManagedMemoryActionRepository = (
           await client.query("rollback");
           return null;
         }
+        if (authority.rows[0]!.command_kind === "hq_catch_up") {
+          const encrypted = authority.rows[0]!.encrypted_payload;
+          const envelope = encrypted as
+            | (EncryptedPayloadEnvelope & Record<string, unknown>)
+            | null;
+          if (
+            !envelope ||
+            envelope.scope?.tenantId !== actor.userId ||
+            envelope.scope?.objectClass !== "managed_conversation_prompt" ||
+            envelope.provenance?.rowFamily !==
+              "managed_conversation_commands" ||
+            envelope.provenance?.sourceId !== input.commandId ||
+            envelope.ciphertextLocation !==
+              "managed_conversation_commands.encrypted_payload" ||
+            envelope.aad?.ownerUserId !== actor.userId ||
+            envelope.aad?.executionId !== input.executionId ||
+            envelope.aad?.commandId !== input.commandId
+          ) {
+            await client.query("rollback");
+            return null;
+          }
+          const plaintext = encrypted
+            ? await decryptEnvelopeToUtf8(provider, envelope)
+            : null;
+          let payload: unknown;
+          try {
+            payload = plaintext ? JSON.parse(plaintext) : null;
+          } catch {
+            payload = null;
+          }
+          if (
+            !payload ||
+            typeof payload !== "object" ||
+            Array.isArray(payload) ||
+            (payload as Record<string, unknown>).prompt !== input.providerPrompt
+          ) {
+            await client.query("rollback");
+            return null;
+          }
+        }
         const items = await client.query<{
           id: string;
           source_line_number: number;
@@ -686,9 +731,10 @@ export const createManagedMemoryActionRepository = (
           raw_text: string | null;
           raw_json: unknown;
           metadata: Record<string, unknown>;
+          projection_status: string;
         }>(
           `select id,source_line_number,source_sequence,canonical_stable_item_id,
-                  raw_text,raw_json,metadata from conversation_items
+                  raw_text,raw_json,metadata,projection_status from conversation_items
            where owner_user_id=$1 and session_id=$2 and visibility='personal'
              and source_kind=$3 and external_session_id=$4
              and source_line_number >= $5 and source_line_number < $6
@@ -803,15 +849,43 @@ export const createManagedMemoryActionRepository = (
           return null;
         }
         const item = candidates[0]![0]!;
+        const catchUp = authority.rows[0]!.command_kind === "hq_catch_up";
+        if (
+          catchUp &&
+          !(
+            item.projection_status === "held" ||
+            (item.projection_status === "raw_only" &&
+              item.metadata.managedKoedCatchUpCommandId === input.commandId)
+          )
+        ) {
+          await client.query("rollback");
+          return null;
+        }
         const existing = item.metadata.managedClientUserMessageId;
-        if (existing !== undefined && existing !== input.clientUserMessageId) {
+        if (
+          (existing !== undefined && existing !== input.clientUserMessageId) ||
+          (catchUp &&
+            item.metadata.managedKoedCatchUpCommandId !== undefined &&
+            item.metadata.managedKoedCatchUpCommandId !== input.commandId)
+        ) {
           await client.query("rollback");
           return null;
         }
         await client.query(
-          `update conversation_items set metadata=jsonb_set(metadata,'{managedClientUserMessageId}',to_jsonb($3::text),true)
+          `update conversation_items set
+              metadata=case when $4::boolean then
+                jsonb_set(jsonb_set(metadata,'{managedClientUserMessageId}',to_jsonb($3::text),true),
+                  '{managedKoedCatchUpCommandId}',to_jsonb($5::text),true)
+                else jsonb_set(metadata,'{managedClientUserMessageId}',to_jsonb($3::text),true) end,
+              projection_status=case when $4::boolean then 'raw_only' else projection_status end
            where id=$1 and owner_user_id=$2`,
-          [item.id, actor.userId, input.clientUserMessageId]
+          [
+            item.id,
+            actor.userId,
+            input.clientUserMessageId,
+            catchUp,
+            input.commandId
+          ]
         );
         await client.query("commit");
         return item.id;

@@ -1,7 +1,7 @@
 import type { Agent } from "@koed/shared/agent-contract";
 import { Pixelkin } from "../agents/Pixelkin.js";
 import { ArrowUp, Paperclip, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MarkdownPlatformAdapters } from "@koed/memory-ui";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
@@ -52,7 +52,12 @@ export function HqProjectConversation({
   onClearContext,
   agentsApi,
   helperAgents,
-  ownerIdentity = ""
+  ownerIdentity = "",
+  catchUpEnabled = false,
+  activityRevision = "",
+  foreground = true,
+  teamUnreadCount = 0,
+  onOpenTeam
 }: {
   project: DesktopProject;
   chiefName: string;
@@ -78,6 +83,12 @@ export function HqProjectConversation({
   agentsApi?: AgentsDesktopApi | null;
   helperAgents?: readonly Agent[];
   ownerIdentity?: string;
+  /** Enabled only after the trusted catch-up migration and terminal proof. */
+  catchUpEnabled?: boolean;
+  activityRevision?: string;
+  foreground?: boolean;
+  teamUnreadCount?: number;
+  onOpenTeam?: () => void;
 }) {
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [conversation, setConversation] =
@@ -106,9 +117,59 @@ export function HqProjectConversation({
   const [error, setError] = useState("");
   const startedDocumentIntent = useRef<string | null>(null);
   const [delegationNotice, setDelegationNotice] = useState("");
+  const [catchUpStatus, setCatchUpStatus] = useState<
+    | "idle"
+    | "starting"
+    | "waiting"
+    | "recovered"
+    | "retry_available"
+    | "reconciliation_required"
+  >("idle");
+  const [catchUpCommandId, setCatchUpCommandId] = useState<string | null>(null);
+  const retryCatchUpId = useRef<{
+    commandId: string;
+    requestId: string;
+  } | null>(null);
+  const currentScope = useRef(`${ownerIdentity}:${project.id}`);
+  const scopeEpoch = useRef(0);
+  const idleCheckBusy = useRef<number | null>(null);
+  const lastActivityRevision = useRef(activityRevision);
+
+  const checkIdleActivity = useCallback(async () => {
+    const epoch = scopeEpoch.current;
+    if (idleCheckBusy.current === epoch) return;
+    idleCheckBusy.current = epoch;
+    const scope = currentScope.current;
+    try {
+      const result = await api.catchUp(project.id);
+      if (currentScope.current !== scope || scopeEpoch.current !== epoch)
+        return;
+      if (result.executionId) setExecutionId(result.executionId);
+      setCatchUpCommandId(result.commandId);
+      setCatchUpStatus(
+        result.status === "queued"
+          ? "waiting"
+          : result.status === "nothing"
+            ? "idle"
+            : result.status
+      );
+    } catch {
+      if (currentScope.current !== scope || scopeEpoch.current !== epoch)
+        return;
+      setCatchUpStatus("reconciliation_required");
+      setError("Project catch-up could not be confirmed. Check delivery.");
+    } finally {
+      if (idleCheckBusy.current === epoch) idleCheckBusy.current = null;
+    }
+  }, [api, project.id]);
 
   useEffect(() => {
     let live = true;
+    const scope = `${ownerIdentity}:${project.id}`;
+    const epoch = ++scopeEpoch.current;
+    currentScope.current = scope;
+    idleCheckBusy.current = null;
+    lastActivityRevision.current = activityRevision;
     setLoading(true);
     setExecutionId(null);
     setConversation(null);
@@ -122,22 +183,157 @@ export function HqProjectConversation({
     setUncertain(false);
     setError("");
     setDelegationNotice("");
-    void api
-      .reserve(project.id)
-      .then((value) => {
-        if (!live) return;
+    setCatchUpStatus("idle");
+    setCatchUpCommandId(null);
+    retryCatchUpId.current = null;
+    void (async () => {
+      try {
+        const value = await api.reserve(project.id);
+        if (
+          !live ||
+          currentScope.current !== scope ||
+          scopeEpoch.current !== epoch
+        )
+          return;
         setExecutionId(value.executionId);
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!live) return;
+      } catch {
+        if (
+          !live ||
+          currentScope.current !== scope ||
+          scopeEpoch.current !== epoch
+        )
+          return;
         setError("Project HQ Conversation could not be opened. Retry.");
         setLoading(false);
-      });
+        return;
+      }
+      if (catchUpEnabled) {
+        try {
+          const result = await api.catchUp(project.id);
+          if (
+            !live ||
+            currentScope.current !== scope ||
+            scopeEpoch.current !== epoch
+          )
+            return;
+          if (result.executionId) setExecutionId(result.executionId);
+          setCatchUpCommandId(result.commandId);
+          setCatchUpStatus(
+            result.status === "queued"
+              ? "waiting"
+              : result.status === "nothing"
+                ? "idle"
+                : result.status
+          );
+        } catch {
+          if (
+            live &&
+            currentScope.current === scope &&
+            scopeEpoch.current === epoch
+          )
+            setError(
+              "Project catch-up is unavailable. You can still ask directly."
+            );
+        }
+      }
+      if (
+        live &&
+        currentScope.current === scope &&
+        scopeEpoch.current === epoch
+      )
+        setLoading(false);
+    })();
     return () => {
       live = false;
+      if (scopeEpoch.current === epoch) {
+        scopeEpoch.current += 1;
+        idleCheckBusy.current = null;
+      }
     };
-  }, [api, project.id]);
+  }, [api, catchUpEnabled, ownerIdentity, project.id]);
+
+  // Personal activity does not currently emit a dedicated Project cursor
+  // invalidation. Check the single foreground HQ on collaboration revision
+  // and with a bounded timer; never scan every idle Project.
+  useEffect(() => {
+    if (lastActivityRevision.current === activityRevision) return;
+    lastActivityRevision.current = activityRevision;
+    if (catchUpEnabled && foreground && !loading && catchUpStatus === "idle")
+      void checkIdleActivity();
+  }, [
+    activityRevision,
+    catchUpEnabled,
+    foreground,
+    loading,
+    catchUpStatus,
+    checkIdleActivity
+  ]);
+  useEffect(() => {
+    if (!catchUpEnabled || !foreground || loading || catchUpStatus !== "idle")
+      return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const check = async () => {
+      await checkIdleActivity();
+      if (live) timer = setTimeout(() => void check(), 15_000);
+    };
+    timer = setTimeout(() => void check(), 15_000);
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [catchUpEnabled, foreground, loading, catchUpStatus, checkIdleActivity]);
+
+  // A cold HQ first creates the same logical execution and returns
+  // "starting". Recheck until it can enqueue, then until the persisted
+  // assistant reply lets the server acknowledge the exact Team window.
+  useEffect(() => {
+    if (
+      !catchUpEnabled ||
+      !["starting", "waiting", "recovered"].includes(catchUpStatus)
+    )
+      return;
+    let live = true;
+    const scope = currentScope.current;
+    const epoch = scopeEpoch.current;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const check = async () => {
+      try {
+        const result = await api.catchUp(project.id);
+        if (
+          !live ||
+          currentScope.current !== scope ||
+          scopeEpoch.current !== epoch
+        )
+          return;
+        if (result.executionId) setExecutionId(result.executionId);
+        setCatchUpCommandId(result.commandId);
+        const nextStatus =
+          result.status === "queued"
+            ? "waiting"
+            : result.status === "nothing"
+              ? "idle"
+              : result.status;
+        setCatchUpStatus(nextStatus);
+        if (["starting", "waiting", "recovered"].includes(nextStatus))
+          timer = setTimeout(() => void check(), 4_000);
+      } catch {
+        if (
+          !live ||
+          currentScope.current !== scope ||
+          scopeEpoch.current !== epoch
+        )
+          return;
+        setCatchUpStatus("reconciliation_required");
+        setError("Project catch-up could not be confirmed. Check delivery.");
+      }
+    };
+    timer = setTimeout(() => void check(), 4_000);
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [api, catchUpEnabled, catchUpStatus, project.id]);
 
   useEffect(() => {
     let live = true;
@@ -249,7 +445,7 @@ export function HqProjectConversation({
       live = false;
       if (timer) clearTimeout(timer);
     };
-  }, [api, executionId, managedConversations, project.id]);
+  }, [api, catchUpStatus, executionId, managedConversations, project.id]);
 
   const thread = useMemo<PersonalDesktopProjectThread | null>(
     () =>
@@ -455,6 +651,62 @@ export function HqProjectConversation({
     }
   };
 
+  const checkCatchUp = async () => {
+    const scope = currentScope.current;
+    const epoch = scopeEpoch.current;
+    try {
+      const result = await api.catchUp(project.id);
+      if (currentScope.current !== scope || scopeEpoch.current !== epoch)
+        return;
+      if (result.executionId) setExecutionId(result.executionId);
+      setCatchUpCommandId(result.commandId);
+      setCatchUpStatus(
+        result.status === "queued"
+          ? "waiting"
+          : result.status === "nothing"
+            ? "idle"
+            : result.status
+      );
+      setError("");
+    } catch {
+      if (currentScope.current === scope && scopeEpoch.current === epoch)
+        setError("Project catch-up could not be checked. Try again.");
+    }
+  };
+
+  const retryCatchUp = async () => {
+    if (!catchUpCommandId || pending) return;
+    const scope = currentScope.current;
+    const epoch = scopeEpoch.current;
+    if (retryCatchUpId.current?.commandId !== catchUpCommandId)
+      retryCatchUpId.current = {
+        commandId: catchUpCommandId,
+        requestId: crypto.randomUUID()
+      };
+    setPending(true);
+    try {
+      const result = await api.retryCatchUp(
+        project.id,
+        catchUpCommandId,
+        retryCatchUpId.current.requestId
+      );
+      if (currentScope.current !== scope || scopeEpoch.current !== epoch)
+        return;
+      setExecutionId(result.executionId);
+      setCatchUpCommandId(result.commandId);
+      setCatchUpStatus(result.status === "completed" ? "recovered" : "waiting");
+      setError("");
+    } catch {
+      if (currentScope.current === scope && scopeEpoch.current === epoch)
+        setError(
+          "Project catch-up Retry could not be confirmed. Check its status before retrying."
+        );
+    } finally {
+      if (currentScope.current === scope && scopeEpoch.current === epoch)
+        setPending(false);
+    }
+  };
+
   const activeConversation =
     thread && conversation && (!uncertain || reviewStarted) ? (
       <>
@@ -512,6 +764,46 @@ export function HqProjectConversation({
         {chiefAgent ? <Pixelkin agent={chiefAgent} size={22} /> : null}
         <strong>Just me</strong>
       </header>
+      {onOpenTeam && teamUnreadCount > 0 ? (
+        <div className="hq-project-conversation__team-unread" role="status">
+          <button type="button" onClick={onOpenTeam}>
+            {teamUnreadCount} new{" "}
+            {teamUnreadCount === 1 ? "message" : "messages"} in Team
+          </button>
+        </div>
+      ) : null}
+      {catchUpEnabled && catchUpStatus !== "idle" ? (
+        <div className="hq-project-conversation__catch-up" role="status">
+          <span>
+            {catchUpStatus === "reconciliation_required"
+              ? "Catch-up delivery needs review before another turn."
+              : catchUpStatus === "retry_available"
+                ? "Catch-up stopped before reaching your AI Client."
+                : catchUpStatus === "recovered"
+                  ? "Catch-up reply recovered."
+                  : "Catching up on this Project…"}
+          </span>
+          {catchUpStatus === "reconciliation_required" ? (
+            <button type="button" onClick={() => void checkCatchUp()}>
+              Check catch-up
+            </button>
+          ) : null}
+          {catchUpStatus === "retry_available" && catchUpCommandId ? (
+            <button
+              type="button"
+              onClick={() => void retryCatchUp()}
+              disabled={pending}
+            >
+              Retry catch-up
+            </button>
+          ) : null}
+          {onOpenTeam ? (
+            <button type="button" onClick={onOpenTeam}>
+              Open Team
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {activeConversation ? (
         <div className="hq-project-conversation__active">
           {activeConversation}

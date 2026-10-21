@@ -21,6 +21,7 @@ export type ProjectActivityWriteKind = Extract<
   | "source_failed"
   | "pr_opened"
   | "pr_merged"
+  | "assertion_created"
 >;
 
 const availableWriteKinds = new Set<ProjectActivityWriteKind>([
@@ -31,7 +32,8 @@ const availableWriteKinds = new Set<ProjectActivityWriteKind>([
   "source_ready",
   "source_failed",
   "pr_opened",
-  "pr_merged"
+  "pr_merged",
+  "assertion_created"
 ]);
 
 export class ProjectActivityUnavailableError extends Error {}
@@ -84,21 +86,56 @@ const decode = (
   return sequence;
 };
 
+/** Revalidate a stored high-water against its exact Personal owner and Project. */
+export const decodeProjectActivityCursor = decode;
+
 const activeProject = async (
   client: pg.PoolClient | pg.Pool,
   ownerUserId: string,
   projectId: string,
-  lock: "share" | "update" | null = null
+  lock: "share" | "update" | null = null,
+  nowait = false
 ) => {
-  const result = await client.query(
-    `select id from projects where owner_user_id=$1 and id=$2 and lifecycle='active' and deletion_phase is null ${lock === "update" ? "for update" : lock === "share" ? "for share" : ""}`,
-    [ownerUserId, projectId]
-  );
+  let result: pg.QueryResult<{ id: string }>;
+  try {
+    result = await client.query<{ id: string }>(
+      `select id from projects where owner_user_id=$1 and id=$2 and lifecycle='active' and deletion_phase is null ${lock === "update" ? `for update${nowait ? " nowait" : ""}` : lock === "share" ? "for share" : ""}`,
+      [ownerUserId, projectId]
+    );
+  } catch (error) {
+    if (nowait && (error as { code?: string }).code === "55P03")
+      throw Object.assign(
+        new Error(
+          "Project changed during Curated Memory review; retry the review."
+        ),
+        { statusCode: 409 }
+      );
+    throw error;
+  }
   if (!result.rowCount)
     throw new ProjectActivityUnavailableError(
       "Project activity is unavailable"
     );
+  if (nowait) {
+    const pending = await client.query(
+      `select 1 from personal_workspace_project_share_attempts
+       where personal_project_id=$1 and owner_user_id=$2 and state='pending'`,
+      [projectId, ownerUserId]
+    );
+    if (pending.rowCount)
+      throw Object.assign(
+        new Error("Project share is pending during Curated Memory review"),
+        { statusCode: 409 }
+      );
+  }
 };
+
+/** Acquire the Project parent before a cross-aggregate Curated review writes. */
+export const lockProjectActivityParentNowait = async (
+  client: pg.PoolClient,
+  ownerUserId: string,
+  projectId: string
+) => activeProject(client, ownerUserId, projectId, "update", true);
 
 /** Called only by a trusted writer in the same transaction as its source mutation.
  * The caller must acquire the Project row FOR UPDATE before mutating its source.
@@ -111,13 +148,20 @@ export const appendProjectActivityWithClient = async (
     actorUserId: string;
     kind: ProjectActivityWriteKind;
     ref: string;
+    nowait?: boolean;
   }
 ) => {
   if (!availableWriteKinds.has(input.kind))
     throw new Error("Personal Project activity kind is unavailable");
   if (input.actorUserId !== input.ownerUserId)
     throw new Error("Personal Project activity actor is not the owner");
-  await activeProject(client, input.ownerUserId, input.projectId, "update");
+  await activeProject(
+    client,
+    input.ownerUserId,
+    input.projectId,
+    "update",
+    input.nowait
+  );
   if (!input.ref.trim())
     throw new Error("Project activity reference is required");
   const result = await client.query<{ sequence: string }>(

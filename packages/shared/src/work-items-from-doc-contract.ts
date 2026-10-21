@@ -41,6 +41,34 @@ export const workItemsFromDocApplySchema = z
   })
   .strict();
 
+export const workItemsFromDocPreviewSchema = z
+  .object({
+    executionGeneration: z.number().int().positive(),
+    sourceId: z.uuid(),
+    sourceRevisionId: z.uuid(),
+    noteRevisionId: z.uuid(),
+    proposals: z.array(workItemsFromDocProposalSchema).min(1).max(30)
+  })
+  .strict();
+export const workItemsFromDocPreviewResultSchema = z
+  .object({
+    newCount: z.number().int().nonnegative(),
+    alreadyExistingCount: z.number().int().nonnegative(),
+    removedCount: z.number().int().nonnegative(),
+    candidates: z
+      .array(
+        z
+          .object({
+            lineNumber: z.number().int().positive(),
+            title: z.string().max(500),
+            status: z.enum(["new", "already_existing", "removed"])
+          })
+          .strict()
+      )
+      .max(30)
+  })
+  .strict();
+
 export const workItemsFromDocReadPageSchema = z
   .object({
     sourceId: z.uuid(),
@@ -109,9 +137,19 @@ export const workItemsFromDocToolApplySchema = z
     proposals: z.array(workItemsFromDocToolProposalSchema).min(1).max(30)
   })
   .strict();
+export const workItemsFromDocToolPreviewSchema = z
+  .object({
+    mode: z.literal("preview"),
+    source_id: z.uuid(),
+    source_revision_id: z.uuid(),
+    note_revision_id: z.uuid(),
+    proposals: z.array(workItemsFromDocToolProposalSchema).min(1).max(30)
+  })
+  .strict();
 export const workItemsFromDocToolInputSchema = z.discriminatedUnion("mode", [
   workItemsFromDocToolListSchema,
   workItemsFromDocToolReadSchema,
+  workItemsFromDocToolPreviewSchema,
   workItemsFromDocToolApplySchema
 ]);
 

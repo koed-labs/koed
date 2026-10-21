@@ -5,12 +5,15 @@ export {
   workItemsFromDocListSchema,
   workItemsFromDocProposalSchema,
   workItemsFromDocApplySchema,
+  workItemsFromDocPreviewSchema,
+  workItemsFromDocPreviewResultSchema,
   workItemsFromDocReadPageSchema,
   workItemsFromDocListPageSchema,
   workItemsFromDocToolProposalSchema,
   workItemsFromDocToolReadSchema,
   workItemsFromDocToolListSchema,
   workItemsFromDocToolApplySchema,
+  workItemsFromDocToolPreviewSchema,
   workItemsFromDocToolInputSchema,
   type WorkItemsFromDocToolApply
 } from "./work-items-from-doc-contract.js";

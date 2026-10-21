@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { mkdir, readFile, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type {
   DeviceCredentialAuthContext,
@@ -10,6 +11,11 @@ import type {
   AgentsRepository,
   WorkItemRepository,
   ProjectSourceRepository
+} from "@koed/db";
+import type {
+  PersonalWorkspaceProjectRepository,
+  ProjectActivityRepository,
+  ProjectApiRepository
 } from "@koed/db";
 import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import { z } from "zod";
@@ -46,6 +52,15 @@ import { listClaudeDraftCommands } from "@koed/worker/command-discovery-adapter-
 import { createPiCommandDiscoveryAdapter } from "@koed/worker/command-discovery-adapter-pi";
 import type { ApiRouteContext } from "../server/context.js";
 import { authenticateHqManagedWrite } from "./hq-auth.js";
+import {
+  hasTeamCatchUpActivity,
+  personalCatchUpInput,
+  readPersonalProjectCatchUp
+} from "../projects/project-catch-up.js";
+import {
+  ackLinkedTeamCatchUp,
+  readLinkedTeamCatchUp
+} from "../projects/team-catch-up.js";
 import { authenticateWorkItemSourceControl } from "../work-items/pr-reconciliation-routes.js";
 import {
   reconcileSharedWorkItemPr,
@@ -71,6 +86,16 @@ const isLoopbackRequest = (request: FastifyRequest): boolean =>
   loopbackAddresses.has(
     request.socket?.remoteAddress ?? request.raw.socket?.remoteAddress ?? ""
   );
+/** Stable retry identity for the one first human message on an auto-opened HQ. */
+const firstHqUserMessageId = (ownerUserId: string, projectId: string) => {
+  const bytes = createHash("sha256")
+    .update(`project-hq-first-user:${ownerUserId}:${projectId}`)
+    .digest();
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+};
 const maximumTerminalTransportQueueBytes = 1024 * 1024;
 const terminalReauthorizationIntervalMs = 15_000;
 const idempotencyKeySchema = z
@@ -850,7 +875,11 @@ export const registerManagedConversationRoutes = (
   context: ApiRouteContext,
   hqAgents?: AgentsRepository | null,
   workItems?: WorkItemRepository | null,
-  projectSources?: ProjectSourceRepository | null
+  projectSources?: ProjectSourceRepository | null,
+  projectActivity?: ProjectActivityRepository | null,
+  hqProjects?: ProjectApiRepository | null,
+  catchUpLaunchEnabled = false,
+  personalWorkspaceProjects?: PersonalWorkspaceProjectRepository | null
 ): void => {
   // Managed Conversations are interactive. Keep their capacity independent
   // from background Capture Hook and historical-import memory traffic.
@@ -858,6 +887,46 @@ export const registerManagedConversationRoutes = (
     context.rateLimit.managedConversationRead ?? context.rateLimit.memoryRead;
   const managedConversationWriteRateLimit =
     context.rateLimit.managedConversationWrite ?? context.rateLimit.memoryWrite;
+  const reconcileProjectTeamAcks = async (input: {
+    request: FastifyRequest;
+    ownerUserId: string;
+    projectId: string;
+    executionId: string;
+    personalProjects: PersonalWorkspaceProjectRepository;
+  }) => {
+    const repository = context.requireRepository();
+    for (let count = 0; count < 100; count++) {
+      const pending = await repository.pendingProjectHqTeamAck(
+        { userId: input.ownerUserId },
+        { projectId: input.projectId, executionId: input.executionId }
+      );
+      if (!pending) return;
+      await ackLinkedTeamCatchUp({
+        context,
+        repository: input.personalProjects,
+        request: input.request,
+        ownerUserId: input.ownerUserId,
+        personalProjectId: input.projectId,
+        window: pending.teamWindow
+      });
+      const marked = await repository.markProjectHqTeamAck(
+        { userId: input.ownerUserId },
+        {
+          projectId: input.projectId,
+          executionId: input.executionId,
+          commandId: pending.commandId,
+          teamWindow: pending.teamWindow
+        }
+      );
+      if (!marked)
+        throw Object.assign(new Error("Project HQ Team receipt changed"), {
+          statusCode: 409
+        });
+    }
+    throw Object.assign(new Error("Project HQ Team receipts need review"), {
+      statusCode: 409
+    });
+  };
   const remoteAuthority = () => {
     if (!localExecutionProfiles.has(context.config.deploymentProfile)) {
       return null;
@@ -2879,6 +2948,415 @@ export const registerManagedConversationRoutes = (
     }
   );
 
+  // A Desktop-opened HQ may have residual Personal Project activity before
+  // any User message. The request carries no prose, origin flag, or cursor:
+  // every byte of the Agent input comes from current server-owned rows.
+  app.post(
+    "/v1/projects/:id/hq/catch-up",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request, reply) => {
+      // Enable only after migration 0072 and native terminal/identity proofs.
+      if (!catchUpLaunchEnabled)
+        throw Object.assign(new Error("Project HQ catch-up is not ready"), {
+          statusCode: 503
+        });
+      assertAvailable(context);
+      if (
+        !localExecutionProfiles.has(context.config.deploymentProfile) ||
+        !isLoopbackRequest(request) ||
+        !request.headers.authorization?.trim().startsWith("Koed-Desktop ")
+      )
+        throw Object.assign(
+          new Error("Desktop HQ catch-up requires loopback"),
+          {
+            statusCode: 403
+          }
+        );
+      const user = await authenticateHqManagedWrite(request, context);
+      const { id } = z.object({ id: z.uuid() }).strict().parse(request.params);
+      z.object({})
+        .strict()
+        .parse(request.body ?? {});
+      if (remoteAuthority())
+        throw Object.assign(
+          new Error(
+            "Project HQ catch-up is unavailable while remote Managed Conversations are active"
+          ),
+          { statusCode: 503 }
+        );
+      if (
+        !projectActivity ||
+        !projectSources ||
+        !hqProjects ||
+        !hqAgents ||
+        !personalWorkspaceProjects
+      )
+        throw Object.assign(new Error("Project HQ catch-up is unavailable"), {
+          statusCode: 503
+        });
+      const repository = context.requireRepository();
+      let hq = await hqProjects.readHqConversation(user.id, id);
+      if (hq.conversation?.executionId)
+        await reconcileProjectTeamAcks({
+          request,
+          ownerUserId: user.id,
+          projectId: id,
+          executionId: hq.conversation.executionId,
+          personalProjects: personalWorkspaceProjects
+        });
+      const teamWindow = await readLinkedTeamCatchUp({
+        context,
+        repository: personalWorkspaceProjects,
+        request,
+        ownerUserId: user.id,
+        personalProjectId: id
+      });
+      const residual = await readPersonalProjectCatchUp({
+        ownerUserId: user.id,
+        projectId: id,
+        activity: projectActivity,
+        sources: projectSources,
+        decisions: context.requireRepository()
+      });
+      if (residual.events.length === 0 && !hasTeamCatchUpActivity(teamWindow)) {
+        if (hq.conversation?.executionId) {
+          const previous = await repository.inspectProjectHqCatchUp(
+            { userId: user.id },
+            { projectId: id, executionId: hq.conversation.executionId }
+          );
+          if (previous.disposition === "needs_reconciliation") {
+            const recovered = previous.command
+              ? await repository.recoverProjectHqCatchUp(
+                  { userId: user.id },
+                  {
+                    projectId: id,
+                    executionId: hq.conversation.executionId,
+                    commandId: previous.command.id
+                  }
+                )
+              : false;
+            return {
+              status: recovered ? "recovered" : "reconciliation_required",
+              executionId: hq.conversation.executionId,
+              commandId: previous.command?.id
+            };
+          }
+          if (previous.disposition === "active")
+            return {
+              status: "waiting",
+              executionId: hq.conversation.executionId,
+              commandId: previous.command?.id
+            };
+        }
+        return { status: "nothing" as const };
+      }
+      if (!hq.conversation) {
+        await hqProjects.reserveHqConversation(user.id, id);
+        hq = await hqProjects.readHqConversation(user.id, id);
+      }
+      let executionId = hq.conversation?.executionId ?? null;
+      if (!executionId) {
+        const chief = (await hqAgents.list(user.id)).find(
+          (agent) => agent.isChiefOfStaff
+        );
+        if (!chief)
+          throw Object.assign(new Error("Chief of Staff is not configured"), {
+            statusCode: 409
+          });
+        const instances = await launchInstances(repository, user.id);
+        const instance = instances.find(
+          (candidate) => candidate.instanceId === chief.aiClientInstanceId
+        );
+        if (!instance || !isSupportedAiClientDriverId(instance.driverId))
+          throw Object.assign(
+            new Error("Chief of Staff AI Client is unavailable"),
+            { statusCode: 409 }
+          );
+        const model = chief.defaultModel
+          ? instance.models.find(
+              (candidate) => modelId(candidate) === chief.defaultModel
+            )
+          : instance.models[0];
+        const selectedModel = model ? modelId(model) : null;
+        if (!selectedModel)
+          throw Object.assign(
+            new Error("Chief of Staff model is unavailable"),
+            {
+              statusCode: 409
+            }
+          );
+        const selection = {
+          projectId: id,
+          contextKind: "independent" as const,
+          provider: instance.driverId,
+          aiClientInstanceId: chief.aiClientInstanceId,
+          model: selectedModel,
+          reasoningEffort: null,
+          permissionMode: "supervised" as const,
+          runnerKind: "local_device" as const,
+          idempotencyKey: `project-hq:${id}`
+        };
+        await assertLocalLaunchSelection(repository, user.id, selection);
+        const runner = await runnerIdentity(request);
+        const privatePath = resolve(
+          context.config.koedHome,
+          "managed-conversations",
+          "project-hq",
+          user.id,
+          id
+        );
+        await mkdir(privatePath, { mode: 0o700, recursive: true });
+        const canonicalPrivatePath = await realpath(privatePath);
+        try {
+          const created = await repository.createManagedConversation(
+            { userId: user.id },
+            {
+              ...selection,
+              hqProjectId: id,
+              hqPrivatePath: canonicalPrivatePath,
+              runnerDeploymentId: runner.deploymentId,
+              runnerDeviceId: runner.deviceId,
+              deferUntilRuntimeBinding: true
+            }
+          );
+          await repository.upsertManagedConversationRuntimeBinding(
+            { userId: user.id },
+            {
+              executionId: created.execution.id,
+              deploymentId: runner.deploymentId,
+              deviceId: runner.deviceId,
+              executionGeneration: created.execution.executionGeneration,
+              projectPath: canonicalPrivatePath
+            }
+          );
+          executionId = created.execution.id;
+        } catch (error) {
+          // A first human send can win the same HQ row. Observe its exact
+          // execution; never create a second Conversation for this Project.
+          const concurrent = await hqProjects.readHqConversation(user.id, id);
+          if (!concurrent.conversation?.executionId) throw error;
+          executionId = concurrent.conversation.executionId;
+        }
+        return reply.status(202).send({
+          status: "starting",
+          executionId
+        });
+      }
+      const execution = await repository.getManagedConversationExecution(
+        { userId: user.id },
+        executionId
+      );
+      if (!execution || execution.projectId !== id)
+        throw Object.assign(new Error("Project HQ identity changed"), {
+          statusCode: 409
+        });
+      if (execution.state === "starting")
+        return reply.status(202).send({ status: "starting", executionId });
+      const previousCatchUp = await repository.inspectProjectHqCatchUp(
+        { userId: user.id },
+        { projectId: id, executionId }
+      );
+      if (previousCatchUp.disposition === "active")
+        return {
+          status: "waiting",
+          executionId,
+          commandId: previousCatchUp.command?.id
+        };
+      if (previousCatchUp.disposition === "proven_no_send")
+        return {
+          status: "retry_available",
+          executionId,
+          commandId: previousCatchUp.command?.id
+        };
+      if (previousCatchUp.disposition === "needs_reconciliation") {
+        const recovered = previousCatchUp.command
+          ? await repository.recoverProjectHqCatchUp(
+              { userId: user.id },
+              {
+                projectId: id,
+                executionId,
+                commandId: previousCatchUp.command.id
+              }
+            )
+          : false;
+        return {
+          status: recovered ? "recovered" : "reconciliation_required",
+          executionId,
+          commandId: previousCatchUp.command?.id
+        };
+      }
+      if (execution.state !== "running")
+        return { status: "waiting", executionId };
+      if (!execution.logicalSessionId || !execution.providerThreadId)
+        return reply.status(202).send({ status: "starting", executionId });
+      const input = personalCatchUpInput({
+        ownerUserId: user.id,
+        projectId: id,
+        seenCursor: residual.seenCursor,
+        highWater: residual.highWater ?? residual.seenCursor,
+        events: residual.events,
+        teamWindow
+      });
+      const command = await repository.enqueueManagedConversationCatchUp(
+        { userId: user.id },
+        {
+          projectId: id,
+          executionId,
+          executionGeneration: execution.executionGeneration,
+          seenCursor: residual.seenCursor,
+          highWater: residual.highWater ?? residual.seenCursor,
+          events: residual.events,
+          teamWindow,
+          prompt: input.instruction,
+          inputDigest: input.digest
+        }
+      );
+      return reply.status(202).send({
+        status: "queued",
+        executionId,
+        commandId: command.id,
+        commandState: command.state
+      });
+    }
+  );
+
+  app.post(
+    "/v1/projects/:id/hq/catch-up/retry",
+    { preHandler: managedConversationWriteRateLimit },
+    async (request, reply) => {
+      if (!catchUpLaunchEnabled)
+        throw Object.assign(new Error("Project HQ catch-up is not ready"), {
+          statusCode: 503
+        });
+      assertAvailable(context);
+      if (
+        !localExecutionProfiles.has(context.config.deploymentProfile) ||
+        !isLoopbackRequest(request) ||
+        !request.headers.authorization?.trim().startsWith("Koed-Desktop ")
+      )
+        throw Object.assign(new Error("Desktop HQ retry requires loopback"), {
+          statusCode: 403
+        });
+      const user = await authenticateHqManagedWrite(request, context);
+      const { id } = z.object({ id: z.uuid() }).strict().parse(request.params);
+      const body = z
+        .object({ failedCommandId: z.uuid(), retryRequestId: z.uuid() })
+        .strict()
+        .parse(request.body);
+      if (remoteAuthority())
+        throw Object.assign(
+          new Error(
+            "Project HQ retry is unavailable while remote Managed Conversations are active"
+          ),
+          { statusCode: 503 }
+        );
+      if (
+        !projectActivity ||
+        !projectSources ||
+        !hqProjects ||
+        !personalWorkspaceProjects
+      )
+        throw Object.assign(new Error("Project HQ retry is unavailable"), {
+          statusCode: 503
+        });
+      const hq = await hqProjects.readHqConversation(user.id, id);
+      const executionId = hq.conversation?.executionId;
+      if (!executionId)
+        throw Object.assign(new Error("Project HQ has not started"), {
+          statusCode: 409
+        });
+      await reconcileProjectTeamAcks({
+        request,
+        ownerUserId: user.id,
+        projectId: id,
+        executionId,
+        personalProjects: personalWorkspaceProjects
+      });
+      const repository = context.requireRepository();
+      const prior = await repository.getProjectHqCatchUpRetry(
+        { userId: user.id },
+        { projectId: id, executionId, ...body }
+      );
+      if (prior)
+        return reply.status(202).send({
+          status: prior.state === "completed" ? "completed" : "queued",
+          executionId,
+          commandId: prior.id,
+          commandState: prior.state
+        });
+      const previous = await repository.inspectProjectHqCatchUp(
+        { userId: user.id },
+        { projectId: id, executionId }
+      );
+      if (
+        previous.disposition !== "proven_no_send" ||
+        previous.command?.id !== body.failedCommandId
+      )
+        throw Object.assign(
+          new Error("Project HQ outcome needs reconciliation"),
+          {
+            statusCode: 409
+          }
+        );
+      const teamWindow = await readLinkedTeamCatchUp({
+        context,
+        repository: personalWorkspaceProjects,
+        request,
+        ownerUserId: user.id,
+        personalProjectId: id
+      });
+      const residual = await readPersonalProjectCatchUp({
+        ownerUserId: user.id,
+        projectId: id,
+        activity: projectActivity,
+        sources: projectSources,
+        decisions: context.requireRepository()
+      });
+      if (residual.events.length === 0 && !hasTeamCatchUpActivity(teamWindow))
+        throw Object.assign(new Error("Project HQ activity changed"), {
+          statusCode: 409
+        });
+      const execution = await repository.getManagedConversationExecution(
+        { userId: user.id },
+        executionId
+      );
+      if (!execution || execution.projectId !== id)
+        throw Object.assign(new Error("Project HQ identity changed"), {
+          statusCode: 409
+        });
+      const prepared = personalCatchUpInput({
+        ownerUserId: user.id,
+        projectId: id,
+        seenCursor: residual.seenCursor,
+        highWater: residual.highWater ?? residual.seenCursor,
+        events: residual.events,
+        teamWindow
+      });
+      const restarted = await repository.retryProjectHqCatchUp(
+        { userId: user.id },
+        {
+          projectId: id,
+          executionId,
+          executionGeneration: execution.executionGeneration,
+          failedCommandId: body.failedCommandId,
+          retryRequestId: body.retryRequestId,
+          seenCursor: residual.seenCursor,
+          highWater: residual.highWater ?? residual.seenCursor,
+          events: residual.events,
+          teamWindow,
+          prompt: prepared.instruction,
+          inputDigest: prepared.digest
+        }
+      );
+      return reply.status(202).send({
+        status: "queued",
+        executionId,
+        commandId: restarted.command.id,
+        commandState: restarted.command.state
+      });
+    }
+  );
+
   app.post(
     "/v1/projects/:id/hq/conversation::start",
     { preHandler: managedConversationWriteRateLimit },
@@ -2908,6 +3386,13 @@ export const registerManagedConversationRoutes = (
         })
         .strict()
         .parse(request.body ?? {});
+      if (remoteAuthority())
+        throw Object.assign(
+          new Error(
+            "Project HQ start is unavailable while remote Managed Conversations are active"
+          ),
+          { statusCode: 503 }
+        );
       if (firstMessage.selectedDocumentSourceId) {
         if (!projectSources)
           throw Object.assign(new Error("Project Sources are unavailable"), {
@@ -2928,6 +3413,99 @@ export const registerManagedConversationRoutes = (
           throw Object.assign(new Error("Selected document prompt changed"), {
             statusCode: 409
           });
+      }
+      const existingHq = hqProjects
+        ? await hqProjects.readHqConversation(user.id, params.id)
+        : null;
+      if (existingHq?.conversation?.executionId) {
+        const repository = context.requireRepository();
+        const execution = await repository.getManagedConversationExecution(
+          { userId: user.id },
+          existingHq.conversation.executionId
+        );
+        if (!execution || execution.projectId !== params.id)
+          throw Object.assign(new Error("Project HQ identity changed"), {
+            statusCode: 409
+          });
+        const runner = await runnerIdentity(request);
+        const privatePath = resolve(
+          context.config.koedHome,
+          "managed-conversations",
+          "project-hq",
+          user.id,
+          params.id
+        );
+        await mkdir(privatePath, { mode: 0o700, recursive: true });
+        const canonicalPrivatePath = await realpath(privatePath);
+        const started = await repository.createManagedConversation(
+          { userId: user.id },
+          {
+            projectId: params.id,
+            contextKind: "independent",
+            provider: execution.provider,
+            aiClientInstanceId: execution.aiClientInstanceId,
+            model: execution.model,
+            reasoningEffort: execution.reasoningEffort,
+            permissionMode: execution.permissionMode,
+            runnerKind: "local_device",
+            runnerDeploymentId: runner.deploymentId,
+            runnerDeviceId: runner.deviceId,
+            idempotencyKey: `project-hq:${params.id}`,
+            hqProjectId: params.id,
+            hqPrivatePath: canonicalPrivatePath,
+            deferUntilRuntimeBinding: true
+          }
+        );
+        const originalPrompt = started.command.payload?.prompt;
+        if (typeof originalPrompt === "string") {
+          if (
+            originalPrompt !== firstMessage.prompt ||
+            started.command.payload?.selectedDocumentSourceId !==
+              firstMessage.selectedDocumentSourceId ||
+            execution.permissionMode !==
+              (firstMessage.permissionMode ?? "supervised")
+          )
+            throw Object.assign(
+              new Error(
+                "Project HQ already started with another first message"
+              ),
+              { statusCode: 409 }
+            );
+          return reply.status(202).send({
+            execution: await publicExecutionFor(user.id, started.execution),
+            command: { id: started.command.id, state: started.command.state }
+          });
+        }
+        if (
+          execution.permissionMode !==
+          (firstMessage.permissionMode ?? "supervised")
+        )
+          throw Object.assign(
+            new Error(
+              "Project HQ already started with another permission choice"
+            ),
+            { statusCode: 409 }
+          );
+        const firstUser = await repository.enqueueManagedConversationPrompt(
+          { userId: user.id },
+          {
+            executionId: execution.id,
+            executionGeneration: execution.executionGeneration,
+            idempotencyKey: `project-hq-first-user:${params.id}`,
+            clientUserMessageId: firstHqUserMessageId(user.id, params.id),
+            prompt: firstMessage.prompt,
+            ...(firstMessage.selectedDocumentSourceId
+              ? {
+                  selectedDocumentSourceId:
+                    firstMessage.selectedDocumentSourceId
+                }
+              : {})
+          }
+        );
+        return reply.status(202).send({
+          execution: await publicExecutionFor(user.id, started.execution),
+          command: { id: firstUser.id, state: firstUser.state }
+        });
       }
       const chief = (await hqAgents.list(user.id)).find(
         (agent) => agent.isChiefOfStaff
@@ -2993,6 +3571,31 @@ export const registerManagedConversationRoutes = (
           deferUntilRuntimeBinding: true
         }
       );
+      // The internal catch-up opener can win after the first HQ lookup. In
+      // that case createManagedConversation returns its promptless start.
+      // Preserve the actual human first message as a separate User command.
+      if (typeof created.command.payload?.prompt !== "string") {
+        const firstUser = await repository.enqueueManagedConversationPrompt(
+          { userId: user.id },
+          {
+            executionId: created.execution.id,
+            executionGeneration: created.execution.executionGeneration,
+            idempotencyKey: `project-hq-first-user:${params.id}`,
+            clientUserMessageId: firstHqUserMessageId(user.id, params.id),
+            prompt: firstMessage.prompt,
+            ...(firstMessage.selectedDocumentSourceId
+              ? {
+                  selectedDocumentSourceId:
+                    firstMessage.selectedDocumentSourceId
+                }
+              : {})
+          }
+        );
+        return reply.status(202).send({
+          execution: await publicExecutionFor(user.id, created.execution),
+          command: { id: firstUser.id, state: firstUser.state }
+        });
+      }
       await repository.upsertManagedConversationRuntimeBinding(
         { userId: user.id },
         {

@@ -39,6 +39,19 @@ import type {
 export { suppressCuratedMemoryWithoutActiveEvidenceWithClient } from "./curated-memory-policy.js";
 
 export interface CuratedMemoryRepository {
+  resolveActivityDecisions(
+    actor: ActorContext,
+    projectId: string,
+    assertionIds: readonly string[]
+  ): Promise<
+    Array<{
+      assertionId: string;
+      text: string;
+      classificationVersion: number;
+      updatedAt: string;
+      at: string;
+    }>
+  >;
   hydrateCuratedProjectSourceEvidence(
     actor: ActorContext,
     input:

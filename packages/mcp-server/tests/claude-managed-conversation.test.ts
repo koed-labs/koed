@@ -190,6 +190,67 @@ describe("ClaudeManagedConversationSession", () => {
     }
   );
 
+  it("restricts a Full Access catch-up turn and restores normal tools on the same session", async () => {
+    const { config, cwd } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) =>
+      queryFrom([
+        successResult((options?.resume ?? options?.sessionId) as string, "done")
+      ])
+    );
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      permissionMode: "bypassPermissions",
+      env: { ...config.env, KOED_HOME: cwd },
+      mcpServers: {
+        extra: { type: "stdio", command: "mutation-server", args: [] }
+      },
+      allowedTools: ["Bash", "mcp__extra__delete_everything"]
+    });
+    try {
+      await session.prompt("Koed status", { catchUpReadOnly: true });
+      const restricted = queryOptions(0);
+      expect(restricted.permissionMode).toBe("dontAsk");
+      expect(restricted.allowDangerouslySkipPermissions).toBeUndefined();
+      expect(restricted.tools).toEqual([]);
+      expect(restricted.mcpServers).toHaveProperty("koed");
+      expect(restricted.mcpServers).not.toHaveProperty("extra");
+      expect(restricted.allowedTools).toEqual([
+        "mcp__koed__memory_answer",
+        "mcp__koed__memory_answer_result",
+        "mcp__koed__memory_answer_cancel",
+        "mcp__koed__work_items_from_doc"
+      ]);
+      expect(restricted.settingSources).toEqual([]);
+      expect(restricted.plugins).toEqual([]);
+      expect(restricted.strictMcpConfig).toBe(true);
+
+      await session.prompt("A real User request");
+      const normal = queryOptions(1);
+      expect(normal.resume).toBe(restricted.sessionId);
+      expect(normal.permissionMode).toBe("bypassPermissions");
+      expect(normal.allowDangerouslySkipPermissions).toBe(true);
+      expect(normal.allowedTools).toEqual([
+        "Bash",
+        "mcp__extra__delete_everything"
+      ]);
+      expect(normal.mcpServers).toHaveProperty("extra");
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("fails closed when a restricted turn has no Koed MCP runtime", async () => {
+    const { config } = fixture();
+    const session = new ClaudeManagedConversationSession(config);
+    await expect(
+      session.prompt("Koed status", { catchUpReadOnly: true })
+    ).rejects.toThrow(
+      "Restricted Claude Koed MCP configuration is unavailable"
+    );
+    expect(sdk.query).not.toHaveBeenCalled();
+    await session.closeAndWait();
+  });
+
   it.each(["low", "high", "xhigh", "max", "none"])(
     "passes the selected reasoning effort %s to the native SDK",
     async (reasoningEffort) => {

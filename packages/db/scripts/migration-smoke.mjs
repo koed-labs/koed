@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0071_conscious_harry_osborn";
-const expectedLatestMigrationIndex = 71;
+const expectedLatestMigrationTag = "0072_steady_killraven";
+const expectedLatestMigrationIndex = 72;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -3846,6 +3846,121 @@ try {
           throw new Error(
             "0068 migration rerun lost valid cold or active delegation"
           );
+      });
+    }
+  );
+
+  await runScenario(
+    "project-catch-up-0072-upgrade-rollback-and-rerun",
+    async () => {
+      const target = await createDisposableDatabase("project_catch_up_upgrade");
+      const predecessor = await createMigrationSlice(journal, 71, {
+        folderPrefix: "koed-catch-up-predecessor-"
+      });
+      const interrupted = await createMigrationSlice(journal, 72, {
+        folderPrefix: "koed-catch-up-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(predecessor);
+      temporaryFolders.add(interrupted);
+      const priorRecords = await migrationRecords(
+        predecessor,
+        journal.entries.slice(0, 72)
+      );
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: predecessor });
+        const fixture = await seedStablePre0020Fixture(pool);
+        const projectId = randomUUID();
+        await pool.query(
+          `insert into workspace_projects
+           (id,team_id,workspace_id,owner_team_member_id,name,key,share_attempt_key)
+           values($1,$2,$3,$4,'Catch-up','CATCH','migration-0072')`,
+          [projectId, fixture.teamId, fixture.workspaceId, fixture.membershipId]
+        );
+        const before = await pool.query(
+          `select to_regclass('public.workspace_project_seen')::text as seen,
+                  pg_get_constraintdef(oid) as kind
+             from pg_constraint
+            where conname='managed_conversation_commands_kind_check'`
+        );
+        if (
+          before.rows[0]?.seen !== null ||
+          String(before.rows[0]?.kind).includes("hq_catch_up")
+        )
+          throw new Error("0072 predecessor already allows trusted catch-up");
+        const fingerprint = await schemaFingerprint(pool);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        if (
+          !failed ||
+          (await schemaFingerprint(pool)) !== fingerprint ||
+          (
+            await pool.query(
+              "select to_regclass('public.workspace_project_seen')::text as seen"
+            )
+          ).rows[0]?.seen !== null
+        )
+          throw new Error("Interrupted 0072 migration leaked catch-up schema");
+        await assertMigrationLedger(pool, priorRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+        const current = await pool.query(
+          `select to_regclass('public.workspace_project_seen')::text as seen,
+                  pg_get_constraintdef(oid) as kind
+             from pg_constraint
+            where conname='managed_conversation_commands_kind_check'`
+        );
+        if (
+          current.rows[0]?.seen !== "workspace_project_seen" ||
+          !String(current.rows[0]?.kind).includes("hq_catch_up")
+        )
+          throw new Error(
+            "0072 did not install Team seen or trusted command kind"
+          );
+        await pool.query(
+          `insert into workspace_project_seen(workspace_project_id,team_member_id)
+           values($1,$2)`,
+          [projectId, fixture.membershipId]
+        );
+        await expectSqlState(
+          pool,
+          `update workspace_project_seen set seen_sequence=-1
+            where workspace_project_id=$1 and team_member_id=$2`,
+          "23514",
+          "Team Project seen cursor must not be negative",
+          [projectId, fixture.membershipId]
+        );
+        await expectSqlState(
+          pool,
+          `insert into workspace_project_seen(workspace_project_id,team_member_id)
+           values($1,$2)`,
+          "23503",
+          "Team Project seen member must exist",
+          [projectId, randomUUID()]
+        );
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== stable)
+          throw new Error("0072 migration rerun changed schema");
+        const retained = await pool.query(
+          `select seen_sequence::text as seen_sequence,
+                  welcome_delivered_at from workspace_project_seen
+            where workspace_project_id=$1 and team_member_id=$2`,
+          [projectId, fixture.membershipId]
+        );
+        if (
+          !isDeepStrictEqual(retained.rows[0], {
+            seen_sequence: "0",
+            welcome_delivered_at: null
+          })
+        )
+          throw new Error("0072 rerun lost the current member's seen frontier");
       });
     }
   );
