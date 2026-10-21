@@ -66,7 +66,8 @@ try {
         KOED_HQ304_DELEGATED_S18: "1",
         KOED_HQ306_DELEGATED_S07: "1",
         KOED_HQ307_DELEGATED_S18: "1",
-        KOED_HQ308_DELEGATED_S19: "1"
+        KOED_HQ308_DELEGATED_S19: "1",
+        KOED_HQ603_DELEGATED_S12_SCHEDULED: "1"
       },
       stdio: "inherit"
     });
@@ -686,6 +687,61 @@ try {
         }
         process.stdout.write(
           "PASS HQ707.native [HQ-707]: reply chip, dismissals, V2 reply target, quote jump, desktop light/dark.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-603", "HQ603.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq603-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq603.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ603_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ603.native", owner: "HQ-603", status: "pass" }
+        );
+        assert.deepEqual(report.assertions, [
+          "next two Scheduled summary and bounded expansion with paused last",
+          "failed and missed Needs you controls with Skip effect",
+          "Job sidebar clock, context Pause and Run now, Conversation navigation",
+          "exact Scheduled Job approval facts"
+        ]);
+        assert.equal(report.results.length, 3);
+        for (const theme of ["light", "dark"]) {
+          const result = report.results.find((entry) => entry.theme === theme);
+          assert.ok(result);
+          assert.match(result.collapsed, /^Next: .+ · .+ · \+4$/);
+          assert.equal(result.trace.pauses, 1);
+          assert.equal(result.trace.runNows, 1);
+          assert.equal(result.trace.skips, 1);
+          for (const view of [
+            "collapsed",
+            "expanded",
+            "needs",
+            "sidebar",
+            "conversation"
+          ])
+            assert.ok(
+              report.screenshots.includes(`scheduled-${view}-${theme}.png`)
+            );
+        }
+        assert.ok(report.screenshots.includes("scheduled-review-light.png"));
+        process.stdout.write(
+          "PASS HQ603.native [HQ-603]: S12 Scheduled summary, expansion, Needs you, Job sidebar/actions and exact approval review, desktop light/dark; remaining compound S12.1 clauses stay SKIP.\n"
         );
       }
     } finally {

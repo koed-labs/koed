@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { scheduledJobScheduleSchema } from "./scheduled-job-contract.js";
 
 const uuid = z.uuid();
 const name = z.string().trim().min(1).max(160);
@@ -40,6 +41,14 @@ export const koedTextActionInputSchemas = {
   koed_todo_send: z
     .object({ projectId: uuid, workItemId: uuid, agentId: uuid })
     .strict(),
+  koed_job_create: z
+    .object({
+      title: name,
+      instruction: z.string().trim().min(1).max(20_000),
+      schedule: scheduledJobScheduleSchema
+    })
+    .strict(),
+  koed_job_pause: z.object({ title: name, paused: z.boolean() }).strict(),
   koed_hq_open: z.object({ projectId: uuid }).strict(),
   koed_settings_open: z
     .object({
@@ -65,9 +74,7 @@ export const koedTextActionFutureNames = [
   "koed_invite_accept",
   "koed_project_leave",
   "koed_workspace_leave",
-  "koed_job_create",
   "koed_job_run",
-  "koed_job_pause",
   "koed_deck_make",
   "koed_deck_open"
 ] as const;

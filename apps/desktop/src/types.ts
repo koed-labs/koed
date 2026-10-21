@@ -21,6 +21,7 @@ import type { ManagedMemoryActionDesktopApi } from "./ipc/managed-memory-action-
 import type { ManagedTextActionDesktopApi } from "./ipc/managed-text-action-protocol.js";
 import type { CuratedMemoryDesktopApi } from "./ipc/curated-memory-protocol.js";
 import type { AgentsDesktopApi } from "./ipc/agents-protocol.js";
+import type { ScheduledJobsDesktopApi } from "./ipc/scheduled-jobs-protocol.js";
 import type { HqLayoutPreferencesApi } from "./ipc/hq-layout-preferences-protocol.js";
 import type { HqSidebarPreferencesApi } from "./ipc/hq-sidebar-preferences-protocol.js";
 
@@ -176,6 +177,7 @@ export interface DesktopApi {
   managedMemoryActions?: ManagedMemoryActionDesktopApi;
   managedTextActions?: ManagedTextActionDesktopApi;
   agents?: AgentsDesktopApi;
+  scheduledJobs?: ScheduledJobsDesktopApi;
   managedConversations?: ManagedConversationDesktopApi;
   projectHqConversation?: ProjectHqConversationDesktopApi;
   localAiClients?: {

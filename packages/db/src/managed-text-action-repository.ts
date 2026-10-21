@@ -357,6 +357,8 @@ export const claimedManagedTextCreateWithClient = async (
     name:
       | "koed_project_create"
       | "koed_todo_add"
+      | "koed_job_create"
+      | "koed_job_pause"
       | "koed_chat_move"
       | "koed_project_move_chats";
     matches: (
@@ -569,9 +571,73 @@ const targetSnapshot = async (
   ownerUserId: string,
   name: KoedTextActionName,
   args: Record<string, unknown>,
-  teamProof: TeamProof | null = null
+  teamProof: TeamProof | null = null,
+  origin?: { logicalSessionId: string; executionId: string }
 ): Promise<Record<string, unknown> | null> => {
-  const projectId = typeof args.projectId === "string" ? args.projectId : null;
+  type JobSessionRow = {
+    id: string;
+    project_id: string | null;
+    project_assignment_version: number;
+  };
+  type JobTargetRow = {
+    id: string;
+    project_id: string | null;
+    version: number;
+    paused: boolean;
+    agent_id: string;
+    conversation_session_id: string;
+    project_assignment_version: number;
+    conversation_project_id: string | null;
+  };
+  let jobSession: JobSessionRow | null = null;
+  let jobTarget: JobTargetRow | null = null;
+  if (name === "koed_job_create") {
+    if (!origin) return null;
+    jobSession =
+      (
+        await client.query<JobSessionRow>(
+          `select sessions.id,sessions.project_assignment_version,
+        (case when sessions.project_override_at is not null then sessions.project_override_personal_project_id
+          else sessions.automatic_personal_project_id end) as project_id
+       from managed_conversation_runtime_bindings binding
+       join sessions on sessions.id=binding.local_session_id
+         and sessions.owner_user_id=binding.owner_user_id
+       where binding.execution_id=$3 and binding.owner_user_id=$2
+         and sessions.logical_session_id=$1
+         and sessions.visibility='personal' and sessions.invalidated_at is null
+         and sessions.personal_deleted_at is null and sessions.trashed_at is null
+         and sessions.delete_batch_id is null and sessions.forget_batch_id is null
+       for share of sessions,binding`,
+          [origin.logicalSessionId, ownerUserId, origin.executionId]
+        )
+      ).rows[0] ?? null;
+    if (!jobSession) return null;
+  }
+  if (name === "koed_job_pause") {
+    const matching = await client.query<JobTargetRow>(
+      `select job.id,job.project_id,job.version,job.paused,job.agent_id,
+         job.conversation_session_id,session.project_assignment_version,
+         (case when session.project_override_at is not null
+           then session.project_override_personal_project_id
+           else session.automatic_personal_project_id end) as conversation_project_id
+       from scheduled_jobs job join sessions session
+         on session.id=job.conversation_session_id and session.owner_user_id=job.owner_user_id
+       where job.owner_user_id=$1 and job.title=$2
+         and session.visibility='personal' and session.invalidated_at is null
+         and session.personal_deleted_at is null and session.trashed_at is null
+         and session.delete_batch_id is null and session.forget_batch_id is null
+       for share of job,session`,
+      [ownerUserId, args.title]
+    );
+    if (matching.rows.length !== 1) return null;
+    jobTarget = matching.rows[0]!;
+    if (jobTarget.paused === args.paused) return null;
+    if (jobTarget.conversation_project_id !== jobTarget.project_id) return null;
+  }
+  const projectId =
+    jobSession?.project_id ??
+    jobTarget?.project_id ??
+    (typeof args.projectId === "string" ? args.projectId : null);
   const project = projectId
     ? await activeProject(client, ownerUserId, projectId)
     : null;
@@ -585,7 +651,12 @@ const targetSnapshot = async (
       !teamProof ||
       project.team_backend_id !== teamProof.teamBackendId ||
       project.workspace_project_id !== teamProof.workspaceProjectId ||
-      !["koed_todo_add", "koed_todo_send"].includes(name)
+      ![
+        "koed_todo_add",
+        "koed_todo_send",
+        "koed_job_create",
+        "koed_job_pause"
+      ].includes(name)
     )
       return null;
   } else if (teamProof) return null;
@@ -599,6 +670,73 @@ const targetSnapshot = async (
     name === "koed_settings_set_theme"
   )
     return {};
+  if (name === "koed_job_create") {
+    if (!jobSession || !origin) return null;
+    const execution = (
+      await client.query<{
+        ai_client_instance_id: string;
+        provider: string;
+        permission_mode: string;
+        model: string;
+      }>(
+        `select ai_client_instance_id,provider,permission_mode,model from managed_conversation_executions
+       where id=$1 and owner_user_id=$2 and logical_session_id=$3 for share`,
+        [origin.executionId, ownerUserId, origin.logicalSessionId]
+      )
+    ).rows[0];
+    if (!execution) return null;
+    const agents = await client.query<{
+      id: string;
+      name: string;
+      is_chief_of_staff: boolean;
+    }>(
+      `select agent.id,agent.name,agent.is_chief_of_staff from agents agent
+       join ai_client_instances instance on instance.owner_user_id=agent.owner_user_id
+         and instance.instance_id=agent.ai_client_instance_id
+       where agent.owner_user_id=$1 and agent.ai_client_instance_id=$2
+         and instance.driver_id=$3 and instance.enabled=true
+         and agent.default_permission_mode=$4
+         and (agent.default_model is null or agent.default_model=$5)
+       order by agent.is_chief_of_staff desc,agent.id`,
+      [
+        ownerUserId,
+        execution.ai_client_instance_id,
+        execution.provider,
+        execution.permission_mode,
+        execution.model
+      ]
+    );
+    const agent =
+      agents.rows.length === 1
+        ? agents.rows[0]
+        : agents.rows.filter((candidate) => candidate.is_chief_of_staff)
+              .length === 1
+          ? agents.rows.find((candidate) => candidate.is_chief_of_staff)
+          : null;
+    if (!agent) return null;
+    return {
+      ...base,
+      ...team,
+      agentId: agent.id,
+      agentName: agent.name,
+      conversationSessionId: jobSession.id,
+      conversationProjectAssignmentVersion:
+        jobSession.project_assignment_version
+    };
+  }
+  if (name === "koed_job_pause") {
+    if (!jobTarget) return null;
+    return {
+      ...base,
+      ...team,
+      jobId: jobTarget.id,
+      jobVersion: jobTarget.version,
+      paused: jobTarget.paused,
+      agentId: jobTarget.agent_id,
+      conversationSessionId: jobTarget.conversation_session_id,
+      conversationProjectAssignmentVersion: jobTarget.project_assignment_version
+    };
+  }
   // chat.new/project.chat.new are UI operations. The effect is opening a
   // composer with the selected Project, not persisting a Conversation.
   if (name === "koed_chat_create") return base;
@@ -751,10 +889,20 @@ export const createManagedTextActionRepository = (
   const preflightTeam = async (
     ownerUserId: string,
     name: KoedTextActionName,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    projectOverride?: string | null
   ): Promise<TeamProof | null> => {
-    if (name !== "koed_todo_add" && name !== "koed_todo_send") return null;
-    const projectId = String(args.projectId);
+    if (
+      ![
+        "koed_todo_add",
+        "koed_todo_send",
+        "koed_job_create",
+        "koed_job_pause"
+      ].includes(name)
+    )
+      return null;
+    const projectId = projectOverride ?? args.projectId;
+    if (typeof projectId !== "string") return null;
     const row = (
       await pool.query<{
         team_backend_id: string | null;
@@ -790,7 +938,38 @@ export const createManagedTextActionRepository = (
     async enqueueManagedTextAction(actor, input) {
       const args = parseKoedTextActionArguments(input.name, input.arguments);
       const argsHash = digest({ name: input.name, arguments: args });
-      const teamProof = await preflightTeam(actor.userId, input.name, args);
+      let jobProject: string | null | undefined;
+      if (input.name === "koed_job_create") {
+        const origin = await pool.query<{ project_id: string | null }>(
+          `select (case when session.project_override_at is not null then session.project_override_personal_project_id
+            else session.automatic_personal_project_id end) as project_id
+           from managed_conversation_commands command
+           join managed_conversation_executions execution on execution.id=command.execution_id
+             and execution.owner_user_id=command.owner_user_id
+           join managed_conversation_runtime_bindings binding
+             on binding.execution_id=execution.id and binding.owner_user_id=execution.owner_user_id
+           join sessions session on session.id=binding.local_session_id
+             and session.owner_user_id=execution.owner_user_id
+             and session.logical_session_id=execution.logical_session_id
+           where command.owner_user_id=$1 and command.id=$2 and execution.id=$3`,
+          [actor.userId, input.commandId, input.executionId]
+        );
+        jobProject =
+          origin.rows.length === 1 ? origin.rows[0]!.project_id : undefined;
+      } else if (input.name === "koed_job_pause") {
+        const job = await pool.query<{ project_id: string | null }>(
+          "select project_id from scheduled_jobs where owner_user_id=$1 and title=$2",
+          [actor.userId, args.title]
+        );
+        jobProject =
+          job.rows.length === 1 ? job.rows[0]!.project_id : undefined;
+      }
+      const teamProof = await preflightTeam(
+        actor.userId,
+        input.name,
+        args,
+        jobProject
+      );
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -853,7 +1032,11 @@ export const createManagedTextActionRepository = (
           actor.userId,
           input.name,
           args,
-          teamProof
+          teamProof,
+          {
+            logicalSessionId: current.logical_session_id,
+            executionId: input.executionId
+          }
         );
         const id = randomUUID();
         const initial: Row = {
@@ -876,6 +1059,8 @@ export const createManagedTextActionRepository = (
             input.name === "koed_chat_delete"
               ? "native"
               : input.name === "koed_project_create" ||
+                  input.name === "koed_job_create" ||
+                  input.name === "koed_job_pause" ||
                   input.name === "koed_project_move_chats" ||
                   input.name === "koed_chat_move"
                 ? current.permission_mode === "full_access"
@@ -1130,10 +1315,18 @@ export const createManagedTextActionRepository = (
         preliminary,
         "arguments"
       );
+      const preliminarySnapshot = await decrypt(
+        encryptionProvider,
+        preliminary,
+        "snapshot"
+      );
       const teamProof = await preflightTeam(
         actor.userId,
         preliminary.action_name,
-        preliminaryArgs
+        preliminaryArgs,
+        typeof preliminarySnapshot.projectId === "string"
+          ? preliminarySnapshot.projectId
+          : null
       );
       const client = await pool.connect();
       try {
@@ -1188,6 +1381,8 @@ export const createManagedTextActionRepository = (
           row.review_kind === "none" &&
           [
             "koed_project_create",
+            "koed_job_create",
+            "koed_job_pause",
             "koed_chat_move",
             "koed_project_move_chats"
           ].includes(row.action_name) &&
@@ -1203,7 +1398,11 @@ export const createManagedTextActionRepository = (
           actor.userId,
           row.action_name,
           args,
-          teamProof
+          teamProof,
+          {
+            logicalSessionId: row.logical_session_id,
+            executionId: row.execution_id
+          }
         );
         if (!fresh || digest(fresh) !== digest(pinned)) {
           await client.query("rollback");
@@ -1259,7 +1458,23 @@ export const createManagedTextActionRepository = (
           ]
         )
       ).rows[0];
-      if (!preliminary) return null;
+      if (!preliminary) {
+        const applied = (
+          await pool.query<Row>(
+            `select * from managed_conversation_text_actions
+           where owner_user_id=$1 and execution_id=$2 and id=$3
+             and state='applied' and revision=$4
+             and action_name in ('koed_job_create','koed_job_pause')`,
+            [
+              actor.userId,
+              input.executionId,
+              input.actionId,
+              input.expectedRevision + 1
+            ]
+          )
+        ).rows[0];
+        return applied ? present(encryptionProvider, applied) : null;
+      }
       const preliminarySnapshot = await decrypt(
         encryptionProvider,
         preliminary,

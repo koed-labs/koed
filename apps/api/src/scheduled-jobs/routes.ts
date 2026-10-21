@@ -337,7 +337,7 @@ export function registerScheduledJobRoutes(
       const owner = await write(request);
       const { id } = idParams.parse(request.params);
       const body = scheduledJobVersionSchema
-        .extend({ paused: z.boolean() })
+        .extend({ paused: z.boolean(), textActionId: z.uuid().optional() })
         .strict()
         .parse(request.body);
       try {
@@ -345,7 +345,8 @@ export function registerScheduledJobRoutes(
           owner.id,
           id,
           body.expectedVersion,
-          body.paused
+          body.paused,
+          body.textActionId
         );
       } catch (error) {
         return handle(error);

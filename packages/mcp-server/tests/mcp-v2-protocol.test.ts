@@ -109,20 +109,26 @@ describe("Koed MCP 2026-07-28 protocol", () => {
         KOED_MANAGED_DOC_API_URL: "http://127.0.0.1:9"
       }
     });
-    expect(
-      (await client.listTools()).tools.map((tool) => tool.name).sort()
-    ).toEqual([
+    const catchUpNames = (await client.listTools()).tools
+      .map((tool) => tool.name)
+      .sort();
+    expect(catchUpNames).toEqual([
       "memory_answer",
       "memory_answer_cancel",
       "memory_answer_result",
       "work_items_from_doc"
     ]);
+    expect(catchUpNames).not.toContain("koed_job_create");
+    expect(catchUpNames).not.toContain("koed_job_pause");
   });
   it("advertises request-only Koed text actions only in managed sessions", async () => {
     const ordinary = await connect();
-    expect(
-      (await ordinary.client.listTools()).tools.map((tool) => tool.name)
-    ).not.toContain("koed_todo_add");
+    const ordinaryNames = (await ordinary.client.listTools()).tools.map(
+      (tool) => tool.name
+    );
+    expect(ordinaryNames).not.toContain("koed_todo_add");
+    expect(ordinaryNames).not.toContain("koed_job_create");
+    expect(ordinaryNames).not.toContain("koed_job_pause");
     const managed = await connect({
       environment: { KOED_MANAGED_TEXT_ACTIONS: "1" }
     });
@@ -131,7 +137,9 @@ describe("Koed MCP 2026-07-28 protocol", () => {
     );
     expect(names).toContain("koed_todo_add");
     expect(names).toContain("koed_project_delete");
-    expect(names).not.toContain("koed_job_create");
+    expect(names).toContain("koed_job_create");
+    expect(names).toContain("koed_job_pause");
+    expect(names).not.toContain("koed_job_run");
     const result = await managed.client.callTool({
       name: "koed_todo_add",
       arguments: {

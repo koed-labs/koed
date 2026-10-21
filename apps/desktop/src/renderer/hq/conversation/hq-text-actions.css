@@ -34,6 +34,29 @@
   gap: 8px;
   min-width: 0;
 }
+.hq-text-action__job-review {
+  display: grid;
+  gap: 5px;
+  margin: 2px 0 4px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.hq-text-action__job-review > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+}
+.hq-text-action__job-review dt {
+  color: var(--hq-muted);
+}
+.hq-text-action__job-review dd {
+  margin: 0;
+  color: var(--hq-fg);
+  overflow-wrap: anywhere;
+}
+.hq-text-action__job-instruction {
+  white-space: pre-wrap;
+}
 
 .hq-text-action__buttons {
   display: flex;

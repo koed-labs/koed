@@ -1,0 +1,113 @@
+.hq-now__scheduled {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+}
+.hq-now__scheduled-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--hq-muted, #85828c);
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+.hq-now__scheduled-toggle:hover,
+.hq-now__scheduled-row:hover {
+  background: var(--hq-card, color-mix(in srgb, var(--hq-fg) 5%, transparent));
+}
+.hq-now__scheduled-toggle span {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hq-now__scheduled-toggle svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.hq-now__scheduled-toggle[aria-expanded="true"] svg:last-child {
+  transform: rotate(180deg);
+}
+.hq-now__scheduled-partial {
+  margin: 0 12px;
+  color: var(--hq-muted, #85828c);
+  font-size: 12px;
+}
+.hq-now__scheduled-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-left: 26px;
+}
+.hq-now__scheduled-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  font-size: 13px;
+}
+.hq-now__scheduled-row > svg {
+  width: 18px;
+  height: 18px;
+}
+.hq-now__scheduled-row button {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  border: 0;
+  background: transparent;
+  color: var(--hq-fg);
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+.hq-now__scheduled-row strong {
+  font-weight: 500;
+  white-space: nowrap;
+}
+.hq-now__scheduled-row small {
+  color: var(--hq-faint, #99959e);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hq-now__scheduled-refresh {
+  border: 0;
+  background: transparent;
+  opacity: 0.7;
+  cursor: pointer;
+  padding: 8px;
+  text-align: left;
+}
+.hq-now__scheduled-refresh svg {
+  width: 13px;
+  height: 13px;
+  vertical-align: middle;
+}
+.hq-now__job-need {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+}
+.hq-now__job-need > span {
+  flex: 1;
+}
+.hq-now__job-need button {
+  border: 0;
+  border-radius: 8px;
+  padding: 5px 8px;
+  cursor: pointer;
+}

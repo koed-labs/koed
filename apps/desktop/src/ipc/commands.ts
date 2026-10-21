@@ -35,6 +35,13 @@ import {
   type AgentsResult
 } from "./agents-protocol.js";
 import {
+  scheduledJobsChannel,
+  scheduledJobsRequestSchema,
+  scheduledJobsResultSchema,
+  type ScheduledJobsRequest,
+  type ScheduledJobsResult
+} from "./scheduled-jobs-protocol.js";
+import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationDesktopRendererEventSchema,
@@ -266,6 +273,9 @@ export const registerDesktopCommandHandlers = (
     >;
     pickProjectFolder?: () => Promise<string | null>;
     agents?: (request: AgentsRequest) => Promise<AgentsResult>;
+    scheduledJobs?: (
+      request: ScheduledJobsRequest
+    ) => Promise<ScheduledJobsResult>;
     managedConversation: (
       request: ManagedConversationRequest
     ) => Promise<ManagedConversationResult>;
@@ -754,6 +764,41 @@ export const registerDesktopCommandHandlers = (
       result.agent.id !== request.id
     )
       throw new Error("Invalid Agent identity.");
+    return result;
+  });
+  ipcMain.handle(scheduledJobsChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (
+      process.env.KOED_DESKTOP_HQ_ENABLED !== "true" ||
+      !options.scheduledJobs
+    )
+      throw new Error("Scheduled Jobs are unavailable.");
+    const request = scheduledJobsRequestSchema.parse(value);
+    const result = scheduledJobsResultSchema.parse(
+      await options.scheduledJobs(request)
+    );
+    if (result.operation !== request.operation)
+      throw new Error("Scheduled Job operation mismatch.");
+    if (
+      "jobId" in request &&
+      "job" in result &&
+      result.job.id !== request.jobId
+    )
+      throw new Error("Scheduled Job identity mismatch.");
+    if (
+      "jobId" in request &&
+      "run" in result &&
+      result.run.jobId !== request.jobId
+    )
+      throw new Error("Scheduled run identity mismatch.");
+    if (
+      "jobId" in request &&
+      result.operation === "runs" &&
+      (result.jobId !== request.jobId ||
+        result.runs.some((run) => run.jobId !== request.jobId))
+    )
+      throw new Error("Scheduled run identity mismatch.");
     return result;
   });
 

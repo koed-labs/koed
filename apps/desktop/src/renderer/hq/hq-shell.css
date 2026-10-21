@@ -259,6 +259,13 @@
 .hq-sidebar__conversation-link {
   padding-inline-start: 32px;
 }
+.hq-sidebar__job-clock {
+  flex: none;
+  color: var(--hq-muted);
+}
+.hq-sidebar__job-clock[data-paused="true"] {
+  opacity: 0.5;
+}
 .hq-sidebar__conversation {
   position: relative;
 }
@@ -302,6 +309,16 @@
   background: transparent;
   font: inherit;
   cursor: pointer;
+}
+.hq-sidebar__job-menu-title {
+  max-inline-size: 240px;
+  overflow: hidden;
+  padding: 7px 12px 2px;
+  color: var(--hq-muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .hq-sidebar__more-row {
   padding-inline-start: 23px;

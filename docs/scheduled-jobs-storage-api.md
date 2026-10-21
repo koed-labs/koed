@@ -24,6 +24,21 @@ to refresh a Job without sending its instruction over realtime.
 Create and Run now each carry a client-generated `requestId` so a lost response
 can be retried without creating a second Job or manual occurrence.
 
+HQ shows the next two Job times in Now, expands to a bounded list ordered by
+the next occurrence, marks bound Job chats in the sidebar, and puts failed or
+missed runs in Needs you. Pause, Run now, Retry, and Skip use the current Job
+version and owner-scoped Desktop transport. On an uncertain Run now response,
+the UI reads run history and requires an explicit owner acknowledgement before
+a new manual occurrence request.
+
+The `koed_job_create` and `koed_job_pause` text tools use the existing
+human-origin managed action journal. The effect checks the claimed action,
+exact arguments, Agent, Conversation assignment, Job version when pausing,
+Project version and current Team proof before its database mutation. An
+unscoped Conversation remains unscoped, including when a User explicitly
+moves it out of an automatically detected Project. Scheduled synthetic turns
+cannot mint these human-origin actions.
+
 The `(job_id, scheduled_for)` key identifies one stable occurrence. A run row
 summarizes its current state. Each start inserts a new attempt identity and
 an append-only start event in one transaction _before_ any turn could launch.

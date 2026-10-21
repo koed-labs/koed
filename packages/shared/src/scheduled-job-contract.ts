@@ -52,7 +52,8 @@ export const createScheduledJobSchema = z
     projectId: z.uuid().nullable(),
     title: z.string().trim().min(1).max(160),
     instruction: z.string().trim().min(1).max(20_000),
-    schedule: scheduledJobScheduleSchema
+    schedule: scheduledJobScheduleSchema,
+    textActionId: z.uuid().optional()
   })
   .strict();
 export const editScheduledJobSchema = z

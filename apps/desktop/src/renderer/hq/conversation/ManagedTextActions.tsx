@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KoedTextActionProjection } from "@koed/shared";
+import { scheduledJobScheduleSchema } from "@koed/shared/scheduled-job-contract";
+import { nextScheduledJobOccurrence } from "@koed/shared/scheduled-job-calendar";
 import type { ManagedTextActionDesktopApi } from "../../../ipc/managed-text-action-protocol.js";
 import "./hq-text-actions.css";
 
@@ -12,6 +14,8 @@ const label: Record<KoedTextActionProjection["name"], string> = {
   koed_chat_delete: "Delete chat",
   koed_todo_add: "Add to-do",
   koed_todo_send: "Send to Agent",
+  koed_job_create: "Schedule Job",
+  koed_job_pause: "Pause or resume Job",
   koed_hq_open: "Open Project HQ",
   koed_settings_open: "Open Settings",
   koed_settings_set_theme: "Change theme"
@@ -26,6 +30,10 @@ const detail = (action: KoedTextActionProjection) => {
       return `${String(args.title ?? "To-do")}${args.dueOn ? ` · ${String(args.dueOn)}` : ""}`;
     case "koed_todo_send":
       return `Send ${String(action.snapshot.workItemTitle ?? "this to-do")} to ${String(action.snapshot.agentName ?? "your Agent")}`;
+    case "koed_job_create":
+      return `${String(args.title ?? "Scheduled Job")} · ${String(action.snapshot.agentName ?? "Agent")}`;
+    case "koed_job_pause":
+      return `${args.paused ? "Pause" : "Resume"} ${String(args.title ?? "Scheduled Job")}`;
     case "koed_project_delete":
       return `${String(action.snapshot.projectName ?? args.projectId ?? "Project")} · ${String(action.snapshot.activeExecutionCount ?? 0)} active Agent executions. Review Project deletion and its chats, to-dos, and memory.`;
     case "koed_chat_delete":
@@ -63,9 +71,70 @@ const hasDurableServiceReceipt = (action: KoedTextActionProjection) =>
     "koed_project_create",
     "koed_todo_add",
     "koed_todo_send",
+    "koed_job_create",
+    "koed_job_pause",
     "koed_chat_move",
     "koed_project_move_chats"
   ].includes(action.name);
+
+const jobReviewDetails = (action: KoedTextActionProjection) => {
+  if (action.name !== "koed_job_create") return null;
+  const parsed = scheduledJobScheduleSchema.safeParse(
+    action.arguments.schedule
+  );
+  if (!parsed.success || typeof action.arguments.instruction !== "string")
+    return (
+      <p role="alert">
+        Scheduled Job details are unavailable. Refresh before approval.
+      </p>
+    );
+  const schedule = parsed.data;
+  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const recurrence =
+    schedule.kind === "daily"
+      ? "Every day"
+      : schedule.kind === "weekdays"
+        ? "Every weekday"
+        : schedule.kind === "weekly"
+          ? `Every ${schedule.dow.map((day) => days[day - 1]).join(", ")}`
+          : `Every month on day ${schedule.dom}`;
+  const next = nextScheduledJobOccurrence(schedule, new Date());
+  const nextLabel = next
+    ? new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: schedule.tz
+      }).format(next) + ` (${schedule.tz})`
+    : "Unavailable";
+  return (
+    <dl className="hq-text-action__job-review">
+      <div>
+        <dt>When</dt>
+        <dd>
+          {recurrence} at {schedule.at} ({schedule.tz})
+        </dd>
+      </div>
+      <div>
+        <dt>Next</dt>
+        <dd>{nextLabel}</dd>
+      </div>
+      <div>
+        <dt>Instruction</dt>
+        <dd className="hq-text-action__job-instruction">
+          {action.arguments.instruction}
+        </dd>
+      </div>
+      <div>
+        <dt>Results</dt>
+        <dd>this chat</dd>
+      </div>
+      <div>
+        <dt>Project</dt>
+        <dd>{String(action.snapshot.projectName ?? "Just me")}</dd>
+      </div>
+    </dl>
+  );
+};
 
 /** A Koed action approval is separate from AI Client command approval. */
 export function ManagedTextActions({
@@ -383,6 +452,7 @@ export function ManagedTextActions({
         <article key={action.id} className="hq-text-action">
           <strong>{label[action.name]}</strong>
           <span className="hq-text-action__detail">{detail(action)}</span>
+          {jobReviewDetails(action)}
           {action.state === "awaiting_review" &&
           action.reviewKind === "ask_first" ? (
             <div className="hq-text-action__buttons">

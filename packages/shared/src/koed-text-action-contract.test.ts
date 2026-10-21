@@ -58,6 +58,41 @@ describe("Koed managed text actions", () => {
       'Koed koed_project_create request v1: {"status":"requested"}'
     );
   });
+  it("keeps Scheduled Job text requests exact and browser-safe", () => {
+    const create = {
+      title: "Morning brief",
+      instruction: "Summarize AI news",
+      schedule: { kind: "weekdays", at: "08:00", tz: "Europe/Oslo" }
+    };
+    expect(
+      koedTextActionInputSchemas.koed_job_create.safeParse(create).success
+    ).toBe(true);
+    expect(
+      koedTextActionInputSchemas.koed_job_create.safeParse({
+        ...create,
+        schedule: { ...create.schedule, at: "8am" }
+      }).success
+    ).toBe(false);
+    expect(
+      koedTextActionInputSchemas.koed_job_create.safeParse({
+        ...create,
+        agentId: "forged"
+      }).success
+    ).toBe(false);
+    expect(
+      koedTextActionInputSchemas.koed_job_pause.safeParse({
+        title: "Morning brief",
+        paused: true
+      }).success
+    ).toBe(true);
+    expect(
+      koedTextActionInputSchemas.koed_job_pause.safeParse({
+        title: "Morning",
+        paused: true,
+        jobId: "forged"
+      }).success
+    ).toBe(false);
+  });
   it("keeps Team text-action receipts out of ordinary renderer creation", () => {
     const id = "90fd9cee-d5b1-4dda-9675-c044e4613ed7";
     const input = {

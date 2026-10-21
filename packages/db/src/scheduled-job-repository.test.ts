@@ -133,6 +133,31 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
     ).toBe("2");
   });
 
+  it("honors an explicit Just me override over automatic Project detection", async () => {
+    const sessionId = randomUUID();
+    await pool.query(
+      `insert into sessions(id,owner_user_id,source_runtime,capture_method,
+       automatic_personal_project_id,project_override_id,project_override_name,
+       project_override_at,project_override_by_user_id,project_override_personal_project_id)
+       values($1,$2,'codex-cli','api',$3,$4,'Independent',now(),$2,null)`,
+      [sessionId, owner, projectId, projectId]
+    );
+    const repo = createScheduledJobRepository(pool);
+    const job = await repo.create(owner, runnerDeviceId, {
+      ...body(),
+      conversationSessionId: sessionId,
+      projectId: null
+    });
+    expect(job.projectId).toBeNull();
+    await expect(
+      repo.create(owner, runnerDeviceId, {
+        ...body(),
+        conversationSessionId: sessionId,
+        projectId
+      })
+    ).rejects.toBeInstanceOf(ScheduledJobConflict);
+  });
+
   it("keeps a stable occurrence and old attempt history on retry", async () => {
     const repo = createScheduledJobRepository(pool);
     const job = await repo.create(owner, runnerDeviceId, body());
@@ -204,6 +229,61 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
     expect(
       (await repo.listRuns(owner, job.id, { limit: 20 })).runs[0]!.attempt
     ).toBe(2);
+  });
+
+  it("skips failed and missed occurrences without losing attempts or an active run", async () => {
+    const repo = createScheduledJobRepository(pool);
+    const job = await repo.create(owner, runnerDeviceId, body());
+    const failed = await repo.runNow(owner, job.id, job.version, randomUUID());
+    const started = await repo.startAttempt(owner, job.id, failed.id, {
+      expectedJobVersion: job.version,
+      runnerDeviceId,
+      fenceToken: "skip-fence"
+    });
+    if (!started.started) throw new Error("Expected started attempt");
+    await expect(
+      repo.skip(owner, job.id, failed.id, job.version)
+    ).rejects.toBeInstanceOf(ScheduledJobConflict);
+    await repo.appendAttemptEvent(owner, job.id, failed.id, {
+      attemptId: started.attemptId,
+      executionId: started.executionId,
+      fenceGeneration: started.fenceGeneration,
+      fenceToken: "skip-fence",
+      expectedJobVersion: job.version,
+      runnerDeviceId,
+      status: "failed",
+      error: "test failure"
+    });
+    await expect(
+      repo.skip(other, job.id, failed.id, job.version)
+    ).rejects.toThrow();
+    expect(
+      (await repo.skip(owner, job.id, failed.id, job.version)).status
+    ).toBe("skipped");
+    const history = await repo.attemptHistory(owner, job.id, failed.id);
+    expect(history.attempts).toHaveLength(1);
+    expect(history.events.map((event) => event.status)).toEqual([
+      "running",
+      "failed"
+    ]);
+    const missed = await repo.runNow(owner, job.id, job.version, randomUUID());
+    await pool.query(
+      "update scheduled_job_runs set status='missed',finished_at=now() where id=$1",
+      [missed.id]
+    );
+    expect(
+      (await repo.skip(owner, job.id, missed.id, job.version)).status
+    ).toBe("skipped");
+    const scheduled = await repo.runNow(
+      owner,
+      job.id,
+      job.version,
+      randomUUID()
+    );
+    const paused = await repo.setPaused(owner, job.id, job.version, true);
+    await expect(
+      repo.skip(owner, job.id, scheduled.id, paused.version)
+    ).rejects.toBeInstanceOf(ScheduledJobConflict);
   });
 
   it("rejects direct history edits and deletes but lets owner forget cascade", async () => {

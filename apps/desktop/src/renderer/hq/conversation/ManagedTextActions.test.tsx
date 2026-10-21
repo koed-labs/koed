@@ -31,6 +31,72 @@ const action: KoedTextActionProjection = {
   decidedAt: null
 };
 
+it("shows exact Scheduled Job approval facts before the decision", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const jobAction: KoedTextActionProjection = {
+    ...action,
+    name: "koed_job_create",
+    arguments: {
+      title: "Morning brief",
+      instruction: "Brief me on AI news\nInclude sources.",
+      schedule: { kind: "weekdays", at: "08:00", tz: "Europe/Oslo" }
+    },
+    snapshot: {
+      agentId: "66666666-6666-4666-8666-666666666666",
+      agentName: "Quinn",
+      conversationSessionId: "77777777-7777-4777-8777-777777777777",
+      projectName: "Research archive",
+      projectVersion: 2
+    }
+  };
+  const api: ManagedTextActionDesktopApi = {
+    list: vi.fn(async () => [jobAction]),
+    get: vi.fn(),
+    review: vi.fn(),
+    claim: vi.fn(),
+    complete: vi.fn(),
+    applyTeamTodoAdd: vi.fn()
+  };
+  try {
+    await act(async () =>
+      root.render(
+        <ManagedTextActions
+          api={api}
+          executionId={execution}
+          ownerId={owner}
+          profileKey="profile-a"
+        />
+      )
+    );
+    const review = container.querySelector(".hq-text-action__job-review");
+    expect(review?.textContent).toContain(
+      "Every weekday at 08:00 (Europe/Oslo)"
+    );
+    expect(review?.textContent).toContain("Next");
+    expect(review?.textContent).toContain(
+      "Brief me on AI news\nInclude sources."
+    );
+    const facts = Object.fromEntries(
+      [...review!.querySelectorAll("div")].map((row) => [
+        row.querySelector("dt")?.textContent,
+        row.querySelector("dd")?.textContent
+      ])
+    );
+    expect(facts.Results).toBe("this chat");
+    expect(facts.Project).toBe("Research archive");
+    expect(container.textContent).toContain("Quinn");
+    expect(container.querySelector("button")?.textContent).toBe("Approve");
+    expect(review?.textContent).not.toContain(
+      "77777777-7777-4777-8777-777777777777"
+    );
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
 it("asks once, claims before the button service, and records only a verified result", async () => {
   const container = document.createElement("div");
   document.body.append(container);

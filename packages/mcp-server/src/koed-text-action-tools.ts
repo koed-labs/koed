@@ -23,6 +23,10 @@ const descriptions: Record<KoedTextActionName, string> = {
     "Request a Work Item in the User's Project, with an optional calendar due date. Koed verifies the Project and records the exact result.",
   koed_todo_send:
     "Request to send an owned Work Item to an Agent. Koed verifies the item, Agent, Project and current runtime authority.",
+  koed_job_create:
+    "Request a Scheduled Job in this human-started Conversation. Give an exact title, instruction, calendar schedule, and IANA time zone. Koed verifies the owner, Agent, Conversation and Project before review.",
+  koed_job_pause:
+    "Request pause or resume of one owned Scheduled Job by its exact unique title. Koed rejects missing or ambiguous titles and verifies current lifecycle authority.",
   koed_hq_open:
     "Request to open the named Project HQ in the User's Desktop. This only requests navigation.",
   koed_settings_open:

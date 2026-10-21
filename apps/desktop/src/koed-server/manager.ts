@@ -32,6 +32,14 @@ import type {
 } from "../ipc/managed-text-action-protocol.js";
 import { createProjectSourceNativeClient } from "./project-source-native-client.js";
 import { createAgentsClient, type AgentsAuthority } from "./agents-client.js";
+import {
+  createScheduledJobsClient,
+  type ScheduledJobsAuthority
+} from "./scheduled-jobs-client.js";
+import type {
+  ScheduledJobsRequest,
+  ScheduledJobsResult
+} from "../ipc/scheduled-jobs-protocol.js";
 import { resolveChiefDefaultInstance } from "./agent-default-instance.js";
 import { agentBootstrapContextSchema } from "@koed/shared/agent-contract";
 import type { AgentsRequest, AgentsResult } from "../ipc/agents-protocol.js";
@@ -321,6 +329,9 @@ export interface KoedServerManager {
     request: ProjectHqConversationRequest
   ) => Promise<ProjectHqConversationResult>;
   agents: (request: AgentsRequest) => Promise<AgentsResult>;
+  scheduledJobs: (
+    request: ScheduledJobsRequest
+  ) => Promise<ScheduledJobsResult>;
   localAiClients: LocalAiClientDesktopHandler;
   hardwareAcceleration: {
     get: () => Promise<HardwareAccelerationState>;
@@ -5276,6 +5287,23 @@ export const createKoedServerManager = ({
       );
     }
   });
+  const scheduledJobs = createScheduledJobsClient({
+    requestJson: agentsRequestJson,
+    authority: async (): Promise<ScheduledJobsAuthority> => {
+      const access = await managedProjectAccess(true);
+      const credential = readDesktopLocalCredentialAuthorization(
+        resolveKoedHome(environment)
+      );
+      if (!credential || credential.authorization !== access.authorization)
+        throw new PersonalMemoryBoundaryError("not_ready", true);
+      return {
+        key: `${access.apiOrigin}\u0000${access.authorization}\u0000${credential.ownerUserId}`,
+        ownerId: credential.ownerUserId,
+        apiOrigin: access.apiOrigin,
+        authorization: access.authorization
+      };
+    }
+  });
 
   const localAiClients: LocalAiClientDesktopHandler = async (value) => {
     const request = localAiClientCommandSchema.parse(value);
@@ -6274,6 +6302,7 @@ export const createKoedServerManager = ({
     chatMoveNative,
     projectHqConversation,
     agents,
+    scheduledJobs,
     discoverProject: (cwd) =>
       runJson(["project", "discover", "--cwd", cwd], 30_000),
     subscribePersonalMemory,

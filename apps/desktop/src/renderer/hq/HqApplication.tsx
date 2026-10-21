@@ -65,6 +65,7 @@ import { reconcileHqRoute, type HqRoute } from "./hq-navigation.js";
 import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
 import { useProjectMenuActions } from "./useProjectMenuActions.js";
 import { NowView } from "./now/NowView.js";
+import { useScheduledJobs } from "./jobs/use-scheduled-jobs.js";
 import { HqProjectConversation } from "./project/HqProjectConversation.js";
 import { HqProjectThread } from "./project/HqProjectThread.js";
 import { Pixelkin } from "./agents/Pixelkin.js";
@@ -151,6 +152,12 @@ export function HqApplication({
   }) => void;
   catchUpEnabled?: boolean;
 }) {
+  const scheduledJobs = useScheduledJobs(
+    window.koedDesktop?.scheduledJobs,
+    visibilityOwnerId,
+    visibilityProfileKey,
+    visibilityClient
+  );
   const [selection, setSelection] = useState<{
     route: HqRoute;
     project?: DesktopProject;
@@ -1337,6 +1344,39 @@ export function HqApplication({
     });
     if (destination.synthetic) setInventoryTarget(need);
   };
+  const openScheduledJob = async (
+    sessionId: string,
+    personalProjectId: string | null
+  ): Promise<boolean> => {
+    const owner = visibilityOwnerId;
+    const profile = visibilityProfileKey;
+    const find = (rows: readonly DesktopProject[]) => {
+      for (const project of rows) {
+        const thread = project.threads.find(
+          (item) =>
+            item.sessionId === sessionId &&
+            item.personalProjectId === personalProjectId &&
+            !item.conversationTrashedAt
+        );
+        if (thread) return project.id;
+      }
+      return null;
+    };
+    let technicalProjectId = find(projects);
+    if (!technicalProjectId && personalMemoryStore) {
+      const loaded = await personalMemoryStore.loadProjects({ silent: true });
+      if (owner !== visibilityOwnerId || profile !== visibilityProfileKey)
+        return false;
+      technicalProjectId = find([...loaded.projectsById.values()]);
+    }
+    if (!technicalProjectId) return false;
+    selectRoute({
+      kind: "conversation",
+      projectId: technicalProjectId,
+      sessionId
+    });
+    return true;
+  };
   const title =
     route.kind === "conversation"
       ? conversationThread?.name || "Conversation"
@@ -1557,6 +1597,65 @@ export function HqApplication({
           dueOn: typeof args.dueOn === "string" ? args.dueOn : null,
           textActionId: action.id
         });
+        return stillCurrent();
+      }
+      case "koed_job_create": {
+        const api = window.koedDesktop?.scheduledJobs;
+        if (
+          !api ||
+          typeof action.snapshot.agentId !== "string" ||
+          typeof action.snapshot.conversationSessionId !== "string"
+        )
+          return false;
+        const result = await api.command({
+          operation: "create",
+          value: {
+            requestId: action.id,
+            textActionId: action.id,
+            agentId: action.snapshot.agentId,
+            conversationSessionId: action.snapshot.conversationSessionId,
+            projectId:
+              typeof action.snapshot.projectId === "string"
+                ? action.snapshot.projectId
+                : null,
+            title: String(args.title),
+            instruction: String(args.instruction),
+            schedule:
+              args.schedule as import("@koed/shared/scheduled-job-contract").ScheduledJobSchedule
+          }
+        });
+        if (
+          !stillCurrent() ||
+          result.operation !== "create" ||
+          result.job.ownerUserId !== action.ownerUserId
+        )
+          return false;
+        await scheduledJobs.refresh();
+        return stillCurrent();
+      }
+      case "koed_job_pause": {
+        const api = window.koedDesktop?.scheduledJobs;
+        if (
+          !api ||
+          typeof action.snapshot.jobId !== "string" ||
+          typeof action.snapshot.jobVersion !== "number" ||
+          typeof args.paused !== "boolean"
+        )
+          return false;
+        const result = await api.command({
+          operation: "pause",
+          jobId: action.snapshot.jobId,
+          expectedVersion: action.snapshot.jobVersion,
+          paused: args.paused,
+          textActionId: action.id
+        });
+        if (
+          !stillCurrent() ||
+          result.operation !== "pause" ||
+          result.job.ownerUserId !== action.ownerUserId
+        )
+          return false;
+        await scheduledJobs.refresh();
         return stillCurrent();
       }
       case "koed_todo_send": {
@@ -2134,6 +2233,11 @@ export function HqApplication({
         sidebar={({ compact }) => (
           <HqSidebar
             compact={compact}
+            scheduledJobs={scheduledJobs.jobs}
+            onPauseScheduledJob={(job, paused) =>
+              void scheduledJobs.pause(job, paused)
+            }
+            onRunScheduledJob={(job) => void scheduledJobs.runNow(job)}
             conversationAgents={conversationAgents}
             revealProject={revealProject}
             accountIdentity={accountIdentity}
@@ -2288,6 +2392,9 @@ export function HqApplication({
               {route.kind === "home" && !blankOpen ? (
                 <NowView
                   key={visibilityOwnerId ?? "no-owner"}
+                  scheduledJobs={scheduledJobs}
+                  scheduledJobAgents={agentsSnapshot?.agents ?? []}
+                  onOpenJob={openScheduledJob}
                   projects={projects}
                   personalProjects={
                     projectsStore ? personalProjects : undefined
@@ -2334,6 +2441,9 @@ export function HqApplication({
           ) : route.kind === "home" ? (
             <NowView
               key={visibilityOwnerId ?? "no-owner"}
+              scheduledJobs={scheduledJobs}
+              scheduledJobAgents={agentsSnapshot?.agents ?? []}
+              onOpenJob={openScheduledJob}
               projects={projects}
               personalProjects={projectsStore ? personalProjects : undefined}
               projectsApi={projectsApi}

@@ -67,6 +67,14 @@
       "types": "./dist/agent-contract.d.ts",
       "import": "./dist/agent-contract.js"
     },
+    "./scheduled-job-contract": {
+      "types": "./dist/scheduled-job-contract.d.ts",
+      "import": "./dist/scheduled-job-contract.js"
+    },
+    "./scheduled-job-calendar": {
+      "types": "./dist/scheduled-job-calendar.d.ts",
+      "import": "./dist/scheduled-job-calendar.js"
+    },
     "./hq-onboarding-contract": {
       "types": "./dist/hq-onboarding-contract.d.ts",
       "import": "./dist/hq-onboarding-contract.js"

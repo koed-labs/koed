@@ -533,6 +533,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   let scheduledJobTeamAuthority: ScheduledJobTeamAuthority | null = null;
   const scheduledJobRepository = pool
     ? createScheduledJobRepository(pool, {
+        encryptionProvider: envelopeEncryptionProvider,
         teamAuthority: (input) => {
           if (!scheduledJobTeamAuthority)
             throw new Error("Team authority is unavailable");

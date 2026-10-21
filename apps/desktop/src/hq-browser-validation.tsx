@@ -31,6 +31,9 @@ import type {
   WorkspaceProjectWorkItemPatch
 } from "@koed/shared";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
+import type { ScheduledJobsDesktopApi } from "./ipc/scheduled-jobs-protocol.js";
+import { scheduledJobRunSchema } from "@koed/shared/scheduled-job-contract";
+import type { z } from "zod";
 import type { ManagedTextActionDesktopApi } from "./ipc/managed-text-action-protocol.js";
 import type { KoedTextActionProjection } from "@koed/shared";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
@@ -82,6 +85,11 @@ const hq505Outcome = new URLSearchParams(window.location.search).get(
 );
 const hq504Capture =
   new URLSearchParams(window.location.search).get("hq504Capture") === "yes";
+const hq603ReviewCapture =
+  new URLSearchParams(window.location.search).get("hq603ReviewCapture") ===
+  "yes";
+const hq603Capture =
+  new URLSearchParams(window.location.search).get("hq603Capture") === "yes";
 const hq701Linked =
   new URLSearchParams(window.location.search).get("hq701Linked") === "yes";
 const hq705Capture =
@@ -991,7 +999,32 @@ const hq504Actions: KoedTextActionProjection[] = [
     state: "claimed",
     revision: 3,
     reviewKind: "ask_first"
-  }
+  },
+  ...(hq603ReviewCapture
+    ? [
+        {
+          ...hq504ActionBase,
+          id: "00000000-0000-4000-8000-000000006039",
+          effectKey: "00000000-0000-4000-8000-000000006039",
+          toolCallId: "fixture-scheduled-job",
+          name: "koed_job_create" as const,
+          arguments: {
+            title: "Morning brief",
+            instruction: "Brief me on AI news and include sources.",
+            schedule: { kind: "weekdays", at: "08:00", tz: "Europe/Oslo" }
+          },
+          snapshot: {
+            agentId: "00000000-0000-4000-8000-000000002046",
+            agentName: "Chief of Staff",
+            projectName: "New empty Project",
+            projectId: hq204ProjectId,
+            projectVersion: 1,
+            conversationSessionId: hq204SessionId,
+            conversationProjectAssignmentVersion: 1
+          }
+        }
+      ]
+    : [])
 ];
 const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
   list: async () => structuredClone(hq504Actions),
@@ -1022,16 +1055,148 @@ const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
     throw new Error("No Team effect fixture");
   }
 };
+const hq603OwnerId = "00000000-0000-4000-8000-000000000109";
+const hq603AgentId = "00000000-0000-4000-8000-000000002046";
+const hq603ProjectId = "00000000-0000-4000-8000-000000002031";
+const hq603JobId = (index: number) =>
+  `00000000-0000-4000-8000-${String(6030 + index).padStart(12, "0")}`;
+const hq603RunId = (index: number) =>
+  `00000000-0000-4000-8000-${String(6100 + index).padStart(12, "0")}`;
+const hq603Trace = { pauses: 0, runNows: 0, retries: 0, skips: 0 };
+let hq603Jobs = Array.from({ length: 7 }, (_, index) => ({
+  id: hq603JobId(index + 1),
+  ownerUserId: hq603OwnerId,
+  projectId: index === 6 ? null : hq603ProjectId,
+  agentId: hq603AgentId,
+  conversationSessionId: `00000000-0000-4000-8000-${String(index === 6 ? 91 : 21 + index).padStart(12, "0")}`,
+  title: [
+    "Morning brief",
+    "Build check",
+    "Inbox sweep",
+    "Team digest",
+    "Weekly plan",
+    "Release notes",
+    "Paused recap"
+  ][index]!,
+  instruction: "Prepare the scheduled update",
+  schedule: {
+    kind: "daily" as const,
+    at: ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "07:00"][index]!,
+    tz: "Europe/Oslo"
+  },
+  paused: index === 6,
+  pausedReason: index === 6 ? "owner" : null,
+  runnerDeviceId: "00000000-0000-4000-8000-000000006030",
+  version: 1,
+  createdAt: FIXTURE_TIME,
+  updatedAt: FIXTURE_TIME
+}));
+let hq603Runs: z.infer<typeof scheduledJobRunSchema>[] = (
+  ["failed", "missed"] as const
+).map((status, index) => ({
+  id: hq603RunId(index + 1),
+  jobId: hq603JobId(index + 1),
+  scheduledFor: FIXTURE_TIME,
+  trigger: "scheduled" as const,
+  attempt: index === 0 ? 1 : 0,
+  status,
+  skipReason: null as string | null,
+  startedAt: null,
+  finishedAt: FIXTURE_TIME,
+  executionId: null,
+  error: index === 0 ? "Check failed" : null
+}));
+const hq603ScheduledJobs = {
+  command: async (
+    request: Parameters<ScheduledJobsDesktopApi["command"]>[0]
+  ) => {
+    if (request.operation === "list")
+      return {
+        operation: "list",
+        jobs: structuredClone(hq603Jobs),
+        nextCursor: null
+      };
+    if (request.operation === "runs")
+      return {
+        operation: "runs",
+        jobId: request.jobId,
+        runs: structuredClone(
+          hq603Runs.filter((run) => run.jobId === request.jobId)
+        ),
+        nextCursor: null
+      };
+    if (request.operation === "get")
+      return {
+        operation: "get",
+        job: structuredClone(hq603Jobs.find((job) => job.id === request.jobId))
+      };
+    if (request.operation === "create")
+      throw new Error("Text-action create is verified by database tests");
+    if (request.operation === "pause") {
+      hq603Trace.pauses++;
+      hq603Jobs = hq603Jobs.map((job) =>
+        job.id === request.jobId
+          ? {
+              ...job,
+              paused: request.paused,
+              pausedReason: request.paused ? "owner" : null,
+              version: job.version + 1
+            }
+          : job
+      );
+      return {
+        operation: "pause",
+        job: structuredClone(hq603Jobs.find((job) => job.id === request.jobId))
+      };
+    }
+    if (request.operation === "runNow") {
+      hq603Trace.runNows++;
+      const run = {
+        ...hq603Runs[0]!,
+        id: crypto.randomUUID(),
+        jobId: request.jobId,
+        scheduledFor: new Date().toISOString(),
+        trigger: "manual" as const,
+        status: "scheduled" as const,
+        attempt: 0,
+        error: null,
+        finishedAt: null
+      };
+      hq603Runs = [run, ...hq603Runs];
+      return { operation: "runNow", run: structuredClone(run) };
+    }
+    const run = hq603Runs.find(
+      (row) => row.id === request.runId && row.jobId === request.jobId
+    );
+    if (!run) throw new Error("Unknown fixture run");
+    if (request.operation === "retry") {
+      hq603Trace.retries++;
+      run.status = "scheduled";
+      run.finishedAt = null;
+    } else {
+      hq603Trace.skips++;
+      run.status = "skipped";
+      run.skipReason = "owner";
+    }
+    return { operation: request.operation, run: structuredClone(run) };
+  }
+} as ScheduledJobsDesktopApi;
+
 const installSettingsDesktop = () => {
   const originalDesktop = window.koedDesktop;
   window.koedDesktop = {
     ...originalDesktop,
     ...(hq307Capture ? { managedMemoryActions: hq307MemoryActionsApi } : {}),
     ...(hq504Capture ? { managedTextActions: hq504ManagedTextActions } : {}),
+    ...(hq603Capture ? { scheduledJobs: hq603ScheduledJobs } : {}),
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
     ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
     ...(hq106Capture ? { personalMemory: sidebarPersonalMemoryApi } : {}),
-    ...(hq204Capture || hq205Capture || hq207Capture || hq506Capture
+    ...(hq204Capture ||
+    hq205Capture ||
+    hq207Capture ||
+    hq506Capture ||
+    hq603Capture
       ? {
           agents: {
             list: async () => [
@@ -3735,6 +3900,15 @@ export function HqValidationApp() {
       throw new Error("The real HQ shell scaffold did not mount.");
     }
     fixture.reset();
+    if (hq603Capture) {
+      hq603Trace.pauses = 0;
+      hq603Trace.runNows = 0;
+      hq603Trace.retries = 0;
+      hq603Trace.skips = 0;
+      (
+        window as Window & { __koedHq603Trace?: typeof hq603Trace }
+      ).__koedHq603Trace = hq603Trace;
+    }
     hq104SentPrompt = "";
     hq204Started = hq306Capture || hq406ActiveCapture;
     hq505Trace.catchUpCalls = 0;
@@ -3850,6 +4024,8 @@ export function HqValidationApp() {
     document.documentElement.dataset.browserValidationReady = "true";
     return () => {
       restoreDesktop();
+      delete (window as Window & { __koedHq603Trace?: typeof hq603Trace })
+        .__koedHq603Trace;
       delete (window as Window & { __koedHq306Trace?: typeof hq306Trace })
         .__koedHq306Trace;
       delete (window as Window & { __koedHq305Trace?: typeof hq305Trace })

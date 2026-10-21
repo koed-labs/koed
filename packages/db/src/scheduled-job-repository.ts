@@ -9,6 +9,8 @@ import {
 } from "@koed/shared";
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
 import { managedConversationEventMutationId } from "./managed-conversation-event.js";
+import { claimedManagedTextCreateWithClient } from "./managed-text-action-repository.js";
+import type { EnvelopeEncryptionProvider } from "@koed/shared";
 
 type Row = Record<string, unknown>;
 export class ScheduledJobNotFound extends Error {}
@@ -388,7 +390,7 @@ const lockJob = async (
 ) => {
   const preliminary = await client.query<Row>(
     `select job.project_id,job.conversation_session_id,
-      (case when session.project_override_id is not null then session.project_override_personal_project_id
+      (case when session.project_override_at is not null then session.project_override_personal_project_id
         else session.automatic_personal_project_id end) as conversation_project_id
      from scheduled_jobs job left join sessions session
        on session.id=job.conversation_session_id and session.owner_user_id=job.owner_user_id
@@ -413,7 +415,7 @@ const lockJob = async (
   for (const sessionId of sessionIds) {
     const assignment = await client.query<Row>(
       `select project_assignment_version,
-         (case when project_override_id is not null then project_override_personal_project_id
+         (case when project_override_at is not null then project_override_personal_project_id
            else automatic_personal_project_id end) as project_id
        from sessions where id=$1 and owner_user_id=$2`,
       [sessionId, ownerUserId]
@@ -453,7 +455,7 @@ const lockJob = async (
   for (const sessionId of sessionIds) {
     const assignment = await client.query<Row>(
       `select project_assignment_version,
-         (case when project_override_id is not null then project_override_personal_project_id
+         (case when project_override_at is not null then project_override_personal_project_id
            else automatic_personal_project_id end) as project_id
        from sessions where id=$1 and owner_user_id=$2 for share`,
       [sessionId, ownerUserId]
@@ -509,7 +511,7 @@ const binding = async (
   }
   const conversation = await client.query<Row>(
     `select id,logical_session_id,updated_at,project_assignment_version,
-       (case when project_override_id is not null then project_override_personal_project_id
+       (case when project_override_at is not null then project_override_personal_project_id
              else automatic_personal_project_id end) as effective_project_id
        from sessions where id=$1 and owner_user_id=$2 and visibility='personal'
         and personal_deleted_at is null and trashed_at is null and invalidated_at is null
@@ -554,8 +556,39 @@ export function createScheduledJobRepository(
   pool: pg.Pool,
   options: {
     teamAuthority?: ScheduledJobTeamAuthority;
+    encryptionProvider?: EnvelopeEncryptionProvider;
   } = {}
 ) {
+  const textActionTeamProof = async (
+    ownerUserId: string,
+    projectId: string | null
+  ) => {
+    if (!projectId) return null;
+    const result = await pool.query<Row>(
+      `select id,team_backend_id,workspace_project_id from projects
+       where id=$1 and owner_user_id=$2 and lifecycle='active' and deletion_phase is null`,
+      [projectId, ownerUserId]
+    );
+    const project = result.rows[0];
+    if (!project) throw new ScheduledJobConflict("Project is unavailable");
+    return assertTeam(ownerUserId, project);
+  };
+  const matchesTextSnapshot = (
+    snapshot: Record<string, unknown>,
+    authority: Awaited<ReturnType<typeof binding>>,
+    proof: Awaited<ReturnType<typeof textActionTeamProof>>
+  ) =>
+    (snapshot.projectId ?? null) === (authority.project?.id ?? null) &&
+    (snapshot.projectVersion ?? null) ===
+      (authority.project?.version ?? null) &&
+    snapshot.conversationProjectAssignmentVersion ===
+      authority.conversation.project_assignment_version &&
+    (snapshot.teamBackendId ?? null) ===
+      (authority.project?.team_backend_id ?? null) &&
+    (snapshot.workspaceProjectId ?? null) ===
+      (authority.project?.workspace_project_id ?? null) &&
+    (snapshot.teamProjectVersion ?? null) === (proof?.projectVersion ?? null) &&
+    (snapshot.teamMemberVersion ?? null) === (proof?.memberVersion ?? null);
   const assertTeam = async (ownerUserId: string, project: Row | null) => {
     if (
       !project ||
@@ -1396,6 +1429,9 @@ export function createScheduledJobRepository(
       runnerDeviceId: string,
       input: CreateScheduledJob
     ) {
+      const textProof = input.textActionId
+        ? await textActionTeamProof(ownerUserId, input.projectId)
+        : null;
       return transaction(pool, async (client) => {
         const payloadHash = createHash("sha256")
           .update(
@@ -1417,10 +1453,55 @@ export function createScheduledJobRepository(
         if (prior.rows[0]) {
           if (prior.rows[0].creation_payload_hash !== payloadHash)
             throw new ScheduledJobConflict("Creation request changed");
+          if (input.textActionId) {
+            const receipt = await client.query<Row>(
+              `select id from managed_conversation_text_actions
+               where id=$1 and owner_user_id=$2 and action_name='koed_job_create'
+                 and state='applied'`,
+              [input.textActionId, ownerUserId]
+            );
+            if (input.requestId !== input.textActionId || !receipt.rows[0])
+              throw new ScheduledJobConflict(
+                "Scheduled Job text action receipt missing"
+              );
+          }
           return mapJob(prior.rows[0]);
         }
+        let textSnapshot: Record<string, unknown> | null = null;
+        if (input.textActionId) {
+          const valid = await claimedManagedTextCreateWithClient(
+            client,
+            options.encryptionProvider,
+            {
+              ownerUserId,
+              actionId: input.textActionId,
+              name: "koed_job_create",
+              matches: (args, snapshot) =>
+                input.requestId === input.textActionId &&
+                args.title === input.title &&
+                args.instruction === input.instruction &&
+                JSON.stringify(args.schedule) ===
+                  JSON.stringify(input.schedule) &&
+                (snapshot.projectId ?? null) === input.projectId &&
+                snapshot.agentId === input.agentId &&
+                snapshot.conversationSessionId ===
+                  input.conversationSessionId &&
+                ((textSnapshot = snapshot), true)
+            }
+          );
+          if (!valid)
+            throw new ScheduledJobConflict("Scheduled Job text action changed");
+        }
         const current = await binding(client, ownerUserId, input);
-        await assertTeam(ownerUserId, current.project);
+        if (input.textActionId) {
+          if (
+            !textSnapshot ||
+            !matchesTextSnapshot(textSnapshot, current, textProof)
+          )
+            throw new ScheduledJobConflict(
+              "Scheduled Job text action binding changed"
+            );
+        } else await assertTeam(ownerUserId, current.project);
         const result = await client.query<Row>(
           `insert into scheduled_jobs (owner_user_id,creation_request_id,creation_payload_hash,
             project_id,agent_id,conversation_session_id,title,instruction,schedule,runner_device_id)
@@ -1449,6 +1530,15 @@ export function createScheduledJobRepository(
           return mapJob(raced.rows[0]!);
         }
         await changed(client, ownerUserId, String(result.rows[0]!.id));
+        if (input.textActionId) {
+          const applied = await client.query(
+            `update managed_conversation_text_actions set state='applied',revision=revision+1,updated_at=now()
+             where id=$1 and owner_user_id=$2 and state='claimed'`,
+            [input.textActionId, ownerUserId]
+          );
+          if (applied.rowCount !== 1)
+            throw new ScheduledJobConflict("Scheduled Job text action changed");
+        }
         return mapJob(result.rows[0]!);
       });
     },
@@ -1563,19 +1653,68 @@ export function createScheduledJobRepository(
       ownerUserId: string,
       id: string,
       expectedVersion: number,
-      paused: boolean
+      paused: boolean,
+      textActionId?: string
     ) {
+      const textProject = textActionId
+        ? (
+            await pool.query<Row>(
+              "select project_id from scheduled_jobs where id=$1 and owner_user_id=$2",
+              [id, ownerUserId]
+            )
+          ).rows[0]
+        : null;
+      const textProof = textActionId
+        ? await textActionTeamProof(
+            ownerUserId,
+            textProject?.project_id == null
+              ? null
+              : dbText(textProject.project_id)
+          )
+        : null;
       return transaction(pool, async (client) => {
         const current = await lockJob(client, ownerUserId, id);
         assertVersion(current, expectedVersion);
-        if (!paused) {
+        let textSnapshot: Record<string, unknown> | null = null;
+        if (textActionId) {
+          const valid = await claimedManagedTextCreateWithClient(
+            client,
+            options.encryptionProvider,
+            {
+              ownerUserId,
+              actionId: textActionId,
+              name: "koed_job_pause",
+              matches: (args, snapshot) =>
+                args.title === current.title &&
+                args.paused === paused &&
+                snapshot.jobId === id &&
+                snapshot.jobVersion === expectedVersion &&
+                snapshot.paused === current.paused &&
+                snapshot.agentId === current.agent_id &&
+                snapshot.conversationSessionId ===
+                  current.conversation_session_id &&
+                ((textSnapshot = snapshot), true)
+            }
+          );
+          if (!valid)
+            throw new ScheduledJobConflict("Scheduled Job text action changed");
+        }
+        if (!paused || textActionId) {
           const authority = await binding(client, ownerUserId, {
             agentId: String(current.agent_id),
             conversationSessionId: String(current.conversation_session_id),
             projectId:
               current.project_id == null ? null : dbText(current.project_id)
           });
-          await assertTeam(ownerUserId, authority.project);
+          if (textActionId) {
+            if (
+              !textSnapshot ||
+              !matchesTextSnapshot(textSnapshot, authority, textProof)
+            )
+              throw new ScheduledJobConflict(
+                "Scheduled Job text action binding changed"
+              );
+          } else await assertTeam(ownerUserId, authority.project);
         }
         const result = await client.query<Row>(
           `update scheduled_jobs set paused=$3,paused_reason=$4,version=version+1,updated_at=now()
@@ -1583,6 +1722,15 @@ export function createScheduledJobRepository(
           [id, ownerUserId, paused, paused ? "owner" : null]
         );
         await changed(client, ownerUserId, id);
+        if (textActionId) {
+          const applied = await client.query(
+            `update managed_conversation_text_actions set state='applied',revision=revision+1,updated_at=now()
+             where id=$1 and owner_user_id=$2 and state='claimed'`,
+            [textActionId, ownerUserId]
+          );
+          if (applied.rowCount !== 1)
+            throw new ScheduledJobConflict("Scheduled Job text action changed");
+        }
         return mapJob(result.rows[0]!);
       });
     },
@@ -1720,13 +1868,25 @@ export function createScheduledJobRepository(
       return transaction(pool, async (client) => {
         const job = await lockJob(client, ownerUserId, id);
         assertVersion(job, expectedVersion);
+        if (job.paused)
+          throw new ScheduledJobConflict("Scheduled Job is paused");
+        const authority = await binding(client, ownerUserId, {
+          agentId: String(job.agent_id),
+          conversationSessionId: String(job.conversation_session_id),
+          projectId: job.project_id == null ? null : dbText(job.project_id)
+        });
+        await assertTeam(ownerUserId, authority.project);
         const run = await client.query<Row>(
           "select * from scheduled_job_runs where id=$1 and job_id=$2 for update",
           [runId, id]
         );
         if (!run.rows[0])
           throw new ScheduledJobNotFound("Scheduled Job run not found");
-        if (!["interrupted", "scheduled"].includes(String(run.rows[0].status)))
+        if (
+          !["interrupted", "scheduled", "failed", "missed"].includes(
+            String(run.rows[0].status)
+          )
+        )
           throw new ScheduledJobConflict(
             "Active or finished run cannot be skipped"
           );

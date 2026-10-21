@@ -10,6 +10,10 @@ import { sessionSelectionId } from "../../project-memory-ui.js";
 import type { HqRoute } from "./hq-navigation.js";
 import { HqSidebarPreferencesStore } from "../state/hq-sidebar-preferences.js";
 import type { Agent } from "@koed/shared/agent-contract";
+import { scheduledJobSchema } from "@koed/shared/scheduled-job-contract";
+import type { z } from "zod";
+import { Clock3 } from "lucide-react";
+type ScheduledJob = z.infer<typeof scheduledJobSchema>;
 import { Pixelkin } from "./agents/Pixelkin.js";
 import {
   useEffect,
@@ -126,6 +130,9 @@ const projectDomId = (projectId: string): string =>
   `hq-project-children-${encodeURIComponent(projectId)}`;
 
 export type HqSidebarProps = {
+  scheduledJobs?: readonly ScheduledJob[];
+  onPauseScheduledJob?: (job: ScheduledJob, paused: boolean) => void;
+  onRunScheduledJob?: (job: ScheduledJob) => void;
   conversationAgents?: Readonly<Record<string, Agent>>;
   compact?: boolean;
   accountIdentity?: HqAccountIdentity;
@@ -168,6 +175,9 @@ export type HqSidebarProps = {
 };
 
 export function HqSidebar({
+  scheduledJobs = [],
+  onPauseScheduledJob,
+  onRunScheduledJob,
   conversationAgents,
   compact = false,
   accountIdentity,
@@ -407,6 +417,13 @@ export function HqSidebar({
     thread: PersonalDesktopProjectThread,
     personalProjectId: string | null
   ) => {
+    const boundJobs = thread.sessionId
+      ? scheduledJobs.filter(
+          (job) =>
+            job.conversationSessionId === thread.sessionId &&
+            job.projectId === personalProjectId
+        )
+      : [];
     const sessionId = sessionSelectionId(thread);
     const selected =
       selectedProjectId === projectId && selectedSessionId === sessionId;
@@ -415,7 +432,8 @@ export function HqSidebar({
         className="hq-sidebar__conversation"
         key={`${projectId}:${thread.id}`}
         onContextMenu={(event) => {
-          if (!thread.sessionId || !onDeleteConversation) return;
+          if (!thread.sessionId || (!onDeleteConversation && !boundJobs.length))
+            return;
           event.preventDefault();
           setConversationMenuId(
             conversationMenuId === thread.sessionId ? null : thread.sessionId
@@ -456,7 +474,14 @@ export function HqSidebar({
           title={thread.name || "Conversation"}
           type="button"
         >
-          {thread.sessionId && conversationAgents?.[thread.sessionId] ? (
+          {boundJobs.length ? (
+            <Clock3
+              aria-label="Job chat"
+              className="hq-sidebar__job-clock"
+              data-paused={boundJobs.every((job) => job.paused) || undefined}
+              size={14}
+            />
+          ) : thread.sessionId && conversationAgents?.[thread.sessionId] ? (
             <Pixelkin agent={conversationAgents[thread.sessionId]!} size={16} />
           ) : null}
           <span>{thread.name || "Conversation"}</span>
@@ -486,26 +511,63 @@ export function HqSidebar({
         ) : null}
         {conversationMenuId === thread.sessionId &&
         thread.sessionId &&
-        onDeleteConversation ? (
+        (onDeleteConversation || boundJobs.length) ? (
           <div
             className="hq-sidebar__conversation-menu"
             role="menu"
             aria-label={`${thread.name || "Conversation"} actions`}
           >
-            <button
-              role="menuitem"
-              type="button"
-              onClick={() => {
-                onDeleteConversation(
-                  projectId,
-                  thread.sessionId!,
-                  thread.name || "Conversation"
-                );
-                setConversationMenuId(null);
-              }}
-            >
-              Delete chat
-            </button>
+            {boundJobs.map((job) => (
+              <div
+                key={job.id}
+                role="group"
+                aria-label={`${job.title} job actions`}
+              >
+                {boundJobs.length > 1 ? (
+                  <div className="hq-sidebar__job-menu-title" title={job.title}>
+                    {job.title}
+                  </div>
+                ) : null}
+                <button
+                  role="menuitem"
+                  type="button"
+                  disabled={!onPauseScheduledJob}
+                  onClick={() => {
+                    setConversationMenuId(null);
+                    onPauseScheduledJob?.(job, !job.paused);
+                  }}
+                >
+                  {job.paused ? "Resume job" : "Pause job"}
+                </button>
+                <button
+                  role="menuitem"
+                  type="button"
+                  disabled={!onRunScheduledJob || job.paused}
+                  onClick={() => {
+                    setConversationMenuId(null);
+                    onRunScheduledJob?.(job);
+                  }}
+                >
+                  Run now
+                </button>
+              </div>
+            ))}
+            {onDeleteConversation ? (
+              <button
+                role="menuitem"
+                type="button"
+                onClick={() => {
+                  onDeleteConversation(
+                    projectId,
+                    thread.sessionId!,
+                    thread.name || "Conversation"
+                  );
+                  setConversationMenuId(null);
+                }}
+              >
+                Delete chat
+              </button>
+            ) : null}
             {onForgetConversation ? (
               <button
                 role="menuitem"

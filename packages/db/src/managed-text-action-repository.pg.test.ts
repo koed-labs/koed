@@ -13,6 +13,11 @@ import { createManagedTextActionRepository } from "./managed-text-action-reposit
 import { runDbMigrations } from "./migrate.js";
 import { createProjectApiRepository } from "./project-api-repository.js";
 import { createWorkItemRepository } from "./work-item-repository.js";
+import { createAgentsRepository } from "./agents-repository.js";
+import {
+  createScheduledJobRepository,
+  ScheduledJobConflict
+} from "./scheduled-job-repository.js";
 
 // Requires the canonical HQ-504 migration (0073). This file is prepared before
 // that schema slot opens; it must be run against a fresh child database then.
@@ -181,6 +186,233 @@ describe.skipIf(!testUrl)("HQ-504 exact managed text-action authority", () => {
       leaseToken: command!.leaseToken!
     };
   };
+
+  it("binds a human-origin unscoped Scheduled Job and rejects a moved Conversation after claim", async () => {
+    const setup = async (projectScoped = false) => {
+      const f = await fixture("supervised", true);
+      if (projectScoped)
+        await pool.query(
+          "update sessions set automatic_personal_project_id=$2,project_assignment_version=project_assignment_version+1 where id=$1",
+          [f.sessionId, f.project.id]
+        );
+      await pool.query(
+        `insert into ai_client_instances(owner_user_id,instance_id,driver_id,display_name,enabled)
+         values($1,'codex.default','codex','Codex',true) on conflict do nothing`,
+        [f.owner]
+      );
+      const agent = await createAgentsRepository(pool).create(f.owner, {
+        name: "Scheduler",
+        role: "Assistant",
+        look: {},
+        aiClientInstanceId: "codex.default",
+        defaultPermissionMode: "supervised",
+        defaultModel: null
+      });
+      await pool.query(
+        `insert into device_credentials(owner_user_id,credential_key_id,upstream_backend_id,
+           device_instance_id,verifier_kind,verifier_hash,operation_families)
+         values($1,$2,'personal',$3,'secret_hash',$4,array['managed_execution'])`,
+        [f.owner, `hq603-${randomUUID()}`, deviceId, "a".repeat(64)]
+      );
+      const args = {
+        title: "Morning brief",
+        instruction: "Check the plan",
+        schedule: { kind: "daily" as const, at: "09:00", tz: "Europe/Oslo" }
+      };
+      const action = await f.actions.enqueueManagedTextAction(f.actor, {
+        executionId: f.executionId,
+        commandId: f.commandId,
+        leaseToken: f.leaseToken,
+        executionGeneration: 1,
+        providerTurnId: "turn-job",
+        toolCallId: "tool-job",
+        name: "koed_job_create",
+        arguments: args
+      });
+      expect(action?.state).toBe("awaiting_review");
+      expect(action?.snapshot.projectId).toBe(
+        projectScoped ? f.project.id : undefined
+      );
+      const approved = await f.actions.decideManagedTextAction(f.actor, {
+        executionId: f.executionId,
+        actionId: action!.id,
+        expectedRevision: action!.revision,
+        decision: "approve"
+      });
+      const claimed = await f.actions.claimManagedTextAction(f.actor, {
+        executionId: f.executionId,
+        actionId: action!.id,
+        expectedRevision: approved!.revision
+      });
+      expect(claimed?.state).toBe("claimed");
+      return { f, agent, action: action!, claimed: claimed!, args };
+    };
+    const first = await setup();
+    const jobs = createScheduledJobRepository(pool, {
+      encryptionProvider: provider
+    });
+    const created = await jobs.create(first.f.owner, deviceId, {
+      ...first.args,
+      requestId: first.action.id,
+      textActionId: first.action.id,
+      projectId: null,
+      agentId: first.agent.id,
+      conversationSessionId: first.f.sessionId
+    });
+    expect(created.projectId).toBeNull();
+    expect(
+      (
+        await first.f.actions.completeManagedTextAction(first.f.actor, {
+          executionId: first.f.executionId,
+          actionId: first.action.id,
+          expectedRevision: first.claimed.revision
+        })
+      )?.state
+    ).toBe("applied");
+    expect(
+      (
+        await jobs.create(first.f.owner, deviceId, {
+          ...first.args,
+          requestId: first.action.id,
+          textActionId: first.action.id,
+          projectId: null,
+          agentId: first.agent.id,
+          conversationSessionId: first.f.sessionId
+        })
+      ).id
+    ).toBe(created.id);
+    const pauseAction = await first.f.actions.enqueueManagedTextAction(
+      first.f.actor,
+      {
+        executionId: first.f.executionId,
+        commandId: first.f.commandId,
+        leaseToken: first.f.leaseToken,
+        executionGeneration: 1,
+        providerTurnId: "turn-job",
+        toolCallId: "tool-job-pause",
+        name: "koed_job_pause",
+        arguments: { title: created.title, paused: true }
+      }
+    );
+    expect(pauseAction?.state).toBe("awaiting_review");
+    const pauseApproved = await first.f.actions.decideManagedTextAction(
+      first.f.actor,
+      {
+        executionId: first.f.executionId,
+        actionId: pauseAction!.id,
+        expectedRevision: pauseAction!.revision,
+        decision: "approve"
+      }
+    );
+    const pauseClaimed = await first.f.actions.claimManagedTextAction(
+      first.f.actor,
+      {
+        executionId: first.f.executionId,
+        actionId: pauseAction!.id,
+        expectedRevision: pauseApproved!.revision
+      }
+    );
+    expect(pauseClaimed?.state).toBe("claimed");
+    expect(
+      (
+        await jobs.setPaused(
+          first.f.owner,
+          created.id,
+          created.version,
+          true,
+          pauseAction!.id
+        )
+      ).paused
+    ).toBe(true);
+    expect(
+      (
+        await first.f.actions.completeManagedTextAction(first.f.actor, {
+          executionId: first.f.executionId,
+          actionId: pauseAction!.id,
+          expectedRevision: pauseClaimed!.revision
+        })
+      )?.state
+    ).toBe("applied");
+    const resumed = await jobs.setPaused(
+      first.f.owner,
+      created.id,
+      created.version + 1,
+      false
+    );
+    const syntheticRun = await jobs.runNow(
+      first.f.owner,
+      created.id,
+      resumed.version,
+      randomUUID()
+    );
+    const syntheticAttempt = await jobs.startAttempt(
+      first.f.owner,
+      created.id,
+      syntheticRun.id,
+      {
+        expectedJobVersion: resumed.version,
+        runnerDeviceId: deviceId,
+        fenceToken: "synthetic-boundary"
+      }
+    );
+    if (!syntheticAttempt.started)
+      throw new Error("Expected a Scheduled Job attempt");
+    await pool.query(
+      `insert into scheduled_job_attempt_dispatch_bindings
+       (attempt_id,owner_user_id,managed_execution_id,managed_execution_generation,managed_command_id)
+       values($1,$2,$3,1,$4)`,
+      [
+        syntheticAttempt.attemptId,
+        first.f.owner,
+        first.f.executionId,
+        first.f.commandId
+      ]
+    );
+    for (const name of ["koed_chat_create", "koed_job_create"] as const) {
+      expect(
+        await first.f.actions.enqueueManagedTextAction(first.f.actor, {
+          executionId: first.f.executionId,
+          commandId: first.f.commandId,
+          leaseToken: first.f.leaseToken,
+          executionGeneration: 1,
+          providerTurnId: "synthetic-turn",
+          toolCallId: `synthetic-${name}`,
+          name,
+          arguments: name === "koed_chat_create" ? {} : first.args
+        })
+      ).toBeNull();
+    }
+    const second = await setup();
+    await pool.query(
+      `update sessions set automatic_personal_project_id=$2,
+       project_assignment_version=project_assignment_version+1 where id=$1`,
+      [second.f.sessionId, second.f.project.id]
+    );
+    await expect(
+      jobs.create(second.f.owner, deviceId, {
+        ...second.args,
+        requestId: second.action.id,
+        textActionId: second.action.id,
+        projectId: null,
+        agentId: second.agent.id,
+        conversationSessionId: second.f.sessionId
+      })
+    ).rejects.toBeInstanceOf(ScheduledJobConflict);
+    const third = await setup(true);
+    await pool.query("update projects set version=version+1 where id=$1", [
+      third.f.project.id
+    ]);
+    await expect(
+      jobs.create(third.f.owner, deviceId, {
+        ...third.args,
+        requestId: third.action.id,
+        textActionId: third.action.id,
+        projectId: third.f.project.id,
+        agentId: third.agent.id,
+        conversationSessionId: third.f.sessionId
+      })
+    ).rejects.toBeInstanceOf(ScheduledJobConflict);
+  }, 120_000);
 
   it("uses the exact human command, generation and lease for a single proposal", async () => {
     const f = await fixture();
@@ -362,6 +594,22 @@ describe.skipIf(!testUrl)("HQ-504 exact managed text-action authority", () => {
         toolCallId: "tool-synthetic",
         name: "koed_chat_create",
         arguments: {}
+      })
+    ).toBeNull();
+    expect(
+      await stale.actions.enqueueManagedTextAction(stale.actor, {
+        executionId: stale.executionId,
+        commandId: stale.commandId,
+        leaseToken: stale.leaseToken,
+        executionGeneration: 1,
+        providerTurnId: "turn-synthetic-job",
+        toolCallId: "tool-synthetic-job",
+        name: "koed_job_create",
+        arguments: {
+          title: "No synthetic Job",
+          instruction: "Denied",
+          schedule: { kind: "daily", at: "09:00", tz: "Europe/Oslo" }
+        }
       })
     ).toBeNull();
   }, 120_000);

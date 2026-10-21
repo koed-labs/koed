@@ -43,6 +43,10 @@ import {
   nowSharedDeadlineItems
 } from "../due/hq-due-model.js";
 import { viewerTimeZone } from "../project/hq-work-item-model.js";
+import { NowScheduledJobs } from "../jobs/NowScheduledJobs.js";
+import type { Agent } from "@koed/shared/agent-contract";
+import { actionableScheduledRuns } from "../jobs/scheduled-jobs-model.js";
+import type { ScheduledJobInventory } from "../jobs/use-scheduled-jobs.js";
 import "./now.css";
 
 export function NowView({
@@ -63,7 +67,10 @@ export function NowView({
   onOpenCitationMessage,
   onSelectProject,
   onSelectDueItem,
-  onSelectConversation
+  onSelectConversation,
+  scheduledJobs,
+  onOpenJob,
+  scheduledJobAgents
 }: {
   projects: readonly DesktopProject[];
   personalProjects?: readonly Project[];
@@ -87,6 +94,9 @@ export function NowView({
   onSelectProject: (id: string) => void;
   onSelectDueItem?: (projectId: string, itemId: string) => void;
   onSelectConversation: (need: NowNeed) => void;
+  scheduledJobs?: ScheduledJobInventory;
+  onOpenJob?: (sessionId: string, projectId: string | null) => Promise<boolean>;
+  scheduledJobAgents?: readonly Agent[];
 }) {
   const [preferences, setPreferences] = useState(readNowPreferences);
   const [moreNeeds, setMoreNeeds] = useState(false);
@@ -483,6 +493,9 @@ export function NowView({
     ...soonDues.map((due) => ({ type: "due" as const, due })),
     ...needs.map((need) => ({ type: "need" as const, need }))
   ];
+  const jobNeeds = scheduledJobs
+    ? actionableScheduledRuns(scheduledJobs.jobs, scheduledJobs.runs)
+    : [];
   const setFold = (section: "needsFolded" | "projectsFolded") => {
     const next = { ...preferences, [section]: !preferences[section] };
     setPreferences(next);
@@ -494,7 +507,7 @@ export function NowView({
         <section
           className="hq-now__section"
           aria-label="Needs you"
-          data-has-items={needRows.length > 0}
+          data-has-items={needRows.length + jobNeeds.length > 0}
         >
           <header className="hq-now__section-header">
             <button
@@ -504,7 +517,7 @@ export function NowView({
             >
               <ChevronDown aria-hidden="true" />
               <i className="hq-now__section-dot" aria-hidden="true" />
-              Needs you <span>{needRows.length}</span>
+              Needs you <span>{needRows.length + jobNeeds.length}</span>
             </button>
             <button
               type="button"
@@ -529,6 +542,18 @@ export function NowView({
               {loading || !sourceCurrent ? (
                 <p role="status">Checking Conversations…</p>
               ) : null}
+              {scheduledJobs?.loading ? (
+                <p role="status">Checking Scheduled Jobs…</p>
+              ) : null}
+              {scheduledJobs?.error ? (
+                <p role="alert">{scheduledJobs.error}</p>
+              ) : null}
+              {scheduledJobs?.truncated ? (
+                <p role="status">
+                  Scheduled Job history is incomplete. Refresh to check for more
+                  runs.
+                </p>
+              ) : null}
               {!loading && sourceCurrent && inventoryTruncated ? (
                 <p role="status">
                   Showing recent Conversations. Older activity may be missing.
@@ -539,7 +564,11 @@ export function NowView({
               !dueError &&
               sourceCurrent &&
               complete &&
-              needRows.length === 0 ? (
+              (!scheduledJobs ||
+                (!scheduledJobs.loading &&
+                  !scheduledJobs.error &&
+                  !scheduledJobs.truncated)) &&
+              needRows.length + jobNeeds.length === 0 ? (
                 <p className="hq-now__empty">Nothing needs you right now.</p>
               ) : null}
               {nowVisible(needRows, moreNeeds).map((entry) =>
@@ -660,13 +689,88 @@ export function NowView({
                   })()
                 )
               )}
-              {needRows.length > 5 ? (
+              {jobNeeds
+                .slice(
+                  0,
+                  moreNeeds ? undefined : Math.max(0, 5 - needRows.length)
+                )
+                .map(({ job, run }) => (
+                  <div className="hq-now__job-need" key={`job:${run.id}`}>
+                    <span>
+                      <strong>{job.title}</strong>
+                      <small>
+                        {" "}
+                        ·{" "}
+                        {run.status === "missed"
+                          ? "Missed run"
+                          : run.status === "failed"
+                            ? "Failed run"
+                            : "Interrupted run"}
+                      </small>
+                    </span>
+                    {scheduledJobs?.uncertainIds.has(job.id) ? (
+                      <small>
+                        Recent runs:{" "}
+                        {scheduledJobs.runs
+                          .filter((entry) => entry.jobId === job.id)
+                          .slice(0, 3)
+                          .map(
+                            (entry) =>
+                              `${entry.status} ${new Date(entry.scheduledFor).toLocaleString()}`
+                          )
+                          .join(" · ") || "none found"}
+                      </small>
+                    ) : null}
+                    {scheduledJobs?.uncertainIds.has(job.id) ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          scheduledJobs.acknowledgeUncertain(job.id)
+                        }
+                      >
+                        Reviewed run history
+                      </button>
+                    ) : null}
+                    {run.status !== "missed" ? (
+                      <button
+                        type="button"
+                        disabled={
+                          job.paused || scheduledJobs?.pendingIds.has(job.id)
+                        }
+                        onClick={() => void scheduledJobs?.retry(job, run)}
+                      >
+                        Retry
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={
+                        job.paused ||
+                        scheduledJobs?.pendingIds.has(job.id) ||
+                        scheduledJobs?.uncertainIds.has(job.id)
+                      }
+                      onClick={() => void scheduledJobs?.runNow(job)}
+                    >
+                      Run now
+                    </button>
+                    <button
+                      type="button"
+                      disabled={scheduledJobs?.pendingIds.has(job.id)}
+                      onClick={() => void scheduledJobs?.skip(job, run)}
+                    >
+                      Skip
+                    </button>
+                  </div>
+                ))}
+              {needRows.length + jobNeeds.length > 5 ? (
                 <button
                   type="button"
                   className="hq-now__more"
                   onClick={() => setMoreNeeds((value) => !value)}
                 >
-                  {moreNeeds ? "Show less" : `Show ${needRows.length - 5} more`}
+                  {moreNeeds
+                    ? "Show less"
+                    : `Show ${needRows.length + jobNeeds.length - 5} more`}
                 </button>
               ) : null}
             </div>
@@ -755,6 +859,13 @@ export function NowView({
             </div>
           ) : null}
         </section>
+        {scheduledJobs && onOpenJob ? (
+          <NowScheduledJobs
+            inventory={scheduledJobs}
+            onOpenJob={onOpenJob}
+            agents={scheduledJobAgents}
+          />
+        ) : null}
         {weekDues.length ? (
           <section className="hq-now__due-week" aria-label="Due this week">
             <button
