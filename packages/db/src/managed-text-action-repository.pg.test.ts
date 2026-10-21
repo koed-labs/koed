@@ -15,6 +15,11 @@ import { createProjectApiRepository } from "./project-api-repository.js";
 import { createWorkItemRepository } from "./work-item-repository.js";
 import { createAgentsRepository } from "./agents-repository.js";
 import {
+  createFlashcardDeckRepository,
+  DeckConflictError
+} from "./flashcard-deck-repository.js";
+import { deckCreateFromTextAction } from "./managed-deck-action.js";
+import {
   createScheduledJobRepository,
   ScheduledJobConflict
 } from "./scheduled-job-repository.js";
@@ -186,6 +191,144 @@ describe.skipIf(!testUrl)("HQ-504 exact managed text-action authority", () => {
       leaseToken: command!.leaseToken!
     };
   };
+
+  it("creates a reviewed Personal Deck with an exact journal effect and rejects same-key adoption", async () => {
+    const f = await fixture("supervised");
+    await pool.query(
+      `insert into ai_client_instances(owner_user_id,instance_id,driver_id,display_name,enabled)
+       values($1,'codex.default','codex','Codex',true) on conflict do nothing`,
+      [f.owner]
+    );
+    const agent = await createAgentsRepository(pool).create(f.owner, {
+      name: "Flashcard Agent",
+      role: "Assistant",
+      look: {},
+      aiClientInstanceId: "codex.default",
+      defaultPermissionMode: "supervised",
+      defaultModel: null
+    });
+    const decks = createFlashcardDeckRepository(pool);
+    const make = async (toolCallId: string) => {
+      const args = {
+        projectId: f.project.id,
+        title: "Chapter 7",
+        scope: "Chapter 7 only; exclude later chapters",
+        madeFrom: "Course notes",
+        cards: [
+          { question: "What is X?", answer: "X is Y.", sourceRef: "Notes p. 7" }
+        ]
+      };
+      const action = await f.actions.enqueueManagedTextAction(f.actor, {
+        executionId: f.executionId,
+        commandId: f.commandId,
+        leaseToken: f.leaseToken,
+        executionGeneration: 1,
+        providerTurnId: `turn-${toolCallId}`,
+        toolCallId,
+        name: "koed_deck_make",
+        arguments: args
+      });
+      expect(action?.state).toBe("awaiting_review");
+      expect(action?.snapshot.agentId).toBe(agent.id);
+      const approved = await f.actions.decideManagedTextAction(f.actor, {
+        executionId: f.executionId,
+        actionId: action!.id,
+        expectedRevision: action!.revision,
+        decision: "approve"
+      });
+      const claimed = await f.actions.claimManagedTextAction(f.actor, {
+        executionId: f.executionId,
+        actionId: action!.id,
+        expectedRevision: approved!.revision
+      });
+      expect(claimed?.state).toBe("claimed");
+      return { action: action!, claimed: claimed!, args };
+    };
+    const good = await make("flashcards-good");
+    const prepared = await f.actions.prepareManagedTextDeckMake(f.actor, {
+      executionId: f.executionId,
+      actionId: good.action.id,
+      expectedRevision: good.claimed.revision
+    });
+    expect(prepared?.id).toBe(good.action.id);
+    const payload = deckCreateFromTextAction(
+      good.action.id,
+      good.args,
+      agent.id
+    );
+    const created = await decks.createPersonal(f.owner, f.project.id, payload, {
+      actionId: good.action.id,
+      encryptionProvider: provider
+    });
+    expect(created.createdByAgentId).toBe(agent.id);
+    expect(
+      (
+        await pool.query(
+          "select 1 from managed_conversation_text_action_create_effects where owner_user_id=$1 and action_id=$2 and project_id=$3",
+          [f.owner, good.action.id, f.project.id]
+        )
+      ).rowCount
+    ).toBe(1);
+    expect(
+      (
+        await f.actions.completeManagedTextAction(f.actor, {
+          executionId: f.executionId,
+          actionId: good.action.id,
+          expectedRevision: good.claimed.revision
+        })
+      )?.state
+    ).toBe("applied");
+
+    const collision = await make("flashcards-collision");
+    const collisionPayload = deckCreateFromTextAction(
+      collision.action.id,
+      collision.args,
+      agent.id
+    );
+    await decks.createPersonal(f.owner, f.project.id, collisionPayload);
+    await expect(
+      decks.createPersonal(f.owner, f.project.id, collisionPayload, {
+        actionId: collision.action.id,
+        encryptionProvider: provider
+      })
+    ).rejects.toBeInstanceOf(DeckConflictError);
+    expect(
+      await f.actions.completeManagedTextAction(f.actor, {
+        executionId: f.executionId,
+        actionId: collision.action.id,
+        expectedRevision: collision.claimed.revision
+      })
+    ).toBeNull();
+    const moved = await make("flashcards-assignment-changed");
+    expect(
+      await f.actions.prepareManagedTextDeckMake(f.actor, {
+        executionId: f.executionId,
+        actionId: moved.action.id,
+        expectedRevision: moved.claimed.revision
+      })
+    ).not.toBeNull();
+    // An assignment round trip can keep the same Project ID. Its version
+    // still invalidates the earlier approval before the actual Deck effect.
+    await pool.query(
+      "update sessions set project_assignment_version=project_assignment_version+2 where id=$1",
+      [f.sessionId]
+    );
+    await expect(
+      decks.createPersonal(
+        f.owner,
+        f.project.id,
+        deckCreateFromTextAction(moved.action.id, moved.args, agent.id),
+        { actionId: moved.action.id, encryptionProvider: provider }
+      )
+    ).rejects.toThrow("Reviewed Deck action changed");
+    expect(
+      await decks.getPersonalByCreationKey(
+        f.owner,
+        f.project.id,
+        moved.action.id
+      )
+    ).toBeNull();
+  });
 
   it("binds a human-origin unscoped Scheduled Job and rejects a moved Conversation after claim", async () => {
     const setup = async (projectScoped = false) => {

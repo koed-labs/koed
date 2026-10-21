@@ -45,6 +45,21 @@ export const managedTextActionRequestSchema = z.discriminatedUnion(
         actionId: z.uuid(),
         expectedRevision: z.number().int().positive()
       })
+      .strict(),
+    z
+      .object({
+        operation: z.literal("apply-deck-make"),
+        executionId: z.uuid(),
+        actionId: z.uuid(),
+        expectedRevision: z.number().int().positive()
+      })
+      .strict(),
+    z
+      .object({
+        operation: z.literal("deck-result"),
+        executionId: z.uuid(),
+        actionId: z.uuid()
+      })
       .strict()
   ]
 );
@@ -93,6 +108,25 @@ export const managedTextActionResultSchema = z.discriminatedUnion("operation", [
       executionId: z.uuid(),
       action: koedTextActionProjectionSchema
     })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("apply-deck-make"),
+      executionId: z.uuid(),
+      action: koedTextActionProjectionSchema,
+      result: z.object({ projectId: z.uuid(), deckId: z.uuid() }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("deck-result"),
+      executionId: z.uuid(),
+      state: koedTextActionProjectionSchema.shape.state,
+      result: z
+        .object({ projectId: z.uuid(), deckId: z.uuid() })
+        .strict()
+        .nullable()
+    })
     .strict()
 ]);
 export type ManagedTextActionResult = z.infer<
@@ -128,4 +162,19 @@ export interface ManagedTextActionDesktopApi {
     actionId: string,
     expectedRevision: number
   ): Promise<z.infer<typeof koedTextActionProjectionSchema>>;
+  applyDeckMake?(
+    executionId: string,
+    actionId: string,
+    expectedRevision: number
+  ): Promise<{
+    action: z.infer<typeof koedTextActionProjectionSchema>;
+    result: { projectId: string; deckId: string };
+  }>;
+  deckResult?(
+    executionId: string,
+    actionId: string
+  ): Promise<{
+    state: z.infer<typeof koedTextActionProjectionSchema>["state"];
+    result: { projectId: string; deckId: string } | null;
+  }>;
 }

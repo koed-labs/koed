@@ -27,6 +27,8 @@ const descriptions: Record<KoedTextActionName, string> = {
     "Request a Scheduled Job in this human-started Conversation. Give an exact title, instruction, calendar schedule, and IANA time zone. Koed verifies the owner, Agent, Conversation and Project before review.",
   koed_job_pause:
     "Request pause or resume of one owned Scheduled Job by its exact unique title. Koed rejects missing or ambiguous titles and verifies current lifecycle authority.",
+  koed_deck_make:
+    "Make flashcards for the current Project. Read authorized Project Sources and scoped memory in this AI Client first. Supply the exact requested scope, title, source description and generated question/answer cards. Respect exclusions such as material not on the exam. Optional card sourceRef is only a display label, never access authority. Koed reviews the exact content and creates the Deck idempotently.",
   koed_hq_open:
     "Request to open the named Project HQ in the User's Desktop. This only requests navigation.",
   koed_settings_open:

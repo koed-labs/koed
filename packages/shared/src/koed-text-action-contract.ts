@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { scheduledJobScheduleSchema } from "./scheduled-job-contract.js";
+import { deckCardContentSchema } from "./flashcard-deck-contract.js";
 
 const uuid = z.uuid();
 const name = z.string().trim().min(1).max(160);
@@ -49,6 +50,17 @@ export const koedTextActionInputSchemas = {
     })
     .strict(),
   koed_job_pause: z.object({ title: name, paused: z.boolean() }).strict(),
+  koed_deck_make: z
+    .object({
+      projectId: uuid,
+      title: z.string().trim().min(1).max(500),
+      // The requested study boundary is kept verbatim. The Agent must not
+      // silently fold excluded material into a broader Deck.
+      scope: z.string().trim().min(1).max(2000),
+      madeFrom: z.string().trim().min(1).max(4000),
+      cards: z.array(deckCardContentSchema).min(1).max(100)
+    })
+    .strict(),
   koed_hq_open: z.object({ projectId: uuid }).strict(),
   koed_settings_open: z
     .object({
@@ -75,7 +87,6 @@ export const koedTextActionFutureNames = [
   "koed_project_leave",
   "koed_workspace_leave",
   "koed_job_run",
-  "koed_deck_make",
   "koed_deck_open"
 ] as const;
 

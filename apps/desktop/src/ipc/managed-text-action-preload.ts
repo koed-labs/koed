@@ -26,7 +26,9 @@ export const createManagedTextActionPreloadApi = (
       throw new Error("Koed action response crossed Conversation identity.");
     if (
       request.operation !== "list" &&
+      request.operation !== "deck-result" &&
       result.operation !== "list" &&
+      result.operation !== "deck-result" &&
       result.action.id !== request.actionId
     )
       throw new Error("Koed action response crossed action identity.");
@@ -126,6 +128,34 @@ export const createManagedTextActionPreloadApi = (
       )
         throw new Error("Koed Team action crossed Conversation identity.");
       return result.action;
+    },
+    applyDeckMake: async (
+      executionId: string,
+      actionId: string,
+      expectedRevision: number
+    ) => {
+      const result = await command({
+        operation: "apply-deck-make",
+        executionId,
+        actionId,
+        expectedRevision
+      });
+      if (
+        result.operation !== "apply-deck-make" ||
+        result.action.executionId !== executionId
+      )
+        throw new Error("Koed Deck action crossed Conversation identity.");
+      return { action: result.action, result: result.result };
+    },
+    deckResult: async (executionId: string, actionId: string) => {
+      const result = await command({
+        operation: "deck-result",
+        executionId,
+        actionId
+      });
+      if (result.operation !== "deck-result")
+        throw new Error("Koed Deck result crossed Conversation identity.");
+      return { state: result.state, result: result.result };
     }
   });
 };

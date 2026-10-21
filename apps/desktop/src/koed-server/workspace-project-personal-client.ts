@@ -6,14 +6,31 @@ import {
   projectSourceReadSchema
 } from "@koed/shared";
 
-const snapshotSchema = workspaceProjectCopySchema
+const snapshotSchema = z
+  .object(workspaceProjectCopySchema.shape)
   .omit({
     expectedVersion: true
   })
   .extend({
     personalProjectVersion: z.number().int().positive()
   })
-  .strict();
+  .strict()
+  .superRefine((snapshot, context) => {
+    // The local snapshot has no Team target version yet. Validate its complete
+    // copy content with the original cross-field rules before adding that
+    // separately reviewed version at the Team write boundary.
+    const checked = workspaceProjectCopySchema.safeParse({
+      ...snapshot,
+      expectedVersion: 1
+    });
+    if (!checked.success)
+      for (const issue of checked.error.issues)
+        context.addIssue({
+          code: "custom",
+          message: issue.message,
+          path: issue.path
+        });
+  });
 
 export const createWorkspaceProjectPersonalClient = (
   sendPersonal: (path: string, init?: RequestInit) => Promise<unknown>,

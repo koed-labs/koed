@@ -53,6 +53,7 @@ export function HqProjectConversation({
   onTextActionApply,
   onTextActionNativeReview,
   onTextActionResumeMove,
+  onOpenDeck,
   ownerId,
   profileKey,
   onClearContext,
@@ -91,6 +92,7 @@ export function HqProjectConversation({
   onTextActionResumeMove?: (
     action: KoedTextActionProjection
   ) => Promise<boolean>;
+  onOpenDeck?: (target: { projectId: string; deckId: string }) => void;
   ownerId?: string;
   profileKey?: string;
   agentsApi?: AgentsDesktopApi | null;
@@ -748,6 +750,7 @@ export function HqProjectConversation({
           onTextActionApply={onTextActionApply}
           onTextActionNativeReview={onTextActionNativeReview}
           onTextActionResumeMove={onTextActionResumeMove}
+          onOpenDeck={onOpenDeck}
           visibilityOwnerId={ownerId}
           visibilityProfileKey={profileKey}
           agentsApi={agentsApi}

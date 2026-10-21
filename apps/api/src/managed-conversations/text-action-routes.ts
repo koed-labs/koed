@@ -1,5 +1,16 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ManagedTextActionRepository } from "@koed/db/managed-text-action-contract";
+import type { createFlashcardDeckRepository } from "@koed/db";
+import {
+  deckCreateFromTextAction,
+  deckMatchesTextAction,
+  teamDeckCreateFromTextAction
+} from "@koed/db";
+import {
+  createTeamDeckSchema,
+  type Deck,
+  type EnvelopeEncryptionProvider
+} from "@koed/shared";
 import {
   koedTextActionDeliverySchema,
   koedTextActionReviewSchema,
@@ -29,6 +40,31 @@ export const registerManagedTextActionRoutes = (
   app: FastifyInstance,
   input: {
     repository: ManagedTextActionRepository | null;
+    deckRepository?: ReturnType<typeof createFlashcardDeckRepository> | null;
+    encryptionProvider?: EnvelopeEncryptionProvider | null;
+    createTeamDeck?: (input: {
+      ownerUserId: string;
+      projectId: string;
+      teamBackendId: string;
+      workspaceProjectId: string;
+      actionId: string;
+      effectNonce: string;
+      runnerDeviceId: string;
+      expectedProjectVersion: number;
+      expectedMemberVersion: number;
+      payload: ReturnType<typeof createTeamDeckSchema.parse>;
+    }) => Promise<Deck>;
+    findTeamDeck?: (input: {
+      ownerUserId: string;
+      projectId: string;
+      teamBackendId: string;
+      workspaceProjectId: string;
+      actionId: string;
+      effectNonce?: string;
+      arguments?: Record<string, unknown>;
+      runnerDeviceId?: string;
+      sourceDeckId?: string;
+    }) => Promise<Deck | null>;
     applyTeamTodoAdd?: (input: {
       ownerUserId: string;
       projectId: string;
@@ -55,6 +91,11 @@ export const registerManagedTextActionRoutes = (
         statusCode: 503
       });
     return input.repository;
+  };
+  const decks = () => {
+    if (!input.deckRepository)
+      throw Object.assign(new Error("Decks unavailable"), { statusCode: 503 });
+    return input.deckRepository;
   };
   const authenticate = async (request: FastifyRequest, write: boolean) => {
     const authorization = request.headers.authorization?.trim();
@@ -193,6 +234,167 @@ export const registerManagedTextActionRoutes = (
           .code(409)
           .send({ message: "Koed action effect is not verified" });
       return { action };
+    }
+  );
+  app.post(
+    "/v1/managed-conversations/:executionId/text-actions/:actionId/apply-deck-make",
+    { preHandler: input.writeRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, true);
+      const { executionId, actionId } = parsed(actionParams, request.params);
+      const { expectedRevision } = parsed(claimBody, request.body);
+      const action = await repository().prepareManagedTextDeckMake(actor, {
+        executionId,
+        actionId,
+        expectedRevision
+      });
+      if (!action || action.name !== "koed_deck_make")
+        return reply
+          .code(409)
+          .send({ message: "Reviewed Deck action changed" });
+      const projectId = String(action.snapshot.projectId);
+      const agentId = String(action.snapshot.agentId);
+      const payload = deckCreateFromTextAction(
+        action.id,
+        action.arguments,
+        agentId
+      );
+      let deck: Deck;
+      if (typeof action.snapshot.workspaceProjectId === "string") {
+        if (!input.createTeamDeck)
+          return reply.code(503).send({ message: "Team Decks unavailable" });
+        // This durable fence is committed before the network dispatch. A lost
+        // outcome can only be reconciled by reads, never a second blind POST.
+        const marked = await repository().markManagedTextDeckDispatch(actor, {
+          executionId,
+          actionId,
+          expectedRevision
+        });
+        if (!marked)
+          return reply.code(409).send({
+            message: "Deck dispatch already attempted; reconcile its result"
+          });
+        const teamPayload = teamDeckCreateFromTextAction(
+          action.id,
+          action.arguments
+        );
+        deck = await input.createTeamDeck({
+          ownerUserId: actor.userId,
+          projectId,
+          teamBackendId: String(action.snapshot.teamBackendId),
+          workspaceProjectId: action.snapshot.workspaceProjectId,
+          actionId,
+          effectNonce: marked.effectNonce,
+          runnerDeviceId: String(action.snapshot.runnerDeviceId),
+          expectedProjectVersion: Number(action.snapshot.teamProjectVersion),
+          expectedMemberVersion: Number(action.snapshot.teamMemberVersion),
+          payload: teamPayload
+        });
+        if (
+          !deckMatchesTextAction(
+            deck,
+            teamPayload,
+            action.snapshot.workspaceProjectId,
+            true
+          )
+        )
+          throw Object.assign(new Error("Team Deck result changed"), {
+            statusCode: 409
+          });
+      } else {
+        if (!input.encryptionProvider)
+          return reply
+            .code(503)
+            .send({ message: "Deck action custody unavailable" });
+        deck = await decks().createPersonal(actor.userId, projectId, payload, {
+          actionId,
+          encryptionProvider: input.encryptionProvider
+        });
+        if (!deckMatchesTextAction(deck, payload, projectId, false))
+          throw Object.assign(new Error("Personal Deck result changed"), {
+            statusCode: 409
+          });
+      }
+      const applied = await repository().completeManagedTextAction(actor, {
+        executionId,
+        actionId,
+        expectedRevision
+      });
+      if (!applied || applied.state !== "applied")
+        return reply.code(409).send({
+          message: "Deck exists; action receipt needs reconciliation"
+        });
+      return { action: applied, result: { projectId, deckId: deck.id } };
+    }
+  );
+  app.get(
+    "/v1/managed-conversations/:executionId/text-actions/:actionId/deck-result",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { executionId, actionId } = parsed(actionParams, request.params);
+      const action = await repository().reconcileManagedTextAction(actor, {
+        executionId,
+        actionId
+      });
+      if (!action || action.name !== "koed_deck_make")
+        return reply.code(404).send({ message: "Deck action not found" });
+      if (action.state !== "applied")
+        return { state: action.state, result: null };
+      const projectId = String(action.snapshot.projectId);
+      const location = await decks().getPersonalCreationLocation(
+        actor.userId,
+        projectId,
+        actionId
+      );
+      if (!location) return { state: action.state, result: null };
+      const linked = Boolean(
+        location.teamBackendId && location.workspaceProjectId
+      );
+      if (
+        typeof action.snapshot.workspaceProjectId === "string" &&
+        (!linked ||
+          location.teamBackendId !== action.snapshot.teamBackendId ||
+          location.workspaceProjectId !== action.snapshot.workspaceProjectId)
+      )
+        return { state: action.state, result: null };
+      const sourceDeckId =
+        typeof action.snapshot.workspaceProjectId === "string"
+          ? undefined
+          : (location.sourceDeckId ?? undefined);
+      const effectNonce =
+        linked && !sourceDeckId
+          ? await repository().readManagedTextDeckEffectNonce(actor, {
+              executionId,
+              actionId
+            })
+          : null;
+      const deck = linked
+        ? input.findTeamDeck
+          ? await input.findTeamDeck({
+              ownerUserId: actor.userId,
+              projectId,
+              teamBackendId: location.teamBackendId!,
+              workspaceProjectId: location.workspaceProjectId!,
+              actionId,
+              ...(effectNonce
+                ? { effectNonce, arguments: action.arguments }
+                : {}),
+              runnerDeviceId: String(action.snapshot.runnerDeviceId),
+              ...(sourceDeckId ? { sourceDeckId } : {})
+            })
+          : null
+        : await decks().getPersonalByCreationKey(
+            actor.userId,
+            projectId,
+            actionId
+          );
+      if (!deck) return { state: action.state, result: null };
+      return {
+        state: action.state,
+        result:
+          action.state === "applied" ? { projectId, deckId: deck.id } : null
+      };
     }
   );
   app.post(

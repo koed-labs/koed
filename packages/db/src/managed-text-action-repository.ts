@@ -16,6 +16,7 @@ import type {
   ManagedTextActionRecord,
   ManagedTextActionRepository
 } from "./managed-text-action-contract.js";
+import { deckCreateFromTextAction } from "./managed-deck-action.js";
 
 type Row = {
   id: string;
@@ -58,8 +59,9 @@ export type ManagedTextActionTeamReceipt = (input: {
   projectId: string;
   teamBackendId: string;
   workspaceProjectId: string;
-  name: "koed_todo_add" | "koed_todo_send";
+  name: "koed_todo_add" | "koed_todo_send" | "koed_deck_make";
   effectKey: string;
+  effectNonce?: string;
   arguments: Record<string, unknown>;
   snapshot: Record<string, unknown>;
 }) => Promise<{ confirmed: boolean; effectNonceHash: string | null }>;
@@ -85,6 +87,9 @@ const teamNonceAad = (row: Row, snapshot: Record<string, unknown>) => ({
   actionId: row.id,
   executionId: row.execution_id,
   executionGeneration: row.execution_generation,
+  ...(row.action_name === "koed_deck_make"
+    ? { runnerDeviceId: String(snapshot.runnerDeviceId) }
+    : {}),
   argumentsDigest: row.arguments_digest,
   teamBackendId: String(snapshot.teamBackendId),
   workspaceProjectId: String(snapshot.workspaceProjectId),
@@ -356,6 +361,7 @@ export const claimedManagedTextCreateWithClient = async (
     actionId: string;
     name:
       | "koed_project_create"
+      | "koed_deck_make"
       | "koed_todo_add"
       | "koed_job_create"
       | "koed_job_pause"
@@ -412,10 +418,36 @@ export const claimedManagedTextCreateWithClient = async (
     row.arguments_digest
   )
     return false;
-  return input.matches(
-    argumentsValue,
-    await decrypt(provider, row, "snapshot")
-  );
+  const snapshot = await decrypt(provider, row, "snapshot");
+  if (row.action_name === "koed_deck_make") {
+    // The earlier preparation is a read, not a reservation of the chat's
+    // Project. Recheck its exact assignment while the effect transaction
+    // still holds the Session and execution locks acquired above.
+    const current = await client.query<{
+      project_id: string | null;
+      project_assignment_version: number;
+    }>(
+      `select case when execution.is_project_hq then execution.project_id
+                     when session.project_override_at is not null
+                       then session.project_override_personal_project_id::text
+                     else session.automatic_personal_project_id::text end as project_id,
+              session.project_assignment_version
+         from managed_conversation_executions execution
+         join managed_conversation_runtime_bindings binding
+           on binding.execution_id=execution.id and binding.owner_user_id=execution.owner_user_id
+         join sessions session on session.id=binding.local_session_id
+           and session.owner_user_id=execution.owner_user_id
+        where execution.id=$1 and execution.owner_user_id=$2`,
+      [row.execution_id, input.ownerUserId]
+    );
+    if (
+      current.rows[0]?.project_id !== snapshot.projectId ||
+      current.rows[0]?.project_assignment_version !==
+        snapshot.conversationProjectAssignmentVersion
+    )
+      return false;
+  }
+  return input.matches(argumentsValue, snapshot);
 };
 
 /** Validate one linked-source move against the claimed immutable text action.
@@ -655,7 +687,8 @@ const targetSnapshot = async (
         "koed_todo_add",
         "koed_todo_send",
         "koed_job_create",
-        "koed_job_pause"
+        "koed_job_pause",
+        "koed_deck_make"
       ].includes(name)
     )
       return null;
@@ -664,6 +697,87 @@ const targetSnapshot = async (
     ? { projectId, projectName: project.name, projectVersion: project.version }
     : {};
   const team = teamProof ? { ...teamProof } : {};
+  if (name === "koed_deck_make") {
+    if (!origin || typeof args.projectId !== "string" || !project) return null;
+    // A Deck may be generated only for this human-started Conversation's
+    // current Project. A model-supplied Project ID is never enough.
+    const current = (
+      await client.query<{
+        project_id: string | null;
+        project_assignment_version: number;
+        ai_client_instance_id: string;
+        provider: string;
+        permission_mode: string;
+        model: string;
+        runner_device_id: string;
+      }>(
+        `select (case when execution.is_project_hq then execution.project_id
+                  when session.project_override_at is not null
+                    then session.project_override_personal_project_id::text
+                  else session.automatic_personal_project_id::text end) as project_id,
+                session.project_assignment_version,execution.ai_client_instance_id,
+                execution.provider,execution.permission_mode,execution.model,
+                execution.runner_device_id
+           from managed_conversation_executions execution
+           join managed_conversation_runtime_bindings binding
+             on binding.execution_id=execution.id and binding.owner_user_id=execution.owner_user_id
+           join sessions session on session.id=binding.local_session_id
+             and session.owner_user_id=execution.owner_user_id
+             and session.logical_session_id=execution.logical_session_id
+          where execution.id=$1 and execution.owner_user_id=$2
+            and execution.logical_session_id=$3
+            and session.visibility='personal' and session.invalidated_at is null
+            and session.personal_deleted_at is null and session.trashed_at is null
+            and session.delete_batch_id is null and session.forget_batch_id is null
+          for share of execution,binding,session`,
+        [origin.executionId, ownerUserId, origin.logicalSessionId]
+      )
+    ).rows[0];
+    if (
+      !current ||
+      current.project_id !== args.projectId ||
+      typeof current.runner_device_id !== "string" ||
+      !current.runner_device_id
+    )
+      return null;
+    const agents = await client.query<{
+      id: string;
+      name: string;
+      is_chief_of_staff: boolean;
+    }>(
+      `select agent.id,agent.name,agent.is_chief_of_staff from agents agent
+         join ai_client_instances instance on instance.owner_user_id=agent.owner_user_id
+           and instance.instance_id=agent.ai_client_instance_id
+        where agent.owner_user_id=$1 and agent.ai_client_instance_id=$2
+          and instance.driver_id=$3 and instance.enabled=true
+          and agent.default_permission_mode=$4
+          and (agent.default_model is null or agent.default_model=$5)
+        order by agent.is_chief_of_staff desc,agent.id`,
+      [
+        ownerUserId,
+        current.ai_client_instance_id,
+        current.provider,
+        current.permission_mode,
+        current.model
+      ]
+    );
+    const agent =
+      agents.rows.length === 1
+        ? agents.rows[0]
+        : agents.rows.filter((candidate) => candidate.is_chief_of_staff)
+              .length === 1
+          ? agents.rows.find((candidate) => candidate.is_chief_of_staff)
+          : null;
+    if (!agent) return null;
+    return {
+      ...base,
+      ...team,
+      conversationProjectAssignmentVersion: current.project_assignment_version,
+      agentId: agent.id,
+      agentName: agent.name,
+      runnerDeviceId: current.runner_device_id
+    };
+  }
   if (
     name === "koed_project_create" ||
     name === "koed_settings_open" ||
@@ -897,7 +1011,8 @@ export const createManagedTextActionRepository = (
         "koed_todo_add",
         "koed_todo_send",
         "koed_job_create",
-        "koed_job_pause"
+        "koed_job_pause",
+        "koed_deck_make"
       ].includes(name)
     )
       return null;
@@ -1059,6 +1174,7 @@ export const createManagedTextActionRepository = (
             input.name === "koed_chat_delete"
               ? "native"
               : input.name === "koed_project_create" ||
+                  input.name === "koed_deck_make" ||
                   input.name === "koed_job_create" ||
                   input.name === "koed_job_pause" ||
                   input.name === "koed_project_move_chats" ||
@@ -1381,6 +1497,7 @@ export const createManagedTextActionRepository = (
           row.review_kind === "none" &&
           [
             "koed_project_create",
+            "koed_deck_make",
             "koed_job_create",
             "koed_job_pause",
             "koed_chat_move",
@@ -1464,7 +1581,7 @@ export const createManagedTextActionRepository = (
             `select * from managed_conversation_text_actions
            where owner_user_id=$1 and execution_id=$2 and id=$3
              and state='applied' and revision=$4
-             and action_name in ('koed_job_create','koed_job_pause')`,
+             and action_name in ('koed_job_create','koed_job_pause','koed_deck_make')`,
             [
               actor.userId,
               input.executionId,
@@ -1485,7 +1602,8 @@ export const createManagedTextActionRepository = (
         typeof preliminarySnapshot.teamBackendId === "string" &&
         typeof preliminarySnapshot.workspaceProjectId === "string" &&
         (preliminary.action_name === "koed_todo_add" ||
-          preliminary.action_name === "koed_todo_send") &&
+          preliminary.action_name === "koed_todo_send" ||
+          preliminary.action_name === "koed_deck_make") &&
         options.teamReceipt
           ? await options
               .teamReceipt({
@@ -1495,6 +1613,17 @@ export const createManagedTextActionRepository = (
                 workspaceProjectId: preliminarySnapshot.workspaceProjectId,
                 name: preliminary.action_name,
                 effectKey: preliminary.id,
+                ...(preliminary.action_name === "koed_deck_make"
+                  ? {
+                      effectNonce:
+                        (await readTeamNonce(
+                          pool,
+                          encryptionProvider,
+                          preliminary,
+                          preliminarySnapshot
+                        )) ?? undefined
+                    }
+                  : {}),
                 arguments: await decrypt(
                   encryptionProvider,
                   preliminary,
@@ -1545,6 +1674,31 @@ export const createManagedTextActionRepository = (
               sameHash(expectedHash, teamReceipt.effectNonceHash)
             );
           } else proven = teamReceipt?.confirmed === true;
+        } else if (row.action_name === "koed_deck_make") {
+          const payload = deckCreateFromTextAction(
+            row.id,
+            args,
+            String(snapshot.agentId)
+          );
+          const expectedHash = createHash("sha256")
+            .update(JSON.stringify(payload))
+            .digest("hex");
+          const result = await client.query(
+            `select 1 from managed_conversation_text_action_create_effects effect
+               join project_decks deck on deck.owner_user_id=effect.owner_user_id
+                 and deck.project_id=effect.project_id
+                 and deck.idempotency_key=effect.action_id::text
+               join projects project on project.id=deck.project_id
+                 and project.owner_user_id=deck.owner_user_id
+              where effect.action_id=$3 and effect.owner_user_id=$1
+                and effect.project_id=$2 and effect.work_item_id is null
+                and deck.owner_user_id=$1 and deck.project_id=$2
+                and deck.idempotency_key=$3::text and deck.creation_payload_hash=$4
+                and deck.deleted_at is null and project.lifecycle='active'
+                and project.deletion_phase is null`,
+            [actor.userId, args.projectId, row.id, expectedHash]
+          );
+          proven = Boolean(result.rowCount);
         } else if (row.action_name === "koed_project_create") {
           const result = await client.query(
             `select 1 from managed_conversation_text_action_create_effects effect
@@ -1766,6 +1920,144 @@ export const createManagedTextActionRepository = (
       } finally {
         client.release();
       }
+    },
+    async prepareManagedTextDeckMake(actor, input) {
+      const preliminary = (
+        await pool.query<Row>(
+          `select * from managed_conversation_text_actions
+            where owner_user_id=$1 and execution_id=$2 and id=$3
+              and revision=$4 and state='claimed' and action_name='koed_deck_make'`,
+          [
+            actor.userId,
+            input.executionId,
+            input.actionId,
+            input.expectedRevision
+          ]
+        )
+      ).rows[0];
+      if (!preliminary) return null;
+      const args = await decrypt(encryptionProvider, preliminary, "arguments");
+      const snapshot = await decrypt(
+        encryptionProvider,
+        preliminary,
+        "snapshot"
+      );
+      const proof = await preflightTeam(
+        actor.userId,
+        "koed_deck_make",
+        args,
+        typeof snapshot.projectId === "string" ? snapshot.projectId : null
+      );
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const valid = await claimedManagedTextCreateWithClient(
+          client,
+          encryptionProvider,
+          {
+            ownerUserId: actor.userId,
+            actionId: input.actionId,
+            name: "koed_deck_make",
+            matches: (actual, pinned) =>
+              digest(actual) === digest(args) &&
+              digest(pinned) === digest(snapshot)
+          }
+        );
+        const fresh = valid
+          ? await targetSnapshot(
+              client,
+              actor.userId,
+              "koed_deck_make",
+              args,
+              proof,
+              {
+                logicalSessionId: preliminary.logical_session_id,
+                executionId: preliminary.execution_id
+              }
+            )
+          : null;
+        await client.query("commit");
+        return fresh && digest(fresh) === digest(snapshot)
+          ? present(encryptionProvider, preliminary)
+          : null;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async markManagedTextDeckDispatch(actor, input) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const row = (
+          await client.query<Row>(
+            `select * from managed_conversation_text_actions
+            where owner_user_id=$1 and execution_id=$2 and id=$3
+              and state='claimed' and revision=$4 and action_name='koed_deck_make'
+            for update`,
+            [
+              actor.userId,
+              input.executionId,
+              input.actionId,
+              input.expectedRevision
+            ]
+          )
+        ).rows[0];
+        if (!row) {
+          await client.query("rollback");
+          return null;
+        }
+        const snapshot = await decrypt(encryptionProvider, row, "snapshot");
+        if (
+          typeof snapshot.teamBackendId !== "string" ||
+          typeof snapshot.workspaceProjectId !== "string"
+        ) {
+          await client.query("rollback");
+          return null;
+        }
+        const nonce = randomBytes(32).toString("base64url");
+        const encrypted = await encryptTeamNonce(
+          encryptionProvider,
+          row,
+          snapshot,
+          nonce
+        );
+        const inserted = await client.query(
+          `insert into managed_conversation_text_action_team_nonces
+            (action_id,owner_user_id,encrypted_nonce)
+           values($1,$2,$3::jsonb) on conflict do nothing`,
+          [row.id, actor.userId, JSON.stringify(encrypted)]
+        );
+        await client.query("commit");
+        return inserted.rowCount === 1
+          ? {
+              action: await present(encryptionProvider, row),
+              effectNonce: nonce
+            }
+          : null;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readManagedTextDeckEffectNonce(actor, input) {
+      const row = (
+        await pool.query<Row>(
+          `select * from managed_conversation_text_actions
+           where owner_user_id=$1 and execution_id=$2 and id=$3
+             and action_name='koed_deck_make' and state='applied'`,
+          [actor.userId, input.executionId, input.actionId]
+        )
+      ).rows[0];
+      if (!row) return null;
+      const snapshot = await decrypt(encryptionProvider, row, "snapshot");
+      return typeof snapshot.workspaceProjectId === "string"
+        ? readTeamNonce(pool, encryptionProvider, row, snapshot)
+        : null;
     }
   };
 };

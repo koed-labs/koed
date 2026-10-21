@@ -14,6 +14,7 @@ describe("Koed managed text actions", () => {
   it("keeps current actions distinct from future owned actions", () => {
     expect(koedTextActionNames).toContain("koed_todo_add");
     expect(koedTextActionNames).toContain("koed_chat_delete");
+    expect(koedTextActionNames).toContain("koed_deck_make");
     for (const future of koedTextActionFutureNames)
       expect(koedTextActionNames).not.toContain(future);
   });
@@ -57,6 +58,32 @@ describe("Koed managed text actions", () => {
     expect(koedTextActionReceipt("koed_project_create")).toBe(
       'Koed koed_project_create request v1: {"status":"requested"}'
     );
+  });
+  it("requires explicit bounded Deck scope and supplied cards, not model authority", () => {
+    const request = {
+      projectId: "90fd9cee-d5b1-4dda-9675-c044e4613ed7",
+      title: "Chapter 7",
+      scope: "Chapter 7; exclude topics not on the midterm",
+      madeFrom: "Syllabus and chapter notes",
+      cards: [
+        {
+          question: "What is X?",
+          answer: "X is Y [m:1].",
+          sourceRef: "Chapter 7"
+        }
+      ]
+    };
+    const schema = koedTextActionInputSchemas.koed_deck_make;
+    expect(schema.parse(request).scope).toContain("exclude");
+    expect(schema.safeParse({ ...request, cards: [] }).success).toBe(false);
+    expect(schema.safeParse({ ...request, scope: "" }).success).toBe(false);
+    expect(
+      schema.safeParse({ ...request, createdByAgentId: request.projectId })
+        .success
+    ).toBe(false);
+    expect(
+      schema.safeParse({ ...request, teamBackendId: request.projectId }).success
+    ).toBe(false);
   });
   it("keeps Scheduled Job text requests exact and browser-safe", () => {
     const create = {

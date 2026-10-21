@@ -2336,6 +2336,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         )
       : null;
   registerManagedTextActionRoutes(app, {
+    deckRepository: flashcardDeckRepository,
+    encryptionProvider: envelopeEncryptionProvider,
+    createTeamDeck: textActionTeam?.createDeck,
+    findTeamDeck: textActionTeam?.findDeck,
     repository:
       pool && envelopeEncryptionProvider
         ? createManagedTextActionRepository(

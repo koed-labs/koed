@@ -71,6 +71,15 @@ const fixture = async () => {
       return { id: userId };
     }
   );
+  const deviceInstanceId = randomUUID();
+  const deviceAuth = vi.fn(async () => ({
+    user: { id: userId },
+    credential: {
+      credentialKeyId: "sealed-device",
+      deviceInstanceId,
+      operationFamilies: ["team_workspace_read", "team_workspace_write"]
+    }
+  }));
   registerDeckRoutes(app, {
     repository: {
       createPersonal,
@@ -80,15 +89,80 @@ const fixture = async () => {
     } as unknown as ReturnType<typeof createFlashcardDeckRepository>,
     deploymentProfile: "developer",
     auth: {
-      authenticateSessionOrDeviceCredential: auth
+      authenticateSessionOrDeviceCredential: auth,
+      authenticateDeviceCredential: deviceAuth
     } as unknown as ApiRouteContext["auth"],
     readRateLimit: async () => undefined,
     writeRateLimit: async () => undefined
   });
   await app.ready();
-  return { app, createPersonal, createTeam, getTeam, putProgress, auth };
+  return {
+    app,
+    createPersonal,
+    createTeam,
+    getTeam,
+    putProgress,
+    auth,
+    deviceAuth,
+    deviceInstanceId
+  };
 };
 describe("Flashcard Deck routes", () => {
+  it("requires the authenticated enrolled device for reviewed Team creation", async () => {
+    const f = await fixture();
+    try {
+      const payload = {
+        idempotencyKey: randomUUID(),
+        title: "Chapter 7",
+        scope: "Midterm only",
+        madeFrom: "Notes",
+        cards: [{ question: "Q?", answer: "A." }],
+        teamBackendId: "team-vps",
+        runnerDeviceId: f.deviceInstanceId,
+        textActionNonce: "A".repeat(43),
+        expectedProjectVersion: 7,
+        expectedMemberVersion: 3
+      };
+      const url = `/v1/workspace-projects/${projectId}/decks/from-text-action`;
+      const created = await f.app.inject({
+        method: "POST",
+        url,
+        headers: { authorization: "Koed-Device sealed-device:secret" },
+        payload
+      });
+      expect(created.statusCode).toBe(201);
+      expect(f.createTeam).toHaveBeenCalledWith(
+        userId,
+        projectId,
+        {
+          idempotencyKey: payload.idempotencyKey,
+          title: payload.title,
+          scope: payload.scope,
+          madeFrom: payload.madeFrom,
+          cards: payload.cards
+        },
+        {
+          nonce: payload.textActionNonce,
+          teamBackendId: payload.teamBackendId,
+          runnerDeviceId: f.deviceInstanceId,
+          deviceCredentialKeyId: "sealed-device",
+          expectedProjectVersion: 7,
+          expectedMemberVersion: 3
+        }
+      );
+      f.createTeam.mockClear();
+      const wrong = await f.app.inject({
+        method: "POST",
+        url,
+        headers: { authorization: "Koed-Device sealed-device:secret" },
+        payload: { ...payload, runnerDeviceId: randomUUID() }
+      });
+      expect(wrong.statusCode).toBe(403);
+      expect(f.createTeam).not.toHaveBeenCalled();
+    } finally {
+      await f.app.close();
+    }
+  });
   it("binds Personal creation to authenticated owner and validates content", async () => {
     const f = await fixture();
     try {

@@ -70,6 +70,20 @@ export interface ManagedTextActionRepository {
     actor: { userId: string },
     input: { executionId: string; actionId: string; expectedRevision: number }
   ): Promise<{ action: ManagedTextActionRecord; effectNonce: string } | null>;
+  prepareManagedTextDeckMake(
+    actor: { userId: string },
+    input: { executionId: string; actionId: string; expectedRevision: number }
+  ): Promise<ManagedTextActionRecord | null>;
+  /** One-way fence before a Team POST; later calls may only reconcile reads. */
+  markManagedTextDeckDispatch(
+    actor: { userId: string },
+    input: { executionId: string; actionId: string; expectedRevision: number }
+  ): Promise<{ action: ManagedTextActionRecord; effectNonce: string } | null>;
+  /** Server-only read for exact Team Deck receipt verification. */
+  readManagedTextDeckEffectNonce(
+    actor: { userId: string },
+    input: { executionId: string; actionId: string }
+  ): Promise<string | null>;
   reconcileManagedTextAction(
     actor: { userId: string },
     input: { executionId: string; actionId: string }

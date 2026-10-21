@@ -267,6 +267,61 @@ export const registerDeckRoutes = (
       }
     }
   );
+  app.post(
+    "/v1/workspace-projects/:projectId/decks/from-text-action",
+    { preHandler: input.writeRateLimit },
+    async (r, reply) => {
+      if (!r.headers.authorization?.startsWith("Koed-Device "))
+        return reply.code(403).send({ message: "Enrolled device required" });
+      const u = await team(r, true);
+      const { projectId } = projectParam.parse(r.params);
+      const body = createTeamDeckSchema
+        .extend({
+          teamBackendId: z.string().min(1),
+          runnerDeviceId: z.string().min(1),
+          textActionNonce: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+          expectedProjectVersion: z.number().int().positive(),
+          expectedMemberVersion: z.number().int().positive()
+        })
+        .strict()
+        .parse(r.body);
+      const {
+        teamBackendId,
+        runnerDeviceId,
+        textActionNonce,
+        expectedProjectVersion,
+        expectedMemberVersion,
+        ...payload
+      } = body;
+      const device = await input.auth.authenticateDeviceCredential(r, {
+        fresh: true
+      });
+      if (
+        device.user.id !== u.id ||
+        device.credential.deviceInstanceId !== runnerDeviceId ||
+        !device.credential.operationFamilies.includes("team_workspace_write")
+      )
+        return reply
+          .code(403)
+          .send({ message: "Reviewed device scope changed" });
+      try {
+        return reply.code(201).send(
+          deckSchema.parse(
+            await repo().createTeam(u.id, projectId, payload, {
+              nonce: textActionNonce,
+              teamBackendId,
+              runnerDeviceId,
+              deviceCredentialKeyId: device.credential.credentialKeyId,
+              expectedProjectVersion,
+              expectedMemberVersion
+            })
+          )
+        );
+      } catch (e) {
+        return handle(e);
+      }
+    }
+  );
   app.get(
     "/v1/workspace-projects/:projectId/decks/:deckId",
     { preHandler: input.readRateLimit },
@@ -275,6 +330,68 @@ export const registerDeckRoutes = (
       const { projectId, deckId } = deckParam.parse(r.params);
       try {
         return deckSchema.parse(await repo().getTeam(u.id, projectId, deckId));
+      } catch (e) {
+        return handle(e);
+      }
+    }
+  );
+  // Used only to reconcile an uncertain managed Deck generation outcome. The
+  // key is an exact journal action ID; live Team read authority and creator
+  // membership still decide whether the receipt is visible.
+  app.get(
+    "/v1/workspace-projects/:projectId/decks/by-creation-key/:key",
+    { preHandler: input.readRateLimit },
+    async (r, reply) => {
+      const u = await team(r, false);
+      const { projectId, key } = z
+        .object({ projectId: z.uuid(), key: z.uuid() })
+        .strict()
+        .parse(r.params);
+      if (!r.headers.authorization?.startsWith("Koed-Device "))
+        return reply.code(403).send({ message: "Enrolled device required" });
+      const device = await input.auth.authenticateDeviceCredential(r, {
+        fresh: true
+      });
+      if (
+        device.user.id !== u.id ||
+        !device.credential.operationFamilies.includes("team_workspace_read")
+      )
+        return reply.code(403).send({ message: "Team read scope changed" });
+      try {
+        const receipt = await repo().getTeamByCreationKey(u.id, projectId, key);
+        return receipt
+          ? {
+              deck: deckSchema.parse(receipt.deck),
+              creationPayloadHash: z
+                .string()
+                .regex(/^[a-f0-9]{64}$/)
+                .parse(receipt.creationPayloadHash),
+              requestDeviceInstanceId: device.credential.deviceInstanceId
+            }
+          : reply.code(404).send({ message: "Deck creation not found" });
+      } catch (e) {
+        return handle(e);
+      }
+    }
+  );
+  app.get(
+    "/v1/workspace-projects/:projectId/decks/by-source-deck/:sourceDeckId",
+    { preHandler: input.readRateLimit },
+    async (r, reply) => {
+      const u = await team(r, false);
+      const { projectId, sourceDeckId } = z
+        .object({ projectId: z.uuid(), sourceDeckId: z.uuid() })
+        .strict()
+        .parse(r.params);
+      try {
+        const deck = await repo().getTeamBySourceDeckId(
+          u.id,
+          projectId,
+          sourceDeckId
+        );
+        return deck
+          ? deckSchema.parse(deck)
+          : reply.code(404).send({ message: "Copied Deck not found" });
       } catch (e) {
         return handle(e);
       }

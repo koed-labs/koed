@@ -1,7 +1,13 @@
 import { randomUUID, createHash } from "node:crypto";
 import type pg from "pg";
 import type { CreateDeck, CreateTeamDeck, Deck } from "@koed/shared";
+import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
+import { claimedManagedTextCreateWithClient } from "./managed-text-action-repository.js";
+import {
+  deckCreateFromTextAction,
+  teamDeckTextActionHash
+} from "./managed-deck-action.js";
 import { notifyProjectChange } from "./workspace-project-repository.js";
 
 type Client = pg.Pool | pg.PoolClient;
@@ -155,7 +161,7 @@ const team = async (
   }
   const r = (
     await c.query<Row>(
-      `select p.*,m.id as actor_team_member_id,pm.access as project_access,wa.access as workspace_access from workspace_projects p join team_memberships m on m.team_id=p.team_id and m.user_id=$2 and m.status='enabled' and m.disabled_at is null join workspace_project_members pm on pm.workspace_project_id=p.id and pm.team_member_id=m.id and pm.disabled_at is null join team_workspace_access_grants wa on wa.team_workspace_id=p.workspace_id and wa.team_id=p.team_id and wa.user_id=$2 and wa.disabled_at is null join teams t on t.id=p.team_id and t.lifecycle='active' join team_workspaces w on w.id=p.workspace_id and w.lifecycle='active' where p.id=$1 and p.lifecycle='active'`,
+      `select p.*,m.id as actor_team_member_id,pm.access as project_access,pm.version as actor_member_version,wa.access as workspace_access from workspace_projects p join team_memberships m on m.team_id=p.team_id and m.user_id=$2 and m.status='enabled' and m.disabled_at is null join workspace_project_members pm on pm.workspace_project_id=p.id and pm.team_member_id=m.id and pm.disabled_at is null join team_workspace_access_grants wa on wa.team_workspace_id=p.workspace_id and wa.team_id=p.team_id and wa.user_id=$2 and wa.disabled_at is null join teams t on t.id=p.team_id and t.lifecycle='active' join team_workspaces w on w.id=p.workspace_id and w.lifecycle='active' where p.id=$1 and p.lifecycle='active'`,
       [projectId, userId]
     )
   ).rows[0];
@@ -193,9 +199,51 @@ const get = async (
   return deck(d, cards);
 };
 export const createFlashcardDeckRepository = (pool: pg.Pool) => ({
-  async createPersonal(userId: string, projectId: string, input: CreateDeck) {
+  async createPersonal(
+    userId: string,
+    projectId: string,
+    input: CreateDeck,
+    textAction?: {
+      actionId: string;
+      encryptionProvider: EnvelopeEncryptionProvider;
+    }
+  ) {
     return tx(pool, async (c) => {
       await personal(c, userId, projectId, true);
+      if (textAction) {
+        const current = (
+          await c.query<{ version: number }>(
+            "select version from projects where id=$1 and owner_user_id=$2 for share",
+            [projectId, userId]
+          )
+        ).rows[0];
+        if (
+          !current ||
+          input.idempotencyKey !== textAction.actionId ||
+          !(await claimedManagedTextCreateWithClient(
+            c,
+            textAction.encryptionProvider,
+            {
+              ownerUserId: userId,
+              actionId: textAction.actionId,
+              name: "koed_deck_make",
+              matches: (args, snapshot) =>
+                args.projectId === projectId &&
+                snapshot.projectId === projectId &&
+                snapshot.projectVersion === current.version &&
+                typeof snapshot.agentId === "string" &&
+                JSON.stringify(
+                  deckCreateFromTextAction(
+                    textAction.actionId,
+                    args,
+                    snapshot.agentId
+                  )
+                ) === JSON.stringify(input)
+            }
+          ))
+        )
+          throw new DeckUnavailableError("Reviewed Deck action changed");
+      }
       const hash = digest(input);
       const existing = (
         await c.query<Row>(
@@ -206,6 +254,16 @@ export const createFlashcardDeckRepository = (pool: pg.Pool) => ({
       if (existing) {
         if (existing.creation_payload_hash !== hash || existing.deleted_at)
           throw new DeckConflictError("Deck creation key changed");
+        if (
+          textAction &&
+          !(
+            await c.query(
+              "select 1 from managed_conversation_text_action_create_effects where action_id=$1 and owner_user_id=$2 and project_id=$3 and work_item_id is null",
+              [textAction.actionId, userId, projectId]
+            )
+          ).rowCount
+        )
+          throw new DeckConflictError("Deck action receipt is missing");
         return get(c, false, projectId, String(existing.id));
       }
       const id = randomUUID();
@@ -236,6 +294,11 @@ export const createFlashcardDeckRepository = (pool: pg.Pool) => ({
             x.topicLabel ?? null
           ]
         );
+      if (textAction)
+        await c.query(
+          "insert into managed_conversation_text_action_create_effects(action_id,owner_user_id,project_id) values($1,$2,$3)",
+          [textAction.actionId, userId, projectId]
+        );
       await personalChanged(c, userId, projectId);
       return get(c, false, projectId, id);
     });
@@ -254,6 +317,44 @@ export const createFlashcardDeckRepository = (pool: pg.Pool) => ({
       )
     };
   },
+  async getPersonalByCreationKey(
+    userId: string,
+    projectId: string,
+    key: string
+  ) {
+    await personal(pool, userId, projectId);
+    const found = await pool.query<Row>(
+      "select id from project_decks where owner_user_id=$1 and project_id=$2 and idempotency_key=$3 and deleted_at is null",
+      [userId, projectId, key]
+    );
+    return found.rows[0]
+      ? get(pool, false, projectId, String(found.rows[0].id))
+      : null;
+  },
+  async getPersonalCreationLocation(
+    userId: string,
+    projectId: string,
+    key: string
+  ) {
+    const project = (
+      await pool.query<Row>(
+        "select team_backend_id,workspace_project_id from projects where id=$1 and owner_user_id=$2 and lifecycle='active' and deletion_phase is null",
+        [projectId, userId]
+      )
+    ).rows[0];
+    if (!project) return null;
+    const original = (
+      await pool.query<Row>(
+        "select id from project_decks where owner_user_id=$1 and project_id=$2 and idempotency_key=$3 and deleted_at is null",
+        [userId, projectId, key]
+      )
+    ).rows[0];
+    return {
+      sourceDeckId: original ? String(original.id) : null,
+      teamBackendId: nullable(project.team_backend_id),
+      workspaceProjectId: nullable(project.workspace_project_id)
+    };
+  },
   async getPersonal(userId: string, projectId: string, deckId: string) {
     await personal(pool, userId, projectId);
     if (
@@ -267,10 +368,40 @@ export const createFlashcardDeckRepository = (pool: pg.Pool) => ({
       throw new DeckUnavailableError("Deck unavailable");
     return get(pool, false, projectId, deckId);
   },
-  async createTeam(userId: string, projectId: string, input: CreateTeamDeck) {
+  async createTeam(
+    userId: string,
+    projectId: string,
+    input: CreateTeamDeck,
+    textAction?: {
+      nonce: string;
+      teamBackendId: string;
+      runnerDeviceId: string;
+      deviceCredentialKeyId: string;
+      expectedProjectVersion: number;
+      expectedMemberVersion: number;
+    }
+  ) {
     return tx(pool, async (c) => {
       const p = await team(c, userId, projectId, true);
-      const hash = digest(input);
+      if (
+        textAction &&
+        (Number(p.version) !== textAction.expectedProjectVersion ||
+          Number(p.actor_member_version) !== textAction.expectedMemberVersion)
+      )
+        throw new DeckConflictError("Reviewed Team Project version changed");
+      const hash = textAction
+        ? teamDeckTextActionHash({
+            actionId: input.idempotencyKey,
+            teamBackendId: textAction.teamBackendId,
+            workspaceProjectId: projectId,
+            teamUserId: userId,
+            runnerDeviceId: textAction.runnerDeviceId,
+            deviceCredentialKeyId: textAction.deviceCredentialKeyId,
+            operationFamily: "team_workspace_write",
+            payload: input,
+            nonce: textAction.nonce
+          })
+        : digest(input);
       const existing = (
         await c.query<Row>(
           "select id,creation_payload_hash,deleted_at from workspace_project_decks where workspace_project_id=$1 and created_by_team_member_id=$2 and idempotency_key=$3 for update",
@@ -312,6 +443,33 @@ export const createFlashcardDeckRepository = (pool: pg.Pool) => ({
       await teamChanged(c, p, userId, id);
       return get(c, true, projectId, id);
     });
+  },
+  async getTeamByCreationKey(userId: string, projectId: string, key: string) {
+    const member = await team(pool, userId, projectId, false);
+    const found = await pool.query<Row>(
+      "select id,creation_payload_hash from workspace_project_decks where workspace_project_id=$1 and created_by_team_member_id=$2 and idempotency_key=$3 and deleted_at is null",
+      [projectId, member.actor_team_member_id, key]
+    );
+    return found.rows[0]
+      ? {
+          deck: await get(pool, true, projectId, String(found.rows[0].id)),
+          creationPayloadHash: String(found.rows[0].creation_payload_hash)
+        }
+      : null;
+  },
+  async getTeamBySourceDeckId(
+    userId: string,
+    projectId: string,
+    sourceDeckId: string
+  ) {
+    const member = await team(pool, userId, projectId, false);
+    const found = await pool.query<Row>(
+      "select id from workspace_project_decks where workspace_project_id=$1 and created_by_team_member_id=$2 and source_deck_id=$3 and deleted_at is null",
+      [projectId, member.actor_team_member_id, sourceDeckId]
+    );
+    return found.rows[0]
+      ? get(pool, true, projectId, String(found.rows[0].id))
+      : null;
   },
   async listTeam(userId: string, projectId: string) {
     return tx(pool, async (c) => {

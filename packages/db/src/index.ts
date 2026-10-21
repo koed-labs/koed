@@ -121,6 +121,12 @@ export {
   type ManagedMemoryActionResult
 } from "./managed-memory-action-repository.js";
 export { createManagedTextActionRepository } from "./managed-text-action-repository.js";
+export {
+  deckCreateFromTextAction,
+  deckMatchesTextAction,
+  teamDeckCreateFromTextAction,
+  teamDeckTextActionHash
+} from "./managed-deck-action.js";
 export type {
   ManagedTextActionTeamAuthority,
   ManagedTextActionTeamReceipt

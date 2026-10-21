@@ -1599,6 +1599,20 @@ export function HqApplication({
         });
         return stillCurrent();
       }
+      case "koed_deck_make": {
+        const textActions = window.koedDesktop?.managedTextActions;
+        if (!textActions?.applyDeckMake) return false;
+        const applied = await textActions.applyDeckMake(
+          action.executionId,
+          action.id,
+          action.revision
+        );
+        return (
+          stillCurrent() &&
+          applied.action.state === "applied" &&
+          applied.result.projectId === action.snapshot.projectId
+        );
+      }
       case "koed_job_create": {
         const api = window.koedDesktop?.scheduledJobs;
         if (

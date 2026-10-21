@@ -16,6 +16,7 @@ const label: Record<KoedTextActionProjection["name"], string> = {
   koed_todo_send: "Send to Agent",
   koed_job_create: "Schedule Job",
   koed_job_pause: "Pause or resume Job",
+  koed_deck_make: "Make flashcards",
   koed_hq_open: "Open Project HQ",
   koed_settings_open: "Open Settings",
   koed_settings_set_theme: "Change theme"
@@ -34,6 +35,8 @@ const detail = (action: KoedTextActionProjection) => {
       return `${String(args.title ?? "Scheduled Job")} · ${String(action.snapshot.agentName ?? "Agent")}`;
     case "koed_job_pause":
       return `${args.paused ? "Pause" : "Resume"} ${String(args.title ?? "Scheduled Job")}`;
+    case "koed_deck_make":
+      return `${String(args.title ?? "Flashcard Deck")} · ${String(args.scope ?? "")} · ${Array.isArray(args.cards) ? args.cards.length : 0} cards`;
     case "koed_project_delete":
       return `${String(action.snapshot.projectName ?? args.projectId ?? "Project")} · ${String(action.snapshot.activeExecutionCount ?? 0)} active Agent executions. Review Project deletion and its chats, to-dos, and memory.`;
     case "koed_chat_delete":
@@ -73,6 +76,7 @@ const hasDurableServiceReceipt = (action: KoedTextActionProjection) =>
     "koed_todo_send",
     "koed_job_create",
     "koed_job_pause",
+    "koed_deck_make",
     "koed_chat_move",
     "koed_project_move_chats"
   ].includes(action.name);
@@ -136,6 +140,33 @@ const jobReviewDetails = (action: KoedTextActionProjection) => {
   );
 };
 
+const deckReviewDetails = (action: KoedTextActionProjection) => {
+  if (action.name !== "koed_deck_make" || action.state !== "awaiting_review")
+    return null;
+  const cards = Array.isArray(action.arguments.cards)
+    ? (action.arguments.cards as Record<string, unknown>[])
+    : [];
+  return (
+    <div className="hq-text-action__deck-review">
+      <p>
+        From {String(action.arguments.madeFrom ?? "Project Sources and memory")}
+      </p>
+      <details>
+        <summary>Review all {cards.length} questions and answers</summary>
+        <ol>
+          {cards.map((card, index) => (
+            <li key={index}>
+              <strong>{String(card.question ?? "")}</strong>
+              <p>{String(card.answer ?? "")}</p>
+              {card.sourceRef ? <small>{String(card.sourceRef)}</small> : null}
+            </li>
+          ))}
+        </ol>
+      </details>
+    </div>
+  );
+};
+
 /** A Koed action approval is separate from AI Client command approval. */
 export function ManagedTextActions({
   api,
@@ -144,7 +175,8 @@ export function ManagedTextActions({
   profileKey,
   onApply,
   onNativeReview,
-  onResumeMove
+  onResumeMove,
+  onOpenDeck
 }: {
   api: ManagedTextActionDesktopApi;
   executionId: string;
@@ -153,6 +185,7 @@ export function ManagedTextActions({
   onApply?: (action: KoedTextActionProjection) => Promise<boolean>;
   onNativeReview?: (action: KoedTextActionProjection) => void;
   onResumeMove?: (action: KoedTextActionProjection) => Promise<boolean>;
+  onOpenDeck?: (target: { projectId: string; deckId: string }) => void;
 }) {
   const [actions, setActions] = useState<KoedTextActionProjection[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -433,6 +466,32 @@ export function ManagedTextActions({
       }
     }
   };
+  const openDeck = async (action: KoedTextActionProjection) => {
+    if (busy.current || !api.deckResult || !onOpenDeck) return;
+    busy.current = true;
+    const current = scope.current;
+    setBusyId(action.id);
+    setError(null);
+    try {
+      const receipt = await api.deckResult(executionId, action.id);
+      if (scope.current !== current) return;
+      if (
+        receipt.state !== "applied" ||
+        !receipt.result ||
+        receipt.result.projectId !== action.snapshot.projectId
+      )
+        throw new Error("Deck receipt unavailable");
+      onOpenDeck(receipt.result);
+    } catch {
+      if (scope.current === current)
+        setError("The Deck is unavailable under your current Project access.");
+    } finally {
+      if (scope.current === current) {
+        busy.current = false;
+        setBusyId(null);
+      }
+    }
+  };
   useEffect(() => {
     if (!onApply || busy.current) return;
     const ready = actions.find(
@@ -453,6 +512,7 @@ export function ManagedTextActions({
           <strong>{label[action.name]}</strong>
           <span className="hq-text-action__detail">{detail(action)}</span>
           {jobReviewDetails(action)}
+          {deckReviewDetails(action)}
           {action.state === "awaiting_review" &&
           action.reviewKind === "ask_first" ? (
             <div className="hq-text-action__buttons">
@@ -535,11 +595,24 @@ export function ManagedTextActions({
             </div>
           ) : null}
           {action.state === "applied" ? (
-            <small>
-              {action.uiOutcome === "opened_composer"
-                ? "Composer opened"
-                : "Done"}
-            </small>
+            action.name === "koed_deck_make" ? (
+              <div className="hq-text-action__buttons">
+                <button
+                  className="hq-text-action__button hq-text-action__button--primary"
+                  type="button"
+                  disabled={busyId !== null || !onOpenDeck || !api.deckResult}
+                  onClick={() => void openDeck(action)}
+                >
+                  Open deck
+                </button>
+              </div>
+            ) : (
+              <small>
+                {action.uiOutcome === "opened_composer"
+                  ? "Composer opened"
+                  : "Done"}
+              </small>
+            )
           ) : null}
           {action.state === "declined" ? <small>Not run</small> : null}
           {action.state === "unavailable" ? (

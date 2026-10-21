@@ -123,6 +123,7 @@ describe("Pi installed document Work Item tool", () => {
     ).href;
     const managed = await setup();
     expect(managed.tools.has("work_items_from_doc")).toBe(true);
+    expect(managed.tools.has("flashcard_sources")).toBe(true);
     storeDesktopLocalCredential(managed.home, {
       ownerUserId: executionId,
       operationFamilies: ["personal_collaboration_read", "managed_execution"]
@@ -178,6 +179,18 @@ describe("Pi installed document Work Item tool", () => {
     expect(String(send.mock.calls[1]?.[0])).toContain(
       `/${executionId}/work-items-from-doc/read`
     );
+    const flashcards = await managed.invoke("flashcard_sources", {
+      mode: "read",
+      source_id: sourceId,
+      cursor: 0
+    });
+    expect(flashcards.details).toMatchObject({
+      sourceId,
+      lines: [{ lineNumber: 1, text: "Paper due Friday" }]
+    });
+    expect(String(send.mock.calls[2]?.[0])).toContain(
+      `/${executionId}/work-items-from-doc/read`
+    );
     send.mockImplementationOnce(
       async () =>
         new Response(
@@ -206,7 +219,7 @@ describe("Pi installed document Work Item tool", () => {
       ]
     });
     expect(preview.details).toMatchObject({ newCount: 1 });
-    expect(String(send.mock.calls[2]?.[0])).toContain(
+    expect(String(send.mock.calls[3]?.[0])).toContain(
       `/${executionId}/work-items-from-doc/preview`
     );
     const apply = await managed.invoke("work_items_from_doc", {
@@ -225,7 +238,7 @@ describe("Pi installed document Work Item tool", () => {
       ]
     });
     expect(apply.details).toEqual({ status: "requested" });
-    expect(send).toHaveBeenCalledTimes(3);
+    expect(send).toHaveBeenCalledTimes(4);
     send.mockImplementationOnce(
       async () => new Response("{}", { status: 409 })
     );
@@ -238,6 +251,12 @@ describe("Pi installed document Work Item tool", () => {
     const noCredential = await setup();
     await expect(
       noCredential.invoke("work_items_from_doc", {
+        mode: "read",
+        source_id: sourceId
+      })
+    ).rejects.toThrow("lacks local owner authority");
+    await expect(
+      noCredential.invoke("flashcard_sources", {
         mode: "read",
         source_id: sourceId
       })

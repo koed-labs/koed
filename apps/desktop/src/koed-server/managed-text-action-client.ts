@@ -15,6 +15,7 @@ export const createBoundManagedTextActionClient =
     if (
       request.operation !== "list" &&
       request.operation !== "get" &&
+      request.operation !== "deck-result" &&
       !bound.canWrite
     )
       throw new Error("Koed action write authority is unavailable.");
@@ -26,9 +27,13 @@ export const createBoundManagedTextActionClient =
         ? base
         : request.operation === "get"
           ? `${base}/${encodeURIComponent(request.actionId)}`
-          : `${base}/${encodeURIComponent(request.actionId)}/${request.operation}`;
+          : request.operation === "deck-result"
+            ? `${base}/${encodeURIComponent(request.actionId)}/deck-result`
+            : `${base}/${encodeURIComponent(request.actionId)}/${request.operation}`;
     const init: RequestInit =
-      request.operation === "list" || request.operation === "get"
+      request.operation === "list" ||
+      request.operation === "get" ||
+      request.operation === "deck-result"
         ? { method: "GET" }
         : {
             method: "POST",
@@ -78,12 +83,19 @@ export const createBoundManagedTextActionClient =
         )
       )
         throw new Error("Koed action list crossed owner identity.");
+    } else if (request.operation === "deck-result") {
+      if (result.operation !== "deck-result")
+        throw new Error("Koed Deck result crossed operation identity.");
     } else if (
-      request.operation === "list" ||
-      result.action.executionId !== request.executionId ||
-      result.action.ownerUserId !== bound.ownerId ||
-      result.action.id !== request.actionId
-    )
-      throw new Error("Koed action crossed owner or action identity.");
+      request.operation !== "list" &&
+      result.operation !== "deck-result"
+    ) {
+      if (
+        result.action.executionId !== request.executionId ||
+        result.action.ownerUserId !== bound.ownerId ||
+        result.action.id !== request.actionId
+      )
+        throw new Error("Koed action crossed owner or action identity.");
+    }
     return result;
   };

@@ -96,6 +96,30 @@ const connect = async ({
 };
 
 describe("Koed MCP 2026-07-28 protocol", () => {
+  it("advertises flashcard source reads only with a managed document selector", async () => {
+    const ordinary = await connect();
+    expect(
+      (await ordinary.client.listTools()).tools.map((tool) => tool.name)
+    ).not.toContain("flashcard_sources");
+    const partial = await connect({
+      environment: {
+        KOED_MANAGED_DOC_EXECUTION_ID: "00000000-0000-4000-8000-000000000001"
+      }
+    });
+    expect(
+      (await partial.client.listTools()).tools.map((tool) => tool.name)
+    ).not.toContain("flashcard_sources");
+    const managed = await connect({
+      environment: {
+        KOED_MANAGED_DOC_EXECUTION_ID: "00000000-0000-4000-8000-000000000001",
+        KOED_MANAGED_DOC_EXECUTION_GENERATION: "1",
+        KOED_MANAGED_DOC_API_URL: "http://127.0.0.1:9"
+      }
+    });
+    expect(
+      (await managed.client.listTools()).tools.map((tool) => tool.name)
+    ).toContain("flashcard_sources");
+  });
   it("advertises only catch-up recall and document preview tools despite normal mutation flags", async () => {
     const { client } = await connect({
       environment: {

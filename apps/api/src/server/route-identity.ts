@@ -1022,7 +1022,13 @@ export const routeIdentityContracts = [
     [
       ["GET", "/v1/workspace-projects/{projectId}/decks"],
       ["POST", "/v1/workspace-projects/{projectId}/decks"],
+      ["POST", "/v1/workspace-projects/{projectId}/decks/from-text-action"],
       ["GET", "/v1/workspace-projects/{projectId}/decks/{deckId}"],
+      ["GET", "/v1/workspace-projects/{projectId}/decks/by-creation-key/{key}"],
+      [
+        "GET",
+        "/v1/workspace-projects/{projectId}/decks/by-source-deck/{sourceDeckId}"
+      ],
       ["PATCH", "/v1/workspace-projects/{projectId}/decks/{deckId}"],
       ["DELETE", "/v1/workspace-projects/{projectId}/decks/{deckId}"],
       ["POST", "/v1/workspace-projects/{projectId}/decks/{deckId}/cards"],
@@ -2368,6 +2374,26 @@ export const routeIdentityContracts = [
     "desktop_local_credential",
     "personal_memory",
     "Apply a claimed owner action through the bound Team principal and exact shared Project versions.",
+    "request_time_team_workspace",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/managed-conversations/{executionId}/text-actions/{actionId}/apply-deck-make",
+    "desktop_local_credential",
+    "personal_memory",
+    "Create one exact reviewed Deck with its journal ID as the creation key.",
+    "request_time_team_workspace",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/managed-conversations/{executionId}/text-actions/{actionId}/deck-result",
+    "desktop_local_credential",
+    "personal_memory",
+    "Resolve an exact generated Deck after current Project authority and verified action receipt.",
     "request_time_team_workspace",
     "implemented",
     localEdgeDeploymentModes

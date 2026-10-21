@@ -1065,6 +1065,7 @@ export function HqActiveConversation({
   onTextActionApply,
   onTextActionNativeReview,
   onTextActionResumeMove,
+  onOpenDeck,
   focusEventId,
   agentsApi,
   helperAgents = []
@@ -1110,6 +1111,7 @@ export function HqActiveConversation({
   onTextActionResumeMove?: (
     action: KoedTextActionProjection
   ) => Promise<boolean>;
+  onOpenDeck?: (target: { projectId: string; deckId: string }) => void;
   focusEventId?: string | null;
   agentsApi?: AgentsDesktopApi | null;
   helperAgents?: readonly Agent[];
@@ -2750,6 +2752,7 @@ export function HqActiveConversation({
                 onApply={onTextActionApply}
                 onNativeReview={onTextActionNativeReview}
                 onResumeMove={onTextActionResumeMove}
+                onOpenDeck={onOpenDeck}
               />
             ) : null}
             {visibleOptimistic.map((item) => (

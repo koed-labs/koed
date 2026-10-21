@@ -59,13 +59,64 @@ const fixture = (profile = "local_personal", managedFamily = true) => {
     prepareManagedTextTeamTodoAdd: vi.fn(
       async () => null as { action: typeof action; effectNonce: string } | null
     ),
+    prepareManagedTextDeckMake: vi.fn(async () => null),
+    markManagedTextDeckDispatch: vi.fn(async () => null),
+    readManagedTextDeckEffectNonce: vi.fn(async () => null),
     reconcileManagedTextAction: vi.fn(async () => action)
   };
   const applyTeamTodoAdd = vi.fn(async () => undefined);
+  const deckRepository = {
+    getPersonalCreationLocation: vi.fn(async () => ({
+      sourceDeckId: null,
+      teamBackendId: null,
+      workspaceProjectId: null
+    })),
+    getPersonalByCreationKey: vi.fn(async () => ({ id: randomUUID() }))
+  };
+  const createTeamDeck = vi.fn(
+    async (input: {
+      payload: {
+        title: string;
+        scope: string;
+        madeFrom: string;
+        cards: Array<{
+          question: string;
+          answer: string;
+          sourceRef?: string | null;
+          topicLabel?: string | null;
+        }>;
+      };
+      workspaceProjectId: string;
+    }) => ({
+      id: randomUUID(),
+      projectId: input.workspaceProjectId,
+      title: input.payload.title,
+      scope: input.payload.scope,
+      madeFrom: input.payload.madeFrom,
+      createdByAgentId: null,
+      uses: 0,
+      version: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      cards: input.payload.cards.map((card) => ({
+        id: randomUUID(),
+        deckId: randomUUID(),
+        question: card.question,
+        answer: card.answer,
+        sourceRef: card.sourceRef ?? null,
+        topicLabel: card.topicLabel ?? null,
+        version: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }))
+    })
+  );
   const app = Fastify();
   registerManagedTextActionRoutes(app, {
     repository: repository as never,
+    deckRepository: deckRepository as never,
     applyTeamTodoAdd,
+    createTeamDeck,
     auth: {
       authenticateSessionOrDeviceCredential: vi.fn(async () => {
         throw new Error("browser/session fallback");
@@ -101,13 +152,113 @@ const fixture = (profile = "local_personal", managedFamily = true) => {
     executionId,
     action,
     repository,
+    deckRepository,
     applyTeamTodoAdd,
+    createTeamDeck,
     url,
     post
   };
 };
 
 describe("owner-local Koed text action admission", () => {
+  it("never adopts a same-key Personal Deck after a Team-generated Project leaves", async () => {
+    const f = fixture();
+    try {
+      const projectId = randomUUID();
+      f.repository.reconcileManagedTextAction.mockResolvedValueOnce({
+        ...f.action,
+        name: "koed_deck_make",
+        state: "applied",
+        arguments: {
+          projectId,
+          title: "Chapter 7",
+          scope: "Midterm",
+          madeFrom: "Notes",
+          cards: [{ question: "Q?", answer: "A." }]
+        },
+        snapshot: {
+          projectId,
+          workspaceProjectId: randomUUID(),
+          teamBackendId: "old-team"
+        }
+      } as never);
+      const result = await f.app.inject({
+        method: "GET",
+        url: `${f.url}/${f.action.id}/deck-result`,
+        remoteAddress: "127.0.0.1",
+        headers: { authorization: f.credential.authorization }
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.json()).toEqual({ state: "applied", result: null });
+      expect(f.deckRepository.getPersonalByCreationKey).not.toHaveBeenCalled();
+    } finally {
+      await f.app.close();
+    }
+  });
+  it("applies linked flashcards with a strict Team payload and reviewed device snapshot", async () => {
+    const f = fixture();
+    try {
+      const personalProjectId = randomUUID();
+      const workspaceProjectId = randomUUID();
+      const runnerDeviceId = randomUUID();
+      const generated = {
+        ...f.action,
+        name: "koed_deck_make",
+        state: "claimed",
+        revision: 3,
+        arguments: {
+          projectId: personalProjectId,
+          title: "Chapter 7",
+          scope: "Only exam material",
+          madeFrom: "Notes",
+          cards: [{ question: "Q?", answer: "A.", sourceRef: "Notes p. 7" }]
+        },
+        snapshot: {
+          projectId: personalProjectId,
+          agentId: randomUUID(),
+          workspaceProjectId,
+          teamBackendId: "team-vps",
+          runnerDeviceId,
+          teamProjectVersion: 7,
+          teamMemberVersion: 3
+        }
+      };
+      f.repository.prepareManagedTextDeckMake.mockResolvedValueOnce(
+        generated as never
+      );
+      f.repository.markManagedTextDeckDispatch.mockResolvedValueOnce({
+        action: generated,
+        effectNonce: "A".repeat(43)
+      } as never);
+      const response = await f.app.inject({
+        method: "POST",
+        url: `${f.url}/${f.action.id}/apply-deck-make`,
+        remoteAddress: "127.0.0.1",
+        headers: { authorization: f.credential.authorization },
+        payload: { expectedRevision: 3 }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().result.projectId).toBe(personalProjectId);
+      expect(f.createTeamDeck).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runnerDeviceId,
+          workspaceProjectId,
+          payload: {
+            idempotencyKey: f.action.id,
+            title: "Chapter 7",
+            scope: "Only exam material",
+            madeFrom: "Notes",
+            cards: [{ question: "Q?", answer: "A.", sourceRef: "Notes p. 7" }]
+          }
+        })
+      );
+      expect(f.createTeamDeck.mock.calls[0]?.[0].payload).not.toHaveProperty(
+        "createdByAgentId"
+      );
+    } finally {
+      await f.app.close();
+    }
+  });
   it("does not contact Team without the claimed exact Personal action", async () => {
     const f = fixture();
     const url = `${f.url}/${f.action.id}/apply-team-todo-add`;

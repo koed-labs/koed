@@ -6,6 +6,13 @@ import {
   workspaceProjectWorkItemCreateSchema,
   workspaceProjectWorkItemSchema
 } from "@koed/shared";
+import { deckSchema } from "@koed/shared";
+import {
+  deckMatchesTextAction,
+  teamDeckCreateFromTextAction,
+  teamDeckTextActionHash
+} from "@koed/db";
+import type { CreateTeamDeck, Deck } from "@koed/shared";
 import type {
   ManagedTextActionTeamAuthority,
   ManagedTextActionTeamReceipt,
@@ -64,6 +71,29 @@ export function createManagedTextActionTeamAdapter(
     expectedProjectVersion: number;
     expectedMemberVersion: number;
   }) => Promise<void>;
+  createDeck: (input: {
+    ownerUserId: string;
+    projectId: string;
+    teamBackendId: string;
+    workspaceProjectId: string;
+    actionId: string;
+    effectNonce: string;
+    runnerDeviceId: string;
+    expectedProjectVersion: number;
+    expectedMemberVersion: number;
+    payload: CreateTeamDeck;
+  }) => Promise<Deck>;
+  findDeck: (input: {
+    ownerUserId: string;
+    projectId: string;
+    teamBackendId: string;
+    workspaceProjectId: string;
+    actionId: string;
+    effectNonce?: string;
+    arguments?: Record<string, unknown>;
+    runnerDeviceId?: string;
+    sourceDeckId?: string;
+  }) => Promise<Deck | null>;
 } {
   const requestTeam = async (
     input: {
@@ -75,7 +105,8 @@ export function createManagedTextActionTeamAdapter(
     path: string,
     method: "GET" | "POST" = "GET",
     body?: unknown,
-    expected?: { projectVersion: number; memberVersion: number }
+    expected?: { projectVersion: number; memberVersion: number },
+    maxBytes = 64_000
   ) => {
     if (!context.localEdge.remoteOperationsAllowed())
       throw new Error("Team authority unavailable");
@@ -100,6 +131,9 @@ export function createManagedTextActionTeamAdapter(
       context.localEdge.resolveUpstreamAuthorization(backend);
     if (!authorization || !/^Koed-Device\s+[^:\s]+:[^\s]+$/.test(authorization))
       throw new Error("Sealed Team device credential unavailable");
+    const deviceCredentialKeyId = authorization
+      .slice("Koed-Device ".length)
+      .split(":", 1)[0]!;
     // The lifecycle reader verifies this same credential's Team principal and
     // exact link before the item read. The Team route checks membership again.
     const lifecycle = await lifecycleAuthority(input);
@@ -122,9 +156,12 @@ export function createManagedTextActionTeamAdapter(
         },
         ...(body ? { body: JSON.stringify(body) } : {})
       },
-      { timeoutMs: 15_000, maxBytes: 64_000 }
+      { timeoutMs: 15_000, maxBytes }
     );
-    if (!result.response.ok) throw new Error("Team Work Item authority denied");
+    if (!result.response.ok)
+      throw Object.assign(new Error("Team Project authority denied"), {
+        statusCode: result.response.status
+      });
     const after = await personal.getLink(input.ownerUserId, input.projectId);
     if (
       !after ||
@@ -136,11 +173,84 @@ export function createManagedTextActionTeamAdapter(
       )) !== principal
     )
       throw new Error("Team principal or Project binding changed");
-    return { payload: result.payload, lifecycle };
+    return {
+      payload: result.payload,
+      lifecycle,
+      principal,
+      deviceCredentialKeyId
+    };
   };
   const read = async (input: Parameters<typeof requestTeam>[0], path: string) =>
     (await requestTeam(input, path)).payload;
   return {
+    createDeck: async (input) => {
+      const { payload } = await requestTeam(
+        input,
+        `/v1/workspace-projects/${input.workspaceProjectId}/decks/from-text-action`,
+        "POST",
+        {
+          ...input.payload,
+          teamBackendId: input.teamBackendId,
+          runnerDeviceId: input.runnerDeviceId,
+          textActionNonce: input.effectNonce,
+          expectedProjectVersion: input.expectedProjectVersion,
+          expectedMemberVersion: input.expectedMemberVersion
+        },
+        {
+          projectVersion: input.expectedProjectVersion,
+          memberVersion: input.expectedMemberVersion
+        },
+        2_500_000
+      );
+      return deckSchema.parse(payload);
+    },
+    findDeck: async (input) => {
+      try {
+        const { payload, principal, deviceCredentialKeyId } = await requestTeam(
+          input,
+          input.sourceDeckId
+            ? `/v1/workspace-projects/${input.workspaceProjectId}/decks/by-source-deck/${input.sourceDeckId}`
+            : `/v1/workspace-projects/${input.workspaceProjectId}/decks/by-creation-key/${input.actionId}`,
+          "GET",
+          undefined,
+          undefined,
+          2_500_000
+        );
+        if (input.sourceDeckId) return deckSchema.parse(payload);
+        const receipt = z
+          .object({
+            deck: deckSchema,
+            creationPayloadHash: z.string().regex(/^[a-f0-9]{64}$/),
+            requestDeviceInstanceId: z.string().min(1)
+          })
+          .strict()
+          .parse(payload);
+        if (
+          !input.effectNonce ||
+          !input.arguments ||
+          receipt.requestDeviceInstanceId !== input.runnerDeviceId
+        )
+          return null;
+        const expected = teamDeckTextActionHash({
+          actionId: input.actionId,
+          teamBackendId: input.teamBackendId,
+          workspaceProjectId: input.workspaceProjectId,
+          teamUserId: principal,
+          runnerDeviceId: input.runnerDeviceId,
+          deviceCredentialKeyId,
+          operationFamily: "team_workspace_write",
+          payload: teamDeckCreateFromTextAction(
+            input.actionId,
+            input.arguments
+          ),
+          nonce: input.effectNonce
+        });
+        return receipt.creationPayloadHash === expected ? receipt.deck : null;
+      } catch (error) {
+        if ((error as { statusCode?: number }).statusCode === 404) return null;
+        throw error;
+      }
+    },
     applyTodoAdd: async (input) => {
       const { payload } = await requestTeam(
         input,
@@ -200,6 +310,71 @@ export function createManagedTextActionTeamAdapter(
       };
     },
     receipt: async (input) => {
+      if (input.name === "koed_deck_make") {
+        const receipt = await (async () => {
+          try {
+            const { payload, principal, deviceCredentialKeyId } =
+              await requestTeam(
+                input,
+                `/v1/workspace-projects/${input.workspaceProjectId}/decks/by-creation-key/${input.effectKey}`,
+                "GET",
+                undefined,
+                undefined,
+                2_500_000
+              );
+            return {
+              ...z
+                .object({
+                  deck: deckSchema,
+                  creationPayloadHash: z.string().regex(/^[a-f0-9]{64}$/),
+                  requestDeviceInstanceId: z.string().min(1)
+                })
+                .strict()
+                .parse(payload),
+              principal,
+              deviceCredentialKeyId
+            };
+          } catch (error) {
+            if ((error as { statusCode?: number }).statusCode === 404)
+              return null;
+            throw error;
+          }
+        })();
+        const expectedPayload = teamDeckCreateFromTextAction(
+          input.effectKey,
+          input.arguments
+        );
+        const expectedHash =
+          input.effectNonce &&
+          receipt &&
+          receipt.requestDeviceInstanceId === input.snapshot.runnerDeviceId
+            ? teamDeckTextActionHash({
+                actionId: input.effectKey,
+                teamBackendId: input.teamBackendId,
+                workspaceProjectId: input.workspaceProjectId,
+                teamUserId: receipt.principal,
+                runnerDeviceId: String(input.snapshot.runnerDeviceId),
+                deviceCredentialKeyId: receipt.deviceCredentialKeyId,
+                operationFamily: "team_workspace_write",
+                payload: expectedPayload,
+                nonce: input.effectNonce
+              })
+            : null;
+        return {
+          confirmed: Boolean(
+            receipt &&
+            expectedHash &&
+            receipt.creationPayloadHash === expectedHash &&
+            deckMatchesTextAction(
+              receipt.deck,
+              expectedPayload,
+              input.workspaceProjectId,
+              true
+            )
+          ),
+          effectNonceHash: null
+        };
+      }
       if (input.name === "koed_todo_add") {
         const effect = teamTextEffectSchema.parse(
           await read(

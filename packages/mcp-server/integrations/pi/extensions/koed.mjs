@@ -455,6 +455,28 @@ export default function koedExtension(pi) {
         dueOn: Type.Optional(Type.String({ format: "date" }))
       },
       koed_todo_send: { projectId: uuid, workItemId: uuid, agentId: uuid },
+      koed_deck_make: {
+        projectId: uuid,
+        title: Type.String({ minLength: 1, maxLength: 500 }),
+        scope: Type.String({ minLength: 1, maxLength: 2000 }),
+        madeFrom: Type.String({ minLength: 1, maxLength: 4000 }),
+        cards: Type.Array(
+          Type.Object(
+            {
+              question: Type.String({ minLength: 1, maxLength: 4000 }),
+              answer: Type.String({ minLength: 1, maxLength: 16000 }),
+              sourceRef: Type.Optional(
+                Type.Union([Type.String({ maxLength: 2048 }), Type.Null()])
+              ),
+              topicLabel: Type.Optional(
+                Type.Union([Type.String({ maxLength: 240 }), Type.Null()])
+              )
+            },
+            { additionalProperties: false }
+          ),
+          { minItems: 1, maxItems: 100 }
+        )
+      },
       koed_hq_open: { projectId: uuid },
       koed_settings_open: {
         section: Type.Optional(
@@ -498,6 +520,41 @@ export default function koedExtension(pi) {
     process.env.KOED_MANAGED_DOC_API_URL &&
     process.env.KOED_MANAGED_DOC_HELPER_URL
   ) {
+    pi.registerTool({
+      name: "flashcard_sources",
+      label: "Read Project Sources for flashcards",
+      description:
+        "Read authorized current Project Sources before generating flashcards. Use memory_answer separately for exam scope, learning preferences and weak spots. Respect exclusions.",
+      parameters: Type.Union([
+        Type.Object(
+          {
+            mode: Type.Literal("list"),
+            cursor: Type.Optional(Type.Integer({ minimum: 0 }))
+          },
+          { additionalProperties: false }
+        ),
+        Type.Object(
+          {
+            mode: Type.Literal("read"),
+            source_id: Type.Optional(Type.String({ format: "uuid" })),
+            cursor: Type.Optional(Type.Integer({ minimum: 0 }))
+          },
+          { additionalProperties: false }
+        )
+      ]),
+      async execute(_toolCallId, input) {
+        const { readWorkItemsFromDocPage, listWorkItemsFromDocSources } =
+          await import(process.env.KOED_MANAGED_DOC_HELPER_URL);
+        const page =
+          input.mode === "list"
+            ? await listWorkItemsFromDocSources(input, process.env)
+            : await readWorkItemsFromDocPage(input, process.env);
+        return {
+          content: [{ type: "text", text: JSON.stringify(page) }],
+          details: page
+        };
+      }
+    });
     pi.registerTool({
       name: "work_items_from_doc",
       label: "Make Work Items from a document",

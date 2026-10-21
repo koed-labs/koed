@@ -605,6 +605,7 @@ export class PiManagedConversationSession {
             "koed_todo_send",
             "koed_job_create",
             "koed_job_pause",
+            "koed_deck_make",
             "koed_hq_open",
             "koed_settings_open",
             "koed_settings_set_theme"

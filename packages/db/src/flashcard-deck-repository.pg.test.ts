@@ -66,6 +66,82 @@ describe.skipIf(!testUrl)("HQ-801 Flashcard Deck isolation", () => {
   afterAll(async () => {
     await pool?.end();
   });
+  it("keeps reviewed Team Deck creation distinct from ordinary same-key creation", async () => {
+    const projectVersion = Number(
+      (
+        await pool.query<{ version: number }>(
+          "select version from workspace_projects where id=$1",
+          [workspaceProjectId]
+        )
+      ).rows[0]!.version
+    );
+    const memberVersion = Number(
+      (
+        await pool.query<{ version: number }>(
+          "select version from workspace_project_members where workspace_project_id=$1 and team_member_id=$2",
+          [workspaceProjectId, aliceMember]
+        )
+      ).rows[0]!.version
+    );
+    const payload = {
+      idempotencyKey: randomUUID(),
+      title: "Midterm",
+      scope: "Only chapter 7",
+      madeFrom: "Course pack",
+      cards: [{ question: "Q?", answer: "A." }]
+    };
+    const textAction = {
+      nonce: "A".repeat(43),
+      teamBackendId: backend,
+      runnerDeviceId: "device-a",
+      deviceCredentialKeyId: "credential-a",
+      expectedProjectVersion: projectVersion,
+      expectedMemberVersion: memberVersion
+    };
+    const created = await decks.createTeam(
+      alice,
+      workspaceProjectId,
+      payload,
+      textAction
+    );
+    const receipt = await decks.getTeamByCreationKey(
+      alice,
+      workspaceProjectId,
+      payload.idempotencyKey
+    );
+    expect(receipt?.deck.id).toBe(created.id);
+    expect(receipt?.creationPayloadHash).toMatch(/^[a-f0-9]{64}$/);
+    await expect(
+      decks.createTeam(alice, workspaceProjectId, payload)
+    ).rejects.toBeInstanceOf(DeckConflictError);
+    const ordinary = { ...payload, idempotencyKey: randomUUID() };
+    await decks.createTeam(alice, workspaceProjectId, ordinary);
+    const versions = await pool.query<{
+      project_version: number;
+      member_version: number;
+    }>(
+      "select p.version as project_version, m.version as member_version from workspace_projects p join workspace_project_members m on m.workspace_project_id=p.id and m.team_member_id=$2 where p.id=$1",
+      [workspaceProjectId, aliceMember]
+    );
+    await expect(
+      decks.createTeam(alice, workspaceProjectId, ordinary, {
+        ...textAction,
+        expectedProjectVersion: Number(versions.rows[0]!.project_version),
+        expectedMemberVersion: Number(versions.rows[0]!.member_version)
+      })
+    ).rejects.toBeInstanceOf(DeckConflictError);
+    await expect(
+      decks.createTeam(
+        alice,
+        workspaceProjectId,
+        {
+          ...payload,
+          idempotencyKey: randomUUID()
+        },
+        textAction
+      )
+    ).rejects.toBeInstanceOf(DeckConflictError);
+  });
   it("keeps shared cards common and each member's study state Personal", async () => {
     const input = {
       idempotencyKey: randomUUID(),

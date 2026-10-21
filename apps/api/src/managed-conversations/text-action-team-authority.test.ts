@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { teamDeckTextActionHash, teamDeckCreateFromTextAction } from "@koed/db";
 import { createManagedTextActionTeamAdapter } from "./text-action-team-authority.js";
 
 const ownerUserId = randomUUID();
@@ -156,6 +157,124 @@ afterEach(() => {
     rmSync(path, { recursive: true, force: true });
 });
 describe("Managed text action Team authority", () => {
+  it("sends strict Team cards and verifies a same-device salted receipt", async () => {
+    const f = fixture();
+    const actionId = randomUUID();
+    const runnerDeviceId = randomUUID();
+    const nonce = "A".repeat(43);
+    const args = {
+      projectId,
+      title: "Chapter 7",
+      scope: "Midterm only",
+      madeFrom: "Notes",
+      cards: [{ question: "Q?", answer: "A." }]
+    };
+    const payload = teamDeckCreateFromTextAction(actionId, args);
+    const createdAt = new Date().toISOString();
+    const deckId = randomUUID();
+    const deck = {
+      id: deckId,
+      projectId: workspaceProjectId,
+      title: args.title,
+      scope: args.scope,
+      madeFrom: args.madeFrom,
+      createdByAgentId: null,
+      uses: 0,
+      version: 1,
+      createdAt,
+      updatedAt: createdAt,
+      cards: [
+        {
+          id: randomUUID(),
+          deckId,
+          question: "Q?",
+          answer: "A.",
+          sourceRef: null,
+          topicLabel: null,
+          version: 1,
+          createdAt,
+          updatedAt: createdAt
+        }
+      ]
+    };
+    const proof = teamDeckTextActionHash({
+      actionId,
+      teamBackendId: backendId,
+      workspaceProjectId,
+      teamUserId: await f.personal.principalBinding(),
+      runnerDeviceId,
+      deviceCredentialKeyId: "sealed",
+      operationFamily: "team_workspace_write",
+      payload,
+      nonce
+    });
+    f.fetch.mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/decks/from-text-action") && init?.method === "POST")
+        return Response.json(deck, { status: 201 });
+      if (path.endsWith(`/decks/by-creation-key/${actionId}`))
+        return Response.json({
+          deck,
+          creationPayloadHash: proof,
+          requestDeviceInstanceId: runnerDeviceId
+        });
+      return Response.json({}, { status: 404 });
+    });
+    const created = await f.createDeck({
+      ...scope,
+      actionId,
+      effectNonce: nonce,
+      runnerDeviceId,
+      expectedProjectVersion: 7,
+      expectedMemberVersion: 3,
+      payload
+    });
+    expect(created.id).toBe(deckId);
+    const posted = f.fetch.mock.calls.find(
+      ([, init]) => init?.method === "POST"
+    );
+    expect(JSON.parse(String(posted?.[1]?.body))).toMatchObject({
+      ...payload,
+      runnerDeviceId,
+      teamBackendId: backendId,
+      textActionNonce: nonce
+    });
+    expect(JSON.parse(String(posted?.[1]?.body))).not.toHaveProperty(
+      "createdByAgentId"
+    );
+    expect(
+      (
+        await f.findDeck({
+          ...scope,
+          actionId,
+          effectNonce: nonce,
+          arguments: args,
+          runnerDeviceId
+        })
+      )?.id
+    ).toBe(deckId);
+    expect(
+      await f.findDeck({
+        ...scope,
+        actionId,
+        effectNonce: nonce,
+        arguments: args,
+        runnerDeviceId: randomUUID()
+      })
+    ).toBeNull();
+    expect(
+      (
+        await f.receipt({
+          ...scope,
+          name: "koed_deck_make",
+          effectKey: actionId,
+          effectNonce: nonce,
+          arguments: args,
+          snapshot: { runnerDeviceId }
+        })
+      ).confirmed
+    ).toBe(true);
+  });
   it("sends the exact effect request only after current bound Team CAS proof", async () => {
     const f = fixture();
     const input = {
