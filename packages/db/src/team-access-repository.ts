@@ -33,6 +33,7 @@ import {
   teams,
   teamWorkspaceAccessGrants,
   teamWorkspaces,
+  workspaceProjects,
   workspaceRepresentationPolicies,
   users
 } from "./schema.js";
@@ -259,6 +260,7 @@ const mapInviteRecord = (row: {
   id: string;
   teamId: string;
   defaultTeamWorkspaceId: string | null;
+  workspaceProjectId?: string | null;
   defaultWorkspaceAccess: TeamWorkspaceAccessLevel;
   email: string;
   normalizedEmail: string | null;
@@ -280,6 +282,7 @@ const mapInviteRecord = (row: {
     id: row.id,
     teamId: row.teamId,
     defaultTeamWorkspaceId: row.defaultTeamWorkspaceId!,
+    workspaceProjectId: row.workspaceProjectId ?? null,
     defaultWorkspaceAccess: row.defaultWorkspaceAccess,
     email: row.email,
     normalizedEmail: row.normalizedEmail!,
@@ -3436,6 +3439,8 @@ export const createTeamAccessRepository = (
       input: {
         teamId: string;
         defaultTeamWorkspaceId: string;
+        workspaceProjectId?: string | null;
+        expectedWorkspaceProjectVersion?: number;
         defaultWorkspaceAccess: "read" | "write";
         email: string;
         role: TeamRole;
@@ -3487,12 +3492,39 @@ export const createTeamAccessRepository = (
         ) {
           return null;
         }
+        if (input.workspaceProjectId) {
+          const project = (
+            await tx
+              .select({ id: workspaceProjects.id })
+              .from(workspaceProjects)
+              .where(
+                and(
+                  eq(workspaceProjects.id, input.workspaceProjectId),
+                  eq(workspaceProjects.teamId, input.teamId),
+                  eq(
+                    workspaceProjects.workspaceId,
+                    input.defaultTeamWorkspaceId
+                  ),
+                  eq(workspaceProjects.ownerTeamMemberId, lockedManager!.id),
+                  eq(workspaceProjects.lifecycle, "active"),
+                  eq(
+                    workspaceProjects.version,
+                    input.expectedWorkspaceProjectVersion ?? -1
+                  )
+                )
+              )
+              .limit(1)
+              .for("update")
+          )[0];
+          if (!project) return null;
+        }
 
         const inviteRows = await tx
           .insert(teamInvites)
           .values({
             teamId: input.teamId,
             defaultTeamWorkspaceId: input.defaultTeamWorkspaceId,
+            workspaceProjectId: input.workspaceProjectId ?? null,
             defaultWorkspaceAccess: input.defaultWorkspaceAccess,
             email,
             normalizedEmail: email,
@@ -3514,6 +3546,7 @@ export const createTeamAccessRepository = (
           metadata: {
             teamId: input.teamId,
             teamWorkspaceId: input.defaultTeamWorkspaceId,
+            workspaceProjectId: input.workspaceProjectId ?? null,
             workspaceAccess: input.defaultWorkspaceAccess,
             role: input.role,
             version: invite.version,
@@ -3538,6 +3571,7 @@ export const createTeamAccessRepository = (
       input: {
         teamId: string;
         defaultTeamWorkspaceId: string;
+        workspaceProjectId?: string | null;
         role: TeamRole;
       }
     ): Promise<TeamInviteCreationReviewRecord | null> {
@@ -3559,6 +3593,7 @@ export const createTeamAccessRepository = (
       }
       const rows = await db
         .select({
+          managerId: teamMemberships.id,
           managerRole: teamMemberships.role,
           teamId: teams.id,
           teamName: teams.name,
@@ -3575,6 +3610,31 @@ export const createTeamAccessRepository = (
       if (!row || row.managerRole === "member") {
         return null;
       }
+      const project = input.workspaceProjectId
+        ? (
+            await db
+              .select({
+                id: workspaceProjects.id,
+                name: workspaceProjects.name,
+                version: workspaceProjects.version
+              })
+              .from(workspaceProjects)
+              .where(
+                and(
+                  eq(workspaceProjects.id, input.workspaceProjectId),
+                  eq(workspaceProjects.teamId, input.teamId),
+                  eq(
+                    workspaceProjects.workspaceId,
+                    input.defaultTeamWorkspaceId
+                  ),
+                  eq(workspaceProjects.ownerTeamMemberId, row.managerId),
+                  eq(workspaceProjects.lifecycle, "active")
+                )
+              )
+              .limit(1)
+          )[0]
+        : null;
+      if (input.workspaceProjectId && !project) return null;
       return {
         managerRole: row.managerRole,
         team: { id: row.teamId, name: row.teamName },
@@ -3582,7 +3642,10 @@ export const createTeamAccessRepository = (
           id: row.defaultWorkspaceId,
           name: row.defaultWorkspaceName,
           lifecycle: row.defaultWorkspaceLifecycle
-        }
+        },
+        project: project
+          ? { id: project.id, name: project.name, version: project.version }
+          : null
       };
     },
 

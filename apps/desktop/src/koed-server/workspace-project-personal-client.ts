@@ -25,7 +25,9 @@ export const createWorkspaceProjectPersonalClient = (
   async loadPersonalCopy(
     projectId: string,
     teamBackendId: string,
-    shareAttemptKey: string
+    shareAttemptKey: string,
+    targetTeamId: string,
+    targetWorkspaceId: string
   ) {
     const prepared = z
       .object({
@@ -43,11 +45,62 @@ export const createWorkspaceProjectPersonalClient = (
               "x-koed-team-client-credential":
                 teamClientAuthorization(teamBackendId)
             },
-            body: JSON.stringify({ teamBackendId, shareAttemptKey })
+            body: JSON.stringify({
+              teamBackendId,
+              shareAttemptKey,
+              targetTeamId,
+              targetWorkspaceId
+            })
           }
         )
       );
     return prepared.snapshot;
+  },
+  async pendingShare(projectId: string, teamBackendId: string) {
+    return z
+      .object({
+        attempt: z
+          .object({
+            teamBackendId: z.string().min(1),
+            shareAttemptKey: z.string().min(8),
+            targetTeamId: z.uuid(),
+            targetWorkspaceId: z.uuid(),
+            state: z.literal("pending")
+          })
+          .strict()
+          .nullable()
+      })
+      .strict()
+      .parse(
+        await sendPersonal(
+          `/v1/local-edge/projects/${encodeURIComponent(projectId)}/workspace-project-share-attempt`,
+          {
+            headers: {
+              "x-koed-team-client-credential":
+                teamClientAuthorization(teamBackendId)
+            }
+          }
+        )
+      ).attempt;
+  },
+  async cancelPendingShare(projectId: string, teamBackendId: string) {
+    return z
+      .object({ canceled: z.literal(true), shareAttemptKey: z.string().min(8) })
+      .strict()
+      .parse(
+        await sendPersonal(
+          `/v1/local-edge/projects/${encodeURIComponent(projectId)}/workspace-project-share-cancel`,
+          {
+            method: "POST",
+            headers: {
+              "x-koed-team-client-credential": teamClientAuthorization(
+                teamBackendId,
+                "team_workspace_write"
+              )
+            }
+          }
+        )
+      );
   },
   async markPersonalMoved(
     projectId: string,

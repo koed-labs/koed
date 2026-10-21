@@ -23,6 +23,38 @@ const openApiSecuritySchemes = openApiDocument.components
   .securitySchemes as Record<string, Record<string, unknown>>;
 
 describe("route identity contract", () => {
+  it("inventories exact Share Project recovery and current Team target routes", () => {
+    for (const [method, path] of [
+      ["GET", "/v1/teams/{teamId}/workspaces/{workspaceId}/share-target"],
+      [
+        "POST",
+        "/v1/teams/{teamId}/workspaces/{workspaceId}/share-attempt-cancellations"
+      ],
+      ["GET", "/v1/workspace-projects/{projectId}/members"]
+    ] as const) {
+      expect(routeIdentityFor(method, path)).toMatchObject({
+        identity: "session_or_device_credential",
+        domain: "projects",
+        teamAuthority: "request_time_team_workspace"
+      });
+    }
+    for (const [method, path] of [
+      [
+        "GET",
+        "/v1/local-edge/projects/{projectId}/workspace-project-share-attempt"
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/workspace-project-share-cancel"
+      ]
+    ] as const) {
+      expect(routeIdentityFor(method, path)).toMatchObject({
+        identity: "desktop_local_credential",
+        domain: "projects",
+        deploymentModes: ["developer", "local_personal"]
+      });
+    }
+  });
   it("inventories shared Project lifecycle and dual-credential Personal coordination without Personal API Tokens", () => {
     expect(
       routeIdentityFor("POST", "/v1/workspace-projects/{projectId}/leave")

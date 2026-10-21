@@ -648,6 +648,35 @@ try {
       await rm(profile, { recursive: true, force: true });
     }
   }
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-701", "HQ701.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq701-electron-profile-")
+    );
+    try {
+      const result = spawnSync(electronPath, ["scripts/validate-hq701.mjs"], {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ701_USER_DATA_DIR: profile },
+        stdio: "inherit",
+        timeout: 60_000
+      });
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ701.native", owner: "HQ-701", status: "pass" }
+        );
+        process.stdout.write(
+          "PASS HQ701.native [HQ-701]: v50 Share sheet, pending recovery/cancel, exact active Project roster and Shared sidebar count; no live account or invitation.\n"
+        );
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
 } finally {
   await rm(userDataPath, { recursive: true, force: true });
 }

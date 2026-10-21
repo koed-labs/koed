@@ -17,6 +17,10 @@ import {
 } from "@koed/shared/project-source-contract";
 import { z } from "zod";
 import {
+  workspaceProjectShareContextSchema,
+  workspaceProjectPendingShareSchema,
+  workspaceProjectMembersSchema,
+  type WorkspaceProjectShareContext,
   workspaceProjectStateSchema,
   workspaceProjectCreateSchema,
   workspaceProjectRecordSchema,
@@ -33,8 +37,29 @@ import {
 } from "@koed/shared/work-item-contract";
 
 export const projectsCommandChannel = "koed:projects:command";
+export type { WorkspaceProjectShareContext } from "@koed/shared/workspace-project-contract";
 
 export const projectsRequestSchema = z.discriminatedUnion("operation", [
+  z.object({ operation: z.literal("sharedShareContext") }).strict(),
+  z
+    .object({
+      operation: z.literal("sharedPendingShare"),
+      personalProjectId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedCancelPendingShare"),
+      personalProjectId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedMembers"),
+      workspaceProjectId: z.uuid(),
+      teamBackendId: z.string().min(1)
+    })
+    .strict(),
   z
     .object({
       operation: z.literal("sharedFirstShare"),
@@ -289,6 +314,30 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
 ]);
 
 export const projectsResultSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("sharedShareContext"),
+      context: workspaceProjectShareContextSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedPendingShare"),
+      attempt: workspaceProjectPendingShareSchema.nullable()
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedCancelPendingShare"),
+      canceled: z.literal(true)
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedMembers"),
+      members: workspaceProjectMembersSchema
+    })
+    .strict(),
   z
     .object({
       operation: z.literal("sharedFirstShare"),
@@ -591,6 +640,17 @@ export type ProjectsRequest = z.infer<typeof projectsRequestSchema>;
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 
 export interface ProjectsDesktopApi {
+  sharedShareContext?(): Promise<WorkspaceProjectShareContext>;
+  sharedPendingShare?(
+    personalProjectId: string
+  ): Promise<z.infer<typeof workspaceProjectPendingShareSchema> | null>;
+  sharedCancelPendingShare?(
+    personalProjectId: string
+  ): Promise<{ canceled: true }>;
+  sharedMembers?(
+    workspaceProjectId: string,
+    teamBackendId: string
+  ): Promise<z.infer<typeof workspaceProjectMembersSchema>>;
   sharedFirstShare?(
     personalProjectId: string,
     teamBackendId: string,

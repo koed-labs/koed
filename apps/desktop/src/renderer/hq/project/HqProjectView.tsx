@@ -154,6 +154,7 @@ export function HqProjectView({
   onConversationAgentsChange,
   sharedProjectStore,
   deleteSharedProjectSource,
+  onShareProject,
   sharedRefreshSignal = 0
 }: {
   project: Project;
@@ -193,6 +194,7 @@ export function HqProjectView({
   ) => void;
   sharedProjectStore?: SharedProjectStore | null;
   deleteSharedProjectSource?: CollaborationRendererClient["deleteWorkspaceProjectSource"];
+  onShareProject?: () => void;
   sharedRefreshSignal?: number;
 }) {
   const linked = Boolean(project.workspaceProjectId);
@@ -1198,9 +1200,17 @@ export function HqProjectView({
             Done and merged unavailable
           </span>
         )}
-        <span className="hq-project-view__shared">
-          {linked ? "Team" : "Just me"}
-        </span>
+        <button
+          type="button"
+          className="hq-project-view__shared"
+          onClick={onShareProject}
+          disabled={!onShareProject}
+          aria-label={
+            linked ? "View who is in this shared Project" : "Share Project"
+          }
+        >
+          {linked ? "HQ Shared" : "Share"}
+        </button>
       </header>
       <div className="hq-project-view__keys">
         {linked && sharedIdentity && sharedProjectStore ? (

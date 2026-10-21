@@ -8,7 +8,8 @@ export type HqCommandAction =
   | { kind: "route"; route: HqRoute }
   | { kind: "toggle-sidebar" }
   | { kind: "toggle-context" }
-  | { kind: "settings" };
+  | { kind: "settings" }
+  | { kind: "share-project"; projectId: string };
 export type HqCommand = Pick<DesktopCommand, "id" | "label" | "scope"> & {
   action: HqCommandAction;
 };

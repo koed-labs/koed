@@ -68,7 +68,9 @@ describe.skipIf(!testUrl)(
       await expect(
         repo.beginShare(owner, projectId, {
           teamBackendId: "team-vps",
-          shareAttemptKey: "oversize-share-attempt"
+          shareAttemptKey: "oversize-share-attempt",
+          targetTeamId: randomUUID(),
+          targetWorkspaceId: randomUUID()
         })
       ).rejects.toThrow("supported first-share copy limits");
       const attempt = await pool.query(

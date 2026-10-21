@@ -1,5 +1,27 @@
 # Implementation backlog
 
+## Shared Project first-share lifecycle recovery
+
+- HQ703 must preserve the reviewed Project invitation identity through Project
+  deletion before implementing recipient admission. The current nullable handoff
+  foreign key uses `ON DELETE SET NULL`; an originally Project-bound invitation
+  must never become an ordinary Team invitation because its Project disappeared.
+  Retain the exact original target in the admission protocol and reject deleted
+  or changed targets. Cover deletion concurrent with acceptance in HQ713.
+- HQ704 must reconcile a first-share attempt when the Team Project was created
+  but its Personal confirmation never committed, then Team authority was lost or
+  the Team Project was deleted. The pending Personal attempt currently keeps its
+  edit fence in this case. HQ712 handles a lost reply after Personal confirmation
+  committed; it does not cover a missing Personal link.
+- Use an exact retained lifecycle receipt bound to the owner, Team, Workspace,
+  attempt key and copied manifest before releasing that fence. Preserve the
+  owner's original Personal data. Do not infer completion from an offline reply,
+  a missing Project or a 404, and do not grant historical Team content access after
+  access revocation. Active or unproven outcomes must remain pending.
+- HQ713 must cover deletion and access loss before and after Personal confirmation,
+  including restart, uncertain replies, exact-target mismatch and delayed create
+  replay. Resolve this lifecycle integration before final HQ cutover.
+
 ## Asynchronous Memory Answer adapters
 
 Ordinary MCP and the Pi extension use explicit non-blocking submission and

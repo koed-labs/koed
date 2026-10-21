@@ -57,7 +57,7 @@ async function run() {
         await js(
           "document.querySelector('.hq-project-view__shared')?.textContent.trim()"
         ),
-        "Team"
+        "HQ Shared"
       );
       assert.equal(
         await js(

@@ -1,6 +1,64 @@
 import { z } from "zod";
 
 export const workspaceProjectIdSchema = z.uuid();
+// Browser-safe Share Project projections. These contain Team identities and
+// source metadata only; private Personal IDs and content never cross this wire.
+export const workspaceProjectShareContextSchema = z
+  .object({
+    state: z.enum(["ready", "needs_cloud_enrollment", "unavailable"]),
+    backendId: z.string().min(1).nullable(),
+    profile: z.enum(["koed_managed_cloud", "team_self_hosted"]).nullable(),
+    principalId: z.uuid().nullable(),
+    teams: z.array(
+      z
+        .object({
+          id: z.uuid(),
+          name: z.string(),
+          role: z.enum(["owner", "admin", "member"]),
+          people: z.array(
+            z.object({ id: z.uuid(), displayName: z.string() }).strict()
+          ),
+          workspaces: z.array(
+            z
+              .object({
+                id: z.uuid(),
+                name: z.string(),
+                access: z.enum(["read", "write"])
+              })
+              .strict()
+          )
+        })
+        .strict()
+    )
+  })
+  .strict();
+export type WorkspaceProjectShareContext = z.infer<
+  typeof workspaceProjectShareContextSchema
+>;
+export const workspaceProjectPendingShareSchema = z
+  .object({
+    teamBackendId: z.string().min(1),
+    shareAttemptKey: z.string().min(8),
+    targetTeamId: z.uuid(),
+    targetWorkspaceId: z.uuid(),
+    state: z.literal("pending")
+  })
+  .strict();
+export const workspaceProjectMembersSchema = z
+  .object({
+    projectId: z.uuid(),
+    version: z.number().int().positive(),
+    people: z.array(
+      z
+        .object({
+          teamMemberId: z.uuid(),
+          displayName: z.string(),
+          access: z.enum(["read", "write"])
+        })
+        .strict()
+    )
+  })
+  .strict();
 // Leaves headroom for the authenticated local-edge envelope around the copy.
 // Both proxy and Team copy routes accept at most 8 MiB request bodies.
 export const workspaceProjectCopyMaxBytes = 7_000_000;

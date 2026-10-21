@@ -1377,6 +1377,43 @@ export const workspaceProjects = pgTable(
   ]
 );
 
+// A Team-side receipt prevents a delayed first-share request from publishing
+// after its Personal owner has explicitly cancelled that exact attempt.
+export const workspaceProjectShareCancellations = pgTable(
+  "workspace_project_share_cancellations",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => teamWorkspaces.id),
+    ownerTeamMemberId: uuid("owner_team_member_id")
+      .notNull()
+      .references(() => teamMemberships.id),
+    shareAttemptKey: text("share_attempt_key").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.workspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "workspace_project_share_cancellations_workspace_team_fk"
+    }),
+    foreignKey({
+      columns: [table.teamId, table.ownerTeamMemberId],
+      foreignColumns: [teamMemberships.teamId, teamMemberships.id],
+      name: "workspace_project_share_cancellations_owner_team_fk"
+    }),
+    unique("workspace_project_share_cancellations_attempt_unique").on(
+      table.teamId,
+      table.ownerTeamMemberId,
+      table.shareAttemptKey
+    )
+  ]
+);
+
 // This private Personal-backend binding records the dual credential lineage
 // across deployments. Team Project associations never reference it.
 export const personalWorkspaceProjectPrincipalBindings = pgTable(
@@ -1412,6 +1449,8 @@ export const personalWorkspaceProjectShareAttempts = pgTable(
       .references(() => users.id),
     teamBackendId: text("team_backend_id").notNull(),
     shareAttemptKey: text("share_attempt_key").notNull(),
+    targetTeamId: uuid("target_team_id"),
+    targetWorkspaceId: uuid("target_workspace_id"),
     manifestHash: text("manifest_hash").notNull(),
     snapshot: jsonb("snapshot").notNull(),
     state: text("state").notNull().default("pending"),
@@ -1421,7 +1460,12 @@ export const personalWorkspaceProjectShareAttempts = pgTable(
   (table) => [
     check(
       "personal_workspace_project_share_attempt_state_check",
-      sql`${table.state} in ('pending','confirmed')`
+      sql`${table.state} in ('pending','confirmed','canceled')`
+    ),
+    check(
+      "personal_workspace_project_share_attempt_target_pair_check",
+      sql`(${table.targetTeamId} is null and ${table.targetWorkspaceId} is null)
+        or (${table.targetTeamId} is not null and ${table.targetWorkspaceId} is not null)`
     )
   ]
 );
@@ -1732,6 +1776,10 @@ export const teamInvites = pgTable(
       .notNull()
       .references(() => teams.id, { onDelete: "cascade" }),
     defaultTeamWorkspaceId: uuid("default_team_workspace_id"),
+    workspaceProjectId: uuid("workspace_project_id").references(
+      () => workspaceProjects.id,
+      { onDelete: "set null" }
+    ),
     defaultWorkspaceAccess: teamWorkspaceAccess("default_workspace_access")
       .notNull()
       .default("write"),

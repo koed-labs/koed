@@ -121,6 +121,8 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
     input: {
       teamBackendId: string;
       shareAttemptKey: string;
+      targetTeamId: string;
+      targetWorkspaceId: string;
     }
   ) {
     const client = await pool.connect();
@@ -146,6 +148,8 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         await client.query<{
           team_backend_id: string;
           share_attempt_key: string;
+          target_team_id: string | null;
+          target_workspace_id: string | null;
           snapshot: unknown;
           manifest_hash: string;
           state: string;
@@ -156,11 +160,13 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           [projectId]
         )
       ).rows[0];
-      if (existing) {
+      if (existing && existing.state !== "canceled") {
         if (
           existing.state !== "pending" ||
           existing.team_backend_id !== input.teamBackendId ||
-          existing.share_attempt_key !== input.shareAttemptKey
+          existing.share_attempt_key !== input.shareAttemptKey ||
+          existing.target_team_id !== input.targetTeamId ||
+          existing.target_workspace_id !== input.targetWorkspaceId
         )
           throw new PersonalWorkspaceProjectConflictError(
             "A different first-share attempt exists"
@@ -171,6 +177,10 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           manifestHash: existing.manifest_hash
         };
       }
+      if (existing && existing.share_attempt_key === input.shareAttemptKey)
+        throw new PersonalWorkspaceProjectConflictError(
+          "Canceled first-share attempts cannot be resumed"
+        );
       const snapshot = await this.shareSnapshot(ownerUserId, projectId);
       if (
         !workspaceProjectCopySchema.safeParse({
@@ -188,20 +198,150 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         );
       const manifestHash = workspaceProjectCopyManifestHash(snapshot);
       await client.query(
-        `insert into personal_workspace_project_share_attempts
+        existing
+          ? `update personal_workspace_project_share_attempts set
+          team_backend_id=$3,share_attempt_key=$4,target_team_id=$5,
+          target_workspace_id=$6,manifest_hash=$7,snapshot=$8::jsonb,
+          state='pending',updated_at=now()
+          where personal_project_id=$1 and owner_user_id=$2`
+          : `insert into personal_workspace_project_share_attempts
         (personal_project_id,owner_user_id,team_backend_id,share_attempt_key,
-         manifest_hash,snapshot) values ($1,$2,$3,$4,$5,$6::jsonb)`,
+         target_team_id,target_workspace_id,manifest_hash,snapshot)
+         values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
         [
           projectId,
           ownerUserId,
           input.teamBackendId,
           input.shareAttemptKey,
+          input.targetTeamId,
+          input.targetWorkspaceId,
           manifestHash,
           JSON.stringify(snapshot)
         ]
       );
       await client.query("commit");
       return { snapshot, manifestHash };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+  async pendingShare(ownerUserId: string, projectId: string) {
+    const result = await pool.query<{
+      team_backend_id: string;
+      share_attempt_key: string;
+      target_team_id: string | null;
+      target_workspace_id: string | null;
+      state: string;
+    }>(
+      `select attempt.team_backend_id,attempt.share_attempt_key,
+              attempt.target_team_id,attempt.target_workspace_id,attempt.state
+         from personal_workspace_project_share_attempts attempt
+         join projects project on project.id=attempt.personal_project_id
+          and project.owner_user_id=attempt.owner_user_id
+        where attempt.owner_user_id=$1 and attempt.personal_project_id=$2
+          and project.lifecycle='active' and project.deletion_phase is null`,
+      [ownerUserId, projectId]
+    );
+    const row = result.rows[0];
+    return row && row.state === "pending"
+      ? {
+          teamBackendId: row.team_backend_id,
+          shareAttemptKey: row.share_attempt_key,
+          targetTeamId: row.target_team_id,
+          targetWorkspaceId: row.target_workspace_id,
+          state: "pending" as const
+        }
+      : null;
+  },
+  async shareAttempt(ownerUserId: string, projectId: string) {
+    const row = (
+      await pool.query<{
+        team_backend_id: string;
+        share_attempt_key: string;
+        target_team_id: string | null;
+        target_workspace_id: string | null;
+        state: string;
+      }>(
+        `select attempt.team_backend_id,attempt.share_attempt_key,
+        attempt.target_team_id,attempt.target_workspace_id,attempt.state
+      from personal_workspace_project_share_attempts attempt
+      join projects project on project.id=attempt.personal_project_id
+        and project.owner_user_id=attempt.owner_user_id
+      where attempt.owner_user_id=$1 and attempt.personal_project_id=$2
+        and project.lifecycle='active' and project.deletion_phase is null`,
+        [ownerUserId, projectId]
+      )
+    ).rows[0];
+    return row
+      ? {
+          teamBackendId: row.team_backend_id,
+          shareAttemptKey: row.share_attempt_key,
+          targetTeamId: row.target_team_id,
+          targetWorkspaceId: row.target_workspace_id,
+          state: row.state
+        }
+      : null;
+  },
+  async cancelShare(
+    ownerUserId: string,
+    projectId: string,
+    input: {
+      teamBackendId: string;
+      shareAttemptKey: string;
+      targetTeamId: string;
+      targetWorkspaceId: string;
+    }
+  ) {
+    const client = await pool.connect();
+    try {
+      await client.query("begin isolation level serializable");
+      const project = await client.query<{
+        workspace_project_id: string | null;
+      }>(
+        `select workspace_project_id from projects where id=$1 and owner_user_id=$2
+          and lifecycle='active' and deletion_phase is null for update`,
+        [projectId, ownerUserId]
+      );
+      if (!project.rows[0] || project.rows[0].workspace_project_id)
+        throw new PersonalWorkspaceProjectConflictError(
+          "Personal Project share changed"
+        );
+      const attempt = await client.query<{ state: string }>(
+        `select state from personal_workspace_project_share_attempts
+          where personal_project_id=$1 and owner_user_id=$2
+            and team_backend_id=$3 and share_attempt_key=$4
+            and target_team_id=$5 and target_workspace_id=$6 for update`,
+        [
+          projectId,
+          ownerUserId,
+          input.teamBackendId,
+          input.shareAttemptKey,
+          input.targetTeamId,
+          input.targetWorkspaceId
+        ]
+      );
+      if (
+        !attempt.rows[0] ||
+        !["pending", "canceled"].includes(attempt.rows[0].state)
+      )
+        throw new PersonalWorkspaceProjectConflictError(
+          "First-share attempt changed"
+        );
+      if (attempt.rows[0].state === "pending")
+        await client.query(
+          `update personal_workspace_project_share_attempts
+          set state='canceled',updated_at=now()
+          where personal_project_id=$1 and owner_user_id=$2`,
+          [projectId, ownerUserId]
+        );
+      await client.query("commit");
+      return {
+        canceled: true as const,
+        shareAttemptKey: input.shareAttemptKey
+      };
     } catch (error) {
       await client.query("rollback");
       throw error;
@@ -511,6 +651,7 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
       expectedPersonalProjectVersion: number;
       expectedManifestHash: string;
       teamBackendId: string;
+      teamId: string;
       workspaceId: string;
       workspaceProjectId: string;
     }
@@ -552,9 +693,15 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
           "Personal Project link changed"
         );
       const pending = (
-        await client.query<{ manifest_hash: string; state: string }>(
+        await client.query<{
+          manifest_hash: string;
+          state: string;
+          target_team_id: string | null;
+          target_workspace_id: string | null;
+        }>(
           `
-        select manifest_hash,state from personal_workspace_project_share_attempts
+        select manifest_hash,state,target_team_id,target_workspace_id
+          from personal_workspace_project_share_attempts
          where personal_project_id=$1 and owner_user_id=$2 for update`,
           [projectId, ownerUserId]
         )
@@ -562,7 +709,9 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
       if (
         !pending ||
         pending.state !== "pending" ||
-        pending.manifest_hash !== input.expectedManifestHash
+        pending.manifest_hash !== input.expectedManifestHash ||
+        pending.target_team_id !== input.teamId ||
+        pending.target_workspace_id !== input.workspaceId
       )
         throw new PersonalWorkspaceProjectConflictError(
           "First-share attempt changed"

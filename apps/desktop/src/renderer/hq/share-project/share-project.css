@@ -1,0 +1,120 @@
+.hq-share-sheet {
+  /* The dialog portals outside HqShell, so give it the same theme locally. */
+  --hq-fg: #18181b;
+  --hq-muted: #63636b;
+  --hq-border: #dcdce2;
+  --hq-card: #f1f1f4;
+  --hq-surface: #fbfbfc;
+  --hq-input: #fff;
+  --hq-accent: #5e6ad2;
+  width: min(440px, calc(100vw - 32px));
+  padding: 0;
+  color: var(--hq-fg);
+  background: var(--hq-card);
+  border: 1px solid var(--hq-border);
+  border-radius: 12px;
+  box-shadow: 0 20px 70px #0003;
+}
+.dark .hq-share-sheet {
+  --hq-fg: #f4f4f5;
+  --hq-muted: #a1a1aa;
+  --hq-border: #3b3b45;
+  --hq-card: #1d1d23;
+  --hq-surface: #27272e;
+  --hq-input: #131317;
+}
+.hq-share-sheet__head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  padding: 22px 24px 16px;
+  border-bottom: 1px solid var(--hq-border);
+}
+.hq-share-sheet__head h2 {
+  font-size: 19px;
+  margin: 5px 0 0;
+}
+.hq-share-sheet__head button {
+  border: 0;
+  background: transparent;
+  color: var(--hq-fg);
+  font-size: 25px;
+  cursor: pointer;
+}
+.hq-share-sheet__eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--hq-muted);
+}
+.hq-share-sheet__body {
+  padding: 20px 24px 24px;
+}
+.hq-share-sheet__body h3 {
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+.hq-share-sheet__body p {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.hq-share-sheet__field {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 18px;
+  font-size: 12px;
+  font-weight: 650;
+}
+.hq-share-sheet__field input,
+.hq-share-sheet__field select {
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid var(--hq-border);
+  border-radius: 7px;
+  background: var(--hq-input);
+  color: var(--hq-fg);
+  font: inherit;
+}
+.hq-share-sheet__disclosure {
+  padding: 15px 17px;
+  background: var(--hq-surface);
+  border-radius: 8px;
+}
+.hq-share-sheet__disclosure ul {
+  padding-left: 18px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.hq-share-sheet__disclosure p,
+.hq-share-sheet__muted {
+  color: var(--hq-muted);
+}
+.hq-share-sheet__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 20px;
+}
+.hq-share-sheet__actions button,
+.hq-share-sheet__body > button {
+  border: 1px solid var(--hq-border);
+  border-radius: 7px;
+  padding: 9px 13px;
+  background: transparent;
+  color: var(--hq-fg);
+  cursor: pointer;
+}
+.hq-share-sheet__actions button:last-child {
+  background: var(--hq-accent);
+  border-color: transparent;
+  color: #fff;
+}
+.hq-share-sheet button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.hq-share-sheet__error {
+  color: #c65a55;
+  margin: 12px 0 0;
+}

@@ -53,6 +53,7 @@ import { NowView } from "./now/NowView.js";
 import { HqProjectConversation } from "./project/HqProjectConversation.js";
 import { HqProjectView } from "./project/HqProjectView.js";
 import { SharedProjectStore } from "./shared-project/shared-project-store.js";
+import { HqShareSheet } from "./share-project/HqShareSheet.js";
 import { nowConversationDestination, type NowNeed } from "./now/now-model.js";
 import { PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT } from "@koed/shared/personal-desktop";
 import {
@@ -117,6 +118,10 @@ export function HqApplication({
     project?: DesktopProject;
   }>({ route: { kind: "home" } });
   const [searchOpen, setSearchOpen] = useState(false);
+  const [shareProjectId, setShareProjectId] = useState<string | null>(null);
+  useEffect(() => {
+    setShareProjectId(null);
+  }, [visibilityOwnerId, visibilityProfileKey]);
   const [citationFocus, setCitationFocus] = useState<{
     projectId: string;
     sessionId: string;
@@ -342,6 +347,60 @@ export function HqApplication({
     personalProjectsSnapshot?.profileKey === visibilityProfileKey
       ? (personalProjectsSnapshot?.projects ?? emptyPersonalProjects)
       : emptyPersonalProjects;
+  const [sharedPeopleCounts, setSharedPeopleCounts] = useState<
+    Record<string, number>
+  >({});
+  const sharedRosterKey = personalProjects
+    .filter((project) => project.workspaceProjectId && project.teamBackendId)
+    .map(
+      (project) =>
+        `${project.id}:${project.workspaceProjectId}:${project.teamBackendId}`
+    )
+    .join("|");
+  useEffect(() => {
+    let active = true;
+    setSharedPeopleCounts({});
+    if (
+      !projectsApi?.sharedMembers ||
+      !visibilityOwnerId ||
+      !visibilityProfileKey
+    )
+      return;
+    const linked = personalProjects.filter(
+      (project) => project.workspaceProjectId && project.teamBackendId
+    );
+    void Promise.all(
+      linked.map(async (project) => {
+        try {
+          const roster = await projectsApi.sharedMembers!(
+            project.workspaceProjectId!,
+            project.teamBackendId!
+          );
+          return [project.id, roster.people.length] as const;
+        } catch {
+          return null;
+        }
+      })
+    ).then((counts) => {
+      if (active)
+        setSharedPeopleCounts(
+          Object.fromEntries(
+            counts.filter(
+              (item): item is readonly [string, number] => item !== null
+            )
+          )
+        );
+    });
+    return () => {
+      active = false;
+    };
+  }, [
+    projectsApi,
+    visibilityOwnerId,
+    visibilityProfileKey,
+    sharedRosterKey,
+    sharedRefreshSignal
+  ]);
   const chiefAgent =
     agentsSnapshot &&
     agentsSnapshot.ownerId === visibilityOwnerId &&
@@ -1174,6 +1233,15 @@ export function HqApplication({
           route: { kind: "project", projectId: item.id }
         }
       });
+  if (projectsStore && visibilityClient)
+    for (const item of personalProjects)
+      if (!item.workspaceProjectId)
+        destinations.push({
+          id: `share-project:${item.id}`,
+          label: `Share ${item.name}`,
+          scope: "Share Project",
+          action: { kind: "share-project", projectId: item.id }
+        });
   destinations.push(
     ...hqLayoutCommands(Boolean(renderSettings), contextAvailable)
   );
@@ -1244,6 +1312,9 @@ export function HqApplication({
         break;
       case "settings":
         if (renderSettings) openSettings();
+        break;
+      case "share-project":
+        setShareProjectId(action.projectId);
         break;
     }
   };
@@ -1458,6 +1529,7 @@ export function HqApplication({
             }
             projects={projects}
             personalProjects={projectsStore ? personalProjects : undefined}
+            sharedPeopleCounts={sharedPeopleCounts}
             pendingDeletionIds={pendingChatDeletionIds}
             route={route}
             onRetryProjects={() => {
@@ -1479,6 +1551,9 @@ export function HqApplication({
               projectsStore && firstClassLoaded
                 ? projectMenu.openDelete
                 : undefined
+            }
+            onShareProject={
+              projectsApi && visibilityClient ? setShareProjectId : undefined
             }
             onDeleteConversation={
               personalMemoryApi?.trashSession
@@ -1686,6 +1761,11 @@ export function HqApplication({
                   : null
               }
               onFocusWorkItemHandled={() => setFocusDueItem(null)}
+              onShareProject={
+                visibilityClient
+                  ? () => setShareProjectId(personalProject.id)
+                  : undefined
+              }
               curatedMemoryApi={window.koedDesktop?.curatedMemory}
               agentsApi={agentsApi}
               conversationsApi={managedConversations}
@@ -1812,6 +1892,22 @@ export function HqApplication({
         onOpenChange={setSearchOpen}
         onInvoke={invoke}
       />
+      {projectsApi && visibilityClient ? (
+        <HqShareSheet
+          open={shareProjectId !== null}
+          project={
+            personalProjects.find((item) => item.id === shareProjectId) ?? null
+          }
+          projectsApi={projectsApi}
+          collaboration={visibilityClient}
+          onClose={() => setShareProjectId(null)}
+          onShared={() => {
+            void projectsStore?.refresh();
+            setSharedRefreshSignal((value) => value + 1);
+          }}
+          onOpenSettings={renderSettings ? openSettings : undefined}
+        />
+      ) : null}
       {settingsOpen && renderSettings
         ? renderSettings(closeSettings, (sessionId, batchId) => {
             setChatDeleteNotice((notice) =>

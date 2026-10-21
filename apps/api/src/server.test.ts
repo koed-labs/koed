@@ -1775,6 +1775,7 @@ const createFakeRepository = () => {
         id: randomUUID(),
         teamId: input.teamId,
         defaultTeamWorkspaceId: input.defaultTeamWorkspaceId,
+        workspaceProjectId: null,
         defaultWorkspaceAccess: input.defaultWorkspaceAccess,
         email: input.email.toLowerCase(),
         normalizedEmail: input.email.toLowerCase(),

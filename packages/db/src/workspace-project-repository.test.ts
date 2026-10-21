@@ -86,10 +86,45 @@ describe.skipIf(!testUrl)("Workspace Project Team state", () => {
       key: "ATL",
       shareAttemptKey: "first-share-atlas"
     };
+    expect(
+      (
+        await repo.shareTarget(
+          alice,
+          teamId,
+          workspaceId,
+          attempt.shareAttemptKey
+        )
+      ).canStart
+    ).toBe(true);
     const project = await repo.create(alice, attempt);
+    expect(
+      (
+        await repo.shareTarget(
+          alice,
+          teamId,
+          workspaceId,
+          attempt.shareAttemptKey
+        )
+      ).canStart
+    ).toBe(true);
+    expect(
+      (
+        await repo.shareTarget(
+          alice,
+          teamId,
+          workspaceId,
+          "different-share-key"
+        )
+      ).canStart
+    ).toBe(false);
     expect(project.ownerTeamMemberId).toBe(aliceMember);
     expect(await repo.create(alice, attempt)).toEqual(project);
     await repo.join(bob, project.id);
+    const roster = await repo.members(alice, project.id);
+    expect(roster.people.map((person) => person.teamMemberId).sort()).toEqual(
+      [aliceMember, bobMember].sort()
+    );
+    expect(roster.people).toHaveLength(2);
     await repo.copyFirstShare(alice, project.id, {
       personalProjectVersion: 1,
       expectedVersion: 1,

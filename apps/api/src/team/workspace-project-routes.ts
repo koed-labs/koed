@@ -31,6 +31,9 @@ const memberParams = z
   .object({ projectId: z.uuid(), targetUserId: z.uuid() })
   .strict();
 const teamParams = z.object({ teamId: z.uuid() }).strict();
+const shareTargetParams = z
+  .object({ teamId: z.uuid(), workspaceId: z.uuid() })
+  .strict();
 
 export const registerWorkspaceProjectRoutes = (
   app: FastifyInstance,
@@ -140,6 +143,69 @@ export const registerWorkspaceProjectRoutes = (
       const body = workspaceProjectCreateSchema.parse(request.body);
       try {
         return reply.code(201).send(await repository().create(actor.id, body));
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
+    "/v1/teams/:teamId/workspaces/:workspaceId/share-target",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { teamId, workspaceId } = shareTargetParams.parse(request.params);
+      const { shareAttemptKey } = z
+        .object({ shareAttemptKey: z.string().min(8).max(200).optional() })
+        .strict()
+        .parse(request.query);
+      try {
+        return await repository().shareTarget(
+          actor.id,
+          teamId,
+          workspaceId,
+          shareAttemptKey
+        );
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.post(
+    "/v1/teams/:teamId/workspaces/:workspaceId/share-attempt-cancellations",
+    { preHandler: input.writeRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, true);
+      const { teamId, workspaceId } = shareTargetParams.parse(request.params);
+      const { shareAttemptKey, expectedOwnerUserId } = z
+        .object({
+          shareAttemptKey: z.string().min(8).max(200),
+          expectedOwnerUserId: z.uuid()
+        })
+        .strict()
+        .parse(request.body);
+      if (expectedOwnerUserId !== actor.id)
+        throw Object.assign(new Error("Enrolled Team principal changed"), {
+          statusCode: 403
+        });
+      try {
+        return await repository().cancelShareAttempt(actor.id, {
+          teamId,
+          workspaceId,
+          shareAttemptKey
+        });
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
+    "/v1/workspace-projects/:projectId/members",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { projectId } = projectParams.parse(request.params);
+      try {
+        return await repository().members(actor.id, projectId);
       } catch (error) {
         return reply.code(handle(error).statusCode).send(handle(error));
       }

@@ -518,7 +518,10 @@ export const assertUpstreamOperationPathAllowed = (
       (/^\/v1\/teams\/[0-9a-f-]{36}\/(?:workspace-projects|workspace-project-leave-review)$/i.test(
         pathname
       ) ||
-        /^\/v1\/workspace-projects\/[0-9a-f-]{36}(?:\/(?:work-items|sources|lifecycle|link-proof|tombstone-proof))?$/i.test(
+        /^\/v1\/teams\/[0-9a-f-]{36}\/workspaces\/[0-9a-f-]{36}\/share-target$/i.test(
+          pathname
+        ) ||
+        /^\/v1\/workspace-projects\/[0-9a-f-]{36}(?:\/(?:work-items|sources|members|lifecycle|link-proof|tombstone-proof))?$/i.test(
           pathname
         ) ||
         /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/activity\/summary$/i.test(
@@ -569,6 +572,9 @@ export const assertUpstreamOperationPathAllowed = (
     if (
       (method === "POST" &&
         (pathname === "/v1/workspace-projects" ||
+          /^\/v1\/teams\/[0-9a-f-]{36}\/workspaces\/[0-9a-f-]{36}\/share-attempt-cancellations$/i.test(
+            pathname
+          ) ||
           /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/(?:join|first-share-copy|work-items|sources|share-grant-bindings)$/i.test(
             pathname
           ) ||

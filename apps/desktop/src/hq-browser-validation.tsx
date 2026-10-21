@@ -63,8 +63,16 @@ const hq503ColdCapture =
   new URLSearchParams(window.location.search).get("hq503Cold") === "yes";
 const hq502Capture =
   new URLSearchParams(window.location.search).get("hq502Capture") === "yes";
+const hq701Linked =
+  new URLSearchParams(window.location.search).get("hq701Linked") === "yes";
 const hq712Capture =
-  new URLSearchParams(window.location.search).get("hq712Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq712Capture") === "yes" ||
+  hq701Linked;
+const hq701Capture =
+  new URLSearchParams(window.location.search).get("hq701Capture") === "yes";
+let hq701Pending =
+  new URLSearchParams(window.location.search).get("hq701Pending") === "yes";
+const hq701Trace = { cancellations: 0 };
 const hq407Capture =
   new URLSearchParams(window.location.search).get("hq407Capture") === "yes";
 const hq204Capture =
@@ -116,6 +124,7 @@ const hq207Capture =
   hq209Capture ||
   hq403Capture ||
   hq712Capture ||
+  hq701Capture ||
   new URLSearchParams(window.location.search).get("hq304Capture") === "yes" ||
   new URLSearchParams(window.location.search).get("hq305Capture") === "yes" ||
   hq308Capture ||
@@ -2378,6 +2387,73 @@ const hq712State = (): WorkspaceProjectState => ({
   notice: hq712Offline ? "Offline. Shared changes are paused." : null
 });
 const sidebarProjectsApi = {
+  sharedShareContext: async () => {
+    if (!hq701Capture) throw new Error("Share fixture unavailable");
+    return {
+      state: "ready" as const,
+      backendId: hq701Linked ? hq712TeamBackendId : "fixture-cloud",
+      profile: "koed_managed_cloud" as const,
+      principalId: "00000000-0000-4000-8000-000000007101",
+      teams: [
+        {
+          id: "00000000-0000-4000-8000-000000007102",
+          name: "Product Team",
+          role: "owner" as const,
+          people: [
+            { id: "00000000-0000-4000-8000-000000007101", displayName: "You" },
+            { id: "00000000-0000-4000-8000-000000007103", displayName: "Maya" }
+          ],
+          workspaces: [
+            {
+              id: "00000000-0000-4000-8000-000000007104",
+              name: "Launch",
+              access: "write" as const
+            }
+          ]
+        }
+      ]
+    };
+  },
+  sharedPendingShare: async () =>
+    hq701Capture && hq701Pending
+      ? {
+          teamBackendId: "fixture-cloud",
+          shareAttemptKey: "hq701-native-pending",
+          targetTeamId: "00000000-0000-4000-8000-000000007102",
+          targetWorkspaceId: "00000000-0000-4000-8000-000000007104",
+          state: "pending" as const
+        }
+      : null,
+  sharedMembers: async (workspaceProjectId: string, teamBackendId: string) => {
+    if (
+      !hq701Linked ||
+      workspaceProjectId !== hq712WorkspaceProjectId ||
+      teamBackendId !== hq712TeamBackendId
+    )
+      throw new Error("Shared Project roster unavailable in fixture");
+    return {
+      projectId: workspaceProjectId,
+      version: 1,
+      people: [
+        {
+          teamMemberId: "00000000-0000-4000-8000-000000007124",
+          displayName: "You",
+          access: "write" as const
+        },
+        {
+          teamMemberId: "00000000-0000-4000-8000-000000007127",
+          displayName: "Maya",
+          access: "read" as const
+        }
+      ]
+    };
+  },
+  sharedCancelPendingShare: async () => {
+    if (!hq701Capture || !hq701Pending) throw new Error("No pending share");
+    hq701Trace.cancellations += 1;
+    hq701Pending = false;
+    return { canceled: true as const };
+  },
   sharedDispatches: async (personalProjectId: string) => {
     if (!hq712Capture || personalProjectId !== hq204ProjectId || hq712Offline)
       return [];
@@ -3280,6 +3356,10 @@ export function HqValidationApp() {
       }
     ).__koedHqVisibilityFixture = hq105VisibilityFixture;
     window.__koedHqFixture = fixture;
+    if (hq701Capture)
+      (
+        window as Window & { __koedHq701Trace?: typeof hq701Trace }
+      ).__koedHq701Trace = hq701Trace;
     document.documentElement.dataset.hqFixtureReady = "true";
     document.documentElement.dataset.browserValidationReady = "true";
     return () => {
@@ -3291,6 +3371,8 @@ export function HqValidationApp() {
       delete (window as Window & { __koedHq307Trace?: typeof hq307Trace })
         .__koedHq307Trace;
       delete window.__koedHqFixture;
+      delete (window as Window & { __koedHq701Trace?: typeof hq701Trace })
+        .__koedHq701Trace;
       delete (
         window as Window & {
           __koedHqVisibilityReads?: typeof hq105VisibilityReads;

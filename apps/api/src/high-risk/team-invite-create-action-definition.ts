@@ -47,6 +47,9 @@ const resolveTeamInviteCreatePolicy = async (input: {
     {
       teamId: input.intent.teamId,
       defaultTeamWorkspaceId: input.intent.body.defaultTeamWorkspaceId,
+      ...(input.intent.body.workspaceProjectId
+        ? { workspaceProjectId: input.intent.body.workspaceProjectId }
+        : {}),
       role: input.intent.body.role
     }
   );
@@ -55,6 +58,12 @@ const resolveTeamInviteCreatePolicy = async (input: {
       "Team invitation review requires current manager, Team, and Workspace context"
     );
   }
+  if (
+    input.intent.body.workspaceProjectId &&
+    reviewContext.project?.version !==
+      input.intent.body.expectedWorkspaceProjectVersion
+  )
+    return unavailableAction("Shared Project changed before invitation review");
   return reviewedAction("native_review", {
     title: `Invite ${input.intent.body.email}?`,
     description: "Review the exact invitation before it is issued.",
@@ -69,6 +78,14 @@ const resolveTeamInviteCreatePolicy = async (input: {
         label: "Default Workspace",
         value: reviewContext.defaultWorkspace.name
       },
+      ...(reviewContext.project
+        ? [
+            {
+              label: "Shared Project",
+              value: `${reviewContext.project.name} (version ${reviewContext.project.version})`
+            }
+          ]
+        : []),
       {
         label: "Workspace Access",
         value: input.intent.body.defaultWorkspaceAccess

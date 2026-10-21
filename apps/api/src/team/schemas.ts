@@ -129,6 +129,8 @@ export const setTeamBillingSeatPolicySchema = z
 export const createTeamInviteSchema = z
   .object({
     defaultTeamWorkspaceId: z.string().uuid(),
+    workspaceProjectId: z.string().uuid().nullable().optional(),
+    expectedWorkspaceProjectVersion: z.number().int().positive().optional(),
     defaultWorkspaceAccess: z.enum(["read", "write"]).default("write"),
     email: z.string().trim().email(),
     role: teamRoleSchema,

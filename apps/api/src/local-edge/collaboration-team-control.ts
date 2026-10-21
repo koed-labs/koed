@@ -871,6 +871,13 @@ const dispatch = async (
         email: command.input.email,
         role: command.input.role,
         defaultTeamWorkspaceId: command.input.defaultWorkspaceId,
+        ...(command.input.workspaceProjectId
+          ? {
+              workspaceProjectId: command.input.workspaceProjectId,
+              expectedWorkspaceProjectVersion:
+                command.input.expectedWorkspaceProjectVersion
+            }
+          : {}),
         defaultWorkspaceAccess: command.input.defaultWorkspaceAccess,
         ttlHours: command.input.ttlHours
       };

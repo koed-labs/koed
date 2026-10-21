@@ -32,7 +32,8 @@ import {
   Search,
   SquarePen,
   Trash2,
-  UserRoundPlus
+  UserRoundPlus,
+  UsersRound
 } from "lucide-react";
 import {
   Tooltip,
@@ -102,6 +103,7 @@ export function HqIconAction({
 }
 
 const JUST_ME_GROUP_ID = "just-me";
+const SHARED_GROUP_ID = "shared";
 const PROJECT_GROUP_PREFIX = "project:";
 const PROJECT_CONVERSATION_LIMIT = 3;
 const LOOSE_CONVERSATION_LIMIT = 5;
@@ -132,6 +134,8 @@ export type HqSidebarProps = {
   loading?: boolean;
   onCreateProject?: () => void;
   onDeleteProject?: (projectId: string) => void;
+  onShareProject?: (projectId: string) => void;
+  sharedPeopleCounts?: Readonly<Record<string, number>>;
   onDeleteConversation?: (
     projectId: string,
     sessionId: string,
@@ -172,6 +176,8 @@ export function HqSidebar({
   loading = false,
   onCreateProject,
   onDeleteProject,
+  onShareProject,
+  sharedPeopleCounts,
   onDeleteConversation,
   onForgetConversation,
   onNewConversation,
@@ -311,12 +317,28 @@ export function HqSidebar({
         })),
     [navigation, projects]
   );
+  const sharedProjectIds = useMemo(
+    () =>
+      new Set(
+        personalProjects
+          ?.filter((item) => Boolean(item.workspaceProjectId))
+          .map((item) => item.id) ?? []
+      ),
+    [personalProjects]
+  );
+  const privateProjectRows = sortedProjects.filter(
+    (item) => !sharedProjectIds.has(item.id)
+  );
+  const sharedProjectRows = sortedProjects.filter((item) =>
+    sharedProjectIds.has(item.id)
+  );
   const foldGroupIds = useMemo(
     () => [
       JUST_ME_GROUP_ID,
+      ...(sharedProjectRows.length ? [SHARED_GROUP_ID] : []),
       ...sortedProjects.map(({ id }) => hqProjectFoldId(id))
     ],
-    [sortedProjects]
+    [sortedProjects, sharedProjectRows.length]
   );
   useEffect(() => {
     if (groupsReady) preferencesStore.reconcileGroups(foldGroupIds);
@@ -600,6 +622,19 @@ export function HqSidebar({
               />
             )}
             <span>{project.name}</span>
+            {sharedProjectIds.has(project.id) ? (
+              <small
+                className="hq-sidebar__project-people"
+                aria-label={
+                  sharedPeopleCounts?.[project.id] === undefined
+                    ? "Shared Project"
+                    : `${sharedPeopleCounts[project.id]} people`
+                }
+              >
+                <UsersRound aria-hidden="true" />
+                {sharedPeopleCounts?.[project.id] ?? ""}
+              </small>
+            ) : null}
           </button>
           {personalProjects?.some(({ id }) => id === project.id) ? (
             <>
@@ -685,8 +720,11 @@ export function HqSidebar({
                   <button
                     role="menuitem"
                     type="button"
-                    disabled
-                    title="Sharing is unavailable"
+                    disabled={!onShareProject}
+                    onClick={() => {
+                      setProjectMenuId(null);
+                      onShareProject?.(project.id);
+                    }}
                   >
                     <UserRoundPlus aria-hidden="true" />
                     Share
@@ -876,7 +914,7 @@ export function HqSidebar({
                       No Projects or Chats yet
                     </li>
                   ) : null}
-                  {sortedProjects.map(renderProject)}
+                  {privateProjectRows.map(renderProject)}
                   {looseChats.length > 0 || onMoveConversation ? (
                     <li
                       className="hq-sidebar__loose-group"
@@ -947,6 +985,42 @@ export function HqSidebar({
                   ) : null}
                 </ul>
               </li>
+              {sharedProjectRows.length ? (
+                <li className="hq-sidebar__group">
+                  <button
+                    aria-controls="hq-group-shared"
+                    aria-expanded={!groupFolded(SHARED_GROUP_ID)}
+                    className="hq-sidebar__group-heading"
+                    data-hq-sidebar-group="shared"
+                    onClick={() =>
+                      setGroupFolded(
+                        SHARED_GROUP_ID,
+                        !groupFolded(SHARED_GROUP_ID)
+                      )
+                    }
+                    type="button"
+                  >
+                    <ChevronDown
+                      aria-hidden="true"
+                      className="hq-sidebar__row-chevron-icon"
+                      data-hq-group-chevron=""
+                    />
+                    <UserRoundPlus
+                      aria-hidden="true"
+                      className="hq-sidebar__group-icon"
+                      data-hq-group-icon=""
+                    />
+                    <span className="hq-sidebar__group-title">Shared</span>
+                  </button>
+                  <ul
+                    className="hq-sidebar__group-children"
+                    hidden={groupFolded(SHARED_GROUP_ID)}
+                    id="hq-group-shared"
+                  >
+                    {sharedProjectRows.map(renderProject)}
+                  </ul>
+                </li>
+              ) : null}
             </ul>
             {preferences.error ? (
               <p className="hq-sidebar__preference-error" role="status">

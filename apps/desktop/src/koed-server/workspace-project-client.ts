@@ -44,7 +44,9 @@ export const createWorkspaceProjectClient = (input: {
   loadPersonalCopy(
     projectId: string,
     teamBackendId: string,
-    shareAttemptKey: string
+    shareAttemptKey: string,
+    targetTeamId: string,
+    targetWorkspaceId: string
   ): Promise<
     Omit<WorkspaceProjectCopy, "expectedVersion"> & {
       personalProjectVersion: number;
@@ -283,7 +285,9 @@ export const createWorkspaceProjectClient = (input: {
       const personal = await input.loadPersonalCopy(
         inputValue.personalProjectId,
         inputValue.teamBackendId,
-        inputValue.shareAttemptKey
+        inputValue.shareAttemptKey,
+        value.teamId,
+        value.workspaceId
       );
       const project = projectSchema.parse(
         await input.sendTeam("/v1/workspace-projects", json("POST", value))

@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0068_brief_reptil";
-const expectedLatestMigrationIndex = 68;
+const expectedLatestMigrationTag = "0069_talented_famine";
+const expectedLatestMigrationIndex = 69;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -924,10 +924,21 @@ const assertLatestSchema = async (pool) => {
       ["personal_project_id", "uuid", "NO"],
       ["owner_user_id", "uuid", "NO"],
       ["team_backend_id", "text", "NO"],
+      ["target_team_id", "uuid", "YES"],
+      ["target_workspace_id", "uuid", "YES"],
       ["manifest_hash", "text", "NO"],
       ["snapshot", "jsonb", "NO"],
       ["state", "text", "NO"]
     ],
+    workspace_project_share_cancellations: [
+      ["id", "uuid", "NO"],
+      ["team_id", "uuid", "NO"],
+      ["workspace_id", "uuid", "NO"],
+      ["owner_team_member_id", "uuid", "NO"],
+      ["share_attempt_key", "text", "NO"],
+      ["created_at", "timestamp with time zone", "NO"]
+    ],
+    team_invites: [["workspace_project_id", "uuid", "YES"]],
     personal_workspace_project_copyback_stages: [
       ["owner_user_id", "uuid", "NO"],
       ["personal_project_id", "uuid", "NO"],
@@ -1213,6 +1224,37 @@ const assertLatestSchema = async (pool) => {
       "personal_workspace_project_share_attempts",
       "personal_workspace_project_share_attempt_state_check",
       "c"
+    ],
+    [
+      "personal_workspace_project_share_attempts",
+      "personal_workspace_project_share_attempt_target_pair_check",
+      "c"
+    ],
+    [
+      "workspace_project_share_cancellations",
+      "workspace_project_share_cancellations_attempt_unique",
+      "u"
+    ],
+    [
+      "workspace_project_share_cancellations",
+      "workspace_project_share_cancellations_workspace_team_fk",
+      "f",
+      "team_workspaces",
+      "a"
+    ],
+    [
+      "workspace_project_share_cancellations",
+      "workspace_project_share_cancellations_owner_team_fk",
+      "f",
+      "team_memberships",
+      "a"
+    ],
+    [
+      "team_invites",
+      "team_invites_workspace_project_id_workspace_projects_id_fk",
+      "f",
+      "workspace_projects",
+      "n"
     ],
     [
       "personal_workspace_project_copyback_stages",
@@ -3783,6 +3825,139 @@ try {
         )
           throw new Error(
             "0068 migration rerun lost valid cold or active delegation"
+          );
+      });
+    }
+  );
+
+  await runScenario(
+    "share-project-0069-upgrade-rollback-and-rerun",
+    async () => {
+      const target = await createDisposableDatabase("share_project_upgrade");
+      const predecessor = await createMigrationSlice(journal, 68, {
+        folderPrefix: "koed-share-project-predecessor-"
+      });
+      const interrupted = await createMigrationSlice(journal, 69, {
+        folderPrefix: "koed-share-project-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(predecessor);
+      temporaryFolders.add(interrupted);
+      const priorRecords = await migrationRecords(
+        predecessor,
+        journal.entries.slice(0, 69)
+      );
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: predecessor });
+        const ownerId = randomUUID();
+        const projectId = randomUUID();
+        await pool.query("insert into users(id,email) values($1,$2)", [
+          ownerId,
+          `${ownerId}@example.test`
+        ]);
+        await pool.query(
+          "insert into projects(id,owner_user_id,name,key) values($1,$2,'Pending Share','PENDING')",
+          [projectId, ownerId]
+        );
+        await pool.query(
+          `insert into personal_workspace_project_share_attempts
+           (personal_project_id,owner_user_id,team_backend_id,share_attempt_key,
+            manifest_hash,snapshot) values($1,$2,'team','attempt-0069','manifest','{}'::jsonb)`,
+          [projectId, ownerId]
+        );
+        const prior = await pool.query(
+          `select to_regclass('public.workspace_project_share_cancellations')::text as receipts,
+                  (select count(*)::integer from personal_workspace_project_share_attempts
+                    where personal_project_id=$1 and state='pending') as pending,
+                  (select count(*)::integer from information_schema.columns
+                    where table_name='personal_workspace_project_share_attempts'
+                      and column_name='target_team_id') as targets`,
+          [projectId]
+        );
+        if (
+          !isDeepStrictEqual(prior.rows[0], {
+            receipts: null,
+            pending: 1,
+            targets: 0
+          })
+        )
+          throw new Error(
+            "0069 predecessor did not retain pending Personal Share"
+          );
+        const fingerprint = await schemaFingerprint(pool);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        if (
+          !failed ||
+          !isDeepStrictEqual(
+            (
+              await pool.query(
+                `select to_regclass('public.workspace_project_share_cancellations')::text as receipts,
+                    (select count(*)::integer from personal_workspace_project_share_attempts
+                      where personal_project_id=$1 and state='pending') as pending,
+                    (select count(*)::integer from information_schema.columns
+                      where table_name='personal_workspace_project_share_attempts'
+                        and column_name='target_team_id') as targets`,
+                [projectId]
+              )
+            ).rows[0],
+            prior.rows[0]
+          ) ||
+          (await schemaFingerprint(pool)) !== fingerprint
+        )
+          throw new Error(
+            "Interrupted 0069 migration leaked target or receipt schema"
+          );
+        await assertMigrationLedger(pool, priorRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+        await expectSqlState(
+          pool,
+          "update personal_workspace_project_share_attempts set target_team_id=$2 where personal_project_id=$1",
+          "23514",
+          "Share target must bind Team and Workspace together",
+          [projectId, randomUUID()]
+        );
+        const teamId = randomUUID();
+        const workspaceId = randomUUID();
+        await pool.query(
+          `update personal_workspace_project_share_attempts
+             set target_team_id=$2,target_workspace_id=$3,state='canceled'
+           where personal_project_id=$1`,
+          [projectId, teamId, workspaceId]
+        );
+        const guard = await pool.query(
+          `select count(*)::integer as count from pg_trigger
+             where not tgisinternal and tgname='workspace_project_share_cancellations_immutable'`
+        );
+        if (guard.rows[0]?.count !== 1)
+          throw new Error(
+            "0069 immutable Team cancellation receipt guard missing"
+          );
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== stable)
+          throw new Error("0069 migration rerun changed schema");
+        const retained = await pool.query(
+          `select target_team_id,target_workspace_id,state
+             from personal_workspace_project_share_attempts where personal_project_id=$1`,
+          [projectId]
+        );
+        if (
+          !isDeepStrictEqual(retained.rows[0], {
+            target_team_id: teamId,
+            target_workspace_id: workspaceId,
+            state: "canceled"
+          })
+        )
+          throw new Error(
+            "0069 migration rerun lost bound Personal Share attempt"
           );
       });
     }

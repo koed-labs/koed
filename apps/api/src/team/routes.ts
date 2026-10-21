@@ -1,3 +1,4 @@
+import { legacyTeamInvite } from "./invite-serialization.js";
 import {
   sharedMemoryGrantScopedSourceId,
   teamPresenceStatusCatalogue
@@ -804,7 +805,7 @@ export const registerTeamRoutes = (
       );
       if (!page) throw forbidden("Team invites cannot be viewed");
       return {
-        invites: page.invites,
+        invites: page.invites.map(legacyTeamInvite),
         nextCursor: page.nextCursor
           ? encodeTeamInviteCursor(context, {
               version: 1,
@@ -856,6 +857,9 @@ export const registerTeamRoutes = (
               {
                 teamId,
                 defaultTeamWorkspaceId: input.defaultTeamWorkspaceId,
+                workspaceProjectId: input.workspaceProjectId ?? null,
+                expectedWorkspaceProjectVersion:
+                  input.expectedWorkspaceProjectVersion,
                 defaultWorkspaceAccess: input.defaultWorkspaceAccess,
                 email: input.email,
                 role: input.role,
@@ -869,7 +873,10 @@ export const registerTeamRoutes = (
               }
             );
             return invite
-              ? { statusCode: 200, body: { invite, inviteToken } }
+              ? {
+                  statusCode: 200,
+                  body: { invite: legacyTeamInvite(invite), inviteToken }
+                }
               : null;
           }
         )
@@ -905,7 +912,12 @@ export const registerTeamRoutes = (
                   expectedVersion: input.expectedVersion
                 }
               );
-              return invite ? { statusCode: 200, body: { invite } } : null;
+              return invite
+                ? {
+                    statusCode: 200,
+                    body: { invite: legacyTeamInvite(invite) }
+                  }
+                : null;
             }
           )
         )
@@ -961,7 +973,7 @@ export const registerTeamRoutes = (
             return {
               statusCode: 200,
               body: {
-                invite: accepted.invite,
+                invite: legacyTeamInvite(accepted.invite),
                 membership: accepted.membership,
                 user: publicUser(accepted.user),
                 createdUser: accepted.createdUser

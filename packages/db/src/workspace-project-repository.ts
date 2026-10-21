@@ -332,6 +332,215 @@ export const createWorkspaceProjectRepository = (
     }
   };
   return {
+    async shareTarget(
+      actorUserId: string,
+      teamId: string,
+      workspaceId: string,
+      shareAttemptKey?: string
+    ) {
+      return transaction(pool, async (client) => {
+        await one(client, `select id from teams where id=$1 for update`, [
+          teamId
+        ]);
+        await one(
+          client,
+          `select id from team_memberships where team_id=$1 and user_id=$2 for update`,
+          [teamId, actorUserId]
+        );
+        await one(
+          client,
+          `select id from team_workspaces where id=$1 and team_id=$2 for update`,
+          [workspaceId, teamId]
+        );
+        await one(
+          client,
+          `select team_workspace_id from team_workspace_access_grants where team_workspace_id=$1 and team_id=$2 and user_id=$3 for update`,
+          [workspaceId, teamId, actorUserId]
+        );
+        const row = await one(
+          client,
+          `select membership.id as team_member_id
+           from team_memberships membership
+           join teams team on team.id=membership.team_id
+            and team.lifecycle='active'
+           join team_workspaces workspace on workspace.team_id=team.id
+            and workspace.id=$2 and workspace.lifecycle='active'
+           join team_workspace_access_grants access
+             on access.team_workspace_id=workspace.id
+            and access.team_id=team.id and access.user_id=membership.user_id
+            and access.access='write' and access.disabled_at is null
+          where membership.team_id=$1 and membership.user_id=$3
+            and membership.status='enabled' and membership.disabled_at is null`,
+          [teamId, workspaceId, actorUserId]
+        );
+        if (!row)
+          throw new WorkspaceProjectUnavailableError(
+            "Current Team sharing target is unavailable"
+          );
+        const occupying = await one(
+          client,
+          `select project.owner_team_member_id,project.share_attempt_key
+           from workspace_projects project
+          where project.workspace_id=$1 and project.team_id=$2`,
+          [workspaceId, teamId]
+        );
+        const canceled = shareAttemptKey
+          ? await one(
+              client,
+              `select id from workspace_project_share_cancellations
+          where team_id=$1 and owner_team_member_id=$2
+            and share_attempt_key=$3`,
+              [teamId, row.team_member_id, shareAttemptKey]
+            )
+          : null;
+        return {
+          teamId,
+          workspaceId,
+          ownerUserId: actorUserId,
+          canStart:
+            !canceled &&
+            (!occupying ||
+              (occupying.owner_team_member_id === row.team_member_id &&
+                occupying.share_attempt_key === shareAttemptKey))
+        };
+      });
+    },
+    async cancelShareAttempt(
+      actorUserId: string,
+      input: {
+        teamId: string;
+        workspaceId: string;
+        shareAttemptKey: string;
+      }
+    ) {
+      return transaction(pool, async (client) => {
+        await one(client, `select id from teams where id=$1 for update`, [
+          input.teamId
+        ]);
+        await one(
+          client,
+          `select id from team_memberships where team_id=$1 and user_id=$2 for update`,
+          [input.teamId, actorUserId]
+        );
+        await one(
+          client,
+          `select id from team_workspaces where id=$1 and team_id=$2 for update`,
+          [input.workspaceId, input.teamId]
+        );
+        await one(
+          client,
+          `select team_workspace_id from team_workspace_access_grants where team_workspace_id=$1 and team_id=$2 and user_id=$3 for update`,
+          [input.workspaceId, input.teamId, actorUserId]
+        );
+        const member = await one(
+          client,
+          `select membership.id
+          from team_memberships membership
+          join teams team on team.id=membership.team_id and team.lifecycle='active'
+          join team_workspaces workspace on workspace.id=$2 and workspace.team_id=team.id and workspace.lifecycle='active'
+          join team_workspace_access_grants access on access.team_workspace_id=workspace.id
+            and access.team_id=team.id and access.user_id=membership.user_id
+            and access.access='write' and access.disabled_at is null
+          where membership.team_id=$1 and membership.user_id=$3
+            and membership.status='enabled' and membership.disabled_at is null`,
+          [input.teamId, input.workspaceId, actorUserId]
+        );
+        if (!member)
+          throw new WorkspaceProjectUnavailableError(
+            "Current Team sharing target is unavailable"
+          );
+        const existing = await one(
+          client,
+          `select id from workspace_projects
+          where team_id=$1 and owner_team_member_id=$2
+            and share_attempt_key=$3 for update`,
+          [input.teamId, member.id, input.shareAttemptKey]
+        );
+        if (existing) throw new WorkspaceProjectConflictError(existing);
+        const prior = await one(
+          client,
+          `select id,workspace_id from workspace_project_share_cancellations
+          where team_id=$1 and owner_team_member_id=$2 and share_attempt_key=$3`,
+          [input.teamId, member.id, input.shareAttemptKey]
+        );
+        if (prior && prior.workspace_id !== input.workspaceId)
+          throw new WorkspaceProjectConflictError(prior);
+        await client.query(
+          `insert into workspace_project_share_cancellations
+          (id,team_id,workspace_id,owner_team_member_id,share_attempt_key)
+          values ($1,$2,$3,$4,$5)
+          on conflict (team_id,owner_team_member_id,share_attempt_key)
+          do nothing`,
+          [
+            randomUUID(),
+            input.teamId,
+            input.workspaceId,
+            member.id,
+            input.shareAttemptKey
+          ]
+        );
+        const receipt = await one(
+          client,
+          `select id from workspace_project_share_cancellations
+          where team_id=$1 and workspace_id=$2 and owner_team_member_id=$3
+            and share_attempt_key=$4`,
+          [input.teamId, input.workspaceId, member.id, input.shareAttemptKey]
+        );
+        return {
+          canceled: true as const,
+          receiptId: String(receipt!.id),
+          teamId: input.teamId,
+          workspaceId: input.workspaceId,
+          ownerUserId: actorUserId,
+          shareAttemptKey: input.shareAttemptKey
+        };
+      });
+    },
+    async members(actorUserId: string, projectId: string) {
+      return transaction(pool, async (client) => {
+        const project = await currentMember(
+          client,
+          actorUserId,
+          projectId,
+          true
+        );
+        const rows = await client.query<{
+          team_member_id: string;
+          display_name: string | null;
+          access: "read" | "write";
+        }>(
+          `select membership.id as team_member_id,
+                  coalesce(account.display_name,account.email) as display_name,
+                  association.access
+             from workspace_project_members association
+             join team_memberships membership
+               on membership.id=association.team_member_id
+              and membership.team_id=$2
+              and membership.status='enabled' and membership.disabled_at is null
+             join users account on account.id=membership.user_id
+             join team_workspace_access_grants workspace_access
+               on workspace_access.team_workspace_id=$3
+              and workspace_access.user_id=membership.user_id
+              and workspace_access.team_id=$2
+              and workspace_access.disabled_at is null
+              and workspace_access.access<>'disabled'
+            where association.workspace_project_id=$1
+              and association.disabled_at is null
+              and association.access<>'disabled'
+            order by account.display_name nulls last,account.email,membership.id`,
+          [projectId, project.team_id, project.workspace_id]
+        );
+        return {
+          projectId,
+          version: Number(project.version),
+          people: rows.rows.map((row) => ({
+            teamMemberId: row.team_member_id,
+            displayName: row.display_name ?? "Team member",
+            access: row.access
+          }))
+        };
+      });
+    },
     async create(
       actorUserId: string,
       input: {
@@ -386,6 +595,17 @@ export const createWorkspaceProjectRepository = (
         if (!member)
           throw new WorkspaceProjectUnavailableError(
             "Workspace Project creation unavailable"
+          );
+        const canceled = await one(
+          client,
+          `select id from workspace_project_share_cancellations
+          where team_id=$1 and owner_team_member_id=$2
+            and share_attempt_key=$3`,
+          [input.teamId, member.id, input.shareAttemptKey]
+        );
+        if (canceled)
+          throw new WorkspaceProjectUnavailableError(
+            "First-share attempt was canceled"
           );
         const existing = await one(
           client,

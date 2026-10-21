@@ -6,6 +6,8 @@ import {
   verifyLocalEdgeClientCredentialAuthorization
 } from "@koed/shared";
 import {
+  PersonalWorkspaceProjectConflictError,
+  PersonalWorkspaceProjectUnavailableError,
   workspaceProjectCopyManifestHash,
   type PersonalWorkspaceProjectRepository,
   type ProjectSourceRepository
@@ -36,7 +38,27 @@ const confirmSchema = z
 const prepareSchema = z
   .object({
     teamBackendId: z.string().trim().min(1).max(160),
-    shareAttemptKey: z.string().trim().min(8).max(200)
+    shareAttemptKey: z.string().trim().min(8).max(200),
+    targetTeamId: z.uuid(),
+    targetWorkspaceId: z.uuid()
+  })
+  .strict();
+const targetProofSchema = z
+  .object({
+    teamId: z.uuid(),
+    workspaceId: z.uuid(),
+    ownerUserId: z.uuid(),
+    canStart: z.boolean()
+  })
+  .strict();
+const cancelReceiptSchema = z
+  .object({
+    canceled: z.literal(true),
+    receiptId: z.uuid(),
+    teamId: z.uuid(),
+    workspaceId: z.uuid(),
+    ownerUserId: z.uuid(),
+    shareAttemptKey: z.string().min(8)
   })
   .strict();
 const principalSchema = z
@@ -187,6 +209,49 @@ export const registerWorkspaceProjectCoordinationRoutes = (
     if (!remote.response.ok)
       denied("Authoritative Team Project state unavailable", 424);
     return remote.payload;
+  };
+  const cancelTeamAttempt = async (
+    backendId: string,
+    teamId: string,
+    workspaceId: string,
+    shareAttemptKey: string,
+    expectedOwnerUserId: string
+  ) => {
+    const backend = upstreamBackendById(
+      readLocalEdgeUpstreamRegistry(context.localEdge.upstreamBackendsPath),
+      backendId
+    );
+    if (!backend) denied("Team backend is not enrolled", 424);
+    const authorization = context.localEdge.resolveUpstreamAuthorization(
+      backend!
+    );
+    if (!authorization) denied("Team upstream credential unavailable", 424);
+    const remote = await fetchBoundedJson(
+      context.localEdge.fetch,
+      safeUpstreamProxyUrl(
+        backend!,
+        `/v1/teams/${teamId}/workspaces/${workspaceId}/share-attempt-cancellations`
+      ),
+      {
+        method: "POST",
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          authorization: authorization!
+        },
+        body: JSON.stringify({ shareAttemptKey, expectedOwnerUserId })
+      },
+      { timeoutMs: 15_000, maxBytes: 64_000 }
+    );
+    if (!remote.response.ok)
+      denied(
+        remote.response.status === 409
+          ? "Team Project already exists; resume sharing to reconcile it"
+          : "Team first-share cancellation was not confirmed",
+        remote.response.status === 409 ? 409 : 424
+      );
+    return cancelReceiptSchema.parse(remote.payload);
   };
   const teamPrincipal = async (backendId: string) => {
     const backend = upstreamBackendById(
@@ -433,13 +498,131 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         "team_workspace_read"
       );
       const principal = await teamPrincipal(body.teamBackendId);
+      const target = targetProofSchema.parse(
+        await requestTeam(
+          body.teamBackendId,
+          `/v1/teams/${body.targetTeamId}/workspaces/${body.targetWorkspaceId}/share-target?shareAttemptKey=${encodeURIComponent(body.shareAttemptKey)}`
+        )
+      );
+      if (
+        target.teamId !== body.targetTeamId ||
+        target.workspaceId !== body.targetWorkspaceId ||
+        target.ownerUserId !== principal ||
+        !target.canStart
+      )
+        denied("Team sharing target changed", 409);
       await repo().bindPrincipal(authority.actor.id, {
         teamBackendId: body.teamBackendId,
         teamPrincipalUserId: principal,
         localCredentialKeyId: authority.local.credentialKeyId,
         teamCredentialKeyId: authority.team.credentialKeyId
       });
-      return repo().beginShare(authority.actor.id, projectId, body);
+      try {
+        return await repo().beginShare(authority.actor.id, projectId, body);
+      } catch (error) {
+        if (error instanceof PersonalWorkspaceProjectConflictError)
+          denied(error.message, 409);
+        if (error instanceof PersonalWorkspaceProjectUnavailableError)
+          denied(error.message, 404);
+        throw error;
+      }
+    }
+  );
+  app.get(
+    "/v1/local-edge/projects/:projectId/workspace-project-share-attempt",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const local = await authenticateLocal(request);
+      const pending = await repo().pendingShare(local.actor.id, projectId);
+      if (!pending) return { attempt: null };
+      if (!pending.targetTeamId || !pending.targetWorkspaceId)
+        denied("Historical first-share attempt needs explicit recovery", 409);
+      const authority = await authenticate(
+        request,
+        pending.teamBackendId,
+        "team_workspace_read"
+      );
+      if (authority.actor.id !== local.actor.id)
+        denied("Personal sharing owner changed", 409);
+      const principal = await teamPrincipal(pending.teamBackendId);
+      if (
+        (await repo().principalBinding(
+          local.actor.id,
+          pending.teamBackendId
+        )) !== principal
+      )
+        denied("Enrolled Team principal changed", 409);
+      const target = targetProofSchema.parse(
+        await requestTeam(
+          pending.teamBackendId,
+          `/v1/teams/${pending.targetTeamId}/workspaces/${pending.targetWorkspaceId}/share-target?shareAttemptKey=${encodeURIComponent(pending.shareAttemptKey)}`
+        )
+      );
+      if (
+        target.teamId !== pending.targetTeamId ||
+        target.workspaceId !== pending.targetWorkspaceId ||
+        target.ownerUserId !== principal ||
+        !target.canStart
+      )
+        denied("Team sharing target changed", 409);
+      return { attempt: pending };
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/workspace-project-share-cancel",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      z.object({})
+        .strict()
+        .parse(request.body ?? {});
+      const local = await authenticateLocal(request);
+      const attempt = await repo().shareAttempt(local.actor.id, projectId);
+      if (!attempt || !["pending", "canceled"].includes(attempt.state))
+        denied("No cancelable first-share attempt", 409);
+      const pending = attempt!;
+      if (!pending.targetTeamId || !pending.targetWorkspaceId)
+        denied("Historical first-share attempt needs explicit recovery", 409);
+      const teamId = pending.targetTeamId!;
+      const workspaceId = pending.targetWorkspaceId!;
+      const authority = await authenticate(
+        request,
+        pending.teamBackendId,
+        "team_workspace_write"
+      );
+      if (authority.actor.id !== local.actor.id)
+        denied("Personal sharing owner changed", 409);
+      const principal = await teamPrincipal(pending.teamBackendId);
+      if (
+        (await repo().principalBinding(
+          local.actor.id,
+          pending.teamBackendId
+        )) !== principal
+      )
+        denied("Enrolled Team principal changed", 409);
+      if (pending.state === "pending") {
+        const receipt = await cancelTeamAttempt(
+          pending.teamBackendId,
+          teamId,
+          workspaceId,
+          pending.shareAttemptKey,
+          principal
+        );
+        if (
+          receipt.teamId !== teamId ||
+          receipt.workspaceId !== workspaceId ||
+          receipt.shareAttemptKey !== pending.shareAttemptKey ||
+          receipt.ownerUserId !== principal
+        )
+          denied("Team cancellation receipt changed", 409);
+      }
+      return repo().cancelShare(local.actor.id, projectId, {
+        teamBackendId: pending.teamBackendId,
+        shareAttemptKey: pending.shareAttemptKey,
+        targetTeamId: teamId,
+        targetWorkspaceId: workspaceId
+      });
     }
   );
   app.post(
@@ -479,6 +662,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
           expectedPersonalProjectVersion: body.expectedPersonalProjectVersion,
           expectedManifestHash: proof.copyManifestHash,
           teamBackendId: body.teamBackendId,
+          teamId: proof.teamId,
           workspaceId: proof.workspaceId,
           workspaceProjectId: proof.projectId
         });
@@ -502,6 +686,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         expectedPersonalProjectVersion: body.expectedPersonalProjectVersion,
         expectedManifestHash: proof.copyManifestHash,
         teamBackendId: body.teamBackendId,
+        teamId: proof.teamId,
         workspaceId: proof.workspaceId,
         workspaceProjectId: proof.projectId
       });

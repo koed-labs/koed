@@ -172,6 +172,8 @@ export interface CollaborationRendererClient {
     email: string;
     role: "owner" | "admin" | "member";
     defaultWorkspaceId: string;
+    workspaceProjectId?: string | null;
+    expectedWorkspaceProjectVersion?: number;
     defaultWorkspaceAccess: "read" | "write";
     ttlHours: number;
   }): Promise<{

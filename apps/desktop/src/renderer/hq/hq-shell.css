@@ -912,3 +912,18 @@
 .hq-project-toast__error {
   color: #ef9b9b;
 }
+
+.hq-sidebar__project-people {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--hq-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.hq-sidebar__project-people svg {
+  inline-size: 13px;
+  block-size: 13px;
+}

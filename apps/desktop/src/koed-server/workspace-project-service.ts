@@ -1,7 +1,9 @@
 import type {
   ProjectsRequest,
-  ProjectsResult
+  ProjectsResult,
+  WorkspaceProjectShareContext
 } from "../ipc/projects-protocol.js";
+import { workspaceProjectMembersSchema } from "@koed/shared/workspace-project-contract";
 import { createWorkspaceProjectClient } from "./workspace-project-client.js";
 import { z } from "zod";
 import { workspaceProjectRecordSchema } from "@koed/shared/workspace-project-contract";
@@ -60,6 +62,13 @@ export class WorkspaceProjectRemoteError extends Error {
 
 export const createWorkspaceProjectDesktopService = (input: {
   identityKey(): Promise<string>;
+  loadShareContext?(): Promise<WorkspaceProjectShareContext>;
+  loadPendingShare?: ReturnType<
+    typeof createWorkspaceProjectPersonalClient
+  >["pendingShare"];
+  cancelPendingShare?: ReturnType<
+    typeof createWorkspaceProjectPersonalClient
+  >["cancelPendingShare"];
   sendTeam(
     teamBackendId: string,
     path: string,
@@ -183,6 +192,10 @@ export const createWorkspaceProjectDesktopService = (input: {
           | "sharedCreateWorkItem"
           | "sharedPatchWorkItem"
           | "sharedFirstShare"
+          | "sharedShareContext"
+          | "sharedPendingShare"
+          | "sharedCancelPendingShare"
+          | "sharedMembers"
           | "sharedTeamLeaveStage"
           | "sharedTeamLeaveFinish"
           | "sharedAttachSource"
@@ -195,6 +208,68 @@ export const createWorkspaceProjectDesktopService = (input: {
     >
   ): Promise<ProjectsResult> => {
     const identityKey = await input.identityKey();
+    if (request.operation === "sharedShareContext") {
+      if (!input.loadShareContext)
+        throw new Error("Shared Project context is unavailable");
+      const context = await checked(identityKey, input.loadShareContext);
+      return { operation: request.operation, context };
+    }
+    if (request.operation === "sharedPendingShare") {
+      if (!input.loadShareContext || !input.loadPendingShare)
+        throw new Error("Pending Project share recovery is unavailable");
+      const context = await checked(identityKey, input.loadShareContext);
+      if (
+        context.state !== "ready" ||
+        !context.backendId ||
+        !context.principalId
+      )
+        throw new Error("Team enrollment is required to recover this share");
+      const attempt = await checked(identityKey, () =>
+        input.loadPendingShare!(request.personalProjectId, context.backendId!)
+      );
+      if (
+        attempt?.teamBackendId !== undefined &&
+        attempt.teamBackendId !== context.backendId
+      )
+        throw new Error("Pending share backend changed");
+      return { operation: request.operation, attempt };
+    }
+    if (request.operation === "sharedCancelPendingShare") {
+      if (!input.loadShareContext || !input.cancelPendingShare)
+        throw new Error("Pending Project share cancellation is unavailable");
+      const context = await checked(identityKey, input.loadShareContext);
+      if (
+        context.state !== "ready" ||
+        !context.backendId ||
+        !context.principalId
+      )
+        throw new Error("Team enrollment is required to cancel this share");
+      const result = await checked(identityKey, () =>
+        input.cancelPendingShare!(request.personalProjectId, context.backendId!)
+      );
+      return { operation: request.operation, canceled: result.canceled };
+    }
+    if (request.operation === "sharedMembers") {
+      if (!input.loadShareContext)
+        throw new Error("Shared Project people are unavailable");
+      const context = await checked(identityKey, input.loadShareContext);
+      if (
+        context.state !== "ready" ||
+        context.backendId !== request.teamBackendId
+      )
+        throw new Error("Team context changed before member read");
+      const members = workspaceProjectMembersSchema.parse(
+        await checked(identityKey, () =>
+          input.sendTeam(
+            request.teamBackendId,
+            `/v1/workspace-projects/${request.workspaceProjectId}/members`
+          )
+        )
+      );
+      if (members.projectId !== request.workspaceProjectId)
+        throw new Error("Shared Project people identity changed");
+      return { operation: request.operation, members };
+    }
     if (
       request.operation === "sharedUploadSource" &&
       request.expectedProfileKey &&
@@ -272,6 +347,23 @@ export const createWorkspaceProjectDesktopService = (input: {
       return { operation: request.operation, content };
     }
     if (request.operation === "sharedFirstShare") {
+      const shareContext = input.loadShareContext
+        ? await checked(identityKey, input.loadShareContext)
+        : null;
+      const selectedTeam = shareContext?.teams.find(
+        (team) => team.id === request.value.teamId
+      );
+      if (
+        shareContext?.state !== "ready" ||
+        shareContext.backendId !== request.teamBackendId ||
+        !shareContext.principalId ||
+        !selectedTeam?.workspaces.some(
+          (workspace) =>
+            workspace.id === request.value.workspaceId &&
+            workspace.access === "write"
+        )
+      )
+        throw new Error("Current Team sharing authority is unavailable");
       const project = workspaceProjectRecordSchema.parse(
         await client.firstShare({
           ...request.value,

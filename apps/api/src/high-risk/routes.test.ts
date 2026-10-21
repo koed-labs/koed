@@ -561,7 +561,8 @@ describe("high-risk action grant routes", () => {
         id: ids.workspace,
         name: "Product",
         lifecycle: "active" as const
-      }
+      },
+      project: null
     }));
     const fixture = await buildServer({
       repository: { getTeamInviteCreationReview: reviewLookup }

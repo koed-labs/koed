@@ -1823,6 +1823,8 @@ export const collaborationActionGrantIntentSchema = z
       email: normalizedEmailSchema,
       role: z.enum(["owner", "admin", "member"]),
       defaultWorkspaceId: z.uuid(),
+      workspaceProjectId: z.uuid().nullable().optional(),
+      expectedWorkspaceProjectVersion: positiveVersionSchema.optional(),
       defaultWorkspaceAccess: z.enum(["read", "write"]),
       ttlHours: z
         .number()
@@ -2771,6 +2773,8 @@ export const collaborationRendererCommandSchema = z
       email: normalizedEmailSchema,
       role: z.enum(["owner", "admin", "member"]),
       defaultWorkspaceId: z.uuid(),
+      workspaceProjectId: z.uuid().nullable().optional(),
+      expectedWorkspaceProjectVersion: positiveVersionSchema.optional(),
       defaultWorkspaceAccess: z.enum(["read", "write"]),
       ttlHours: z
         .number()

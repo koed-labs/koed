@@ -388,6 +388,26 @@ const managedConversationRunnerRoutes = [
 
 const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
   route(
+    "GET",
+    "/v1/teams/{teamId}/workspaces/{workspaceId}/share-target",
+    "session_or_device_credential",
+    "projects",
+    "Current enrolled Team member and Workspace authority are rechecked for the exact sharing target.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/teams/{teamId}/workspaces/{workspaceId}/share-attempt-cancellations",
+    "session_or_device_credential",
+    "projects",
+    "Current enrolled Team member and Workspace write authority bind an immutable first-share cancellation receipt.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "POST",
     "/v1/workspace-projects",
     "session_or_device_credential",
@@ -423,6 +443,16 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
     "session_or_device_credential",
     "projects",
     "Current Team membership, Workspace access and Project association are rechecked for this shared Project operation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/members",
+    "session_or_device_credential",
+    "projects",
+    "Current Team membership, Workspace access and Project association are rechecked before listing enabled members.",
     "request_time_team_workspace",
     "implemented",
     teamDeploymentModes
@@ -743,6 +773,26 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
     "desktop_local_credential",
     "projects",
     "Loopback owner Desktop credential plus independently enrolled Team client credential; current Team proof and Personal link are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/local-edge/projects/{projectId}/workspace-project-share-attempt",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential plus independently enrolled Team client credential; exact pending target and current Team authority are rechecked.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/projects/{projectId}/workspace-project-share-cancel",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential plus independently enrolled Team write credential; Personal fence clears only after the exact Team cancellation receipt.",
     "none",
     "implemented",
     localEdgeDeploymentModes

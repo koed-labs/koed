@@ -116,6 +116,55 @@ describe("high-risk action definitions", () => {
       "admin"
     );
   });
+  it("binds a Project invitation to its exact owner-reviewed Project version", async () => {
+    const projectId = randomUUID();
+    const repo = repository({
+      managerRole: "owner",
+      team: { id: ids.team, name: "Koed Team" },
+      defaultWorkspace: {
+        id: ids.workspace,
+        name: "Product",
+        lifecycle: "active"
+      },
+      project: { id: projectId, name: "Atlas", version: 4 }
+    });
+    const intent = {
+      ...invitationIntent,
+      body: {
+        ...invitationIntent.body,
+        workspaceProjectId: projectId,
+        expectedWorkspaceProjectVersion: 4
+      }
+    } as const satisfies HighRiskActionGrantIntent;
+    const admitted = await admitHighRiskActionGrant({
+      repository: repo as never,
+      userId: ids.user,
+      clientRequestId: randomUUID(),
+      hashSecret: (secret) => secret,
+      intent
+    });
+    if (!admitted) throw new Error("Project invitation was not admitted");
+    expect(admitted.operation.body).toMatchObject({
+      workspaceProjectId: projectId,
+      expectedWorkspaceProjectVersion: 4
+    });
+    expect(admitted.policy.review?.details).toContainEqual({
+      label: "Shared Project",
+      value: "Atlas (version 4)"
+    });
+    await expect(
+      admitHighRiskActionGrant({
+        repository: repo as never,
+        userId: ids.user,
+        clientRequestId: randomUUID(),
+        hashSecret: (secret) => secret,
+        intent: {
+          ...intent,
+          body: { ...intent.body, expectedWorkspaceProjectVersion: 3 }
+        }
+      })
+    ).rejects.toBeInstanceOf(ActionApprovalPolicyError);
+  });
 
   it("fails closed when authoritative Team invitation context is unavailable", async () => {
     const repo = repository(null);

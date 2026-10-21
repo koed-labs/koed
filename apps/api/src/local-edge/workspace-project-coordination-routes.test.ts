@@ -76,6 +76,9 @@ describe.skipIf(!testUrl)(
     let routeConfig: { deploymentProfile: string; koedHome: string };
     let manifestHash = "";
     let proofOwner = ids.teamUser;
+    let targetCanStart = true;
+    let cancelReplyStatus = 200;
+    let cancelReceiptOwner = ids.teamUser;
     let proofProject = ids.workspaceProject;
     let statusPrincipal = ids.teamUser;
     let lifecycleProject = ids.workspaceProject;
@@ -225,6 +228,39 @@ describe.skipIf(!testUrl)(
             user: { id: statusPrincipal }
           };
         else if (
+          path ===
+          `/v1/teams/${ids.team}/workspaces/${ids.workspace}/share-target`
+        )
+          payload = {
+            teamId: ids.team,
+            workspaceId: ids.workspace,
+            ownerUserId: proofOwner,
+            canStart: targetCanStart
+          };
+        else if (
+          path ===
+          `/v1/teams/${ids.team}/workspaces/${ids.workspace}/share-attempt-cancellations`
+        ) {
+          if (cancelReplyStatus !== 200)
+            return new Response(JSON.stringify({ error: "Team unavailable" }), {
+              status: cancelReplyStatus,
+              headers: { "content-type": "application/json" }
+            });
+          const cancelBody = JSON.parse(String(init?.body)) as {
+            shareAttemptKey: string;
+            expectedOwnerUserId: string;
+          };
+          expect(cancelBody.expectedOwnerUserId).toBe(ids.teamUser);
+          const { shareAttemptKey } = cancelBody;
+          payload = {
+            canceled: true,
+            receiptId: ids.workspaceProject,
+            teamId: ids.team,
+            workspaceId: ids.workspace,
+            ownerUserId: cancelReceiptOwner,
+            shareAttemptKey
+          };
+        } else if (
           path === `/v1/workspace-projects/${ids.workspaceProject}/link-proof`
         )
           payload = {
@@ -418,6 +454,92 @@ describe.skipIf(!testUrl)(
       noOwnedProjects = false;
     });
 
+    it("keeps a pending Personal fence on uncertain Team cancellation and clears it only after an exact receipt", async () => {
+      const cancelProject = randomUUID();
+      await pool.query(
+        "insert into projects(id,owner_user_id,name,key) values($1,$2,'Cancel plan','CANCEL')",
+        [cancelProject, ids.personalUser]
+      );
+      storeLocalEdgeClientCredential(home, {
+        backendId,
+        secret: "hq701-team-write-secret",
+        operationFamilies: ["team_workspace_read", "team_workspace_write"]
+      });
+      teamAuthorization = readLocalEdgeClientCredentialAuthorization(
+        home,
+        backendId
+      )!.authorization;
+      const preparePath = `/v1/local-edge/projects/${cancelProject}/workspace-project-prepare`;
+      const cancelPath = `/v1/local-edge/projects/${cancelProject}/workspace-project-share-cancel`;
+      const input = {
+        teamBackendId: backendId,
+        shareAttemptKey: "hq701-cancel-attempt",
+        targetTeamId: ids.team,
+        targetWorkspaceId: ids.workspace
+      };
+      expect((await send(preparePath, input)).statusCode).toBe(200);
+      expect(
+        (await send(cancelPath, { targetTeamId: randomUUID() })).statusCode
+      ).toBeGreaterThanOrEqual(400);
+      cancelReplyStatus = 503;
+      expect((await send(cancelPath, {})).statusCode).toBe(424);
+      expect(
+        await createPersonalWorkspaceProjectRepository(pool).pendingShare(
+          ids.personalUser,
+          cancelProject
+        )
+      ).toMatchObject(input);
+      cancelReplyStatus = 409;
+      const alreadyCreated = await send(cancelPath, {});
+      expect(alreadyCreated.statusCode).toBe(409);
+      expect(alreadyCreated.body).toContain("resume sharing");
+      expect(
+        await createPersonalWorkspaceProjectRepository(pool).pendingShare(
+          ids.personalUser,
+          cancelProject
+        )
+      ).toMatchObject(input);
+      cancelReplyStatus = 200;
+      cancelReceiptOwner = randomUUID();
+      expect((await send(cancelPath, {})).statusCode).toBe(409);
+      expect(
+        await createPersonalWorkspaceProjectRepository(pool).pendingShare(
+          ids.personalUser,
+          cancelProject
+        )
+      ).toMatchObject(input);
+      cancelReceiptOwner = ids.teamUser;
+      expect((await send(cancelPath, {})).json()).toMatchObject({
+        canceled: true,
+        shareAttemptKey: input.shareAttemptKey
+      });
+      expect(
+        await createPersonalWorkspaceProjectRepository(pool).pendingShare(
+          ids.personalUser,
+          cancelProject
+        )
+      ).toBeNull();
+      expect((await send(cancelPath, {})).statusCode).toBe(200);
+      expect((await send(preparePath, input)).statusCode).toBe(409);
+      expect(
+        (
+          await send(preparePath, {
+            ...input,
+            shareAttemptKey: "hq701-new-attempt"
+          })
+        ).statusCode
+      ).toBe(200);
+      storeLocalEdgeClientCredential(home, {
+        backendId,
+        secret: "hq712-team-client-secret",
+        operationFamilies: ["team_workspace_read"]
+      });
+      teamAuthorization = readLocalEdgeClientCredentialAuthorization(
+        home,
+        backendId
+      )!.authorization;
+    });
+
     it("checks exact Personal manifest and Team owner, then binds backend-qualified principals", async () => {
       const path = `/v1/local-edge/projects/${projectId}/workspace-project-confirm`;
       const preparePath = `/v1/local-edge/projects/${projectId}/workspace-project-prepare`;
@@ -426,12 +548,66 @@ describe.skipIf(!testUrl)(
         workspaceProjectId: ids.workspaceProject,
         expectedPersonalProjectVersion: projectVersion
       };
+      targetCanStart = false;
+      expect(
+        (
+          await send(preparePath, {
+            teamBackendId: backendId,
+            shareAttemptKey: "hq712-first-share-attempt",
+            targetTeamId: ids.team,
+            targetWorkspaceId: ids.workspace
+          })
+        ).statusCode
+      ).toBe(409);
+      expect(
+        (
+          await pool.query(
+            "select 1 from personal_workspace_project_share_attempts where personal_project_id=$1",
+            [projectId]
+          )
+        ).rowCount
+      ).toBe(0);
+      targetCanStart = true;
       const prepared = await send(preparePath, {
         teamBackendId: backendId,
-        shareAttemptKey: "hq712-first-share-attempt"
+        shareAttemptKey: "hq712-first-share-attempt",
+        targetTeamId: ids.team,
+        targetWorkspaceId: ids.workspace
       });
       expect(prepared.statusCode, prepared.body).toBe(200);
       expect(prepared.json()).toMatchObject({ manifestHash });
+      const recovery = () =>
+        app.inject({
+          method: "GET",
+          url: `/v1/local-edge/projects/${projectId}/workspace-project-share-attempt`,
+          remoteAddress: "127.0.0.1",
+          headers: {
+            authorization: localAuthorization,
+            "x-koed-team-client-credential": teamAuthorization
+          }
+        });
+      expect((await recovery()).json()).toMatchObject({
+        attempt: {
+          teamBackendId: backendId,
+          shareAttemptKey: "hq712-first-share-attempt",
+          targetTeamId: ids.team,
+          targetWorkspaceId: ids.workspace,
+          state: "pending"
+        }
+      });
+      proofOwner = randomUUID();
+      expect((await recovery()).statusCode).toBe(409);
+      proofOwner = ids.teamUser;
+      expect(
+        (
+          await send(preparePath, {
+            teamBackendId: backendId,
+            shareAttemptKey: "a-different-share-attempt",
+            targetTeamId: ids.team,
+            targetWorkspaceId: ids.workspace
+          })
+        ).statusCode
+      ).toBe(409);
       await expect(
         createWorkItemRepository(pool).patch(ids.personalUser, personalItemId, {
           version: 1,
@@ -446,7 +622,9 @@ describe.skipIf(!testUrl)(
       ).rejects.toThrow("Personal Project first share is pending");
       const resumed = await send(preparePath, {
         teamBackendId: backendId,
-        shareAttemptKey: "hq712-first-share-attempt"
+        shareAttemptKey: "hq712-first-share-attempt",
+        targetTeamId: ids.team,
+        targetWorkspaceId: ids.workspace
       });
       expect(resumed.statusCode, resumed.body).toBe(200);
       expect(resumed.json()).toEqual(prepared.json());

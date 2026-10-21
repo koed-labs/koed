@@ -4,6 +4,10 @@ import { createChatLifecycleClient } from "./chat-lifecycle-client.js";
 import { createWorkspaceProjectDesktopService } from "./workspace-project-service.js";
 import { createWorkspaceProjectTransport } from "./workspace-project-transport.js";
 import { createWorkspaceProjectPersonalClient } from "./workspace-project-personal-client.js";
+import {
+  createWorkspaceProjectShareContextLoader,
+  createWorkspaceProjectCollaborationLoader
+} from "./workspace-project-share-context.js";
 import { createCuratedMemoryClient } from "./curated-memory-client.js";
 import type {
   CuratedMemoryRequest,
@@ -70,6 +74,7 @@ import {
   PDS_PEER_ENDPOINT_RUNTIME_FILE,
   readDesktopLocalCredentialAuthorization,
   readLocalEdgeClientCredentialAuthorization,
+  readLocalEdgeUpstreamRegistry,
   resolveTeamCollaborationEnabled,
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   MEMORY_ANSWER_HARD_TIMEOUT_MAX_MS,
@@ -4233,7 +4238,23 @@ export const createKoedServerManager = ({
   );
   const workspaceProjectService = createWorkspaceProjectDesktopService({
     identityKey: async () => (await projectsAuthority()).key,
+    loadShareContext: createWorkspaceProjectShareContextLoader({
+      authority: projectsAuthority,
+      registryReader: () =>
+        readLocalEdgeUpstreamRegistry(
+          resolve(
+            resolveKoedHome(environment),
+            "config",
+            "upstream-backends.json"
+          )
+        ),
+      collaborationLoader: createWorkspaceProjectCollaborationLoader(
+        collaborationTransport
+      )
+    }),
     loadPersonalCopy: workspaceProjectPersonal.loadPersonalCopy,
+    loadPendingShare: workspaceProjectPersonal.pendingShare,
+    cancelPendingShare: workspaceProjectPersonal.cancelPendingShare,
     loadPersonalSource: workspaceProjectPersonal.sourceMetadata,
     loadLinkedPersonalSources: workspaceProjectPersonal.linkedSourcesMetadata,
     markPersonalMoved: workspaceProjectPersonal.markPersonalMoved,
@@ -4255,6 +4276,10 @@ export const createKoedServerManager = ({
     request: ProjectsRequest
   ): Promise<ProjectsResult> =>
     request.operation === "sharedRefresh" ||
+    request.operation === "sharedShareContext" ||
+    request.operation === "sharedPendingShare" ||
+    request.operation === "sharedCancelPendingShare" ||
+    request.operation === "sharedMembers" ||
     request.operation === "sharedFirstShare" ||
     request.operation === "sharedTeamLeaveStage" ||
     request.operation === "sharedTeamLeaveFinish" ||

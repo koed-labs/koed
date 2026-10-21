@@ -430,6 +430,7 @@ export interface TeamInviteRecord {
   id: string;
   teamId: string;
   defaultTeamWorkspaceId: string;
+  workspaceProjectId: string | null;
   defaultWorkspaceAccess: Exclude<TeamWorkspaceAccessLevel, "disabled">;
   email: string;
   normalizedEmail: string;
@@ -466,6 +467,7 @@ export interface TeamInviteCreationReviewRecord {
   managerRole: Exclude<TeamRole, "member">;
   team: Pick<TeamRecord, "id" | "name">;
   defaultWorkspace: Pick<TeamWorkspaceRecord, "id" | "name" | "lifecycle">;
+  project: { id: string; name: string; version: number } | null;
 }
 
 export interface TeamInviteRevocationReviewRecord {
@@ -2244,6 +2246,8 @@ export interface MemorySourceRepository
     input: {
       teamId: string;
       defaultTeamWorkspaceId: string;
+      workspaceProjectId?: string | null;
+      expectedWorkspaceProjectVersion?: number;
       defaultWorkspaceAccess: Exclude<TeamWorkspaceAccessLevel, "disabled">;
       email: string;
       role: TeamRole;
@@ -2257,6 +2261,7 @@ export interface MemorySourceRepository
     input: {
       teamId: string;
       defaultTeamWorkspaceId: string;
+      workspaceProjectId?: string | null;
       role: TeamRole;
     }
   ): Promise<TeamInviteCreationReviewRecord | null>;

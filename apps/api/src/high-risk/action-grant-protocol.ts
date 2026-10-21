@@ -684,6 +684,13 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
           email: intent.email,
           role: intent.role,
           defaultTeamWorkspaceId: intent.defaultWorkspaceId,
+          ...(intent.workspaceProjectId
+            ? {
+                workspaceProjectId: intent.workspaceProjectId,
+                expectedWorkspaceProjectVersion:
+                  intent.expectedWorkspaceProjectVersion
+              }
+            : {}),
           defaultWorkspaceAccess: intent.defaultWorkspaceAccess,
           ttlHours: intent.ttlHours
         }

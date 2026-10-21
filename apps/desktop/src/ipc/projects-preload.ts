@@ -49,6 +49,43 @@ export const createProjectsPreloadApi = (
     return result;
   };
   const api: ProjectsDesktopApi = {
+    sharedShareContext: async () => {
+      const result = await command({ operation: "sharedShareContext" });
+      if (result.operation !== "sharedShareContext")
+        throw new Error("Invalid shared Project context result.");
+      return result.context;
+    },
+    sharedPendingShare: async (personalProjectId) => {
+      const result = await command({
+        operation: "sharedPendingShare",
+        personalProjectId
+      });
+      if (result.operation !== "sharedPendingShare")
+        throw new Error("Invalid pending Project share result.");
+      return result.attempt;
+    },
+    sharedCancelPendingShare: async (personalProjectId) => {
+      const result = await command({
+        operation: "sharedCancelPendingShare",
+        personalProjectId
+      });
+      if (result.operation !== "sharedCancelPendingShare")
+        throw new Error("Invalid pending Project cancellation result.");
+      return { canceled: result.canceled };
+    },
+    sharedMembers: async (workspaceProjectId, teamBackendId) => {
+      const result = await command({
+        operation: "sharedMembers",
+        workspaceProjectId,
+        teamBackendId
+      });
+      if (
+        result.operation !== "sharedMembers" ||
+        result.members.projectId !== workspaceProjectId
+      )
+        throw new Error("Invalid shared Project people result.");
+      return result.members;
+    },
     sharedFirstShare: async (personalProjectId, teamBackendId, value) => {
       const result = await command({
         operation: "sharedFirstShare",
