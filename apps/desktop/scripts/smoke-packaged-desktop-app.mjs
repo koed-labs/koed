@@ -26,7 +26,10 @@ import {
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
-import { launchPackagedDesktop } from "./packaged-desktop-lifecycle.mjs";
+import {
+  launchPackagedDesktop,
+  waitForPackagedDesktopExit
+} from "./packaged-desktop-lifecycle.mjs";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const sourceCheckoutRoot = resolve(desktopRoot, "..", "..");
@@ -1232,8 +1235,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   };
 };
 
-const smokeTeamFailClosed = async (layout, options, daemonPids) => {
-  const koedHome = createSmokeHome("koed-desktop-team-smoke-");
+const smokeTeamFailClosed = async (layout, koedHome, options, daemonPids) => {
   const desktop = launchPackagedDesktop({
     executable: layout.executable,
     env: createSmokeEnv(koedHome, {
@@ -1266,10 +1268,16 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
     };
   } finally {
     try {
-      await desktop.invoke("quit");
-    } finally {
+      const quit = await desktop.invoke("quit");
+      if (quit?.ok !== true) {
+        console.error(`Manager cleanup failed: ${JSON.stringify(quit)}`);
+        process.exitCode = 1;
+      }
+      await waitForPackagedDesktopExit(desktop.child, 30_000);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
       killPidBestEffort(desktop.child.pid);
-      removeSmokeHome(koedHome);
     }
   }
 };
@@ -1368,17 +1376,18 @@ const run = async () => {
       daemonPids,
       timings
     });
-    const teamFailClosed = await smokeTeamFailClosed(
-      layout,
-      options,
-      daemonPids
-    );
     const quit = await desktop.invoke("quit");
     if (quit?.ok !== true) {
       throw new Error(`Manager cleanup failed: ${JSON.stringify(quit)}`);
     }
-    killPidBestEffort(desktop.child.pid);
+    await waitForPackagedDesktopExit(desktop.child, 30_000);
     desktop = undefined;
+    const teamFailClosed = await smokeTeamFailClosed(
+      layout,
+      koedHome,
+      options,
+      daemonPids
+    );
     if (options.exportEmbeddingModel) {
       await measurePhase(timings, "embedding model cache export", async () =>
         exportEmbeddingModel(koedHome, options.exportEmbeddingModel)
