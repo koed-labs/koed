@@ -297,7 +297,7 @@ const isolatedSmokeApiPort = (koedHome) =>
       )
   );
 
-const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
+export const createSmokeEnv = (koedHome, extraEnv = {}) => {
   const env = {
     ...process.env,
     ELECTRON_RUN_AS_NODE: "1",
@@ -315,7 +315,6 @@ const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
     CODEX_CONFIG_PATH: resolve(koedHome, "codex", "config.toml"),
     MEMORY_CODEX_APP_SERVER_BINARY: process.execPath,
     KOED_PACKAGED_DESKTOP: "1",
-    KOED_PACKAGED_RESOURCES_PATH: layout.resourcesPath,
     KOED_AUTO_PORTS: "1",
     API_HOST_PORT: isolatedSmokeApiPort(koedHome),
     KOED_RUNTIME_MODE: "local-personal",
@@ -329,6 +328,7 @@ const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
   };
   delete env.KOED_REPO_ROOT;
   delete env.KOED_SERVER_CLI;
+  delete env.KOED_PACKAGED_RESOURCES_PATH;
   delete env.KOED_ALLOW_PACKAGED_SOURCE_FALLBACK;
   return env;
 };
@@ -430,7 +430,7 @@ const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
     [layout.runner, "node-script", layout.bundledCli, ...args],
     {
       cwd: layout.resourcesPath,
-      env: createSmokeEnv(layout, koedHome, extraEnv),
+      env: createSmokeEnv(koedHome, extraEnv),
       encoding: "utf8",
       maxBuffer: 32 * 1024 * 1024
     }
@@ -663,7 +663,7 @@ const smokePackagedCollaborationBroker = async (layout, koedHome) => {
       ],
       {
         cwd: layout.resourcesPath,
-        env: createSmokeEnv(layout, koedHome, {
+        env: createSmokeEnv(koedHome, {
           KOED_DESKTOP_COLLABORATION_BROKER_SESSION_TOKEN: sessionToken
         }),
         stdio: ["ignore", "ignore", "ignore", "ipc"]
@@ -1236,7 +1236,7 @@ const smokeTeamFailClosed = async (layout, options, daemonPids) => {
   const koedHome = createSmokeHome("koed-desktop-team-smoke-");
   const desktop = launchPackagedDesktop({
     executable: layout.executable,
-    env: createSmokeEnv(layout, koedHome, {
+    env: createSmokeEnv(koedHome, {
       KOED_TEAM_COLLABORATION_ENABLED: "true"
     }),
     koedHome,
@@ -1349,7 +1349,7 @@ const run = async () => {
       : await measurePhase(timings, "renderer fault checks", async () =>
           smokePackagedRendererFaults({
             executable: layout.executable,
-            env: createSmokeEnv(layout, koedHome, {
+            env: createSmokeEnv(koedHome, {
               ELECTRON_RUN_AS_NODE: undefined
             }),
             koedHome
@@ -1357,7 +1357,7 @@ const run = async () => {
         );
     desktop = launchPackagedDesktop({
       executable: layout.executable,
-      env: createSmokeEnv(layout, koedHome),
+      env: createSmokeEnv(koedHome),
       koedHome,
       timeoutMs: options.timeoutMs
     });
