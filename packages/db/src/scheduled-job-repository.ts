@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
+  nextScheduledJobOccurrence,
   scheduledJobScheduleSchema,
   type CreateScheduledJob,
   type EditScheduledJob,
   type ScheduledJobSchedule
 } from "@koed/shared";
 import { appendCollaborationOutboxEventWithClient } from "./collaboration-repository.js";
+import { managedConversationEventMutationId } from "./managed-conversation-event.js";
 
 type Row = Record<string, unknown>;
 export class ScheduledJobNotFound extends Error {}
@@ -280,14 +282,19 @@ export async function bindScheduledJobManagedPromptWithClient(
   }
   const result = await client.query<Row>(
     `select attempt.id,execution.execution_generation,
+            execution.provider,execution.ai_client_instance_id,
+            execution.permission_mode,execution.model,
             command.id as command_id
        from scheduled_job_attempts attempt
        join scheduled_job_runs run on run.id=attempt.run_id
        join scheduled_jobs job on job.id=run.job_id
        join managed_conversation_executions execution
          on execution.id=$5 and execution.owner_user_id=job.owner_user_id
-        and execution.logical_session_id=job.conversation_session_id
-        and execution.project_id is not distinct from job.project_id::text
+        and execution.logical_session_id=(
+          select session.logical_session_id from sessions session
+           where session.id=job.conversation_session_id
+             and session.owner_user_id=job.owner_user_id)
+        and (job.project_id is null or execution.project_id=job.project_id::text)
         and execution.runner_device_id=job.runner_device_id
         and execution.state='running'
        join managed_conversation_commands command
@@ -325,7 +332,10 @@ export async function bindScheduledJobManagedPromptWithClient(
       team?.memberVersion ?? null
     ]
   );
-  if (!result.rows[0])
+  if (
+    !result.rows[0] ||
+    !activeAgentMatchesExecution(authority.agent, result.rows[0])
+  )
     throw new ScheduledJobConflict(
       "Managed prompt does not match current attempt"
     );
@@ -498,7 +508,7 @@ const binding = async (
     if (!project) throw new ScheduledJobConflict("Project is unavailable");
   }
   const conversation = await client.query<Row>(
-    `select id,updated_at,project_assignment_version,
+    `select id,logical_session_id,updated_at,project_assignment_version,
        (case when project_override_id is not null then project_override_personal_project_id
              else automatic_personal_project_id end) as effective_project_id
        from sessions where id=$1 and owner_user_id=$2 and visibility='personal'
@@ -511,12 +521,27 @@ const binding = async (
   if ((conversation.rows[0].effective_project_id ?? null) !== input.projectId)
     throw new ScheduledJobConflict("Conversation Project binding changed");
   const agent = await client.query<Row>(
-    `select id from agents where id=$1 and owner_user_id=$2 ${lock ? "for share" : ""}`,
+    `select agent.id,agent.ai_client_instance_id,
+            agent.default_permission_mode,agent.default_model,
+            instance.driver_id,instance.enabled
+       from agents agent
+       join ai_client_instances instance
+         on instance.owner_user_id=agent.owner_user_id
+        and instance.instance_id=agent.ai_client_instance_id
+      where agent.id=$1 and agent.owner_user_id=$2
+      ${lock ? "for share of agent,instance" : ""}`,
     [input.agentId, ownerUserId]
   );
   if (!agent.rows[0]) throw new ScheduledJobConflict("Agent is unavailable");
-  return { conversation: conversation.rows[0], project };
+  return { conversation: conversation.rows[0], project, agent: agent.rows[0] };
 };
+
+const activeAgentMatchesExecution = (agent: Row, execution: Row): boolean =>
+  agent.enabled === true &&
+  agent.ai_client_instance_id === execution.ai_client_instance_id &&
+  agent.driver_id === execution.provider &&
+  agent.default_permission_mode === execution.permission_mode &&
+  (agent.default_model == null || agent.default_model === execution.model);
 
 export type ScheduledJobTeamAuthority = (input: {
   ownerUserId: string;
@@ -582,7 +607,790 @@ export function createScheduledJobRepository(
     await changed(client, ownerUserId, id);
     return mapJob(result.rows[0]!);
   };
+  const startAttemptWithClient = async (
+    client: pg.PoolClient,
+    ownerUserId: string,
+    id: string,
+    runId: string,
+    input: {
+      expectedJobVersion: number;
+      runnerDeviceId: string;
+      fenceToken: string;
+    }
+  ) => {
+    const job = await lockJob(client, ownerUserId, id);
+    assertVersion(job, input.expectedJobVersion);
+    if (job.paused || job.runner_device_id !== input.runnerDeviceId)
+      throw new ScheduledJobConflict("Assigned device or pause state changed");
+    const authority = await binding(client, ownerUserId, {
+      agentId: String(job.agent_id),
+      conversationSessionId: String(job.conversation_session_id),
+      projectId: job.project_id == null ? null : dbText(job.project_id)
+    });
+    const team = await assertTeam(ownerUserId, authority.project);
+    const run = await client.query<Row>(
+      "select * from scheduled_job_runs where id=$1 and job_id=$2 for update",
+      [runId, id]
+    );
+    if (!run.rows[0] || run.rows[0].status !== "scheduled")
+      throw new ScheduledJobConflict("Occurrence is no longer scheduled");
+    const active = await client.query<Row>(
+      "select started_at from scheduled_job_runs where job_id=$1 and id<>$2 and status in ('running','waiting_approval') limit 1",
+      [id, runId]
+    );
+    const scheduledFor = new Date(run.rows[0].scheduled_for as string | Date);
+    const missed =
+      run.rows[0].trigger === "scheduled" &&
+      Date.now() - scheduledFor.getTime() > 15 * 60_000;
+    const overlap = Boolean(
+      active.rows[0] &&
+      (!missed ||
+        !active.rows[0].started_at ||
+        new Date(active.rows[0].started_at as string | Date) <= scheduledFor)
+    );
+    if (overlap || missed) {
+      const ended = await client.query<Row>(
+        `update scheduled_job_runs set status=$2,skip_reason=$3,finished_at=now(),updated_at=now()
+              where id=$1 returning *`,
+        [runId, overlap ? "skipped" : "missed", overlap ? "overlap" : null]
+      );
+      await changed(client, ownerUserId, id);
+      return { started: false as const, run: mapRun(ended.rows[0]!) };
+    }
+    const nextAttempt = Number(run.rows[0].attempt) + 1;
+    const executionId = randomUUID();
+    const hash = createHash("sha256").update(input.fenceToken).digest("hex");
+    const attempt = await client.query<Row>(
+      `insert into scheduled_job_attempts(run_id,attempt,execution_id,fence_generation,
+             fence_token_hash,job_version,runner_device_id,conversation_session_id,
+             conversation_project_assignment_version,project_id,project_version,
+             team_backend_id,workspace_project_id,team_project_version,team_member_version)
+           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *`,
+      [
+        runId,
+        nextAttempt,
+        executionId,
+        nextAttempt,
+        hash,
+        input.expectedJobVersion,
+        input.runnerDeviceId,
+        job.conversation_session_id,
+        authority.conversation.project_assignment_version,
+        job.project_id,
+        authority.project?.version ?? null,
+        team?.teamBackendId ?? null,
+        team?.workspaceProjectId ?? null,
+        team?.projectVersion ?? null,
+        team?.memberVersion ?? null
+      ]
+    );
+    await client.query(
+      `insert into scheduled_job_attempt_events(attempt_id,event_kind,execution_id,
+             fence_generation,status,at) values($1,'attempt_start',$2,$3,'running',clock_timestamp())`,
+      [attempt.rows[0]!.id, executionId, nextAttempt]
+    );
+    const nextRun = await client.query<Row>(
+      `update scheduled_job_runs set attempt=$2,status='running',execution_id=$3,
+             started_at=now(),finished_at=null,error=null,updated_at=now()
+           where id=$1 returning *`,
+      [runId, nextAttempt, executionId]
+    );
+    await changed(client, ownerUserId, id);
+    return {
+      started: true as const,
+      run: mapRun(nextRun.rows[0]!),
+      attemptId: String(attempt.rows[0]!.id),
+      executionId,
+      fenceGeneration: nextAttempt
+    };
+  };
+  const currentManagedCommand = async (
+    client: pg.PoolClient,
+    ownerUserId: string,
+    commandId: string,
+    runnerDeviceId: string,
+    states: string[]
+  ) => {
+    const found = await client.query<Row>(
+      `select run.job_id from scheduled_job_attempt_dispatch_bindings dispatch
+        join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+        join scheduled_job_runs run on run.id=attempt.run_id
+       where dispatch.owner_user_id=$1 and dispatch.managed_command_id=$2`,
+      [ownerUserId, commandId]
+    );
+    if (!found.rows[0]) return null;
+    const job = await lockJob(
+      client,
+      ownerUserId,
+      dbText(found.rows[0].job_id)
+    );
+    const authority = await binding(client, ownerUserId, {
+      agentId: dbText(job.agent_id),
+      conversationSessionId: dbText(job.conversation_session_id),
+      projectId: job.project_id == null ? null : dbText(job.project_id)
+    });
+    const team = await assertTeam(ownerUserId, authority.project);
+    const current = await client.query<Row>(
+      `select attempt.*,run.id as run_id,run.status as run_status,
+          command.state as command_state,command.lease_token as command_lease_token,
+          command.lease_expires_at as command_lease_expires_at,
+          command.attempts as command_attempts,
+          execution.execution_generation,execution.state as execution_state,
+          execution.project_id as managed_project_id,
+          execution.logical_session_id as managed_logical_session_id,
+          execution.ai_client_instance_id as managed_ai_client_instance_id,
+          execution.provider as managed_provider,
+          execution.permission_mode as managed_permission_mode,
+          execution.model as managed_model,
+          execution.runner_deployment_id,execution.runner_id,
+          runtime.deployment_id as bound_deployment_id
+       from scheduled_job_attempt_dispatch_bindings dispatch
+        join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+        join scheduled_job_runs run on run.id=attempt.run_id
+        join managed_conversation_commands command on command.id=dispatch.managed_command_id
+        join managed_conversation_executions execution on execution.id=dispatch.managed_execution_id
+        join managed_conversation_runtime_bindings runtime on runtime.execution_id=execution.id
+       where dispatch.owner_user_id=$1 and dispatch.managed_command_id=$2
+         and dispatch.managed_execution_generation=execution.execution_generation
+         and command.execution_id=execution.id and command.owner_user_id=$1
+         and command.execution_generation=execution.execution_generation
+         and execution.owner_user_id=$1 and execution.runner_device_id=$3
+         and runtime.owner_user_id=$1 and runtime.device_id=$3
+         and runtime.execution_generation=execution.execution_generation
+         and run.job_id=$4 and run.execution_id=attempt.execution_id
+         and run.attempt=attempt.attempt
+       for share of dispatch,attempt,run,command,execution,runtime`,
+      [ownerUserId, commandId, runnerDeviceId, job.id]
+    );
+    const row = current.rows[0];
+    const terminalReconciliation = row?.command_state === "completed";
+    if (
+      !row ||
+      job.paused ||
+      job.runner_device_id !== runnerDeviceId ||
+      Number(job.version) !== Number(row.job_version) ||
+      row.conversation_session_id !== job.conversation_session_id ||
+      row.managed_logical_session_id !==
+        authority.conversation.logical_session_id ||
+      (job.project_id != null &&
+        row.managed_project_id !== dbText(job.project_id)) ||
+      row.managed_ai_client_instance_id !==
+        authority.agent.ai_client_instance_id ||
+      (["queued", "dispatching"].includes(dbText(row.command_state)) &&
+        !activeAgentMatchesExecution(authority.agent, {
+          ai_client_instance_id: row.managed_ai_client_instance_id,
+          provider: row.managed_provider,
+          permission_mode: row.managed_permission_mode,
+          model: row.managed_model
+        })) ||
+      Number(row.conversation_project_assignment_version) !==
+        Number(authority.conversation.project_assignment_version) ||
+      row.project_id !== job.project_id ||
+      (row.project_version == null ? null : Number(row.project_version)) !==
+        (authority.project?.version == null
+          ? null
+          : Number(authority.project.version)) ||
+      (row.team_backend_id ?? null) !== (team?.teamBackendId ?? null) ||
+      (row.workspace_project_id ?? null) !==
+        (team?.workspaceProjectId ?? null) ||
+      (row.team_project_version == null
+        ? null
+        : Number(row.team_project_version)) !==
+        (team?.projectVersion ?? null) ||
+      (row.team_member_version == null
+        ? null
+        : Number(row.team_member_version)) !== (team?.memberVersion ?? null) ||
+      row.bound_deployment_id !== row.runner_deployment_id ||
+      !states.includes(dbText(row.command_state)) ||
+      (!terminalReconciliation && Number(row.command_attempts) > 1) ||
+      !["running", "waiting_approval"].includes(dbText(row.run_status)) ||
+      ![
+        "running",
+        "quiesce_requested",
+        ...(terminalReconciliation ? ["quiesced"] : [])
+      ].includes(dbText(row.execution_state))
+    )
+      throw new ScheduledJobConflict("Scheduled dispatch authority changed");
+    return { job, row };
+  };
   return {
+    async listInterruptedManagedCommandsAwaitingProviderAck(
+      ownerUserId: string,
+      runnerDeviceId: string,
+      limit = 100
+    ) {
+      const result = await pool.query<{ managed_command_id: string }>(
+        `select dispatch.managed_command_id
+         from scheduled_job_attempt_dispatch_bindings dispatch
+          join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+          join scheduled_job_runs run on run.id=attempt.run_id
+          join scheduled_jobs job on job.id=run.job_id
+          join managed_conversation_commands command on command.id=dispatch.managed_command_id
+         where dispatch.owner_user_id=$1 and job.owner_user_id=$1
+           and job.runner_device_id=$2 and run.status='interrupted'
+           and run.execution_id=attempt.execution_id and run.attempt=attempt.attempt
+           and command.owner_user_id=$1 and command.state='indeterminate'
+         order by attempt.started_at limit $3`,
+        [ownerUserId, runnerDeviceId, Math.min(Math.max(limit, 1), 100)]
+      );
+      return result.rows.map((row) => row.managed_command_id);
+    },
+    async releaseInterruptedManagedCommandAfterProviderAck(
+      ownerUserId: string,
+      commandId: string,
+      runnerDeviceId: string
+    ) {
+      return transaction(pool, async (client) => {
+        const current = await client.query<Row>(
+          `select command.execution_id,command.execution_generation,
+              command.sequence,command.completed_at,command.result,
+              execution.state as execution_state
+           from scheduled_job_attempt_dispatch_bindings dispatch
+            join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+            join scheduled_job_runs run on run.id=attempt.run_id
+            join scheduled_jobs job on job.id=run.job_id
+            join managed_conversation_commands command on command.id=dispatch.managed_command_id
+            join managed_conversation_executions execution on execution.id=command.execution_id
+           where dispatch.owner_user_id=$1 and dispatch.managed_command_id=$2
+             and job.owner_user_id=$1 and job.runner_device_id=$3
+             and run.status='interrupted' and run.execution_id=attempt.execution_id
+             and run.attempt=attempt.attempt and command.owner_user_id=$1
+             and command.state='indeterminate' and execution.owner_user_id=$1
+             and execution.execution_generation=command.execution_generation
+             and dispatch.managed_execution_generation=command.execution_generation
+           for update of command,execution`,
+          [ownerUserId, commandId, runnerDeviceId]
+        );
+        const row = current.rows[0];
+        if (
+          !row ||
+          !["running", "reconciling"].includes(dbText(row.execution_state))
+        )
+          return false;
+        const controls = await client.query<Row>(
+          `select result from managed_conversation_commands
+           where owner_user_id=$1 and execution_id=$2
+             and execution_generation=$3 and command_kind='interrupt'
+             and state='completed' and sequence>$4
+             and completed_at>$5
+             and result->>'scheduledRecoveryCommandId'=$6
+             and result->>'providerQuiesced'='true'
+           order by sequence desc limit 1`,
+          [
+            ownerUserId,
+            row.execution_id,
+            row.execution_generation,
+            row.sequence,
+            row.completed_at,
+            commandId
+          ]
+        );
+        const ack = controls.rows[0]?.result as
+          | Record<string, unknown>
+          | undefined;
+        if (!ack) return false;
+        const providerTurnId =
+          row.result && typeof row.result === "object"
+            ? (row.result as Record<string, unknown>).providerTurnId
+            : undefined;
+        if (
+          typeof providerTurnId === "string" &&
+          ack.interrupted === true &&
+          ack.turnId !== providerTurnId
+        )
+          return false;
+        const result = await client.query(
+          `update managed_conversation_commands
+             set state='canceled',updated_at=now()
+           where id=$1 and owner_user_id=$2 and state='indeterminate'`,
+          [commandId, ownerUserId]
+        );
+        if (result.rowCount !== 1) return false;
+        if (row.execution_state === "reconciling") {
+          const restored = await client.query<{ state_version: number }>(
+            `update managed_conversation_executions
+               set state='running',state_version=state_version+1,
+                   last_error_code=null,updated_at=now()
+             where id=$1 and owner_user_id=$2 and execution_generation=$3
+               and state='reconciling'
+             returning state_version`,
+            [row.execution_id, ownerUserId, row.execution_generation]
+          );
+          if (restored.rowCount !== 1)
+            throw new ScheduledJobConflict("Provider recovery state changed");
+          await appendCollaborationOutboxEventWithClient(client, {
+            family: "managed_conversation_changed",
+            scope: "personal",
+            personalOwnerUserId: ownerUserId,
+            teamId: null,
+            teamWorkspaceId: null,
+            threadId: null,
+            messageId: null,
+            shareGrantId: null,
+            logicalMemoryId: null,
+            resourceType: "managed_conversation_execution",
+            resourceId: dbText(row.execution_id),
+            actorPrincipalId: ownerUserId,
+            mutationId: managedConversationEventMutationId(
+              `managed-conversation:${row.execution_id}:state:${restored.rows[0]!.state_version}`
+            )
+          });
+        }
+        return true;
+      });
+    },
+    async interruptScheduledAuthorityLoss(
+      ownerUserId: string,
+      commandId: string,
+      runnerDeviceId: string,
+      reason: "changed" | "unavailable"
+    ) {
+      return transaction(pool, async (client) => {
+        const result = await client.query<Row>(
+          `select attempt.id as attempt_id,attempt.execution_id,
+              attempt.fence_generation,attempt.attempt,
+              run.id as run_id,job.id as job_id,
+              command.state as command_state
+           from scheduled_job_attempt_dispatch_bindings dispatch
+            join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+            join scheduled_job_runs run on run.id=attempt.run_id
+            join scheduled_jobs job on job.id=run.job_id
+            join managed_conversation_commands command on command.id=dispatch.managed_command_id
+           where dispatch.owner_user_id=$1 and dispatch.managed_command_id=$2
+             and job.owner_user_id=$1 and job.runner_device_id=$3
+             and command.owner_user_id=$1
+             and run.execution_id=attempt.execution_id and run.attempt=attempt.attempt
+             and run.status in ('running','waiting_approval')
+             and (command.state in ('queued','dispatching')
+               or (command.state='failed'
+                 and command.last_error_code='ScheduledJobAuthorityUnavailable'))
+           for update of job,run,attempt,command nowait`,
+          [ownerUserId, commandId, runnerDeviceId]
+        );
+        const row = result.rows[0];
+        if (!row) return false;
+        const uncertain = row.command_state !== "queued";
+        const outcome =
+          reason === "unavailable"
+            ? "Scheduled Job authority could not be verified; effects require review"
+            : "Scheduled Job authority changed; effects require review";
+        await client.query(
+          `update managed_conversation_commands
+             set state=$3,last_error_code='ScheduledJobAuthorityUnavailable',
+               lease_token=null,lease_expires_at=null,completed_at=now(),updated_at=now()
+           where id=$1 and owner_user_id=$2
+             and (state in ('queued','dispatching')
+               or (state='failed'
+                 and last_error_code='ScheduledJobAuthorityUnavailable'))`,
+          [commandId, ownerUserId, uncertain ? "indeterminate" : "canceled"]
+        );
+        await client.query(
+          `insert into scheduled_job_attempt_events
+             (attempt_id,event_kind,execution_id,fence_generation,status,uncertainty,outcome,at)
+           values($1,'state',$2,$3,'interrupted',$4,$5,clock_timestamp())`,
+          [
+            row.attempt_id,
+            row.execution_id,
+            row.fence_generation,
+            uncertain,
+            outcome
+          ]
+        );
+        await client.query(
+          `update scheduled_job_runs set status='interrupted',finished_at=now(),
+             error=$2,updated_at=now() where id=$1`,
+          [row.run_id, outcome]
+        );
+        await changed(client, ownerUserId, dbText(row.job_id));
+        return true;
+      });
+    },
+    async listExpiredManagedCommands(
+      ownerUserId: string,
+      runnerDeviceId: string,
+      limit = 100
+    ) {
+      const result = await pool.query<{ managed_command_id: string }>(
+        `select dispatch.managed_command_id
+         from scheduled_job_attempt_dispatch_bindings dispatch
+          join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+          join scheduled_job_runs run on run.id=attempt.run_id
+          join scheduled_jobs job on job.id=run.job_id
+          join managed_conversation_commands command on command.id=dispatch.managed_command_id
+         where dispatch.owner_user_id=$1 and job.owner_user_id=$1
+           and job.runner_device_id=$2 and run.execution_id=attempt.execution_id
+           and run.attempt=attempt.attempt and run.status in ('running','waiting_approval')
+           and ((command.state='dispatching' and command.lease_expires_at<=now())
+             or (command.state='queued' and attempt.started_at<=now()-interval '15 minutes'))
+         order by attempt.started_at limit $3`,
+        [ownerUserId, runnerDeviceId, Math.min(Math.max(limit, 1), 100)]
+      );
+      return result.rows.map((row) => row.managed_command_id);
+    },
+    async interruptExpiredManagedCommand(
+      ownerUserId: string,
+      commandId: string,
+      runnerDeviceId: string
+    ) {
+      return transaction(pool, async (client) => {
+        const current = await currentManagedCommand(
+          client,
+          ownerUserId,
+          commandId,
+          runnerDeviceId,
+          ["queued", "dispatching"]
+        );
+        if (!current) return false;
+        const staleQueued =
+          current.row.command_state === "queued" &&
+          new Date(current.row.started_at as Date | string).getTime() <=
+            Date.now() - 15 * 60_000;
+        const expiredLease =
+          current.row.command_state === "dispatching" &&
+          current.row.command_lease_expires_at &&
+          new Date(
+            current.row.command_lease_expires_at as Date | string
+          ).getTime() <= Date.now();
+        if (!staleQueued && !expiredLease) return false;
+        const uncertain = current.row.command_state === "dispatching";
+        const ended = await client.query(
+          `update managed_conversation_commands
+             set state=$4,last_error_code='ScheduledJobLeaseExpired',
+               lease_token=null,lease_expires_at=null,completed_at=now(),updated_at=now()
+           where id=$1 and owner_user_id=$2
+             and ((state='queued' and $3::boolean)
+               or (state='dispatching' and lease_expires_at<=now()))`,
+          [
+            commandId,
+            ownerUserId,
+            staleQueued,
+            uncertain ? "indeterminate" : "canceled"
+          ]
+        );
+        if (ended.rowCount !== 1) return false;
+        await client.query(
+          `insert into scheduled_job_attempt_events
+             (attempt_id,event_kind,execution_id,fence_generation,status,uncertainty,outcome,at)
+           values($1,'state',$2,$3,'interrupted',$4,$5,clock_timestamp())`,
+          [
+            current.row.id,
+            current.row.execution_id,
+            current.row.fence_generation,
+            uncertain,
+            uncertain
+              ? "AI Client turn lease expired; effects require review"
+              : "Queued AI Client turn expired before launch"
+          ]
+        );
+        await client.query(
+          `update scheduled_job_runs set status='interrupted',finished_at=now(),
+             error=$2,updated_at=now() where id=$1 and status in ('running','waiting_approval')`,
+          [
+            current.row.run_id,
+            uncertain
+              ? "AI Client turn lease expired; effects require review"
+              : "Queued AI Client turn expired before launch"
+          ]
+        );
+        await changed(client, ownerUserId, dbText(current.job.id));
+        return true;
+      });
+    },
+    async listActiveManagedCommands(
+      ownerUserId: string,
+      runnerDeviceId: string,
+      limit = 100
+    ) {
+      const result = await pool.query<{ managed_command_id: string }>(
+        `select dispatch.managed_command_id
+         from scheduled_job_attempt_dispatch_bindings dispatch
+          join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+          join scheduled_job_runs run on run.id=attempt.run_id
+          join scheduled_jobs job on job.id=run.job_id
+          join managed_conversation_commands command on command.id=dispatch.managed_command_id
+         where dispatch.owner_user_id=$1 and job.owner_user_id=$1
+           and job.runner_device_id=$2 and run.execution_id=attempt.execution_id
+           and run.attempt=attempt.attempt and run.status in ('running','waiting_approval')
+           and command.state in ('queued','dispatching')
+         order by attempt.started_at limit $3`,
+        [ownerUserId, runnerDeviceId, Math.min(Math.max(limit, 1), 100)]
+      );
+      return result.rows.map((row) => row.managed_command_id);
+    },
+    async syncManagedApprovalWait(
+      ownerUserId: string,
+      commandId: string,
+      runnerDeviceId: string
+    ) {
+      return transaction(pool, async (client) => {
+        const current = await currentManagedCommand(
+          client,
+          ownerUserId,
+          commandId,
+          runnerDeviceId,
+          ["dispatching"]
+        );
+        if (!current) return false;
+        const pending = await client.query(
+          `select 1 from managed_conversation_runtime_items item
+            join scheduled_job_attempt_dispatch_bindings dispatch
+              on dispatch.managed_command_id=$2
+           where item.owner_user_id=$1 and item.execution_id=dispatch.managed_execution_id
+             and item.execution_generation=dispatch.managed_execution_generation
+             and item.state='pending'
+             and item.item_kind in ('command_approval','file_approval','permissions_approval')
+           limit 1`,
+          [ownerUserId, commandId]
+        );
+        const status = pending.rowCount ? "waiting_approval" : "running";
+        if (status === current.row.run_status) return false;
+        await client.query(
+          `insert into scheduled_job_attempt_events
+            (attempt_id,event_kind,execution_id,fence_generation,status,outcome,at)
+           values($1,'state',$2,$3,$4,$5,clock_timestamp())`,
+          [
+            current.row.id,
+            current.row.execution_id,
+            current.row.fence_generation,
+            status,
+            status === "waiting_approval"
+              ? "Awaiting User approval"
+              : "User approval resolved"
+          ]
+        );
+        await client.query(
+          `update scheduled_job_runs set status=$2,updated_at=now()
+           where id=$1 and status in ('running','waiting_approval')`,
+          [current.row.run_id, status]
+        );
+        await changed(client, ownerUserId, dbText(current.job.id));
+        return true;
+      });
+    },
+    async listTerminalManagedCommands(
+      ownerUserId: string,
+      runnerDeviceId: string,
+      limit = 100
+    ) {
+      const result = await pool.query<{ managed_command_id: string }>(
+        `select dispatch.managed_command_id
+         from scheduled_job_attempt_dispatch_bindings dispatch
+          join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+          join scheduled_job_runs run on run.id=attempt.run_id
+          join scheduled_jobs job on job.id=run.job_id
+          join managed_conversation_commands command on command.id=dispatch.managed_command_id
+         where dispatch.owner_user_id=$1 and job.owner_user_id=$1
+           and job.runner_device_id=$2 and run.execution_id=attempt.execution_id
+           and run.attempt=attempt.attempt and run.status in ('running','waiting_approval')
+           and command.state in ('completed','failed','indeterminate','canceled')
+         order by attempt.started_at limit $3`,
+        [ownerUserId, runnerDeviceId, Math.min(Math.max(limit, 1), 100)]
+      );
+      return result.rows.map((row) => row.managed_command_id);
+    },
+    async reconcileManagedCommandOutcome(
+      ownerUserId: string,
+      commandId: string,
+      runnerDeviceId: string
+    ) {
+      return transaction(pool, async (client) => {
+        const current = await currentManagedCommand(
+          client,
+          ownerUserId,
+          commandId,
+          runnerDeviceId,
+          ["completed", "failed", "indeterminate", "canceled"]
+        );
+        if (!current) return false;
+        const state = dbText(current.row.command_state);
+        const status =
+          Number(current.row.command_attempts) > 1
+            ? "interrupted"
+            : state === "completed"
+              ? "ok"
+              : state === "failed"
+                ? "failed"
+                : "interrupted";
+        const uncertainty = status === "interrupted";
+        const outcome =
+          status === "ok"
+            ? "Managed turn completed"
+            : status === "failed"
+              ? "Managed turn failed"
+              : "Managed turn outcome uncertain";
+        await client.query(
+          `insert into scheduled_job_attempt_events
+            (attempt_id,event_kind,execution_id,fence_generation,status,uncertainty,outcome,at)
+           values($1,'state',$2,$3,$4,$5,$6,clock_timestamp())`,
+          [
+            current.row.id,
+            current.row.execution_id,
+            current.row.fence_generation,
+            status,
+            uncertainty,
+            outcome
+          ]
+        );
+        await client.query(
+          `update scheduled_job_runs set status=$2,finished_at=now(),
+             error=case when $4::boolean then null else $3 end,updated_at=now()
+           where id=$1 and status in ('running','waiting_approval')`,
+          [current.row.run_id, status, outcome, status === "ok"]
+        );
+        await changed(client, ownerUserId, dbText(current.job.id));
+        return true;
+      });
+    },
+    async getActiveScheduledCommandForExecution(
+      ownerUserId: string,
+      executionId: string
+    ) {
+      const found = await pool.query<{ managed_command_id: string }>(
+        `select dispatch.managed_command_id
+         from scheduled_job_attempt_dispatch_bindings dispatch
+          join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+          join scheduled_job_runs run on run.id=attempt.run_id
+          join managed_conversation_commands command on command.id=dispatch.managed_command_id
+         where dispatch.owner_user_id=$1 and dispatch.managed_execution_id=$2
+           and run.execution_id=attempt.execution_id
+           and run.attempt=attempt.attempt
+           and (run.status in ('running','waiting_approval')
+             or command.state in ('queued','blocked','dispatching','indeterminate'))
+         order by attempt.started_at desc limit 1`,
+        [ownerUserId, executionId]
+      );
+      return found.rows[0]?.managed_command_id ?? null;
+    },
+    async assertManagedCommandAuthority(
+      ownerUserId: string,
+      commandId: string,
+      runnerDeviceId: string,
+      states: string[] = ["dispatching"]
+    ) {
+      return transaction(pool, async (client) => {
+        const current = await currentManagedCommand(
+          client,
+          ownerUserId,
+          commandId,
+          runnerDeviceId,
+          states
+        );
+        return current
+          ? { scheduled: true as const, attemptId: dbText(current.row.id) }
+          : { scheduled: false as const };
+      });
+    },
+    async appendManagedCommandLease(
+      ownerUserId: string,
+      commandId: string,
+      runnerDeviceId: string,
+      leaseToken: string,
+      runnerId: string
+    ) {
+      return transaction(pool, async (client) => {
+        const current = await currentManagedCommand(
+          client,
+          ownerUserId,
+          commandId,
+          runnerDeviceId,
+          ["dispatching"]
+        );
+        if (!current) return false;
+        if (
+          current.row.command_lease_token !== leaseToken ||
+          current.row.runner_id !== runnerId ||
+          !current.row.command_lease_expires_at ||
+          new Date(
+            current.row.command_lease_expires_at as Date | string
+          ).getTime() <= Date.now()
+        )
+          throw new ScheduledJobConflict("Scheduled command lease changed");
+        const previous = await client.query<Row>(
+          `select event_kind,lease_owner_id,lease_expires_at from scheduled_job_attempt_events
+           where attempt_id=$1 and event_kind in ('lease_acquired','lease_renewed')
+           order by at desc,id desc limit 1`,
+          [current.row.id]
+        );
+        if (
+          previous.rows[0]?.lease_owner_id === runnerId &&
+          previous.rows[0]?.lease_expires_at &&
+          new Date(
+            previous.rows[0].lease_expires_at as Date | string
+          ).getTime() ===
+            new Date(
+              current.row.command_lease_expires_at as Date | string
+            ).getTime()
+        )
+          return true;
+        await client.query(
+          `insert into scheduled_job_attempt_events
+            (attempt_id,event_kind,execution_id,fence_generation,status,lease_owner_id,lease_expires_at,at)
+           values($1,$2,$3,$4,$5,$6,$7,clock_timestamp())`,
+          [
+            current.row.id,
+            previous.rows[0] ? "lease_renewed" : "lease_acquired",
+            current.row.execution_id,
+            current.row.fence_generation,
+            current.row.run_status,
+            runnerId,
+            current.row.command_lease_expires_at
+          ]
+        );
+        return true;
+      });
+    },
+    async listRuntimeCandidates(
+      ownerUserId: string,
+      runnerDeviceId: string,
+      afterId: string | null,
+      limit = 100
+    ) {
+      const result = await pool.query<Row>(
+        `select job.*,
+          (select max(run.scheduled_for) from scheduled_job_runs run
+            where run.job_id=job.id and run.trigger='scheduled') as last_scheduled_for
+         from scheduled_jobs job
+         where job.owner_user_id=$1 and job.runner_device_id=$2
+           and job.id>$3::uuid
+         order by job.id limit $4`,
+        [
+          ownerUserId,
+          runnerDeviceId,
+          afterId ?? "00000000-0000-0000-0000-000000000000",
+          Math.min(Math.max(limit, 1), 100)
+        ]
+      );
+      return result.rows.map((row) => ({
+        job: mapJob(row),
+        lastScheduledFor:
+          row.last_scheduled_for == null ? null : iso(row.last_scheduled_for)
+      }));
+    },
+    async listPendingRuntimeRuns(
+      ownerUserId: string,
+      runnerDeviceId: string,
+      limit = 100
+    ) {
+      const result = await pool.query<Row>(
+        `select run.*,job.version as job_version,job.instruction as job_instruction,
+           job.agent_id as job_agent_id,job.conversation_session_id as job_conversation_session_id,
+           job.project_id as job_project_id
+         from scheduled_job_runs run join scheduled_jobs job on job.id=run.job_id
+         where job.owner_user_id=$1 and job.runner_device_id=$2
+           and job.paused=false and run.status='scheduled'
+         order by run.scheduled_for,run.id limit $3`,
+        [ownerUserId, runnerDeviceId, Math.min(Math.max(limit, 1), 100)]
+      );
+      return result.rows.map((row) => ({
+        run: mapRun(row),
+        jobVersion: Number(row.job_version),
+        instruction: dbText(row.job_instruction),
+        agentId: dbText(row.job_agent_id),
+        conversationSessionId: dbText(row.job_conversation_session_id),
+        projectId:
+          row.job_project_id == null ? null : dbText(row.job_project_id)
+      }));
+    },
     async create(
       ownerUserId: string,
       runnerDeviceId: string,
@@ -969,28 +1777,42 @@ export function createScheduledJobRepository(
       return transaction(pool, async (client) => {
         const job = await lockJob(client, ownerUserId, id);
         assertVersion(job, expectedVersion);
+        const latest = await client.query<{ scheduled_for: Date | null }>(
+          `select max(scheduled_for) as scheduled_for from scheduled_job_runs
+           where job_id=$1 and trigger='scheduled'`,
+          [id]
+        );
+        const after = latest.rows[0]?.scheduled_for ?? job.created_at;
+        const expected = nextScheduledJobOccurrence(
+          scheduledJobScheduleSchema.parse(job.schedule),
+          new Date(after as Date | string)
+        );
+        if (
+          expected.getTime() !== scheduledFor.getTime() ||
+          scheduledFor.getTime() > Date.now()
+        )
+          throw new ScheduledJobConflict("Scheduled occurrence changed");
         const bindingState = await binding(client, ownerUserId, {
           agentId: String(job.agent_id),
           conversationSessionId: String(job.conversation_session_id),
           projectId: job.project_id == null ? null : dbText(job.project_id)
         });
         await assertTeam(ownerUserId, bindingState.project);
-        const active = await client.query(
-          "select 1 from scheduled_job_runs where job_id=$1 and status in ('running','waiting_approval') limit 1",
+        const active = await client.query<Row>(
+          "select started_at from scheduled_job_runs where job_id=$1 and status in ('running','waiting_approval') limit 1",
           [id]
         );
         const overdue = Date.now() - scheduledFor.getTime() > 15 * 60_000;
+        const overlap = Boolean(
+          active.rows[0] &&
+          (!overdue ||
+            !active.rows[0].started_at ||
+            new Date(active.rows[0].started_at as Date | string) <=
+              scheduledFor)
+        );
         const status =
-          job.paused || active.rows[0]
-            ? "skipped"
-            : overdue
-              ? "missed"
-              : "scheduled";
-        const reason = job.paused
-          ? "paused"
-          : active.rows[0]
-            ? "overlap"
-            : null;
+          job.paused || overlap ? "skipped" : overdue ? "missed" : "scheduled";
+        const reason = job.paused ? "paused" : overlap ? "overlap" : null;
         const result = await client.query<Row>(
           `insert into scheduled_job_runs(job_id,scheduled_for,trigger,status,skip_reason,finished_at)
             values($1,$2,'scheduled',$3::scheduled_job_run_status,$4,
@@ -1019,93 +1841,104 @@ export function createScheduledJobRepository(
         fenceToken: string;
       }
     ) {
+      return transaction(pool, (client) =>
+        startAttemptWithClient(client, ownerUserId, id, runId, input)
+      );
+    },
+    startAttemptWithClient,
+    async settleUnlaunchableRun(
+      ownerUserId: string,
+      id: string,
+      runId: string,
+      expectedJobVersion: number,
+      runnerDeviceId: string
+    ) {
       return transaction(pool, async (client) => {
         const job = await lockJob(client, ownerUserId, id);
-        assertVersion(job, input.expectedJobVersion);
-        if (job.paused || job.runner_device_id !== input.runnerDeviceId)
+        assertVersion(job, expectedJobVersion);
+        if (job.paused || job.runner_device_id !== runnerDeviceId)
           throw new ScheduledJobConflict(
             "Assigned device or pause state changed"
           );
         const authority = await binding(client, ownerUserId, {
-          agentId: String(job.agent_id),
-          conversationSessionId: String(job.conversation_session_id),
+          agentId: dbText(job.agent_id),
+          conversationSessionId: dbText(job.conversation_session_id),
           projectId: job.project_id == null ? null : dbText(job.project_id)
         });
-        const team = await assertTeam(ownerUserId, authority.project);
+        await assertTeam(ownerUserId, authority.project);
         const run = await client.query<Row>(
           "select * from scheduled_job_runs where id=$1 and job_id=$2 for update",
           [runId, id]
         );
-        if (!run.rows[0] || run.rows[0].status !== "scheduled")
-          throw new ScheduledJobConflict("Occurrence is no longer scheduled");
-        const active = await client.query(
-          "select 1 from scheduled_job_runs where job_id=$1 and id<>$2 and status in ('running','waiting_approval') limit 1",
+        if (!run.rows[0] || run.rows[0].status !== "scheduled") return null;
+        const active = await client.query<Row>(
+          "select started_at from scheduled_job_runs where job_id=$1 and id<>$2 and status in ('running','waiting_approval') limit 1",
           [id, runId]
         );
-        if (
-          active.rows[0] ||
-          (run.rows[0].trigger === "scheduled" &&
-            Date.now() -
-              new Date(run.rows[0].scheduled_for as string | Date).getTime() >
-              15 * 60_000)
-        ) {
-          const missed = !active.rows[0];
-          const ended = await client.query<Row>(
-            `update scheduled_job_runs set status=$2,skip_reason=$3,finished_at=now(),updated_at=now()
-              where id=$1 returning *`,
-            [runId, missed ? "missed" : "skipped", missed ? null : "overlap"]
-          );
-          await changed(client, ownerUserId, id);
-          return { started: false as const, run: mapRun(ended.rows[0]!) };
-        }
-        const nextAttempt = Number(run.rows[0].attempt) + 1;
-        const executionId = randomUUID();
-        const hash = createHash("sha256")
-          .update(input.fenceToken)
-          .digest("hex");
-        const attempt = await client.query<Row>(
-          `insert into scheduled_job_attempts(run_id,attempt,execution_id,fence_generation,
-             fence_token_hash,job_version,runner_device_id,conversation_session_id,
-             conversation_project_assignment_version,project_id,project_version,
-             team_backend_id,workspace_project_id,team_project_version,team_member_version)
-           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *`,
-          [
-            runId,
-            nextAttempt,
-            executionId,
-            nextAttempt,
-            hash,
-            input.expectedJobVersion,
-            input.runnerDeviceId,
-            job.conversation_session_id,
-            authority.conversation.project_assignment_version,
-            job.project_id,
-            authority.project?.version ?? null,
-            team?.teamBackendId ?? null,
-            team?.workspaceProjectId ?? null,
-            team?.projectVersion ?? null,
-            team?.memberVersion ?? null
-          ]
+        const scheduledFor = new Date(
+          run.rows[0].scheduled_for as string | Date
         );
-        await client.query(
-          `insert into scheduled_job_attempt_events(attempt_id,event_kind,execution_id,
-             fence_generation,status) values($1,'attempt_start',$2,$3,'running')`,
-          [attempt.rows[0]!.id, executionId, nextAttempt]
+        const missed =
+          run.rows[0].trigger === "scheduled" &&
+          Date.now() - scheduledFor.getTime() > 15 * 60_000;
+        const overlap = Boolean(
+          active.rows[0] &&
+          (!missed ||
+            !active.rows[0].started_at ||
+            new Date(active.rows[0].started_at as Date | string) <=
+              scheduledFor)
         );
-        const nextRun = await client.query<Row>(
-          `update scheduled_job_runs set attempt=$2,status='running',execution_id=$3,
-             started_at=now(),finished_at=null,error=null,updated_at=now()
+        if (!overlap && !missed) return null;
+        const ended = await client.query<Row>(
+          `update scheduled_job_runs set status=$2,skip_reason=$3,finished_at=now(),updated_at=now()
            where id=$1 returning *`,
-          [runId, nextAttempt, executionId]
+          [runId, overlap ? "skipped" : "missed", overlap ? "overlap" : null]
         );
         await changed(client, ownerUserId, id);
-        return {
-          started: true as const,
-          run: mapRun(nextRun.rows[0]!),
-          attemptId: String(attempt.rows[0]!.id),
-          executionId,
-          fenceGeneration: nextAttempt
-        };
+        return mapRun(ended.rows[0]!);
+      });
+    },
+    async failUnsupportedRuntimeRun(
+      ownerUserId: string,
+      id: string,
+      runId: string,
+      input: {
+        expectedJobVersion: number;
+        runnerDeviceId: string;
+        fenceToken: string;
+      }
+    ) {
+      return transaction(pool, async (client) => {
+        const started = await startAttemptWithClient(
+          client,
+          ownerUserId,
+          id,
+          runId,
+          input
+        );
+        if (!started.started) return started.run;
+        await client.query(
+          `insert into scheduled_job_attempt_events
+             (attempt_id,event_kind,execution_id,fence_generation,status,outcome,error,at)
+           values($1,'state',$2,$3,'failed',$4,$5,clock_timestamp())`,
+          [
+            started.attemptId,
+            started.executionId,
+            started.fenceGeneration,
+            "No AI Client work was launched",
+            "Job Conversation is not a current compatible Managed Conversation"
+          ]
+        );
+        const result = await client.query<Row>(
+          `update scheduled_job_runs set status='failed',finished_at=now(),
+             error=$2,updated_at=now() where id=$1 returning *`,
+          [
+            runId,
+            "Job Conversation is not a current compatible Managed Conversation"
+          ]
+        );
+        await changed(client, ownerUserId, id);
+        return mapRun(result.rows[0]!);
       });
     },
     async appendAttemptEvent(
@@ -1198,8 +2031,8 @@ export function createScheduledJobRepository(
           throw new ScheduledJobConflict("Attempt fence or binding changed");
         await client.query(
           `insert into scheduled_job_attempt_events(attempt_id,event_kind,execution_id,
-             fence_generation,status,uncertainty,outcome,error)
-           values($1,'state',$2,$3,$4,$5,$6,$7)`,
+             fence_generation,status,uncertainty,outcome,error,at)
+           values($1,'state',$2,$3,$4,$5,$6,$7,clock_timestamp())`,
           [
             input.attemptId,
             input.executionId,

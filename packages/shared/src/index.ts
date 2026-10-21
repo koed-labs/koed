@@ -26,6 +26,12 @@ export {
   scheduledJobRunSchema,
   scheduledJobAttemptSchema,
   scheduledJobAttemptEventSchema,
+  scheduledJobRuntimeTickRequestSchema,
+  scheduledJobRuntimeTickResultSchema,
+  scheduledJobRuntimeAuthoritySchema,
+  scheduledJobRuntimeLeaseRequestSchema,
+  scheduledJobRuntimeLeaseResultSchema,
+  scheduledJobLocalApiUrl,
   type ScheduledJobSchedule,
   type CreateScheduledJob,
   type EditScheduledJob

@@ -27,6 +27,7 @@ import {
   type ConversationPresentationPolicySnapshot
 } from "./conversation-presentation-policy.js";
 import type { ActorContext } from "./types.js";
+import { ScheduledJobConflict } from "./scheduled-job-repository.js";
 
 export type ManagedConversationExecutionState =
   | "starting"
@@ -390,6 +391,11 @@ export interface ManagedConversationRepository {
       selectedDocumentSourceId?: string;
       fileMentionCommandIds?: string[];
       settingsChange?: ManagedConversationSettingsChange;
+      /** Trusted scheduler hooks run in the prompt transaction, before command visibility. */
+      scheduledDispatch?: {
+        start: (client: pg.PoolClient) => Promise<void>;
+        bind: (client: pg.PoolClient, commandId: string) => Promise<void>;
+      };
     }
   ): Promise<ManagedConversationCommandRecord>;
   enqueueManagedConversationFileOperation(
@@ -506,6 +512,26 @@ export interface ManagedConversationRepository {
     actor: ActorContext,
     input: { logicalSessionId: string; providerThreadId: string }
   ): Promise<ManagedConversationExecutionRecord | null>;
+  getManagedConversationExecutionForSession(
+    actor: ActorContext,
+    logicalSessionId: string
+  ): Promise<ManagedConversationExecutionRecord | null>;
+  hasScheduledJobDispatchForCommand(
+    actor: ActorContext,
+    commandId: string
+  ): Promise<boolean>;
+  getInterruptedScheduledCommandForExecution(
+    actor: ActorContext,
+    input: { executionId: string; executionGeneration: number }
+  ): Promise<string | null>;
+  listQueuedScheduledJobCommands(
+    actor: ActorContext,
+    input: { deviceId: string; deploymentId: string; limit: number }
+  ): Promise<string[]>;
+  hasActiveScheduledJobDispatchForExecution(
+    actor: ActorContext,
+    executionId: string
+  ): Promise<boolean>;
   listManagedConversationExecutions(
     actor: ActorContext,
     input?: { projectId?: string; limit?: number }
@@ -531,6 +557,8 @@ export interface ManagedConversationRepository {
     deviceId: string;
     limit?: number;
     leaseMs: number;
+    /** Trusted runner preflight allowlist; ordinary commands are unaffected. */
+    allowedScheduledCommandIds?: string[];
   }): Promise<ClaimedManagedConversationCommand[]>;
   reconcileAbandonedManagedConversationCommands(input: {
     ownerUserId?: string;
@@ -2906,11 +2934,16 @@ export const createManagedConversationRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        // A scheduled attempt takes Project/Conversation/Job locks before the
+        // Managed execution lock. Its start event and command binding commit
+        // with the queued command, so no runner can see a partial dispatch.
+        if (input.scheduledDispatch)
+          await input.scheduledDispatch.start(client);
         const execution = await client.query<ExecutionRow>(
           `select ${EXECUTION_COLUMNS}
              from managed_conversation_executions
             where owner_user_id = $1 and id = $2
-            for update`,
+            for update${input.scheduledDispatch ? " nowait" : ""}`,
           [actor.userId, input.executionId]
         );
         const current = execution.rows[0];
@@ -3094,6 +3127,8 @@ export const createManagedConversationRepository = (
             encryptedPayload
           ]
         );
+        if (input.scheduledDispatch)
+          await input.scheduledDispatch.bind(client, commandId);
         await notifyManagedConversationCommand(client, input.executionId);
         await client.query("commit");
         return mapCommand(result.rows[0]!, {
@@ -3103,6 +3138,14 @@ export const createManagedConversationRepository = (
         });
       } catch (error) {
         await client.query("rollback");
+        if (
+          input.scheduledDispatch &&
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "55P03"
+        )
+          throw new ScheduledJobConflict("Managed Conversation is busy");
         throw error;
       } finally {
         client.release();
@@ -3979,6 +4022,95 @@ export const createManagedConversationRepository = (
       return result.rows[0] ? mapExecution(result.rows[0]) : null;
     },
 
+    async getManagedConversationExecutionForSession(actor, logicalSessionId) {
+      const result = await pool.query<ExecutionRow>(
+        `select ${EXECUTION_COLUMNS}
+           from managed_conversation_executions
+          where owner_user_id=$1 and logical_session_id=(
+            select session.logical_session_id from sessions session
+             where session.id=$2 and session.owner_user_id=$1
+               and session.visibility='personal' and session.trashed_at is null
+               and session.personal_deleted_at is null and session.invalidated_at is null
+               and session.delete_batch_id is null and session.forget_batch_id is null)
+          limit 1`,
+        [actor.userId, logicalSessionId]
+      );
+      return result.rows[0] ? mapExecution(result.rows[0]) : null;
+    },
+
+    async hasScheduledJobDispatchForCommand(actor, commandId) {
+      const result = await pool.query(
+        `select 1 from scheduled_job_attempt_dispatch_bindings
+         where owner_user_id=$1 and managed_command_id=$2 limit 1`,
+        [actor.userId, commandId]
+      );
+      return (result.rowCount ?? 0) > 0;
+    },
+
+    async getInterruptedScheduledCommandForExecution(actor, input) {
+      const result = await pool.query<{ managed_command_id: string }>(
+        `select dispatch.managed_command_id
+         from scheduled_job_attempt_dispatch_bindings dispatch
+          join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+          join scheduled_job_runs run on run.id=attempt.run_id
+          join managed_conversation_commands command on command.id=dispatch.managed_command_id
+          join managed_conversation_executions execution on execution.id=command.execution_id
+         where dispatch.owner_user_id=$1 and dispatch.managed_execution_id=$2
+           and dispatch.managed_execution_generation=$3
+           and execution.owner_user_id=$1 and execution.id=$2
+           and execution.execution_generation=$3
+           and command.owner_user_id=$1 and command.execution_generation=$3
+           and command.state='indeterminate' and run.status='interrupted'
+           and run.execution_id=attempt.execution_id and run.attempt=attempt.attempt
+         order by attempt.started_at desc limit 1`,
+        [actor.userId, input.executionId, input.executionGeneration]
+      );
+      return result.rows[0]?.managed_command_id ?? null;
+    },
+
+    async listQueuedScheduledJobCommands(actor, input) {
+      const result = await pool.query<{ id: string }>(
+        `select command.id from scheduled_job_attempt_dispatch_bindings dispatch
+          join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+          join scheduled_job_runs run on run.id=attempt.run_id
+          join scheduled_jobs job on job.id=run.job_id
+          join managed_conversation_commands command on command.id=dispatch.managed_command_id
+          join managed_conversation_executions execution on execution.id=command.execution_id
+         where dispatch.owner_user_id=$1 and job.owner_user_id=$1
+           and job.runner_device_id=$2 and execution.runner_device_id=$2
+           and execution.runner_deployment_id=$3
+           and command.owner_user_id=$1 and command.state='queued'
+           and command.execution_generation=execution.execution_generation
+           and run.execution_id=attempt.execution_id
+           and run.attempt=attempt.attempt
+           and run.status in ('running','waiting_approval')
+         order by command.created_at,command.id limit $4`,
+        [
+          actor.userId,
+          input.deviceId,
+          input.deploymentId,
+          Math.min(Math.max(input.limit, 1), 100)
+        ]
+      );
+      return result.rows.map((row) => row.id);
+    },
+
+    async hasActiveScheduledJobDispatchForExecution(actor, executionId) {
+      const result = await pool.query(
+        `select 1 from scheduled_job_attempt_dispatch_bindings dispatch
+          join scheduled_job_attempts attempt on attempt.id=dispatch.attempt_id
+          join scheduled_job_runs run on run.id=attempt.run_id
+          join managed_conversation_commands command on command.id=dispatch.managed_command_id
+         where dispatch.owner_user_id=$1 and dispatch.managed_execution_id=$2
+           and run.execution_id=attempt.execution_id
+           and run.attempt=attempt.attempt
+           and (run.status in ('running','waiting_approval')
+             or command.state in ('queued','blocked','dispatching','indeterminate')) limit 1`,
+        [actor.userId, executionId]
+      );
+      return (result.rowCount ?? 0) > 0;
+    },
+
     async listManagedConversationExecutions(actor, input = {}) {
       const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
       const result = await pool.query<ExecutionRow>(
@@ -4075,6 +4207,10 @@ export const createManagedConversationRepository = (
               )
               and ($7::uuid is null or command.owner_user_id = $7)
               and command.execution_generation = execution.execution_generation
+              and (not exists (
+                select 1 from scheduled_job_attempt_dispatch_bindings scheduled
+                 where scheduled.managed_command_id=command.id
+              ) or command.id=any($8::uuid[]))
               and not exists (
                 select 1 from sessions captured
                  where captured.owner_user_id=execution.owner_user_id
@@ -4191,7 +4327,8 @@ export const createManagedConversationRepository = (
           input.runnerId,
           input.deviceId,
           input.deploymentId,
-          input.ownerUserId ?? null
+          input.ownerUserId ?? null,
+          input.allowedScheduledCommandIds ?? []
         ]
       );
       const claims: ClaimedManagedConversationCommand[] = [];

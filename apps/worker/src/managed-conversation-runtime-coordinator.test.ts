@@ -12,12 +12,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createManagedConversationRuntimeCoordinator } from "./managed-conversation-runtime-coordinator.js";
 
-const timeout = <T>(promise: Promise<T>): Promise<T> =>
+const timeout = <T>(promise: Promise<T>, label: string): Promise<T> =>
   Promise.race([
     promise,
     new Promise<never>((_resolve, reject) => {
       setTimeout(
-        () => reject(new Error("Timed out waiting for file event")),
+        () => reject(new Error(`Timed out waiting for ${label}`)),
         5_000
       );
     })
@@ -79,6 +79,9 @@ describe("Managed Conversation runtime coordinator", () => {
     });
     const coordinator = createManagedConversationRuntimeCoordinator({
       localRepository: {
+        listQueuedScheduledJobCommands: vi.fn(async () => []),
+        hasScheduledJobDispatchForCommand: vi.fn(async () => false),
+        hasActiveScheduledJobDispatchForExecution: vi.fn(async () => false),
         getConversationSourceArtifactByGeneration,
         enqueueConversationSourceArtifactReplication,
         completeForManagedExecutionLease,
@@ -100,7 +103,7 @@ describe("Managed Conversation runtime coordinator", () => {
     });
 
     coordinator.start();
-    await timeout(started[0]!.promise);
+    await timeout(started[0]!.promise, "initial local runner");
     expect(createService).toHaveBeenCalledOnce();
     const localServiceOptions = createService.mock.calls[0]?.[0] as {
       onKoedToolCompleted?: (event: unknown) => Promise<void>;
@@ -140,7 +143,7 @@ describe("Managed Conversation runtime coordinator", () => {
       "{}",
       "utf8"
     );
-    await timeout(started[1]!.promise);
+    await timeout(started[1]!.promise, "remote authority replacement");
 
     expect(stopped).toEqual([0]);
     expect(createService).toHaveBeenCalledTimes(2);
@@ -213,6 +216,9 @@ describe("Managed Conversation runtime coordinator", () => {
       MemorySourceRepository["putManagedConversationRuntimeItem"]
     >(async () => ({}) as never);
     const localRepository = {
+      listQueuedScheduledJobCommands: vi.fn(async () => []),
+      hasScheduledJobDispatchForCommand: vi.fn(async () => false),
+      hasActiveScheduledJobDispatchForExecution: vi.fn(async () => false),
       getSharedWorkItemDispatchForExecution: vi.fn(async () => ({
         teamBackendId: "team-vps"
       })),

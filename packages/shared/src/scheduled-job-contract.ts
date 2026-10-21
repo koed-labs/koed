@@ -171,3 +171,38 @@ export const scheduledJobAttemptEventSchema = z
   .strict();
 export type CreateScheduledJob = z.infer<typeof createScheduledJobSchema>;
 export type EditScheduledJob = z.infer<typeof editScheduledJobSchema>;
+
+/** Private Local AI Runtime transport. These receipts never carry a credential. */
+export const scheduledJobRuntimeTickRequestSchema = z.object({}).strict();
+export const scheduledJobRuntimeTickResultSchema = z
+  .object({
+    materialized: z.number().int().nonnegative(),
+    dispatched: z.number().int().nonnegative(),
+    needsReview: z.number().int().nonnegative(),
+    reconciled: z.number().int().nonnegative()
+  })
+  .strict();
+export const scheduledJobRuntimeAuthoritySchema = z
+  .object({ allowed: z.literal(true), scheduled: z.boolean() })
+  .strict();
+export const scheduledJobRuntimeLeaseRequestSchema = z
+  .object({
+    leaseToken: z.string().min(1).max(512),
+    runnerId: z.string().min(1).max(160)
+  })
+  .strict();
+export const scheduledJobRuntimeLeaseResultSchema = z
+  .object({ recorded: z.literal(true) })
+  .strict();
+
+export function scheduledJobLocalApiUrl(value: string): URL {
+  const url = new URL(value);
+  if (
+    url.protocol !== "http:" ||
+    url.username ||
+    url.password ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+  )
+    throw new Error("Scheduled Jobs require the local Personal API");
+  return url;
+}

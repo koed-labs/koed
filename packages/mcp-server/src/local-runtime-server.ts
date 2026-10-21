@@ -68,6 +68,10 @@ import {
 } from "./memory-answer-task-scheduler.js";
 import { createMemoryAnswerTaskCoordinator } from "./memory-answer-task-coordinator.js";
 import {
+  startScheduledJobScheduler,
+  type ScheduledJobScheduler
+} from "./scheduled-job-scheduler.js";
+import {
   MemoryAnswerBlockingError,
   MemoryAnswerTaskRuntime
 } from "./memory-answer-task-runtime.js";
@@ -883,12 +887,33 @@ export const startLocalAiRuntime = async ({
     });
     logger.info({ url }, "Koed local AI runtime started");
 
+    let scheduledJobScheduler: ScheduledJobScheduler | null = null;
+    if (environment.KOED_HEADLESS_FUTURE_CAPTURE_ONLY !== "1") {
+      try {
+        scheduledJobScheduler = startScheduledJobScheduler({
+          apiUrl: config.apiUrl,
+          koedHome,
+          onError: (error) =>
+            logger.warn(
+              { err: error },
+              "Scheduled Job runtime tick unavailable"
+            )
+        });
+      } catch (error) {
+        // A remote Personal backend cannot receive the sealed local Desktop
+        // credential. Keep ordinary Managed work alive and expose the disabled
+        // scheduler through the host log instead of leaking or forwarding it.
+        logger.warn({ err: error }, "Scheduled Job runtime is unavailable");
+      }
+    }
+
     let closed = false;
     return {
       url,
       async close() {
         if (closed) return;
         closed = true;
+        scheduledJobScheduler?.stop();
         removeOwnedRegistration(registrationPath);
         for (const controller of activeRequests) {
           controller.abort(new Error("Koed local AI runtime is shutting down"));

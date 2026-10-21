@@ -47,6 +47,8 @@ const buildServer = async (options?: {
 }) => {
   const repository = {
     getSharedWorkItemDispatchForExecution: vi.fn(async () => null),
+    listQueuedScheduledJobCommands: vi.fn(async () => []),
+    hasScheduledJobDispatchForCommand: vi.fn(async () => false),
     claimManagedConversationCommands: vi.fn(async () => []),
     claimManagedConversationControlCommands: vi.fn(async () => []),
     claimManagedConversationFileOperations: vi.fn(async () => []),
@@ -711,7 +713,8 @@ describe("managed Conversation runner routes", () => {
       deviceId: ids.device,
       deploymentId: ids.deployment,
       limit: 2,
-      leaseMs: 30_000
+      leaseMs: 30_000,
+      allowedScheduledCommandIds: []
     });
     await fixture.app.close();
   });

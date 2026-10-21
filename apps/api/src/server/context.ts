@@ -1,5 +1,9 @@
 import type { Visibility } from "@koed/core";
-import type { MemorySourceRepository, PersonalNoteRecord } from "@koed/db";
+import type {
+  MemorySourceRepository,
+  PersonalNoteRecord,
+  ScheduledJobRepository
+} from "@koed/db";
 import type {
   DeviceIdentityInspection,
   EnvelopeEncryptionProvider,
@@ -30,6 +34,7 @@ export type CapturePolicy = Awaited<
 >;
 
 export interface ApiRouteContext {
+  scheduledJobs?: ScheduledJobRepository | null;
   config: ApiServerConfig;
   requireRepository(): MemorySourceRepository;
   auth: AuthHelpers;

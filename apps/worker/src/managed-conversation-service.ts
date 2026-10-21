@@ -7801,6 +7801,14 @@ export const createManagedConversationService = (options: {
             throw new ManagedConversationLeaseLostError();
           }
           if (command.commandKind === "interrupt") {
+            const scheduledRecoveryCommandId =
+              await options.repository.getInterruptedScheduledCommandForExecution(
+                { userId: command.ownerUserId },
+                {
+                  executionId: command.executionId,
+                  executionGeneration: command.executionGeneration
+                }
+              );
             const provider = command.execution
               .provider as ManagedConversationProvider;
             const managed = runtimeSessions.get(provider, command.executionId);
@@ -7833,6 +7841,18 @@ export const createManagedConversationService = (options: {
               );
               signalRuntimeWake();
               result = { interrupted: true };
+            }
+            if (scheduledRecoveryCommandId) {
+              // The interrupt call alone may return before the old turn exits.
+              // Close the exact managed provider session and wait for its turn
+              // before allowing a later ordinary User prompt to be claimed.
+              await managed.session.closeAndWait();
+              runtimeSessions.deleteAny(command.executionId);
+              result = {
+                ...result,
+                scheduledRecoveryCommandId,
+                providerQuiesced: true
+              };
             }
             await options.repository.completeManagedConversationCommand({
               commandId: command.id,

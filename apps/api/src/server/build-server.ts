@@ -1593,6 +1593,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       : {})
   });
   const routeContext = {
+    scheduledJobs: scheduledJobRepository,
     config,
     requireRepository,
     auth: authHelpers,
@@ -2140,7 +2141,13 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     readRateLimit: rateLimitHandlers.memoryRead,
     writeRateLimit: rateLimitHandlers.memoryWrite
   });
-  registerScheduledJobRoutes(app, routeContext, scheduledJobRepository);
+  registerScheduledJobRoutes(
+    app,
+    routeContext,
+    scheduledJobRepository,
+    agentsRepository,
+    scheduledJobTeamAuthority
+  );
   registerProjectSourceRoutes(app, {
     repository: projectSourceRepository,
     removalRepository: projectSourceRemovalRepository,

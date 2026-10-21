@@ -1,24 +1,36 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
+  readLocalEdgeUpstreamRegistry,
+  upstreamBackendById,
   createScheduledJobSchema,
   editScheduledJobSchema,
   scheduledJobVersionSchema,
   scheduledJobReassignSchema,
-  scheduledJobRunNowSchema
+  scheduledJobRunNowSchema,
+  scheduledJobRuntimeTickRequestSchema,
+  scheduledJobRuntimeTickResultSchema,
+  scheduledJobRuntimeAuthoritySchema,
+  scheduledJobRuntimeLeaseRequestSchema,
+  scheduledJobRuntimeLeaseResultSchema
 } from "@koed/shared";
 import {
   ScheduledJobNotFound,
   ScheduledJobConflict,
   ScheduledJobAuthorityUnavailable,
+  type AgentsRepository,
+  type ScheduledJobTeamAuthority,
   type ScheduledJobRepository
 } from "@koed/db";
 import type { ApiRouteContext } from "../server/context.js";
 import { authenticateHqManagedWrite } from "../managed-conversations/hq-auth.js";
 import { authenticateProjectRead } from "../projects/desktop-read-auth.js";
+import { tickScheduledJobs } from "./runtime-tick.js";
 
 const idParams = z.object({ id: z.uuid() }).strict();
 const runParams = z.object({ id: z.uuid(), runId: z.uuid() }).strict();
+const runtimeCommandParams = z.object({ commandId: z.uuid() }).strict();
+const runtimeExecutionParams = z.object({ executionId: z.uuid() }).strict();
 const listQuery = z
   .object({
     limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -36,7 +48,9 @@ const localProfiles = new Set(["developer", "local_personal"]);
 export function registerScheduledJobRoutes(
   app: FastifyInstance,
   context: ApiRouteContext,
-  repository: ScheduledJobRepository | null
+  repository: ScheduledJobRepository | null,
+  agents: AgentsRepository | null,
+  teamAuthority: ScheduledJobTeamAuthority | null
 ) {
   const repo = () => {
     if (!localProfiles.has(context.config.deploymentProfile))
@@ -109,6 +123,163 @@ export function registerScheduledJobRoutes(
       throw Object.assign(error, { statusCode: 503 });
     throw error;
   };
+  app.post(
+    "/v1/scheduled-jobs/runtime/tick",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      if (!request.headers.authorization?.trim().startsWith("Koed-Desktop "))
+        throw Object.assign(new Error("Local AI Runtime credential required"), {
+          statusCode: 403
+        });
+      scheduledJobRuntimeTickRequestSchema.parse(request.body ?? {});
+      const { ownerUserId, deviceId } = await creatingDevice(request);
+      // The scheduler transaction and dispatch binding use the local command
+      // store. A remote-authority worker would never claim that local command.
+      const registry = readLocalEdgeUpstreamRegistry(
+        context.localEdge.upstreamBackendsPath
+      );
+      const selected = registry.activeBackendId
+        ? upstreamBackendById(registry, registry.activeBackendId)
+        : null;
+      if (selected?.routePolicy.managedExecution === "enabled")
+        throw Object.assign(
+          new Error(
+            "Scheduled Jobs are unavailable while remote Managed Conversations are active"
+          ),
+          { statusCode: 503 }
+        );
+      const identity = context.deploymentIdentity.inspect();
+      if (
+        identity.health !== "healthy" ||
+        identity.deviceInstanceId !== deviceId ||
+        !identity.deploymentId ||
+        !agents ||
+        !teamAuthority
+      )
+        throw Object.assign(new Error("Scheduled Job runtime is unavailable"), {
+          statusCode: 503
+        });
+      return scheduledJobRuntimeTickResultSchema.parse(
+        await tickScheduledJobs(
+          {
+            jobs: repo(),
+            managed: context.requireRepository(),
+            agents,
+            teamAuthority
+          },
+          { ownerUserId, deviceId, deploymentId: identity.deploymentId }
+        )
+      );
+    }
+  );
+  const runtimeAuthority = async (request: FastifyRequest) => {
+    if (!request.headers.authorization?.trim().startsWith("Koed-Desktop "))
+      throw Object.assign(new Error("Local AI Runtime credential required"), {
+        statusCode: 403
+      });
+    const caller = await creatingDevice(request);
+    const identity = context.deploymentIdentity.inspect();
+    if (
+      identity.health !== "healthy" ||
+      identity.deviceInstanceId !== caller.deviceId
+    )
+      throw Object.assign(new Error("Verified runtime device changed"), {
+        statusCode: 409
+      });
+    return caller;
+  };
+  app.get(
+    "/v1/scheduled-jobs/runtime/commands/:commandId/authority",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const caller = await runtimeAuthority(request);
+      const { commandId } = runtimeCommandParams.parse(request.params);
+      try {
+        const current = await repo().assertManagedCommandAuthority(
+          caller.ownerUserId,
+          commandId,
+          caller.deviceId,
+          [
+            "queued",
+            "dispatching",
+            "completed",
+            "failed",
+            "indeterminate",
+            "canceled"
+          ]
+        );
+        return scheduledJobRuntimeAuthoritySchema.parse({
+          allowed: true,
+          scheduled: current.scheduled
+        });
+      } catch (error) {
+        return handle(error);
+      }
+    }
+  );
+  app.get(
+    "/v1/scheduled-jobs/runtime/executions/:executionId/authority",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const caller = await runtimeAuthority(request);
+      const { executionId } = runtimeExecutionParams.parse(request.params);
+      const commandId = await repo().getActiveScheduledCommandForExecution(
+        caller.ownerUserId,
+        executionId
+      );
+      if (!commandId)
+        return scheduledJobRuntimeAuthoritySchema.parse({
+          allowed: true,
+          scheduled: false
+        });
+      try {
+        await repo().assertManagedCommandAuthority(
+          caller.ownerUserId,
+          commandId,
+          caller.deviceId,
+          [
+            "queued",
+            "dispatching",
+            "completed",
+            "failed",
+            "indeterminate",
+            "canceled"
+          ]
+        );
+        return scheduledJobRuntimeAuthoritySchema.parse({
+          allowed: true,
+          scheduled: true
+        });
+      } catch (error) {
+        return handle(error);
+      }
+    }
+  );
+  app.post(
+    "/v1/scheduled-jobs/runtime/commands/:commandId/lease",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const caller = await runtimeAuthority(request);
+      const { commandId } = runtimeCommandParams.parse(request.params);
+      const input = scheduledJobRuntimeLeaseRequestSchema.parse(request.body);
+      try {
+        const recorded = await repo().appendManagedCommandLease(
+          caller.ownerUserId,
+          commandId,
+          caller.deviceId,
+          input.leaseToken,
+          input.runnerId
+        );
+        if (!recorded)
+          throw new ScheduledJobConflict(
+            "Scheduled command binding is unavailable"
+          );
+        return scheduledJobRuntimeLeaseResultSchema.parse({ recorded });
+      } catch (error) {
+        return handle(error);
+      }
+    }
+  );
   app.get(
     "/v1/scheduled-jobs",
     { preHandler: context.rateLimit.memoryRead },

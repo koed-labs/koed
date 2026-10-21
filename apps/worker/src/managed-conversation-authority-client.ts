@@ -1292,6 +1292,7 @@ const localManagedConversationMethods = new Set<PropertyKey>([
   "bindManagedConversationLocalRuntime",
   "getManagedConversationRuntimeBinding",
   "clearManagedConversationRuntimeBinding",
+  "getInterruptedScheduledCommandForExecution",
   "createCapturedSession",
   "getCapturedSession",
   "listLcmGraphThreads",

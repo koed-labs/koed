@@ -26,6 +26,7 @@ import { createWorkItemCompletionObserver } from "./work-item-completion.js";
 import { createWorkItemsFromDocObserver } from "./work-items-from-doc-observer.js";
 import { createReviewRequestMergeProposalObserver } from "./review-request-merge-proposal.js";
 import { guardLocalSharedWorkItemRepository } from "./shared-work-item-runtime-guard.js";
+import { guardLocalScheduledJobRepository } from "./scheduled-job-runtime-guard.js";
 import {
   createManagedMemoryActionObserver,
   createManagedMemoryActionProcessor
@@ -99,8 +100,14 @@ export const createManagedConversationRuntimeCoordinator = (options: {
   let reconcilePromise: Promise<void> | null = null;
   let stopped = false;
   const watchers: FSWatcher[] = [];
-  const localRunnerRepository = guardLocalSharedWorkItemRepository({
-    repository: options.localRepository,
+  const localRunnerRepository = guardLocalScheduledJobRepository({
+    repository: guardLocalSharedWorkItemRepository({
+      repository: options.localRepository,
+      ownerUserId: options.localOwnerUserId,
+      apiUrl: options.apiUrl,
+      koedHome: options.koedHome,
+      ...(options.fetch ? { fetch: options.fetch } : {})
+    }),
     ownerUserId: options.localOwnerUserId,
     apiUrl: options.apiUrl,
     koedHome: options.koedHome,
@@ -232,7 +239,7 @@ export const createManagedConversationRuntimeCoordinator = (options: {
       : null;
     const repository = authorityClient
       ? combineManagedConversationRepositories(
-          options.localRepository,
+          localRunnerRepository,
           authorityClient,
           options.localOwnerUserId
         )

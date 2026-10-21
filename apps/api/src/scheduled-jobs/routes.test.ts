@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify from "fastify";
@@ -24,6 +24,10 @@ const fixture = (home: string, health: "healthy" | "unhealthy" = "healthy") => {
   const app = Fastify();
   const create = vi.fn(async () => ({ id: randomUUID() }));
   const auth = vi.fn(async () => ({ id: owner }));
+  const expired = vi.fn(async () => []);
+  const runtimeCandidates = vi.fn(async () => []);
+  const materialize = vi.fn();
+  const requireRepository = vi.fn(() => ({}));
   registerScheduledJobRoutes(
     app,
     {
@@ -36,16 +40,96 @@ const fixture = (home: string, health: "healthy" | "unhealthy" = "healthy") => {
         })
       },
       auth: { authenticateSessionOrDeviceCredential: auth },
+      localEdge: { upstreamBackendsPath: join(home, "upstream-backends.json") },
+      requireRepository,
       rateLimit: {
         memoryRead: async () => undefined,
         memoryWrite: async () => undefined
       }
     } as never,
-    { create } as never
+    {
+      create,
+      listExpiredManagedCommands: expired,
+      listActiveManagedCommands: async () => [],
+      listTerminalManagedCommands: async () => [],
+      listInterruptedManagedCommandsAwaitingProviderAck: async () => [],
+      listRuntimeCandidates: runtimeCandidates,
+      listPendingRuntimeRuns: async () => [],
+      materializeScheduledOccurrence: materialize
+    } as never,
+    { bootstrapContext: async () => ({ enabledInstances: [] }) } as never,
+    async () => {
+      throw new Error("No linked Job expected in this fixture");
+    }
   );
-  return { app, create, auth };
+  return {
+    app,
+    create,
+    auth,
+    expired,
+    runtimeCandidates,
+    materialize,
+    requireRepository
+  };
 };
 describe("Scheduled Job route identity and validation", () => {
+  it.each(["enabled", "disabled"] as const)(
+    "does not queue local work when selected remote Managed authority is %s",
+    async (managedExecution) => {
+      const home = mkdtempSync(join(tmpdir(), "koed-hq602-authority-"));
+      const state = fixture(home);
+      try {
+        const credential = storeDesktopLocalCredential(home, {
+          ownerUserId: owner,
+          operationFamilies: [
+            "personal_collaboration_write",
+            "managed_execution"
+          ]
+        });
+        writeFileSync(
+          join(home, "upstream-backends.json"),
+          JSON.stringify({
+            schemaVersion: 2,
+            activeBackendId: "remote",
+            backends: [
+              {
+                id: "remote",
+                baseUrl: "https://managed.example.test",
+                routePolicy: { managedExecution }
+              }
+            ]
+          })
+        );
+        const response = await state.app.inject({
+          method: "POST",
+          url: "/v1/scheduled-jobs/runtime/tick",
+          headers: { authorization: credential.authorization },
+          remoteAddress: "127.0.0.1",
+          payload: {}
+        });
+        if (managedExecution === "enabled") {
+          expect(response.statusCode).toBe(503);
+          expect(state.expired).not.toHaveBeenCalled();
+          expect(state.runtimeCandidates).not.toHaveBeenCalled();
+          expect(state.requireRepository).not.toHaveBeenCalled();
+        } else {
+          expect(response.statusCode).toBe(200);
+          expect(response.json()).toEqual({
+            materialized: 0,
+            dispatched: 0,
+            needsReview: 0,
+            reconciled: 0
+          });
+          expect(state.runtimeCandidates).toHaveBeenCalledOnce();
+        }
+        expect(state.materialize).not.toHaveBeenCalled();
+      } finally {
+        await state.app.close();
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("derives the first device from a healthy local Desktop identity", async () => {
     const home = mkdtempSync(join(tmpdir(), "koed-hq601-route-"));
     try {

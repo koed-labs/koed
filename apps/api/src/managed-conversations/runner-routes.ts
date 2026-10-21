@@ -12,6 +12,10 @@ import type { ApiRouteContext } from "../server/context.js";
 import { resolveConversationSourceDownloadMaterial } from "../source-replication/download-material.js";
 import { sourceReplicationRecipientKeySchema } from "../source-replication/schemas.js";
 import { requireSharedDispatchRunnerAuthority } from "./shared-work-item-dispatch.js";
+import {
+  ScheduledJobConflict,
+  ScheduledJobAuthorityUnavailable
+} from "@koed/db";
 
 const uuid = z.uuid();
 const boundedRunnerId = z.string().trim().min(1).max(160);
@@ -732,7 +736,51 @@ const requireExecutionForRunner = async (
     });
   }
   await requireSharedDispatchRunnerAuthority(context, auth.userId, execution);
+  const scheduledCommand =
+    await context.scheduledJobs?.getActiveScheduledCommandForExecution(
+      auth.userId,
+      executionId
+    );
+  if (scheduledCommand)
+    await requireScheduledCommandForRunner(context, auth, scheduledCommand);
   return execution;
+};
+
+const requireScheduledCommandForRunner = async (
+  context: ApiRouteContext,
+  auth: RunnerAuth,
+  commandId: string
+) => {
+  if (
+    !context.scheduledJobs &&
+    (await context
+      .requireRepository()
+      .hasScheduledJobDispatchForCommand({ userId: auth.userId }, commandId))
+  )
+    throw Object.assign(new Error("Scheduled Job runtime is unavailable"), {
+      statusCode: 503
+    });
+  try {
+    await context.scheduledJobs?.assertManagedCommandAuthority(
+      auth.userId,
+      commandId,
+      auth.deviceId,
+      [
+        "queued",
+        "dispatching",
+        "completed",
+        "failed",
+        "indeterminate",
+        "canceled"
+      ]
+    );
+  } catch (error) {
+    if (error instanceof ScheduledJobConflict)
+      throw Object.assign(error, { statusCode: 409 });
+    if (error instanceof ScheduledJobAuthorityUnavailable)
+      throw Object.assign(error, { statusCode: 503 });
+    throw error;
+  }
 };
 
 const requireCommandForRunner = async (
@@ -768,6 +816,7 @@ const requireCommandForRunner = async (
     });
   }
   await requireSharedDispatchRunnerAuthority(context, auth.userId, execution);
+  await requireScheduledCommandForRunner(context, auth, commandId);
   return { command, execution };
 };
 
@@ -1074,6 +1123,25 @@ export const registerManagedConversationRunnerRoutes = (
     async (request) => {
       const auth = await authenticateRunner(request, context);
       const input = claimSchema.parse(request.body);
+      const allowedScheduledCommandIds: string[] = [];
+      for (const id of await context
+        .requireRepository()
+        .listQueuedScheduledJobCommands(
+          { userId: auth.userId },
+          {
+            deviceId: auth.deviceId,
+            deploymentId: auth.deploymentId,
+            limit: 100
+          }
+        )) {
+        try {
+          await requireScheduledCommandForRunner(context, auth, id);
+          allowedScheduledCommandIds.push(id);
+        } catch {
+          // A revoked or offline Job cannot be claimed. The exact command is
+          // rechecked after the claim to close the preflight race.
+        }
+      }
       const commands = await context
         .requireRepository()
         .claimManagedConversationCommands({
@@ -1082,8 +1150,10 @@ export const registerManagedConversationRunnerRoutes = (
           deviceId: auth.deviceId,
           deploymentId: auth.deploymentId,
           limit: input.limit,
-          leaseMs: input.leaseMs
+          leaseMs: input.leaseMs,
+          allowedScheduledCommandIds
         });
+      const allowed: typeof commands = [];
       for (const command of commands) {
         try {
           await requireSharedDispatchRunnerAuthority(
@@ -1103,8 +1173,37 @@ export const registerManagedConversationRunnerRoutes = (
             });
           throw error;
         }
+        try {
+          await requireScheduledCommandForRunner(context, auth, command.id);
+          if (command.leaseToken)
+            await context.scheduledJobs?.appendManagedCommandLease(
+              auth.userId,
+              command.id,
+              auth.deviceId,
+              command.leaseToken,
+              input.runnerId
+            );
+          allowed.push(command);
+        } catch (error) {
+          if (command.leaseToken)
+            await context.requireRepository().failManagedConversationCommand({
+              commandId: command.id,
+              leaseToken: command.leaseToken,
+              state: "failed",
+              errorCode: "ScheduledJobAuthorityUnavailable"
+            });
+          if (
+            !(await context
+              .requireRepository()
+              .hasScheduledJobDispatchForCommand(
+                { userId: auth.userId },
+                command.id
+              ))
+          )
+            throw error;
+        }
       }
-      return { commands };
+      return { commands: allowed };
     }
   );
 
@@ -2194,6 +2293,14 @@ export const registerManagedConversationRunnerRoutes = (
       const renewed = await context
         .requireRepository()
         .renewManagedConversationCommandLease({ commandId, ...input });
+      if (renewed)
+        await context.scheduledJobs?.appendManagedCommandLease(
+          auth.userId,
+          commandId,
+          auth.deviceId,
+          input.leaseToken,
+          input.runnerId
+        );
       return { renewed };
     }
   );

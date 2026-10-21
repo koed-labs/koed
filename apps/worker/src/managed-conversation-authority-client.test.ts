@@ -18,9 +18,15 @@ describe("Managed Conversation authority client", () => {
   it("keeps provider usage on the execution device while authority stays remote", async () => {
     const localOwnerUserId = ids.session;
     const recordWorkflowTokenUsage = vi.fn(async () => ({ id: "usage-1" }));
+    const getInterruptedScheduledCommandForExecution = vi.fn(
+      async () => "command-1"
+    );
     const remoteClaim = vi.fn(async () => []);
     const repository = combineManagedConversationRepositories(
-      { recordWorkflowTokenUsage } as never,
+      {
+        recordWorkflowTokenUsage,
+        getInterruptedScheduledCommandForExecution
+      } as never,
       { claimManagedConversationCommands: remoteClaim } as never,
       localOwnerUserId
     );
@@ -40,12 +46,22 @@ describe("Managed Conversation authority client", () => {
       limit: 1,
       leaseMs: 30_000
     });
+    expect(
+      await repository.getInterruptedScheduledCommandForExecution(
+        { userId: "remote-owner-is-not-local" },
+        { executionId: "execution-1", executionGeneration: 1 }
+      )
+    ).toBe("command-1");
 
     expect(recordWorkflowTokenUsage).toHaveBeenCalledWith(
       { userId: localOwnerUserId },
       expect.objectContaining({ workflowId: "execution-1" })
     );
     expect(remoteClaim).toHaveBeenCalledOnce();
+    expect(getInterruptedScheduledCommandForExecution).toHaveBeenCalledWith(
+      { userId: localOwnerUserId },
+      { executionId: "execution-1", executionGeneration: 1 }
+    );
   });
 
   it("binds the first durable source generation through runner authority", async () => {

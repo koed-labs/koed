@@ -1036,6 +1036,46 @@ export const routeIdentityContracts = [
     )
   ),
   route(
+    "POST",
+    "/v1/scheduled-jobs/runtime/tick",
+    "desktop_local_credential",
+    "scheduled_jobs",
+    "Materialize and dispatch due Jobs on the verified assigned Local AI Runtime device.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/scheduled-jobs/runtime/commands/{commandId}/authority",
+    "desktop_local_credential",
+    "scheduled_jobs",
+    "Check the current bound Scheduled Job command before runner use.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/scheduled-jobs/runtime/executions/{executionId}/authority",
+    "desktop_local_credential",
+    "scheduled_jobs",
+    "Check current Scheduled Job authority before private execution use.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/scheduled-jobs/runtime/commands/{commandId}/lease",
+    "desktop_local_credential",
+    "scheduled_jobs",
+    "Record an exact current Managed command lease on a Scheduled Job attempt.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
     "GET",
     "/v1/projects",
     "session_or_device_credential",

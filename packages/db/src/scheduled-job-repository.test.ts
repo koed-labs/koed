@@ -24,6 +24,7 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
     other = randomUUID(),
     runnerDeviceId = randomUUID();
   let agentId: string, projectId: string, conversationSessionId: string;
+  let conversationLogicalSessionId: string;
   beforeAll(async () => {
     admin = new pg.Pool({ connectionString: testUrl });
     database = `hq601_${randomUUID().replaceAll("-", "")}`;
@@ -50,6 +51,12 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
        values($1,$2,'codex-cli','api',$3)`,
       [conversationSessionId, owner, projectId]
     );
+    conversationLogicalSessionId = (
+      await pool.query<{ logical_session_id: string }>(
+        "select logical_session_id from sessions where id=$1",
+        [conversationSessionId]
+      )
+    ).rows[0]!.logical_session_id;
     await pool.query(
       `insert into ai_client_instances(owner_user_id,instance_id,driver_id,display_name,enabled)
        values($1,'codex.jobs','codex','Codex',true)`,
@@ -289,7 +296,14 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
        values($1,$2,'codex-cli','api',$3)`,
       [linkedConversationId, owner, linkedProjectId]
     );
+    const linkedLogicalSessionId = (
+      await pool.query<{ logical_session_id: string }>(
+        "select logical_session_id from sessions where id=$1",
+        [linkedConversationId]
+      )
+    ).rows[0]!.logical_session_id;
     let current = true;
+    let teamProjectVersion = 7;
     const repo = createScheduledJobRepository(pool, {
       teamAuthority: async (input) => {
         expect(input).toMatchObject({
@@ -299,7 +313,7 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
           workspaceProjectId
         });
         if (!current) throw new Error("Team offline or revoked");
-        return { projectVersion: 7, memberVersion: 3 };
+        return { projectVersion: teamProjectVersion, memberVersion: 3 };
       }
     });
     const input = {
@@ -323,6 +337,7 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
     if (!started.started) throw new Error("Expected Team attempt start");
     const managedExecutionId = randomUUID();
     const managedCommandId = randomUUID();
+    const managedDeploymentId = randomUUID();
     await pool.query(
       `insert into managed_conversation_executions
        (id,owner_user_id,project_id,ai_client_instance_id,model,permission_mode,
@@ -335,9 +350,9 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
         owner,
         linkedProjectId,
         "b".repeat(64),
-        randomUUID(),
+        managedDeploymentId,
         runnerDeviceId,
-        linkedConversationId
+        linkedLogicalSessionId
       ]
     );
     const client = await pool.connect();
@@ -387,6 +402,131 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
     } finally {
       client.release();
     }
+    await pool.query(
+      `insert into managed_conversation_runtime_bindings
+         (execution_id,owner_user_id,deployment_id,device_id,execution_generation,
+          source_project_path,project_path)
+       values($1,$2,$3,$4,1,'/tmp/team-job','/tmp/team-job')`,
+      [managedExecutionId, owner, managedDeploymentId, runnerDeviceId]
+    );
+    expect(
+      await repo.assertManagedCommandAuthority(
+        owner,
+        managedCommandId,
+        runnerDeviceId,
+        ["queued"]
+      )
+    ).toMatchObject({ scheduled: true, attemptId: started.attemptId });
+    current = false;
+    await expect(
+      repo.assertManagedCommandAuthority(
+        owner,
+        managedCommandId,
+        runnerDeviceId,
+        ["queued"]
+      )
+    ).rejects.toBeInstanceOf(ScheduledJobAuthorityUnavailable);
+    expect(
+      await repo.interruptScheduledAuthorityLoss(
+        owner,
+        managedCommandId,
+        runnerDeviceId,
+        "unavailable"
+      )
+    ).toBe(true);
+    expect(
+      (await repo.listRuns(owner, job.id, { limit: 20 })).runs[0]?.status
+    ).toBe("interrupted");
+    expect(
+      (await repo.attemptHistory(owner, job.id, run.id)).events.at(-1)
+    ).toMatchObject({ status: "interrupted", uncertainty: false });
+    expect(
+      await repo.interruptScheduledAuthorityLoss(
+        owner,
+        managedCommandId,
+        runnerDeviceId,
+        "unavailable"
+      )
+    ).toBe(false);
+    current = true;
+    const refreshed = await repo.get(owner, job.id);
+    const revokedRun = await repo.runNow(
+      owner,
+      job.id,
+      refreshed.version,
+      randomUUID()
+    );
+    const revokedAttempt = await repo.startAttempt(
+      owner,
+      job.id,
+      revokedRun.id,
+      {
+        expectedJobVersion: refreshed.version,
+        runnerDeviceId,
+        fenceToken: "team-revoked-attempt"
+      }
+    );
+    expect(revokedAttempt.started).toBe(true);
+    if (!revokedAttempt.started)
+      throw new Error("Expected revoked attempt start");
+    const revokedCommandId = randomUUID();
+    await pool.query(
+      `insert into managed_conversation_commands
+       (id,owner_user_id,execution_id,idempotency_key,sequence,command_kind,
+        request_digest,client_user_message_id,execution_generation,encrypted_payload)
+       values($1,$2,$3,$4,2,'prompt',$5,$6,1,'{}'::jsonb)`,
+      [
+        revokedCommandId,
+        owner,
+        managedExecutionId,
+        `hq602:changed:${randomUUID()}`,
+        "d".repeat(64),
+        randomUUID()
+      ]
+    );
+    const revokedClient = await pool.connect();
+    try {
+      await revokedClient.query("begin");
+      await bindScheduledJobManagedPromptWithClient(revokedClient, {
+        ownerUserId: owner,
+        attemptId: revokedAttempt.attemptId,
+        attemptExecutionId: revokedAttempt.executionId,
+        fenceToken: "team-revoked-attempt",
+        managedExecutionId,
+        managedCommandId: revokedCommandId,
+        teamAuthority: async () => ({ projectVersion: 7, memberVersion: 3 })
+      });
+      await revokedClient.query("commit");
+    } catch (error) {
+      await revokedClient.query("rollback");
+      throw error;
+    } finally {
+      revokedClient.release();
+    }
+    teamProjectVersion = 8;
+    await expect(
+      repo.assertManagedCommandAuthority(
+        owner,
+        revokedCommandId,
+        runnerDeviceId,
+        ["queued"]
+      )
+    ).rejects.toBeInstanceOf(ScheduledJobConflict);
+    expect(
+      await repo.interruptScheduledAuthorityLoss(
+        owner,
+        revokedCommandId,
+        runnerDeviceId,
+        "changed"
+      )
+    ).toBe(true);
+    expect(
+      (await repo.attemptHistory(owner, job.id, revokedRun.id)).events.at(-1)
+    ).toMatchObject({
+      status: "interrupted",
+      uncertainty: false,
+      outcome: "Scheduled Job authority changed; effects require review"
+    });
     await createPersonalWorkspaceProjectRepository(pool).reconcileInvalidation(
       owner,
       linkedProjectId,
@@ -431,7 +571,7 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
         "b".repeat(64),
         randomUUID(),
         runnerDeviceId,
-        conversationSessionId
+        conversationLogicalSessionId
       ]
     );
     const queueAndBind = async (

@@ -15200,6 +15200,7 @@ describeDb("memory repository visibility", () => {
       )
     ).resolves.toEqual({
       managerRole: "admin",
+      project: null,
       team: { id: team.id, name: "Workspace Listing Team" },
       defaultWorkspace: {
         id: workspace!.id,
