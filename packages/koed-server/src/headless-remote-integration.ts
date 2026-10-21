@@ -236,6 +236,8 @@ const inspectHarness = async (
     resolveClaudeExecutable: resolveClaudeExecutablePath,
     resolveCodexExecutable: resolveCodexExecutablePath,
     checkPid: isProcessRunning,
+    delay: (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
     now: () => new Date()
   };
   const profile = await (harness === "codex"

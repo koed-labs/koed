@@ -121,6 +121,7 @@ export interface KoedServerStatusDependencies {
   resolveClaudeExecutable?: typeof resolveClaudeExecutablePath;
   resolveCodexExecutable?: typeof resolveCodexExecutablePath;
   checkPid?: (pid: number) => boolean;
+  delay?: (milliseconds: number) => Promise<void>;
   now?: () => Date;
 }
 
@@ -135,6 +136,8 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   resolveClaudeExecutable: resolveClaudeExecutablePath,
   resolveCodexExecutable: resolveCodexExecutablePath,
   checkPid: isProcessRunning,
+  delay: (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
   now: () => new Date()
 });
 
@@ -966,12 +969,22 @@ const koedServerConfigEnvironment = (
     repoEnv.KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED
 });
 
+const LOCAL_RATE_LIMIT_RETRY_MAX_MS = 2_000;
+
+const parseRetryAfterMilliseconds = (value: string | null): number | null => {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0
+    ? Math.ceil(seconds * 1_000)
+    : null;
+};
+
 const inspectApiToken = async (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>,
   apiUrl: string,
-  fetch: typeof globalThis.fetch
+  fetch: typeof globalThis.fetch,
+  delay: (milliseconds: number) => Promise<void>
 ): Promise<KoedServerStatus["apiToken"]> => {
   const token = resolveActiveIntegrationApiToken(paths, environment, repoEnv);
   if (!token) {
@@ -984,9 +997,22 @@ const inspectApiToken = async (
     };
   }
   try {
-    const response = await fetch(new URL("/v1/access/check", apiUrl), {
-      headers: { authorization: `Bearer ${token.token}` }
-    });
+    const url = new URL("/v1/access/check", apiUrl);
+    const checkAccess = () =>
+      fetch(url, { headers: { authorization: `Bearer ${token.token}` } });
+    let response = await checkAccess();
+    const retryAfterMs = parseRetryAfterMilliseconds(
+      response.headers.get("retry-after")
+    );
+    if (
+      response.status === 429 &&
+      response.headers.get("x-koed-rate-limit-source") === "local" &&
+      retryAfterMs !== null &&
+      retryAfterMs <= LOCAL_RATE_LIMIT_RETRY_MAX_MS
+    ) {
+      await delay(retryAfterMs);
+      response = await checkAccess();
+    }
     if (response.ok) {
       return {
         ...healthy("Local API Token authenticated successfully."),
@@ -1007,7 +1033,21 @@ const inspectApiToken = async (
       ...needsAttention(
         `Koed API access validation returned HTTP ${response.status}.`,
         "Check Koed API health and rerun diagnostics.",
-        { kind: "service_error", httpStatus: response.status }
+        {
+          kind: "service_error",
+          httpStatus: response.status,
+          ...(response.status === 429 &&
+          response.headers.get("x-koed-rate-limit-source")
+            ? {
+                rateLimitSource: response.headers.get(
+                  "x-koed-rate-limit-source"
+                )
+              }
+            : {}),
+          ...(response.status === 429 && response.headers.get("retry-after")
+            ? { retryAfter: response.headers.get("retry-after") }
+            : {})
+        }
       ),
       configured: true
     };
@@ -2600,7 +2640,8 @@ export const collectKoedServerStartupStatus = async (
     runtimeEnvironment,
     repoEnv,
     apiUrl,
-    fetcher
+    fetcher,
+    deps.delay
   );
   const localAiRuntime = inspectLocalAiRuntime(
     runtime,
@@ -2804,7 +2845,8 @@ export const collectKoedServerStatus = async (
     runtimeEnvironment,
     repoEnv,
     apiUrl,
-    fetcher
+    fetcher,
+    deps.delay
   );
   const capabilityReadModel = await fetchAiClientCapabilityReadModel(
     paths,

@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   aggregateState,
   collectKoedServerDoctor,
@@ -36,10 +36,16 @@ const tempDir = () => {
   return path;
 };
 
-const response = (ok: boolean, status: number, body: unknown): Response =>
+const response = (
+  ok: boolean,
+  status: number,
+  body: unknown,
+  headers: HeadersInit = {}
+): Response =>
   ({
     ok,
     status,
+    headers: new Headers(headers),
     text: async () => JSON.stringify(body),
     json: async () => body
   }) as Response;
@@ -1731,6 +1737,86 @@ describe("status state aggregation", () => {
       assignment: {
         provider: "codex",
         model: "openai/gpt-test"
+      }
+    });
+  });
+
+  it("retries a local access-check rate limit once after a short Retry-After", async () => {
+    const root = tempDir();
+    const delay = vi.fn(async () => undefined);
+    let accessAttempts = 0;
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        MEMORY_API_TOKEN: "local-token"
+      },
+      {
+        fetch: async (url) => {
+          if (String(url).endsWith("/v1/access/check")) {
+            accessAttempts += 1;
+            return accessAttempts === 1
+              ? response(
+                  false,
+                  429,
+                  {},
+                  {
+                    "retry-after": "1",
+                    "x-koed-rate-limit-source": "local"
+                  }
+                )
+              : response(true, 200, {});
+          }
+          return response(true, 200, { checks: [] });
+        },
+        delay,
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(accessAttempts).toBe(2);
+    expect(delay).toHaveBeenCalledWith(1_000);
+    expect(status.apiToken.state).toBe("healthy");
+  });
+
+  it("reports local rate-limit retry metadata when Retry-After exceeds cap", async () => {
+    const root = tempDir();
+    const delay = vi.fn(async () => undefined);
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        MEMORY_API_TOKEN: "local-token"
+      },
+      {
+        fetch: async (url) =>
+          String(url).endsWith("/v1/access/check")
+            ? response(
+                false,
+                429,
+                {},
+                {
+                  "retry-after": "3",
+                  "x-koed-rate-limit-source": "local"
+                }
+              )
+            : response(true, 200, { checks: [] }),
+        delay,
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(delay).not.toHaveBeenCalled();
+    expect(status.apiToken).toMatchObject({
+      state: "needs_attention",
+      details: {
+        httpStatus: 429,
+        rateLimitSource: "local",
+        retryAfter: "3"
       }
     });
   });
