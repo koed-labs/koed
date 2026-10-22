@@ -41,7 +41,7 @@ async function run() {
       console.log(`HQ705 native: loading ${theme}`);
       await window.loadFile(
         resolve(root, "apps/desktop/dist/browser-validation.html"),
-        { query: { view: "hq", hq705Capture: "yes" } }
+        { query: { view: "hq", hq705Capture: "yes", hq711Capture: "yes" } }
       );
       console.log(`HQ705 native: loaded ${theme}`);
       await waitFor(
@@ -85,6 +85,11 @@ async function run() {
         "unread Team tab while Just me is open"
       );
       assert.equal(await js("window.__koedHq705Trace?.reads"), 0);
+      assert.equal(
+        await js("document.querySelector('[aria-label^=\"Open Team tab\"]')"),
+        null,
+        "S01.2: Team chip is absent while the right column is visible"
+      );
       await capture(`project-just-me-${theme}.png`);
       await js(
         "document.querySelector('.hq-project-context-tabs__tabs button:nth-child(2)')?.click()"
@@ -105,10 +110,31 @@ async function run() {
         ),
         2
       );
+      assert.equal(
+        await js(
+          "document.querySelector('.hq-project-thread__notice')?.textContent.trim().replace(/^◇\\s*/, '')"
+        ),
+        "Visible to Koed team",
+        "S17.1: Team composer names the current verified Team"
+      );
+      assert.equal(
+        await js(
+          "[...document.querySelectorAll('.hq-project-thread__messages *')].some((item) => /Saved as a decision|Goes against a decision/.test(item.textContent ?? ''))"
+        ),
+        false,
+        "S17.2: Team history has no memory or decision marks"
+      );
       assert.equal(await js("window.__koedHq705Trace?.reads > 0"), true);
       await capture(`project-team-${theme}.png`);
       await js(
         "document.querySelector('.hq-project-thread__mention-trigger')?.click()"
+      );
+      assert.equal(
+        await js(
+          "[...document.querySelectorAll('.hq-project-thread__mentions button')].some((item) => /Rook|agent/i.test(item.textContent ?? ''))"
+        ),
+        false,
+        "S17.3: the mention picker excludes Agents"
       );
       await js(
         "Array.from(document.querySelectorAll('.hq-project-thread__mentions button')).find(el => el.textContent?.includes('Maya'))?.click()"
@@ -127,11 +153,39 @@ async function run() {
       );
       await capture(`project-team-sent-${theme}.png`);
       await js(
+        "document.querySelector('.hq-project-context-tabs__tabs button:first-child')?.click()"
+      );
+      await waitFor(
+        "document.querySelector('[role=tab][aria-selected=true]')?.textContent.trim() === 'Just me'",
+        "private HQ tab"
+      );
+      assert.equal(
+        await js(
+          "document.querySelector('.hq-project-thread-host')?.parentElement?.hidden === true && document.querySelector('.hq-project-context-tabs__content:not([hidden]) .hq-project-conversation') !== null"
+        ),
+        true,
+        "S17.4: Team history is hidden while the private HQ is visible"
+      );
+      await js(
+        "document.querySelector('.hq-project-context-tabs__tabs button:nth-child(2)')?.click()"
+      );
+      await waitFor(
+        "document.querySelector('.hq-project-thread__messages')?.textContent.includes('Ready to review together')",
+        "Team message restored only in Team tab"
+      );
+      await js(
         "document.querySelector('[aria-label=\"Hide project context\"]')?.click()"
       );
       await waitFor(
         "document.querySelector('[aria-label^=\"Open Team tab\"]') !== null",
         "hidden-column Team chip"
+      );
+      assert.equal(
+        await js(
+          "document.querySelector('[aria-label=\"Show project context\"]') !== null"
+        ),
+        true,
+        "S01.2: the chip appears only after hiding the right column"
       );
       await capture(`project-team-chip-${theme}.png`);
       const readsBeforeHiddenUpdate = await js(
@@ -159,6 +213,18 @@ async function run() {
         `window.__koedHq705Trace?.reads > ${readsBeforeHiddenUpdate}`,
         "visible Team read state"
       );
+      assert.equal(
+        await js("document.querySelector('[aria-label^=\"Open Team tab\"]')"),
+        null,
+        "S01.2: opening Team restores the column and removes the chip"
+      );
+      await js(
+        "document.querySelector('[aria-label=\"Hide project context\"]')?.click()"
+      );
+      await waitFor(
+        "document.querySelector('[aria-label^=\"Open Team tab\"]') !== null",
+        "S01.2: chip returns after hiding the column again"
+      );
     }
     await writeFile(
       reportPath,
@@ -168,6 +234,42 @@ async function run() {
           owner: "HQ-705",
           status: "pass",
           assertions: [
+            {
+              id: "S01.2",
+              status: "pass",
+              checks: [
+                "visible-no-chip",
+                "hidden-chip",
+                "reshown-no-chip-and-rehidden-chip"
+              ]
+            },
+            {
+              id: "S17.1",
+              status: "pass",
+              checks: [
+                "Just-me-and-Team-tabs",
+                "unread-indicator",
+                "exact-Team-visibility-label"
+              ]
+            },
+            {
+              id: "S17.2",
+              status: "pass",
+              checks: ["human-only-disclosure", "no-decision-marks"]
+            },
+            {
+              id: "S17.3",
+              status: "pass",
+              checks: ["people-only-mention-picker", "agent-absent"]
+            },
+            {
+              id: "S17.4",
+              status: "pass",
+              checks: [
+                "Team-history-hidden-in-private-HQ",
+                "Team-message-returned-in-Team-tab"
+              ]
+            },
             "Just me keeps Team unread without reading",
             "Team human history, people-only mention and send",
             "Hidden-column realtime unread without read; reopening marks read",

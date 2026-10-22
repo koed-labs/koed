@@ -15,6 +15,7 @@ import {
   claudeAgentSdkEffort,
   claudeAgentSdkEnvironment,
   claudeAgentSdkExecutableOptions,
+  claudeAgentSdkProcessEnvironment,
   claudeSupportedReasoningEfforts,
   claudeExecutableInstallationIdentity,
   claudeAgentSdkTokenUsage,
@@ -511,6 +512,49 @@ exit 1
     expect(claudeAgentSdkExecutableOptions(nativeExecutable)).toEqual({
       pathToClaudeCodeExecutable: fs.realpathSync(nativeExecutable)
     });
+  });
+
+  it("keeps source-control credentials out of the launched AI Client environment and arguments", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-claude-sc-"));
+    temporaryDirectories.push(root);
+    const entry = path.join(root, "cli.js");
+    const launcher = path.join(root, "claude");
+    fs.writeFileSync(entry, "process.exit(0);\n", { mode: 0o700 });
+    fs.symlinkSync(entry, launcher);
+    const secrets = {
+      GITHUB_TOKEN: "n4-github-secret-sentinel",
+      GITLAB_TOKEN: "n4-gitlab-secret-sentinel",
+      SOURCE_CONTROL_TOKEN: "n4-source-control-secret-sentinel"
+    };
+    const allowedEnvironment = claudeAgentSdkProcessEnvironment(
+      launcher,
+      { HOME: root, PATH: "/usr/bin:/bin", ...secrets },
+      "n4-boundary"
+    );
+    let launched:
+      | { command: string; args: string[]; env?: NodeJS.ProcessEnv }
+      | undefined;
+    const options = claudeAgentSdkExecutableOptions(launcher, ((
+      command: string,
+      args: string[],
+      spawnOptions: { env?: NodeJS.ProcessEnv }
+    ) => {
+      launched = { command, args, env: spawnOptions.env };
+      return {} as never;
+    }) as never);
+    options.spawnClaudeCodeProcess?.({
+      command: "node",
+      args: [fs.realpathSync(entry), "--version"],
+      cwd: root,
+      env: allowedEnvironment,
+      signal: new AbortController().signal
+    });
+    expect(launched).toBeDefined();
+    expect(launched?.env).toMatchObject({ HOME: root });
+    for (const [name, secret] of Object.entries(secrets)) {
+      expect(launched?.env).not.toHaveProperty(name);
+      expect(JSON.stringify(launched)).not.toContain(secret);
+    }
   });
 
   it("honors Windows PATHEXT order and resolves shims to an SDK-safe package entry", () => {

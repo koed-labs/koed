@@ -133,6 +133,13 @@ const run = async () => {
       ),
       "Merge"
     );
+    assert.equal(
+      await js(
+        "document.querySelector('[aria-label=\"Done today\"]')?.textContent.includes('Ship the release') ?? false"
+      ),
+      false,
+      "A ready PR must not complete the Work Item before a provider merge result."
+    );
     await js(
       "Array.from(Array.from(document.querySelectorAll('[aria-label=\"Needs you\"] .hq-project-view__work-item')).find((row) => row.textContent.includes('Ship the release')).querySelectorAll('button')).find((button) => button.textContent.trim() === 'Merge').click()"
     );
@@ -165,6 +172,19 @@ const run = async () => {
       await js(
         "document.querySelector('[aria-label=\"Needs you\"]')?.textContent.includes('Ship the release')"
       )
+    );
+    assert.equal(
+      await js(
+        "Array.from(document.querySelectorAll('[aria-label=\"Needs you\"] .hq-project-view__work-item')).find(row => row.querySelector('b')?.textContent === 'Ship the release')?.querySelector('.hq-project-view__work-item-meta small')?.textContent.trim()"
+      ),
+      "PR ready to merge",
+      "Declining leaves the Work Item in review status, even while it appears in Needs you."
+    );
+    assert.equal(
+      await js(
+        "document.querySelector('[aria-label=\"Done today\"]')?.textContent.includes('Ship the release') ?? false"
+      ),
+      false
     );
     assert.equal(
       await js("document.documentElement.classList.contains('light')"),
@@ -205,6 +225,12 @@ const run = async () => {
           id: "HQ405.native",
           owner: "HQ-405",
           status: "pass",
+          proofIds: [
+            "S04.1.pr-needs-you",
+            "S04.3.provider-merged-before-done",
+            "S05.2.decline-remains-in-review",
+            "S08.1.ticketless-colleague-pr-visible"
+          ],
           checks: [
             "ticket and ticketless PRs",
             "actual In review count and Show more cap",

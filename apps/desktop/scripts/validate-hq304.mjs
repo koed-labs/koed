@@ -136,6 +136,18 @@ const run = async () => {
       ),
       false
     );
+    assert.equal(
+      await js("document.querySelector('.hq-knows__note')?.textContent.trim()"),
+      "Only your agents see this in every Project. Nothing here is shared with your Team.",
+      "S18.2: Me scope explains that it is not Team-shared"
+    );
+    assert.equal(
+      await js(
+        "document.querySelector('.hq-knows__body')?.textContent.includes('The legacy note needs a home')"
+      ),
+      false,
+      "S18.2: legacy unscoped memory stays outside Me"
+    );
     await capture("memory-me-light.png", "light");
     await js("document.querySelector('.hq-knows__forget').click()");
     await waitFor("Boolean(document.querySelector('.hq-knows__undo button'))");
@@ -169,7 +181,18 @@ const run = async () => {
           id: "HQ304.native",
           owner: "HQ-304",
           status: "pass",
-          assertions: [{ id: "S18.2", owner: "HQ-304", status: "pass" }],
+          assertions: [
+            {
+              id: "S18.2",
+              owner: "HQ-304",
+              status: "pass",
+              checks: [
+                "Me-private-disclosure",
+                "legacy-unscoped-excluded",
+                "Forget-and-Undo"
+              ]
+            }
+          ],
           checks: [
             "Project/Me/Other separation",
             "replacement detail",

@@ -171,6 +171,51 @@ async function run() {
         ordinaryRestored > ordinary.replyWidth &&
           ordinaryRestored === ordinaryBefore
       );
+      await new Promise((resolveReload) => {
+        window.webContents.once("did-finish-load", resolveReload);
+        window.webContents.reload();
+      });
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (
+          await js("document.documentElement.dataset.hqFixtureReady === 'true'")
+        )
+          break;
+        await delay(50);
+      }
+      await js(
+        "document.querySelector('[data-hq-project-link=\"00000000-0000-4000-8000-000000002038\"]')?.click()"
+      );
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (
+          await js(
+            "document.querySelectorAll('.hq-citation-chip').length === 4 && window.__koedHq306Trace?.aliasLookups >= 1"
+          )
+        )
+          break;
+        await delay(50);
+      }
+      assert.equal(
+        await js("document.querySelectorAll('.hq-citation-chip').length"),
+        4,
+        "S28.1: both persisted aliases return after a page reload"
+      );
+      await js("document.querySelectorAll('.hq-citation-chip')[1].click()");
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (
+          await js(
+            "document.querySelector('.hq-citation-detail h2')?.textContent === 'Deck outline'"
+          )
+        )
+          break;
+        await delay(50);
+      }
+      assert.equal(
+        await js(
+          "document.querySelector('.hq-citation-detail h2')?.textContent"
+        ),
+        "Deck outline",
+        "S28.1: second persisted alias resolves to its distinct source"
+      );
       process.stdout.write(
         `${dark ? "dark" : "light"}: ${JSON.stringify({ metrics, detail, ordinary })}\n`
       );
@@ -218,7 +263,18 @@ async function run() {
           id: "HQ306.native",
           owner: "HQ-306",
           status: "pass",
-          assertions: [{ id: "S07.1", owner: "HQ-306", status: "pass" }],
+          assertions: [
+            { id: "S07.1", owner: "HQ-306", status: "pass" },
+            {
+              id: "S28.1",
+              owner: "HQ-306",
+              status: "pass",
+              checks: [
+                "two-persisted-aliases-after-reload",
+                "distinct-second-detail"
+              ]
+            }
+          ],
           assertion:
             "Memory number in reply opens next to chat; citation still resolves after reload",
           checks: [

@@ -70,9 +70,10 @@ export function HqProjectThread({
       ? snapshot.state?.project
       : null;
   const teamId = project?.teamId ?? null;
-  const currentPeople =
-    collaboration?.navigation.teams.find((team) => team.id === teamId)
-      ?.people ?? [];
+  const currentTeam = collaboration?.navigation.teams.find(
+    (team) => team.id === teamId
+  );
+  const currentPeople = currentTeam?.people ?? [];
   const teamPrincipalId = collaboration?.navigation.teamPrincipal?.id;
   const ownTeamUserId =
     teamPrincipalId &&
@@ -531,7 +532,11 @@ export function HqProjectThread({
     >
       <div className="hq-project-thread__notice">
         <span aria-hidden="true">◇</span>
-        <span>Visible to people in this Project</span>
+        <span>
+          {currentTeam?.name
+            ? `Visible to ${currentTeam.name}`
+            : "Visible to people in this Project"}
+        </span>
       </div>
       <p className="hq-project-thread__privacy">
         Team messages stay between people. They aren't saved to memory or read

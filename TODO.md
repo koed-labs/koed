@@ -1,5 +1,19 @@
 # Implementation backlog
 
+## HQ acceptance parity before cut-over
+
+- Close S02.1: keyless Work Items already have a brief and live log. Complete
+  or prove the Conversation-origin producer, row origin/activity description,
+  readable origin link and return-to-chat proof. An unrelated
+  runtime without a Work Item does not need a new brief for this assertion.
+- Close S15.1/S15.3: render named Team sidebar groups and their fold controls
+  from authoritative links, after Just me and separately Shared Projects.
+- Complete the unproved clauses in the acceptance proof inventories, including
+  the ordinary managed agent-turn prompt spy and the full real-backend grant
+  race/independent-publication/denial conjunction. Run the owning harnesses and
+  keep HQ-901 open until every approved assertion is green. See
+  `docs/hq-acceptance-parity.md`.
+
 ## Shared Project first-share lifecycle recovery
 
 - Persist accepted-invitation Personal Project setup recovery across a Desktop

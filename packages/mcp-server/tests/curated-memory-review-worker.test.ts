@@ -263,6 +263,32 @@ describe("Curated Memory local review worker", () => {
     );
   });
 
+  it("excludes a Team message field from the actual Curated review agent prompt", async () => {
+    const teamMessage = "PRIVATE_TEAM_CHAT_SENTINEL_FOR_N1";
+    const input = {
+      ...bundle(),
+      teamMessages: [{ text: teamMessage }]
+    } as CuratedMemoryReviewBundle;
+    const prompts: string[] = [];
+    const delegate = runnerReturning({
+      outcome: "rejected",
+      reason_category: "not_user_authored",
+      decision_reason: "No additional source evidence."
+    });
+    const runner: CuratedMemoryReviewRunner = async (
+      prompt,
+      workerConfig,
+      timeoutMs
+    ) => {
+      prompts.push(prompt);
+      return delegate(prompt, workerConfig, timeoutMs);
+    };
+    await reviewCuratedMemoryProposal(input, config(), runner);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("window seat");
+    expect(prompts[0]).not.toContain(teamMessage);
+  });
+
   it("rejects oversized complete evidence instead of truncating it", async () => {
     await expect(
       reviewCuratedMemoryProposal(

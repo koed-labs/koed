@@ -51,6 +51,28 @@ const run = async () => {
     await js(
       "document.documentElement.classList.remove('dark'); document.documentElement.classList.add('light')"
     );
+    const indentation = await js(`(() => {
+      const groupIcon = document.querySelector('[data-hq-sidebar-group="just-me"] [data-hq-group-icon]');
+      const project = [...document.querySelectorAll('#hq-group-just-me .hq-sidebar__project')]
+        .find(row => row.querySelector('.hq-sidebar__project-conversations [data-hq-chat-title]'));
+      const projectIcon = project?.querySelector('[data-hq-project-icon]');
+      const projectName = project?.querySelector('.hq-sidebar__project-link span');
+      const chatTitle = project?.querySelector('.hq-sidebar__project-conversations [data-hq-chat-title] span');
+      if (!groupIcon || !projectIcon || !projectName || !chatTitle) return null;
+      return {
+        groupIcon: groupIcon.getBoundingClientRect().left,
+        projectIcon: projectIcon.getBoundingClientRect().left,
+        projectName: projectName.getBoundingClientRect().left,
+        chatTitle: chatTitle.getBoundingClientRect().left
+      };
+    })()`);
+    assert.ok(
+      indentation,
+      "A nested Project chat must be visible for indentation proof"
+    );
+    assert.ok(Math.abs(indentation.projectIcon - indentation.groupIcon) < 1);
+    assert.ok(Math.abs(indentation.chatTitle - indentation.projectName) < 1);
+    assert.ok(indentation.projectName > indentation.projectIcon);
     process.stderr.write("HQ-107: draggable chat ready\n");
     const debuggerClient = window.webContents.debugger;
     debuggerClient.attach("1.3");
@@ -179,6 +201,7 @@ const run = async () => {
           id: "HQ107.private-native",
           status: "pass",
           checks: [
+            "Just me group icon aligns with Project icon; nested chat text aligns with Project name",
             "Project and Chats drag targets visibly highlight",
             "Project move uses target name and expands moved chat",
             "Undo restores the prior placement",
@@ -189,6 +212,7 @@ const run = async () => {
             reason:
               "Shared destination confirmation and policy issuance belong to HQ-702"
           },
+          assertions: [{ id: "S20.1.indentation", status: "pass" }],
           screenshots: [
             "initial-light.png",
             "project-drop-highlight-light.png",

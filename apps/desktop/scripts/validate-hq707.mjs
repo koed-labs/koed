@@ -121,6 +121,13 @@ async function run() {
         ),
         /Maya.*launch plan/
       );
+      assert.equal(
+        await js(
+          "document.querySelector('.hq-project-thread__quote')?.closest('.hq-project-thread__messages .hq-project-thread__message') !== null && document.querySelectorAll('.hq-project-thread__messages').length === 1"
+        ),
+        true,
+        "S23.1: quoted reply stays in the single Team message list"
+      );
       await capture(`quoted-reply-${theme}.png`);
       await js("document.querySelector('.hq-project-thread__quote')?.click()");
       await waitFor(
@@ -136,6 +143,17 @@ async function run() {
           owner: "HQ-707",
           status: "pass",
           assertions: [
+            {
+              id: "S23.1",
+              status: "pass",
+              checks: [
+                "reply-chip",
+                "Escape-dismissal",
+                "one-line-quote",
+                "jump-to-original",
+                "single-message-list"
+              ]
+            },
             "Reply chip and both dismissals",
             "Reply target sent through V2 contract",
             "One-line quote and jump",

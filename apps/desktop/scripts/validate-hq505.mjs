@@ -363,6 +363,10 @@ async function run() {
         id: "HQ505.native",
         owner: "HQ-505",
         status: "pass",
+        proofIds: [
+          "S01.4.no-team-text-in-retained-reply",
+          "S01.4.deterministic-team-unread-line"
+        ],
         evidence:
           "Electron renderer fixture; API, DB, and provider terminal proof run separately",
         assertions: [

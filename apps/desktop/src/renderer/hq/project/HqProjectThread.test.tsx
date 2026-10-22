@@ -71,8 +71,10 @@ it("discards late Project responses, resets profile drafts, refreshes while hidd
       return () => undefined;
     }
   );
+  const navigation = { teams: [{ id: teamId, name: "Koed team", people: [] }] };
+  const collaboration = { navigation };
   const client = {
-    current: () => null,
+    current: () => collaboration,
     subscribe: () => () => undefined,
     openProjectThreadV2,
     loadProjectThreadMessagesV2: vi.fn(
@@ -106,6 +108,9 @@ it("discards late Project responses, resets profile drafts, refreshes while hidd
   await act(async () => {
     await Promise.resolve();
   });
+  expect(
+    container.querySelector(".hq-project-thread__notice")?.textContent
+  ).toContain("Visible to Koed team");
   const composer = container.querySelector<HTMLTextAreaElement>("textarea");
   expect(composer).not.toBeNull();
   await act(async () => {

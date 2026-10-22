@@ -294,6 +294,7 @@ describe("managed memory action capture boundary", () => {
 
   it("creates a reviewed correction only from the exact captured User item", async () => {
     const prompt = "Correct latest citation 1 to new wording";
+    const teamMessage = "PRIVATE_TEAM_CHAT_SENTINEL_FOR_PROPOSAL";
     const correctionAction = {
       ...action(prompt, "correct"),
       request: {
@@ -302,7 +303,13 @@ describe("managed memory action capture boundary", () => {
         userStatement: prompt
       }
     };
-    repository.getManagedConversationCommand.mockResolvedValue(command(prompt));
+    repository.getManagedConversationCommand.mockResolvedValue({
+      ...command(prompt),
+      payload: {
+        prompt,
+        teamMessages: [{ text: teamMessage }]
+      }
+    });
     repository.listManagedMemoryActionsForCommand.mockResolvedValue([
       correctionAction
     ]);
@@ -366,6 +373,9 @@ describe("managed memory action capture boundary", () => {
         targetAssertionId: "77777777-7777-4777-8777-777777777777"
       })
     );
+    expect(
+      JSON.stringify(repository.createCuratedMemoryProposal.mock.calls)
+    ).not.toContain(teamMessage);
     repository.getManagedMemoryActionUserSource.mockResolvedValue(null);
     repository.createCuratedMemoryProposal.mockClear();
     await run();

@@ -333,7 +333,16 @@ try {
           { id: "HQ306.native", owner: "HQ-306", status: "pass" }
         );
         assert.deepEqual(report.assertions, [
-          { id: "S07.1", owner: "HQ-306", status: "pass" }
+          { id: "S07.1", owner: "HQ-306", status: "pass" },
+          {
+            id: "S28.1",
+            owner: "HQ-306",
+            status: "pass",
+            checks: [
+              "two-persisted-aliases-after-reload",
+              "distinct-second-detail"
+            ]
+          }
         ]);
         assert.equal(
           report.assertion,
@@ -644,7 +653,7 @@ try {
           { id: report.id, owner: report.owner, status: report.status },
           { id: "HQ705.native", owner: "HQ-705", status: "pass" }
         );
-        assert.equal(report.assertions.length, 4);
+        assert.equal(report.assertions.length, 9);
         assert.ok(report.screenshots.includes("project-team-light.png"));
         assert.ok(report.screenshots.includes("project-team-dark.png"));
         assert.ok(
@@ -682,7 +691,7 @@ try {
           { id: report.id, owner: report.owner, status: report.status },
           { id: "HQ707.native", owner: "HQ-707", status: "pass" }
         );
-        assert.equal(report.assertions.length, 4);
+        assert.equal(report.assertions.length, 5);
         for (const theme of ["light", "dark"]) {
           assert.ok(report.screenshots.includes(`reply-chip-${theme}.png`));
           assert.ok(report.screenshots.includes(`quoted-reply-${theme}.png`));
@@ -1182,4 +1191,33 @@ try {
   }
 } finally {
   await rm(userDataPath, { recursive: true, force: true });
+}
+
+if (process.exitCode === undefined || process.exitCode === 0) {
+  const profile = await mkdtemp(resolve(scratchDir, "hq901-share-profile-"));
+  try {
+    const reportPath = resolve(scratchDir, "hq-901-early-share", "report.json");
+    await rm(reportPath, { force: true });
+    const result = spawnSync(
+      electronPath,
+      ["scripts/validate-hq901-early-share.mjs"],
+      {
+        cwd: desktopDir,
+        env: { ...process.env, KOED_HQ901_EARLY_SHARE_USER_DATA_DIR: profile },
+        stdio: "inherit"
+      }
+    );
+    if (result.error) throw result.error;
+    process.exitCode = result.status ?? 1;
+    if (process.exitCode === 0) {
+      const report = JSON.parse(await readFile(reportPath, "utf8"));
+      assert.equal(report.status, "pass");
+      assert.deepEqual(report.proofIds, ["S14.1.share-sheet-contents"]);
+      process.stdout.write(
+        "PASS S14.1.share-sheet-contents: exact shared metadata, summaries and exclusions.\n"
+      );
+    }
+  } finally {
+    await rm(profile, { recursive: true, force: true });
+  }
 }

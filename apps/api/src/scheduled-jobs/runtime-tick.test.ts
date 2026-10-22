@@ -292,6 +292,48 @@ describe.skipIf(!testUrl)("Scheduled Job Local AI Runtime dispatch", () => {
     ).toHaveLength(1);
   });
 
+  it("allows only one of two online devices to claim the same scheduled run", async () => {
+    const secondDevice = randomUUID();
+    await pool.query(
+      `insert into device_credentials(owner_user_id,credential_key_id,upstream_backend_id,
+         device_instance_id,verifier_kind,verifier_hash,operation_families)
+       values($1,$2,'personal',$3,'secret_hash',$4,array['managed_execution'])`,
+      [owner, `hq602-${randomUUID()}`, secondDevice, "b".repeat(64)]
+    );
+    const job = await createJob();
+    const run = await jobs.runNow(owner, job.id, job.version, randomUUID());
+    const dependencies = {
+      jobs,
+      managed,
+      agents,
+      teamAuthority: async () => {
+        throw new Error("Personal Job must not request Team authority");
+      }
+    };
+    const [assigned, otherDevice] = await Promise.all([
+      tickScheduledJobs(
+        dependencies,
+        { ownerUserId: owner, deviceId: device, deploymentId: deployment },
+        new Date(0)
+      ),
+      tickScheduledJobs(
+        dependencies,
+        {
+          ownerUserId: owner,
+          deviceId: secondDevice,
+          deploymentId: randomUUID()
+        },
+        new Date(0)
+      )
+    ]);
+    expect(assigned.needsReview).toBe(1);
+    expect(otherDevice.materialized).toBe(0);
+    expect(otherDevice.needsReview).toBe(0);
+    expect(
+      (await jobs.attemptHistory(owner, job.id, run.id)).attempts
+    ).toHaveLength(1);
+  });
+
   it("commits one attempt, queued prompt, and exact binding together; terminal recovery is idempotent", async () => {
     const executionId = randomUUID();
     await pool.query(

@@ -104,6 +104,28 @@ export const validateHq711 = async (window) => {
       true,
       "colleague note visible without chat link"
     );
+    const colleagueProgress = await js(`(() => {
+      const note = document.querySelector('.hq-shared-project__privacy');
+      const row = note?.closest('.hq-shared-project__row');
+      const link = row?.querySelector('.hq-shared-project__pr-link');
+      return {
+        status: row?.closest('[aria-label]')?.getAttribute('aria-label'),
+        step: row?.querySelector('.hq-project-view__work-item-meta')?.textContent.trim(),
+        prText: link?.textContent.trim(),
+        prHref: link?.getAttribute('href'),
+        chatLink: Boolean(row?.querySelector('a[href*="/chat/"], [data-hq-conversation]')),
+        privateExecution: row?.textContent.includes('colleague-private-execution')
+      };
+    })()`);
+    assert.equal(colleagueProgress.status, "Needs you");
+    assert.match(colleagueProgress.step, /Pull request open/);
+    assert.equal(colleagueProgress.prText, "Open PR");
+    assert.equal(
+      colleagueProgress.prHref,
+      "https://github.com/acme/repo/pull/213"
+    );
+    assert.equal(colleagueProgress.chatLink, false);
+    assert.equal(colleagueProgress.privateExecution, false);
     await js(
       "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
     );
@@ -164,5 +186,22 @@ export const validateHq711 = async (window) => {
     );
     await capture(`empty-initial-${theme}.png`, "Just me");
   }
+  await writeFile(
+    resolve(scratch, "hq-711", "HQ711.native.json"),
+    JSON.stringify(
+      {
+        id: "HQ711.native",
+        status: "pass",
+        proofIds: [
+          "S03.1.privacy-note",
+          "S03.1.no-colleague-chat-link",
+          "S03.1.safe-status-step-pr"
+        ],
+        scope: "simulated IPC renderer fixture"
+      },
+      null,
+      2
+    ) + "\n"
+  );
   console.log(`HQ-711 Native fixture proof passed: ${output}`);
 };

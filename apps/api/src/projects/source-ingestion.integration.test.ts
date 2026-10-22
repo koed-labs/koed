@@ -382,6 +382,13 @@ describe.skipIf(!testUrl)("Project Source real Note ingestion", () => {
       Buffer.from("Forget after Source trash."),
       "trash-one"
     );
+    const sentinelSessionId = randomUUID();
+    await pool.query(
+      `insert into sessions(id,owner_user_id,source_runtime,capture_method,
+         automatic_personal_project_id)
+       values($1,$2,'codex-cli','api',$3)`,
+      [sentinelSessionId, owner, project.id]
+    );
     const removals = createProjectSourceRemovalRepository(pool);
     const removal = await removals.begin(
       owner,
@@ -397,6 +404,26 @@ describe.skipIf(!testUrl)("Project Source real Note ingestion", () => {
     expect(
       (await removals.latest(owner, project.id, trashFirst.sourceId))?.state
     ).toBe("complete");
+    const retainedSession = await pool.query<{
+      personal_deleted_at: Date | null;
+    }>("select personal_deleted_at from sessions where id=$1", [
+      sentinelSessionId
+    ]);
+    expect(retainedSession.rows[0]?.personal_deleted_at).toBeNull();
+    for (const noteId of [trashFirst.noteId, recoveryRead.noteId]) {
+      const oneNoteAndEvent = await pool.query<{
+        revisions: number;
+        events: number;
+      }>(
+        `select count(distinct revision.id)::int as revisions,
+                count(distinct event.id)::int as events
+           from personal_note_revisions revision
+           left join memory_events event on event.id=revision.memory_event_id
+          where revision.note_id=$1`,
+        [noteId]
+      );
+      expect(oneNoteAndEvent.rows[0]).toEqual({ revisions: 1, events: 1 });
+    }
     expect(
       await sources.forgetDocumentNoteRevision(owner, trashFirst.noteRevisionId)
     ).toBe(true);

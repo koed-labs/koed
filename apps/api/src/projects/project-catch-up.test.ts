@@ -9,6 +9,7 @@ import {
 const at = "2026-10-20T10:00:00.000Z";
 describe("Personal Project catch-up input", () => {
   it("keeps finished Work Items and merged PRs out of Team catch-up prose", () => {
+    const teamMessageSentinel = "PRIVATE_TEAM_MESSAGE_NEVER_FOR_AGENT";
     const teamWindow = {
       teamBackendId: "team",
       workspaceProjectId: randomUUID(),
@@ -42,17 +43,25 @@ describe("Personal Project catch-up input", () => {
       ],
       teamWindow: {
         ...teamWindow,
+        messages: [{ text: teamMessageSentinel }],
         events: [
           ...teamWindow.events,
-          { kind: "source_added", ref: "source-public", at } as const
+          { kind: "source_added", ref: "source-public", at } as const,
+          {
+            kind: "team_message",
+            ref: teamMessageSentinel,
+            text: teamMessageSentinel,
+            at
+          }
         ]
-      }
+      } as never
     });
     expect(prepared.instruction).toContain('"source_added":1');
     expect(prepared.instruction).not.toContain("pr_merged");
     expect(prepared.instruction).not.toContain("work_item_done");
     expect(prepared.instruction).not.toContain("pr-private");
     expect(prepared.instruction).not.toContain("done-private");
+    expect(prepared.instruction).not.toContain(teamMessageSentinel);
     expect(prepared.instruction).toContain("Owner Plan.md");
     expect(prepared.instruction).toContain(
       "document Work Item action is unavailable here"
