@@ -38,6 +38,7 @@ import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import type { DesktopApi } from "../../../types.js";
 import { clientMetaLine, summarizeCapabilities } from "../ai-client-card.js";
 import { AiClientStatusDialog } from "./AiClientStatusDialog.js";
+import { EmbeddingStateDetails } from "./EmbeddingStateDetails.js";
 import { LocalAiClientSettingsSection } from "./LocalAiClientSettingsSection.js";
 import { useDesktopStatus } from "../../state/use-status.js";
 import "../ai-client-card.css";
@@ -1161,6 +1162,9 @@ function AdvancedSection({
           </dl>
         )}
       </details>
+      {status && status.embeddingState !== undefined ? (
+        <EmbeddingStateDetails state={status.embeddingState} />
+      ) : null}
       {snapshot.error || actionError ? (
         <p className="koed-diagnostic-error" role="alert">
           {actionError ?? snapshot.error}

@@ -54,6 +54,7 @@ import {
   nodeCliProcessEnvironment,
   resolveTeamCollaborationEnabled,
   type AiClientCapabilityDescriptor,
+  type EmbeddingStateSnapshot,
   type LocalAiClientDefault,
   type LocalAiClientFlowKey,
   type LocalAiClientRuntimeAssignment
@@ -953,6 +954,34 @@ const fetchAiClientCapabilityReadModel = async (
       return null;
     }
     return body as CapabilitySnapshotReadModel;
+  } catch {
+    return null;
+  }
+};
+
+const fetchEmbeddingState = async (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>,
+  apiUrl: string,
+  fetcher: typeof globalThis.fetch
+): Promise<EmbeddingStateSnapshot | null | undefined> => {
+  const token = resolveActiveIntegrationApiToken(paths, environment, repoEnv);
+  if (!token) return null;
+  try {
+    const response = await fetcher(new URL("/v1/embedding-state", apiUrl), {
+      headers: { authorization: `Bearer ${token.token}` }
+    });
+    // 404 and 403 mean this deployment does not offer embedding state.
+    if (response.status === 404 || response.status === 403) return undefined;
+    if (!response.ok) return null;
+    const body = JSON.parse(
+      await response.text()
+    ) as Partial<EmbeddingStateSnapshot>;
+    if (typeof body.activity !== "string" || !body.service || !body.queues) {
+      return null;
+    }
+    return body as EmbeddingStateSnapshot;
   } catch {
     return null;
   }
@@ -2623,12 +2652,13 @@ export const collectKoedServerStatus = async (
   // Automatic ports identify a Desktop-owned local control plane. Without a
   // live runtime for this KOED_HOME, a healthy service on the default port may
   // be an unrelated Koed backend and must not satisfy local readiness.
-  const apiReady =
-    runtimeEnvironment.KOED_AUTO_PORTS === "1" && !runtimeProcessRunning
-      ? statusWaitingForManagedRuntime(Boolean(runtime))
-      : await statusFromApiReady(apiUrl, fetcher, {
-          dependencyMode: serverConfig.dependencyMode
-        });
+  const waitingForManagedRuntime =
+    runtimeEnvironment.KOED_AUTO_PORTS === "1" && !runtimeProcessRunning;
+  const apiReady = waitingForManagedRuntime
+    ? statusWaitingForManagedRuntime(Boolean(runtime))
+    : await statusFromApiReady(apiUrl, fetcher, {
+        dependencyMode: serverConfig.dependencyMode
+      });
   const serviceEnvironment = { ...repoEnv, ...runtimeEnvironment };
   const useBundledLocalDependencies =
     serverConfig.dependencyMode === "bundled-local";
@@ -2646,6 +2676,18 @@ export const collectKoedServerStatus = async (
     apiUrl,
     fetcher
   );
+  // Readiness can fail because the Embedding Service is degraded, which is
+  // when these diagnostics matter most, so only the managed-runtime wait skips
+  // the request.
+  const embeddingState = !waitingForManagedRuntime
+    ? await fetchEmbeddingState(
+        paths,
+        runtimeEnvironment,
+        repoEnv,
+        apiUrl,
+        fetcher
+      )
+    : null;
   const localAiRuntime = inspectLocalAiRuntime(
     runtime,
     runtimeProcessRunning,
@@ -2908,6 +2950,7 @@ export const collectKoedServerStatus = async (
     aiClientInstances,
     aiClientFlowReadiness,
     lcmSummaryService,
+    embeddingState,
     deviceIdentity,
     upstreamBackends,
     lastVerification,
