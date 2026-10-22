@@ -125,6 +125,75 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
   }
 };
 
+const createLifecycleRaceSpawn = (requests: Record<string, unknown>[]) => {
+  let managementStartupActive = false;
+  let nextPid = 12340;
+  return vi.fn(() => {
+    const child = Object.assign(childProcess(), {
+      connected: true,
+      pid: nextPid++,
+      stderr: new EventEmitter(),
+      send(message: Record<string, unknown>) {
+        requests.push(message);
+        if (message.type === "koed.desktop.supervisor.init") {
+          const ready = () =>
+            child.emit("message", {
+              type: "koed.desktop.supervisor.ready",
+              nonce: message.nonce,
+              childPid: child.pid,
+              bundleDigest: "a".repeat(64),
+              mode: message.mode
+            });
+          if (message.mode === "privacy-management") {
+            if (managementStartupActive) {
+              queueMicrotask(() => {
+                child.stderr.emit(
+                  "data",
+                  "Error: runtime lifecycle is locked; stale locks require stopped-runtime operator recovery"
+                );
+                child.stderr.emit("close");
+                child.emit("exit", 1, null);
+              });
+            } else {
+              managementStartupActive = true;
+              setTimeout(() => {
+                managementStartupActive = false;
+                ready();
+              }, 20);
+            }
+          } else {
+            queueMicrotask(ready);
+          }
+        } else if (message.type === "koed.desktop.status.request") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              ...message,
+              type: "koed.desktop.status.response",
+              result: { state: "stopped", epoch: "stopped", owned: false }
+            })
+          );
+        } else if (message.type === "koed.desktop.privacy.request") {
+          queueMicrotask(() =>
+            child.emit("message", {
+              type: "koed.desktop.privacy.response",
+              requestId: message.requestId,
+              action: message.action,
+              nonce: message.nonce,
+              result: {
+                required: ["privacy"],
+                components: { privacy: "missing" },
+                activeGeneration: null,
+                trustedSignerConfigured: true
+              }
+            })
+          );
+        }
+      }
+    });
+    return child;
+  });
+};
+
 describe("Koed server desktop manager", () => {
   it("installs first Privacy assets with stopped private authority before Team services can start", async () => {
     const requests: Record<string, unknown>[] = [];
@@ -230,6 +299,53 @@ describe("Koed server desktop manager", () => {
     expect(children.every((child) => child.kill.mock.calls.length === 1)).toBe(
       true
     );
+  });
+
+  it("serializes Team Privacy status and daemon start while stopped supervisors initialize", async () => {
+    const requests: Record<string, unknown>[] = [];
+    lifecycleControl.current = { ...stoppedManagedLifecycle };
+    const spawn = createLifecycleRaceSpawn(requests);
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {
+        KOED_HOME: "/home/test/.koed",
+        KOED_TEAM_COLLABORATION_ENABLED: "true"
+      },
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      createSupervisorInvocation: () => ({
+        command: "/electron",
+        args: ["private-entry.js"],
+        env: {}
+      }),
+      packagedResourcesPath: "/app/Contents/Resources",
+      productVersion: "0.8.1",
+      existsSync: () => true,
+      execFile: (_command, _args, _options, callback) =>
+        callback(null, "{}", ""),
+      spawn: spawn as never,
+      openExternal: async () => undefined
+    });
+
+    const privacyStatus = manager.privacyInstall.getStatus();
+    const start = manager.handlers.start_daemon();
+
+    await expect(privacyStatus).resolves.toMatchObject({
+      available: true,
+      state: "not_installed"
+    });
+    await expect(start).resolves.toMatchObject({
+      ok: true,
+      state: "starting"
+    });
+    expect(spawn).toHaveBeenCalledTimes(3);
+    expect(
+      requests.filter(
+        (request) =>
+          request.type === "koed.desktop.supervisor.init" &&
+          request.mode === "privacy-management"
+      )
+    ).toHaveLength(2);
   });
 
   it("routes privacy status/install through nonce-correlated child RPC with exact release source", async () => {

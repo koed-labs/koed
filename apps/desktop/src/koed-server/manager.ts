@@ -4976,7 +4976,24 @@ export const createKoedServerManager = ({
       { startup: false },
       statusCommandTimeoutMs
     );
-  const requestDesktopStatusRpcWithStoppedAuthority = async (
+  // Temporary authority startup and runtime start share the generation lock.
+  let lifecycleOperationQueue = Promise.resolve();
+  const withLifecycleOperation = async <T>(
+    operation: () => Promise<T>
+  ): Promise<T> => {
+    const previous = lifecycleOperationQueue;
+    let release!: () => void;
+    lifecycleOperationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+  const requestDesktopStatusRpcWithStoppedAuthorityUnlocked = async (
     action: "doctor" | "setup-core",
     startup = false,
     timeoutMs = action === "setup-core" ? 330_000 : 45_000
@@ -5009,6 +5026,21 @@ export const createKoedServerManager = ({
     } finally {
       session.child.kill("SIGTERM");
     }
+  };
+  const requestDesktopStatusRpcWithStoppedAuthority = (
+    action: "doctor" | "setup-core",
+    startup = false,
+    timeoutMs = action === "setup-core" ? 330_000 : 45_000
+  ): Promise<unknown> => {
+    if (desktopSupervisorProcess && desktopSupervisorNonce)
+      return requestDesktopStatusRpc(action, startup);
+    return withLifecycleOperation(() =>
+      requestDesktopStatusRpcWithStoppedAuthorityUnlocked(
+        action,
+        startup,
+        timeoutMs
+      )
+    );
   };
   const drainSupervisorStderr = async (child: ChildProcess) => {
     const stream = child.stderr;
@@ -5058,7 +5090,7 @@ export const createKoedServerManager = ({
     }
   };
   let stoppedPrivacyOperation: PrivateSupervisorSession | null = null;
-  const requestPrivacyRpc = async <T>(
+  const requestPrivacyRpcUnlocked = async <T>(
     action: string,
     args: Record<string, unknown> = {},
     onProgress?: (value: Record<string, unknown>) => void
@@ -5102,6 +5134,20 @@ export const createKoedServerManager = ({
       if (stoppedPrivacyOperation === session) stoppedPrivacyOperation = null;
       session.child.kill("SIGTERM");
     }
+  };
+  const requestPrivacyRpc = <T>(
+    action: string,
+    args: Record<string, unknown> = {},
+    onProgress?: (value: Record<string, unknown>) => void
+  ): Promise<T> => {
+    if (
+      action === "cancel" ||
+      (desktopSupervisorProcess && desktopSupervisorNonce)
+    )
+      return requestPrivacyRpcUnlocked<T>(action, args, onProgress);
+    return withLifecycleOperation(() =>
+      requestPrivacyRpcUnlocked<T>(action, args, onProgress)
+    );
   };
 
   const adoptLiveInstance = async (
@@ -5150,9 +5196,9 @@ export const createKoedServerManager = ({
     };
   };
 
-  const requestDaemonStart = async (
-    generation = captureStartGeneration(),
-    explicitStopAtStart = explicitStopGeneration
+  const requestDaemonStartUnlocked = async (
+    generation: number,
+    explicitStopAtStart: number
   ) => {
     if (createSupervisorInvocation && !desktopSupervisorProcess) {
       let live: Awaited<ReturnType<typeof inspectLiveInstance>>;
@@ -5267,6 +5313,13 @@ export const createKoedServerManager = ({
     const result = await runJson(["start", "--daemon"], 45_000);
     return generation === stopGeneration ? result : stoppedStartResult();
   };
+  const requestDaemonStart = (
+    generation = captureStartGeneration(),
+    explicitStopAtStart = explicitStopGeneration
+  ) =>
+    withLifecycleOperation(() =>
+      requestDaemonStartUnlocked(generation, explicitStopAtStart)
+    );
 
   const start = async () => {
     const explicitStopAtStart = explicitStopGeneration;
@@ -6019,20 +6072,21 @@ export const createKoedServerManager = ({
 
   const activatePrivacyGeneration = async (
     generationId: string
-  ): Promise<void> => {
-    const session = await openStoppedPrivacySession();
-    try {
-      await requestSupervisor(
-        session,
-        "privacy",
-        "activate",
-        { generationId },
-        30_000
-      );
-    } finally {
-      session.child.kill("SIGTERM");
-    }
-  };
+  ): Promise<void> =>
+    withLifecycleOperation(async () => {
+      const session = await openStoppedPrivacySession();
+      try {
+        await requestSupervisor(
+          session,
+          "privacy",
+          "activate",
+          { generationId },
+          30_000
+        );
+      } finally {
+        session.child.kill("SIGTERM");
+      }
+    });
 
   return {
     personalMemory,
