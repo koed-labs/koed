@@ -1,5 +1,18 @@
 # Shared Memory owner workflow model
 
+## Candidate expiry
+
+The captured-session preview command accepts an optional owner-selected
+`expiresAt`. An omitted value means no expiry. A supplied value must be a
+future timestamp and is normalized to UTC. The candidate digest, repeated
+authoritative preparation and exact share review bind that same value;
+changing it requires a fresh candidate and review. The Team Backend still
+enforces expiry when material is accessed, including after a grant freezes.
+
+Personal Note preview currently supports no expiry selection. A non-null
+expiry for that source returns `invalid_input`; it is never silently replaced
+with an indefinite grant.
+
 Project Share Policy uses these transaction boundaries. Its implementation
 and recovery rules are in [Project Share Policy backend lifecycle](./project-share-policy-backend.md).
 
@@ -307,3 +320,14 @@ canonical revision hashes still match the signed current set. Removed, changed
 or expired assertions are blocked immediately. Replacement publication and
 retirement of the old representation are atomic. A freeze during preparation
 retains the eligible published set and excludes unpublished additions.
+
+Parent lifecycle freezes lock their complete affected active grant set in grant
+ID order before locking representation policies. This applies to multi-member
+Project deletion and Team leave across owned Projects. It avoids holding one
+policy while waiting for another grant held by a publisher.
+
+Continuous preview preparation retries a rolled-back PostgreSQL serialization
+or deadlock conflict at most three times. After a known lifecycle or database
+conflict, it reads the exact grant's current freeze state; if frozen, that
+grant stops advancing. Other grants can continue. Unexpected errors propagate,
+and this recovery never adds material to frozen coverage.

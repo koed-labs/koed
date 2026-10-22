@@ -988,6 +988,7 @@ export const createWorkItemRepository = (
   ): Promise<WorkItem> {
     return inTransaction(pool, async (client) => {
       let pinnedProjectVersion: number | null = null;
+      let trustedOriginSessionId: string | null = null;
       if (input.textActionId) {
         const authorized =
           input.kind === "todo" &&
@@ -1012,6 +1013,9 @@ export const createWorkItemRepository = (
                   snapshot.projectId === projectId &&
                   Number.isSafeInteger(pinnedProjectVersion)
                 );
+              },
+              onValidatedOriginSession: (sessionId) => {
+                trustedOriginSessionId = sessionId;
               }
             }
           ));
@@ -1021,6 +1025,11 @@ export const createWorkItemRepository = (
             null
           );
       }
+      // The origin is derived from the claimed human Conversation action. The
+      // Desktop request cannot choose or forge another Conversation's source.
+      const creationInput: CreateWorkItem = trustedOriginSessionId
+        ? { ...input, originRef: trustedOriginSessionId }
+        : input;
       const projectVersion = await lockActiveProject(
         client,
         ownerUserId,
@@ -1043,7 +1052,8 @@ export const createWorkItemRepository = (
       if (existing?.rows[0]) {
         const deleted = existing.rows[0].deleted_at !== null;
         if (
-          existing.rows[0].creation_payload_hash !== creationPayloadHash(input)
+          existing.rows[0].creation_payload_hash !==
+          creationPayloadHash(creationInput)
         )
           throw new WorkItemConflictError(
             "Idempotency key has a different payload",
@@ -1082,9 +1092,9 @@ export const createWorkItemRepository = (
           input.title,
           input.goal,
           input.origin,
-          input.originRef ?? null,
+          creationInput.originRef ?? null,
           input.idempotencyKey ?? null,
-          creationPayloadHash(input),
+          creationPayloadHash(creationInput),
           input.dueOn ?? null
         ]
       );

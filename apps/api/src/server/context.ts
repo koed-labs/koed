@@ -34,6 +34,15 @@ export type CapturePolicy = Awaited<
 >;
 
 export interface ApiRouteContext {
+  getPersonalProjectForTeamCreation?(
+    ownerUserId: string,
+    projectId: string
+  ): Promise<{
+    name: string;
+    lifecycle: "active" | "deleted";
+    teamBackendId?: string | null;
+    workspaceProjectId?: string | null;
+  } | null>;
   scheduledJobs?: ScheduledJobRepository | null;
   config: ApiServerConfig;
   requireRepository(): MemorySourceRepository;

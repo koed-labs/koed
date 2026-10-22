@@ -71,6 +71,137 @@ describe.skipIf(!testUrl)(
       await admin?.end();
     });
 
+    it("creates three Plan.md Work Items once and preserves their identities on repeat", async () => {
+      const planProjectId = randomUUID();
+      await pool.query(
+        `insert into projects(id,owner_user_id,name,key) values($1,$2,'Release plan','PLAN')`,
+        [planProjectId, owner]
+      );
+      const sources = createProjectSourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const items = createWorkItemRepository(pool);
+      const managed = createManagedConversationRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const lines = [
+        "Draft the release notes",
+        "Verify the migration rollback",
+        "Publish the release checklist"
+      ];
+      const text = lines.join("\n");
+      const source = await sources.uploadDocument(owner, planProjectId, {
+        name: "Plan.md",
+        mediaType: "text/markdown",
+        bytesBase64: Buffer.from(text).toString("base64"),
+        idempotencyKey: randomUUID()
+      });
+      const claim = await sources.claimDocumentAttempt();
+      expect(claim?.id).toBe(source.attempt.id);
+      const completed = await sources.completeDocumentAttempt({
+        ownerUserId: owner,
+        attemptId: claim!.id,
+        leaseGeneration: claim!.leaseGeneration,
+        text
+      });
+      await projectPersonalNoteToMemory(
+        {
+          repository: {
+            ...createMemorySourceRepository(pool, {
+              envelopeEncryptionProvider: provider
+            }),
+            ...createCollaborationRepository(pool, {
+              envelopeEncryptionProvider: provider
+            })
+          },
+          enqueueEmbedding: async () => ({
+            queued: false,
+            inline: false,
+            reason: "test"
+          })
+        },
+        { ownerUserId: owner, note: completed.note }
+      );
+      await sources.finishDocumentAttempt({
+        ownerUserId: owner,
+        attemptId: claim!.id,
+        leaseGeneration: claim!.leaseGeneration
+      });
+      const read = await sources.readDocument(
+        owner,
+        planProjectId,
+        source.source.id
+      );
+      expect(read.noteRevisionId).toBe(completed.note.revisionId);
+      const created = await managed.createManagedConversation(
+        { userId: owner },
+        {
+          projectId: planProjectId,
+          contextKind: "project",
+          provider: "codex",
+          aiClientInstanceId: "codex.syllabus",
+          model: "gpt-test",
+          permissionMode: "supervised",
+          runnerKind: "local_device",
+          runnerDeploymentId: randomUUID(),
+          runnerDeviceId: randomUUID(),
+          idempotencyKey: randomUUID(),
+          initialPrompt: "Turn Plan.md into three Work Items"
+        }
+      );
+      const leaseToken = randomUUID();
+      await pool.query(
+        `update managed_conversation_commands set state='dispatching',lease_token=$2,
+           lease_expires_at=now()+interval '2 minutes',blocked_on_kind=null,blocked_on_id=null
+         where id=$1`,
+        [created.command.id, leaseToken]
+      );
+      const request = {
+        ownerUserId: owner,
+        projectId: planProjectId,
+        sourceId: source.source.id,
+        sourceRevisionId: read.sourceRevisionId,
+        noteRevisionId: read.noteRevisionId,
+        sourceText: read.text,
+        executionId: created.execution.id,
+        executionGeneration: created.execution.executionGeneration,
+        commandId: created.command.id,
+        leaseToken,
+        proposals: lines.map((line, index) => ({
+          lineNumber: index + 1,
+          sourceLine: line,
+          title: line,
+          goal: line,
+          dueOn: null
+        }))
+      };
+      const first = await items.createFromDocument(request);
+      expect(first).toMatchObject({ created: 3, alreadyExisting: 0 });
+      expect(new Set(first.items.map((item) => item.id)).size).toBe(3);
+      const repeat = await items.createFromDocument({
+        ...request,
+        proposals: request.proposals.map((proposal) => ({
+          ...proposal,
+          title: `Rephrased: ${proposal.title}`
+        }))
+      });
+      expect(repeat).toMatchObject({ created: 0, alreadyExisting: 3 });
+      expect(repeat.items.map((item) => item.id).sort()).toEqual(
+        first.items.map((item) => item.id).sort()
+      );
+      expect(
+        Number(
+          (
+            await pool.query(
+              `select count(*) as total from project_work_items
+               where owner_user_id=$1 and project_id=$2 and origin_ref=$3`,
+              [owner, planProjectId, source.source.id]
+            )
+          ).rows[0]?.total
+        )
+      ).toBe(3);
+    }, 120_000);
+
     it("uses exact non-checkbox syllabus evidence, preserves duplicates across changed revisions, and denies stale lease", async () => {
       const sources = createProjectSourceRepository(pool, {
         envelopeEncryptionProvider: provider

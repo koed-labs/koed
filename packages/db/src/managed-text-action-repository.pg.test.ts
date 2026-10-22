@@ -828,6 +828,17 @@ describe.skipIf(!testUrl)("HQ-504 exact managed text-action authority", () => {
       textActionId: todoAction!.id
     });
     expect(item.title).toBe("Exact to-do");
+    expect(item.originRef).toBe(f.sessionId);
+    const replayedItem = await workItems.create(f.owner, f.project.id, {
+      kind: "todo",
+      title: "Exact to-do",
+      goal: "Exact to-do",
+      origin: "koed_text_action",
+      idempotencyKey: todoAction!.id,
+      textActionId: todoAction!.id
+    });
+    expect(replayedItem.id).toBe(item.id);
+    expect(replayedItem.originRef).toBe(f.sessionId);
     expect(
       (
         await f.actions.completeManagedTextAction(f.actor, {

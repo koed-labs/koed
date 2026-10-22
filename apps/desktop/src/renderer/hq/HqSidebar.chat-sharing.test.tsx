@@ -101,7 +101,8 @@ describe("HQ exact chat summary controls", () => {
       projectId: string,
       sessionId: string
     ) => Promise<{ state: "pending" | "activated" | "canceled" }>,
-    shownProjects: readonly DesktopProject[] = graph
+    shownProjects: readonly DesktopProject[] = graph,
+    sharedAudienceNames: Readonly<Record<string, readonly string[]>> = {}
   ) => {
     await act(async () =>
       root.render(
@@ -111,6 +112,7 @@ describe("HQ exact chat summary controls", () => {
           onMakeChatPrivate={makePrivate}
           onShareChatAgain={shareAgain}
           onShareUnsharedChat={shareUnshared}
+          sharedAudienceNames={sharedAudienceNames}
           onOpenSearchAndCommands={() => undefined}
           onSelectConversation={() => undefined}
           onSelectProject={() => undefined}
@@ -133,6 +135,27 @@ describe("HQ exact chat summary controls", () => {
     [
       ...container.querySelectorAll<HTMLButtonElement>("[role='menuitem']")
     ].find((button) => button.textContent === name);
+
+  it("announces the exact member only after an activated summary receipt", async () => {
+    const offer = vi.fn().mockResolvedValue({ state: "activated" });
+    await render(
+      "owner:profile",
+      vi.fn().mockResolvedValue("unshared"),
+      vi.fn(),
+      project,
+      undefined,
+      offer,
+      graph,
+      { [projectId]: ["Mark"] }
+    );
+    await openMenu();
+    expect(container.textContent).not.toContain("Summary shared with Mark.");
+    await act(async () => action("Share a summary")!.click());
+    expect(offer).toHaveBeenCalledExactlyOnceWith(projectId, sessionId);
+    expect(container.querySelector(".hq-project-toast")?.textContent).toContain(
+      "Summary shared with Mark."
+    );
+  });
 
   it("offers Make private only after exact status and never claims private on cancellation", async () => {
     const status = vi.fn().mockResolvedValue("shared");

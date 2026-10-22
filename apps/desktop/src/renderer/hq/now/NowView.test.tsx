@@ -109,13 +109,20 @@ describe("Now view", () => {
       workspaceAccess: "write",
       expiresAt: "2026-10-27T09:00:00.000Z"
     };
-    const decideInvitation = vi.fn(async () => invite);
+    let teamPrincipal: string | null = null;
+    const decideInvitation = vi.fn(async () => {
+      teamPrincipal = "remote-principal";
+      return invite;
+    });
     const sharedJoinProject = vi.fn(async () => ({ id: "personal-project" }));
     const onJoinedProject = vi.fn(async () => {});
     const client = {
       current: () => ({
         connection: { backendId: "team-backend", connectedAt: null },
-        navigation: { personalOwner: { id: ownerId }, teamPrincipal: null }
+        navigation: {
+          personalOwner: { id: ownerId },
+          teamPrincipal: teamPrincipal ? { id: teamPrincipal } : null
+        }
       }),
       currentRemoteUrl: () => "https://team.example.test",
       subscribe: () => () => {},

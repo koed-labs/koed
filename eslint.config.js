@@ -35,6 +35,17 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked
   },
   {
+    // Electron sandboxed preloads support CommonJS and require("electron").
+    files: ["apps/desktop/scripts/hq901-*-preload.cjs"],
+    languageOptions: { sourceType: "commonjs", globals: globals.node },
+    rules: {
+      "@typescript-eslint/no-require-imports": [
+        "error",
+        { allow: ["^electron$"] }
+      ]
+    }
+  },
+  {
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
       parserOptions: {

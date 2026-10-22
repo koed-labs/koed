@@ -712,7 +712,18 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
   collaborationActionGrantIntentSchema.parse(intent);
   switch (intent.intent) {
     case "collaboration.create_team":
-      return { action: "team.create", body: { name: intent.name } };
+      return {
+        action: "team.create",
+        body: {
+          name: intent.name,
+          ...(intent.origin
+            ? {
+                origin: intent.origin,
+                personalProjectId: intent.personalProjectId
+              }
+            : {})
+        }
+      };
     case "collaboration.project_share_policy_enable":
       return {
         action: "shared_memory.project_share_policy.enable",

@@ -48,6 +48,7 @@ const now = () => new Date().toISOString();
 const team = (overrides: Partial<TeamRecord> = {}): TeamRecord => ({
   id: teamId,
   name: "Lifecycle Team",
+  origin: "named",
   version: 1,
   lifecycle: "active",
   entitlementStatus: "active",

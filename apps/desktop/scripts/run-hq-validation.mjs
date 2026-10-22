@@ -5,10 +5,12 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import electronPath from "electron";
+import { compileBrowserParity } from "./hq-browser-parity.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const desktopDir = resolve(scriptDir, "..");
 const repoRoot = resolve(scriptDir, "../../..");
+const chainStartedAt = Date.now();
 const scratchDir = resolve(repoRoot, "scratch");
 const sourcesReportPath = resolve(scratchDir, "hq-205", "browser-report.json");
 const projectViewReportPath = resolve(
@@ -60,6 +62,7 @@ try {
       cwd: desktopDir,
       env: {
         ...process.env,
+        KOED_HQ_ACCEPTANCE_CHAIN: "1",
         KOED_HQ_USER_DATA_DIR: userDataPath,
         KOED_HQ205_DELEGATED_S09: "1",
         KOED_HQ207_DELEGATED_S01_S11: "1",
@@ -752,7 +755,7 @@ try {
         }
         assert.ok(report.screenshots.includes("scheduled-review-light.png"));
         process.stdout.write(
-          "PASS HQ603.native [HQ-603]: S12 Scheduled summary, expansion, Needs you, Job sidebar/actions and exact approval review, desktop light/dark; remaining compound S12.1 clauses stay SKIP.\n"
+          "PASS HQ603.native [HQ-603]: S12 Scheduled summary, expansion, Needs you, Job sidebar/actions and exact approval review, desktop light/dark; remaining S12.1 clauses run in the consolidated Now journey.\n"
         );
       }
     } finally {
@@ -810,7 +813,7 @@ try {
           { id: "HQ407.native", owner: "HQ-407", status: "pass" }
         );
         process.stdout.write(
-          "PASS HQ407.native [HQ-407]: viewer-local deadlines in Now and Project, exact Team row focus, shared Due CAS and offline state; S21.1 remains compound pending HQ-406/HQ-713.\n"
+          "PASS HQ407.native [HQ-407]: viewer-local deadlines in Now and Project, exact Team row focus, shared Due CAS and offline state; S21.1 document and audience clauses run in this journey; real counterparts run in HQ-713.\n"
         );
       }
     } finally {
@@ -839,7 +842,7 @@ try {
           { id: "HQ406.native", owner: "HQ-406", status: "pass" }
         );
         process.stdout.write(
-          "PASS HQ406.native [HQ-406]: v50 document action, simple User prompt and separate selected Source in new/active private HQ; compound S06.1 text/offer routing awaits HQ-504.\n"
+          "PASS HQ406.native [HQ-406]: v50 document action, simple User prompt and separate selected Source in new/active private HQ; S06.1 text, offered and document receipt cycles run below.\n"
         );
       }
     } finally {
@@ -911,7 +914,7 @@ try {
         assert.equal(report.coverage.claimedReadOnlyRecoveryVisible, true);
         assert.equal(report.coverage.nativeDeleteReviewVisible, true);
         process.stdout.write(
-          "PASS HQ504.native [HQ-504]: new HQ light/dark compact Ask First controls, decline without claim/effect, claimed read-only recovery, and exact Native delete review. Real mutation authority is proved by separate PostgreSQL tests; compound S18.3/N12.U remains pending.\n"
+          "PASS HQ504.native [HQ-504]: new HQ light/dark compact Ask First controls, decline without claim/effect, claimed read-only recovery, and exact Native delete review. Real mutation authority is proved by separate PostgreSQL tests; typed S18.3 runs below and N12.U is required by the parity gate.\n"
         );
       }
     } finally {
@@ -984,7 +987,7 @@ try {
         });
         assert.ok(report.screenshots.includes("deck-to-sources-dark.png"));
         process.stdout.write(
-          "PASS S22.1.study and S22.1.text [HQ-802/HQ-803]: new-HQ study and generated Chapter 7 action receipt to exact Deck in light/dark. Compound shared two-user S22.1/I26.1 awaits HQ-713.\n"
+          "PASS S22.1.study and S22.1.text [HQ-802/HQ-803]: new-HQ study and generated Chapter 7 action receipt to exact Deck in light/dark. Shared two-user S22.1/I26.1 is separately required by the HQ-713 parity gate.\n"
         );
       }
     } finally {
@@ -1024,18 +1027,21 @@ try {
         );
         assert.equal(report.nativeGrantAuthorityProved, false);
         assert.equal(report.nativeReviewInterceptionProved, true);
-        assert.deepEqual(report.scenarioAssertions, [
-          {
-            id: "S15.2",
-            owner: "HQ-702",
-            status: "pass",
-            scope: "renderer-and-native-ui",
-            exactSummaryQuestion: true,
-            nativeApproveAndCancel: true,
-            separateTranscriptAndCuratedDisclosure: true,
-            conversationSourceAccessPublicationProved: false
-          }
-        ]);
+        assert.deepEqual(
+          report.scenarioAssertions.filter((item) => item.id === "S15.2"),
+          [
+            {
+              id: "S15.2",
+              owner: "HQ-702",
+              status: "pass",
+              scope: "renderer-and-native-ui",
+              exactSummaryQuestion: true,
+              nativeApproveAndCancel: true,
+              separateTranscriptAndCuratedDisclosure: true,
+              conversationSourceAccessPublicationProved: false
+            }
+          ]
+        );
         assert.ok(
           report.assertions.includes(
             "exact chat-summary question in isolated Native review, approve and cancel"
@@ -1090,7 +1096,7 @@ try {
           "native-chat-summary-dark.png"
         ]);
         process.stdout.write(
-          "PASS S15.2 UI [HQ-702]: exact summary question, separate transcript/Curated disclosure, and Native approve/cancel in new HQ light/dark. Real no-CSA publication is proved separately in PostgreSQL; compound S15.1/S15.3 and two-user acceptance remain pending.\n"
+          "PASS S15.2 UI [HQ-702]: exact summary question, separate transcript/Curated disclosure, and Native approve/cancel in new HQ light/dark. Real no-CSA publication is proved separately in PostgreSQL; S15.1/S15.3 joined-state proof runs below and real effects run in HQ-713.\n"
         );
       }
     } finally {
@@ -1128,17 +1134,38 @@ try {
             scope: "renderer-fixture"
           }
         );
-        assert.deepEqual(report.scenarioAssertions, [
-          { id: "S13.1", detail: "pre-join summary-sharing disclosure" },
-          {
-            id: "S14.1",
-            detail: "addressed invite scope and Native decision controls"
-          }
-        ]);
+        assert.deepEqual(
+          report.scenarioAssertions.filter((item) =>
+            ["S13.1", "S14.1"].includes(item.id)
+          ),
+          [
+            { id: "S13.1", detail: "pre-join summary-sharing disclosure" },
+            {
+              id: "S14.1",
+              detail: "addressed invite scope and Native decision controls"
+            }
+          ]
+        );
+        assert.deepEqual(
+          report.scenarioAssertions.map((item) => item.id),
+          [
+            "S13.1",
+            "S01.3.four-groups-project-chat",
+            "S13.1.accepted-join",
+            "S13.1.private-welcome",
+            "S15.1.named-team-order",
+            "S15.3.named-team-fold",
+            "S16.1.loose-chat-cap",
+            "S16.1.typed-roster-question",
+            "S14.1"
+          ]
+        );
         assert.equal(report.nativeGrantAuthorityProved, false);
         assert.deepEqual(report.screenshots, [
           "invitation-light.png",
-          "invitation-dark.png"
+          "invitation-dark.png",
+          "joined-hq-light.png",
+          "joined-hq-dark.png"
         ]);
         process.stdout.write(
           "PASS S13.1/S14.1 UI [HQ-703]: recipient invitation, pre-join summary notice, and decision controls in new HQ light/dark. API authority and compound joined-state acceptance are proved separately.\n"
@@ -1220,4 +1247,134 @@ if (process.exitCode === undefined || process.exitCode === 0) {
   } finally {
     await rm(profile, { recursive: true, force: true });
   }
+}
+
+// Remaining HQ-901 journeys use production clients under isolated Native
+// profiles. Their reports still have to satisfy every mapped clause below.
+for (const [script, variable, prefix] of [
+  [
+    "validate-hq901-work-origin.mjs",
+    "KOED_HQ901_WORK_ORIGIN_USER_DATA_DIR",
+    "hq901-origin-profile-"
+  ],
+  [
+    "validate-hq901-work-native.mjs",
+    "KOED_HQ901_WORK_NATIVE_USER_DATA_DIR",
+    "hq901-work-profile-"
+  ],
+  [
+    "validate-hq901-work-typed-merge.mjs",
+    "KOED_HQ901_WORK_TYPED_USER_DATA_DIR",
+    "hq901-work-typed-merge-profile-"
+  ],
+  [
+    "validate-hq901-work-typed-native.mjs",
+    "KOED_HQ901_WORK_TYPED_NATIVE_USER_DATA_DIR",
+    "hq901-work-typed-native-profile-"
+  ],
+  [
+    "validate-hq901-work-ticketless.mjs",
+    "KOED_HQ901_WORK_TICKETLESS_USER_DATA_DIR",
+    "hq901-work-ticketless-profile-"
+  ],
+  [
+    "validate-hq901-work-ticket-loop.mjs",
+    "KOED_HQ901_WORK_TICKET_LOOP_USER_DATA_DIR",
+    "hq901-work-ticket-loop-profile-"
+  ],
+  [
+    "validate-hq901-work-closing-citation.mjs",
+    "KOED_HQ901_WORK_CLOSING_USER_DATA_DIR",
+    "hq901-work-closing-citation-profile-"
+  ],
+  [
+    "validate-hq901-work-catchup.mjs",
+    "KOED_HQ901_WORK_CATCHUP_USER_DATA_DIR",
+    "hq901-work-catchup-profile-"
+  ],
+  [
+    "validate-hq901-work-document-cycle.mjs",
+    "KOED_HQ901_WORK_DOCUMENT_USER_DATA_DIR",
+    "hq901-work-document-cycle-profile-"
+  ],
+  [
+    "validate-hq901-work-todo-cycle.mjs",
+    "KOED_HQ901_WORK_TODO_USER_DATA_DIR",
+    "hq901-work-todo-cycle-profile-"
+  ],
+  [
+    "validate-hq901-now.mjs",
+    "KOED_HQ901_NOW_USER_DATA_DIR",
+    "hq901-now-profile-"
+  ],
+  [
+    "validate-hq901-invites.mjs",
+    "KOED_HQ901_INVITES_USER_DATA_DIR",
+    "hq901-invites-profile-"
+  ],
+  [
+    "validate-hq901-forget.mjs",
+    "KOED_HQ901_FORGET_USER_DATA_DIR",
+    "hq901-forget-profile-"
+  ],
+  [
+    "validate-hq901-prompt-native.mjs",
+    "KOED_HQ901_PROMPT_USER_DATA_DIR",
+    "hq901-prompts-profile-"
+  ],
+  [
+    "validate-hq901-citation-lifecycle.mjs",
+    "KOED_HQ901_CITATION_USER_DATA_DIR",
+    "hq901-citation-profile-"
+  ]
+]) {
+  if (process.exitCode !== undefined && process.exitCode !== 0) break;
+  const profile = await mkdtemp(resolve(scratchDir, prefix));
+  try {
+    const result = spawnSync(electronPath, [`scripts/${script}`], {
+      cwd: desktopDir,
+      env: { ...process.env, [variable]: profile },
+      stdio: "inherit"
+    });
+    if (result.error) throw result.error;
+    process.exitCode = result.status ?? 1;
+  } finally {
+    await rm(profile, { recursive: true, force: true });
+  }
+}
+
+if (process.exitCode === undefined || process.exitCode === 0) {
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/validate-hq901-work-text-receipts.mjs"],
+    {
+      cwd: desktopDir,
+      env: process.env,
+      stdio: "inherit"
+    }
+  );
+  if (result.error) throw result.error;
+  process.exitCode = result.status ?? 1;
+}
+
+if (process.exitCode === undefined || process.exitCode === 0) {
+  const report = compileBrowserParity(repoRoot, chainStartedAt);
+  const path = resolve(scratchDir, "hq-901", "simulated-parity.json");
+  await mkdir(dirname(path), { recursive: true });
+  await (
+    await import("node:fs/promises")
+  ).writeFile(path, JSON.stringify(report, null, 2) + "\n");
+  for (const item of report.results) {
+    process.stdout.write(
+      `${item.status === "pass" ? "PASS" : "FAIL"} ${item.id}: ${
+        item.status === "pass"
+          ? "all fresh simulated-IPC clauses passed"
+          : item.missing.join("; ")
+      }\n`
+    );
+  }
+  process.stdout.write(
+    `Simulated HQ parity: ${report.passed}/${report.total}. Real/unit prerequisites require test:hq-parity.\n`
+  );
+  if (!report.complete) process.exitCode = 1;
 }

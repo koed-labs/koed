@@ -24,7 +24,8 @@ async function run() {
       show: false,
       width: 1280,
       height: 800,
-      useContentSize: true
+      useContentSize: true,
+      webPreferences: { backgroundThrottling: false }
     });
     const js = (source) => window.webContents.executeJavaScript(source);
     const waitFor = async (source) => {

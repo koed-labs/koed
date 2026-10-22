@@ -1804,6 +1804,30 @@ export class SharedMemoryAuthorizationError extends Error {
   }
 }
 
+export const retryContinuousPreviewAfterFreeze = async <T>(
+  createPreview: () => Promise<T>,
+  grantIsFrozen: () => Promise<boolean>
+): Promise<{ frozen: true } | { frozen: false; preview: T }> => {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return { frozen: false, preview: await createPreview() };
+    } catch (error) {
+      const code = (error as { code?: string } | null)?.code;
+      const transientDatabaseConflict = code === "40001" || code === "40P01";
+      if (
+        !transientDatabaseConflict &&
+        !(error instanceof SharedMemoryConflictError) &&
+        !(error instanceof SharedMemoryAuthorizationError)
+      ) {
+        throw error;
+      }
+      if (await grantIsFrozen()) return { frozen: true };
+      if (!transientDatabaseConflict || attempt === 2) throw error;
+    }
+  }
+  throw new Error("Continuous preview retry exhausted without an error");
+};
+
 export class SharedMemorySemanticDerivativePendingError extends Error {
   constructor() {
     super("Shared Memory semantic privacy materialization is pending");
@@ -21178,34 +21202,51 @@ export const createSharedMemoryRepository = (
             (representation) => representation !== activationRepresentation
           )
         ];
+        let frozenDuringAdvance = false;
         for (const representation of representations) {
-          let preview: SharedMemoryPersistedPreviewRecord;
+          let preview: SharedMemoryPersistedPreviewRecord | null = null;
           try {
-            preview = await createAuthoritativeSourcePreview(
-              actor,
-              {
-                logicalMemoryId: stringValue(row.logical_memory_id),
-                remoteReplicaId: stringValue(row.remote_replica_id),
-                teamId: stringValue(row.team_id),
-                teamWorkspaceId: stringValue(row.team_workspace_id),
-                representation,
-                sourceCapabilities,
-                activationRepresentation,
-                mode: stringValue(row.mode) as SharedMemoryConsentMode,
-                maximumFidelity,
-                includeCuratedMemory
-              },
-              grantId
+            const result = await retryContinuousPreviewAfterFreeze(
+              () =>
+                createAuthoritativeSourcePreview(
+                  actor,
+                  {
+                    logicalMemoryId: stringValue(row.logical_memory_id),
+                    remoteReplicaId: stringValue(row.remote_replica_id),
+                    teamId: stringValue(row.team_id),
+                    teamWorkspaceId: stringValue(row.team_workspace_id),
+                    representation,
+                    sourceCapabilities,
+                    activationRepresentation,
+                    mode: stringValue(row.mode) as SharedMemoryConsentMode,
+                    maximumFidelity,
+                    includeCuratedMemory
+                  },
+                  grantId
+                ),
+              async () => {
+                const freeze = await pool.query<{ frozen_at: Date | null }>(
+                  "select frozen_at from team_memory_share_grants where id=$1",
+                  [grantId]
+                );
+                return Boolean(freeze.rows[0]?.frozen_at);
+              }
             );
+            if (result.frozen) {
+              frozenDuringAdvance = true;
+            } else {
+              preview = result.preview;
+            }
           } catch (error) {
             if (
               representation !== activationRepresentation &&
               error instanceof SharedMemorySourceMaterialAbsentError
-            ) {
+            )
               continue;
-            }
             throw error;
           }
+          if (frozenDuringAdvance) break;
+          if (!preview) continue;
           if (preview.sourceRevision !== input.sourceRevision) {
             throw new SharedMemoryConflictError(
               "Continuous preview revision does not match the synced replica"

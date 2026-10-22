@@ -157,6 +157,15 @@ interface ActiveLocalUser {
 }
 
 interface CollaborationCommandRouteOptions {
+  getPersonalProjectForTeamCreation?: (
+    ownerUserId: string,
+    projectId: string
+  ) => Promise<{
+    name: string;
+    lifecycle: "active" | "deleted";
+    teamBackendId?: string | null;
+    workspaceProjectId?: string | null;
+  } | null>;
   deploymentProfile: RouteDeploymentMode;
   resolveVerifiedLocalDeploymentId: () => string;
   teamCollaborationEnabled: boolean;
@@ -464,6 +473,7 @@ const remoteTeamSchema = z
   .object({
     id: z.uuid(),
     name: z.string().min(1),
+    origin: z.enum(["named", "project_share"]).optional(),
     version: z.number().int().safe().positive(),
     lifecycle: z.enum([
       "active",
@@ -2101,6 +2111,7 @@ const loadRemoteTeamNavigation = async (input: {
     navigationTeams.push({
       id: team.id,
       name: team.name,
+      origin: team.origin ?? "named",
       role: membership.role,
       lifecycle: team.lifecycle,
       unreadCount: threads.reduce(
@@ -3982,7 +3993,15 @@ export const registerCollaborationCommandRoute = (
             resolveInvitationAgentDisplayName: (invite) =>
               options
                 .requireCollaborationRepository()
-                .resolveInvitationAgentDisplayName({ userId: user.id }, invite)
+                .resolveInvitationAgentDisplayName({ userId: user.id }, invite),
+            getPersonalProjectForTeamCreation:
+              options.getPersonalProjectForTeamCreation
+                ? (projectId) =>
+                    options.getPersonalProjectForTeamCreation!(
+                      user.id,
+                      projectId
+                    )
+                : undefined
           }
         );
         if (dispatched.status === "handled") return dispatched.result;

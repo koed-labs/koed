@@ -47,31 +47,44 @@ Skipped cases, duplicate test titles, unrelated passing tests, stale Native
 reports and simulated results cannot supply real-backend proof. A successful
 adjacent test never closes a clause listed as unproved.
 
-## Findings before cut-over
+## Journey boundaries
 
-The parity review identified two production behavior gaps that the earlier
-component proofs did not cover:
+Conversation-origin Work Items derive their source Session from the exact
+claimed human action. The row and brief show the readable origin and current
+work; the origin link opens that Conversation without borrowing the Work
+Item's separate execution identity.
 
-1. **S02.1: Conversation-origin work without a ticket.** A keyless Work Item
-   can represent this work and already has a brief and live log. The current
-   row omits its origin/activity description, the brief renders an opaque
-   `originRef`, and the source-Conversation link is absent. The close control
-   exists, as it does in v50; its return-to-chat behavior still needs the journey
-   assertion. The approved origin-linked journey needs a trusted producer and
-   executable proof. A brief for an unrelated runtime without a Work Item is
-   not an additional requirement.
-2. **S15.1 / S15.3: named Team navigation.** The sidebar has Just me and Shared
-   groups. Named Teams and their Projects are available through management
-   controls, but the approved named Team sidebar group and fold are missing.
-   Add the named group using authoritative Team and Project links. Keep the
-   small owner-managed Team used by a separately shared Project under Shared.
+Named Team groups use immutable Team creation origin and authoritative backend,
+Workspace and Project links. Separately shared Projects remain under Shared;
+renaming a Team never changes this placement. See
+[Team sidebar origin](team-sidebar-origin.md).
 
-The inventories also retain unproved compound journeys, including text-driven
-actions, the exact Native merge flow, full invitation acceptance and ordinary
-agent-turn prompt isolation. These are coverage gaps until an executable check
-or a missing production capability establishes otherwise. Do not infer that an
-AI Client command is absent merely because its literal text does not appear in
-the renderer.
+The invitation journey also verifies a visible welcome in the recipient's
+private HQ. Its simulated AI Client reply is backed by a production route test
+that queues the welcome through the private catch-up path with no Team message
+text in its prompt. The invitation card alone does not establish that welcome.
+
+The Electron chain runs the full simulated journeys, including three document
+creation entry points, typed actions, Native merge review in Full access,
+invitation acceptance, private citations and deletion/Undo. Each run creates
+fresh isolated profiles. Its aggregate fails if any of the 49 simulated
+assertions has a missing, stale or partial proof. This aggregate establishes
+simulated IPC coverage only; the release gate also requires all real/unit
+prerequisites.
+
+Simulated AI Client replies and provider outcomes remain explicit fixtures.
+Separate production tests cover catch-up input filtering, normal capture of an
+agent's closing reply, durable citations, document idempotence, and the Native
+single-use merge journal. Koed does not synthesize a closing reply in a backend
+service. The managed prompt spy observes the actual provider input with a
+present Team-message sentinel; it does not infer isolation from an empty store.
+
+The real three-server lifecycle test coordinates an in-flight publication with
+Project deletion, checks an independent grant continues advancing, and checks
+revocation, suppression and expiry. Parent lifecycle transactions lock their
+complete affected grant set in ID order before acquiring policy freeze locks.
+This preserves the same ordering as publication across multi-member deletion
+and Team leave.
 
 The approved Team-thread deferrals remain deferred: Agent mentions/replies,
 decisions or contradictions saved from Team messages, and Team documents

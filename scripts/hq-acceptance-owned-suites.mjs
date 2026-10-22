@@ -51,8 +51,13 @@ export const ownedAcceptanceSuites = [
   },
   {
     id: "I13.1",
-    clause: "Share and join disclose summaries and yield Bob's own private HQ.",
+    clause:
+      "Share and join disclose summaries and yield Bob's own private HQ with a private welcome catch-up.",
     proof: [
+      unit(
+        "apps/api/src/managed-conversations/project-catch-up-route.test.ts",
+        "queues a private HQ welcome catch-up from Team welcome due without exposing Team message text"
+      ),
       integration(main, "I13-I14-step1-step2-share-join"),
       integration(main, "HQ713-step2-private-project-HQ"),
       integration(main, "I713.Native")
@@ -167,10 +172,11 @@ export const ownedAcceptanceSuites = [
       unit(
         "apps/worker/src/memory-action-observer.test.ts",
         "creates a reviewed correction only from the exact captured User item"
+      ),
+      unit(
+        "apps/worker/src/managed-conversation-service.test.ts",
+        "excludes a present Team message from the actual managed provider turn"
       )
-    ],
-    unresolvedClauses: [
-      "Catch-up, Curated review and managed correction proposal boundaries exclude extra Team-message fields. The full claim still needs an ordinary managed agent-turn prompt spy with Team messages present. That requires an injectable provider session at the command-to-runTurn boundary; current narrow unit fixtures do not expose it."
     ]
   },
   {
@@ -277,6 +283,14 @@ export const ownedAcceptanceSuites = [
       unit(
         "apps/api/src/work-items/pr-reconciliation.pg.test.ts",
         "moves a quiesced execution's item to Done only after provider merged reads, once"
+      ),
+      unit(
+        "apps/api/src/work-items/pr-reconciliation.pg.test.ts",
+        "captures an agent closing reply after the provider merge as one Personal Memory event"
+      ),
+      unit(
+        "packages/db/tests/managed-conversation-citations.test.ts",
+        "binds two trusted recalls to one durable turn and reloads after transient output deletion"
       )
     ]
   },
@@ -323,6 +337,14 @@ export const ownedAcceptanceSuites = [
       unit(
         "packages/db/tests/shared-memory-repository.test.ts",
         "freezes a Memory Answer grant set while revocation and regrant fail closed"
+      ),
+      unit(
+        "packages/db/src/shared-memory-preview-retry.test.ts",
+        "retries a serialization conflict while the grant remains active"
+      ),
+      unit(
+        "packages/db/src/shared-memory-preview-retry.test.ts",
+        "does not hide an unexpected error behind a concurrent freeze"
       )
     ]
   },
@@ -330,9 +352,14 @@ export const ownedAcceptanceSuites = [
     id: "N11.I",
     clause:
       "Real-backend freeze pins published material and leaves independent grant publication valid while denial states stay enforced.",
-    proof: [integration(main, "N11.post-freeze"), integration(main, "I24")],
-    unresolvedClauses: [
-      "The HQ-713 record names do not expose all suppression/expiry and second-grant advancement facets; inspect current execution evidence before claiming full N11.I."
+    proof: [
+      integration(main, "N11.post-freeze"),
+      integration(main, "N11.in-flight-freeze"),
+      integration(main, "N11.independent-grant"),
+      integration(main, "N11.revocation"),
+      integration(main, "N11.suppression"),
+      integration(main, "N11.expiry"),
+      integration(main, "I24")
     ]
   },
   {
@@ -370,6 +397,10 @@ export const ownedAcceptanceSuites = [
       unit(
         "packages/db/src/project-source-repository.test.ts",
         "deletes only active references in its exact batch and Undo preserves prior trash"
+      ),
+      unit(
+        "apps/api/src/work-items/from-document.integration.test.ts",
+        "creates three Plan.md Work Items once and preserves their identities on repeat"
       )
     ]
   },

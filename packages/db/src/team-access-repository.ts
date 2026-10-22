@@ -244,6 +244,7 @@ const invitationMatchesLifecycle = (
 const mapTeamRecord = (row: {
   id: string;
   name: string;
+  origin: "named" | "project_share";
   version: number;
   lifecycle: TeamLifecycle;
   entitlementStatus: TeamEntitlementStatus;
@@ -259,6 +260,7 @@ const mapTeamRecord = (row: {
 }): TeamRecord => ({
   id: row.id,
   name: row.name,
+  origin: row.origin,
   version: row.version,
   lifecycle: row.lifecycle,
   entitlementStatus: row.entitlementStatus,
@@ -1317,9 +1319,20 @@ export const createTeamAccessRepository = (
   return {
     async createTeam(
       actor: ActorContext,
-      input: { name: string; idempotencyKey?: string }
+      input: {
+        name: string;
+        origin?: "named" | "project_share";
+        personalProjectId?: string;
+        idempotencyKey?: string;
+      }
     ): Promise<TeamRecord> {
       const name = normalizeBoundedName(input.name);
+      const origin = input.origin ?? "named";
+      if ((origin === "project_share") !== Boolean(input.personalProjectId)) {
+        throw new Error(
+          "Project share Team origin requires one Personal Project"
+        );
+      }
       const idempotencyKey = input.idempotencyKey
         ? normalizeTeamCreationIdempotencyKey(input.idempotencyKey)
         : null;
@@ -1327,11 +1340,19 @@ export const createTeamAccessRepository = (
         ? hashTeamCreationValue("idempotency-key", idempotencyKey)
         : null;
       const creationRequestHash = idempotencyKey
-        ? hashTeamCreationValue("request", JSON.stringify({ name }))
+        ? hashTeamCreationValue(
+            "request",
+            JSON.stringify(
+              origin === "project_share"
+                ? { name, origin, personalProjectId: input.personalProjectId }
+                : { name }
+            )
+          )
         : null;
       return db.transaction(async (tx) => {
         const teamInsert = tx.insert(teams).values({
           name,
+          origin,
           createdByUserId: idempotencyKey ? actor.userId : null,
           creationIdempotencyKeyHash,
           creationRequestHash
@@ -3036,6 +3057,36 @@ export const createTeamAccessRepository = (
           )
         )
           staleVersion();
+        // Freeze can acquire a Team representation policy after locking one
+        // grant. Lock every grant in this reviewed leave operation first, in
+        // one order, so a publisher holding a later grant cannot wait on a
+        // policy already held by this transaction.
+        const ownedLinkedProjectIds = linked.rows
+          .filter((project) => project.owner_team_member_id === membership.id)
+          .map((project) => project.id);
+        await client.query(
+          `select grant_row.id
+             from team_memory_share_grants grant_row
+            where grant_row.team_id=$1
+              and grant_row.lifecycle='active' and grant_row.revoked_at is null
+              and grant_row.frozen_at is null
+              and (grant_row.owner_user_id=$2 or exists (
+                select 1 from workspace_project_share_grant_bindings binding
+                join workspace_projects project
+                  on project.id=binding.workspace_project_id
+                join workspace_project_members association
+                  on association.workspace_project_id=project.id
+                 and association.disabled_at is null
+                join team_memberships member
+                  on member.id=association.team_member_id
+               where binding.share_grant_id=grant_row.id
+                 and project.id=any($3::uuid[])
+                 and project.workspace_id=grant_row.team_workspace_id
+                 and member.user_id=grant_row.owner_user_id
+                 and member.id<>$4))
+            order by grant_row.id for update of grant_row`,
+          [input.teamId, actor.userId, ownedLinkedProjectIds, membership.id]
+        );
         await freezeSourceOwnerGrantsForParent(client, {
           action: "team.leave",
           actorUserId: actor.userId,

@@ -16,7 +16,12 @@ const run = async () => {
   let window;
   try {
     await app.whenReady();
-    window = new BrowserWindow({ show: false, width: 1280, height: 800 });
+    window = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 800,
+      webPreferences: { backgroundThrottling: false }
+    });
     await window.loadFile(
       resolve(root, "apps/desktop/dist/browser-validation.html"),
       { query: { view: "hq", hq701Capture: "yes" } }

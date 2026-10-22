@@ -22,7 +22,10 @@ async function run() {
     width: 1280,
     height: 800,
     useContentSize: true,
-    webPreferences: { partition: `hq707-${process.pid}` }
+    webPreferences: {
+      partition: `hq707-${process.pid}`,
+      backgroundThrottling: false
+    }
   });
   const js = (source) => window.webContents.executeJavaScript(source);
   const waitFor = async (source, label) => {
@@ -87,6 +90,9 @@ async function run() {
         "reply chip"
       );
       await capture(`reply-chip-${theme}.png`);
+      await js(
+        "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+      );
       await js(
         "document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"
       );

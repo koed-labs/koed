@@ -720,6 +720,7 @@ export interface CollaborationSharedMemoryControlOptions {
     sessionId: string;
     representation: Representation;
     mode: "snapshot" | "continuous";
+    expiresAt?: string | null;
   }): Promise<SharedMemoryCandidatePreview | null>;
   loadPersonalNoteCandidatePreview?(input: {
     localOwnerUserId: string;
@@ -2261,7 +2262,8 @@ const dispatchCandidatePreview = async (
           localOwnerUserId: authority.localOwnerUserId,
           sessionId: candidateSessionId!,
           representation: command.input.activationRepresentation,
-          mode: command.input.mode
+          mode: command.input.mode,
+          expiresAt: command.input.candidate.expiresAt
         })
   );
   const sourceIdentity = options.resolveCandidateSourceIdentity?.(
@@ -4220,7 +4222,8 @@ export const createCollaborationSharedMemoryControl = (
         const source = command.input.source;
         if (
           source.kind === "personal_note" &&
-          command.input.activationRepresentation !== "memory_events"
+          (command.input.activationRepresentation !== "memory_events" ||
+            command.input.expiresAt != null)
         ) {
           return failure(command, "invalid_input");
         }
@@ -4236,7 +4239,8 @@ export const createCollaborationSharedMemoryControl = (
                 localOwnerUserId: parsedContext.data.localOwnerUserId,
                 sessionId: source.sessionId,
                 representation: command.input.activationRepresentation,
-                mode: command.input.mode
+                mode: command.input.mode,
+                expiresAt: command.input.expiresAt
               })
         );
         if (

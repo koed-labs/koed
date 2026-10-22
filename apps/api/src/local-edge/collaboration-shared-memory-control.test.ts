@@ -1768,6 +1768,48 @@ describe("collaboration Shared Memory control", () => {
     });
   });
 
+  it("rejects an expiry request for Personal Note candidate preview rather than dropping it", async () => {
+    const fixture = createFixture();
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.preview_shared_memory_candidate"),
+        input: {
+          source: noteSourceV1,
+          activationRepresentation: "memory_events",
+          mode: "snapshot",
+          expiresAt: "2026-11-01T12:00:00.000Z"
+        }
+      },
+      context()
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" }
+    });
+    expect(fixture.requests).toHaveLength(0);
+  });
+
+  it("keeps the Personal Note candidate's existing no-expiry path", async () => {
+    const fixture = createFixture({
+      loadPersonalNoteCandidatePreview: async () => noteCandidateV2
+    });
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.preview_shared_memory_candidate"),
+        input: {
+          source: noteSourceV2,
+          activationRepresentation: "memory_events",
+          mode: "continuous"
+        }
+      },
+      context()
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      data: { candidate: { expiresAt: null } }
+    });
+  });
+
   it("binds a local candidate to an authoritative destination without a sync target", async () => {
     const localCandidate = {
       source: capturedSource,
@@ -1868,6 +1910,28 @@ describe("collaboration Shared Memory control", () => {
       expect.stringMatching(/device-credentials\/status$/),
       "/v1/shared-memory/candidate-previews"
     ]);
+    const changedExpiry = await fixture.control.dispatch(
+      {
+        ...command,
+        input: {
+          ...command.input,
+          candidate: {
+            ...command.input.candidate,
+            expiresAt: "2026-11-01T12:00:00.000Z"
+          }
+        }
+      },
+      context()
+    );
+    expect(changedExpiry).toMatchObject({
+      ok: false,
+      error: { code: "conflict" }
+    });
+    expect(
+      fixture.requests.filter(
+        (request) => request.pathname === "/v1/shared-memory/candidate-previews"
+      )
+    ).toHaveLength(1);
   });
 
   it("preserves an exact Curated commitment from candidate through approved preview and source work", async () => {

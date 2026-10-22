@@ -107,7 +107,11 @@ export const createShareProjectFlow = (
         teamId = target.teamId;
         workspaceId = target.workspaceId;
       } else if (target.kind === "new_team") {
-        await collaboration.createTeam({ name: `${project.name} shared` });
+        await collaboration.createTeam({
+          name: `${project.name} shared`,
+          origin: "project_share",
+          personalProjectId: project.id
+        });
         const after = await context();
         if (after.backendId !== backendId || after.principalId !== principalId)
           throw new Error("Team identity changed during sharing.");

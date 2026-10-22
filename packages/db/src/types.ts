@@ -242,6 +242,7 @@ export interface TeamEntitlementGateRecord {
 export interface TeamRecord {
   id: string;
   name: string;
+  origin: "named" | "project_share";
   version: number;
   lifecycle: TeamLifecycle;
   entitlementStatus: TeamEntitlementStatus;
@@ -2200,7 +2201,12 @@ export interface MemorySourceRepository
   ): Promise<ExternalAuthIdentityRecord | null>;
   createTeam(
     actor: ActorContext,
-    input: { name: string; idempotencyKey?: string }
+    input: {
+      name: string;
+      origin?: "named" | "project_share";
+      personalProjectId?: string;
+      idempotencyKey?: string;
+    }
   ): Promise<TeamRecord>;
   getTeamDefaultWorkspace(
     actor: ActorContext,

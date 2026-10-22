@@ -9,6 +9,7 @@ type SharedSource = {
   logicalMemoryId: string;
   sourceItemIds: string[];
   summaryText: string;
+  expiresAt?: string;
 };
 type GrantState = {
   id: string;
@@ -39,21 +40,26 @@ const publishProjectConversation = async (
   fixture: Hq713Fixture,
   actor: Hq713Actor,
   personalProjectId: string,
-  label: string
+  label: string,
+  expiryDurationMs?: number
 ): Promise<SharedSource> => {
   const marker = `${label}-${randomUUID()}`;
   const captured = await fixture.seedCapturedSession(actor, {
     projectId: personalProjectId,
     sessionLabel: marker
   });
+  const expiresAt = expiryDurationMs
+    ? new Date(Date.now() + expiryDurationMs).toISOString()
+    : undefined;
   const shared = await fixture.shareCapturedSession(actor, {
     sessionId: captured.sessionId,
     workspaceProjectId: fixture.ids.workspaceProjectId,
     teamWorkspaceId: fixture.ids.workspaceId,
     summaryText: marker,
-    includeCuratedMemory: false
+    includeCuratedMemory: false,
+    ...(expiresAt ? { expiresAt } : {})
   });
-  return { ...captured, ...shared, summaryText: marker };
+  return { ...captured, ...shared, summaryText: marker, expiresAt };
 };
 
 const createProjectJob = async (
@@ -90,33 +96,42 @@ const createProjectJob = async (
 
 const grantState = async (
   fixture: Hq713Fixture,
-  grantId: string
+  grantId: string,
+  requireProjectBinding = true
 ): Promise<GrantState> => {
   const response = await fixture.team.db.query<GrantState>(
     `select grant_row.id,grant_row.owner_user_id,grant_row.grant_version,grant_row.source_revision,
             grant_row.frozen_at,grant_row.freeze_manifest_hash,grant_row.freeze_representation_count,
             grant_row.revoked_at
        from team_memory_share_grants grant_row
-       join workspace_project_share_grant_bindings binding
-         on binding.share_grant_id=grant_row.id
-      where grant_row.id=$1 and binding.workspace_project_id=$2`,
-    [grantId, fixture.ids.workspaceProjectId]
+      where grant_row.id=$1
+        and ($2::boolean=false or exists (
+          select 1 from workspace_project_share_grant_bindings binding
+           where binding.share_grant_id=grant_row.id
+             and binding.workspace_project_id=$3))`,
+    [grantId, requireProjectBinding, fixture.ids.workspaceProjectId]
   );
   assert.equal(
     response.rows.length,
     1,
-    "Exact Project-bound Share Grant must exist"
+    "Exact Share Grant must exist at the requested binding"
   );
   return response.rows[0]!;
 };
 
-const assertFrozen = (before: GrantState, after: GrantState) => {
+const assertFrozen = (
+  before: GrantState,
+  after: GrantState,
+  allowInFlightAdvance = false
+) => {
   assert.equal(after.id, before.id);
   assert.ok(after.frozen_at instanceof Date, "Grant must freeze atomically");
   assert.match(after.freeze_manifest_hash ?? "", /^[0-9a-f]{64}$/);
   assert.ok((after.freeze_representation_count ?? -1) >= 1);
   assert.equal(after.revoked_at, null, "D9 retains the Share Grant");
-  assert.equal(after.source_revision, before.source_revision);
+  if (allowInFlightAdvance)
+    assert.ok((after.source_revision ?? 0) >= (before.source_revision ?? 0));
+  else assert.equal(after.source_revision, before.source_revision);
 };
 
 const assertTeamRecall = async (
@@ -277,13 +292,13 @@ const assertFrozenAfterLaterSource = async (
   const answer = await answerTeam(
     fixture,
     recipient,
-    advanced.laterText,
+    advanced.laterSummaryText,
     "scoped_leaf_search"
   );
   const grantEvidence = teamEvidenceForGrant(answer, source.grantId);
   assert.ok(
     grantEvidence.every(
-      (item) => !String(item.summaryText).includes(advanced.laterText)
+      (item) => !String(item.summaryText).includes(advanced.laterSummaryText)
     ),
     "Frozen grant must exclude the later canonical source marker"
   );
@@ -293,6 +308,8 @@ const assertFrozenAfterLaterSource = async (
     pinnedSourceRevision: frozen.source_revision,
     initialSourceItemIds: source.sourceItemIds,
     laterSourceItemId: laterItem.id,
+    laterText: advanced.laterText,
+    laterSummaryText: advanced.laterSummaryText,
     canonicalEventCount: canonical.rows[0]!.event_count,
     canonicalNodeCount: canonical.rows[0]!.node_count,
     laterSourceItemCount: afterItems.length,
@@ -416,6 +433,42 @@ export async function runHq713ChatDeleteFreeze(
     postDeleteAdvance,
     retainedEvidence
   });
+  const revoked = await fixture.alice.teamBrowser.request<{
+    grant: { id: string; lifecycle: string };
+  }>("POST", `/v1/shared-memory/share-grants/${source.grantId}/revoke`, {
+    body: {
+      mutationId: randomUUID(),
+      teamId: fixture.ids.teamId,
+      teamWorkspaceId: fixture.ids.workspaceId,
+      expectedGrantVersion: frozen.grant_version,
+      reasonCode: "owner_revoked",
+      authority: {
+        action: "workspace.memory.share_owned",
+        source: "browser_session"
+      }
+    },
+    expectedStatus: 200
+  });
+  assert.equal(revoked.body.grant.id, source.grantId);
+  assert.equal(revoked.body.grant.lifecycle, "revoked");
+  const revokedRead = await fixture.bob.team.request(
+    "GET",
+    `/v1/shared-memory/teams/${fixture.ids.teamId}/workspaces/${fixture.ids.workspaceId}/share-grants/${source.grantId}?representation=lcm_leaves`
+  );
+  assert.ok([403, 404].includes(revokedRead.status));
+  const revokedAnswer = await answerTeam(
+    fixture,
+    fixture.bob,
+    source.summaryText,
+    "scoped_leaf_search"
+  );
+  assert.equal(teamEvidenceForGrant(revokedAnswer, source.grantId).length, 0);
+  fixture.results.record("N11.revocation", {
+    grantId: source.grantId,
+    frozenHash: frozen.freeze_manifest_hash,
+    revokedReadStatus: revokedRead.status,
+    revokedRecallDenied: true
+  });
 }
 
 /** Steps 8–9 and N6: D9 retains recall but never resumes old grants. */
@@ -429,12 +482,66 @@ export async function runHq713DeleteRestore(
     fixture.ids.alicePersonalProjectId,
     "hq713-delete-alice"
   );
+  const independentWorkspaceBody = {
+    name: `HQ713 independent ${randomUUID()}`
+  };
+  const workspaceApproval = await fixture.approveActionGrant(fixture.alice, {
+    action: "team.workspace.create",
+    teamId,
+    body: independentWorkspaceBody
+  });
+  const independentWorkspace = await fixture.alice.team.request<{
+    teamWorkspace: { id: string };
+  }>("POST", `/v1/teams/${teamId}/workspaces`, {
+    body: independentWorkspaceBody,
+    headers: { "x-koed-action-grant": workspaceApproval.secret },
+    expectedStatus: 200
+  });
+  const independentWorkspaceId = independentWorkspace.body.teamWorkspace.id;
+  const bobAccessBody = {
+    userId: fixture.bob.teamUserId,
+    access: "read",
+    canShareOwnedMemory: false,
+    expectedVersion: null
+  };
+  const accessApproval = await fixture.approveActionGrant(fixture.alice, {
+    action: "team.workspace.access_update",
+    teamId,
+    teamWorkspaceId: independentWorkspaceId,
+    body: bobAccessBody
+  });
+  await fixture.alice.team.request(
+    "PUT",
+    `/v1/team-workspaces/${independentWorkspaceId}/access`,
+    {
+      body: bobAccessBody,
+      headers: { "x-koed-action-grant": accessApproval.secret },
+      expectedStatus: 200
+    }
+  );
+  // This independent Workspace grant tracks the same captured source. Project
+  // deletion may freeze its Project-bound sibling but must not stop this one.
+  const independent = await fixture.shareCapturedSession(fixture.alice, {
+    sessionId: alice.sessionId,
+    teamWorkspaceId: independentWorkspaceId,
+    summaryText: alice.summaryText,
+    includeCuratedMemory: false
+  });
+  assert.notEqual(independent.grantId, alice.grantId);
+  const independentBefore = await grantState(
+    fixture,
+    independent.grantId,
+    false
+  );
+  assert.equal(independentBefore.frozen_at, null);
   const bob = await publishProjectConversation(
     fixture,
     fixture.bob,
     fixture.ids.bobPersonalProjectId,
-    "hq713-delete-bob"
+    "hq713-delete-bob",
+    120_000
   );
+  const bobExpiryAt = bob.expiresAt!;
   const bobJobId = await createProjectJob(
     fixture.bob,
     fixture.ids.bobPersonalProjectId,
@@ -461,15 +568,86 @@ export async function runHq713DeleteRestore(
     projectId: workspaceProjectId,
     body
   });
-  const deleted = await fixture.alice.team.request(
-    "POST",
-    `/v1/workspace-projects/${workspaceProjectId}/delete`,
-    {
-      body,
-      headers: { "x-koed-action-grant": approved.secret },
-      expectedStatus: 200
+  // Hold the exact grant row while a real source-sync publication and the
+  // project-delete HTTP freeze both enter the database. Releasing the row
+  // makes their order observable without altering any business state.
+  const lock = await fixture.team.db.connect();
+  const observer = await fixture.team.db.connect().catch((error: unknown) => {
+    lock.release();
+    throw error;
+  });
+  let deleted: Awaited<ReturnType<Hq713Actor["team"]["request"]>>;
+  let racingSource: Awaited<ReturnType<Hq713Fixture["advanceCapturedSession"]>>;
+  let publicationWaiters: number;
+  let freezeWaiters: number;
+  let freezeCompletedWhilePublicationBlocked: boolean;
+  try {
+    await lock.query("begin");
+    const holder = await lock.query<{ pid: number }>(
+      "select pg_backend_pid() as pid"
+    );
+    const holderPid = holder.rows[0]!.pid;
+    await lock.query(
+      "select id from team_memory_share_grants where id=$1 for update",
+      [alice.grantId]
+    );
+    const blockedByHolder = async () => {
+      const waiting = await observer.query<{ count: number }>(
+        `select count(*)::int as count from pg_stat_activity
+          where pid<>$1 and $1=any(pg_blocking_pids(pid))`,
+        [holderPid]
+      );
+      return waiting.rows[0]?.count ?? 0;
+    };
+    const waitForBlocked = async (minimum: number) => {
+      const deadline = Date.now() + 15_000;
+      do {
+        const count = await blockedByHolder();
+        if (count >= minimum) return count;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      } while (Date.now() < deadline);
+      assert.fail(`N11 grant race did not observe ${minimum} blocked writers`);
+    };
+    racingSource = await fixture.advanceCapturedSession(fixture.alice, {
+      sessionId: alice.sessionId,
+      projectId: fixture.ids.alicePersonalProjectId,
+      sessionLabel: alice.summaryText
+    });
+    publicationWaiters = await waitForBlocked(1);
+    const deletion = fixture.alice.team.request(
+      "POST",
+      `/v1/workspace-projects/${workspaceProjectId}/delete`,
+      {
+        body,
+        headers: { "x-koed-action-grant": approved.secret },
+        expectedStatus: 200
+      }
+    );
+    void deletion.catch(() => undefined);
+    freezeCompletedWhilePublicationBlocked = await Promise.race([
+      deletion.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 2_000))
+    ]);
+    freezeWaiters = await blockedByHolder();
+    assert.ok(freezeWaiters >= 1, "Publication must stay in flight at freeze");
+    if (freezeCompletedWhilePublicationBlocked) {
+      const frozenWhileBlocked = await observer.query<{
+        frozen_at: Date | null;
+      }>("select frozen_at from team_memory_share_grants where id=$1", [
+        alice.grantId
+      ]);
+      assert.ok(
+        frozenWhileBlocked.rows[0]?.frozen_at instanceof Date,
+        "HTTP freeze must close the grant while publication is blocked"
+      );
     }
-  );
+    await lock.query("commit");
+    deleted = await deletion;
+  } finally {
+    await lock.query("rollback").catch(() => undefined);
+    lock.release();
+    observer.release();
+  }
   assert.deepEqual(deleted.body, {
     projectId: workspaceProjectId,
     lifecycle: "deleted"
@@ -495,8 +673,21 @@ export async function runHq713DeleteRestore(
   assert.equal((lifecycle.body as { active: boolean }).active, false);
   const afterAlice = await grantState(fixture, alice.grantId);
   const afterBob = await grantState(fixture, bob.grantId);
-  assertFrozen(beforeAlice, afterAlice);
+  assertFrozen(beforeAlice, afterAlice, true);
   assertFrozen(beforeBob, afterBob);
+  const racingRead = await fixture.bob.team.request(
+    "GET",
+    `/v1/shared-memory/teams/${teamId}/workspaces/${workspaceId}/share-grants/${alice.grantId}?representation=lcm_leaves`,
+    { expectedStatus: 200 }
+  );
+  const racingMarkerIncluded = JSON.stringify(racingRead.body).includes(
+    racingSource.laterSummaryText
+  );
+  assert.equal(
+    racingMarkerIncluded,
+    (afterAlice.source_revision ?? 0) > (beforeAlice.source_revision ?? 0),
+    "Frozen closure must match whichever publication linearized before freeze"
+  );
   const thread = await fixture.team.db.query<{ lifecycle: string }>(
     `select lifecycle from collaboration_threads
       where workspace_project_id=$1 and kind='project_thread'`,
@@ -520,6 +711,58 @@ export async function runHq713DeleteRestore(
     fixture.bob,
     alice,
     fixture.ids.alicePersonalProjectId
+  );
+  const independentDeadline = Date.now() + 15_000;
+  let independentAfter = await grantState(fixture, independent.grantId, false);
+  while (
+    (independentAfter.source_revision ?? 0) <=
+      (independentBefore.source_revision ?? 0) &&
+    Date.now() < independentDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    independentAfter = await grantState(fixture, independent.grantId, false);
+  }
+  assert.equal(independentAfter.frozen_at, null);
+  assert.ok(
+    (independentAfter.source_revision ?? 0) >
+      (independentBefore.source_revision ?? 0),
+    "Independent grant for the same source must continue publishing"
+  );
+  let independentEvidence: ReturnType<typeof teamEvidenceForGrant>;
+  const independentRecallDeadline = Date.now() + 15_000;
+  do {
+    const independentAnswer = (
+      await fixture.bob.team.request<Record<string, unknown>>(
+        "POST",
+        "/v1/memory/answer",
+        {
+          body: {
+            query: postDeleteAdvance.laterSummaryText,
+            search_domain: "global",
+            team_workspace_id: independentWorkspaceId,
+            retrieval_stage: "scoped_leaf_search"
+          },
+          expectedStatus: 200
+        }
+      )
+    ).body;
+    independentEvidence = teamEvidenceForGrant(
+      independentAnswer,
+      independent.grantId
+    );
+    if (
+      independentEvidence.some((item) =>
+        String(item.summaryText).includes(postDeleteAdvance.laterSummaryText)
+      )
+    )
+      break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  } while (Date.now() < independentRecallDeadline);
+  assert.ok(
+    independentEvidence.some((item) =>
+      String(item.summaryText).includes(postDeleteAdvance.laterSummaryText)
+    ),
+    "Independent grant must expose the later publication through Team recall"
   );
 
   const reconciled = await fixture.bob.personalEdge.request(
@@ -625,6 +868,92 @@ export async function runHq713DeleteRestore(
   });
   fixture.results.record("I24", postDeleteAdvance);
   fixture.results.record("N11.post-freeze", postDeleteAdvance);
+  fixture.results.record("N11.independent-grant", {
+    frozenGrantId: alice.grantId,
+    independentGrantId: independent.grantId,
+    independentWorkspaceId,
+    independentSourceRevisionBefore: independentBefore.source_revision,
+    independentSourceRevisionAfter: independentAfter.source_revision,
+    laterSourceItemId: postDeleteAdvance.laterSourceItemId,
+    laterMarkerVisible: independentEvidence.length > 0
+  });
+  fixture.results.record("N11.in-flight-freeze", {
+    grantId: alice.grantId,
+    sourceRevisionBefore: beforeAlice.source_revision,
+    sourceRevisionAtFreeze: afterAlice.source_revision,
+    racingSourceItemId: racingSource.rawSourceItemId,
+    racingMarkerIncluded,
+    publicationWaiters,
+    freezeWaiters,
+    freezeCompletedWhilePublicationBlocked,
+    frozenManifestHash: afterAlice.freeze_manifest_hash
+  });
+  const preview = await fixture.team.db.query<{
+    sanitized_source_preview_id: string;
+  }>(
+    `select frozen.source_binding_snapshot->>'sanitizedSourcePreviewId'
+              as sanitized_source_preview_id
+       from team_memory_representations representation
+       join team_memory_grant_freeze_representations frozen
+         on frozen.frozen_representation_id=representation.id
+      where representation.share_grant_id=$1
+        and representation.representation='lcm_leaves'
+        and representation.frozen_snapshot=true
+        and representation.state='available'`,
+    [alice.grantId]
+  );
+  assert.equal(preview.rows.length, 1);
+  assert.match(
+    preview.rows[0]?.sanitized_source_preview_id ?? "",
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  );
+  assert.equal(
+    await fixture.invalidateTeamSemanticPreview({
+      ownerTeamUserId: fixture.alice.teamUserId,
+      semanticPreviewId: preview.rows[0]!.sanitized_source_preview_id
+    }),
+    true
+  );
+  const suppressedRead = await fixture.bob.team.request(
+    "GET",
+    `/v1/shared-memory/teams/${teamId}/workspaces/${workspaceId}/share-grants/${alice.grantId}?representation=lcm_leaves`
+  );
+  assert.ok([403, 404].includes(suppressedRead.status));
+  const suppressedAnswer = await answerTeam(
+    fixture,
+    fixture.bob,
+    alice.summaryText,
+    "scoped_leaf_search"
+  );
+  assert.equal(teamEvidenceForGrant(suppressedAnswer, alice.grantId).length, 0);
+  fixture.results.record("N11.suppression", {
+    grantId: alice.grantId,
+    previewId: preview.rows[0]!.sanitized_source_preview_id,
+    readStatus: suppressedRead.status,
+    recallDenied: true
+  });
+  while (Date.now() <= Date.parse(bobExpiryAt) + 250) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const expiredRead = await fixture.alice.team.request(
+    "GET",
+    `/v1/shared-memory/teams/${teamId}/workspaces/${workspaceId}/share-grants/${bob.grantId}?representation=lcm_leaves`
+  );
+  assert.ok([403, 404].includes(expiredRead.status));
+  const expiredAnswer = await answerTeam(
+    fixture,
+    fixture.alice,
+    bob.summaryText,
+    "scoped_leaf_search"
+  );
+  assert.equal(teamEvidenceForGrant(expiredAnswer, bob.grantId).length, 0);
+  fixture.results.record("N11.expiry", {
+    grantId: bob.grantId,
+    consentExpiresAt: bobExpiryAt,
+    frozenHash: afterBob.freeze_manifest_hash,
+    readStatus: expiredRead.status,
+    recallDenied: true
+  });
 }
 
 /** Step 11: a Project self-leave keeps membership; Team leave freezes recall. */

@@ -1452,6 +1452,7 @@ const teamNavigationSchema = z
   .object({
     id: z.uuid(),
     name: collaborationNameSchema,
+    origin: z.enum(["named", "project_share"]).optional(),
     role: z.enum(["owner", "admin", "member"]),
     lifecycle: z.enum([
       "active",
@@ -1834,7 +1835,9 @@ const sharedMemoryCandidateBindingSchema = z
 export const collaborationActionGrantIntentSchema = z
   .discriminatedUnion("intent", [
     actionGrantIntent("collaboration.create_team", {
-      name: collaborationNameSchema
+      name: collaborationNameSchema,
+      origin: z.literal("project_share").optional(),
+      personalProjectId: z.uuid().optional()
     }),
     actionGrantIntent("collaboration.join_team", {
       invitation: boundedRequiredUtf8(MAX_INVITATION_BYTES)
@@ -2940,6 +2943,8 @@ export const collaborationRendererCommandSchema = z
     }),
     command("collaboration.create_team", {
       name: collaborationNameSchema,
+      origin: z.literal("project_share").optional(),
+      personalProjectId: z.uuid().optional(),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.join_team", {
@@ -3241,6 +3246,7 @@ export const collaborationRendererCommandSchema = z
       source: sharedMemorySourceRefSchema,
       activationRepresentation: sharedMemoryRepresentationSchema,
       mode: z.enum(["snapshot", "continuous"]),
+      expiresAt: collaborationTimestampSchema.nullable().optional(),
       curatedTarget: z
         .object({
           includeCuratedMemory: z.literal(true),

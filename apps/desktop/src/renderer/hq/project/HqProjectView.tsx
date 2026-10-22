@@ -128,6 +128,32 @@ export function projectHqExecutionBelongsTo(
   );
 }
 
+export function workItemOriginConversation(
+  item: WorkItem,
+  graphProjects: readonly DesktopProject[]
+): {
+  graphProject: DesktopProject;
+  thread: DesktopProject["threads"][number];
+} | null {
+  if (item.origin !== "koed_text_action" || !item.originRef) return null;
+  const matches: Array<{
+    graphProject: DesktopProject;
+    thread: DesktopProject["threads"][number];
+  }> = [];
+  for (const graphProject of graphProjects) {
+    for (const thread of graphProject.threads)
+      if (thread.sessionId === item.originRef)
+        matches.push({ graphProject, thread });
+  }
+  return (
+    matches.find(
+      ({ graphProject, thread }) =>
+        thread.personalProjectId === item.projectId ||
+        graphProject.id === item.projectId
+    ) ?? (matches.length === 1 ? matches[0]! : null)
+  );
+}
+
 export function HqProjectView({
   project,
   personalProjects,
@@ -1177,6 +1203,31 @@ export function HqProjectView({
   };
   const selectedBrief =
     visibleInventory.workItems.find((item) => item.id === briefFor) ?? null;
+  const originConversation = (item: WorkItem) =>
+    workItemOriginConversation(item, graphProjects);
+  const openOriginConversation = (item: WorkItem) => {
+    const source = originConversation(item);
+    if (!source) return;
+    setBriefFor(null);
+    onSourcesOpenChange?.(false);
+    onSelectConversation({
+      id: `work-origin:${item.id}`,
+      kind: "question",
+      title: source.thread.name || "Conversation",
+      context: source.graphProject.name,
+      projectId: source.graphProject.id,
+      sessionId: item.originRef!,
+      threadId: source.thread.id,
+      createdAt: item.createdAt
+    });
+  };
+  const originLabel = (item: WorkItem) => {
+    const source = originConversation(item);
+    if (source) return `From ${source.thread.name || "Conversation"}`;
+    if (item.origin === "koed_text_action") return "From a Conversation";
+    if (item.origin === "plan") return "From a document";
+    return "Added by you";
+  };
   const sectionHead = (
     kind: keyof typeof cap,
     label: string,
@@ -1597,36 +1648,49 @@ export function HqProjectView({
                             </button>
                             <span className="hq-execution-memory__secondary">
                               {dueControl(item)}
+                              {item.kind === "todo" && !item.key ? (
+                                <small className="hq-project-view__origin-summary">
+                                  {originLabel(item)}
+                                  {item.goal && item.goal !== item.title
+                                    ? ` · ${item.goal}`
+                                    : null}
+                                </small>
+                              ) : null}
                               {item.executionId ? (
-                                <ExecutionMemoryChips
-                                  api={conversationsApi}
-                                  ownerId={ownerId}
-                                  profileKey={profileKey}
-                                  projectId={project.id}
-                                  executionId={item.executionId}
-                                  executionGeneration={visibleInventory.runtimeGenerations.get(
-                                    item.executionId
-                                  )}
-                                  providerTurnId={latestRuntimeTurn(
-                                    visibleInventory.runtime.get(
+                                <>
+                                  <ExecutionMemoryChips
+                                    api={conversationsApi}
+                                    ownerId={ownerId}
+                                    profileKey={profileKey}
+                                    projectId={project.id}
+                                    executionId={item.executionId}
+                                    executionGeneration={visibleInventory.runtimeGenerations.get(
                                       item.executionId
-                                    ) ?? [],
-                                    undefined,
-                                    visibleInventory.runtimeGenerations.get(
-                                      item.executionId
-                                    )
-                                  )}
-                                  variant="count"
-                                  panelHost={panelHost}
-                                  panelActive={
-                                    memoryPanelRow === `work:${item.id}`
-                                  }
-                                  onPanelOpen={() =>
-                                    openMemoryPanel(`work:${item.id}`)
-                                  }
-                                  onPanelClose={closeMemoryPanel}
-                                  onOpenMessage={onOpenCitationMessage}
-                                />
+                                    )}
+                                    providerTurnId={latestRuntimeTurn(
+                                      visibleInventory.runtime.get(
+                                        item.executionId
+                                      ) ?? [],
+                                      undefined,
+                                      visibleInventory.runtimeGenerations.get(
+                                        item.executionId
+                                      )
+                                    )}
+                                    variant="count"
+                                    panelHost={panelHost}
+                                    panelActive={
+                                      memoryPanelRow === `work:${item.id}`
+                                    }
+                                    onPanelOpen={() =>
+                                      openMemoryPanel(`work:${item.id}`)
+                                    }
+                                    onPanelClose={closeMemoryPanel}
+                                    onOpenMessage={onOpenCitationMessage}
+                                  />
+                                </>
+                              ) : null}
+                              {item.kind === "todo" && !item.key ? (
+                                <small aria-hidden="true">·</small>
                               ) : null}
                               <small>
                                 {item.executionId
@@ -2190,7 +2254,7 @@ export function HqProjectView({
               <div className="hq-project-view__brief-head">
                 <span>
                   <ListTodo size={13} aria-hidden="true" />
-                  {selectedBrief.key || `TO-DO ${selectedBrief.id.slice(0, 8)}`}
+                  {selectedBrief.key || "Work · no ticket"}
                 </span>
                 <button
                   type="button"
@@ -2205,10 +2269,9 @@ export function HqProjectView({
                 </button>
               </div>
               <span className="hq-project-view__brief-origin">
-                {selectedBrief.originRef
-                  ? `From ${selectedBrief.originRef}`
-                  : "Added by you"}
+                {originLabel(selectedBrief)}
               </span>
+
               <h2>{selectedBrief.title}</h2>
               <div className="hq-project-view__brief-state">
                 <i aria-hidden="true" />
@@ -2225,10 +2288,21 @@ export function HqProjectView({
                   ? ` · ${agents.find((agent) => agent.id === selectedBrief.assigneeAgentId)?.name ?? "Agent"}`
                   : null}
               </div>
-              <span className="hq-project-view__brief-label">Goal</span>
+              <span className="hq-project-view__brief-label">
+                What’s happening
+              </span>
               <p className="hq-project-view__brief-goal">
                 {selectedBrief.goal || selectedBrief.title}
               </p>
+              {originConversation(selectedBrief) ? (
+                <button
+                  type="button"
+                  className="hq-project-view__origin-link"
+                  onClick={() => openOriginConversation(selectedBrief)}
+                >
+                  Open the chat it came from
+                </button>
+              ) : null}
               <span className="hq-project-view__brief-label hq-project-view__brief-live-label">
                 {selectedBrief.assigneeAgentId &&
                 agents.find(

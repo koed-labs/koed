@@ -1341,6 +1341,10 @@ export const teams = pgTable(
   {
     id: id(),
     name: text("name").notNull(),
+    origin: text("origin")
+      .$type<"named" | "project_share">()
+      .notNull()
+      .default("named"),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, {
       onDelete: "restrict"
     }),
@@ -1376,6 +1380,10 @@ export const teams = pgTable(
       .where(sql`${table.lifecycle} = 'active'`),
     index("teams_lifecycle_idx").on(table.lifecycle, table.updatedAt.desc()),
     check("teams_version_check", sql`${table.version} > 0`),
+    check(
+      "teams_origin_check",
+      sql`${table.origin} in ('named', 'project_share')`
+    ),
     check(
       "teams_creation_idempotency_shape_check",
       sql`(

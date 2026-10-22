@@ -1,0 +1,2 @@
+ALTER TABLE "teams" ADD COLUMN "origin" text DEFAULT 'named' NOT NULL;--> statement-breakpoint
+ALTER TABLE "teams" ADD CONSTRAINT "teams_origin_check" CHECK ("teams"."origin" in ('named', 'project_share'));

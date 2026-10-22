@@ -102,7 +102,16 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
     sessionId: string;
     representation: SharedMemoryRepresentation;
     mode: "snapshot" | "continuous";
+    expiresAt?: string | null;
   }): Promise<SharedMemoryCandidatePreview | null> => {
+    const expiryTime = input.expiresAt ? Date.parse(input.expiresAt) : null;
+    if (
+      expiryTime !== null &&
+      (!Number.isFinite(expiryTime) || expiryTime <= Date.now())
+    )
+      return null;
+    const expiresAt =
+      expiryTime === null ? null : new Date(expiryTime).toISOString();
     const projects = await options.repository.listLcmGraphThreads(
       { userId: input.localOwnerUserId },
       { limit: 500, includeInvalidated: false }
@@ -311,6 +320,7 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
       sourceCapabilities,
       activationRepresentation: input.representation,
       mode: input.mode,
+      expiresAt,
       sourceRevision,
       itemCount: items.length,
       byteCount,
@@ -324,7 +334,7 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
       sourceCapabilities,
       activationRepresentation: input.representation,
       mode: input.mode,
-      expiresAt: null,
+      expiresAt,
       sourceRevision,
       candidateHash,
       itemCount: items.length,

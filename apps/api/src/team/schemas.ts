@@ -45,7 +45,18 @@ export const teamAuditEventsQuerySchema = z
   })
   .strict();
 
-export const createTeamSchema = z.object({ name: boundedNameSchema }).strict();
+export const createTeamSchema = z
+  .object({
+    name: boundedNameSchema,
+    origin: z.enum(["named", "project_share"]).optional(),
+    personalProjectId: z.uuid().optional()
+  })
+  .strict()
+  .refine(
+    (value) =>
+      (value.origin === "project_share") === Boolean(value.personalProjectId),
+    { message: "Project share Team creation requires one Personal Project" }
+  );
 
 export const teamRoleSchema = z.enum(["owner", "admin", "member"]);
 

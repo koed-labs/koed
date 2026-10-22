@@ -18,7 +18,12 @@ const run = async () => {
   let failed = false;
   try {
     await app.whenReady();
-    window = new BrowserWindow({ show: true, width: 1280, height: 800 });
+    window = new BrowserWindow({
+      show: true,
+      width: 1280,
+      height: 800,
+      webPreferences: { backgroundThrottling: false }
+    });
     const errors = [];
     window.webContents.on("console-message", (_event, details) => {
       if (details.level === "error") errors.push(details.message);

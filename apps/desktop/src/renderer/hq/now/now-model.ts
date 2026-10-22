@@ -177,8 +177,7 @@ export function nowConversationDestination(
   need: NowNeed,
   projects: readonly DesktopProject[]
 ): { projectId: string; routeId: string; synthetic: boolean } | null {
-  if (!need.executionId || !need.projectId || !need.sessionId || !need.threadId)
-    return null;
+  if (!need.projectId || !need.sessionId || !need.threadId) return null;
   const project = projects.find(({ id }) => id === need.projectId);
   if (!project) return null;
   const thread = project.threads.find(
@@ -186,9 +185,10 @@ export function nowConversationDestination(
       sessionSelectionId(candidate) === need.sessionId ||
       candidate.id === need.threadId
   );
+  if (!thread && !need.executionId) return null;
   return {
     projectId: project.id,
-    routeId: thread ? sessionSelectionId(thread) : need.executionId,
+    routeId: thread ? sessionSelectionId(thread) : need.executionId!,
     synthetic: !thread
   };
 }

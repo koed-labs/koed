@@ -1,5 +1,24 @@
 # User-owned Project Work Items
 
+## Conversation origin
+
+A Work Item created by a claimed `koed_todo_add` action records the exact
+owner-owned Captured Session from the action's live command and runtime
+binding. The request cannot choose an `originRef`. Creation and replay use
+that same trusted origin in the idempotency payload.
+
+The new HQ shows a readable Conversation origin and current activity for work
+without a ticket. Its brief links to the originating Conversation when that
+Session resolves in the owner's current graph. A missing or ambiguous source
+does not expose an opaque identifier as a link. Opening a captured
+Conversation does not require or invent a Managed Conversation execution ID;
+an inventory-only runtime fallback still requires its real execution ID.
+
+The brief's live log belongs to the Work Item's execution. That execution and
+the originating Conversation are separate identities.
+
+## Work Item lifecycle
+
 Work Items are to-dos or tickets owned by a User's active Project. They are operational state, not Memory. `due_on` is a calendar date (`YYYY-MM-DD`), without a time or time zone; each viewer interprets that date locally.
 
 `GET` and `POST /v1/projects/{id}/work-items`, `PATCH` and `DELETE /v1/work-items/{id}` require a browser session or a local device credential with `personal_collaboration_read` or `personal_collaboration_write`. Personal API Tokens do not authorize these operations. Every repository operation verifies the current owner and active Project. Projects with an authoritative Team link are unavailable here; HQ-712 owns their Team-side state and access rules. The recall-routing configuration is not a Team link.

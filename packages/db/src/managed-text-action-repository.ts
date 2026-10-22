@@ -404,11 +404,12 @@ export const claimedManagedTextCreateWithClient = async (
       argumentsValue: Record<string, unknown>,
       snapshot: Record<string, unknown>
     ) => boolean;
+    onValidatedOriginSession?: (sessionId: string) => void;
   }
 ): Promise<boolean> => {
   if (!provider) return false;
-  const found = await client.query<Row>(
-    `select action.* from managed_conversation_text_actions action
+  const found = await client.query<Row & { origin_session_id: string }>(
+    `select action.*, session.id as origin_session_id from managed_conversation_text_actions action
        join managed_conversation_executions execution
          on execution.id=action.execution_id and execution.owner_user_id=action.owner_user_id
        join managed_conversation_commands command
@@ -480,7 +481,9 @@ export const claimedManagedTextCreateWithClient = async (
     )
       return false;
   }
-  return input.matches(argumentsValue, snapshot);
+  if (!input.matches(argumentsValue, snapshot)) return false;
+  input.onValidatedOriginSession?.(String(row.origin_session_id));
+  return true;
 };
 
 /** Validate one linked-source move against the claimed immutable text action.

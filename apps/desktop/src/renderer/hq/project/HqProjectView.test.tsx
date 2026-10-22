@@ -77,11 +77,154 @@ import { createRoot } from "react-dom/client";
 import { vi } from "vitest";
 import type { ProjectsDesktopApi } from "../../../ipc/projects-protocol.js";
 import type { WorkItem } from "@koed/shared/work-item-contract";
-import { HqProjectView } from "./HqProjectView.js";
+import { HqProjectView, workItemOriginConversation } from "./HqProjectView.js";
 import { dueChoiceDate } from "../due/hq-due-model.js";
 import { viewerTimeZone } from "./hq-work-item-model.js";
 
 describe("Project HQ Work Item writes", () => {
+  it("resolves same and cross Project source chats without exposing stale or ambiguous IDs", () => {
+    const item = {
+      origin: "koed_text_action",
+      originRef: sessionId,
+      projectId: personalId
+    } as WorkItem;
+    const duplicate = {
+      id: anotherPersonalId,
+      name: "Other graph",
+      threads: [
+        {
+          id: "cross-thread",
+          sessionId,
+          personalProjectId: anotherPersonalId,
+          name: "Other source"
+        }
+      ]
+    } as DesktopProject;
+    expect(
+      workItemOriginConversation(item, [duplicate, ...graphProjects])?.thread.id
+    ).toBe("thread-one");
+    expect(workItemOriginConversation(item, [duplicate])?.thread.id).toBe(
+      "cross-thread"
+    );
+    expect(
+      workItemOriginConversation(item, [
+        duplicate,
+        {
+          ...duplicate,
+          id: "third-graph",
+          threads: [{ ...duplicate.threads[0]!, id: "third-thread" }]
+        }
+      ])
+    ).toBeNull();
+    expect(
+      workItemOriginConversation(
+        { ...item, originRef: "missing" },
+        graphProjects
+      )
+    ).toBeNull();
+    expect(
+      workItemOriginConversation({ ...item, originRef: null }, graphProjects)
+    ).toBeNull();
+  });
+  it("shows a keyless Conversation-origin item, opens its source chat, and closes the brief", async () => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    const node = document.createElement("div");
+    document.body.append(node);
+    const root = createRoot(node);
+    const project = {
+      id: personalId,
+      name: "Koed",
+      lifecycle: "active"
+    } as Project;
+    const item = {
+      id: "00000000-0000-4000-8000-000000002074",
+      projectId: personalId,
+      kind: "todo",
+      key: null,
+      title: "Check mobile spacing",
+      goal: "Polish the narrow layout requested in chat",
+      origin: "koed_text_action",
+      originRef: sessionId,
+      status: "doing",
+      executionId: null,
+      assigneeAgentId: null,
+      version: 1,
+      dueOn: null,
+      createdAt: "2026-10-20T00:00:00Z",
+      updatedAt: "2026-10-20T00:00:00Z"
+    } as WorkItem;
+    const api = {
+      hq: vi.fn(async () => ({ project, activity: null })),
+      workItemList: vi.fn(async () => [item]),
+      sourceList: vi.fn(async () => [])
+    } as unknown as ProjectsDesktopApi;
+    const selectConversation = vi.fn();
+    try {
+      await act(async () =>
+        root.render(
+          <HqProjectView
+            project={project}
+            personalProjects={[project]}
+            graphProjects={[
+              {
+                id: graphId,
+                name: "Koed",
+                threads: [
+                  { id: "thread-one", sessionId, name: "Mobile review" }
+                ]
+              } as DesktopProject
+            ]}
+            projectsApi={api}
+            ownerId="owner"
+            profileKey="profile"
+            panelHost={node}
+            onSelectConversation={selectConversation}
+          />
+        )
+      );
+      expect(
+        node.querySelector(".hq-project-view__origin-summary")?.textContent
+      ).toContain("From Mobile review · Polish the narrow layout");
+      await act(async () =>
+        node
+          .querySelector<HTMLButtonElement>(
+            ".hq-project-view__section--doing .hq-project-view__brief-trigger"
+          )!
+          .click()
+      );
+      expect(node.querySelector('[aria-label="Work brief"]')).toBeTruthy();
+      await act(async () =>
+        node
+          .querySelector<HTMLButtonElement>('[aria-label="Close work brief"]')!
+          .click()
+      );
+      expect(node.querySelector('[aria-label="Work brief"]')).toBeNull();
+      await act(async () =>
+        node
+          .querySelector<HTMLButtonElement>(
+            ".hq-project-view__section--doing .hq-project-view__brief-trigger"
+          )!
+          .click()
+      );
+      await act(async () =>
+        node
+          .querySelector<HTMLButtonElement>(".hq-project-view__origin-link")!
+          .click()
+      );
+      expect(selectConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId, threadId: "thread-one" })
+      );
+      expect(selectConversation.mock.calls[0]?.[0]).not.toHaveProperty(
+        "executionId"
+      );
+      expect(node.querySelector('[aria-label="Work brief"]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      node.remove();
+    }
+  });
   it("opens the Due menu by right-click and saves a viewer-local calendar date", async () => {
     (
       globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }

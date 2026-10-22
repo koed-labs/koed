@@ -984,6 +984,15 @@ const runAssertion = async (name, assertion) => {
 const reportSkippedCases = () => {
   for (const entry of registry) {
     if (
+      process.env.KOED_HQ_ACCEPTANCE_CHAIN === "1" &&
+      (entry.id.startsWith("S") || entry.id.endsWith(".S"))
+    ) {
+      process.stdout.write(
+        `DELEGATED ${entry.id}: the complete new-HQ chain checks every mapped clause and emits its final simulated-IPC result. This scaffold is not a passing result.\n`
+      );
+      continue;
+    }
+    if (
       delegatedProjectLifecycle &&
       ["S19.4", "S20.2", "S20.3", "S20.4", "N6.S"].includes(entry.id)
     ) {
@@ -2735,9 +2744,14 @@ const runValidation = async () => {
     assert.equal(hq208Created.dialogClosed, true);
 
     await validateHq711(window);
-    process.stdout.write(
-      `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length - Number(delegatedS09) - (delegatedProjectHq ? 2 : 0) - Number(delegatedMemoryScope) - Number(delegatedMemoryCitations) - Number(delegatedMemoryActions) - Number(delegatedRowMemoryChips) - Number(delegatedSummarySharingS15)} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report${delegatedS09 ? "; S09.1 is delegated to the dedicated native Sources proof" : ""}${delegatedProjectHq ? "; S01.1 and S11.1 are delegated to the dedicated native Project HQ proof" : ""}${delegatedMemoryScope ? "; S18.2 is delegated to the dedicated native Memory scope proof" : ""}${delegatedMemoryCitations ? "; S07.1 is delegated to the dedicated native citation proof" : ""}${delegatedMemoryActions ? "; S18.1 is delegated to the dedicated native Memory actions proof" : ""}${delegatedRowMemoryChips ? "; S19.1 is delegated to the dedicated native row memory-chip proof" : ""}${delegatedSummarySharingS15 ? "; S15.2 UI wording and Native decision are delegated to HQ702.ui.native, with real no-CSA publication verified separately in PostgreSQL" : ""}${delegatedScheduledS12 ? "; the Scheduled subset of S12.1 is delegated to HQ603.native while the compound case remains SKIP" : ""}. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
-    );
+    if (process.env.KOED_HQ_ACCEPTANCE_CHAIN === "1") {
+      process.stdout.write(
+        `HQ scaffold and existing desktop checks passed. Simulated assertions await the chain's fresh owning proofs; real API, Team repository and unit assertions require their separate harnesses. Screenshots: ${screenshotDir}.\n`
+      );
+    } else
+      process.stdout.write(
+        `HQ acceptance harness: active scaffold/fixture smoke, HQ-103 sidebar subchecks, HQ-104 composer/timeline proof, HQ-105 private visibility proof, HQ-108 Now home proof, HQ-109 Settings integration, and real Electron layout, drag, keyboard, modal, and screenshot checks passed; ${approvedPositiveIds.length - Number(delegatedS09) - (delegatedProjectHq ? 2 : 0) - Number(delegatedMemoryScope) - Number(delegatedMemoryCitations) - Number(delegatedMemoryActions) - Number(delegatedRowMemoryChips) - Number(delegatedSummarySharingS15)} positive, ${approvedNegativeIds.length} negative, and ${approvedTwoUserIds.length} two-user IDs remain explicit SKIP entries in this browser report${delegatedS09 ? "; S09.1 is delegated to the dedicated native Sources proof" : ""}${delegatedProjectHq ? "; S01.1 and S11.1 are delegated to the dedicated native Project HQ proof" : ""}${delegatedMemoryScope ? "; S18.2 is delegated to the dedicated native Memory scope proof" : ""}${delegatedMemoryCitations ? "; S07.1 is delegated to the dedicated native citation proof" : ""}${delegatedMemoryActions ? "; S18.1 is delegated to the dedicated native Memory actions proof" : ""}${delegatedRowMemoryChips ? "; S19.1 is delegated to the dedicated native row memory-chip proof" : ""}${delegatedSummarySharingS15 ? "; S15.2 UI wording and Native decision are delegated to HQ702.ui.native, with real no-CSA publication verified separately in PostgreSQL" : ""}${delegatedScheduledS12 ? "; the Scheduled subset of S12.1 is delegated to HQ603.native while the compound case remains SKIP" : ""}. Preference-file and IPC contracts are validated by their native module tests, not by the preload-free fixture window. Screenshots: ${screenshotDir}.\n`
+      );
   } finally {
     if (debuggerClient?.isAttached()) debuggerClient.detach();
     if (window && !window.isDestroyed()) window.destroy();

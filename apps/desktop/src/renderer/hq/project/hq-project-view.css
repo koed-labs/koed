@@ -130,6 +130,20 @@
   color: var(--hq-muted);
   font-size: 11px;
 }
+.hq-project-view__origin-link {
+  display: block;
+  border: 0;
+  margin: 8px 0 0;
+  padding: 0;
+  background: transparent;
+  color: var(--hq-accent-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.hq-project-view__origin-link:hover {
+  text-decoration: underline;
+}
 .hq-project-view__brief h2 {
   margin: 5px 0 11px;
   font-size: 17px;
@@ -492,6 +506,13 @@ button.hq-project-view__row:hover:not(:disabled) {
   min-height: 19px;
 }
 .hq-project-view__work-item-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hq-project-view__origin-summary {
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

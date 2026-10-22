@@ -179,6 +179,10 @@ export interface Hq713Fixture {
   readonly personalEncryptionProvider: NonNullable<
     ReturnType<typeof createEnvelopeEncryptionProviderFromEnvironment>
   >;
+  invalidateTeamSemanticPreview(input: {
+    ownerTeamUserId: string;
+    semanticPreviewId: string;
+  }): Promise<boolean>;
   blockTeamPath(method: string, path: string): void;
   resumeTeamPath(method: string, path: string): void;
   blockTeamCuratedWithdrawal(): void;
@@ -207,6 +211,7 @@ export interface Hq713Fixture {
       teamWorkspaceId: string;
       summaryText: string;
       includeCuratedMemory: boolean;
+      expiresAt?: string | null;
     }
   ): Promise<{
     grantId: string;
@@ -2470,6 +2475,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
           source,
           activationRepresentation: "lcm_leaves",
           mode: "continuous",
+          ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
           ...(input.includeCuratedMemory
             ? {
                 curatedTarget: {
@@ -2618,7 +2624,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         includeCuratedMemory: input.includeCuratedMemory,
         previewRevision: preview.previewRevision,
         previewHash: preview.previewHash,
-        expiresAt: null
+        expiresAt: input.expiresAt ?? null
       };
       if (input.projectBoundCuratedDenialProjectId) {
         assert.equal(
@@ -2836,6 +2842,11 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         assert.deepEqual(workerErrors, [], "Production worker failures"),
       home,
       personalEncryptionProvider,
+      invalidateTeamSemanticPreview: ({ ownerTeamUserId, semanticPreviewId }) =>
+        sharedMemoryRepository.invalidateSemanticPreview(
+          { userId: ownerTeamUserId },
+          { semanticPreviewId, reasonCode: "privacy_material_invalidated" }
+        ),
       blockTeamPath: (method, path) => {
         blockedTeamPaths.add(`${method.toUpperCase()} ${path}`);
       },

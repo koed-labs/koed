@@ -26,6 +26,12 @@ export const lateProofs = [
     id: "S15.1",
     clauses: [
       proof(
+        "Just me, Shared and named Team order with authoritative Project link",
+        "validate-hq703.mjs",
+        "hq-703/HQ703.native.json",
+        "S15.1.named-team-order"
+      ),
+      proof(
         "private chat drag and local placement",
         "validate-hq107.mjs",
         "hq-107/browser-report.json",
@@ -38,9 +44,7 @@ export const lateProofs = [
         "HQ702.ui.native"
       )
     ],
-    gaps: [
-      "The current sidebar has no named Koed team heading, so approved Just me / Shared / Koed team order cannot be proved."
-    ]
+    gaps: []
   },
   {
     id: "S15.2",
@@ -59,29 +63,49 @@ export const lateProofs = [
     id: "S15.3",
     clauses: [
       proof(
+        "named Team sidebar fold",
+        "validate-hq703.mjs",
+        "hq-703/HQ703.native.json",
+        "S15.3.named-team-fold"
+      ),
+      proof(
+        "exact member toast only after activated moved-chat summary",
+        "validate-hq702.mjs",
+        "hq-702/HQ702.native.json",
+        "S15.3.exact-audience-toast"
+      ),
+      proof(
         "confirmed summary status after Share again",
         "validate-hq702.mjs",
         "hq-702/HQ702.native.json",
         "HQ702.ui.native"
       )
     ],
-    gaps: [
-      "No shared-with-member toast or exact Team visibility assertion exists for the moved chat; the named Koed team sidebar fold is absent in production."
-    ]
+    gaps: []
   },
   {
     id: "S16.1",
     clauses: [
       proof(
+        "five loose Chats under Just me and Show 2 more",
+        "validate-hq703.mjs",
+        "hq-703/HQ703.native.json",
+        "S16.1.loose-chat-cap"
+      ),
+      proof(
         "shared Project roster in Who’s in sheet",
         "validate-hq701.mjs",
         "hq-701/HQ701.native.json",
         "HQ701.native"
+      ),
+      proof(
+        "typed Koed team roster question in private HQ",
+        "validate-hq703.mjs",
+        "hq-703/HQ703.native.json",
+        "S16.1.typed-roster-question"
       )
     ],
-    gaps: [
-      "Five loose chats plus Show 2 more and the text question ‘Who’s in Koed team?’ have no dedicated native assertions."
-    ]
+    gaps: []
   },
   {
     id: "S17.1",
@@ -163,11 +187,15 @@ export const lateProofs = [
         "validate-hq305.mjs",
         "hq-305/HQ305.native.json",
         "HQ305.native"
+      ),
+      proof(
+        "typed forget that through LocalRuntime receipt, latest owned citation, Undo, and Now",
+        "validate-hq901-forget.mjs",
+        "hq-901-forget/report.json",
+        "S18.3.forget-that"
       )
     ],
-    gaps: [
-      "Text ‘forget that’ selecting the latest owned cited assertion and returning to Now is not asserted in this browser flow."
-    ]
+    gaps: []
   },
   {
     id: "S19.1",
@@ -189,18 +217,27 @@ export const lateProofs = [
         "validate-hq306.mjs",
         "hq-306/browser-report.json",
         "S07.1"
+      ),
+      proof(
+        "loose Just me citation preserves sidebar scroll",
+        "validate-hq901-citation-lifecycle.mjs",
+        "hq-901-citation-lifecycle/report.json",
+        "S19.2.loose-private-citation-scroll"
       )
     ],
-    gaps: [
-      "The cited chat is not proved loose/Just me and this proof does not assert sidebar scroll retention."
-    ]
+    gaps: []
   },
   {
     id: "S19.3",
-    clauses: [],
-    gaps: [
-      "Personal koed-mobile Project Delete/Undo and citation resolution after deletion have no executable browser proof."
-    ]
+    clauses: [
+      proof(
+        "personal koed-mobile Delete confirmation, Undo and retained citation detail",
+        "validate-hq901-citation-lifecycle.mjs",
+        "hq-901-citation-lifecycle/report.json",
+        "S19.3.project-delete-undo-citation"
+      )
+    ],
+    gaps: []
   },
   {
     id: "S19.4",
@@ -303,11 +340,15 @@ export const lateProofs = [
         "validate-hq407.mjs",
         "hq-407/HQ407.native.json",
         "HQ407.native"
+      ),
+      proof(
+        "Syllabus repeat reports existing to-do and Team tab shows Lena/Omar",
+        "validate-hq407.mjs",
+        "hq-407/HQ407.native.json",
+        "S21.1.syllabus-repeat-team-audience"
       )
     ],
-    gaps: [
-      "Syllabus already-done response and Lena/Omar Team audience are not asserted in the Econ 101 browser sequence."
-    ]
+    gaps: []
   },
   {
     id: "S22.1",

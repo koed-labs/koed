@@ -612,6 +612,8 @@ export const registerLocalEdgeRoutes = (
     fetch: upstreamFetch,
     resolveUpstreamAuthorization,
     requireCollaborationRepository: requireRepository,
+    getPersonalProjectForTeamCreation:
+      context.getPersonalProjectForTeamCreation,
     resolveActiveLocalUser: (userId) => requireRepository().getUser(userId),
     actionGrantControl: context.collaboration.actionGrantControl,
     actionGrantLifecycle: context.collaboration.actionGrantLifecycle,

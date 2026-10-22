@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0084_narrow_war_machine";
-const expectedLatestMigrationIndex = 84;
+const expectedLatestMigrationTag = "0085_fresh_steel_serpent";
+const expectedLatestMigrationIndex = 85;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -6161,6 +6161,136 @@ try {
         if ((await schemaFingerprint(pool)) !== stable) {
           throw new Error("0084 migration rerun changed schema");
         }
+      });
+    }
+  );
+
+  await runScenario(
+    "team-origin-0085-upgrade-default-check-rollback-and-rerun",
+    async () => {
+      const target = await createDisposableDatabase("team_origin_upgrade");
+      const predecessor = await createMigrationSlice(journal, 84, {
+        folderPrefix: "koed-team-origin-predecessor-"
+      });
+      const interrupted = await createMigrationSlice(journal, 85, {
+        folderPrefix: "koed-team-origin-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(predecessor);
+      temporaryFolders.add(interrupted);
+      const priorRecords = await migrationRecords(
+        predecessor,
+        journal.entries.slice(0, 85)
+      );
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: predecessor });
+        const legacyTeam = randomUUID();
+        await pool.query(
+          "insert into teams(id,name) values($1,'Existing arbitrary Team')",
+          [legacyTeam]
+        );
+        const before = await schemaFingerprint(pool);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        const rolledBack = await pool.query(
+          `select
+            (select count(*)::int from teams where id=$1) as legacy_rows,
+            (select count(*)::int from information_schema.columns
+             where table_schema='public' and table_name='teams' and column_name='origin') as origin_columns`,
+          [legacyTeam]
+        );
+        if (
+          !failed ||
+          (await schemaFingerprint(pool)) !== before ||
+          !isDeepStrictEqual(rolledBack.rows[0], {
+            legacy_rows: 1,
+            origin_columns: 0
+          })
+        )
+          throw new Error(
+            "Interrupted 0085 migration leaked Team origin schema or changed existing Team"
+          );
+        await assertMigrationLedger(pool, priorRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+        const legacy = await pool.query(
+          "select name,origin from teams where id=$1",
+          [legacyTeam]
+        );
+        if (
+          !isDeepStrictEqual(legacy.rows[0], {
+            name: "Existing arbitrary Team",
+            origin: "named"
+          })
+        )
+          throw new Error("0085 did not preserve existing Team as named");
+        const createdNamed = randomUUID();
+        const createdShare = randomUUID();
+        await pool.query(
+          "insert into teams(id,name) values($1,'Named one-Project Team')",
+          [createdNamed]
+        );
+        await pool.query(
+          "insert into teams(id,name,origin) values($1,'Share origin Team','project_share')",
+          [createdShare]
+        );
+        const allowed = await pool.query(
+          "select id,origin from teams where id=any($1::uuid[]) order by id",
+          [[createdNamed, createdShare]]
+        );
+        const origins = new Map(
+          allowed.rows.map((row) => [row.id, row.origin])
+        );
+        if (
+          origins.get(createdNamed) !== "named" ||
+          origins.get(createdShare) !== "project_share"
+        )
+          throw new Error(
+            "0085 rejected a valid Team origin or changed the named default"
+          );
+        const rejectOrigin = await pool
+          .query(
+            "insert into teams(id,name,origin) values($1,'Invalid origin','unexpected')",
+            [randomUUID()]
+          )
+          .then(
+            () => null,
+            (error) => error.code
+          );
+        const rejectNull = await pool
+          .query(
+            "insert into teams(id,name,origin) values($1,'Missing origin',null)",
+            [randomUUID()]
+          )
+          .then(
+            () => null,
+            (error) => error.code
+          );
+        if (rejectOrigin !== "23514" || rejectNull !== "23502")
+          throw new Error(
+            "0085 Team origin CHECK or NOT NULL guard is missing"
+          );
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== stable)
+          throw new Error("0085 migration rerun changed schema");
+        const retained = await pool.query(
+          "select origin from teams where id=any($1::uuid[]) order by id",
+          [[legacyTeam, createdNamed, createdShare]]
+        );
+        if (
+          retained.rowCount !== 3 ||
+          retained.rows.filter((row) => row.origin === "named").length !== 2 ||
+          retained.rows.filter((row) => row.origin === "project_share")
+            .length !== 1
+        )
+          throw new Error("0085 migration rerun changed Team origin rows");
       });
     }
   );

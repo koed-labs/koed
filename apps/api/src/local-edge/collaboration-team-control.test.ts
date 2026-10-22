@@ -466,6 +466,84 @@ describe("Team-control integration requirements", () => {
 });
 
 describe("Team and Workspace creation", () => {
+  it("binds a Project-share Team to an owned unlinked Project and the exact approved body", async () => {
+    const projectId = randomUUID();
+    const command = parsedCommand({
+      command: "collaboration.create_team",
+      input: {
+        name: "Alpha shared",
+        origin: "project_share",
+        personalProjectId: projectId,
+        actionGrant: { id: ids.actionGrant }
+      }
+    });
+    const resolveActionGrantSecret = vi.fn(
+      async (binding: CollaborationTeamControlActionBinding) => {
+        expect(binding.body).toEqual({
+          name: "Alpha shared",
+          origin: "project_share",
+          personalProjectId: projectId
+        });
+        return grantSecret;
+      }
+    );
+    const fixture = context({
+      getPersonalProjectForTeamCreation: async () => ({
+        name: "Alpha",
+        lifecycle: "active",
+        teamBackendId: null,
+        workspaceProjectId: null
+      }),
+      resolveActionGrantSecret,
+      response: {
+        team: {
+          id: ids.team,
+          name: "Alpha shared",
+          origin: "project_share",
+          lifecycle: "active"
+        },
+        defaultWorkspace: workspaceRecord()
+      }
+    });
+    expect(
+      handled(await dispatchCollaborationTeamControlCommand(command, fixture))
+        .ok
+    ).toBe(true);
+    expect(resolveActionGrantSecret).toHaveBeenCalledOnce();
+    expect(fixture.fetch.mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({
+        name: "Alpha shared",
+        origin: "project_share",
+        personalProjectId: projectId
+      })
+    );
+  });
+
+  it("rejects Project-share origin before approval when the owned Project changed", async () => {
+    const command = parsedCommand({
+      command: "collaboration.create_team",
+      input: {
+        name: "Alpha shared",
+        origin: "project_share",
+        personalProjectId: randomUUID(),
+        actionGrant: { id: ids.actionGrant }
+      }
+    });
+    const fixture = context({
+      getPersonalProjectForTeamCreation: async () => ({
+        name: "Renamed",
+        lifecycle: "active",
+        teamBackendId: null,
+        workspaceProjectId: null
+      })
+    });
+    expectError(
+      await dispatchCollaborationTeamControlCommand(command, fixture),
+      "permission_denied"
+    );
+    expect(fixture.fetch).not.toHaveBeenCalled();
+  });
+
   it("creates a Team with request idempotency and verifies one mandatory general channel", async () => {
     const requestId = randomUUID();
     const command = parsedCommand({

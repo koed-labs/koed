@@ -1294,6 +1294,7 @@ const createFakeRepository = () => {
         if (!existing) {
           teams.set(teamId, {
             id: teamId,
+            origin: "named",
             name:
               input.organization.name ??
               input.organization.providerOrganizationId,
@@ -1365,6 +1366,7 @@ const createFakeRepository = () => {
       const team: TeamRecord = {
         id: randomUUID(),
         name: input.name,
+        origin: input.origin ?? "named",
         version: 1,
         lifecycle: "active",
         entitlementStatus: "active",

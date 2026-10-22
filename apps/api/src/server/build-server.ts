@@ -1970,6 +1970,15 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       : {})
   });
   const routeContext = {
+    getPersonalProjectForTeamCreation: projectApiRepository
+      ? async (ownerUserId: string, projectId: string) => {
+          try {
+            return await projectApiRepository.get(ownerUserId, projectId);
+          } catch {
+            return null;
+          }
+        }
+      : undefined,
     scheduledJobs: scheduledJobRepository,
     config,
     requireRepository,

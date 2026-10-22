@@ -8,6 +8,7 @@ import {
 import type { DesktopProject } from "../../project-memory-ui.js";
 import { sessionSelectionId } from "../../project-memory-ui.js";
 import type { HqRoute } from "./hq-navigation.js";
+import { groupSidebarProjects, type SidebarTeam } from "./hq-sidebar-groups.js";
 import { HqSidebarPreferencesStore } from "../state/hq-sidebar-preferences.js";
 import type { Agent } from "@koed/shared/agent-contract";
 import { scheduledJobSchema } from "@koed/shared/scheduled-job-contract";
@@ -109,6 +110,7 @@ export function HqIconAction({
 
 const JUST_ME_GROUP_ID = "just-me";
 const SHARED_GROUP_ID = "shared";
+const TEAM_GROUP_PREFIX = "team:";
 const PROJECT_GROUP_PREFIX = "project:";
 const PROJECT_CONVERSATION_LIMIT = 3;
 const LOOSE_CONVERSATION_LIMIT = 5;
@@ -146,6 +148,8 @@ export type HqSidebarProps = {
   onShareProject?: (projectId: string) => void;
   onOpenSharedGroup?: () => void;
   sharedPeopleCounts?: Readonly<Record<string, number>>;
+  sharedAudienceNames?: Readonly<Record<string, readonly string[]>>;
+  teams?: readonly SidebarTeam[];
   onDeleteConversation?: (
     projectId: string,
     sessionId: string,
@@ -210,6 +214,8 @@ export function HqSidebar({
   onShareProject,
   onOpenSharedGroup,
   sharedPeopleCounts,
+  sharedAudienceNames,
+  teams = [],
   onDeleteConversation,
   onForgetConversation,
   chatShareScopeKey,
@@ -270,6 +276,14 @@ export function HqSidebar({
     error: string | null;
     notice?: string | null;
   } | null>(null);
+  const [shareToast, setShareToast] = useState<string | null>(null);
+  const pendingShareSessions = useRef(new Set<string>());
+  const sharedWith = (projectId: string) => {
+    const names = sharedAudienceNames?.[projectId] ?? [];
+    return names.length
+      ? `Summary shared with ${new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format([...names])}.`
+      : "This chat’s summary is shared with the Project members.";
+  };
   const [privateChatKeys, setPrivateChatKeys] = useState<ReadonlySet<string>>(
     () => new Set()
   );
@@ -314,6 +328,8 @@ export function HqSidebar({
   useEffect(() => {
     chatShareEpoch.current++;
     setChatShare(null);
+    setShareToast(null);
+    pendingShareSessions.current.clear();
     setPrivateChatKeys(new Set());
     setConversationMenuId(null);
   }, [chatShareScopeKey, chatShareProjectsKey]);
@@ -337,6 +353,12 @@ export function HqSidebar({
           return;
         }
         rememberPrivate(key, status === "private");
+        const sessionKey = `${personalProjectId}:${sessionId}`;
+        if (
+          status === "shared" &&
+          pendingShareSessions.current.delete(sessionKey)
+        )
+          setShareToast(sharedWith(personalProjectId));
         setChatShare({ key, status, busy: false, error: null });
       })
       .catch((error: unknown) => {
@@ -430,6 +452,13 @@ export function HqSidebar({
           key,
           result.state === "canceled" && expectedStatus === "private"
         );
+        const sessionKey = `${personalProjectId}:${sessionId}`;
+        if (result.state === "pending")
+          pendingShareSessions.current.add(sessionKey);
+        if (result.state === "activated") {
+          pendingShareSessions.current.delete(sessionKey);
+          setShareToast(sharedWith(personalProjectId));
+        }
         setChatShare({
           key,
           status:
@@ -579,19 +608,40 @@ export function HqSidebar({
       ),
     [personalProjects]
   );
+  const groupedProjects = useMemo(
+    () => groupSidebarProjects(personalProjects ?? [], teams),
+    [personalProjects, teams]
+  );
+  const sharedStandaloneIds = new Set(groupedProjects.sharedProjectIds);
   const privateProjectRows = sortedProjects.filter(
     (item) => !sharedProjectIds.has(item.id)
   );
-  const sharedProjectRows = sortedProjects.filter((item) =>
-    sharedProjectIds.has(item.id)
+  const sharedProjectRows = sortedProjects.filter(
+    (item) =>
+      sharedStandaloneIds.has(item.id) ||
+      (sharedProjectIds.has(item.id) &&
+        !groupedProjects.namedTeams.some((team) =>
+          team.projectIds.includes(item.id)
+        ))
+  );
+  const namedTeamRows = useMemo(
+    () =>
+      groupedProjects.namedTeams.map((team) => ({
+        ...team,
+        projects: sortedProjects.filter((project) =>
+          team.projectIds.includes(project.id)
+        )
+      })),
+    [groupedProjects, sortedProjects]
   );
   const foldGroupIds = useMemo(
     () => [
       JUST_ME_GROUP_ID,
       ...(sharedProjectRows.length ? [SHARED_GROUP_ID] : []),
+      ...namedTeamRows.map((team) => `${TEAM_GROUP_PREFIX}${team.id}`),
       ...sortedProjects.map(({ id }) => hqProjectFoldId(id))
     ],
-    [sortedProjects, sharedProjectRows.length]
+    [sortedProjects, sharedProjectRows.length, namedTeamRows]
   );
   useEffect(() => {
     if (groupsReady) preferencesStore.reconcileGroups(foldGroupIds);
@@ -1474,6 +1524,45 @@ export function HqSidebar({
                   </ul>
                 </li>
               ) : null}
+              {namedTeamRows.map((team) => {
+                const groupId = `${TEAM_GROUP_PREFIX}${team.id}`;
+                const childrenId = `hq-group-team-${encodeURIComponent(team.id)}`;
+                return (
+                  <li className="hq-sidebar__group" key={groupId}>
+                    <button
+                      aria-controls={childrenId}
+                      aria-expanded={!groupFolded(groupId)}
+                      className="hq-sidebar__group-heading"
+                      data-hq-sidebar-group={groupId}
+                      onClick={() =>
+                        setGroupFolded(groupId, !groupFolded(groupId))
+                      }
+                      type="button"
+                    >
+                      <ChevronDown
+                        aria-hidden="true"
+                        className="hq-sidebar__row-chevron-icon"
+                        data-hq-group-chevron=""
+                      />
+                      <UsersRound
+                        aria-hidden="true"
+                        className="hq-sidebar__group-icon"
+                        data-hq-group-icon=""
+                      />
+                      <span className="hq-sidebar__group-title">
+                        {team.name}
+                      </span>
+                    </button>
+                    <ul
+                      className="hq-sidebar__group-children"
+                      hidden={groupFolded(groupId)}
+                      id={childrenId}
+                    >
+                      {team.projects.map(renderProject)}
+                    </ul>
+                  </li>
+                );
+              })}
             </ul>
             {preferences.error ? (
               <p className="hq-sidebar__preference-error" role="status">
@@ -1508,6 +1597,18 @@ export function HqSidebar({
               </span>
             </button>
           </footer>
+        ) : null}
+        {shareToast ? (
+          <div className="hq-project-toast" role="status" data-hq-shell="">
+            <span>{shareToast}</span>
+            <button
+              aria-label="Dismiss sharing notice"
+              onClick={() => setShareToast(null)}
+              type="button"
+            >
+              ×
+            </button>
+          </div>
         ) : null}
       </aside>
     </TooltipProvider>

@@ -38,6 +38,7 @@ import {
   nowVisible
 } from "./now-model.js";
 import type { NowNeed } from "./now-model.js";
+import { sameInvitationAuthority } from "./invitation-authority.js";
 import { readNowPreferences, writeNowPreferences } from "./now-preferences.js";
 import { ExecutionMemoryChips } from "../memory/ExecutionMemoryChips.js";
 import { latestRuntimeTurn } from "../memory/execution-memory-chips.js";
@@ -222,43 +223,61 @@ export function NowView({
     )
       return;
     const decisionAuthority = authorityKey;
+    let continuingAuthority = decisionAuthority;
+    let joinStarted = false;
     setInvitationBusy(invite.id);
     setInvitationError("");
     try {
       await invitationsClient.decideInvitation(invite, decision);
-      if (invitationAuthority() !== decisionAuthority) return;
+      // Accepting a first invitation can establish the Team principal while
+      // the local owner, backend and URL remain the same. Continue the join
+      // under that fresh authority rather than abandoning it as a switch.
+      const joinedAuthority = invitationAuthority();
+      if (
+        !joinedAuthority ||
+        !sameInvitationAuthority(
+          decisionAuthority,
+          joinedAuthority,
+          decision === "accept"
+        )
+      )
+        return;
+      continuingAuthority = joinedAuthority;
       if (decision === "accept" && invite.project) {
         const backendId = invitationsClient.current()?.connection.backendId;
         if (!backendId || !projectsApi?.sharedJoinProject)
           throw new Error("Joined Project setup is unavailable");
         const recovery = {
-          authorityKey: decisionAuthority,
+          authorityKey: joinedAuthority,
           workspaceProjectId: invite.project.id,
           teamBackendId: backendId,
           name: invite.project.name
         };
         setJoinRecovery(recovery);
+        joinStarted = true;
         const joined = await projectsApi.sharedJoinProject(
           recovery.workspaceProjectId,
           recovery.teamBackendId
         );
-        if (invitationAuthority() === decisionAuthority) {
+        if (invitationAuthority() === joinedAuthority) {
           await onJoinedProject?.(joined.id);
-          if (invitationAuthority() === decisionAuthority)
-            setJoinRecovery(null);
+          if (invitationAuthority() === joinedAuthority) setJoinRecovery(null);
         }
       }
-      if (invitationAuthority() === decisionAuthority)
+      if (invitationAuthority() === joinedAuthority)
         setRefreshKey((value) => value + 1);
     } catch {
-      if (invitationAuthority() === decisionAuthority) {
+      if (invitationAuthority() === continuingAuthority) {
         setInvitationError(
-          "Invitation changed or the review was canceled. Refresh to check its current state."
+          joinStarted
+            ? "Project setup is incomplete. Retry to finish joining."
+            : "Invitation changed or the review was canceled. Refresh to check its current state."
         );
         setRefreshKey((value) => value + 1);
       }
     } finally {
-      if (invitationAuthority() === decisionAuthority) setInvitationBusy(null);
+      if (invitationAuthority() === continuingAuthority)
+        setInvitationBusy(null);
     }
   };
   const retryJoinedProject = async () => {

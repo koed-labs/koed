@@ -59,15 +59,45 @@ const hq108Overflow =
   new URLSearchParams(window.location.search).get("nowOverflow") === "yes";
 const hq203Empty =
   new URLSearchParams(window.location.search).get("hq203Empty") === "yes";
+const hq901CitationLifecycle =
+  new URLSearchParams(window.location.search).get("hq901CitationLifecycle") ===
+  "yes";
 // Renderer-only presentation fixture. API behavior is verified in Project route tests.
 const hq208Capture =
-  new URLSearchParams(window.location.search).get("hq208Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq208Capture") === "yes" ||
+  hq901CitationLifecycle;
 const hq307Capture =
   new URLSearchParams(window.location.search).get("hq307Capture") === "yes";
+const hq901OriginCapture =
+  new URLSearchParams(window.location.search).get("hq901Origin") === "yes";
+const hq901TypedMergeCapture =
+  new URLSearchParams(window.location.search).get("hq901TypedMerge") ===
+    "yes" ||
+  new URLSearchParams(window.location.search).get("hq901TypedMergeNative") ===
+    "yes";
+const hq901TypedMergeNativeCapture =
+  new URLSearchParams(window.location.search).get("hq901TypedMergeNative") ===
+  "yes";
+const hq901TicketlessCapture =
+  new URLSearchParams(window.location.search).get("hq901Ticketless") === "yes";
+const hq901ClosingCapture =
+  new URLSearchParams(window.location.search).get("hq901Closing") === "yes";
+const hq901TicketLoopCapture =
+  new URLSearchParams(window.location.search).get("hq901TicketLoop") ===
+    "yes" || hq901ClosingCapture;
 const hq308Capture =
   new URLSearchParams(window.location.search).get("hq308Capture") === "yes";
+const hq901DocEntry =
+  new URLSearchParams(window.location.search).get("hq901DocEntry") ??
+  (new URLSearchParams(window.location.search).get("hq901DocCycle") === "yes"
+    ? "source"
+    : null);
+const hq901DocCycleCapture = hq901DocEntry !== null;
+const hq901TodoCycleCapture =
+  new URLSearchParams(window.location.search).get("hq901TodoCycle") === "yes";
 const hq406Capture =
-  new URLSearchParams(window.location.search).get("hq406Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq406Capture") === "yes" ||
+  hq901DocCycleCapture;
 const hq406ActiveCapture =
   hq406Capture &&
   new URLSearchParams(window.location.search).get("hq406Active") === "yes";
@@ -79,8 +109,11 @@ const hq502Capture =
   new URLSearchParams(window.location.search).get("hq502Capture") === "yes";
 const hq506Capture =
   new URLSearchParams(window.location.search).get("hq506Capture") === "yes";
+const hq901CatchupCapture =
+  new URLSearchParams(window.location.search).get("hq901Catchup") === "yes";
 const hq505Capture =
-  new URLSearchParams(window.location.search).get("hq505Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq505Capture") === "yes" ||
+  hq901CatchupCapture;
 const hq505Outcome = new URLSearchParams(window.location.search).get(
   "hq505Outcome"
 );
@@ -92,11 +125,16 @@ const hq704Capture =
   new URLSearchParams(window.location.search).get("hq704Capture") === "yes";
 const hq704Owner =
   new URLSearchParams(window.location.search).get("hq704Owner") === "yes";
+const hq714Capture =
+  new URLSearchParams(window.location.search).get("hq714Capture") === "yes";
+const hq718Capture =
+  new URLSearchParams(window.location.search).get("hq718Capture") === "yes";
 const hq704Trace = { actions: [] as string[], deleted: false };
 const hq504Capture =
   new URLSearchParams(window.location.search).get("hq504Capture") === "yes" ||
   hq802DeckCapture ||
-  hq704Capture;
+  hq704Capture ||
+  hq714Capture;
 const hq603ReviewCapture =
   new URLSearchParams(window.location.search).get("hq603ReviewCapture") ===
   "yes";
@@ -106,7 +144,7 @@ const hq701Linked =
   new URLSearchParams(window.location.search).get("hq701Linked") === "yes";
 const hq705Capture =
   new URLSearchParams(window.location.search).get("hq705Capture") === "yes" ||
-  hq505Capture;
+  (hq505Capture && !hq901CatchupCapture);
 const hq712Capture =
   new URLSearchParams(window.location.search).get("hq712Capture") === "yes" ||
   hq701Linked ||
@@ -119,7 +157,17 @@ const hq711Capture =
   new URLSearchParams(window.location.search).get("hq711Capture") === "yes";
 const hq703Capture =
   new URLSearchParams(window.location.search).get("hq703Capture") === "yes";
-const hq703Trace = { decisions: [] as string[], failNext: false };
+const hq703Trace = {
+  decisions: [] as string[],
+  joins: 0,
+  failNext: false,
+  catchUpCalls: 0,
+  catchUpCommandId: "" as string,
+  catchUpStatuses: [] as string[],
+  rosterMessageId: "" as string,
+  rosterRuntimeReads: 0,
+  rosterCompleted: false
+};
 const hq703Invitation = {
   id: "00000000-0000-4000-8000-000000007031",
   version: 1,
@@ -128,12 +176,12 @@ const hq703Invitation = {
   membershipStatus: null,
   membershipDisabledReason: null,
   leaveGeneration: 0,
-  team: { id: "00000000-0000-4000-8000-000000007032", name: "Launch Team" },
+  team: { id: "00000000-0000-4000-8000-000000007120", name: "Launch Team" },
   workspace: {
-    id: "00000000-0000-4000-8000-000000007033",
+    id: "00000000-0000-4000-8000-000000007121",
     name: "Launch workspace"
   },
-  project: { id: "00000000-0000-4000-8000-000000007034", name: "landing-site" },
+  project: { id: "00000000-0000-4000-8000-000000007122", name: "landing-site" },
   inviter: {
     displayName: "Maya Chen",
     agentDisplayName: "Maya’s Design Agent"
@@ -143,6 +191,12 @@ const hq703Invitation = {
   workspaceAccess: "write" as const,
   expiresAt: "2026-10-27T09:00:00.000Z"
 };
+if (
+  hq703Capture &&
+  window.sessionStorage.getItem("hq714-invitation-issued") ===
+    "ana@example.test"
+)
+  hq703Invitation.team.name = "Koed team";
 let hq703Invitations = [hq703Invitation];
 let hq702PolicyStatus: "absent" | "active" | "revoked" = "absent";
 const hq702Trace = {
@@ -174,12 +228,18 @@ const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes" ||
   hq505Capture ||
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
+  hq901OriginCapture ||
+  hq901ClosingCapture ||
+  hq901TypedMergeCapture ||
+  hq901TodoCycleCapture ||
   hq307Capture ||
   hq308Capture ||
   hq406Capture ||
   hq502Capture ||
   hq407Capture ||
-  hq503Capture;
+  hq503Capture ||
+  hq714Capture ||
+  hq718Capture;
 const hq705ThreadId = "00000000-0000-4000-8000-000000007051";
 const hq705TeamId = "00000000-0000-4000-8000-000000007120";
 const hq705ProjectId = "00000000-0000-4000-8000-000000007122";
@@ -231,7 +291,9 @@ let hq705Messages: TeamCollaborationMessageV2Renderer[] = [
       membershipState: "enabled" as const
     },
     senderKind: "user" as const,
-    body: "Can we review the launch plan this afternoon?",
+    body: hq703Capture
+      ? "team-message-human-sentinel: Ana will review the launch plan."
+      : "Can we review the launch plan this afternoon?",
     createdAt: FIXTURE_TIME,
     updatedAt: FIXTURE_TIME,
     editedAt: null,
@@ -245,6 +307,10 @@ let hq705Messages: TeamCollaborationMessageV2Renderer[] = [
 ];
 const hq306Capture =
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
+  hq901CitationLifecycle ||
+  hq901OriginCapture ||
+  hq901ClosingCapture ||
+  hq901DocEntry === "offered" ||
   hq307Capture ||
   hq308Capture ||
   (hq503Capture && !hq503ColdCapture);
@@ -258,19 +324,32 @@ const hq209Capture =
   hq505Capture ||
   hq406Capture;
 const hq404Capture =
-  new URLSearchParams(window.location.search).get("hq404Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq404Capture") === "yes" ||
+  hq901OriginCapture ||
+  hq901TicketLoopCapture ||
+  hq901TodoCycleCapture;
 const hq405Capture =
-  new URLSearchParams(window.location.search).get("hq405Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq405Capture") === "yes" ||
+  hq901TypedMergeCapture ||
+  hq901TicketlessCapture ||
+  hq901TicketLoopCapture ||
+  hq901CatchupCapture;
 const hq405ManyCapture =
-  new URLSearchParams(window.location.search).get("hq405Many") === "yes";
-const hq405ProposalCapture =
+  new URLSearchParams(window.location.search).get("hq405Many") === "yes" ||
+  hq901TicketlessCapture;
+let hq405ProposalCapture =
   new URLSearchParams(window.location.search).get("hq405Proposal") === "yes";
+Object.defineProperty(window, "__hq405ProposalCapture", {
+  configurable: true,
+  get: () => hq405ProposalCapture
+});
 const hq405DeclinedCapture =
   new URLSearchParams(window.location.search).get("hq405Declined") === "yes";
 const hq403Capture =
   new URLSearchParams(window.location.search).get("hq403Capture") === "yes" ||
   hq404Capture ||
   hq405Capture ||
+  hq901DocCycleCapture ||
   hq502Capture ||
   hq407Capture;
 const hq106Capture =
@@ -631,6 +710,18 @@ const hq307Trace = {
   undos: [] as string[],
   chatForgets: [] as string[]
 };
+const hq718Trace = {
+  action: null as ManagedMemoryAction | null,
+  apply(action: ManagedMemoryAction) {
+    if (
+      !hq718Capture ||
+      hq204Trace.nextPrompt !== "Forget that" ||
+      action.actionKind !== "forget"
+    )
+      throw new Error("Untrusted memory action fixture receipt");
+    this.action = structuredClone(action);
+  }
+};
 const hq307ReadActions = (): ManagedMemoryAction[] => {
   const saved = window.sessionStorage.getItem(hq307StorageKey);
   return saved
@@ -642,7 +733,9 @@ const hq307MemoryActionsApi: ManagedMemoryActionDesktopApi = {
     if (executionId !== hq204ExecutionId)
       throw new Error("Unknown fixture execution");
     hq307Trace.lists++;
-    return structuredClone(hq307ReadActions());
+    return hq718Capture
+      ? structuredClone(hq718Trace.action ? [hq718Trace.action] : [])
+      : structuredClone(hq307ReadActions());
   },
   undo: async (executionId, actionId) => {
     if (executionId !== hq204ExecutionId || actionId !== hq307ActionIds[0])
@@ -701,6 +794,21 @@ const hq505Citations = [
     title: "Ship the smaller launch first"
   }
 ];
+const hq901ClosingCitation = {
+  alias: "r44444444444444448444444444444444c1",
+  providerTurnId: "hq901-closing-turn",
+  sourceType: "curated_memory" as const,
+  sourceId: "00000000-0000-4000-8000-000000009044",
+  visibility: "personal" as const,
+  detailAvailable: true,
+  title: "KOE-4 mobile spacing decision",
+  summary: null
+};
+let hq901ClosingMemoryCreated = false;
+Object.defineProperty(window, "__hq901ClosingMemoryCreated", {
+  configurable: true,
+  get: () => hq901ClosingMemoryCreated
+});
 let hq204Started = false;
 const hq505StorageKey = "koed-hq505-validation-catch-up";
 let hq505PendingUntil = 0;
@@ -821,7 +929,7 @@ let settingsCollaborationSnapshot = collaborationSnapshotSchema.parse({
   generatedAt: FIXTURE_TIME,
   connection: {
     state: "live",
-    backendId: "hq-renderer-fixture",
+    backendId: hq703Capture ? "fixture-team-backend" : "hq-renderer-fixture",
     connectedAt: FIXTURE_TIME,
     retryAt: null,
     reconnectAttempt: 0,
@@ -893,19 +1001,28 @@ if (hq711Capture) {
         {
           id: teamId,
           name: "Koed team",
-          role: "member",
+          role: hq714Capture ? "owner" : "member",
           lifecycle: "active",
           unreadCount: 0,
           membershipVersion: 1,
           people: [
             owner,
-            person("00000000-0000-4000-8000-000000007127", "Maya")
+            ...(hq407Capture
+              ? [
+                  person("00000000-0000-4000-8000-000000007127", "Lena"),
+                  person("00000000-0000-4000-8000-000000007129", "Omar")
+                ]
+              : [person("00000000-0000-4000-8000-000000007127", "Maya")])
           ],
           directMessages: [],
           workspaces: [
             {
               id: workspaceId,
-              name: "New empty Project",
+              name: hq714Capture
+                ? "landing-site"
+                : hq407Capture
+                  ? "Econ 101"
+                  : "New empty Project",
               description: null,
               access: "write",
               lifecycle: "active",
@@ -1022,6 +1139,49 @@ const settingsCollaborationClient = {
     };
   },
   reportTeamActivity: async () => [],
+  createInvitation: async (input: {
+    teamId: string;
+    email: string;
+    role: string;
+    defaultWorkspaceId: string;
+    workspaceProjectId?: string | null;
+    expectedWorkspaceProjectVersion?: number;
+    defaultWorkspaceAccess: string;
+    inviterAgentDisplayName?: string;
+    managedTextAction?: {
+      executionId: string;
+      actionId: string;
+      revision: number;
+      projectId: string;
+    };
+    ttlHours: number;
+  }) => {
+    if (
+      !hq714Capture ||
+      input.teamId !== hq705TeamId ||
+      input.email !== "ana@example.test" ||
+      input.role !== "member" ||
+      input.defaultWorkspaceId !== "00000000-0000-4000-8000-000000007121" ||
+      input.workspaceProjectId !== hq712WorkspaceProjectId ||
+      input.expectedWorkspaceProjectVersion !== 1 ||
+      input.defaultWorkspaceAccess !== "write" ||
+      input.inviterAgentDisplayName !== "Chief of Staff" ||
+      input.managedTextAction?.projectId !== hq204ProjectId ||
+      input.managedTextAction.actionId !==
+        "00000000-0000-4000-8000-000000007141" ||
+      input.ttlHours !== 72
+    )
+      throw new Error("Typed invitation scope changed");
+    hq714Trace.requests.push(structuredClone(input));
+    await new Promise<void>((resolve) => {
+      hq714Trace.resolve = resolve;
+    });
+    window.sessionStorage.setItem("hq714-invitation-issued", input.email);
+    return {
+      invitation: hq703Invitation,
+      invitationUrl: "https://fixture.example.test/invite/hq714"
+    };
+  },
   listMyInvitations: async () => (hq703Capture ? [...hq703Invitations] : []),
   decideInvitation: async (
     invite: typeof hq703Invitation,
@@ -1039,6 +1199,78 @@ const settingsCollaborationClient = {
       throw new Error("Native review canceled");
     }
     hq703Invitations = [];
+    if (decision === "accept") {
+      settingsCollaborationSnapshot = collaborationSnapshotSchema.parse({
+        ...settingsCollaborationSnapshot,
+        snapshotRevision: `hq703-accepted-${Date.now()}`,
+        navigation: {
+          ...settingsCollaborationSnapshot.navigation,
+          teamPrincipal: {
+            id: "00000000-0000-4000-8000-000000007110",
+            displayName: "You",
+            presence: "available",
+            membershipState: "enabled"
+          },
+          teams: [
+            {
+              id: hq703Invitation.team.id,
+              name: "Koed team",
+              origin: "named",
+              role: "member",
+              lifecycle: "active",
+              unreadCount: 0,
+              membershipVersion: 1,
+              people: [
+                {
+                  id: "00000000-0000-4000-8000-000000007110",
+                  displayName: "You",
+                  presence: "available",
+                  membershipState: "enabled",
+                  teamPresence: {
+                    mode: "manual",
+                    manualStatus: "available",
+                    activityLevel: null,
+                    lastActivityAt: null,
+                    nextTransitionAt: null,
+                    preferenceVersion: 1
+                  },
+                  management: {
+                    membershipId: "00000000-0000-4000-8000-000000007110",
+                    email: "you@fixture.test",
+                    role: "member",
+                    status: "enabled",
+                    version: 1,
+                    workspaceAccess: [
+                      {
+                        workspaceId: hq703Invitation.workspace.id,
+                        userId: "00000000-0000-4000-8000-000000007110",
+                        access: "write",
+                        version: 1
+                      }
+                    ]
+                  }
+                }
+              ],
+              directMessages: [],
+              workspaces: [
+                {
+                  id: hq703Invitation.workspace.id,
+                  name: "landing-site",
+                  description: null,
+                  access: "write",
+                  lifecycle: "active",
+                  version: 1,
+                  channels: [],
+                  sharedMemory: []
+                }
+              ],
+              version: 1
+            }
+          ]
+        }
+      });
+      publishHq105VisibilityUpdate({ kind: "command" });
+    }
     return {
       ...invite,
       lifecycle: decision === "accept" ? "accepted" : "declined",
@@ -1085,7 +1317,18 @@ const settingsCollaborationClient = {
       ).length,
       people: [
         { userId: "00000000-0000-4000-8000-000000007124", displayName: "You" },
-        { userId: "00000000-0000-4000-8000-000000007127", displayName: "Maya" }
+        {
+          userId: "00000000-0000-4000-8000-000000007127",
+          displayName: hq407Capture && hq711Capture ? "Lena" : "Maya"
+        },
+        ...(hq407Capture && hq711Capture
+          ? [
+              {
+                userId: "00000000-0000-4000-8000-000000007129",
+                displayName: "Omar"
+              }
+            ]
+          : [])
       ]
     };
   },
@@ -1250,6 +1493,16 @@ const settingsCollaborationClient = {
 let startupEnabled = false;
 let accelerationEnabled = true;
 const hq504Trace = { claims: 0, applications: 0, nativeOpens: 0 };
+const hq714Trace = {
+  requests: [] as Array<Record<string, unknown>>,
+  resolve: null as (() => void) | null,
+  nativeApproved: false,
+  approve() {
+    this.nativeApproved = true;
+    this.resolve?.();
+    this.resolve = null;
+  }
+};
 const hq504OwnerId = "00000000-0000-4000-8000-000000000109";
 const hq504ActionBase: KoedTextActionProjection = {
   id: "00000000-0000-4000-8000-000000005041",
@@ -1385,8 +1638,31 @@ if (hq704Capture)
       teamMemberVersion: 1
     }
   });
+if (hq714Capture)
+  hq504Actions.splice(0, hq504Actions.length, {
+    ...hq504ActionBase,
+    id: "00000000-0000-4000-8000-000000007141",
+    effectKey: "00000000-0000-4000-8000-000000007141",
+    toolCallId: "fixture-team-invite",
+    name: "koed_team_invite",
+    arguments: { projectId: hq204ProjectId, email: "ana@example.test" },
+    snapshot: {
+      projectId: hq204ProjectId,
+      projectName: "landing-site",
+      teamBackendId: "fixture-team-backend",
+      workspaceProjectId: "00000000-0000-4000-8000-000000007122",
+      teamProjectVersion: 1,
+      agentName: "Chief of Staff"
+    }
+  });
 const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
-  list: async () => structuredClone(hq504Actions),
+  list: async () =>
+    structuredClone(
+      hq714Capture &&
+        hq204Trace.nextPrompt !== "Invite ana@example.test to landing-site"
+        ? []
+        : hq504Actions
+    ),
   get: async (_executionId, actionId) => {
     const action = hq504Actions.find((row) => row.id === actionId);
     if (!action) throw new Error("Unknown fixture text action");
@@ -1403,11 +1679,31 @@ const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
     };
     return structuredClone(hq504Actions[index]!);
   },
-  claim: async () => {
+  claim: async (_executionId, actionId, revision) => {
+    if (hq714Capture && actionId === "00000000-0000-4000-8000-000000007141") {
+      const action = hq504Actions[0]!;
+      if (revision !== action.revision || action.state !== "ready")
+        throw new Error("Invite action changed");
+      hq504Actions[0] = { ...action, state: "claimed", revision: revision + 1 };
+      hq504Trace.claims++;
+      return structuredClone(hq504Actions[0]!);
+    }
     hq504Trace.claims++;
     throw new Error("Fixture never auto-claims");
   },
-  complete: async () => {
+  complete: async (_executionId, actionId, revision) => {
+    if (hq714Capture && actionId === "00000000-0000-4000-8000-000000007141") {
+      const action = hq504Actions[0]!;
+      if (
+        revision !== action.revision ||
+        action.state !== "claimed" ||
+        !hq714Trace.nativeApproved
+      )
+        throw new Error("Invite Native receipt missing");
+      hq504Actions[0] = { ...action, state: "applied", revision: revision + 1 };
+      hq504Trace.applications++;
+      return structuredClone(hq504Actions[0]!);
+    }
     hq504Trace.applications++;
     throw new Error("No fixture effect receipt");
   },
@@ -1706,7 +2002,9 @@ const installSettingsDesktop = () => {
   window.koedDesktop = {
     ...originalDesktop,
     ...(hq803Capture ? { decks: hq803DeckApi } : {}),
-    ...(hq307Capture ? { managedMemoryActions: hq307MemoryActionsApi } : {}),
+    ...(hq307Capture || hq718Capture
+      ? { managedMemoryActions: hq307MemoryActionsApi }
+      : {}),
     ...(hq504Capture ? { managedTextActions: hq504ManagedTextActions } : {}),
     ...(hq603Capture ? { scheduledJobs: hq603ScheduledJobs } : {}),
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
@@ -1922,6 +2220,33 @@ const installSettingsDesktop = () => {
                   }
                 }
               : {}),
+            ...(hq703Capture
+              ? {
+                  catchUp: async (projectId: string) => {
+                    if (projectId !== hq204ProjectId || hq703Trace.joins !== 1)
+                      throw new Error(
+                        "Private HQ catch-up requires the accepted Project join."
+                      );
+                    hq703Trace.catchUpCalls++;
+                    const commandId = "00000000-0000-4000-8000-000000007033";
+                    hq703Trace.catchUpCommandId = commandId;
+                    // The first call represents the trusted queued command. The
+                    // next poll represents its durable captured reply receipt.
+                    const status =
+                      hq703Trace.catchUpCalls === 1
+                        ? ("queued" as const)
+                        : ("recovered" as const);
+                    hq703Trace.catchUpStatuses.push(status);
+                    if (status === "recovered") hq204Started = true;
+                    return {
+                      projectId,
+                      status,
+                      executionId: hq204ExecutionId,
+                      commandId
+                    };
+                  }
+                }
+              : {}),
             read: async (projectId: string) => ({
               conversation: {
                 projectId,
@@ -1952,6 +2277,8 @@ const installSettingsDesktop = () => {
             ) => {
               hq204Trace.start += 1;
               hq204Trace.firstPrompt = prompt;
+              if (hq901TypedMergeCapture && prompt.trim() === "Merge #212")
+                hq405ProposalCapture = true;
               hq204Trace.firstSelectedDocumentSourceId =
                 selectedDocumentSourceId ?? "";
               hq204Started = true;
@@ -2315,7 +2642,36 @@ const hq104ManagedConversations = {
 
 const hq204ManagedConversations = {
   ...hq104ManagedConversations,
-  ...(hq306Capture || hq505Capture
+  runtime: async (executionId: string) => {
+    const baseline = await hq104ManagedConversations.runtime(executionId);
+    if (
+      !hq703Capture ||
+      executionId !== hq204ExecutionId ||
+      !hq703Trace.rosterMessageId
+    )
+      return baseline;
+    hq703Trace.rosterRuntimeReads++;
+    // A submitted prompt first has a queued/dispatching receipt; the next
+    // runtime read confirms completion and makes its captured graph events
+    // available through the normal Personal Memory refresh.
+    const completed = hq703Trace.rosterRuntimeReads >= 2;
+    hq703Trace.rosterCompleted = completed;
+    return {
+      ...baseline,
+      executionStateVersion: completed ? 2 : 1,
+      latestCommand: {
+        id: "00000000-0000-4000-8000-000000007034",
+        sequence: 2,
+        executionGeneration: 1,
+        commandKind: "prompt" as const,
+        clientUserMessageId: hq703Trace.rosterMessageId,
+        state: completed ? ("completed" as const) : ("dispatching" as const),
+        lastErrorCode: null,
+        updatedAt: completed ? "2026-10-20T09:00:01.000Z" : FIXTURE_TIME
+      }
+    };
+  },
+  ...(hq306Capture || hq505Capture || hq901ClosingCapture
     ? {
         turnCitations: async (
           executionId: string,
@@ -2340,8 +2696,16 @@ const hq204ManagedConversations = {
             operation: "turn_citations" as const,
             executionId,
             providerTurnId,
-            citations: (hq505Capture ? hq505Citations : hq306Citations).filter(
-              (citation) => aliases?.includes(citation.alias)
+            citations: (hq901ClosingCapture &&
+            providerTurnId === hq901ClosingCitation.providerTurnId
+              ? hq901ClosingMemoryCreated
+                ? [hq901ClosingCitation]
+                : []
+              : hq505Capture
+                ? hq505Citations
+                : hq306Citations
+            ).filter(
+              (citation) => !aliases?.length || aliases.includes(citation.alias)
             )
           };
         },
@@ -2356,20 +2720,34 @@ const hq204ManagedConversations = {
             executionId,
             providerTurnId,
             alias,
-            citation: (hq505Capture ? hq505Citations : hq306Citations).find(
-              (citation) => citation.alias === alias
-            )
+            citation: (hq901ClosingCapture &&
+            providerTurnId === hq901ClosingCitation.providerTurnId
+              ? hq901ClosingMemoryCreated
+                ? [hq901ClosingCitation]
+                : []
+              : hq505Capture
+                ? hq505Citations
+                : hq306Citations
+            ).find((citation) => citation.alias === alias)
               ? {
-                  ...(hq505Capture ? hq505Citations : hq306Citations).find(
-                    (citation) => citation.alias === alias
-                  )!,
-                  title: hq505Capture
-                    ? alias === hq505Citations[0]!.alias
-                      ? "Owner Plan.md"
-                      : "Ship the smaller launch first"
-                    : alias === hq306Citations[0]!.alias
-                      ? "Never book meetings before 9am."
-                      : "Deck outline",
+                  ...(hq901ClosingCapture &&
+                  providerTurnId === hq901ClosingCitation.providerTurnId
+                    ? [hq901ClosingCitation]
+                    : hq505Capture
+                      ? hq505Citations
+                      : hq306Citations
+                  ).find((citation) => citation.alias === alias)!,
+                  title:
+                    hq901ClosingCapture &&
+                    providerTurnId === hq901ClosingCitation.providerTurnId
+                      ? hq901ClosingCitation.title
+                      : hq505Capture
+                        ? alias === hq505Citations[0]!.alias
+                          ? "Owner Plan.md"
+                          : "Ship the smaller launch first"
+                        : alias === hq306Citations[0]!.alias
+                          ? "Never book meetings before 9am."
+                          : "Deck outline",
                   kind: hq505Capture
                     ? "decision"
                     : alias === hq306Citations[0]!.alias
@@ -2435,6 +2813,13 @@ const hq204ManagedConversations = {
   }) => {
     hq204Trace.send += 1;
     hq204Trace.nextPrompt = input.prompt;
+    if (hq703Capture && input.prompt === "Who's in Koed team?") {
+      hq703Trace.rosterMessageId = input.clientUserMessageId;
+      hq703Trace.rosterRuntimeReads = 0;
+      hq703Trace.rosterCompleted = false;
+    }
+    if (hq901TypedMergeCapture && input.prompt.trim() === "Merge #212")
+      hq405ProposalCapture = true;
     hq204Trace.nextSelectedDocumentSourceId =
       input.selectedDocumentSourceId ?? "";
     return {
@@ -2457,6 +2842,13 @@ const hq204ManagedConversations = {
 } as ManagedConversationDesktopApi;
 const hq207ManagedConversations = {
   ...hq204ManagedConversations,
+  usage: async (executionId: string) => ({
+    ...(await hq204ManagedConversations.usage(executionId)),
+    permissionMode:
+      hq901TypedMergeNativeCapture && executionId === hq405ExecutionId
+        ? ("full_access" as const)
+        : ("supervised" as const)
+  }),
   list: async () => ({
     operation: "list" as const,
     complete: true,
@@ -2466,8 +2858,10 @@ const hq207ManagedConversations = {
             {
               executionId: hq405ExecutionId,
               projectId: hq204ProjectId,
-              sessionId: null,
-              threadId: null,
+              sessionId: hq901ClosingCapture
+                ? "00000000-0000-4000-8000-000000004056"
+                : null,
+              threadId: hq901ClosingCapture ? "hq405-fixture-thread" : null,
               state: "running" as const
             }
           ]
@@ -2955,7 +3349,7 @@ let sidebarProjectGroups: PersonalDesktopProject[] = [
     name,
     path: null,
     threads: [
-      ...(hq404Capture && id === "hq103-work"
+      ...(hq404Capture && !hq901OriginCapture && id === "hq103-work"
         ? [
             {
               ...sidebarConversation(id, name, 404),
@@ -3006,6 +3400,21 @@ let sidebarProjectGroups: PersonalDesktopProject[] = [
                   }
                 ]
               : []),
+            ...(hq901ClosingCapture
+              ? [
+                  {
+                    ...sidebarConversation(
+                      hq204ProjectId,
+                      "New empty Project",
+                      405
+                    ),
+                    id: "hq405-fixture-thread",
+                    sessionId: "00000000-0000-4000-8000-000000004056",
+                    personalProjectId: hq204ProjectId,
+                    name: "KOE-4 ticket chat"
+                  }
+                ]
+              : []),
             ...(hq702Capture
               ? [
                   {
@@ -3041,6 +3450,29 @@ let sidebarProjectGroups: PersonalDesktopProject[] = [
     : [])
 ];
 
+if (hq901CitationLifecycle) {
+  sidebarProjectGroups = sidebarProjectGroups.map((project) => ({
+    ...project,
+    name: project.id === "hq103-notes" ? "koed-mobile" : project.name,
+    threads:
+      project.id === "hq103-loose"
+        ? project.threads.map((thread, index) =>
+            index === 0
+              ? {
+                  ...thread,
+                  id: "hq204-fixture-thread",
+                  sessionId: hq204SessionId,
+                  personalProjectId: null,
+                  name: "Plan next week"
+                }
+              : thread
+          )
+        : project.id === hq204ProjectId
+          ? []
+          : project.threads
+  }));
+}
+
 const sidebarProjectMetadata: PersonalDesktopProjectMetadata[] =
   sidebarProjectGroups.map((project) => ({
     contextKind: project.id === "hq103-loose" ? "independent" : "project",
@@ -3071,17 +3503,23 @@ const initialSidebarPersonalProjects = sidebarProjectGroups
   .map(({ id, name }) =>
     sidebarProjectRecord(
       sidebarPersonalProjectIds[id]!,
-      id === "hq103-notes" ? "Research archive" : name
+      id === "hq103-notes" && !hq901CitationLifecycle
+        ? "Research archive"
+        : name
     )
   );
 if (hq203Empty || hq204Capture || hq207Capture)
   initialSidebarPersonalProjects.push({
     ...sidebarProjectRecord(
       hq204ProjectId,
-      hq803Capture ? "Econ 101" : "New empty Project"
+      hq714Capture
+        ? "landing-site"
+        : hq803Capture || (hq407Capture && hq711Capture)
+          ? "Econ 101"
+          : "New empty Project"
     ),
     folderPath: hq207Capture ? "/fixtures/koed" : null,
-    ...(hq712Capture
+    ...(hq712Capture && !hq703Capture
       ? {
           teamBackendId: "fixture-team-backend",
           teamWorkspaceId: "00000000-0000-4000-8000-000000007121",
@@ -3147,6 +3585,7 @@ const hq405ExecutionId = "00000000-0000-4000-8000-000000004405";
 const hq405Hash = "a".repeat(64);
 const hq405GitlabHash = "c".repeat(64);
 let hq405ProviderState: "open" | "merged" | "closed" = "open";
+let hq901TicketlessMerged = false;
 const hq405Trace = { mergeRequests: 0, reconcileReads: 0, capabilityReads: 0 };
 Object.defineProperty(window, "__hq405Trace", {
   configurable: true,
@@ -3189,6 +3628,43 @@ const hq405WorkItem: WorkItem = {
   prState: "ready_to_merge"
 };
 let hq403Items: WorkItem[] = [
+  ...(hq901CatchupCapture
+    ? [
+        {
+          ...hq403Seed(
+            "00000000-0000-4000-8000-000000009051",
+            "Finished sentinel ticket",
+            "done"
+          ),
+          doneAt: new Date().toISOString()
+        }
+      ]
+    : []),
+  ...(hq901TicketLoopCapture
+    ? [
+        hq403Seed(
+          "00000000-0000-4000-8000-000000004052",
+          "Ship the release",
+          "todo"
+        )
+      ]
+    : []),
+  ...(hq901OriginCapture
+    ? [
+        {
+          ...hq403Seed(
+            "00000000-0000-4000-8000-000000009021",
+            "Check mobile spacing",
+            "doing"
+          ),
+          goal: "Polish the narrow layout requested in chat",
+          origin: "koed_text_action",
+          originRef: hq204SessionId,
+          executionId: "00000000-0000-4000-8000-000000004404",
+          assigneeAgentId: "00000000-0000-4000-8000-000000004041"
+        }
+      ]
+    : []),
   ...(hq407Capture
     ? [
         hq403Seed(
@@ -3275,6 +3751,36 @@ let hq403Items: WorkItem[] = [
     prState: "open"
   }
 ];
+Object.defineProperty(window, "__hq901TicketPrOpened", {
+  configurable: true,
+  value: () => {
+    if (!hq901TicketLoopCapture) return false;
+    const item = hq403Items.find(
+      (row) => row.id === "00000000-0000-4000-8000-000000004052"
+    );
+    if (!item || item.status !== "doing" || !item.executionId) return false;
+    hq403Items = hq403Items.map((row) =>
+      row.id === item.id
+        ? {
+            ...row,
+            status: "review",
+            prProvider: "github.com",
+            prNumber: 212,
+            prUrl: hq405Review(212).webUrl,
+            prState: "ready_to_merge",
+            version: row.version + 1,
+            updatedAt: new Date().toISOString()
+          }
+        : row
+    );
+    window.dispatchEvent(
+      new CustomEvent("hq-agent-delegated", {
+        detail: { projectId: hq204ProjectId }
+      })
+    );
+    return true;
+  }
+});
 let hq404ExecutionStarts = 0;
 Object.defineProperty(window, "__hq404ExecutionStarts", {
   configurable: true,
@@ -3347,7 +3853,10 @@ const hq405ManagedProject = {
                     )
                   : [
                       hq405Review(212, hq405ProviderState),
-                      hq405Review(213)
+                      hq405Review(
+                        213,
+                        hq901TicketlessMerged ? "merged" : "open"
+                      )
                     ].filter((review) => review.state === "open"),
                 nextCursor: null
               }
@@ -3358,7 +3867,10 @@ const hq405ManagedProject = {
                     request.sourceControlOperation?.number ?? 212,
                     request.sourceControlOperation?.number === 212
                       ? hq405ProviderState
-                      : "open"
+                      : request.sourceControlOperation?.number === 213 &&
+                          hq901TicketlessMerged
+                        ? "merged"
+                        : "open"
                   )
                 }
               : {
@@ -3399,9 +3911,31 @@ const hq405ManagedProject = {
     }
     if (request.operation === "source_control_merge") {
       hq405Trace.mergeRequests += 1;
+      if (hq901TypedMergeNativeCapture) {
+        const bridge = (
+          window as Window & {
+            hq901MergeNative?: (
+              requestInput: typeof request
+            ) => Promise<unknown>;
+          }
+        ).hq901MergeNative;
+        if (!bridge) throw new Error("HQ901 Native merge bridge unavailable");
+        const result = await bridge(request);
+        if (
+          (result as { result?: { outcome?: string } }).result?.outcome ===
+          "merged"
+        )
+          hq405ProviderState = "merged";
+        return result as typeof base & { result: { kind: string } };
+      }
       if (hq405DeclinedCapture)
         return { ...base, result: { kind: "declined" } };
-      if (request.reviewRequestNumber === 212) hq405ProviderState = "merged";
+      if (request.reviewRequestNumber === 212) {
+        hq405ProviderState = "merged";
+        if (hq901ClosingCapture) hq901ClosingMemoryCreated = true;
+      }
+      if (hq901TicketlessCapture && request.reviewRequestNumber === 213)
+        hq901TicketlessMerged = true;
       return {
         ...base,
         result: {
@@ -3463,14 +3997,27 @@ const hq712OtherReview: WorkspaceProjectWorkItem = {
   ...hq712OwnReview,
   id: "00000000-0000-4000-8000-000000007128",
   sourceOwnerTeamMemberId: "00000000-0000-4000-8000-000000007129",
-  title: "Teammate's private PR",
-  dispatchKey: hq711Capture ? "colleague-private-execution" : null,
+  title: hq703Capture ? "Ana’s review" : "Teammate's private PR",
+  dispatchKey: hq711Capture
+    ? "colleague-private-execution--private-chat-sentinel-platypus-742"
+    : null,
   prUrl: hq405Review(213).webUrl
 };
 let hq712Items: WorkspaceProjectWorkItem[] = [
   hq712InitialItem,
   hq712OwnReview,
   hq712OtherReview,
+  ...(hq407Capture && hq711Capture
+    ? [
+        {
+          ...hq712InitialItem,
+          id: "00000000-0000-4000-8000-000000004079",
+          title: "Study Friday examples",
+          goal: "Study Friday examples",
+          dueOn: "2026-10-23"
+        }
+      ]
+    : []),
   ...(hq407Capture && hq712Capture
     ? [
         {
@@ -3527,7 +4074,12 @@ const hq712State = (): WorkspaceProjectState => ({
     teamId: "00000000-0000-4000-8000-000000007120",
     workspaceId: "00000000-0000-4000-8000-000000007121",
     ownerTeamMemberId: "00000000-0000-4000-8000-000000007124",
-    name: "New empty Project",
+    name:
+      hq703Capture || hq714Capture
+        ? "landing-site"
+        : hq407Capture && hq711Capture
+          ? "Econ 101"
+          : "New empty Project",
     key: "TEAM",
     lifecycle: "active",
     version: 1,
@@ -3556,7 +4108,7 @@ const hq712State = (): WorkspaceProjectState => ({
       id: "00000000-0000-4000-8000-000000007125",
       uploaderTeamMemberId: "00000000-0000-4000-8000-000000007124",
       sourceProjectSourceId: "00000000-0000-4000-8000-000000007126",
-      name: "Plan.md",
+      name: hq407Capture && hq711Capture ? "Syllabus.pdf" : "Plan.md",
       kind: "doc",
       status: "ready",
       personalNoteRevisionId: null,
@@ -3587,6 +4139,34 @@ const hq702InitialStage = () => ({
   items: [{ label: "Launch plan chat · 20 Oct", state: "pending" as const }]
 });
 const sidebarProjectsApi = {
+  sharedJoinProject: async (
+    workspaceProjectId: string,
+    teamBackendId: string
+  ) => {
+    if (
+      !hq703Capture ||
+      workspaceProjectId !== hq703Invitation.project.id ||
+      teamBackendId !== "fixture-team-backend" ||
+      !hq703Trace.decisions.includes("accept")
+    )
+      throw new Error("Joined Project unavailable in fixture");
+    hq703Trace.joins++;
+    sidebarPersonalProjects = sidebarPersonalProjects.map((project) =>
+      project.id === hq204ProjectId
+        ? {
+            ...project,
+            name: "landing-site",
+            teamBackendId,
+            teamWorkspaceId: hq703Invitation.workspace.id,
+            workspaceProjectId,
+            version: project.version + 1
+          }
+        : project
+    );
+    return structuredClone(
+      sidebarPersonalProjects.find((project) => project.id === hq204ProjectId)!
+    );
+  },
   sharedChatStatus: async (personalProjectId: string, sessionId: string) => {
     if (
       !hq702Capture ||
@@ -3597,6 +4177,12 @@ const sidebarProjectsApi = {
     )
       throw new Error("Chat sharing fixture unavailable");
     hq702Trace.chatStatusReads++;
+    if (
+      sessionId === hq702MovedSessionId &&
+      hq702MovedStatus === "pending" &&
+      hq702Trace.chatStatusReads >= 10
+    )
+      hq702MovedStatus = "shared";
     return sessionId === hq204SessionId
       ? hq711Capture && hq711VisibilityMode === "pending"
         ? ("pending" as const)
@@ -3750,9 +4336,25 @@ const sidebarProjectsApi = {
         {
           teamMemberId: "00000000-0000-4000-8000-000000007127",
           userId: "00000000-0000-4000-8000-000000007127",
-          displayName: "Maya",
+          displayName: hq702Capture
+            ? "Mark"
+            : hq703Capture
+              ? "Maya Chen"
+              : hq407Capture && hq711Capture
+                ? "Lena"
+                : "Maya",
           access: "read" as const
-        }
+        },
+        ...(hq407Capture && hq711Capture
+          ? [
+              {
+                teamMemberId: "00000000-0000-4000-8000-000000007129",
+                userId: "00000000-0000-4000-8000-000000007129",
+                displayName: "Omar",
+                access: "read" as const
+              }
+            ]
+          : [])
       ]
     };
   },
@@ -3837,16 +4439,52 @@ const sidebarProjectsApi = {
     hq712Items = hq712Items.map((row) => (row.id === itemId ? item : row));
     return { status: "ok" as const, item: structuredClone(item) };
   },
-  workItemList: async (projectId: string) =>
-    hq403Capture && projectId === hq204ProjectId
+  workItemList: async (projectId: string) => {
+    if (hq901DocCycleCapture && projectId === hq204ProjectId) {
+      const bridge = (
+        window as Window & { hq901DocItems?: () => Promise<WorkItem[]> }
+      ).hq901DocItems;
+      if (!bridge)
+        throw new Error("HQ901 document Work Item bridge unavailable");
+      return bridge();
+    }
+    if (hq901TodoCycleCapture && projectId === hq204ProjectId) {
+      const bridge = (
+        window as Window & { hq901TodoItems?: () => Promise<WorkItem[]> }
+      ).hq901TodoItems;
+      if (!bridge) throw new Error("HQ901 typed Work Item bridge unavailable");
+      return bridge();
+    }
+    return hq403Capture && projectId === hq204ProjectId
       ? structuredClone(
-          hq405Capture ? [hq405WorkItem, ...hq403Items] : hq403Items
+          hq405Capture && !hq901TicketLoopCapture
+            ? [hq405WorkItem, ...hq403Items]
+            : hq403Items
         )
-      : [],
+      : [];
+  },
   workItemReconcile: async (_projectId: string, itemId: string) => {
     hq405Trace.reconcileReads += 1;
     if (!hq405Capture || itemId !== hq405WorkItem.id)
       throw new Error("Unavailable");
+    if (hq901TicketLoopCapture) {
+      const item = hq403Items.find((row) => row.id === itemId);
+      if (!item) throw new Error("Unavailable");
+      if (hq405ProviderState === "merged" && item.status === "review") {
+        hq403Items = hq403Items.map((row) =>
+          row.id === itemId
+            ? {
+                ...row,
+                status: "done",
+                prState: "merged",
+                version: row.version + 1,
+                doneAt: new Date().toISOString()
+              }
+            : row
+        );
+      }
+      return structuredClone(hq403Items.find((row) => row.id === itemId)!);
+    }
     if (hq405ProviderState === "merged") {
       hq405WorkItem.status = "done";
       hq405WorkItem.prState = "merged";
@@ -3918,6 +4556,25 @@ const sidebarProjectsApi = {
     agentId: string,
     version: number
   ) => {
+    if (hq901TodoCycleCapture) {
+      const bridge = (
+        window as Window & {
+          hq901TodoDispatch?: (
+            projectId: string,
+            itemId: string,
+            agentId: string,
+            version: number
+          ) => Promise<{
+            item: WorkItem;
+            executionId: string;
+            reused: boolean;
+          }>;
+        }
+      ).hq901TodoDispatch;
+      if (!bridge)
+        throw new Error("HQ901 typed Work Item dispatch unavailable");
+      return bridge(projectId, itemId, agentId, version);
+    }
     const item = hq403Items.find(
       (row) => row.id === itemId && row.projectId === projectId
     );
@@ -3930,7 +4587,9 @@ const sidebarProjectsApi = {
         reused: true
       };
     hq404ExecutionStarts += 1;
-    const executionId = "00000000-0000-4000-8000-000000004404";
+    const executionId = hq901TicketLoopCapture
+      ? hq405ExecutionId
+      : "00000000-0000-4000-8000-000000004404";
     const updated: WorkItem = {
       ...item,
       status: "doing",
@@ -4282,114 +4941,244 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
     : {}),
   listProjectMetadata: async () => structuredClone(sidebarProjectMetadata),
   loadEventPage: async ({ threadId }) =>
-    threadId === "hq204-fixture-thread" && hq204Started
-      ? hq505Capture
-        ? [
-            {
-              id: "hq505-retained-assistant",
-              actor: "assistant" as const,
-              eventType: "message" as const,
-              timestamp: FIXTURE_TIME,
-              sourceEventTime: FIXTURE_TIME,
-              sourceSequence: 1,
-              content: `Project catch-up: the launch scope is ready for review. Source: Owner Plan.md [m:${hq505Citations[0]!.alias}]. Decision: ship the smaller launch first [m:${hq505Citations[1]!.alias}]. I can outline 2 next steps for your review.`,
-              contentPreview:
-                "Project catch-up: the launch scope is ready for review.",
-              invalidatedAt: null,
-              metadata: {}
-            }
-          ]
-        : [
-            {
-              id: "hq204-first-user",
-              actor: "user",
-              eventType: "message",
-              timestamp: FIXTURE_TIME,
-              sourceEventTime: FIXTURE_TIME,
-              sourceSequence: 1,
-              content: hq204Trace.firstPrompt,
-              contentPreview: hq204Trace.firstPrompt,
-              invalidatedAt: null,
-              metadata: {}
-            },
-            ...(hq306Capture
-              ? [
-                  {
-                    id: "hq306-captured-assistant",
-                    actor: "assistant" as const,
-                    eventType: "message" as const,
-                    timestamp: FIXTURE_TIME,
-                    sourceEventTime: FIXTURE_TIME,
-                    sourceSequence: 2,
-                    content: hq306Answer,
-                    contentPreview: "Here's a draft. Nothing before 9am",
-                    invalidatedAt: null,
-                    // Claude/Pi captured history need not carry worker turn IDs.
-                    metadata: {}
+    threadId === "hq405-fixture-thread" && hq901ClosingCapture
+      ? [
+          {
+            id: "hq901-ticket-user",
+            actor: "user" as const,
+            eventType: "message" as const,
+            timestamp: FIXTURE_TIME,
+            sourceEventTime: FIXTURE_TIME,
+            sourceSequence: 1,
+            content: "Please finish KOE-4 and merge PR #212.",
+            contentPreview: "Please finish KOE-4 and merge PR #212.",
+            invalidatedAt: null,
+            metadata: {}
+          },
+          ...(hq901ClosingMemoryCreated
+            ? [
+                {
+                  id: "hq901-ticket-closing",
+                  actor: "assistant" as const,
+                  eventType: "message" as const,
+                  timestamp: FIXTURE_TIME,
+                  sourceEventTime: FIXTURE_TIME,
+                  sourceSequence: 2,
+                  content: `KOE-4 is done and PR #212 is merged. I saved the mobile spacing decision [m:${hq901ClosingCitation.alias}].`,
+                  contentPreview: "KOE-4 is done and PR #212 is merged.",
+                  invalidatedAt: null,
+                  metadata: {
+                    providerTurnId: hq901ClosingCitation.providerTurnId
                   }
-                ]
-              : hq207Capture
+                }
+              ]
+            : [])
+        ]
+      : threadId === "hq204-fixture-thread" && hq204Started
+        ? hq703Capture
+          ? [
+              {
+                id: "hq703-private-welcome",
+                actor: "assistant" as const,
+                eventType: "message" as const,
+                timestamp: FIXTURE_TIME,
+                sourceEventTime: FIXTURE_TIME,
+                sourceSequence: 1,
+                content:
+                  "Welcome to landing-site. Ana’s review is ready in Needs you.",
+                contentPreview: "Welcome to landing-site.",
+                invalidatedAt: null,
+                metadata: {}
+              },
+              ...(hq204Trace.nextPrompt === "Who's in Koed team?" &&
+              hq703Trace.rosterCompleted
                 ? [
                     {
-                      id: "hq207-plan-answer",
-                      actor: "assistant" as const,
+                      id: "hq703-roster-question",
+                      actor: "user" as const,
                       eventType: "message" as const,
                       timestamp: FIXTURE_TIME,
                       sourceEventTime: FIXTURE_TIME,
                       sourceSequence: 2,
-                      content:
-                        "For Plan.md, review the goals and choose the next task.",
-                      contentPreview:
-                        "For Plan.md, review the goals and choose the next task.",
+                      content: hq204Trace.nextPrompt,
+                      contentPreview: hq204Trace.nextPrompt,
+                      invalidatedAt: null,
+                      metadata: {}
+                    },
+                    {
+                      id: "hq703-roster-answer",
+                      actor: "assistant" as const,
+                      eventType: "message" as const,
+                      timestamp: FIXTURE_TIME,
+                      sourceEventTime: FIXTURE_TIME,
+                      sourceSequence: 3,
+                      content: "Koed team includes you and Maya Chen.",
+                      contentPreview: "Koed team includes you and Maya Chen.",
                       invalidatedAt: null,
                       metadata: {}
                     }
                   ]
                 : [])
-          ]
-      : threadId === "hq103-loose-conversation-91"
-        ? [
-            {
-              id: "hq105-conversation-91-user",
-              actor: "user",
-              eventType: "message",
-              timestamp: FIXTURE_TIME,
-              sourceEventTime: FIXTURE_TIME,
-              sourceSequence: 1,
-              content: "Captured message for Conversation 91.",
-              contentPreview: "Captured message for Conversation 91.",
-              invalidatedAt: null,
-              metadata: {}
-            }
-          ]
-        : threadId === hq104Identity.threadId && hq104SentPrompt
+            ]
+          : hq901DocEntry === "offered"
+            ? [
+                {
+                  id: "hq901-doc-offer",
+                  actor: "assistant" as const,
+                  eventType: "message" as const,
+                  timestamp: FIXTURE_TIME,
+                  sourceEventTime: FIXTURE_TIME,
+                  sourceSequence: 1,
+                  content:
+                    "Plan.md has 3 actionable steps. I can make 3 Work Items. Say Make 3 to approve.",
+                  contentPreview: "I can make 3 Work Items.",
+                  invalidatedAt: null,
+                  metadata: {}
+                }
+              ]
+            : hq505Capture
+              ? [
+                  {
+                    id: "hq505-retained-assistant",
+                    actor: "assistant" as const,
+                    eventType: "message" as const,
+                    timestamp: FIXTURE_TIME,
+                    sourceEventTime: FIXTURE_TIME,
+                    sourceSequence: 1,
+                    content: `Project catch-up: the launch scope is ready for review. Source: Owner Plan.md [m:${hq505Citations[0]!.alias}]. Decision: ship the smaller launch first [m:${hq505Citations[1]!.alias}]. I can outline 2 next steps for your review.`,
+                    contentPreview:
+                      "Project catch-up: the launch scope is ready for review.",
+                    invalidatedAt: null,
+                    metadata: {}
+                  }
+                ]
+              : [
+                  {
+                    id: "hq204-first-user",
+                    actor: "user",
+                    eventType: "message",
+                    timestamp: FIXTURE_TIME,
+                    sourceEventTime: FIXTURE_TIME,
+                    sourceSequence: 1,
+                    content: hq204Trace.firstPrompt,
+                    contentPreview: hq204Trace.firstPrompt,
+                    invalidatedAt: null,
+                    metadata: {}
+                  },
+                  ...(hq407Capture &&
+                  hq711Capture &&
+                  hq204Trace.firstPrompt === "Turn Syllabus.pdf into to-dos"
+                    ? [
+                        {
+                          id: "hq407-syllabus-already-done",
+                          actor: "assistant" as const,
+                          eventType: "message" as const,
+                          timestamp: FIXTURE_TIME,
+                          sourceEventTime: FIXTURE_TIME,
+                          sourceSequence: 2,
+                          content:
+                            "Syllabus.pdf already has a to-do: Study Friday examples.",
+                          contentPreview: "Syllabus.pdf already has a to-do.",
+                          invalidatedAt: null,
+                          metadata: {}
+                        }
+                      ]
+                    : hq703Capture &&
+                        hq204Trace.firstPrompt === "Who's in Koed team?"
+                      ? [
+                          {
+                            id: "hq703-roster-answer",
+                            actor: "assistant" as const,
+                            eventType: "message" as const,
+                            timestamp: FIXTURE_TIME,
+                            sourceEventTime: FIXTURE_TIME,
+                            sourceSequence: 2,
+                            content: "Koed team includes you and Maya Chen.",
+                            contentPreview:
+                              "Koed team includes you and Maya Chen.",
+                            invalidatedAt: null,
+                            metadata: {}
+                          }
+                        ]
+                      : hq306Capture
+                        ? [
+                            {
+                              id: "hq306-captured-assistant",
+                              actor: "assistant" as const,
+                              eventType: "message" as const,
+                              timestamp: FIXTURE_TIME,
+                              sourceEventTime: FIXTURE_TIME,
+                              sourceSequence: 2,
+                              content: hq306Answer,
+                              contentPreview:
+                                "Here's a draft. Nothing before 9am",
+                              invalidatedAt: null,
+                              // Claude/Pi captured history need not carry worker turn IDs.
+                              metadata: {}
+                            }
+                          ]
+                        : hq207Capture
+                          ? [
+                              {
+                                id: "hq207-plan-answer",
+                                actor: "assistant" as const,
+                                eventType: "message" as const,
+                                timestamp: FIXTURE_TIME,
+                                sourceEventTime: FIXTURE_TIME,
+                                sourceSequence: 2,
+                                content:
+                                  "For Plan.md, review the goals and choose the next task.",
+                                contentPreview:
+                                  "For Plan.md, review the goals and choose the next task.",
+                                invalidatedAt: null,
+                                metadata: {}
+                              }
+                            ]
+                          : [])
+                ]
+        : threadId === "hq103-loose-conversation-91"
           ? [
               {
-                id: "hq104-user",
+                id: "hq105-conversation-91-user",
                 actor: "user",
                 eventType: "message",
                 timestamp: FIXTURE_TIME,
                 sourceEventTime: FIXTURE_TIME,
                 sourceSequence: 1,
-                content: hq104SentPrompt,
-                contentPreview: hq104SentPrompt,
-                invalidatedAt: null,
-                metadata: { clientUserMessageId: hq104SentMessageId }
-              },
-              {
-                id: "hq104-assistant",
-                actor: "assistant",
-                eventType: "message",
-                timestamp: FIXTURE_TIME,
-                sourceEventTime: FIXTURE_TIME,
-                sourceSequence: 2,
-                content: "I can help with that. Here is the first step.",
-                contentPreview: "I can help with that.",
+                content: "Captured message for Conversation 91.",
+                contentPreview: "Captured message for Conversation 91.",
                 invalidatedAt: null,
                 metadata: {}
               }
             ]
-          : [],
+          : threadId === hq104Identity.threadId && hq104SentPrompt
+            ? [
+                {
+                  id: "hq104-user",
+                  actor: "user",
+                  eventType: "message",
+                  timestamp: FIXTURE_TIME,
+                  sourceEventTime: FIXTURE_TIME,
+                  sourceSequence: 1,
+                  content: hq104SentPrompt,
+                  contentPreview: hq104SentPrompt,
+                  invalidatedAt: null,
+                  metadata: { clientUserMessageId: hq104SentMessageId }
+                },
+                {
+                  id: "hq104-assistant",
+                  actor: "assistant",
+                  eventType: "message",
+                  timestamp: FIXTURE_TIME,
+                  sourceEventTime: FIXTURE_TIME,
+                  sourceSequence: 2,
+                  content: "I can help with that. Here is the first step.",
+                  contentPreview: "I can help with that.",
+                  invalidatedAt: null,
+                  metadata: {}
+                }
+              ]
+            : [],
   assignSessionProject: async (request) => {
     if (!hq702Capture || request.sessionId !== hq702MovedSessionId)
       return { projectId: null };
@@ -4614,7 +5403,7 @@ export function HqValidationApp() {
     ])
       writeHqOnboarding(
         ownerId,
-        `${hq711Capture ? "fixture-team-backend" : "hq-renderer-fixture"}|fixture-epoch|https://fixture.example.test`,
+        `${hq711Capture || hq703Capture ? "fixture-team-backend" : "hq-renderer-fixture"}|fixture-epoch|https://fixture.example.test`,
         { ...initialHqOnboarding, completed: true }
       );
   }, []);
@@ -4640,6 +5429,7 @@ export function HqValidationApp() {
     hq106Forgotten.clear();
     hq205Sources = structuredClone(hq205InitialSources);
     hq405ProviderState = "open";
+    hq901ClosingMemoryCreated = false;
     hq405Trace.mergeRequests = 0;
     hq405Trace.reconcileReads = 0;
     hq405Trace.capabilityReads = 0;
@@ -4674,7 +5464,12 @@ export function HqValidationApp() {
       ).__koedHq603Trace = hq603Trace;
     }
     hq104SentPrompt = "";
-    hq204Started = hq306Capture || hq406ActiveCapture || hq802DeckCapture;
+    hq204Started =
+      hq306Capture ||
+      hq406ActiveCapture ||
+      hq802DeckCapture ||
+      hq714Capture ||
+      hq718Capture;
     if (hq704Capture)
       Object.defineProperty(window, "__koedHq704Trace", {
         configurable: true,
@@ -4722,7 +5517,9 @@ export function HqValidationApp() {
       send: 0,
       firstPrompt: hq306Capture
         ? "Plan next week around the investor meetings"
-        : "",
+        : hq714Capture
+          ? "Prepare the landing-site launch"
+          : "",
       nextPrompt: "",
       firstSelectedDocumentSourceId: "",
       nextSelectedDocumentSourceId: ""
@@ -4798,7 +5595,14 @@ export function HqValidationApp() {
     if (hq703Capture) {
       hq703Invitations = [hq703Invitation];
       hq703Trace.decisions.length = 0;
+      hq703Trace.joins = 0;
       hq703Trace.failNext = false;
+      hq703Trace.catchUpCalls = 0;
+      hq703Trace.catchUpCommandId = "";
+      hq703Trace.catchUpStatuses.length = 0;
+      hq703Trace.rosterMessageId = "";
+      hq703Trace.rosterRuntimeReads = 0;
+      hq703Trace.rosterCompleted = false;
       (
         window as Window & { __koedHq703Trace?: typeof hq703Trace }
       ).__koedHq703Trace = hq703Trace;
@@ -4807,6 +5611,16 @@ export function HqValidationApp() {
       (
         window as Window & { __koedHq705Trace?: typeof hq705Trace }
       ).__koedHq705Trace = hq705Trace;
+    if (hq714Capture)
+      (
+        window as Window & { __koedHq714Trace?: typeof hq714Trace }
+      ).__koedHq714Trace = hq714Trace;
+    if (hq718Capture) {
+      hq718Trace.action = null;
+      (
+        window as Window & { __koedHq718Trace?: typeof hq718Trace }
+      ).__koedHq718Trace = hq718Trace;
+    }
     document.documentElement.dataset.hqFixtureReady = "true";
     document.documentElement.dataset.browserValidationReady = "true";
     return () => {

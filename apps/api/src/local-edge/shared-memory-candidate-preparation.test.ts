@@ -138,6 +138,49 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     );
   });
 
+  it("binds an owner-selected expiry into the captured candidate hash", async () => {
+    const candidateRepository = repository();
+    candidateRepository.listLcmGraphEvents.mockResolvedValue([
+      {
+        id: "event-expiry",
+        eventType: "message",
+        actor: "user",
+        content: "Share this",
+        metadata: {},
+        timestamp: "2026-08-14T10:00:00.000Z"
+      }
+    ]);
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork: vi.fn()
+    });
+    const input = {
+      localOwnerUserId: "owner-1",
+      sessionId: "session-1",
+      representation: "memory_events" as const,
+      mode: "continuous" as const
+    };
+    const withoutExpiry = await preparation.loadCandidatePreview(input);
+    const firstExpiry = await preparation.loadCandidatePreview({
+      ...input,
+      expiresAt: "2026-11-01T12:00:00.000Z"
+    });
+    const changedExpiry = await preparation.loadCandidatePreview({
+      ...input,
+      expiresAt: "2026-11-01T13:00:00.000Z"
+    });
+    const expired = await preparation.loadCandidatePreview({
+      ...input,
+      expiresAt: "2020-01-01T00:00:00.000Z"
+    });
+    expect(withoutExpiry?.expiresAt).toBeNull();
+    expect(firstExpiry?.expiresAt).toBe("2026-11-01T12:00:00.000Z");
+    expect(firstExpiry?.candidateHash).not.toBe(withoutExpiry?.candidateHash);
+    expect(changedExpiry?.candidateHash).not.toBe(firstExpiry?.candidateHash);
+    expect(expired).toBeNull();
+  });
+
   it("builds one owner-bound immutable Personal Note candidate", async () => {
     const candidateRepository = repository();
     const noteId = "00000000-0000-4000-8000-000000000011";

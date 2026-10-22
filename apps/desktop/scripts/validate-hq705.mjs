@@ -22,7 +22,12 @@ async function run() {
     width: 1280,
     height: 800,
     useContentSize: true,
-    webPreferences: { partition: `hq705-${process.pid}` }
+    webPreferences: {
+      partition: `hq705-${process.pid}`,
+      // Keep the test window visible to Electron while Codex has foreground focus.
+      // Hidden-column unread behavior is still exercised through the real DOM.
+      backgroundThrottling: false
+    }
   });
   const js = (source) => window.webContents.executeJavaScript(source);
   const waitFor = async (source, label) => {
@@ -123,6 +128,10 @@ async function run() {
         ),
         false,
         "S17.2: Team history has no memory or decision marks"
+      );
+      await waitFor(
+        "window.__koedHq705Trace?.reads > 0",
+        "visible Team history read receipt"
       );
       assert.equal(await js("window.__koedHq705Trace?.reads > 0"), true);
       await capture(`project-team-${theme}.png`);

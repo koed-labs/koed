@@ -211,7 +211,11 @@ export interface CollaborationRendererClient {
   connectRemote(input: { remoteUrl: string }): Promise<CollaborationSnapshot>;
   reconnect(): Promise<CollaborationSnapshot>;
   disconnect(): Promise<CollaborationSnapshot>;
-  createTeam(input: { name: string }): Promise<CollaborationSnapshot>;
+  createTeam(input: {
+    name: string;
+    origin?: "project_share";
+    personalProjectId?: string;
+  }): Promise<CollaborationSnapshot>;
   joinTeam(input: { invitation: string }): Promise<CollaborationSnapshot>;
   createWorkspace(input: {
     teamId: string;
@@ -3764,19 +3768,24 @@ export const createCollaborationRendererClient = (
           : {})
       });
     },
-    async createTeam({ name }) {
+    async createTeam({ name, origin, personalProjectId }) {
       const commandRequestId = crypto.randomUUID();
       const actionGrant = await waitForActionGrant({
         intent: "collaboration.create_team",
         commandRequestId,
-        name
+        name,
+        ...(origin ? { origin, personalProjectId } : {})
       });
       const result = await runApprovedAction(
         collaborationRendererCommandSchema.parse({
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: commandRequestId,
           command: "collaboration.create_team",
-          input: { name, actionGrant }
+          input: {
+            name,
+            ...(origin ? { origin, personalProjectId } : {}),
+            actionGrant
+          }
         })
       );
       if (!result.ok || result.command !== "collaboration.create_team") {

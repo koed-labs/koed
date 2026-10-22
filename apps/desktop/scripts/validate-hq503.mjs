@@ -34,7 +34,11 @@ const run = async () => {
         show: true,
         width: 1280,
         height: 800,
-        webPreferences: { partition: `hq503-${theme}-${process.pid}` }
+        webPreferences: {
+          partition: `hq503-${theme}-${process.pid}`,
+          // Native validation must keep canvas frames running while Codex has focus.
+          backgroundThrottling: false
+        }
       });
       const errors = [];
       window.webContents.on("console-message", (_event, details) => {

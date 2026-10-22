@@ -114,6 +114,12 @@ export interface CollaborationTeamControlCursorCodec {
 }
 
 export interface CollaborationTeamControlContext {
+  getPersonalProjectForTeamCreation?(projectId: string): Promise<{
+    name: string;
+    lifecycle: "active" | "deleted";
+    teamBackendId?: string | null;
+    workspaceProjectId?: string | null;
+  } | null>;
   backend: LocalEdgeUpstreamBackend;
   principalUserId: string;
   upstreamDeviceCredentialId: string | null;
@@ -296,6 +302,7 @@ const remoteTeamSchema = z
   .object({
     id: z.uuid(),
     name: z.string().min(1),
+    origin: z.enum(["named", "project_share"]).optional(),
     lifecycle: z.enum([
       "active",
       "suspended",
@@ -772,6 +779,26 @@ const dispatch = async (
 ): Promise<CollaborationTeamControlDispatchResult> => {
   switch (command.command) {
     case "collaboration.create_team": {
+      if (command.input.origin === "project_share") {
+        if (
+          !command.input.personalProjectId ||
+          !context.getPersonalProjectForTeamCreation
+        )
+          return failure(command, safeError("permission_denied"));
+        const project = await context.getPersonalProjectForTeamCreation(
+          command.input.personalProjectId
+        );
+        if (
+          !project ||
+          project.lifecycle !== "active" ||
+          project.teamBackendId ||
+          project.workspaceProjectId ||
+          command.input.name !== `${project.name} shared`
+        )
+          return failure(command, safeError("permission_denied"));
+      } else if (command.input.personalProjectId) {
+        return failure(command, safeError("permission_denied"));
+      }
       if (!context.teamCreationRequestIdempotency) {
         return integrationRequired(
           command,
@@ -779,7 +806,15 @@ const dispatch = async (
           "The upstream backend must advertise and enforce request-idempotent atomic Team creation before this command can be enabled."
         );
       }
-      const body = { name: command.input.name };
+      const body = {
+        name: command.input.name,
+        ...(command.input.origin
+          ? {
+              origin: command.input.origin,
+              personalProjectId: command.input.personalProjectId
+            }
+          : {})
+      };
       const grant = await actionGrantSecret(command, context, {
         reference: command.input.actionGrant,
         action: "team.create",
@@ -804,6 +839,8 @@ const dispatch = async (
       if (
         payload.team.lifecycle !== "active" ||
         payload.team.name !== command.input.name ||
+        (payload.team.origin ?? "named") !==
+          (command.input.origin ?? "named") ||
         payload.defaultWorkspace.teamId !== payload.team.id ||
         payload.defaultWorkspace.lifecycle !== "active"
       ) {

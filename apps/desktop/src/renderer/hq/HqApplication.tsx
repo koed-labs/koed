@@ -89,6 +89,22 @@ const emptyApprovals: readonly CollaborationActionGrantProjection[] = [];
 const approvalsEmptySnapshot = () => emptyApprovals;
 const emptyPersonalProjects: readonly import("@koed/shared").Project[] = [];
 
+/** A joined Project may navigate only while the initiating HQ identity and route intent remain current. */
+export const refreshJoinedProjectRoute = async (input: {
+  isCurrent: () => boolean;
+  refreshProjects: () => Promise<unknown>;
+  loadPersonalProjects: () => Promise<unknown>;
+  selectProject: () => void;
+}): Promise<boolean> => {
+  if (!input.isCurrent()) return false;
+  await input.refreshProjects();
+  if (!input.isCurrent()) return false;
+  await input.loadPersonalProjects();
+  if (!input.isCurrent()) return false;
+  input.selectProject();
+  return true;
+};
+
 export function HqApplication({
   personalMemoryStore,
   personalMemoryReady,
@@ -560,6 +576,9 @@ export function HqApplication({
   const [sharedPeopleCounts, setSharedPeopleCounts] = useState<
     Record<string, number>
   >({});
+  const [sharedAudienceNames, setSharedAudienceNames] = useState<
+    Record<string, string[]>
+  >({});
   const sharedRosterKey = personalProjects
     .filter((project) => project.workspaceProjectId && project.teamBackendId)
     .map(
@@ -570,6 +589,7 @@ export function HqApplication({
   useEffect(() => {
     let active = true;
     setSharedPeopleCounts({});
+    setSharedAudienceNames({});
     if (
       !projectsApi?.sharedMembers ||
       !visibilityOwnerId ||
@@ -586,20 +606,39 @@ export function HqApplication({
             project.workspaceProjectId!,
             project.teamBackendId!
           );
-          return [project.id, roster.people.length] as const;
+          return [project.id, roster.people] as const;
         } catch {
           return null;
         }
       })
-    ).then((counts) => {
-      if (active)
+    ).then((rosters) => {
+      if (active) {
+        const available = rosters.filter(
+          (item): item is NonNullable<typeof item> => item !== null
+        );
         setSharedPeopleCounts(
           Object.fromEntries(
-            counts.filter(
-              (item): item is readonly [string, number] => item !== null
-            )
+            available.map(([id, people]) => [id, people.length])
           )
         );
+        setSharedAudienceNames(
+          Object.fromEntries(
+            available.map(([id, people]) => [
+              id,
+              people
+                .filter(
+                  (person) =>
+                    person.userId &&
+                    person.userId !==
+                      visibilityClient?.current()?.navigation.teamPrincipal
+                        ?.id &&
+                    person.displayName.trim()
+                )
+                .map((person) => person.displayName.trim())
+            ])
+          )
+        );
+      }
     });
     return () => {
       active = false;
@@ -848,6 +887,24 @@ export function HqApplication({
         next.kind === "home"
           ? undefined
           : citationProjectsRef.current.find(({ id }) => id === next.projectId)
+    });
+  };
+  const joinAndOpenProject = async (projectId: string) => {
+    const token = chatToken();
+    const navigationEpoch = routeEpoch.current;
+    const isCurrent = () =>
+      chatCurrent(token) &&
+      routeEpoch.current === navigationEpoch &&
+      routeRef.current.kind === "home";
+    await refreshJoinedProjectRoute({
+      isCurrent,
+      refreshProjects: async () => {
+        await projectsStore?.refresh();
+      },
+      loadPersonalProjects: async () => {
+        await personalMemoryStore?.loadProjects({ silent: true });
+      },
+      selectProject: () => selectRoute({ kind: "project", projectId })
     });
   };
   const openActionDeck = (sourceProjectId: string) => {
@@ -2808,6 +2865,23 @@ export function HqApplication({
             projects={projects}
             personalProjects={projectsStore ? personalProjects : undefined}
             sharedPeopleCounts={sharedPeopleCounts}
+            sharedAudienceNames={sharedAudienceNames}
+            teams={
+              visibilityClient?.current()?.connection.backendId &&
+              visibilityClient.current()?.navigation.personalOwner.id ===
+                visibilityOwnerId
+                ? visibilityClient.current()?.navigation.teams.map((team) => ({
+                    id: team.id,
+                    name: team.name,
+                    origin: team.origin ?? "named",
+                    backendId:
+                      visibilityClient.current()!.connection.backendId!,
+                    workspaceIds: team.workspaces.map(
+                      (workspace) => workspace.id
+                    )
+                  }))
+                : []
+            }
             pendingDeletionIds={pendingChatDeletionIds}
             route={route}
             onRetryProjects={() => {
@@ -3050,10 +3124,7 @@ export function HqApplication({
                   onSelectProject={(projectId) =>
                     selectRoute({ kind: "project", projectId })
                   }
-                  onJoinedProject={async () => {
-                    await projectsStore?.refresh();
-                    await personalMemoryStore?.loadProjects({ silent: true });
-                  }}
+                  onJoinedProject={joinAndOpenProject}
                   onSelectDueItem={(projectId, itemId) => {
                     selectRoute({ kind: "project", projectId });
                     setFocusDueItem({ projectId, itemId });
@@ -3102,10 +3173,7 @@ export function HqApplication({
               onSelectProject={(projectId) =>
                 selectRoute({ kind: "project", projectId })
               }
-              onJoinedProject={async () => {
-                await projectsStore?.refresh();
-                await personalMemoryStore?.loadProjects({ silent: true });
-              }}
+              onJoinedProject={joinAndOpenProject}
               onSelectDueItem={(projectId, itemId) => {
                 selectRoute({ kind: "project", projectId });
                 setFocusDueItem({ projectId, itemId });

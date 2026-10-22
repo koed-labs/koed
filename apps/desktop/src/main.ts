@@ -19,6 +19,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
 import { reviewProjectSourceRemoval } from "./koed-server/project-source-native-review.js";
+import { sourceControlMergeReviewOptions } from "./koed-server/source-control-merge-native-review.js";
 import { reviewChatDeletion } from "./koed-server/chat-delete-native-review.js";
 import { reviewChatMove } from "./koed-server/chat-move-native-review.js";
 import { knownCanceledProjectMove } from "./koed-server/project-share-policy-service.js";
@@ -253,35 +254,7 @@ const createServerManager = (
     ...(managedConversationDraftStore ? { managedConversationDraftStore } : {}),
     ...(personalDevicePairingStore ? { personalDevicePairingStore } : {}),
     confirmSourceControlMerge: async (prepared) => {
-      const review = prepared.readiness;
-      const options: MessageBoxOptions = {
-        type: "warning",
-        title: "Review pull request merge",
-        message: `Merge ${review.repository} #${review.reviewRequestNumber}?`,
-        detail: [
-          review.title,
-          `Account: ${review.accountLabel}`,
-          `Target: ${review.targetBranch}`,
-          `Head: ${review.expectedHeadObjectId}`,
-          `Method: ${review.mergeMethod}`,
-          `Checks (${review.checks.length}):`,
-          ...review.checks.map(
-            (check) =>
-              `  ${check.required ? "Required" : "Other"}: ${check.name} · ${check.state} · ${check.source} #${check.id}`
-          ),
-          `Reviews (${review.reviews.length}; ${review.approvedReviewCount} of ${review.requiredReviewCount} required):`,
-          ...review.reviews.map(
-            (item) =>
-              `  ${item.user}: ${item.state} · ${item.commitObjectId.slice(0, 12)} · #${item.id}`
-          ),
-          `Readiness: ${prepared.readinessSnapshotDigest}`,
-          `Expires: ${prepared.expiresAt}`
-        ].join("\n"),
-        buttons: ["Cancel", "Merge"],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true
-      };
+      const options = sourceControlMergeReviewOptions(prepared);
       const result = mainWindow
         ? await dialog.showMessageBox(mainWindow, options)
         : await dialog.showMessageBox(options);

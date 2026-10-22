@@ -163,8 +163,8 @@ describe.skipIf(!testUrl)("Work Item trusted provider reconciliation", () => {
       )
     ).rows[0]!.id;
     await pool.query(
-      "insert into sessions(id,logical_session_id,owner_user_id,source_runtime,capture_method) values($1,$2,$3,'codex','api')",
-      [session, logical, owner]
+      "insert into sessions(id,logical_session_id,owner_user_id,source_runtime,capture_method,metadata) values($1,$2,$3,'codex','api',jsonb_build_object('projectId',$4::text))",
+      [session, logical, owner, project]
     );
     await pool.query(
       `insert into managed_conversation_executions
@@ -236,6 +236,91 @@ describe.skipIf(!testUrl)("Work Item trusted provider reconciliation", () => {
         ["remotes", "review_request", "checks"].includes(operation.kind)
       )
     ).toBe(true);
+  });
+  it("captures an agent closing reply after the provider merge as one Personal Memory event", async () => {
+    expect(await reconcile()).toMatchObject({
+      status: "done",
+      prState: "merged"
+    });
+    const captured = createMemorySourceRepository(pool);
+    const closing =
+      "KOE-4 is done and PR #212 is merged. I recorded the mobile spacing decision.";
+    const turn = `closing-${randomUUID()}`;
+    await captured.createConversationItems(
+      { userId: owner },
+      {
+        items: [
+          {
+            sessionId: session,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: turn,
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 1,
+            rawJson: {
+              method: "item/completed",
+              params: { item: { type: "agentMessage", text: closing } }
+            },
+            rawText: closing,
+            sourceHash: `closing-message-${turn}`,
+            idempotencyKey: `closing-message-${turn}`,
+            metadata: {
+              projectId: project,
+              transcriptType: "agent_message"
+            }
+          },
+          {
+            sessionId: session,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
+            externalTurnId: turn,
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_complete",
+            sourceSequence: 2,
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_complete", turn_id: turn }
+            },
+            sourceHash: `closing-stop-${turn}`,
+            idempotencyKey: `closing-stop-${turn}`,
+            metadata: { projectId: project, transcriptType: "task_complete" }
+          }
+        ]
+      }
+    );
+    const first = await captured.projectPendingConversationItems(
+      { userId: owner },
+      { limit: 10 }
+    );
+    expect(first.memoryEventsCreated).toBe(1);
+    const events = await pool.query<{
+      owner_user_id: string;
+      project_id: string | null;
+      session_id: string | null;
+      visibility: string;
+      content: string;
+    }>(
+      `select owner_user_id,payload->>'projectId' as project_id,session_id,visibility,payload->>'content' as content
+       from memory_events where session_id=$1 and payload #>> '{metadata,semanticUnitType}'='agent_turn'`,
+      [session]
+    );
+    expect(events.rows).toEqual([
+      {
+        owner_user_id: owner,
+        project_id: project,
+        session_id: session,
+        visibility: "personal",
+        content: closing
+      }
+    ]);
+    const second = await captured.projectPendingConversationItems(
+      { userId: owner },
+      { limit: 10 }
+    );
+    expect(second.memoryEventsCreated).toBe(0);
   });
   it("leaves an open PR In review and marks closed-unmerged Blocked", async () => {
     state = "open";

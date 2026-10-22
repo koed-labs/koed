@@ -4,6 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import process from "node:process";
+import console from "node:console";
 import { app, BrowserWindow, nativeTheme } from "electron";
 import { showProjectSharePolicyNativeReview } from "../dist-electron/koed-server/project-share-policy-native-review.js";
 
@@ -23,7 +24,8 @@ async function run() {
       show: false,
       width: 1280,
       height: 800,
-      useContentSize: true
+      useContentSize: true,
+      webPreferences: { backgroundThrottling: false }
     });
     const js = (source) => window.webContents.executeJavaScript(source);
     const waitFor = async (source, label) => {
@@ -45,6 +47,7 @@ async function run() {
     const debuggerClient = window.webContents.debugger;
     await mkdir(output, { recursive: true });
     const capture = async (name) => {
+      console.error(`[HQ702] capture ${name}`);
       if (name.startsWith("chat-")) {
         const chatName = name.startsWith("chat-moved-in-")
           ? "Conversation 91"
@@ -72,8 +75,10 @@ async function run() {
       await delay(100);
       const image = await window.webContents.capturePage();
       await writeFile(resolve(output, name), image.toPNG());
+      console.error(`[HQ702] captured ${name}`);
     };
     for (const theme of ["light", "dark"]) {
+      console.error(`[HQ702] ${theme}: renderer policy and chat assertions`);
       await window.loadFile(
         resolve(root, "apps/desktop/dist/browser-validation.html"),
         {
@@ -338,8 +343,25 @@ async function run() {
         reason: "moved_in"
       });
       await capture(`chat-moved-in-pending-${theme}.png`);
+      await js(`{
+        const row = Array.from(document.querySelectorAll('[data-hq-chat-project="00000000-0000-4000-8000-000000002038"][data-hq-chat-row]')).find(row => row.textContent.includes('Conversation 91'));
+        row?.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
+      }`);
+      await waitFor(
+        "!document.querySelector('[aria-label=\"Chat summary sharing\"]')",
+        "closed pending summary menu"
+      );
+      await js(`{
+        const row = Array.from(document.querySelectorAll('[data-hq-chat-project="00000000-0000-4000-8000-000000002038"][data-hq-chat-row]')).find(row => row.textContent.includes('Conversation 91'));
+        row?.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
+      }`);
+      await waitFor(
+        "window.__koedHq702Trace?.chatStatusReads === 10 && document.querySelector('.hq-project-toast[role=status]')?.textContent.includes('Summary shared with Mark.')",
+        "exact audience toast after activated moved-chat summary status"
+      );
     }
     for (const theme of ["light", "dark"]) {
+      console.error(`[HQ702] ${theme}: Native review assertions`);
       nativeTheme.themeSource = theme;
       window.show();
       let modal;
@@ -378,7 +400,13 @@ async function run() {
           signal: controller.signal,
           currentParent: () => window,
           createWindow: (options) => {
-            modal = new BrowserWindow(options);
+            modal = new BrowserWindow({
+              ...options,
+              webPreferences: {
+                ...options.webPreferences,
+                backgroundThrottling: false
+              }
+            });
             return modal;
           }
         });
@@ -394,13 +422,47 @@ async function run() {
                 `Boolean(document.querySelector('h1')) && document.querySelectorAll('ol li').length === ${sourceCount}`
               )
               .catch(() => false))
-          )
+          ) {
+            // DOM readiness can precede native visibility. Keyboard input
+            // needs the modal shown and focused before the decision starts.
+            modal.show();
+            modal.focus();
             return;
+          }
           await delay(50);
         }
         assert.fail("Timed out waiting for exact Native review");
       };
+      const decisionResult = async (label, decision) => {
+        const exactModal = modal;
+        const result = await Promise.race([
+          decision,
+          delay(7_500).then(() => {
+            throw new Error(
+              `Timed out waiting for HQ702 ${theme} ${label} Native decision (visible=${modal?.isVisible()}, focused=${modal?.isFocused()})`
+            );
+          })
+        ]);
+        // The review resolves before its Cocoa sheet closes. Do not open the
+        // next review until this exact window has finished closing.
+        for (
+          let attempt = 0;
+          attempt < 150 && !exactModal.isDestroyed();
+          attempt++
+        )
+          await delay(50);
+        assert.equal(
+          exactModal.isDestroyed(),
+          true,
+          `${theme} ${label} Native review must close before the next review`
+        );
+        console.error(
+          `[HQ702] ${theme}: ${label} Native decision ${result ? "approved" : "canceled"}; sheet closed`
+        );
+        return result;
+      };
       const captureModal = async (name) => {
+        console.error(`[HQ702] Native capture ${name}`);
         const debuggerClient = modal.webContents.debugger;
         if (!debuggerClient.isAttached()) debuggerClient.attach("1.3");
         const { data } = await debuggerClient.sendCommand(
@@ -411,6 +473,7 @@ async function run() {
           }
         );
         await writeFile(resolve(output, name), Buffer.from(data, "base64"));
+        console.error(`[HQ702] Native captured ${name}`);
       };
       const cancelled = openReview();
       await readyModal();
@@ -430,7 +493,10 @@ async function run() {
       await modal.webContents
         .executeJavaScript("document.querySelector('button.cancel').click()")
         .catch(() => undefined);
-      assert.equal(await cancelled.decision, false);
+      assert.equal(
+        await decisionResult("policy cancel", cancelled.decision),
+        false
+      );
       const approved = openReview();
       await readyModal();
       await modal.webContents
@@ -438,11 +504,20 @@ async function run() {
           "document.querySelector('button[type=submit]:not(.cancel)').click()"
         )
         .catch(() => undefined);
-      assert.equal(await approved.decision, true);
+      assert.equal(
+        await decisionResult("policy approve", approved.decision),
+        true
+      );
       const escaped = openReview();
       await readyModal();
+      app.focus({ steal: true });
+      modal.webContents.focus();
+      await delay(50);
       modal.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
-      assert.equal(await escaped.decision, false);
+      assert.equal(
+        await decisionResult("policy Escape", escaped.decision),
+        false
+      );
       const chatCanceled = openReview(chatReview);
       await readyModal(0);
       assert.equal(
@@ -455,7 +530,10 @@ async function run() {
       await modal.webContents
         .executeJavaScript("document.querySelector('button.cancel').click()")
         .catch(() => undefined);
-      assert.equal(await chatCanceled.decision, false);
+      assert.equal(
+        await decisionResult("chat cancel", chatCanceled.decision),
+        false
+      );
       const chatApproved = openReview(chatReview);
       await readyModal(0);
       await modal.webContents
@@ -463,7 +541,10 @@ async function run() {
           "document.querySelector('button[type=submit]:not(.cancel)').click()"
         )
         .catch(() => undefined);
-      assert.equal(await chatApproved.decision, true);
+      assert.equal(
+        await decisionResult("chat approve", chatApproved.decision),
+        true
+      );
       window.hide();
     }
     await writeFile(
@@ -484,12 +565,21 @@ async function run() {
             "private badge remains scoped to its chat while another chat menu opens",
             "private-only Share again declined and confirmed through exact Project and chat selectors",
             "completed moved-in chat offer declined, then manually retried from unshared and left pending",
+            "activated moved-chat summary status announces exact member Mark",
             "real Electron Native review intercepted approve, cancel, and Escape",
             "light and dark"
           ],
           nativeGrantAuthorityProved: false,
           nativeReviewInterceptionProved: true,
           scenarioAssertions: [
+            {
+              id: "S15.3.exact-audience-toast",
+              owner: "HQ-702",
+              status: "pass",
+              scope: "renderer-fixture",
+              exactMember: "Mark",
+              afterActivatedStatus: true
+            },
             {
               id: "S15.2",
               owner: "HQ-702",

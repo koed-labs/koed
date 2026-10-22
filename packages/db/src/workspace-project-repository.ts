@@ -2824,6 +2824,30 @@ export const createWorkspaceProjectRepository = (
          order by membership.id for update of association,membership`,
           [projectId]
         );
+        // Lock the full Project grant set before any freeze acquires Team
+        // representation policy rows. A publisher can hold one grant while
+        // waiting for the policy; freezing one member and then waiting for a
+        // second member's grant would invert that order and deadlock.
+        if (members.rows.length) {
+          await client.query(
+            `select grant_row.id
+               from team_memory_share_grants grant_row
+               join workspace_project_share_grant_bindings binding
+                 on binding.share_grant_id=grant_row.id
+              where grant_row.team_id=$1 and grant_row.team_workspace_id=$2
+                and grant_row.owner_user_id=any($3::uuid[])
+                and binding.workspace_project_id=$4
+                and grant_row.lifecycle='active' and grant_row.revoked_at is null
+                and grant_row.frozen_at is null
+              order by grant_row.id for update of grant_row`,
+            [
+              project.team_id,
+              project.workspace_id,
+              members.rows.map((member) => member.user_id),
+              project.id
+            ]
+          );
+        }
         for (const member of members.rows)
           await freezeMemberGrants(
             client,

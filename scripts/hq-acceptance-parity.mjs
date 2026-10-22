@@ -283,11 +283,7 @@ export function runParity(root, output) {
     return false;
   };
   // S01.2 belongs to the late Team-column validator, not the early inventory.
-  const claims = [
-    ...earlyProofs.filter((item) => item.id !== "S01.2"),
-    ...lateProofs,
-    ...ownedAcceptanceSuites
-  ];
+  const claims = [...earlyProofs, ...lateProofs, ...ownedAcceptanceSuites];
   const report = {
     ...identity,
     commands: [units, browser, real],

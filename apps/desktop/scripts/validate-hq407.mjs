@@ -58,7 +58,7 @@ const run = async () => {
         await delay(50);
       }
       const state = await js(
-        `({ location: location.href, labels: [...document.querySelectorAll('[aria-label]')].map((node) => node.getAttribute('aria-label')).filter((label) => ['Now', 'Needs you', 'To do', 'Work brief'].includes(label)), content: document.querySelector('.hq-main__content')?.textContent.slice(0, 500) })`
+        `({ location: location.href, tabs:[...document.querySelectorAll('.hq-project-context-tabs [role=tab]')].map(t=>({text:t.textContent,selected:t.getAttribute('aria-selected')})), labels: [...document.querySelectorAll('[aria-label]')].map((node) => node.getAttribute('aria-label')).filter((label) => ['Now', 'Needs you', 'To do', 'Work brief'].includes(label)), content: document.querySelector('.hq-main__content')?.textContent.slice(0, 500) })`
       );
       throw new Error(
         `HQ-407 UI did not reach ${source}: ${JSON.stringify(state)} ${errors.join(" | ")}`
@@ -261,6 +261,62 @@ const run = async () => {
       ),
       true
     );
+    await window.loadFile(
+      resolve(root, "apps/desktop/dist/browser-validation.html"),
+      {
+        query: {
+          view: "hq",
+          hq407Capture: "yes",
+          hq711Capture: "yes",
+          hq701Linked: "yes",
+          hq705Capture: "yes"
+        }
+      }
+    );
+    await waitFor("document.documentElement.dataset.hqFixtureReady === 'true'");
+    await js(
+      "document.querySelector('[data-hq-project-link=\"00000000-0000-4000-8000-000000002038\"]')?.click()"
+    );
+    await waitFor(
+      "document.querySelector('.hq-project-context-tabs [role=tab][aria-selected=true]')?.textContent.includes('Just me')"
+    );
+    const existingSyllabusTodoCount = await js(
+      "[...document.querySelectorAll('.hq-shared-project__row')].filter(row => row.textContent.includes('Study Friday examples')).length"
+    );
+    assert.equal(existingSyllabusTodoCount, 1);
+    assert.ok(
+      await js(
+        "document.querySelector('.hq-project-view__sources')?.textContent.includes('Syllabus.pdf') ?? document.body.textContent.includes('Syllabus.pdf')"
+      )
+    );
+    await js(`(() => {
+      const input = document.querySelector('.hq-project-conversation textarea');
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(input, 'Turn Syllabus.pdf into to-dos');
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    })()`);
+    await delay(40);
+    await js(
+      "document.querySelector('.hq-project-conversation form')?.requestSubmit()"
+    );
+    await waitFor(
+      "window.__koedHq204Trace.firstPrompt === 'Turn Syllabus.pdf into to-dos' && document.querySelector('.hq-project-context-tabs__content:not([hidden])')?.textContent.includes('Syllabus.pdf already has a to-do')"
+    );
+    assert.equal(
+      await js(
+        "[...document.querySelectorAll('.hq-shared-project__row')].filter(row => row.textContent.includes('Study Friday examples')).length"
+      ),
+      existingSyllabusTodoCount
+    );
+    await js(
+      "document.querySelector('.hq-project-context-tabs [role=tab]:last-child')?.click()"
+    );
+    await waitFor(
+      "document.querySelector('.hq-project-context-tabs [role=tab]:last-child')?.getAttribute('aria-selected') === 'true'"
+    );
+    await waitFor(
+      "document.querySelector('.hq-project-thread__people')?.textContent.includes('Lena') && document.querySelector('.hq-project-thread__people')?.textContent.includes('Omar')"
+    );
     assert.equal(errors.length, 0, errors.join(" | "));
     await writeFile(
       resolve(scratch, "hq-407", "HQ407.native.json"),
@@ -278,6 +334,7 @@ const run = async () => {
             "by-Friday entry creates a dated Work Item",
             "linked Team deadlines come from the paged shared service, focus exact Team rows, and keep private rows out of Now",
             "shared Due menu saves through Team item version and disables offline",
+            "typed Syllabus.pdf prompt returns already-has-a-to-do without duplicate and Team tab shows Lena/Omar",
             "light and dark native Desktop captures"
           ],
           screenshots: [
@@ -291,7 +348,8 @@ const run = async () => {
             "shared-project-due-light.png",
             "shared-project-due-dark.png",
             "shared-project-due-menu-light.png"
-          ]
+          ],
+          proofIds: ["S21.1.syllabus-repeat-team-audience"]
         },
         null,
         2

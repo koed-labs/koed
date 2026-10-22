@@ -908,6 +908,12 @@ export const createManagedConversationService = (options: {
     fetch?: typeof fetch;
   };
   turnTimeoutMs?: number;
+  /** Test seam for observing the exact prompt handed to a managed Codex turn. */
+  codexSessionFactory?: (
+    sessionOptions: ConstructorParameters<
+      typeof CodexManagedConversationSession
+    >[0]
+  ) => CodexManagedConversationSession;
   executionCheckoutDriver?: GitExecutionCheckoutDriver;
   logger: Logger;
 }): ManagedConversationService => {
@@ -1980,7 +1986,10 @@ export const createManagedConversationService = (options: {
     if (permission.driverId !== "codex") {
       throw new Error("ManagedConversationCodexPermissionMappingError");
     }
-    return new CodexManagedConversationSession({
+    return (
+      options.codexSessionFactory ??
+      ((sessionOptions) => new CodexManagedConversationSession(sessionOptions))
+    )({
       memoryClient,
       onStartupTiming: (timing) =>
         options.logger.info(

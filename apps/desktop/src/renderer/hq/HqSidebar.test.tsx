@@ -14,6 +14,7 @@ import type {
 import type { DesktopProject } from "../../project-memory-ui.js";
 import type { HqRoute } from "./hq-navigation.js";
 import { HqSidebar } from "./HqSidebar.js";
+import type { SidebarTeam } from "./hq-sidebar-groups.js";
 
 const actEnvironment = globalThis as {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -110,6 +111,7 @@ describe("HQ sidebar", () => {
       nowActive?: boolean;
       onOpenNow?: () => void;
       personalProjects?: readonly Project[];
+      teams?: readonly SidebarTeam[];
       onDeleteProject?: (projectId: string) => void;
       onCreateProject?: () => void;
     } = {},
@@ -125,6 +127,7 @@ describe("HQ sidebar", () => {
           onRetryProjects={onRetryProjects}
           onOpenNow={options.onOpenNow}
           personalProjects={options.personalProjects}
+          teams={options.teams}
           onDeleteProject={options.onDeleteProject}
           onCreateProject={options.onCreateProject}
           nowActive={options.nowActive}
@@ -569,6 +572,77 @@ describe("HQ sidebar", () => {
     await act(async () => account?.click());
     expect(onOpenSettings).toHaveBeenCalledOnce();
     expect(onOpenSettings).toHaveBeenCalledWith();
+  });
+
+  it("groups linked Projects under a named Team and persists its fold", async () => {
+    const personalProjects: Project[] = [
+      {
+        id: "project-a",
+        name: "Alpha",
+        key: "ALPHA",
+        folderPath: null,
+        lifecycle: "active",
+        deletionPhase: null,
+        deleteBatchId: null,
+        deletedAt: null,
+        createdAt: timestamp(1),
+        updatedAt: timestamp(1),
+        version: 1,
+        teamBackendId: "backend",
+        teamWorkspaceId: "workspace-a",
+        workspaceProjectId: "shared-a"
+      },
+      {
+        id: "project-b",
+        name: "Beta",
+        key: "BETA",
+        folderPath: null,
+        lifecycle: "active",
+        deletionPhase: null,
+        deleteBatchId: null,
+        deletedAt: null,
+        createdAt: timestamp(1),
+        updatedAt: timestamp(1),
+        version: 1,
+        teamBackendId: "backend",
+        teamWorkspaceId: "workspace-b",
+        workspaceProjectId: "shared-b"
+      }
+    ];
+    const teams: SidebarTeam[] = [
+      {
+        id: "small",
+        name: "Renamed private group",
+        origin: "project_share",
+        backendId: "backend",
+        workspaceIds: ["workspace-a"]
+      },
+      {
+        id: "named",
+        name: "Koed team",
+        origin: "named",
+        backendId: "backend",
+        workspaceIds: ["workspace-b"]
+      }
+    ];
+    await render(initialRoute, { personalProjects, teams });
+    const groups = [
+      ...container.querySelectorAll<HTMLElement>("[data-hq-sidebar-group]")
+    ];
+    expect(groups.map((group) => group.textContent?.trim())).toEqual([
+      "Just me",
+      "Shared",
+      "Koed team"
+    ]);
+    expect(container.querySelector("#hq-group-shared")?.textContent).toContain(
+      "Alpha"
+    );
+    expect(
+      container.querySelector("#hq-group-team-named")?.textContent
+    ).toContain("Beta");
+    await act(async () => groups[2]?.click());
+    expect(groups[2]?.getAttribute("aria-expanded")).toBe("false");
+    expect(persisted.foldedGroups["team:named"]).toBe(true);
   });
 
   it("opens the Personal Project menu by ellipsis and right click, without offering Leave", async () => {

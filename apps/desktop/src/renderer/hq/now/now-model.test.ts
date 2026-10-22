@@ -249,5 +249,16 @@ describe("Now aggregation", () => {
         { id: "p", threads: [{ id: "t", sessionId: "s" }] }
       ] as unknown as DesktopProject[])
     ).toEqual({ projectId: "p", routeId: "s", synthetic: false });
+    const sourceWithoutManagedExecution = { ...need, executionId: undefined };
+    expect(
+      nowConversationDestination(sourceWithoutManagedExecution, [
+        { id: "p", threads: [{ id: "t", sessionId: "s" }] }
+      ] as unknown as DesktopProject[])
+    ).toEqual({ projectId: "p", routeId: "s", synthetic: false });
+    expect(
+      nowConversationDestination(sourceWithoutManagedExecution, [
+        { id: "p", threads: [] }
+      ] as unknown as DesktopProject[])
+    ).toBeNull();
   });
 });

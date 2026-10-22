@@ -56,6 +56,34 @@ export async function validateHqNow(
     composerWidth: 848,
     bodyWidth: 880
   });
+  assert.equal(
+    await inspect(
+      window,
+      `(() => { const now = document.querySelector('.hq-now'); return !/\\b(Crew|Timeline)\\b/.test(now?.textContent ?? ''); })()`
+    ),
+    true,
+    "Now must contain its compact lists without Crew or timeline"
+  );
+  await inspect(
+    window,
+    `document.querySelector('${projects} .hq-now__row')?.click()`
+  );
+  await waitFor(
+    window,
+    delay,
+    `document.querySelector('[data-hq-route="project"]') !== null`,
+    "Now Project row route"
+  );
+  await inspect(
+    window,
+    `document.querySelector('button[aria-label="Now"]')?.click()`
+  );
+  await waitFor(
+    window,
+    delay,
+    `document.querySelector('[data-hq-route="home"]') !== null`,
+    "Now return after Project row"
+  );
   await inspect(
     window,
     `(() => {

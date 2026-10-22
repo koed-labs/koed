@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import type {
+  ClaimedManagedConversationCommand,
   ManagedConversationExecutionRecord,
   ManagedConversationExecutionCheckpointRecord,
   ManagedConversationRuntimeBindingRecord,
@@ -43,6 +44,101 @@ import {
   shouldRequestManagedConversationSourceRestore,
   shouldRecoverForkPreparationFailure
 } from "./managed-conversation-service.js";
+import { probeManagedConversationProviderPrompt } from "./managed-conversation-prompt-probe.js";
+
+describe("managed ordinary agent-turn prompt isolation", () => {
+  it("excludes a present Team message from the actual managed provider turn", async () => {
+    const root = await mkdtemp(
+      resolve(process.cwd(), "scratch", "hq-n1-provider-")
+    );
+    try {
+      const ownerUserId = randomUUID();
+      const executionId = randomUUID();
+      const deviceId = randomUUID();
+      const deploymentId = randomUUID();
+      const providerThreadId = randomUUID();
+      const commandId = randomUUID();
+      const userPrompt = "Please summarize my Project work";
+      const teamMessage = "PRIVATE_TEAM_CHAT_SENTINEL_FOR_AGENT_TURN";
+      const execution: ManagedConversationExecutionRecord = {
+        ...terminalExecutionFixture({
+          ownerUserId,
+          executionId,
+          deploymentId,
+          deviceId
+        }),
+        projectId: randomUUID(),
+        state: "running",
+        stoppedAt: null,
+        providerThreadId,
+        logicalSessionId: randomUUID()
+      };
+      const command: ClaimedManagedConversationCommand = {
+        id: commandId,
+        ownerUserId,
+        executionId,
+        executionGeneration: 1,
+        commandKind: "prompt",
+        idempotencyKey: commandId,
+        targetDeploymentId: deploymentId,
+        targetDeviceId: deviceId,
+        requestDigest: "a".repeat(64),
+        state: "dispatching",
+        blockedOnKind: null,
+        blockedOnId: null,
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        result: null,
+        lastErrorCode: null,
+        createdAt: execution.createdAt,
+        updatedAt: execution.updatedAt,
+        dispatchingAt: execution.updatedAt,
+        completedAt: null,
+        sequence: 1,
+        attempts: 1,
+        leaseToken: randomUUID(),
+        clientUserMessageId: randomUUID(),
+        payload: {
+          prompt: userPrompt,
+          teamMessages: [{ text: teamMessage }]
+        },
+        execution
+      };
+      const binding = {
+        ...pendingBindingFixture({
+          ownerUserId,
+          executionId,
+          deploymentId,
+          deviceId,
+          sourceProjectPath: root
+        }),
+        checkoutLifecycle: "ready",
+        checkoutId: randomUUID(),
+        checkoutKind: "user_managed_checkout",
+        creationOperationId: randomUUID(),
+        localSessionId: randomUUID(),
+        providerThreadId,
+        transcriptPath: resolve(root, "transcript.jsonl"),
+        managedHome: root
+      } as ManagedConversationRuntimeBindingRecord;
+      const baseline = {
+        commandId,
+        checkpointKind: "baseline",
+        checkpointStatus: "ready"
+      } as ManagedConversationExecutionCheckpointRecord;
+      const observed = await probeManagedConversationProviderPrompt({
+        command,
+        binding,
+        baseline,
+        teamMessageTexts: [teamMessage],
+        koedHome: root
+      });
+      expect(observed.prompt).toContain(userPrompt);
+      expect(observed.prompt).not.toContain(teamMessage);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("managed Project recall launch selection", () => {
   it("passes only first-class Project UUID executions to the owner resolver", () => {

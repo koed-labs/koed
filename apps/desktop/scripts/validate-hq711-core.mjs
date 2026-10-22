@@ -114,7 +114,8 @@ export const validateHq711 = async (window) => {
         prText: link?.textContent.trim(),
         prHref: link?.getAttribute('href'),
         chatLink: Boolean(row?.querySelector('a[href*="/chat/"], [data-hq-conversation]')),
-        privateExecution: row?.textContent.includes('colleague-private-execution')
+        privateExecution: row?.textContent.includes('colleague-private-execution'),
+        privateChatSentinel: row?.textContent.includes('private-chat-sentinel-platypus-742')
       };
     })()`);
     assert.equal(colleagueProgress.status, "Needs you");
@@ -126,6 +127,14 @@ export const validateHq711 = async (window) => {
     );
     assert.equal(colleagueProgress.chatLink, false);
     assert.equal(colleagueProgress.privateExecution, false);
+    assert.equal(colleagueProgress.privateChatSentinel, false);
+    assert.equal(
+      await js(
+        "document.body.textContent.includes('private-chat-sentinel-platypus-742')"
+      ),
+      false,
+      "colleague-private source content must not enter the Project DOM"
+    );
     await js(
       "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
     );
@@ -195,7 +204,8 @@ export const validateHq711 = async (window) => {
         proofIds: [
           "S03.1.privacy-note",
           "S03.1.no-colleague-chat-link",
-          "S03.1.safe-status-step-pr"
+          "S03.1.safe-status-step-pr",
+          "S03.1.private-colleague-sentinel"
         ],
         scope: "simulated IPC renderer fixture"
       },
