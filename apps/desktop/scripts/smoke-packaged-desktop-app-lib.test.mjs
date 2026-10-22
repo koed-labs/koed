@@ -11,14 +11,17 @@ import {
 } from "node:fs";
 import test from "node:test";
 import { tmpdir } from "node:os";
+import process from "node:process";
 import { resolve } from "node:path";
 import {
   removeSmokeHome,
   createSmokeHome,
   smokeExecutionPlan,
+  withSmokeFailureDiagnostics,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import {
+  createSmokeEnv,
   assertNoSourceCheckoutResolution,
   assertFailClosedPrivacy,
   assertFailClosedTeamStart,
@@ -26,9 +29,63 @@ import {
   waitForHealthyStatus
 } from "./smoke-packaged-desktop-app.mjs";
 
+test("failure diagnostics read failing home before cleanup and retain original cause", async () => {
+  const home = createSmokeHome("koed-team-diagnostics-test-");
+  const failure = new Error("Team handshake failed");
+  writeFileSync(resolve(home, "failure.log"), "supervisor failure");
+  try {
+    await assert.rejects(
+      withSmokeFailureDiagnostics(
+        async () => {
+          throw failure;
+        },
+        () => {
+          assert.equal(existsSync(resolve(home, "failure.log")), true);
+          return "Team diagnostics preserved";
+        }
+      ),
+      (error) =>
+        error.cause === failure &&
+        /Team diagnostics preserved/.test(error.message)
+    );
+  } finally {
+    removeSmokeHome(home);
+  }
+  assert.equal(existsSync(home), false);
+});
+
+test("diagnostics failure does not replace original smoke failure", async () => {
+  await assert.rejects(
+    withSmokeFailureDiagnostics(
+      async () => {
+        throw new Error("Team handshake failed");
+      },
+      () => {
+        throw new Error("diagnostic read failed");
+      }
+    ),
+    /Team handshake failed[\s\S]*diagnostic read failed/
+  );
+});
+
 test("packaged smoke defaults health polling to five seconds", () => {
   assert.equal(parseArgs([]).pollIntervalMs, 5_000);
   assert.equal(parseArgs(["--poll-interval-ms", "2000"]).pollIntervalMs, 2_000);
+});
+
+test("packaged smoke strips untrusted resources path overrides", () => {
+  const original = process.env.KOED_PACKAGED_RESOURCES_PATH;
+  process.env.KOED_PACKAGED_RESOURCES_PATH = "/host/resources";
+  try {
+    const environment = createSmokeEnv("/tmp/koed-smoke-home", {
+      KOED_PACKAGED_RESOURCES_PATH: "/extra/resources"
+    });
+    assert.equal(environment.KOED_PACKAGED_DESKTOP, "1");
+    assert.equal(environment.KOED_PACKAGED_RESOURCES_PATH, undefined);
+  } finally {
+    if (original === undefined) delete process.env.KOED_PACKAGED_RESOURCES_PATH;
+    else process.env.KOED_PACKAGED_RESOURCES_PATH = original;
+  }
 });
 
 test("smoke home canonicalizes temporary paths before authenticated lifecycle selection", () => {

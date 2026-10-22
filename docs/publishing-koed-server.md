@@ -35,10 +35,103 @@ node scripts/headless-distribution-smoke.mjs \
 The smoke builds and signs real Base/Privacy archives with an ephemeral test key,
 embeds the public key only in copied fixture output, installs the resulting npm
 package offline outside the checkout, installs both signed components, and runs Personal startup, readiness,
-core doctor checks and shutdown in an isolated Koed home. AI Client authentication
-and capture setup remain separate; the smoke does not use the User's credentials.
+core doctor checks, shutdown, and a second startup/doctor/shutdown cycle in an isolated
+Koed home. Acceptance verifies the healthy runtime belongs to the launched
+supervisor, confirms supervisor exit and runtime-state cleanup after each stop,
+and rejects a restart that reuses the first supervisor PID. AI Client authentication and capture setup remain separate; the smoke
+does not use the User's credentials.
 It does not install production roots or enable signing/publication. Linux and
 Desktop acceptance remain separate release gates.
+
+### Linux x64 and WSL standalone acceptance
+
+Run acceptance as a non-root user inside a clean Ubuntu x64 environment with Node
+24.13.1 and pnpm 11.1.2. Containers must use an init process (for example Docker
+`--init`) so detached supervisors are reaped after shutdown. Install and build the
+checkout there; do not copy macOS
+`node_modules` or mount the Operator's existing `KOED_HOME` or AI Client credentials.
+On Apple Silicon, a full x86_64 Colima/QEMU VM avoids user-mode emulation failures
+observed during Node/libuv component staging. Emulated results establish compatibility,
+not native performance. No Electron installation, desktop display, or published npm
+version is required.
+
+Use native inputs matching `scripts/native-runtime/sources.linux-x64.json`:
+PostgreSQL 17.6 with pgcrypto, pgvector 0.8.3, and llama.cpp b10514. Verify upstream
+SHA-256 values before building/extracting them. The input directories must include
+PostgreSQL client tools and extensions, and llama-server's sibling shared libraries.
+The smoke uses these explicit paths; it does **not** validate cold installation or
+relocation of the complete packaged native-runtime payload, CUDA, or GPU drivers.
+Those remain separate acceptance requirements.
+
+For fresh model provisioning through the assembled, installed CLI, replace
+`--embedding-model` with `--install-models`. This explicitly allows pinned model
+network downloads before startup. The npm install remains offline, and production
+trust roots still reject the ephemeral fixture signing key. Use separate output
+directories that do not already exist:
+
+```bash
+node scripts/headless-distribution-smoke.mjs \
+  --postgres-bin-dir /absolute/path/to/postgres/bin \
+  --llama-server-bin /absolute/path/to/llama-server \
+  --install-models \
+  --out-dir /absolute/path/to/personal-acceptance
+
+node scripts/headless-distribution-smoke.mjs \
+  --postgres-bin-dir /absolute/path/to/postgres/bin \
+  --llama-server-bin /absolute/path/to/llama-server \
+  --install-models --team \
+  --out-dir /absolute/path/to/team-acceptance
+```
+
+`--team` also installs the pinned Privacy Filter model. Do not combine
+`--install-models` with preinstalled model inputs. Preserve `result.json`,
+`doctor-initial.json`, `doctor-restart.json`, model-install reports, and failing
+supervisor logs as local evidence. These directories contain disposable keys and
+runtime state: do not commit them or upload entire directories as public artifacts.
+Only a run completing both shutdowns writes a successful result.
+
+Ubuntu-container acceptance is **not WSL2 acceptance**. Repeat inside an actual
+WSL2 Ubuntu x64 distribution, keep checkout and `KOED_HOME` on its Linux filesystem
+(not `/mnt/c`), and separately check Windows-host connectivity and stop/restart
+across WSL shutdown. Until recorded, WSL2 remains unvalidated. Likewise, testing
+Ubuntu 24.04 alone does not establish the Ubuntu 22.04/glibc 2.35 baseline.
+Neither this smoke nor its fixture signatures authorize npm publication, production
+component signing, or release promotion.
+
+### Recorded Linux x64 standalone acceptance: 2026-10-16
+
+Local validation used Ubuntu 24.04 x64 in a full x86_64 Colima/QEMU VM on an
+Apple Silicon host, Node 24.13.1, pnpm 11.1.2, and the pinned native inputs above.
+A clean checkout built successfully and assembled both base and privacy components.
+
+- **Personal: PASSED.** Offline installation outside the checkout, Base/Privacy
+  fixture signature verification, fresh embedding-model provisioning through the
+  installed CLI, and core doctor checks (`api`, `database`, `workerQueues`,
+  `embeddingService`, `privacyService`, `localAiRuntime`, `apiToken`, `mcpServer`,
+  `deviceIdentity`). Healthy supervisor PID 267 stopped; fresh supervisor PID 650
+  stopped successfully. Production test key rejected without activating a component.
+  No AI Client credentials or MCP setup exercised.
+- **Team: BLOCKED.** Fresh embedding and Privacy ONNX provisioning passed. Integrated
+  startup timed out twice with `Privacy Filter Service (starting)` and
+  `Local AI Runtime (needs_attention)`. Privacy Service loaded CPU parity (~100s in
+  emulation) and logged `listening on :48092`; worker reported
+  `privacy_service_unavailable_error` three times. Same Privacy payload run in
+  isolation completed CPU parity (~50s) and returned HTTP 200 from `/health` with
+  `activeProvider:cpu`. The service works alone but fails integrated; root cause
+  remains unresolved. This is not proof of an emulation-only failure. Do not weaken
+  readiness checks or label Team release-ready.
+- **Fault-injection tests:** startup failure blocks before doctor, failed shutdown
+  blocks acceptance, unhealthy restart preserves doctor reports, stale supervisor
+  cannot pass readiness, and restart requires a different supervisor PID. These
+  verifier tests do not replace cold acceptance.
+- **Still unvalidated:** actual WSL2 (requires Windows host), Ubuntu 22.04/glibc
+  2.35, cold packaged native-runtime install/relocation, GPU/CUDA (driver >=
+  550.54.14), and native x64 performance. Emulation does not establish native
+  performance.
+
+These are local fixture results, not a published-release or production-signing
+rehearsal. Keep Team and remaining platform gates blocked until independently
+validated; do not increase timeouts or remove checks merely to obtain a pass.
 
 ## Desktop privacy component lifecycle
 

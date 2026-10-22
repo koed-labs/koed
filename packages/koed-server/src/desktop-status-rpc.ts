@@ -1,6 +1,14 @@
 import { setupClaude } from "./claude-setup.js";
 import { setupPi } from "./pi-setup.js";
-import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
+import {
+  resolveDesktopRuntimeOwner,
+  type DesktopRuntimeCapability
+} from "./desktop-runtime-capability.js";
+import { resolveKoedServerPaths } from "./paths.js";
+import {
+  observeRuntimeLifecycle,
+  runtimeOwnedBy
+} from "./runtime-lifecycle.js";
 import {
   collectKoedServerDoctor,
   collectKoedServerStartupStatus,
@@ -22,6 +30,18 @@ export const createDesktopStatusRpcHandler = (options: {
         ? collectKoedServerStartupStatus(options.environment, dependencies)
         : collectKoedServerStatus(options.environment, dependencies),
     doctor: () => collectKoedServerDoctor(options.environment, dependencies),
+    // Ownership is judged with the verified capability, never by API health.
+    lifecycle: () => {
+      const paths = resolveKoedServerPaths(options.environment);
+      const observation = observeRuntimeLifecycle(paths);
+      return Promise.resolve({
+        ...observation,
+        owned: runtimeOwnedBy(
+          observation,
+          resolveDesktopRuntimeOwner(options.capability, paths.koedHome)
+        )
+      });
+    },
     "setup-core": () => setupCore(setupOptions),
     "setup-codex": () => setupCodex(setupOptions),
     "repair-codex": () => repairCodexIntegration(setupOptions),

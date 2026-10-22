@@ -84,12 +84,19 @@ import {
 } from "./tray/menu-bar.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
-const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
+const {
+  repoRoot,
+  cliPath: genericKoedServerCli,
+  desktopCliPath
+} = resolveKoedServerPaths({
   appDir,
   appIsPackaged: app.isPackaged,
   environment: process.env,
   resourcesPath: process.resourcesPath
 });
+// Packaged Desktop and its launcher share one verified CLI entrypoint so every
+// command manages Desktop's own instance with Desktop's runtime authority.
+const koedServerCli = desktopCliPath ?? genericKoedServerCli;
 const appName = "Koed";
 const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
   desktopManagedLocal: true,
@@ -452,6 +459,8 @@ const bootstrap = async () => {
     appPath: app.getAppPath(),
     helperPath: process.execPath,
     cliPath: koedServerCli,
+    koedHome: resolveApplicationKoedHome(koedEnvironment),
+    ...(desktopCliPath ? { legacyCliPath: genericKoedServerCli } : {}),
     expectedVersion: app.getVersion(),
     currentPath: process.env.PATH ?? "",
     platform: process.platform,
@@ -580,9 +589,23 @@ const bootstrap = async () => {
       buildMenu: (template) => Menu.buildFromTemplate(template),
       getStatus: () => server.handlers.status(),
       openDesktop: showDesktopWindow,
+      startKoed: () => {
+        void Promise.resolve(server.handlers.start()).catch(() => undefined);
+      },
       quit: () => app.quit()
     });
   }
+  // One cheap local observer drives both the window and the tray, so an
+  // external stop or start is reflected without waiting for full polling.
+  server.lifecycle.subscribe(() => {
+    void desktopMenuBar?.refresh();
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(desktopStatusChangedChannel);
+      }
+    }
+  });
+  server.lifecycle.start();
   await startDesktopWindowAndRuntime({
     background: backgroundLaunchPending,
     createWindow,
@@ -649,10 +672,12 @@ const bootstrap = async () => {
               onProgress: () => undefined
             });
           }
-          if (command === "quit") return server.stop();
+          if (command === "quit") return server.shutdown();
+          // The observation that drives the window and tray, without a refresh.
+          if (command === "lifecycle") return server.lifecycle.current();
           return server.handlers[command as DesktopCommandName]();
         },
-        stop: () => server.stop(),
+        stop: () => server.shutdown(),
         quit: () => app.quit()
       });
       for (const window of BrowserWindow.getAllWindows()) {
@@ -695,7 +720,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   void (async () => {
     await managedPreviewController.close();
-    await koedServer?.stop();
+    await koedServer?.shutdown();
     desktopMenuBar?.dispose();
     desktopMenuBar = null;
     koedServerStoppedForQuit = true;

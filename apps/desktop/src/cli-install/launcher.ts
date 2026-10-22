@@ -7,17 +7,23 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   unlinkSync,
   writeFileSync
 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 
 export interface LauncherInput {
   destination: string;
   appPath: string;
   helperPath: string;
+  // Verified Desktop CLI entrypoint that shares Desktop's managed instance.
   cliPath: string;
+  // The Desktop instance state directory bound into the launcher.
+  koedHome: string;
+  // Generic CLI targeted by exact v1 launchers, recognized only to migrate.
+  legacyCliPath?: string;
   expectedVersion: string;
   currentPath: string;
 }
@@ -27,24 +33,44 @@ export interface LauncherStatus {
   target: "valid" | "missing" | "invalid";
   helper: "supported" | "unsupported";
   version: string | null;
+  // "legacy" launchers are unchanged v1 files that installation upgrades.
+  template: "current" | "legacy" | null;
   pathVisible: boolean;
   fingerprint: string | null;
 }
 
 export type HelperProbe = () => Promise<boolean>;
 
-const marker = "# koed-desktop-launcher:v1";
+// A shebang lets non-shell callers (Node, Python, GUI tools) execute the file.
+const marker = "#!/bin/sh\n# koed-desktop-launcher:v2";
+const legacyMarker = "# koed-desktop-launcher:v1";
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 const digest = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
 const launcherContents = (input: LauncherInput): string =>
-  `${marker}\n# version:${input.expectedVersion}\nexport ELECTRON_RUN_AS_NODE=1\nexec ${quote(input.helperPath)} ${quote(input.cliPath)} "$@"\n`;
+  `${marker}\n# version:${input.expectedVersion}\nexport ELECTRON_RUN_AS_NODE=1\nexport KOED_HOME=${quote(input.koedHome)}\nexec ${quote(input.helperPath)} ${quote(input.cliPath)} "$@"\n`;
+const legacyLauncherContents = (
+  input: LauncherInput,
+  legacyCliPath: string
+): string =>
+  `${legacyMarker}\n# version:${input.expectedVersion}\nexport ELECTRON_RUN_AS_NODE=1\nexec ${quote(input.helperPath)} ${quote(legacyCliPath)} "$@"\n`;
+
+const assertLauncherPaths = (input: LauncherInput): void => {
+  for (const value of [
+    input.helperPath,
+    input.cliPath,
+    input.koedHome,
+    input.destination
+  ])
+    if (!isAbsolute(value) || /[\0\n\r]/u.test(value))
+      throw new Error("Launcher paths must be absolute single-line paths.");
+};
 
 // Only the validated version field may differ across Desktop upgrades.
-const ownedLauncherVersion = (
+const ownedLauncher = (
   contents: string,
   input: LauncherInput
-): string | null => {
+): { version: string; template: "current" | "legacy" } | null => {
   const version = /^# version:([^\n]+)$/mu.exec(contents)?.[1];
   const numeric = "(?:0|[1-9][0-9]*)";
   const prerelease = `(?:${numeric}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)`;
@@ -53,11 +79,20 @@ const ownedLauncherVersion = (
     "u"
   );
   if (!version || !semver.test(version)) return null;
-  return version &&
-    contents === launcherContents({ ...input, expectedVersion: version })
-    ? version
-    : null;
+  const versioned = { ...input, expectedVersion: version };
+  if (contents === launcherContents(versioned))
+    return { version, template: "current" };
+  if (
+    input.legacyCliPath &&
+    contents === legacyLauncherContents(versioned, input.legacyCliPath)
+  )
+    return { version, template: "legacy" };
+  return null;
 };
+const ownedLauncherVersion = (
+  contents: string,
+  input: LauncherInput
+): string | null => ownedLauncher(contents, input)?.version ?? null;
 
 interface FileSnapshot {
   contents: string;
@@ -115,10 +150,13 @@ export const inspectLauncher = async (
   const file = inspectFile(input.destination);
   const snapshot = file.snapshot;
   const contents = snapshot?.contents ?? null;
-  const owned = contents?.startsWith(`${marker}\n`) ?? false;
-  const version =
-    contents === null ? null : ownedLauncherVersion(contents, input);
-  const exactLauncher = version !== null;
+  const owned =
+    (contents?.startsWith(`${marker}\n`) ||
+      contents?.startsWith(`${legacyMarker}\n`)) ??
+    false;
+  const exact = contents === null ? null : ownedLauncher(contents, input);
+  const version = exact?.version ?? null;
+  const exactLauncher = exact !== null;
   const targetStatus = cliTargetStatus(input.cliPath);
   return {
     ownership:
@@ -139,6 +177,7 @@ export const inspectLauncher = async (
           : "valid",
     helper: (await input.probeHelper()) ? "supported" : "unsupported",
     version,
+    template: exact?.template ?? null,
     pathVisible: input.currentPath
       .split(":")
       .includes(dirname(input.destination)),
@@ -183,8 +222,14 @@ export const installLauncher = async (
     throw new Error(
       "Koed CLI target is missing or invalid; launcher disabled."
     );
+  assertLauncherPaths(input);
   const observed = await inspectLauncher(input);
-  if (observed.ownership !== "absent")
+  // Only an unchanged Koed-owned launcher (including exact v1) is replaced.
+  const replaced =
+    observed.ownership === "koed"
+      ? inspectFile(input.destination).snapshot
+      : null;
+  if (observed.ownership !== "absent" && !replaced)
     throw new Error(
       "Launcher destination conflict; preserve existing file or choose another path."
     );
@@ -195,7 +240,20 @@ export const installLauncher = async (
       mode: 0o700,
       flag: "wx"
     });
-    linkSync(temporary, input.destination);
+    if (replaced) {
+      const current = inspectFile(input.destination).snapshot;
+      if (
+        !current ||
+        current.dev !== replaced.dev ||
+        current.ino !== replaced.ino ||
+        current.contents !== replaced.contents ||
+        ownedLauncherVersion(current.contents, input) === null
+      )
+        throw new Error(
+          "Launcher changed during installation; refusing replacement."
+        );
+      renameSync(temporary, input.destination);
+    } else linkSync(temporary, input.destination);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error(

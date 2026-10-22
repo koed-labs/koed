@@ -1,12 +1,40 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDesktopSupervisorEnvironment,
+  sendDesktopSupervisorStartupFailure,
   sendDesktopSupervisorStatus
 } from "./desktop-supervisor-entrypoint.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Desktop supervisor environment", () => {
+  it("sends authenticated runtime startup failures before disconnect", async () => {
+    const send = vi.fn(
+      (_message: unknown, callback: (error: Error | null) => void) =>
+        callback(null)
+    );
+    vi.stubGlobal("process", { connected: true, pid: 123, send });
+    const failure = {
+      nonce: "a".repeat(64),
+      bundleDigest: "b".repeat(64),
+      error: new Error("Privacy assets are missing.")
+    };
+
+    await sendDesktopSupervisorStartupFailure(failure);
+
+    expect(send).toHaveBeenCalledWith(
+      {
+        type: "koed.desktop.supervisor.start-failed",
+        nonce: failure.nonce,
+        childPid: 123,
+        bundleDigest: failure.bundleDigest,
+        mode: "runtime",
+        error: "Privacy assets are missing."
+      },
+      expect.any(Function)
+    );
+  });
+
   it("drops late status responses after disconnect", () => {
     const send = vi.fn();
     vi.stubGlobal("process", { connected: false, send });

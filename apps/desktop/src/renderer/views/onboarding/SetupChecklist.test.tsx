@@ -14,7 +14,7 @@ import {
   setupIsReady,
   setupStepsFromStatus
 } from "./setup-model.js";
-import { SetupChecklist } from "./SetupChecklist.js";
+import { CompactHealthAffordance, SetupChecklist } from "./SetupChecklist.js";
 
 const component = (
   state: "not_configured" | "starting" | "healthy" | "needs_attention",
@@ -235,6 +235,60 @@ describe("SetupChecklist", () => {
       label: "Koed is starting",
       state: "starting"
     });
+  });
+
+  it.each(["healthy", "needs_attention"] as const)(
+    "presents an explicitly stopped instance without %s service noise",
+    (state) => {
+      const status = {
+        ...statusFixture(state),
+        lifecycle: {
+          state: "stopped" as const,
+          message: "Koed is not running."
+        }
+      };
+      expect(compactHealthSummary(status)).toEqual({
+        label: "Koed is stopped",
+        state: "stopped"
+      });
+      expect(setupIsReady(status)).toBe(false);
+    }
+  );
+
+  it("offers Start Koed from the stopped affordance and recovers through the shared start command", async () => {
+    const stopped = {
+      ...statusFixture("needs_attention"),
+      lifecycle: { state: "stopped" as const, message: "Koed is not running." }
+    };
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockResolvedValueOnce(stopped)
+      .mockResolvedValueOnce({ ok: true, state: "starting" })
+      .mockResolvedValueOnce(statusFixture("healthy"));
+    window.koedDesktop = { invoke } as unknown as DesktopApi;
+    const seeded = new DesktopStatusStore();
+    await seeded.refresh();
+    const onOpenSetup = vi.fn();
+    await act(async () => {
+      root.render(
+        <CompactHealthAffordance
+          onOpenSetup={onOpenSetup}
+          statusStore={seeded}
+        />
+      );
+    });
+    const button = container.querySelector("button")!;
+    expect(button.textContent).toBe("Koed is stopped — Start Koed");
+    await act(async () => button.click());
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "status",
+      "start",
+      "status"
+    ]);
+    expect(onOpenSetup).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(container.querySelector("button")).toBeNull()
+    );
   });
 
   it("shows an error only when multiple services need attention", () => {

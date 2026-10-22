@@ -63,6 +63,12 @@ export interface KoedServerStartupStatus {
 export interface KoedServerStatus {
   ok: boolean;
   state: ComponentState;
+  lifecycle?: {
+    state: "running" | "starting" | "stopped" | "unavailable";
+    message: string;
+    epoch?: string;
+    pid?: number;
+  };
   koedHome: string;
   generatedAt: string;
   runtimeMode: "local-personal" | "external" | "developer";

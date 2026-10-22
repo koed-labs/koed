@@ -869,6 +869,102 @@ describe("JSON command output", () => {
     });
   });
 
+  it("injects verified Desktop authority into shared lifecycle and setup commands", async () => {
+    const home = mkdtempSync(resolve(tmpdir(), "koed-cli-authority-"));
+    const capability = { productVersion: "0.0.0" } as never;
+    const supervisorInvocation = {
+      startCommand: "/Apps/Koed.app/entry.js",
+      cwd: "/tmp/koed"
+    };
+    const calls: Array<[string, unknown]> = [];
+    const ok = { ok: true, state: "healthy", koedHome: "/tmp/koed" };
+    const dependencies = {
+      stdout: writer().stream,
+      desktopRuntimeCapability: capability,
+      supervisorInvocation,
+      startDaemon: (options: unknown) => {
+        calls.push(["daemon", options]);
+        return { ...ok, state: "starting" as const, message: "started" };
+      },
+      start: async (options: unknown) => {
+        calls.push(["start", options]);
+      },
+      restart: async (options: unknown) => {
+        calls.push(["restart", options]);
+        return {
+          ...ok,
+          message: "restarted",
+          stoppedPids: [],
+          missingPids: [],
+          stoppedServices: [],
+          missingServices: []
+        };
+      },
+      stop: (options: unknown) => {
+        calls.push(["stop", options]);
+        return {
+          ...ok,
+          message: "stopped",
+          stoppedPids: [],
+          missingPids: [],
+          stoppedServices: [],
+          missingServices: []
+        };
+      },
+      setupCore: async (options: unknown) => {
+        calls.push(["core", options]);
+        return ok;
+      },
+      setupClaude: async (
+        _environment: unknown,
+        _spawn: unknown,
+        options: unknown
+      ) => {
+        calls.push(["claude", options]);
+        return ok;
+      },
+      collectDoctor: async (_environment: unknown, deps: unknown) => {
+        calls.push(["doctor", deps]);
+        return {
+          ok: true,
+          summary: "ok",
+          generatedAt: "2026-10-20T00:00:00Z",
+          checks: []
+        };
+      },
+      resolvePaths: () => resolveKoedServerPaths({ KOED_HOME: home })
+    } as unknown as Parameters<typeof runKoedServerCli>[1];
+    for (const args of [
+      ["start", "--daemon", "--json"],
+      ["start"],
+      ["restart", "--json"],
+      ["stop", "--json"],
+      ["setup", "core", "--json"],
+      ["setup", "claude", "--json"],
+      ["doctor", "--json"]
+    ])
+      await runKoedServerCli(args, dependencies);
+    expect(calls).toEqual([
+      ["daemon", supervisorInvocation],
+      ["start", { desktopRuntimeCapability: capability }],
+      [
+        "restart",
+        { desktopRuntimeCapability: capability, ...supervisorInvocation }
+      ],
+      ["stop", { desktopRuntimeCapability: capability }],
+      ["core", { desktopRuntimeCapability: capability }],
+      ["claude", { desktopRuntimeCapability: capability }],
+      ["doctor", { desktopRuntimeCapability: capability }]
+    ]);
+    await expect(
+      runKoedServerCli(["components", "status", "--json"], {
+        ...dependencies,
+        stderr: writer().stream
+      })
+    ).resolves.toBe(1);
+    rmSync(home, { recursive: true, force: true });
+  });
+
   it("prints stop --json", async () => {
     const stdout = writer();
 

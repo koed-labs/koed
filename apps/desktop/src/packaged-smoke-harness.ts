@@ -1,7 +1,9 @@
 import type { EventEmitter } from "node:events";
 
 const commands = new Set([
+  "start",
   "start_daemon",
+  "lifecycle",
   "status",
   "stop",
   "runtime_status",

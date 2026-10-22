@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { verifyHeadlessLifecycle } from "./headless-lifecycle.mjs";
 import {
   PINNED_PRIVACY_MODEL_FILES,
   PINNED_PRIVACY_MODEL_ID,
@@ -32,7 +33,7 @@ const supportedFlags = new Set([
   "--privacy-transformers-cache",
   "--out-dir"
 ]);
-const switches = new Set(["--team"]);
+const switches = new Set(["--team", "--install-models"]);
 for (let i = 2; i < process.argv.length; ) {
   if (switches.has(process.argv[i])) {
     flags.set(process.argv[i], "true");
@@ -44,11 +45,16 @@ for (let i = 2; i < process.argv.length; ) {
   flags.set(process.argv[i], process.argv[i + 1]);
   i += 2;
 }
-for (const flag of [
-  "--postgres-bin-dir",
-  "--llama-server-bin",
-  "--embedding-model"
-]) {
+const requiredInputs = ["--postgres-bin-dir", "--llama-server-bin"];
+if (!flags.has("--install-models")) requiredInputs.push("--embedding-model");
+if (
+  flags.has("--install-models") &&
+  (flags.has("--embedding-model") || flags.has("--privacy-transformers-cache"))
+)
+  throw new Error(
+    "Use --install-models or preinstalled model inputs, not both."
+  );
+for (const flag of requiredInputs) {
   if (!flags.get(flag) || !existsSync(resolve(flags.get(flag))))
     throw new Error(`Provide existing ${flag}`);
 }
@@ -61,6 +67,7 @@ mkdirSync(scratch, { recursive: true });
 scratch = realpathSync(scratch);
 if (
   flags.has("--team") &&
+  !flags.has("--install-models") &&
   (!flags.has("--privacy-transformers-cache") ||
     !existsSync(resolve(flags.get("--privacy-transformers-cache"))))
 ) {
@@ -68,7 +75,7 @@ if (
     "Team smoke requires --privacy-transformers-cache with the pinned model files."
   );
 }
-const run = (name, args, options = {}) => {
+const run = (name, args, options = {}, allowNonzeroExit = false) => {
   const result = spawnSync(name, args, {
     cwd: repoRoot,
     encoding: "utf8",
@@ -76,7 +83,7 @@ const run = (name, args, options = {}) => {
     ...options
   });
   if (result.error) throw result.error;
-  if (result.status !== 0)
+  if (result.status !== 0 && !allowNonzeroExit)
     throw new Error(
       `${name} ${args.join(" ")} failed (${result.status}): ${result.stderr}\n${result.stdout}`
     );
@@ -168,7 +175,7 @@ run(
 );
 const executable = resolve(prefix, "bin/koed");
 const home = resolve(scratch, "koed-home");
-if (flags.has("--team")) {
+if (flags.has("--team") && !flags.has("--install-models")) {
   const modelSource = resolve(flags.get("--privacy-transformers-cache"));
   cpSync(modelSource, resolve(home, "models/privacy/transformers-cache"), {
     recursive: true
@@ -204,7 +211,9 @@ const env = {
   KOED_AUTO_PORTS: "1",
   KOED_POSTGRES_BIN_DIR: resolve(flags.get("--postgres-bin-dir")),
   KOED_EMBEDDING_LLAMA_SERVER_BIN: resolve(flags.get("--llama-server-bin")),
-  KOED_EMBEDDING_MODEL_PATH: resolve(flags.get("--embedding-model")),
+  ...(flags.has("--embedding-model")
+    ? { KOED_EMBEDDING_MODEL_PATH: resolve(flags.get("--embedding-model")) }
+    : {}),
   KOED_EMBEDDING_ACCELERATION: "cpu",
   MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "false",
   MEMORY_CLAUDE_TRANSCRIPT_WATCHER_ENABLED: "false",
@@ -212,7 +221,10 @@ const env = {
   npm_config_offline: "true",
   npm_config_registry: "http://127.0.0.1:1"
 };
-const koed = (args) => run(executable, args, { cwd: outside, env });
+// Doctor's overall exit includes optional AI Client diagnostics. Gate the same
+// explicit core checks below rather than promoting diagnostics into requirements.
+const koed = (args) =>
+  run(executable, args, { cwd: outside, env }, args[0] === "doctor");
 const manifest = JSON.parse(
   readFileSync(
     resolve(
@@ -300,10 +312,17 @@ assert.equal(installed.components.privacy, "active");
 // verifier correctly rejects a world-readable home, so normalize only this
 // disposable test home before starting services.
 chmodSync(home, 0o700);
-let healthy = false;
-try {
-  const started = JSON.parse(koed(["start", "--daemon", "--json"]));
-  assert.equal(started.ok, true);
+if (flags.has("--install-models")) {
+  for (const kind of flags.has("--team")
+    ? ["embedding", "privacy"]
+    : ["embedding"])
+    writeFileSync(
+      resolve(scratch, `model-install-${kind}.json`),
+      koed(["models", "install", "--kind", kind, "--json"])
+    );
+}
+const runtimeStatePath = resolve(home, "run/koed-server.json");
+const waitForHealthy = async () => {
   const deadline = Date.now() + 240_000;
   while (Date.now() < deadline) {
     const result = spawnSync(executable, ["status", "--startup", "--json"], {
@@ -314,10 +333,8 @@ try {
     });
     if (result.status === 0) {
       const status = JSON.parse(result.stdout);
-      if (status.ok === true && status.state === "healthy") {
-        healthy = true;
-        break;
-      }
+      if (status.ok === true && status.state === "healthy")
+        return JSON.parse(readFileSync(runtimeStatePath, "utf8"));
     }
     const supervisorLog = resolve(home, "logs/supervisor.log");
     if (
@@ -332,54 +349,56 @@ try {
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 2000));
   }
-  assert.ok(
-    healthy,
+  assert.fail(
     `Runtime did not become ready; inspect ${home}/logs/supervisor.log`
   );
-  const doctorResult = spawnSync(executable, ["doctor", "--json"], {
-    cwd: outside,
-    env,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024
-  });
-  if (doctorResult.error) throw doctorResult.error;
-  const doctor = JSON.parse(doctorResult.stdout);
-  for (const id of [
-    "api",
-    "database",
-    "workerQueues",
-    "embeddingService",
-    "privacyService",
-    "localAiRuntime",
-    "apiToken",
-    "mcpServer",
-    "deviceIdentity"
-  ])
-    assert.equal(
-      doctor.checks.find((check) => check.id === id)?.state,
-      "healthy",
-      `doctor ${id}`
+};
+const waitForStopped = async (pid) => {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    let running = true;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+      running = false;
+    }
+    if (!running && !existsSync(runtimeStatePath)) return true;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+  }
+  return false;
+};
+const cycles = await verifyHeadlessLifecycle({
+  command: koed,
+  waitForHealthy,
+  waitForStopped,
+  recordDoctor(phase, doctor) {
+    writeFileSync(
+      resolve(scratch, `doctor-${phase}.json`),
+      `${JSON.stringify(doctor, null, 2)}\n`
     );
-  writeFileSync(
-    resolve(scratch, "doctor.json"),
-    `${JSON.stringify(doctor, null, 2)}\n`
-  );
-  const result = {
-    ok: true,
-    scope: `Node 24 / Base and Privacy installation / ${flags.has("--team") ? "Team" : "Personal"} startup`,
-    runtime: process.execPath,
-    testKeyId: keyId,
-    productionPublicationEnabled: false,
-    scratch,
-    nativeStartup: true,
-    doctor: true,
-    productionTestKeyRejected: true
-  };
-  writeFileSync(
-    resolve(scratch, "result.json"),
-    `${JSON.stringify(result, null, 2)}\n`
-  );
-  console.log(JSON.stringify(result, null, 2));
-} finally {
-  koed(["stop", "--json"]);
-}
+  }
+});
+const result = {
+  ok: true,
+  scope: `Node 24 / Base and Privacy installation / ${flags.has("--team") ? "Team" : "Personal"} startup and restart`,
+  platform: process.platform,
+  architecture: process.arch,
+  nodeVersion: process.version,
+  runtime: process.execPath,
+  testKeyId: keyId,
+  productionPublicationEnabled: false,
+  freshModelInstall: flags.has("--install-models"),
+  scratch,
+  nativeStartup: true,
+  doctor: true,
+  restart: true,
+  shutdown: true,
+  supervisors: cycles,
+  productionTestKeyRejected: true
+};
+writeFileSync(
+  resolve(scratch, "result.json"),
+  `${JSON.stringify(result, null, 2)}\n`
+);
+console.log(JSON.stringify(result, null, 2));

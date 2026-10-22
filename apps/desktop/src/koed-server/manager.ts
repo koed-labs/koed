@@ -1,6 +1,12 @@
 import { createPrivacyInstallBridge } from "./privacy-install.js";
 import {
+  cachedProcessIdentity,
+  createLifecycleObserver,
+  type LifecycleObserver
+} from "./lifecycle-observer.js";
+import {
   connectSupervisor,
+  DesktopSupervisorStartupError,
   requestSupervisor,
   type PrivateSupervisorSession
 } from "./private-supervisor.js";
@@ -12,7 +18,10 @@ import {
 import {
   deviceRequestCommand,
   exchangeDeviceRequest,
-  parseDeviceRequestLink
+  observeRuntimeLifecycle,
+  parseDeviceRequestLink,
+  resolveProcessIdentity,
+  type RuntimeLifecycleObservation
 } from "@koed-labs/server";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import { localPathDescendant, normalizedLocalPath } from "../local-path.js";
@@ -250,6 +259,7 @@ export interface KoedServerManagerOptions {
   confirmSourceControlMutation?: (input: {
     operation: string;
   }) => Promise<boolean>;
+  observeLifecycle?: () => RuntimeLifecycleObservation;
 }
 
 export interface KoedServerManager {
@@ -269,6 +279,9 @@ export interface KoedServerManager {
   ) => Promise<void>;
   resume: () => Promise<unknown>;
   stop: () => Promise<unknown>;
+  /** Desktop quit: stops only what this Desktop started; adopted instances keep running. */
+  shutdown: () => Promise<unknown>;
+  lifecycle: LifecycleObserver;
   privacyInstall: PrivacyInstallBridge;
 }
 
@@ -1627,8 +1640,61 @@ export const createKoedServerManager = ({
   startPairingServer = startPersonalDevicePairingServer,
   personalDevicePairingStore,
   managedConversationDraftStore,
-  confirmSourceControlMutation
+  confirmSourceControlMutation,
+  observeLifecycle
 }: KoedServerManagerOptions): KoedServerManager => {
+  const lifecyclePaths = resolveKoedServerPaths(environment);
+  const cachedPid = cachedProcessIdentity({
+    resolve: resolveProcessIdentity,
+    isAlive: (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  });
+  const lifecycle = createLifecycleObserver({
+    observe:
+      observeLifecycle ??
+      (() =>
+        observeRuntimeLifecycle(lifecyclePaths, {
+          resolveProcessIdentity: cachedPid
+        }))
+  });
+  // Bumped when this Desktop or an external CLI stops the instance, so an
+  // older in-flight start or resume cannot revive it afterwards.
+  let stopGeneration = 0;
+  let explicitStopGeneration = 0;
+  const startupFailureResults = new WeakSet<object>();
+  const stoppedStartResult = () => ({
+    ok: false as const,
+    state: "stopped" as const,
+    message: "Koed was stopped while this start was pending."
+  });
+  const supervisorStartupFailureResult = (error: string) => {
+    const result = {
+      ok: false as const,
+      state: "needs_attention" as const,
+      error
+    };
+    startupFailureResults.add(result);
+    return result;
+  };
+  const isSupervisorStartupFailureResult = (
+    result: unknown
+  ): result is object =>
+    typeof result === "object" &&
+    result !== null &&
+    startupFailureResults.has(result);
+  lifecycle.subscribe((next) => {
+    if (next.state === "stopped") stopGeneration += 1;
+  });
+  const captureStartGeneration = () => {
+    lifecycle.refresh();
+    return stopGeneration;
+  };
   let serverProcess: ChildProcess | null = null;
   let desktopSupervisorProcess: ChildProcess | null = null;
   let desktopSupervisorNonce: string | null = null;
@@ -1989,35 +2055,81 @@ export const createKoedServerManager = ({
           statusCommandTimeoutMs
         );
 
+  const statusLifecycle = (observation: RuntimeLifecycleObservation) => ({
+    state: observation.state,
+    message: observation.message,
+    epoch: observation.epoch,
+    ...(observation.pid ? { pid: observation.pid } : {})
+  });
+  // A verified installation that is not running is explicitly Stopped. Fresh
+  // installs keep the normal setup flow instead.
+  const stoppedStatusIfVerified = (
+    observation: RuntimeLifecycleObservation
+  ): unknown | null =>
+    observation.state === "stopped" &&
+    existsSync(
+      resolve(resolveKoedHome(environment), "run", "last-verification.json")
+    )
+      ? {
+          ...diagnosticStatus({
+            state: "needs_attention",
+            message: observation.message
+          }),
+          lifecycle: statusLifecycle(observation)
+        }
+      : null;
+
   const statusWithEnrollmentReconciliation = async (): Promise<unknown> => {
-    const [statusResult, packageStatus] = await Promise.all([
-      runDesktopStatus(),
-      runPackageStatusJson() as Promise<ServerPackageStatusPayload | null>
-    ]);
-    const current = isRenderableKoedServerStatus(statusResult)
-      ? statusResult
-      : diagnosticStatus({
-          state: "needs_attention",
-          message: "Koed status could not be read."
-        });
-    scheduleEnrollmentReconciliation(current);
-    return withPackageComponent(current, packageStatus);
+    for (let attempt = 0; ; attempt += 1) {
+      const before = lifecycle.refresh();
+      const stoppedBefore = stoppedStatusIfVerified(before);
+      if (stoppedBefore) return stoppedBefore;
+      const [statusResult, packageStatus] = await Promise.all([
+        runDesktopStatus(),
+        runPackageStatusJson() as Promise<ServerPackageStatusPayload | null>
+      ]);
+      const after = lifecycle.refresh();
+      // A different supervisor epoch invalidates a response collected earlier.
+      if (after.epoch !== before.epoch && attempt === 0) continue;
+      const stoppedAfter = stoppedStatusIfVerified(after);
+      if (stoppedAfter) return stoppedAfter;
+      const current = isRenderableKoedServerStatus(statusResult)
+        ? statusResult
+        : diagnosticStatus({
+            state: "needs_attention",
+            message: "Koed status could not be read."
+          });
+      scheduleEnrollmentReconciliation(current);
+      return {
+        ...(withPackageComponent(current, packageStatus) as object),
+        lifecycle: statusLifecycle(after)
+      };
+    }
   };
 
-  const pollUntilReady = async (attemptLimit = 90) => {
+  const pollUntilReady = async (
+    attemptLimit = 90,
+    expectedGeneration?: number
+  ) => {
+    const cancelled = () =>
+      expectedGeneration !== undefined && expectedGeneration !== stopGeneration;
     let latest: unknown = null;
     for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
+      if (cancelled()) return stoppedStartResult();
       const result = await runDesktopStatus(true);
+      if (cancelled()) return stoppedStartResult();
       latest = isRenderableKoedServerStartupStatus(result)
         ? result
         : diagnosticStartupStatus("Koed startup status could not be read.");
       if (setupStartupReady(latest)) {
         retainedPersonalApiOrigin = localPersonalMemoryOrigin(latest);
         await provisionLocalAppCredential();
+        if (cancelled()) return stoppedStartResult();
         return latest;
       }
       await sleep(1_000);
     }
+    if (cancelled()) return stoppedStartResult();
     return (
       latest ?? {
         ok: false,
@@ -4851,7 +4963,37 @@ export const createKoedServerManager = ({
         : statusCommandTimeoutMs
     );
   };
-  const requestDesktopStatusRpcWithStoppedAuthority = async (
+  type ManagedLifecycle = RuntimeLifecycleObservation & { owned: boolean };
+  // Ownership comes from the live pin checked by the verified management
+  // session; a healthy API alone never proves a supervisor is ours.
+  const inspectManagedLifecycle = (
+    session: PrivateSupervisorSession
+  ): Promise<ManagedLifecycle> =>
+    requestSupervisor<ManagedLifecycle>(
+      session,
+      "status",
+      "lifecycle",
+      { startup: false },
+      statusCommandTimeoutMs
+    );
+  // Temporary authority startup and runtime start share the generation lock.
+  let lifecycleOperationQueue = Promise.resolve();
+  const withLifecycleOperation = async <T>(
+    operation: () => Promise<T>
+  ): Promise<T> => {
+    const previous = lifecycleOperationQueue;
+    let release!: () => void;
+    lifecycleOperationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+  const requestDesktopStatusRpcWithStoppedAuthorityUnlocked = async (
     action: "doctor" | "setup-core",
     startup = false,
     timeoutMs = action === "setup-core" ? 330_000 : 45_000
@@ -4866,14 +5008,8 @@ export const createKoedServerManager = ({
 
     const session = await openStoppedPrivacySession();
     try {
-      const current = await requestSupervisor(
-        session,
-        "status",
-        "status",
-        { startup: true },
-        statusCommandTimeoutMs
-      );
-      if (hasHealthyApi(current))
+      const live = await inspectManagedLifecycle(session);
+      if (live.state !== "stopped" && !live.owned)
         return {
           ok: false,
           state: "needs_attention",
@@ -4891,6 +5027,34 @@ export const createKoedServerManager = ({
       session.child.kill("SIGTERM");
     }
   };
+  const requestDesktopStatusRpcWithStoppedAuthority = (
+    action: "doctor" | "setup-core",
+    startup = false,
+    timeoutMs = action === "setup-core" ? 330_000 : 45_000
+  ): Promise<unknown> => {
+    if (desktopSupervisorProcess && desktopSupervisorNonce)
+      return requestDesktopStatusRpc(action, startup);
+    return withLifecycleOperation(() =>
+      requestDesktopStatusRpcWithStoppedAuthorityUnlocked(
+        action,
+        startup,
+        timeoutMs
+      )
+    );
+  };
+  const drainSupervisorStderr = async (child: ChildProcess) => {
+    const stream = child.stderr;
+    if (!stream || stream.readableEnded || stream.destroyed) return;
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        stream.off("close", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, 250);
+      stream.once("close", finish);
+    });
+  };
   const openStoppedPrivacySession = async () => {
     if (!createSupervisorInvocation || !packagedResourcesPath)
       throw new Error(
@@ -4903,15 +5067,30 @@ export const createKoedServerManager = ({
       stdio: ["ignore", "ignore", "pipe", "ipc"],
       detached: false
     });
-    return connectSupervisor(
-      child,
-      packagedResourcesPath,
-      "privacy-management",
-      30_000
-    );
+    let stderr = "";
+    const captureStderr = (chunk: Buffer | string) => {
+      stderr = `${stderr}${String(chunk)}`.slice(-4_000);
+    };
+    child.stderr?.on("data", captureStderr);
+    try {
+      return await connectSupervisor(
+        child,
+        packagedResourcesPath,
+        "privacy-management",
+        30_000
+      );
+    } catch (error) {
+      await drainSupervisorStderr(child);
+      if (error instanceof Error && stderr.trim()) {
+        error.message = `${error.message}\n${stderr.trim()}`;
+      }
+      throw error;
+    } finally {
+      child.stderr?.off("data", captureStderr);
+    }
   };
   let stoppedPrivacyOperation: PrivateSupervisorSession | null = null;
-  const requestPrivacyRpc = async <T>(
+  const requestPrivacyRpcUnlocked = async <T>(
     action: string,
     args: Record<string, unknown> = {},
     onProgress?: (value: Record<string, unknown>) => void
@@ -4956,41 +5135,99 @@ export const createKoedServerManager = ({
       session.child.kill("SIGTERM");
     }
   };
+  const requestPrivacyRpc = <T>(
+    action: string,
+    args: Record<string, unknown> = {},
+    onProgress?: (value: Record<string, unknown>) => void
+  ): Promise<T> => {
+    if (
+      action === "cancel" ||
+      (desktopSupervisorProcess && desktopSupervisorNonce)
+    )
+      return requestPrivacyRpcUnlocked<T>(action, args, onProgress);
+    return withLifecycleOperation(() =>
+      requestPrivacyRpcUnlocked<T>(action, args, onProgress)
+    );
+  };
 
-  const requestDaemonStart = async () => {
-    const current =
-      createSupervisorInvocation && !desktopSupervisorProcess
-        ? await (async () => {
-            const session = await openStoppedPrivacySession();
-            try {
-              return await requestSupervisor(
-                session,
-                "status",
-                "status",
-                { startup: true },
-                statusCommandTimeoutMs
-              );
-            } finally {
-              session.child.kill("SIGTERM");
-            }
-          })()
-        : await runDesktopStatus(true);
-    if (hasHealthyApi(current)) {
-      if (createSupervisorInvocation && !desktopSupervisorProcess) {
+  const adoptLiveInstance = async (
+    live: ManagedLifecycle,
+    generation: number
+  ) => {
+    const current = await runDesktopStatus(true);
+    if (generation !== stopGeneration) return stoppedStartResult();
+    const origin = hasHealthyApi(current)
+      ? localPersonalMemoryOrigin(current)
+      : null;
+    if (origin) {
+      retainedPersonalApiOrigin = origin;
+      await provisionLocalAppCredential();
+      if (generation !== stopGeneration) return stoppedStartResult();
+    }
+    return {
+      ok: true,
+      state: "starting",
+      message: "Koed server is already starting or running.",
+      adoptedPid: live.pid
+    };
+  };
+  // Returns the live Desktop-owned instance, a refusal, or null when stopped.
+  const inspectLiveInstance = async (): Promise<
+    | ManagedLifecycle
+    | { ok: false; state: "needs_attention"; error: string }
+    | null
+  > => {
+    const session = await openStoppedPrivacySession();
+    let live: ManagedLifecycle;
+    try {
+      live = await inspectManagedLifecycle(session);
+    } finally {
+      session.child.kill("SIGTERM");
+    }
+    if (live.state === "stopped") return null;
+    if (live.owned) return live;
+    return {
+      ok: false,
+      state: "needs_attention",
+      error:
+        live.owner === null || live.owner === undefined
+          ? "A Koed supervisor is still starting and its owner is not verified yet. Try again shortly."
+          : "A running Koed supervisor is not owned by this Desktop installation. Stop it before starting Desktop."
+    };
+  };
+
+  const requestDaemonStartUnlocked = async (
+    generation: number,
+    explicitStopAtStart: number
+  ) => {
+    if (createSupervisorInvocation && !desktopSupervisorProcess) {
+      let live: Awaited<ReturnType<typeof inspectLiveInstance>>;
+      try {
+        live = await inspectLiveInstance();
+      } catch (error) {
+        if (error instanceof DesktopSupervisorStartupError) {
+          return explicitStopAtStart === explicitStopGeneration
+            ? supervisorStartupFailureResult(error.message)
+            : stoppedStartResult();
+        }
+        throw error;
+      }
+      if (generation !== stopGeneration) return stoppedStartResult();
+      if (live) {
+        return "ok" in live ? live : adoptLiveInstance(live, generation);
+      }
+    } else {
+      const current = await runDesktopStatus(true);
+      if (generation !== stopGeneration) return stoppedStartResult();
+      if (hasHealthyApi(current)) {
+        retainedPersonalApiOrigin = localPersonalMemoryOrigin(current);
+        await provisionLocalAppCredential();
         return {
-          ok: false,
-          state: "needs_attention",
-          error:
-            "A running Koed supervisor is not owned by this Desktop manager. Stop it before starting Desktop."
+          ok: true,
+          state: "starting",
+          message: "Koed server is already starting or running."
         };
       }
-      retainedPersonalApiOrigin = localPersonalMemoryOrigin(current);
-      await provisionLocalAppCredential();
-      return {
-        ok: true,
-        state: "starting",
-        message: "Koed server is already starting or running."
-      };
     }
 
     if (
@@ -5012,6 +5249,7 @@ export const createKoedServerManager = ({
         };
       }
       const invocation = createSupervisorInvocation();
+      if (generation !== stopGeneration) return stoppedStartResult();
       const child = spawn(invocation.command, invocation.args, {
         cwd: repoRoot,
         env: invocation.env,
@@ -5025,6 +5263,7 @@ export const createKoedServerManager = ({
       });
       try {
         const session = await connectSupervisor(child, packagedResourcesPath);
+        if (generation !== stopGeneration) return stoppedStartResult();
         if (desktopSupervisorProcess !== child)
           throw new Error("Desktop supervisor exited during startup.");
         desktopSupervisorNonce = session.nonce;
@@ -5042,13 +5281,29 @@ export const createKoedServerManager = ({
         };
       } catch (error) {
         child.kill("SIGTERM");
+        const startupFailure = error instanceof DesktopSupervisorStartupError;
+        if (
+          generation !== stopGeneration &&
+          (!startupFailure || explicitStopAtStart !== explicitStopGeneration)
+        ) {
+          return stoppedStartResult();
+        }
         desktopSupervisorProcess = null;
         desktopSupervisorNonce = null;
-        return {
-          ok: false,
-          state: "needs_attention",
-          error: `${error instanceof Error ? error.message : String(error)}${supervisorStderr.trim() ? `\n${supervisorStderr.trim()}` : ""}`
-        };
+        // Losing a simultaneous start to a Desktop-owned supervisor is not a
+        // failure: reconnect to the single winner instead of reporting an error.
+        const winner = await inspectLiveInstance().catch(() => null);
+        if (explicitStopAtStart !== explicitStopGeneration) {
+          return stoppedStartResult();
+        }
+        if (generation !== stopGeneration && !startupFailure) {
+          return stoppedStartResult();
+        }
+        if (winner && !("ok" in winner))
+          return adoptLiveInstance(winner, generation);
+        const message = `${error instanceof Error ? error.message : String(error)}${supervisorStderr.trim() ? `\n${supervisorStderr.trim()}` : ""}`;
+        if (startupFailure) return supervisorStartupFailureResult(message);
+        return { ok: false, state: "needs_attention", error: message };
       }
     }
     if (!existsSync(cliPath)) {
@@ -5056,11 +5311,26 @@ export const createKoedServerManager = ({
     }
 
     const result = await runJson(["start", "--daemon"], 45_000);
-    return result;
+    return generation === stopGeneration ? result : stoppedStartResult();
   };
+  const requestDaemonStart = (
+    generation = captureStartGeneration(),
+    explicitStopAtStart = explicitStopGeneration
+  ) =>
+    withLifecycleOperation(() =>
+      requestDaemonStartUnlocked(generation, explicitStopAtStart)
+    );
 
   const start = async () => {
-    const result = await requestDaemonStart();
+    const explicitStopAtStart = explicitStopGeneration;
+    const generation = captureStartGeneration();
+    const result = await requestDaemonStart(generation, explicitStopAtStart);
+    if (generation !== stopGeneration) {
+      return isSupervisorStartupFailureResult(result) &&
+        explicitStopAtStart === explicitStopGeneration
+        ? result
+        : stoppedStartResult();
+    }
     if (
       typeof result === "object" &&
       result !== null &&
@@ -5068,9 +5338,10 @@ export const createKoedServerManager = ({
     ) {
       return result;
     }
-    const ready = await pollUntilReady();
+    const ready = await pollUntilReady(90, generation);
+    if (generation !== stopGeneration) return stoppedStartResult();
     await personalSyncStatusWithLanRelay().catch(() => undefined);
-    return ready;
+    return generation === stopGeneration ? ready : stoppedStartResult();
   };
 
   const resume = async () => {
@@ -5087,8 +5358,16 @@ export const createKoedServerManager = ({
         message: "Fresh Desktop setup has not been verified yet."
       };
     }
+    const explicitStopAtStart = explicitStopGeneration;
+    const generation = captureStartGeneration();
     try {
-      const result = await requestDaemonStart();
+      const result = await requestDaemonStart(generation, explicitStopAtStart);
+      if (generation !== stopGeneration) {
+        return isSupervisorStartupFailureResult(result) &&
+          explicitStopAtStart === explicitStopGeneration
+          ? result
+          : stoppedStartResult();
+      }
       if (
         typeof result === "object" &&
         result !== null &&
@@ -5096,9 +5375,10 @@ export const createKoedServerManager = ({
       ) {
         return result;
       }
-      const ready = await pollUntilReady(30);
+      const ready = await pollUntilReady(30, generation);
+      if (generation !== stopGeneration) return stoppedStartResult();
       await personalSyncStatusWithLanRelay().catch(() => undefined);
-      return ready;
+      return generation === stopGeneration ? ready : stoppedStartResult();
     } catch (error) {
       return {
         ok: false,
@@ -5410,7 +5690,7 @@ export const createKoedServerManager = ({
     runStage: runSetupStage
   });
 
-  const stop = async () => {
+  const closeDesktopServices = async () => {
     for (const connection of managedTerminalConnections.values()) {
       connection.intentionalClose = true;
       connection.socket.close(1001, "Koed stopping");
@@ -5424,6 +5704,12 @@ export const createKoedServerManager = ({
     } else if (environment.KOED_HOME?.trim()) {
       writePersonalDevicePeerEndpoint(environment, null);
     }
+  };
+
+  const stop = async () => {
+    stopGeneration += 1;
+    explicitStopGeneration += 1;
+    await closeDesktopServices();
     if (desktopSupervisorProcess && !desktopSupervisorProcess.killed) {
       const child = desktopSupervisorProcess;
       if (child.connected) child.send({ type: "koed.desktop.supervisor.stop" });
@@ -5461,6 +5747,24 @@ export const createKoedServerManager = ({
     if (serverProcess && !serverProcess.killed) serverProcess.kill("SIGTERM");
     serverProcess = null;
     return result;
+  };
+
+  // Packaged Desktop only owns the supervisor it spawned. An instance it
+  // adopted (for example one started by the installed CLI) outlives Desktop.
+  const shutdown = async () => {
+    stopGeneration += 1;
+    explicitStopGeneration += 1;
+    lifecycle.stop();
+    if (createSupervisorInvocation && !desktopSupervisorProcess) {
+      await closeDesktopServices();
+      return {
+        ok: true,
+        state: "detached",
+        message:
+          "Koed Desktop closed; the running Koed instance was left running."
+      };
+    }
+    return stop();
   };
 
   const hardwareAccelerationEnvironment = (): NodeJS.ProcessEnv => ({
@@ -5768,20 +6072,21 @@ export const createKoedServerManager = ({
 
   const activatePrivacyGeneration = async (
     generationId: string
-  ): Promise<void> => {
-    const session = await openStoppedPrivacySession();
-    try {
-      await requestSupervisor(
-        session,
-        "privacy",
-        "activate",
-        { generationId },
-        30_000
-      );
-    } finally {
-      session.child.kill("SIGTERM");
-    }
-  };
+  ): Promise<void> =>
+    withLifecycleOperation(async () => {
+      const session = await openStoppedPrivacySession();
+      try {
+        await requestSupervisor(
+          session,
+          "privacy",
+          "activate",
+          { generationId },
+          30_000
+        );
+      } finally {
+        session.child.kill("SIGTERM");
+      }
+    });
 
   return {
     personalMemory,
@@ -5796,6 +6101,8 @@ export const createKoedServerManager = ({
       runJson(["project", "discover", "--cwd", cwd], 30_000),
     subscribePersonalMemory,
     resume,
+    shutdown,
+    lifecycle,
     privacyInstall,
     handlers: {
       personal_sync_request_create: async () => {
@@ -6127,7 +6434,7 @@ export const createKoedServerManager = ({
         return await collaborationTransport.request(command, context);
       },
       start,
-      start_daemon: requestDaemonStart,
+      start_daemon: () => requestDaemonStart(),
       open_external: async (args) => {
         const url =
           typeof args?.url === "string" ? safeExternalUrl(args.url) : null;

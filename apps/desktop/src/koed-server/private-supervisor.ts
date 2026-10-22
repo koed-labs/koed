@@ -5,6 +5,14 @@ export interface PrivateSupervisorSession {
   child: ChildProcess;
   nonce: string;
 }
+
+export class DesktopSupervisorStartupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DesktopSupervisorStartupError";
+  }
+}
+
 const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -116,9 +124,26 @@ export async function connectSupervisor(
       reject(error);
     };
     const onExit = () =>
-      fail(new Error("Desktop supervisor exited before completing handshake."));
+      fail(
+        new DesktopSupervisorStartupError(
+          "Desktop supervisor exited before completing handshake."
+        )
+      );
     const onMessage = (value: unknown) => {
       const item = record(value);
+      if (
+        item?.type === "koed.desktop.supervisor.start-failed" &&
+        item.nonce === nonce &&
+        item.childPid === child.pid &&
+        typeof item.bundleDigest === "string" &&
+        /^[a-f0-9]{64}$/.test(item.bundleDigest) &&
+        item.mode === mode &&
+        typeof item.error === "string" &&
+        item.error.trim().length > 0
+      ) {
+        fail(new DesktopSupervisorStartupError(item.error.slice(0, 4_000)));
+        return;
+      }
       if (
         item?.type !== "koed.desktop.supervisor.ready" ||
         item.nonce !== nonce ||

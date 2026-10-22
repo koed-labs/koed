@@ -81,6 +81,14 @@ describe("private packaged smoke harness", () => {
       }
     ]);
   });
+  it("exposes only the shared start command and the lifecycle observation for shared-lifecycle acceptance", async () => {
+    const f = fixture();
+    f.attach();
+    f.request("start", "ui-start");
+    f.request("lifecycle", "view");
+    await tick();
+    expect(f.calls).toEqual(["start", "lifecycle"]);
+  });
   it("serializes manager lifecycle calls, correlates results, redacts credentials", async () => {
     const f = fixture();
     f.attach();

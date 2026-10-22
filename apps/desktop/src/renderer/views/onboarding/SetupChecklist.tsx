@@ -863,19 +863,26 @@ export function CompactHealthAffordance({
   const summary = compactHealthSummary(snapshot.status);
 
   if (summary.state === "healthy") return null;
+  const stopped = summary.state === "stopped";
   return (
     <button
       className="koed-health-affordance"
       data-state={summary.state}
-      onClick={onOpenSetup}
+      disabled={stopped && snapshot.busyCommand !== null}
+      onClick={() => {
+        if (stopped) void statusStore.run("start").catch(() => undefined);
+        else onOpenSetup();
+      }}
       type="button"
     >
-      {summary.state === "checking" || summary.state === "starting" ? (
+      {summary.state === "checking" ||
+      summary.state === "starting" ||
+      (stopped && snapshot.busyCommand === "start") ? (
         <Spinner aria-hidden="true" />
       ) : (
         <AlertTriangle aria-hidden="true" />
       )}
-      <span>{summary.label}</span>
+      <span>{stopped ? `${summary.label} — Start Koed` : summary.label}</span>
     </button>
   );
 }
