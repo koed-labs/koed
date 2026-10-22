@@ -173,6 +173,8 @@ export const assertMemoryAnswerTeamAuthorityWithClient = async (
     authority.version !== 1 ||
     authority.ownerUserId !== actor.userId ||
     !authority.recallBoundary ||
+    (actor.teamBoundaryId !== undefined &&
+      authority.recallBoundary.teamId !== actor.teamBoundaryId) ||
     !validBoundary(authority.recallBoundary) ||
     !Array.isArray(authority.grantFingerprints) ||
     authority.grantFingerprints.length > 128 ||

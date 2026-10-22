@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import cookie from "@fastify/cookie";
 import Fastify from "fastify";
+import { Window } from "happy-dom";
 import {
   createDbPool,
   createRemoteMcpOAuthRepository,
@@ -15,6 +16,7 @@ import { registerBrowserWriteCsrfProtection } from "../server/browser-write-csrf
 
 const databaseUrl = process.env.KOED_OAUTH_TEST_DATABASE_URL;
 const origin = "https://koed.example";
+const browserOrigin = "https://browser.koed.example";
 const issuer = new URL(origin);
 const resource = new URL("/mcp", issuer);
 const userId = randomUUID();
@@ -80,17 +82,27 @@ describe.skipIf(!databaseUrl)("Fastify remote MCP OAuth routes", () => {
       "utf8"
     );
     await pool.query(migration.replaceAll('"public".', `"${schema}".`));
+    await pool.query(
+      await readFile(
+        new URL(
+          "../../../../packages/db/drizzle/0046_external_agent_grants.sql",
+          import.meta.url
+        ),
+        "utf8"
+      )
+    );
     await app.register(cookie);
     registerBrowserWriteCsrfProtection(
       app,
-      new Set([origin, "https://other-allowed.example"])
+      new Set([origin, browserOrigin, "https://other-allowed.example"])
     );
     registerRemoteMcpOAuthRoutes(app, {
       oauth,
       issuerUrl: issuer,
       auth,
       workosAvailable: false,
-      publicOrigin: origin
+      publicOrigin: origin,
+      browserPublicUrl: browserOrigin
     });
     base = await app.listen({ host: "127.0.0.1", port: 0 });
     const registered = await fetch(`${base}/register`, {
@@ -133,6 +145,176 @@ describe.skipIf(!databaseUrl)("Fastify remote MCP OAuth routes", () => {
       "request"
     )!;
   };
+  const connections = async (id: string) => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/mcp/connections",
+      headers: { cookie: "cm_session=session-one" }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["referrer-policy"]).toBe("strict-origin");
+    const window = new Window();
+    window.document.write(response.body);
+    const form = Array.from(window.document.querySelectorAll("form")).find(
+      (form) =>
+        form.querySelector('input[name="id"]')?.getAttribute("value") === id
+    );
+    expect(form).toBeDefined();
+    const body = Object.fromEntries(
+      Array.from(form!.querySelectorAll("input")).map((input) => [
+        input.name,
+        input.value
+      ])
+    );
+    const csrf = response.cookies.find(
+      (cookie) => cookie.name === "koed_mcp_connections"
+    )!;
+    window.close();
+    return {
+      body,
+      cookie: `cm_session=session-one; ${csrf.name}=${csrf.value}`
+    };
+  };
+  const submitConnection = (
+    form: Awaited<ReturnType<typeof connections>>,
+    overrides: {
+      body?: Record<string, string>;
+      cookie?: string;
+      origin?: string;
+    } = {}
+  ) =>
+    app.inject({
+      method: "POST",
+      url: "/auth/mcp/connections",
+      headers: {
+        cookie: overrides.cookie ?? form.cookie,
+        origin: overrides.origin ?? origin,
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      payload: new URLSearchParams({
+        ...form.body,
+        ...overrides.body
+      }).toString()
+    });
+
+  it("offers owner-only, session-bound connection withdrawal and explicit reapproval", async () => {
+    const store = createRemoteMcpOAuthRepository(pool);
+    const input = {
+      issuer: "https://auth.example.test",
+      providerEnvironment: "staging",
+      registrationId: `agent_reg_${randomUUID()}`,
+      providerUserId: "user_test",
+      providerOrganizationId: "org_test",
+      userId,
+      resource: resource.href,
+      teamBoundaryId: null,
+      scopes: ["koed:memory:read"],
+      now: new Date(),
+      expiresAt: new Date(Date.now() + 30 * 86400_000)
+    };
+    const grant = (await store.resolveExternalGrant(input))!;
+    const form = await connections(grant.id);
+    expect(form.body.action).toBe("disconnect");
+    const forgedBodies: Record<string, string>[] = [
+      { id: randomUUID() },
+      { action: "approve" },
+      { version: "123" }
+    ];
+    for (const body of forgedBodies)
+      expect((await submitConnection(form, { body })).statusCode).toBe(403);
+    expect(
+      (
+        await submitConnection(form, {
+          cookie: form.cookie.replace("session-one", "session-two")
+        })
+      ).statusCode
+    ).toBe(403);
+    expect(
+      (
+        await submitConnection(form, {
+          origin: "https://other-allowed.example"
+        })
+      ).statusCode
+    ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/auth/mcp/connections",
+          headers: { authorization: "Bearer arbitrary" }
+        })
+      ).body
+    ).toContain("Sign in to Koed");
+    expect(
+      (await submitConnection(form, { origin: browserOrigin })).statusCode
+    ).toBe(302);
+    expect(await store.resolveExternalGrant(input)).toBeNull();
+    expect((await submitConnection(form)).statusCode).toBe(409);
+    const approval = await connections(grant.id);
+    expect(approval.body.action).toBe("approve");
+    expect((await submitConnection(approval)).statusCode).toBe(302);
+    expect(await store.resolveExternalGrant(input)).toMatchObject({
+      id: grant.id
+    });
+    const audit = await pool.query(
+      "select action from audit_events where target_id=$1",
+      [grant.id]
+    );
+    expect(audit.rows.map((row) => row.action)).toEqual([
+      "remote_mcp.external.granted",
+      "remote_mcp.connection.disconnected",
+      "remote_mcp.connection.reapproved"
+    ]);
+  });
+
+  it("expires browser action proofs and escapes untrusted connection names", async () => {
+    const store = createRemoteMcpOAuthRepository(pool);
+    const external = (await store.resolveExternalGrant({
+      issuer: "https://auth.example.test",
+      providerEnvironment: "staging",
+      registrationId: `agent_reg_${randomUUID()}`,
+      providerUserId: "user_test",
+      providerOrganizationId: "org_test",
+      userId,
+      resource: resource.href,
+      teamBoundaryId: null,
+      scopes: ["koed:memory:read"],
+      now: new Date(),
+      expiresAt: new Date(Date.now() + 86400_000)
+    }))!;
+    const form = await connections(external.id);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 601_000);
+      expect((await submitConnection(form)).statusCode).toBe(403);
+    } finally {
+      vi.useRealTimers();
+    }
+    const untrustedClient = randomUUID();
+    await store.registerClient(untrustedClient, {
+      client_name: '<script>alert("x")</script>'
+    });
+    await pool.query(
+      "insert into remote_mcp_oauth_grants(id,user_id,client_id,resource,scopes,expires_at) values($1,$2,$3,$4,$5,now()+interval '1 day')",
+      [
+        randomUUID(),
+        userId,
+        untrustedClient,
+        resource.href,
+        ["koed:memory:read"]
+      ]
+    );
+    const view = await app.inject({
+      method: "GET",
+      url: "/auth/mcp/connections",
+      headers: { cookie: "cm_session=session-one" }
+    });
+    expect(view.body).toContain("&lt;script&gt;");
+    expect(view.body).not.toContain('<script>alert("x")</script>');
+    expect(view.headers["content-security-policy"]).toContain(
+      "frame-ancestors 'none'"
+    );
+  });
   it("runs bounded cleanup without overlap and stops its timer on close", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     let finish!: () => void;
@@ -233,7 +415,7 @@ describe.skipIf(!databaseUrl)("Fastify remote MCP OAuth routes", () => {
     expect(view.response.headers.get("content-security-policy")).toContain(
       "frame-ancestors 'none'"
     );
-    expect(view.response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(view.response.headers.get("referrer-policy")).toBe("strict-origin");
     expect(view.response.headers.get("cache-control")).toBe("no-store");
     expect(view.html).toContain(
       "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;"

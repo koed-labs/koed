@@ -59,6 +59,21 @@ Scopes do not create Team Membership, Workspace Access, Share Grants, or
 administrative authority. Every operation revalidates current backend access;
 MCP caller metadata and local project paths do not confer authority.
 
+WorkOS AuthKit deployments can also enable [Agent Registration](workos-agent-registration.md).
+It adds a credential issuer, not another memory pipeline. Personal and Team
+requests still use these APIs, the durable answer queue and the User-owned Local
+AI Runtime. WorkOS Team credentials are additionally confined to the Koed Team
+mapped to their WorkOS organisation. Existing Koed OAuth continues unchanged.
+
+Users can manage native OAuth and WorkOS connections at
+`/auth/mcp/connections` using their normal browser session. Disconnect withdraws
+Koed access independently of provider token validity. WorkOS grants have a
+30-day absolute authorisation lifetime, with explicit User reauthorisation
+after expiry or disconnect. Registration bindings remain stored through normal
+cleanup so replacement credentials cannot recreate withdrawn consent. See
+[WorkOS Agent Registration](workos-agent-registration.md) for the distinction
+between Koed authorisation and WorkOS credential revocation.
+
 The pinned OAuth SDK limits public client registration to 20 requests per hour
 and authorization requests to 100 per 15 minutes, per socket-peer IP. Forwarded
 headers do not override that identity. Behind a proxy, these limits may be shared

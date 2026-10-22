@@ -81,14 +81,22 @@ export class RedisRateLimitStore implements RateLimitStore {
 
   async increment(key: string, windowMs: number) {
     const redisKey = `koed:rate-limit:${key}`;
-    const count = await this.redis.incr(redisKey);
-    if (count === 1) {
-      await this.redis.pexpire(redisKey, windowMs);
-    }
-    const ttl = await this.redis.pttl(redisKey);
+    // Increment and expiry must commit together, including repair of orphaned counters.
+    const [count, ttl] = (await this.redis.eval(
+      `local count = redis.call('INCR', KEYS[1])
+       local ttl = redis.call('PTTL', KEYS[1])
+       if ttl < 0 then
+         redis.call('PEXPIRE', KEYS[1], ARGV[1])
+         ttl = tonumber(ARGV[1])
+       end
+       return {count, ttl}`,
+      1,
+      redisKey,
+      windowMs
+    )) as [number, number];
     return {
       count,
-      resetAt: Date.now() + (ttl > 0 ? ttl : windowMs)
+      resetAt: Date.now() + Math.max(1, ttl)
     };
   }
 
