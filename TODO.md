@@ -2,25 +2,18 @@
 
 ## Shared Project first-share lifecycle recovery
 
-- HQ703 must preserve the reviewed Project invitation identity through Project
-  deletion before implementing recipient admission. The current nullable handoff
-  foreign key uses `ON DELETE SET NULL`; an originally Project-bound invitation
-  must never become an ordinary Team invitation because its Project disappeared.
-  Retain the exact original target in the admission protocol and reject deleted
-  or changed targets. Cover deletion concurrent with acceptance in HQ713.
-- HQ704 must reconcile a first-share attempt when the Team Project was created
-  but its Personal confirmation never committed, then Team authority was lost or
-  the Team Project was deleted. The pending Personal attempt currently keeps its
-  edit fence in this case. HQ712 handles a lost reply after Personal confirmation
-  committed; it does not cover a missing Personal link.
-- Use an exact retained lifecycle receipt bound to the owner, Team, Workspace,
-  attempt key and copied manifest before releasing that fence. Preserve the
-  owner's original Personal data. Do not infer completion from an offline reply,
-  a missing Project or a 404, and do not grant historical Team content access after
-  access revocation. Active or unproven outcomes must remain pending.
-- HQ713 must cover deletion and access loss before and after Personal confirmation,
-  including restart, uncertain replies, exact-target mismatch and delayed create
-  replay. Resolve this lifecycle integration before final HQ cutover.
+- Persist accepted-invitation Personal Project setup recovery across a Desktop
+  restart. The current Now recovery action survives only while its view remains
+  mounted. The Team acceptance and retry-safe Personal join protocol are durable,
+  but restarting between them can hide the accepted Project until setup is
+  invoked again. Bind any recovery intent to the exact owner, Team backend,
+  principal and Project, and revalidate current authority before retrying.
+- Before adding physical Project purge, preserve each invitation's original
+  Project target or terminate pending invitations before removing their target
+  records. Soft deletion already retains that identity and rejects admission,
+  including concurrent acceptance. The nullable handoff foreign key still uses
+  `ON DELETE SET NULL`; a future purge must not turn a Project invitation into
+  an ordinary Team invitation.
 
 ## Asynchronous Memory Answer adapters
 

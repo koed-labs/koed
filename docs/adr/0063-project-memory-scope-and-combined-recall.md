@@ -115,6 +115,50 @@ Personal Project-to-Workspace Project link and not Team authority.
   the owner's raw private journal and values removed by the policy remain
   unavailable. Snapshot source access and unrelated grants remain unchanged.
 
+### Verified Curated delivery between backends
+
+A separate Team backend receives a derived Curated artifact, never copies of the
+Personal canonical assertion tables. The trusted Personal service checks complete
+exact-Session provenance, current Project scope and link, classification versions,
+expiry, and the current capture frontier in one canonical snapshot. Its verified
+host key signs the derived material. Fresh browser-approved source enrollment pins
+that public key and shows its fingerprint; credential redemption or rotation
+cannot replace the approved pin.
+
+Before source-owner approval, the Personal service sends only the commitment hash
+and verification metadata. The exact sharing preview and source-owner Step-up bind
+that commitment. After approval, durable source work uploads the matching signed
+artifact. Initial delivery binds the accepted Pending Share to the locally
+retained reviewed preview; activation creates the Team consent record after
+source delivery. Team independently checks the enrolled key, source principal and
+deployment, exact Session, synced origin mappings and frontier, approved sharing
+operation, Workspace policy and lifecycle. Continuous delivery also checks the
+current Team consent. The signed Personal canonical digest and generic
+sync transport hash have different domains; they are not interchangeable.
+
+The Team and Workspace administrator may separately enable Curated sharing through
+an explicit policy Step-up. Restrictive defaults remain in place. This opt-in does
+not replace any source owner's separate Curated consent, revive a revoked grant,
+or expand an existing grant's approved fidelity.
+
+A signed empty result records successful delivery without publishing a Curated
+representation. Snapshot consent remains bound to its approved set. Continuous
+consent uses a separate signed, monotonic generation and durable Personal work;
+canonical mutations enqueue work in their own transaction, including changes that
+do not advance the capture cursor. Expiry also schedules durable work. Failed or
+uncertain delivery retries with a newer generation of the complete current set;
+changed content never reuses an earlier generation. Team rejects older generations
+and accepts an identical replay only after verifying its immutable hash.
+
+Scope withdrawal fences the old classification before the Personal commit, even
+when the first approved Curated upload has not arrived. Freeze, revocation,
+withdrawal and expiry remain authoritative during later publication and recall.
+While a signed replacement awaits publication, unchanged published assertions
+remain available only when their complete canonical revision hashes still match.
+Changed, removed or expired assertions lose eligibility immediately. Publication
+atomically replaces the old representation; a freeze before that commit retains
+only the eligible published set and excludes the pending additions.
+
 ### Combined Personal and Team recall
 
 - For a Desktop-launched Conversation in a linked Project, the trusted Local AI

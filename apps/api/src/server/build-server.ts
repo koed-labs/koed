@@ -44,6 +44,9 @@ import {
   createChatForgetRepository,
   createProjectSourceRepository,
   createProjectSourceRemovalRepository,
+  curatedSharedSourceCommitment,
+  loadPersonalCuratedSharedSourceMaterial,
+  registerContinuousCuratedGrantSourceWork,
   databaseErrorCode,
   runDbMigrations,
   type CollaborationRealtimeMaterializationRepository,
@@ -124,6 +127,7 @@ import {
   createCollaborationSharedMemoryControl,
   type CollaborationSharedMemoryControl
 } from "../local-edge/collaboration-shared-memory-control.js";
+import { createCuratedGrantSourceWorker } from "../local-edge/curated-grant-source-worker.js";
 import { createCollaborationRealtimeBroker } from "../local-edge/collaboration-realtime-broker.js";
 import {
   canReceiveGraphStreamPayload,
@@ -147,11 +151,16 @@ import {
 } from "../memory/index.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
+  createDeviceBoundSourceSigner,
+  curatedSourceAttestationFingerprint,
+  curatedSourceCommitmentHash,
+  signCuratedSourceMaterial,
   createNotificationDrainController,
   crossIdentitySyncDeterministicUuid,
   createOwnerPrivateReplicaEnvelopeEncryptionProviderFromEnvironment,
   createTeamMemoryEnvelopeEncryptionProviderFromEnvironment,
   fetchBoundedJsonObject,
+  pendingShareSchema,
   derivePrivacyFingerprintKey,
   inspectDeviceIdentityAtKoedHome,
   reconcileDeviceIdentityDeployment,
@@ -352,6 +361,14 @@ const createDefaultResolveUpstreamAuthorization =
 
 export const buildServer = async (options: BuildServerOptions = {}) => {
   const config = resolveApiServerConfig();
+  const serverEnvironment = { ...process.env };
+  const curatedSourceSignerFactory: ConversationSourceSignerFactory =
+    options.conversationSourceSignerFactory ??
+    ((input) =>
+      createDeviceBoundSourceSigner({
+        ...input,
+        environment: serverEnvironment
+      }));
 
   if (config.test) {
     resetMemoryRateLimitStore();
@@ -685,6 +702,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     typeof createSecureUpstreamFetch
   > | null = null;
   let pendingShareSourceWorkerTimer: NodeJS.Timeout | null = null;
+  let curatedGrantSourceWorkerTimer: NodeJS.Timeout | null = null;
+  let curatedGrantSourceWorkerDrain: Promise<void> | null = null;
   let continuousNoteAdvancementWorkerTimer: NodeJS.Timeout | null = null;
   let curatedClassificationWorkerTimer: NodeJS.Timeout | null = null;
   let pdsCheckpointPublicationService: ReturnType<
@@ -850,6 +869,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     if (pendingShareSourceWorkerTimer) {
       clearInterval(pendingShareSourceWorkerTimer);
     }
+    if (curatedGrantSourceWorkerTimer) {
+      clearInterval(curatedGrantSourceWorkerTimer);
+    }
+    await curatedGrantSourceWorkerDrain;
     if (continuousNoteAdvancementWorkerTimer) {
       clearInterval(continuousNoteAdvancementWorkerTimer);
     }
@@ -1059,7 +1082,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       (() =>
         inspectDeviceIdentityAtKoedHome({
           koedHome: config.koedHome,
-          environment: process.env
+          environment: serverEnvironment
         }))
     )();
     return identity.health === "healthy" && identity.deploymentId
@@ -1105,11 +1128,18 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const preparePendingShareSource = async (input: {
     backendId: string;
     localOwnerUserId: string;
+    upstreamUserId: string;
     source?: SharedMemorySourceRef;
     sessionId?: string;
     pendingShareId: string;
     mutationId: string;
     mode: "snapshot" | "continuous";
+    sourceRevision: number;
+    consentId: string | null;
+    previewHash: string | null;
+    teamWorkspaceId: string | null;
+    includeCuratedMemory: boolean;
+    curatedMaterialCommitmentHash: string | null;
   }): Promise<void> => {
     if (!repository) return;
     let failureStage: PendingShareSourcePreparationStage =
@@ -1208,6 +1238,198 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           consentedAt: new Date().toISOString()
         }
       );
+      if (input.includeCuratedMemory) {
+        failureStage = "source_upload";
+        if (
+          !pool ||
+          !envelopeEncryptionProvider ||
+          !sharedMemoryAuthorityRepository ||
+          input.source?.kind !== "captured_session" ||
+          !input.consentId ||
+          !input.previewHash ||
+          !input.teamWorkspaceId ||
+          !input.curatedMaterialCommitmentHash
+        ) {
+          throw new Error("Exact Curated source authority is unavailable");
+        }
+        const identity = {
+          backendId: input.backendId,
+          localOwnerUserId: input.localOwnerUserId,
+          upstreamUserId: input.upstreamUserId
+        };
+        const approvedPreview =
+          await sharedMemoryAuthorityRepository.readAuthoritativePreview({
+            ...identity,
+            previewHash: input.previewHash
+          });
+        const backend = upstreamBackendById(
+          readLocalEdgeUpstreamRegistry(localEdgeUpstreamBackendsPath),
+          input.backendId
+        );
+        const authorization = backend
+          ? localEdgeResolveUpstreamAuthorization(backend)
+          : null;
+        if (!backend || !authorization) {
+          throw new Error("Curated source upstream authorization unavailable");
+        }
+        const current = await fetchBoundedJsonObject(
+          localEdgeFetch,
+          safeUpstreamProxyUrl(
+            backend,
+            `/v1/shared-memory/owned-shares/pending/${input.pendingShareId}`
+          ),
+          {
+            method: "GET",
+            redirect: "error",
+            headers: { accept: "application/json", authorization }
+          },
+          { timeoutMs: 30_000, maxBytes: 64 * 1_024 }
+        );
+        const pending = pendingShareSchema.safeParse(
+          (current.payload.share as { pendingShare?: unknown } | undefined)
+            ?.pendingShare
+        );
+        if (
+          !current.response.ok ||
+          !pending.success ||
+          pending.data.id !== input.pendingShareId ||
+          pending.data.mutationId !== input.mutationId ||
+          (pending.data.state !== "preparing" &&
+            !(
+              pending.data.state === "activated" &&
+              pending.data.sourceUpdateState === "active" &&
+              pending.data.grantId
+            )) ||
+          pending.data.consentId !== input.consentId ||
+          pending.data.includeCuratedMemory !== true ||
+          pending.data.workspaceId !== input.teamWorkspaceId ||
+          pending.data.logicalMemoryId !== input.source.logicalMemoryId ||
+          pending.data.source.kind !== "captured_session" ||
+          pending.data.source.sessionId !== input.source.sessionId ||
+          pending.data.sourceRevision !== input.sourceRevision ||
+          !approvedPreview ||
+          approvedPreview.previewHash !== input.previewHash ||
+          approvedPreview.includeCuratedMemory !== true ||
+          approvedPreview.teamId !== pending.data.teamId ||
+          approvedPreview.teamWorkspaceId !== pending.data.workspaceId ||
+          approvedPreview.logicalMemoryId !== pending.data.logicalMemoryId ||
+          approvedPreview.sourceRevision !== pending.data.sourceRevision ||
+          approvedPreview.source.kind !== "captured_session" ||
+          approvedPreview.source.sessionId !== pending.data.source.sessionId ||
+          approvedPreview.curatedMaterialCommitmentHash !==
+            input.curatedMaterialCommitmentHash
+        ) {
+          throw new Error("Approved Curated Session changed before upload");
+        }
+        const canonical = await loadPersonalCuratedSharedSourceMaterial(
+          pool,
+          envelopeEncryptionProvider,
+          {
+            ownerUserId: input.localOwnerUserId,
+            logicalMemoryId: input.source.logicalMemoryId,
+            sourceSessionId: input.source.sessionId,
+            sourceRevision: input.sourceRevision,
+            teamBackendId: input.backendId,
+            teamWorkspaceId: input.teamWorkspaceId,
+            requirePersistedRevision: true
+          }
+        );
+        const signer = curatedSourceSignerFactory({
+          koedHome: config.koedHome,
+          sourceGenerationId: deploymentId,
+          originKeyId: input.localOwnerUserId
+        });
+        if (
+          signer.deploymentId !== deploymentId ||
+          signer.keyId !== input.localOwnerUserId
+        ) {
+          throw new Error("Curated source signer identity changed");
+        }
+        const commitment = curatedSharedSourceCommitment(canonical, {
+          sourceDeploymentProtocolId: deploymentId,
+          teamId: pending.data.teamId
+        });
+        const commitmentHash = curatedSourceCommitmentHash(commitment);
+        if (commitmentHash !== input.curatedMaterialCommitmentHash) {
+          throw new Error("Approved Curated source snapshot changed");
+        }
+        const signed = signCuratedSourceMaterial(
+          {
+            protocol: "koed.curated-source-material/v1",
+            pendingShareId: input.pendingShareId,
+            consentId: input.consentId,
+            previewHash: input.previewHash,
+            commitmentHash,
+            commitment
+          },
+          signer
+        );
+        const { response, payload } = await fetchBoundedJsonObject(
+          localEdgeFetch,
+          safeUpstreamProxyUrl(
+            backend,
+            `/v1/shared-memory/pending-shares/${input.pendingShareId}/curated-source`
+          ),
+          {
+            method: "PUT",
+            redirect: "error",
+            headers: {
+              accept: "application/json",
+              authorization,
+              "content-type": "application/json",
+              "idempotency-key": input.mutationId
+            },
+            body: JSON.stringify(signed)
+          },
+          { timeoutMs: 30_000, maxBytes: 64 * 1_024 }
+        );
+        failureStage = "source_upload_response";
+        if (
+          !response.ok ||
+          payload.pendingShareId !== input.pendingShareId ||
+          payload.commitmentHash !== commitmentHash ||
+          payload.materialHash !== signed.attestation.materialHash ||
+          payload.sourceRevision !== input.sourceRevision ||
+          payload.status !== (commitment.items.length > 0 ? "ready" : "empty")
+        ) {
+          throw Object.assign(
+            new Error("Curated source upload was not acknowledged"),
+            {
+              statusCode: response.status
+            }
+          );
+        }
+        if (input.mode === "continuous") {
+          const expirations = canonical.provenance
+            .flatMap((assertion) =>
+              assertion.expiresAt ? [assertion.expiresAt] : []
+            )
+            .filter((expiresAt) => Date.parse(expiresAt) > Date.now())
+            .sort();
+          const registered = await registerContinuousCuratedGrantSourceWork(
+            pool,
+            {
+              backendId: input.backendId,
+              localOwnerUserId: input.localOwnerUserId,
+              upstreamUserId: input.upstreamUserId,
+              originalPendingShareId: input.pendingShareId,
+              consentId: input.consentId,
+              previewHash: input.previewHash,
+              initialCommitmentHash: commitmentHash,
+              localSessionId: input.source.sessionId,
+              logicalMemoryId: input.source.logicalMemoryId,
+              sourceDeploymentProtocolId: deploymentId,
+              sourceOwnerPrincipalId: input.localOwnerUserId,
+              teamId: pending.data.teamId,
+              teamWorkspaceId: input.teamWorkspaceId,
+              nextExpiryAt: expirations[0] ?? null
+            }
+          );
+          if (!registered) {
+            throw new Error("Continuous Curated source work was not bound");
+          }
+        }
+      }
     } catch (error) {
       if (error instanceof PendingShareSourcePreparationError) throw error;
       throw new PendingShareSourcePreparationError(failureStage, error);
@@ -1235,6 +1457,62 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             localSharedMemoryCandidatePreparation?.loadPersonalNoteCandidatePreview,
           resolveCandidateSourceIdentity:
             localSharedMemoryCandidatePreparation?.resolveCandidateSourceIdentity,
+          loadCuratedCandidateCommitment:
+            pool &&
+            envelopeEncryptionProvider &&
+            localSharedMemoryCandidatePreparation
+              ? async (input) => {
+                  const identity =
+                    localSharedMemoryCandidatePreparation.resolveCandidateSourceIdentity(
+                      input.localOwnerUserId
+                    );
+                  if (!identity) {
+                    throw new Error(
+                      "Verified Personal source identity unavailable"
+                    );
+                  }
+                  const material =
+                    await loadPersonalCuratedSharedSourceMaterial(
+                      pool,
+                      envelopeEncryptionProvider,
+                      {
+                        ownerUserId: input.localOwnerUserId,
+                        logicalMemoryId: input.logicalMemoryId,
+                        sourceSessionId: input.sessionId,
+                        sourceRevision: input.sourceRevision,
+                        teamBackendId: input.teamBackendId,
+                        teamWorkspaceId: input.teamWorkspaceId,
+                        requirePersistedRevision: false
+                      }
+                    );
+                  const signer = curatedSourceSignerFactory({
+                    koedHome: config.koedHome,
+                    sourceGenerationId: identity.sourceDeploymentProtocolId,
+                    originKeyId: identity.sourceOwnerPrincipalId
+                  });
+                  if (
+                    signer.deploymentId !==
+                      identity.sourceDeploymentProtocolId ||
+                    signer.keyId !== identity.sourceOwnerPrincipalId
+                  ) {
+                    throw new Error("Personal source signer identity changed");
+                  }
+                  return {
+                    hash: curatedSourceCommitmentHash(
+                      curatedSharedSourceCommitment(material, {
+                        sourceDeploymentProtocolId:
+                          identity.sourceDeploymentProtocolId,
+                        teamId: input.teamId
+                      })
+                    ),
+                    keyId: signer.keyId,
+                    fingerprint: curatedSourceAttestationFingerprint(
+                      signer.publicKey
+                    ),
+                    workspaceProjectId: material.workspaceProjectId
+                  };
+                }
+              : undefined,
           reportDiagnostic: (diagnostic) =>
             app.log.warn(
               {
@@ -1277,10 +1555,18 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
               await preparePendingShareSource({
                 backendId: item.backendId,
                 localOwnerUserId: item.localOwnerUserId,
+                upstreamUserId: item.upstreamUserId,
                 source: item.source,
                 pendingShareId: item.pendingShareId,
                 mutationId: item.mutationId,
-                mode: item.mode
+                mode: item.mode,
+                sourceRevision: item.sourceRevision,
+                consentId: item.consentId,
+                previewHash: item.previewHash,
+                teamWorkspaceId: item.teamWorkspaceId,
+                includeCuratedMemory: item.includeCuratedMemory,
+                curatedMaterialCommitmentHash:
+                  item.curatedMaterialCommitmentHash
               });
               await sharedMemoryAuthorityRepository.finishPendingShareSourceWork(
                 {
@@ -1378,6 +1664,59 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     );
     pendingShareSourceWorkerTimer.unref();
     drainPendingShareSourceWork();
+
+    if (pool && envelopeEncryptionProvider) {
+      const curatedGrantSourceWorker = createCuratedGrantSourceWorker({
+        pool,
+        encryptionProvider: envelopeEncryptionProvider,
+        authorityStore: sharedMemoryAuthorityRepository,
+        koedHome: config.koedHome,
+        upstreamBackendsPath: localEdgeUpstreamBackendsPath,
+        fetch: localEdgeFetch,
+        resolveUpstreamAuthorization: localEdgeResolveUpstreamAuthorization,
+        resolveVerifiedDeploymentId,
+        sourceSignerFactory: curatedSourceSignerFactory,
+        reportFailure: ({ workId, backendId, statusCode, errorClass }) => {
+          app.log.warn(
+            {
+              event: { name: "curated_grant.source_work.retry" },
+              workId,
+              backendId,
+              statusCode,
+              errorClass
+            },
+            "Continuous Curated source work will retry"
+          );
+        }
+      });
+      let curatedGrantWorkerRunning = false;
+      const drainCuratedGrantSourceWork = () => {
+        if (curatedGrantWorkerRunning) return;
+        curatedGrantWorkerRunning = true;
+        curatedGrantSourceWorkerDrain = curatedGrantSourceWorker
+          .drainOnce()
+          .then(() => undefined)
+          .catch((error: unknown) => {
+            app.log.warn(
+              {
+                event: { name: "curated_grant.source_worker.failed" },
+                errorClass: error instanceof Error ? error.name : "UnknownError"
+              },
+              "Continuous Curated source worker failed"
+            );
+          })
+          .finally(() => {
+            curatedGrantWorkerRunning = false;
+            curatedGrantSourceWorkerDrain = null;
+          });
+      };
+      curatedGrantSourceWorkerTimer = setInterval(
+        drainCuratedGrantSourceWork,
+        5_000
+      );
+      curatedGrantSourceWorkerTimer.unref();
+      drainCuratedGrantSourceWork();
+    }
 
     let noteAdvancementWorkerRunning = false;
     let noteAdvancementWorkerRequested = false;
@@ -2309,6 +2648,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         );
     },
     projectSharePolicyRepository,
+    sharedMemoryRepository: pool ? requireRepository() : null,
     hashSecret,
     authenticateSessionContext: authHelpers.authenticateSessionContext,
     authenticateDeviceCredential: authHelpers.authenticateDeviceCredential,

@@ -47,6 +47,8 @@ import {
   upstreamBackendById
 } from "./upstream-routing.js";
 
+import { workspaceProjectAuthorityUrl } from "./workspace-project-authority-url.js";
+
 const idParams = z.object({ projectId: z.uuid() }).strict();
 const confirmSchema = z
   .object({
@@ -78,7 +80,15 @@ const cancelReceiptSchema = z
     teamId: z.uuid(),
     workspaceId: z.uuid(),
     ownerUserId: z.uuid(),
-    shareAttemptKey: z.string().min(8)
+    shareAttemptKey: z.string().min(8),
+    terminalProject: z
+      .object({
+        projectId: z.uuid(),
+        copyManifestHash: z.string().length(64).nullable(),
+        copiedAt: z.coerce.date().nullable()
+      })
+      .strict()
+      .optional()
   })
   .strict();
 const principalSchema = z
@@ -97,6 +107,17 @@ const proofSchema = z
     ownerUserId: z.uuid(),
     projectVersion: z.number().int().positive(),
     copyManifestHash: z.string().regex(/^[a-f0-9]{64}$/)
+  })
+  .strict();
+const memberLinkProofSchema = z
+  .object({
+    projectId: z.uuid(),
+    workspaceId: z.uuid(),
+    teamId: z.uuid(),
+    memberTeamMemberId: z.uuid(),
+    memberUserId: z.uuid(),
+    projectVersion: z.number().int().positive(),
+    memberVersion: z.number().int().positive()
   })
   .strict();
 const deckCopyMapSchema = z
@@ -327,7 +348,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
     if (!authorization) denied("Team upstream credential unavailable", 424);
     const remote = await fetchBoundedJson(
       context.localEdge.fetch,
-      safeUpstreamProxyUrl(backend!, path),
+      workspaceProjectAuthorityUrl(backend!, path),
       {
         method: "GET",
         redirect: "error",
@@ -630,19 +651,27 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         deviceCredentialId: device.credential.id,
         policyVersion: teamStatus.policyVersion + 1
       });
-      const initial = await projectSharePolicyRepository!.buildInitialManifest({
+      const scope = {
         ownerUserId: authority.actor.id,
         projectId,
         teamBackendId: body.teamBackendId,
         workspaceProjectId: body.workspaceProjectId
-      });
-      if (initial.entries.length && !candidatePreparation)
+      };
+      const sources =
+        await projectSharePolicyRepository!.listInitialManifestSources(scope);
+      if (sources.length && !candidatePreparation)
         denied("Local summary preparation unavailable", 503);
-      for (const entry of initial.entries) {
+      const sourceIdentity =
+        candidatePreparation?.resolveCandidateSourceIdentity(
+          authority.actor.id
+        );
+      if (sources.length && !sourceIdentity)
+        denied("Verified local source identity unavailable", 503);
+      for (const source of sources) {
         await prepareLocalLcmCandidateRepresentation({
           repository: context.requireRepository(),
           ownerUserId: authority.actor.id,
-          sessionId: entry.sessionId,
+          sessionId: source.sessionId,
           representation: "lcm_leaves"
         });
       }
@@ -650,43 +679,93 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         string,
         { logicalMemoryId: string; sourceRevision: number; itemCount: number }
       >();
-      for (const entry of initial.entries) {
+      for (const source of sources) {
         const candidate = await candidatePreparation!.loadCandidatePreview({
           localOwnerUserId: authority.actor.id,
-          sessionId: entry.sessionId,
+          sessionId: source.sessionId,
           representation: "lcm_leaves",
           mode: "continuous"
         });
-        if (!candidate || candidate.itemCount < 1)
+        if (
+          !candidate ||
+          candidate.itemCount < 1 ||
+          candidate.sourceRevision < 1
+        )
           denied(
             "Exact sanitized summary is not ready before Native review",
             409
           );
-        candidates.set(entry.sessionId, {
+        await projectSharePolicyRepository!.prepareInitialManifestSource({
+          ...scope,
+          sessionId: source.sessionId,
+          mappingRevision: source.mappingRevision,
+          logicalMemoryId: candidate!.logicalMemoryId,
+          sourceRevision: candidate!.sourceRevision,
+          sourceDeploymentProtocolId: sourceIdentity!.sourceDeploymentProtocolId
+        });
+        candidates.set(source.sessionId, {
           logicalMemoryId: candidate!.logicalMemoryId,
           sourceRevision: candidate!.sourceRevision,
           itemCount: candidate!.itemCount
         });
       }
-      const prepared = await projectSharePolicyRepository!.buildInitialManifest(
-        {
-          ownerUserId: authority.actor.id,
-          projectId,
-          teamBackendId: body.teamBackendId,
-          workspaceProjectId: body.workspaceProjectId
-        }
-      );
+      const sourceSetAfterPreparation =
+        await projectSharePolicyRepository!.listInitialManifestSources(scope);
+      if (
+        sourceSetAfterPreparation.length !== sources.length ||
+        sourceSetAfterPreparation.some(
+          (source, index) =>
+            source.sessionId !== sources[index]?.sessionId ||
+            source.mappingRevision !== sources[index]?.mappingRevision
+        )
+      )
+        denied(
+          "Captured Session set changed during local preparation; review again",
+          409
+        );
+      const initial =
+        await projectSharePolicyRepository!.buildInitialManifest(scope);
+      if (
+        initial.entries.length !== sources.length ||
+        initial.entries.some(
+          (entry, index) => entry.sessionId !== sources[index]?.sessionId
+        )
+      )
+        denied(
+          "Captured Session set changed during local preparation; review again",
+          409
+        );
+      const prepared =
+        await projectSharePolicyRepository!.buildInitialManifest(scope);
       if (
         prepared.personalProjectBindingHash !==
           initial.personalProjectBindingHash ||
         prepared.entries.length !== initial.entries.length ||
         prepared.entries.some(
           (entry, index) =>
-            entry.sessionId !== initial.entries[index]?.sessionId
+            entry.sessionId !== initial.entries[index]?.sessionId ||
+            entry.logicalMemoryId !== initial.entries[index]?.logicalMemoryId ||
+            entry.sourceRevision !== initial.entries[index]?.sourceRevision ||
+            entry.mappingRevision !== initial.entries[index]?.mappingRevision ||
+            entry.reviewLabel !== initial.entries[index]?.reviewLabel
         )
       )
         denied(
           "Captured Session set changed during summary preparation; review again",
+          409
+        );
+      const finalSourceSet =
+        await projectSharePolicyRepository!.listInitialManifestSources(scope);
+      if (
+        finalSourceSet.length !== sources.length ||
+        finalSourceSet.some(
+          (source, index) =>
+            source.sessionId !== sources[index]?.sessionId ||
+            source.mappingRevision !== sources[index]?.mappingRevision
+        )
+      )
+        denied(
+          "Captured Session set changed after summary preparation; review again",
           409
         );
       for (const entry of prepared.entries) {
@@ -892,6 +971,75 @@ export const registerWorkspaceProjectCoordinationRoutes = (
     }
   );
   app.post(
+    "/v1/local-edge/projects/:projectId/project-share-policy/future-source-candidates",
+    { preHandler: context.rateLimit.memoryRead, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = z
+        .object({
+          teamBackendId: z.string().trim().min(1).max(160),
+          workspaceProjectId: z.uuid(),
+          expectedPolicyVersion: z.number().int().positive(),
+          cursor: policyCursorSchema
+        })
+        .strict()
+        .parse(request.body);
+      const authority = await authenticate(
+        request,
+        body.teamBackendId,
+        "share_grant_management"
+      );
+      const link = await repo().getLink(authority.actor.id, projectId);
+      if (
+        !link ||
+        link.teamBackendId !== body.teamBackendId ||
+        link.workspaceProjectId !== body.workspaceProjectId
+      )
+        denied("Exact shared Project link unavailable", 409);
+      if (!projectSharePolicyRepository)
+        denied("Local policy source selection unavailable", 503);
+      const policy = projectSharePolicyReviewSchema.parse(
+        await requestTeam(
+          body.teamBackendId,
+          `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/status`
+        )
+      );
+      if (
+        policy.projectId !== body.workspaceProjectId ||
+        policy.status !== "active" ||
+        policy.policyVersion !== body.expectedPolicyVersion
+      )
+        denied("Team Project policy changed", 409);
+      const principal = await teamPrincipal(body.teamBackendId);
+      if (
+        (await repo().principalBinding(
+          authority.actor.id,
+          body.teamBackendId
+        )) !== principal
+      )
+        denied("Team principal binding changed", 409);
+      const binding =
+        `${authority.actor.id}:${projectId}:${body.teamBackendId}:` +
+        `${body.workspaceProjectId}:${body.expectedPolicyVersion}`;
+      const page =
+        await projectSharePolicyRepository!.listFutureSourceCandidates({
+          ownerUserId: authority.actor.id,
+          projectId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId,
+          policyVersion: body.expectedPolicyVersion,
+          cursor: decodePolicyCursor(body.cursor, binding)
+        });
+      return {
+        entries: page.entries,
+        hasMore: page.hasMore,
+        nextCursor: page.hasMore
+          ? encodePolicyCursor(binding, page.nextCursor)
+          : null
+      };
+    }
+  );
+  app.post(
     "/v1/local-edge/projects/:projectId/project-share-policy/reconcile-future",
     { preHandler: context.rateLimit.memoryWrite, bodyLimit: 8 * 1024 },
     async (request) => {
@@ -901,7 +1049,18 @@ export const registerWorkspaceProjectCoordinationRoutes = (
           teamBackendId: z.string().trim().min(1).max(160),
           workspaceProjectId: z.uuid(),
           expectedPolicyVersion: z.number().int().positive(),
-          cursor: policyCursorSchema
+          cursor: policyCursorSchema,
+          preparedSources: z
+            .array(
+              z
+                .object({
+                  sessionId: z.uuid(),
+                  mappingRevision: z.number().int().positive()
+                })
+                .strict()
+            )
+            .max(20)
+            .optional()
         })
         .strict()
         .parse(request.body);
@@ -943,14 +1102,27 @@ export const registerWorkspaceProjectCoordinationRoutes = (
       const binding =
         `${authority.actor.id}:${projectId}:${body.teamBackendId}:` +
         `${body.workspaceProjectId}:${body.expectedPolicyVersion}`;
-      const page = await projectSharePolicyRepository!.listFutureEligible({
-        ownerUserId: authority.actor.id,
-        projectId,
-        teamBackendId: body.teamBackendId,
-        workspaceProjectId: body.workspaceProjectId,
-        policyVersion: body.expectedPolicyVersion,
-        cursor: decodePolicyCursor(body.cursor, binding)
-      });
+      const page =
+        await projectSharePolicyRepository!.listFutureSourceCandidates({
+          ownerUserId: authority.actor.id,
+          projectId,
+          teamBackendId: body.teamBackendId,
+          workspaceProjectId: body.workspaceProjectId,
+          policyVersion: body.expectedPolicyVersion,
+          cursor: decodePolicyCursor(body.cursor, binding)
+        });
+      if (
+        (body.preparedSources === undefined && page.entries.length > 0) ||
+        (body.preparedSources !== undefined &&
+          page.entries.length !== body.preparedSources.length) ||
+        page.entries.some(
+          (entry, index) =>
+            entry.sessionId !== body.preparedSources?.[index]?.sessionId ||
+            entry.mappingRevision !==
+              body.preparedSources?.[index]?.mappingRevision
+        )
+      )
+        denied("Future Project source selection changed", 409);
       const sourceIdentity =
         candidatePreparation!.resolveCandidateSourceIdentity(
           authority.actor.id
@@ -985,22 +1157,100 @@ export const registerWorkspaceProjectCoordinationRoutes = (
       let staged = 0,
         skipped = 0,
         failed = 0;
+      const logFutureFailure = (
+        stage: string,
+        reason: string,
+        error?: unknown
+      ) => {
+        const candidateError = error as {
+          name?: unknown;
+          code?: unknown;
+          statusCode?: unknown;
+        } | null;
+        app.log.warn({
+          event: { name: "project_share_policy.future.failed" },
+          failureStage: stage,
+          reason,
+          errorClass:
+            typeof candidateError?.name === "string"
+              ? candidateError.name.slice(0, 80)
+              : null,
+          errorCode:
+            typeof candidateError?.code === "string" &&
+            /^[A-Z0-9]{5}$/.test(candidateError.code)
+              ? candidateError.code
+              : null,
+          statusCode:
+            typeof candidateError?.statusCode === "number" &&
+            Number.isInteger(candidateError.statusCode)
+              ? candidateError.statusCode
+              : null
+        });
+      };
       for (const pageEntry of page.entries) {
+        if (request.raw.aborted)
+          denied("Future Project source request was canceled", 409);
+        let stage = "candidate_lookup";
         try {
+          const beforePreparation =
+            await projectSharePolicyRepository!.exactFutureSourceCandidate({
+              ownerUserId: authority.actor.id,
+              projectId,
+              teamBackendId: body.teamBackendId,
+              workspaceProjectId: body.workspaceProjectId,
+              policyVersion: body.expectedPolicyVersion,
+              sessionId: pageEntry.sessionId
+            });
+          if (
+            !beforePreparation ||
+            beforePreparation.mappingRevision !== pageEntry.mappingRevision
+          ) {
+            skipped++;
+            continue;
+          }
           // Closure is local preparation only. It can advance the source
           // revision, so bind the issue to a fresh exact eligible snapshot.
+          stage = "lcm_compaction";
           await prepareLocalLcmCandidateRepresentation({
             repository: context.requireRepository(),
             ownerUserId: authority.actor.id,
             sessionId: pageEntry.sessionId,
             representation: "lcm_leaves"
           });
+          stage = "candidate_preview";
           const candidate = await candidatePreparation!.loadCandidatePreview({
             localOwnerUserId: authority.actor.id,
             sessionId: pageEntry.sessionId,
             representation: "lcm_leaves",
             mode: "continuous"
           });
+          if (
+            candidate?.source.kind === "captured_session" &&
+            candidate.source.sessionId === pageEntry.sessionId &&
+            candidate.sourceRevision >= 1 &&
+            candidate.itemCount >= 1 &&
+            candidate.items.length === candidate.itemCount
+          ) {
+            // A future source was absent from the initial Native manifest.
+            // Materialize its canonical owner-local frontier now, using the
+            // same exact preparation as an initial source. The later checks
+            // still bind staging to the capture-time policy and live Team
+            // authority; this step creates no grant or Pending Share.
+            stage = "local_source_preparation";
+            await projectSharePolicyRepository!.prepareInitialManifestSource({
+              ownerUserId: authority.actor.id,
+              projectId,
+              teamBackendId: body.teamBackendId,
+              workspaceProjectId: body.workspaceProjectId,
+              sessionId: pageEntry.sessionId,
+              mappingRevision: pageEntry.mappingRevision,
+              logicalMemoryId: candidate.logicalMemoryId,
+              sourceRevision: candidate.sourceRevision,
+              sourceDeploymentProtocolId:
+                sourceIdentity!.sourceDeploymentProtocolId
+            });
+          }
+          stage = "eligible_entry";
           const entry = await projectSharePolicyRepository!.exactFutureEligible(
             {
               ownerUserId: authority.actor.id,
@@ -1011,9 +1261,20 @@ export const registerWorkspaceProjectCoordinationRoutes = (
               sessionId: pageEntry.sessionId
             }
           );
+          stage = "candidate_recheck";
+          const afterPreparation =
+            await projectSharePolicyRepository!.exactFutureSourceCandidate({
+              ownerUserId: authority.actor.id,
+              projectId,
+              teamBackendId: body.teamBackendId,
+              workspaceProjectId: body.workspaceProjectId,
+              policyVersion: body.expectedPolicyVersion,
+              sessionId: pageEntry.sessionId
+            });
           if (
+            !afterPreparation ||
+            afterPreparation.mappingRevision !== pageEntry.mappingRevision ||
             !entry ||
-            entry.logicalMemoryId !== pageEntry.logicalMemoryId ||
             entry.mappingRevision !== pageEntry.mappingRevision ||
             !candidate ||
             candidate.source.kind !== "captured_session" ||
@@ -1023,9 +1284,56 @@ export const registerWorkspaceProjectCoordinationRoutes = (
             candidate.itemCount < 1 ||
             candidate.items.length !== candidate.itemCount
           ) {
+            const reason = !afterPreparation
+              ? "candidate_missing"
+              : afterPreparation.mappingRevision !== pageEntry.mappingRevision
+                ? "candidate_mapping_changed"
+                : !entry
+                  ? "eligible_entry_missing"
+                  : entry.mappingRevision !== pageEntry.mappingRevision
+                    ? "eligible_mapping_changed"
+                    : !candidate
+                      ? "preview_missing"
+                      : candidate.source.kind !== "captured_session"
+                        ? "preview_kind_changed"
+                        : candidate.source.sessionId !== entry.sessionId
+                          ? "preview_session_changed"
+                          : candidate.logicalMemoryId !== entry.logicalMemoryId
+                            ? "preview_logical_memory_changed"
+                            : candidate.sourceRevision !== entry.sourceRevision
+                              ? "preview_revision_changed"
+                              : candidate.itemCount < 1
+                                ? "preview_empty"
+                                : "preview_item_count_changed";
+            logFutureFailure(stage, reason);
             failed++;
             continue;
           }
+          stage = "policy_recheck";
+          const currentTeamPolicy = projectSharePolicyReviewSchema.parse(
+            await requestTeam(
+              body.teamBackendId,
+              `/v1/workspace-projects/${encodeURIComponent(body.workspaceProjectId)}/share-policy/status`
+            )
+          );
+          if (
+            request.raw.aborted ||
+            currentTeamPolicy.projectId !== body.workspaceProjectId ||
+            currentTeamPolicy.status !== "active" ||
+            currentTeamPolicy.policyId !== policy.policyId ||
+            currentTeamPolicy.policyVersion !== body.expectedPolicyVersion ||
+            currentTeamPolicy.ownerTeamMemberId !== policy.ownerTeamMemberId ||
+            (await teamPrincipal(body.teamBackendId)) !== teamPrincipalUserId ||
+            (await repo().principalBinding(
+              authority.actor.id,
+              body.teamBackendId
+            )) !== teamPrincipalUserId
+          ) {
+            logFutureFailure(stage, "authority_changed");
+            failed++;
+            continue;
+          }
+          stage = "issue_reserve";
           const localIssue =
             await projectSharePolicyRepository!.reserveLocalIssue({
               ownerUserId: authority.actor.id,
@@ -1046,6 +1354,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
               })
             )
             .digest("hex");
+          stage = "proof_sign";
           const proof = await projectSharePolicyRepository!.signFutureProof({
             ownerUserId: authority.actor.id,
             teamPrincipalUserId,
@@ -1061,6 +1370,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
             candidateHash: candidate.candidateHash,
             closureHash
           });
+          stage = "team_bundle";
           const result = await fetchBoundedJson(
             context.localEdge.fetch,
             safeUpstreamProxyUrl(
@@ -1100,6 +1410,9 @@ export const registerWorkspaceProjectCoordinationRoutes = (
             { timeoutMs: 30_000, maxBytes: 64_000 }
           );
           if (!result.response.ok) {
+            logFutureFailure(stage, "upstream_rejected", {
+              statusCode: result.response.status
+            });
             failed++;
             continue;
           }
@@ -1116,6 +1429,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
             ])
             .parse(result.payload);
           if (outcome.state === "staged") {
+            stage = "attach_pending";
             await projectSharePolicyRepository!.attachRemotePending({
               ownerUserId: authority.actor.id,
               issueId: localIssue.issueId,
@@ -1123,7 +1437,8 @@ export const registerWorkspaceProjectCoordinationRoutes = (
             });
             staged++;
           } else skipped++;
-        } catch {
+        } catch (error) {
+          logFutureFailure(stage, "exception", error);
           failed++;
         }
       }
@@ -2994,12 +3309,12 @@ export const registerWorkspaceProjectCoordinationRoutes = (
       backend!
     );
     if (!authorization) denied("Team upstream credential unavailable", 424);
-    const base = new URL(backend!.baseUrl.replace(/\/+$/, "/"));
-    if (base.username || base.password || base.search || base.hash)
-      denied("Unsafe Team backend", 424);
     const remote = await fetchBoundedJson(
       context.localEdge.fetch,
-      new URL("v1/local-edge/device-credentials/status", base),
+      workspaceProjectAuthorityUrl(
+        backend!,
+        "/v1/local-edge/device-credentials/status"
+      ),
       {
         method: "GET",
         redirect: "error",
@@ -3403,6 +3718,26 @@ export const registerWorkspaceProjectCoordinationRoutes = (
           receipt.ownerUserId !== principal
         )
           denied("Team cancellation receipt changed", 409);
+        if (
+          receipt.terminalProject &&
+          (receipt.terminalProject.copiedAt
+            ? receipt.terminalProject.copyManifestHash !== pending.manifestHash
+            : receipt.terminalProject.copyManifestHash !== null)
+        )
+          denied(
+            "Deleted Team copy does not match pending Personal snapshot",
+            409
+          );
+        if (receipt.terminalProject) {
+          return repo().cancelShare(local.actor.id, projectId, {
+            teamBackendId: pending.teamBackendId,
+            shareAttemptKey: pending.shareAttemptKey,
+            targetTeamId: teamId,
+            targetWorkspaceId: workspaceId,
+            expectedManifestHash: pending.manifestHash,
+            expectedPersonalProjectVersion: pending.personalProjectVersion
+          });
+        }
       }
       return repo().cancelShare(local.actor.id, projectId, {
         teamBackendId: pending.teamBackendId,
@@ -3410,6 +3745,61 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         targetTeamId: teamId,
         targetWorkspaceId: workspaceId
       });
+    }
+  );
+  app.post(
+    "/v1/local-edge/projects/:projectId/workspace-project-join-confirm",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const { projectId } = idParams.parse(request.params);
+      const body = confirmSchema.parse(request.body);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        // A concurrent identical confirmation may serialize behind the first
+        // Personal transaction. Recheck both local and Team credentials and
+        // current Team authority before retrying.
+        const authority = await authenticate(
+          request,
+          body.teamBackendId,
+          "team_workspace_read"
+        );
+        const principal = await teamPrincipal(body.teamBackendId);
+        const proof = memberLinkProofSchema.parse(
+          await requestTeam(
+            body.teamBackendId,
+            `/v1/workspace-projects/${body.workspaceProjectId}/member-link-proof`
+          )
+        );
+        if (
+          proof.projectId !== body.workspaceProjectId ||
+          proof.memberUserId !== principal
+        )
+          denied("Joined Team Project proof changed", 409);
+        try {
+          return await repo().linkJoinedMember(authority.actor.id, projectId, {
+            expectedPersonalProjectVersion: body.expectedPersonalProjectVersion,
+            teamBackendId: body.teamBackendId,
+            teamId: proof.teamId,
+            workspaceId: proof.workspaceId,
+            workspaceProjectId: proof.projectId,
+            teamPrincipalUserId: principal,
+            localCredentialKeyId: authority.local.credentialKeyId,
+            teamCredentialKeyId: authority.team.credentialKeyId
+          });
+        } catch (error) {
+          if ((error as { code?: string })?.code === "40001") {
+            if (attempt === 0) continue;
+            denied("Personal Project link changed", 409);
+          }
+          if ((error as { code?: string })?.code === "23505")
+            denied("Enrolled Team principal or Project link changed", 409);
+          if (error instanceof PersonalWorkspaceProjectConflictError)
+            denied(error.message, 409);
+          if (error instanceof PersonalWorkspaceProjectUnavailableError)
+            denied(error.message, 404);
+          throw error;
+        }
+      }
+      denied("Personal Project link changed", 409);
     }
   );
   app.post(
@@ -3445,14 +3835,31 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         linked.teamBackendId === body.teamBackendId &&
         linked.workspaceProjectId === body.workspaceProjectId
       )
-        return repo().markMoved(authority.actor.id, projectId, {
-          expectedPersonalProjectVersion: body.expectedPersonalProjectVersion,
-          expectedManifestHash: proof.copyManifestHash,
-          teamBackendId: body.teamBackendId,
-          teamId: proof.teamId,
-          workspaceId: proof.workspaceId,
-          workspaceProjectId: proof.projectId
-        });
+        try {
+          return await repo().markMoved(authority.actor.id, projectId, {
+            expectedPersonalProjectVersion: body.expectedPersonalProjectVersion,
+            expectedManifestHash: proof.copyManifestHash,
+            teamBackendId: body.teamBackendId,
+            teamId: proof.teamId,
+            workspaceId: proof.workspaceId,
+            workspaceProjectId: proof.projectId
+          });
+        } catch (error) {
+          if (error instanceof PersonalWorkspaceProjectConflictError)
+            denied(error.message, 409);
+          if (error instanceof PersonalWorkspaceProjectUnavailableError)
+            denied(error.message, 404);
+          throw error;
+        }
+      const pending = await repo().shareAttempt(authority.actor.id, projectId);
+      if (
+        !pending ||
+        pending.state !== "pending" ||
+        pending.teamBackendId !== body.teamBackendId ||
+        pending.targetTeamId !== proof.teamId ||
+        pending.targetWorkspaceId !== proof.workspaceId
+      )
+        denied("Team copy differs from exact Personal first-share target", 409);
       const snapshot = await repo().shareSnapshot(
         authority.actor.id,
         projectId
@@ -3480,15 +3887,23 @@ export const registerWorkspaceProjectCoordinationRoutes = (
         localCredentialKeyId: authority.local.credentialKeyId,
         teamCredentialKeyId: authority.team.credentialKeyId
       });
-      return repo().markMoved(authority.actor.id, projectId, {
-        expectedPersonalProjectVersion: body.expectedPersonalProjectVersion,
-        expectedManifestHash: proof.copyManifestHash,
-        teamBackendId: body.teamBackendId,
-        teamId: proof.teamId,
-        workspaceId: proof.workspaceId,
-        workspaceProjectId: proof.projectId,
-        deckCopyMap: deckCopyMap.cards
-      });
+      try {
+        return await repo().markMoved(authority.actor.id, projectId, {
+          expectedPersonalProjectVersion: body.expectedPersonalProjectVersion,
+          expectedManifestHash: proof.copyManifestHash,
+          teamBackendId: body.teamBackendId,
+          teamId: proof.teamId,
+          workspaceId: proof.workspaceId,
+          workspaceProjectId: proof.projectId,
+          deckCopyMap: deckCopyMap.cards
+        });
+      } catch (error) {
+        if (error instanceof PersonalWorkspaceProjectConflictError)
+          denied(error.message, 409);
+        if (error instanceof PersonalWorkspaceProjectUnavailableError)
+          denied(error.message, 404);
+        throw error;
+      }
     }
   );
   app.post(

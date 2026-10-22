@@ -63,6 +63,7 @@ export interface CollaborationRemoteSharedMemoryPreview {
   representation: SharedMemoryRepresentation;
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
+  curatedMaterialCommitmentHash?: string;
   mode: "snapshot" | "continuous";
   binding: CollaborationSharedMemorySourceBinding;
   items: CollaborationSharedMemoryCanonicalSourceItem[];
@@ -237,6 +238,11 @@ export interface CollaborationSharedMemoryAuthorityStore {
     mode: "snapshot" | "continuous";
     source: SharedMemorySourceRef;
     sourceRevision: number;
+    consentId?: string;
+    previewHash?: string;
+    teamWorkspaceId?: string;
+    includeCuratedMemory?: boolean;
+    curatedMaterialCommitmentHash?: string;
   }): Promise<boolean>;
   claimPendingShareSourceWork(input?: { limit?: number }): Promise<
     Array<{
@@ -248,6 +254,12 @@ export interface CollaborationSharedMemoryAuthorityStore {
       mutationId: string;
       mode: "snapshot" | "continuous";
       source: SharedMemorySourceRef;
+      sourceRevision: number;
+      consentId: string | null;
+      previewHash: string | null;
+      teamWorkspaceId: string | null;
+      includeCuratedMemory: boolean;
+      curatedMaterialCommitmentHash: string | null;
     }>
   >;
   finishPendingShareSourceWork(input: {
@@ -677,6 +689,8 @@ const validPersistedPreview = (
     value.representation !== value.activationRepresentation ||
     !isFidelity(value.maximumFidelity) ||
     typeof value.includeCuratedMemory !== "boolean" ||
+    (value.curatedMaterialCommitmentHash !== undefined &&
+      !isHash(value.curatedMaterialCommitmentHash)) ||
     (value.mode !== "snapshot" && value.mode !== "continuous") ||
     !sharedMemoryCeilingAuthorizes(
       value.maximumFidelity,
@@ -2007,6 +2021,19 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         !["snapshot", "continuous"].includes(input.mode) ||
         !Number.isSafeInteger(input.sourceRevision) ||
         input.sourceRevision < 0 ||
+        (input.consentId !== undefined && !isUuid(input.consentId)) ||
+        (input.previewHash !== undefined && !isHash(input.previewHash)) ||
+        (input.curatedMaterialCommitmentHash !== undefined &&
+          !isHash(input.curatedMaterialCommitmentHash)) ||
+        (input.includeCuratedMemory !== true &&
+          input.curatedMaterialCommitmentHash !== undefined) ||
+        (input.teamWorkspaceId !== undefined &&
+          !isUuid(input.teamWorkspaceId)) ||
+        (input.includeCuratedMemory === true &&
+          (!input.consentId ||
+            !input.previewHash ||
+            !input.teamWorkspaceId ||
+            !input.curatedMaterialCommitmentHash)) ||
         !parsedSource.success
       ) {
         return false;
@@ -2018,6 +2045,28 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           "update"
         );
         if (!enrollment) return false;
+        if (input.includeCuratedMemory) {
+          const previewRow = await readPreviewRow(client, enrollment.id, {
+            previewHash: input.previewHash
+          });
+          const approvedPreview = previewRow
+            ? await decodePreview(previewRow, input.identity)
+            : null;
+          if (
+            !approvedPreview ||
+            approvedPreview.curatedMaterialCommitmentHash !==
+              input.curatedMaterialCommitmentHash ||
+            approvedPreview.logicalMemoryId !==
+              parsedSource.data.logicalMemoryId ||
+            approvedPreview.teamWorkspaceId !== input.teamWorkspaceId ||
+            approvedPreview.sourceRevision !== input.sourceRevision ||
+            approvedPreview.mode !== input.mode ||
+            approvedPreview.includeCuratedMemory !== true ||
+            !sameDto(approvedPreview.source, parsedSource.data)
+          ) {
+            return false;
+          }
+        }
         const source = parsedSource.data;
         if (
           source.kind === "personal_note" &&
@@ -2145,8 +2194,16 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           mode: "snapshot" | "continuous";
           logical_memory_id: string;
           source_revision_id: string;
+          consent_id: string | null;
+          preview_hash: string | null;
+          team_workspace_id: string | null;
+          include_curated_memory: boolean;
+          curated_material_commitment_hash: string | null;
         }>(
-          `select mutation_id,pending_share_id,mode,logical_memory_id,source_revision_id
+          `select mutation_id,pending_share_id,mode,logical_memory_id,
+                  source_revision_id,consent_id,preview_hash,
+                  team_workspace_id,include_curated_memory,
+                  curated_material_commitment_hash
              from collaboration_pending_share_source_work
             where enrollment_id=$1 and mutation_id=$2
             limit 1`,
@@ -2158,7 +2215,15 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             existing.rows[0].pending_share_id === input.pendingShareId &&
             existing.rows[0].mode === input.mode &&
             existing.rows[0].logical_memory_id === source.logicalMemoryId &&
-            existing.rows[0].source_revision_id === sourceRevisionId
+            existing.rows[0].source_revision_id === sourceRevisionId &&
+            existing.rows[0].consent_id === (input.consentId ?? null) &&
+            existing.rows[0].preview_hash === (input.previewHash ?? null) &&
+            existing.rows[0].team_workspace_id ===
+              (input.teamWorkspaceId ?? null) &&
+            existing.rows[0].include_curated_memory ===
+              (input.includeCuratedMemory ?? false) &&
+            existing.rows[0].curated_material_commitment_hash ===
+              (input.curatedMaterialCommitmentHash ?? null)
           );
         }
         if (source.kind === "personal_note" && input.mode === "continuous") {
@@ -2186,15 +2251,22 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           await client.query(
             `insert into collaboration_pending_share_source_work
                (enrollment_id,pending_share_id,mutation_id,mode,
-                logical_memory_id,source_revision_id)
-             values ($1,$2,$3,$4,$5,$6)`,
+                logical_memory_id,source_revision_id,consent_id,
+                preview_hash,team_workspace_id,include_curated_memory,
+                curated_material_commitment_hash)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
             [
               enrollment.id,
               input.pendingShareId,
               input.mutationId,
               input.mode,
               source.logicalMemoryId,
-              sourceRevisionId
+              sourceRevisionId,
+              input.consentId ?? null,
+              input.previewHash ?? null,
+              input.teamWorkspaceId ?? null,
+              input.includeCuratedMemory ?? false,
+              input.curatedMaterialCommitmentHash ?? null
             ]
           );
         } catch (error) {
@@ -2217,6 +2289,12 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           mutation_id: string;
           mode: "snapshot" | "continuous";
           logical_memory_id: string;
+          source_revision: string;
+          consent_id: string | null;
+          preview_hash: string | null;
+          team_workspace_id: string | null;
+          include_curated_memory: boolean;
+          curated_material_commitment_hash: string | null;
           source_kind: "captured_session" | "personal_note";
           local_session_id: string | null;
           local_note_id: string | null;
@@ -2247,6 +2325,12 @@ export const createCollaborationSharedMemoryAuthorityStore = (
                   enrollment.local_owner_user_id,enrollment.upstream_user_id,
                   claimed.pending_share_id,claimed.mutation_id,claimed.mode,
                   claimed.logical_memory_id,binding.source_kind,
+                  coalesce(captured_revision.source_cursor,
+                    binding.source_revision) as source_revision,
+                  claimed.consent_id,
+                  claimed.preview_hash,claimed.team_workspace_id,
+                  claimed.include_curated_memory,
+                  claimed.curated_material_commitment_hash,
                   local_session.local_session_id,
                   binding.source_note_id as local_note_id,
                   binding.source_revision as local_note_revision,
@@ -2256,6 +2340,8 @@ export const createCollaborationSharedMemoryAuthorityStore = (
                on enrollment.id=claimed.enrollment_id
              join logical_memory_source_revision_bindings binding
                on binding.source_revision_id=claimed.source_revision_id
+             left join captured_session_source_revisions captured_revision
+               on captured_revision.source_revision_id=claimed.source_revision_id
              left join local_captured_session_logical_memories local_session
                on local_session.logical_memory_id=claimed.logical_memory_id
               and local_session.owner_user_id=enrollment.local_owner_user_id`,
@@ -2269,6 +2355,12 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           pendingShareId: row.pending_share_id,
           mutationId: row.mutation_id,
           mode: row.mode,
+          sourceRevision: Number(row.source_revision),
+          consentId: row.consent_id,
+          previewHash: row.preview_hash,
+          teamWorkspaceId: row.team_workspace_id,
+          includeCuratedMemory: row.include_curated_memory,
+          curatedMaterialCommitmentHash: row.curated_material_commitment_hash,
           source:
             row.source_kind === "personal_note"
               ? {

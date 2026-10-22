@@ -14,7 +14,11 @@
     "packages/**/*.test.ts",
     "packages/**/*.test.tsx",
     "packages/**/*.spec.ts",
-    "packages/**/*.spec.tsx"
+    "packages/**/*.spec.tsx",
+    "apps/api/tests/hq-integration/**/*.ts",
+    "apps/desktop/tests/hq713/**/*.ts",
+    "apps/desktop/tests/hq713/**/*.tsx",
+    "apps/desktop/tests/hq713/**/*.cts"
   ],
   "exclude": ["**/dist/**", "**/node_modules/**", "apps/desktop/release/**"]
 }

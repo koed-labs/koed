@@ -8365,6 +8365,71 @@ describeDb("memory repository visibility", () => {
     ).resolves.toEqual([]);
   });
 
+  it("pins Curated host attestation only through exact browser-approved source enrollment", async () => {
+    const user = await repo.createUser({
+      email: `curated-source-pin-${randomUUID()}@example.com`,
+      displayName: "Curated Source Pin Owner"
+    });
+    const { publicKey } = generateKeyPairSync("ed25519");
+    const rawPublicKey = (publicKey.export({ format: "jwk" }) as { x: string })
+      .x;
+    const metadata = {
+      protocolDeploymentId: randomUUID(),
+      sourceOwnerPrincipalId: randomUUID(),
+      curatedSourceAttestationKeyId: randomUUID(),
+      curatedSourceAttestationPublicKey: rawPublicKey,
+      curatedSourceAttestationFingerprint: createHash("sha256")
+        .update(Buffer.from(rawPublicKey, "base64url"))
+        .digest("hex")
+    };
+    const challengeHash = `curated-${randomUUID()}-${randomUUID()}`;
+    const challenge = await repo.createDeviceEnrollmentChallenge({
+      challengeHash,
+      upstreamBackendId: "team-vps",
+      deviceInstanceId: `desktop-${randomUUID()}`,
+      requestedOperationFamilies: ["share_grant_management", "sync"],
+      metadata,
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    await expect(
+      repo.redeemDeviceEnrollmentChallenge(
+        { userId: user.id },
+        {
+          challengeHash,
+          credentialKeyId: `curated-source-key-${randomUUID()}`,
+          verifierKind: "secret_hash",
+          verifierHash: `verifier-${randomUUID()}`
+        }
+      )
+    ).rejects.toMatchObject({ statusCode: 403 });
+    await expect(
+      repo.approveDeviceEnrollmentChallenge({ userId: user.id }, challenge.id, {
+        credentialKeyId: `curated-source-key-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash: `verifier-${randomUUID()}`,
+        metadata: {
+          ...metadata,
+          curatedSourceAttestationFingerprint: "f".repeat(64)
+        }
+      })
+    ).rejects.toMatchObject({ statusCode: 400 });
+    const credential = await repo.approveDeviceEnrollmentChallenge(
+      { userId: user.id },
+      challenge.id,
+      {
+        credentialKeyId: `curated-source-key-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash: `verifier-${randomUUID()}`,
+        metadata
+      }
+    );
+    expect(credential?.metadata).toMatchObject(metadata);
+    expect(credential?.enrollmentChallengeId).toBe(challenge.id);
+    expect(
+      (await repo.getDeviceEnrollmentChallenge(challenge.id))?.redeemedAt
+    ).not.toBeNull();
+  });
+
   it("rejects ambiguous device credential key ids", async () => {
     const user = await repo.createUser({
       email: `invalid-device-key-${randomUUID()}@example.com`

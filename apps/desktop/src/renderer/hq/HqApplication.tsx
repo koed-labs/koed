@@ -3050,6 +3050,10 @@ export function HqApplication({
                   onSelectProject={(projectId) =>
                     selectRoute({ kind: "project", projectId })
                   }
+                  onJoinedProject={async () => {
+                    await projectsStore?.refresh();
+                    await personalMemoryStore?.loadProjects({ silent: true });
+                  }}
                   onSelectDueItem={(projectId, itemId) => {
                     selectRoute({ kind: "project", projectId });
                     setFocusDueItem({ projectId, itemId });
@@ -3098,6 +3102,10 @@ export function HqApplication({
               onSelectProject={(projectId) =>
                 selectRoute({ kind: "project", projectId })
               }
+              onJoinedProject={async () => {
+                await projectsStore?.refresh();
+                await personalMemoryStore?.loadProjects({ silent: true });
+              }}
               onSelectDueItem={(projectId, itemId) => {
                 selectRoute({ kind: "project", projectId });
                 setFocusDueItem({ projectId, itemId });

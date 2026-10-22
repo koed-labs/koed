@@ -727,7 +727,7 @@ export const collaborationCommandRegistry = {
     desktopOperationFamily: write
   },
   "collaboration.preview_shared_memory_candidate": {
-    scope: "personal",
+    scope: (command) => (command.input.curatedTarget ? "team" : "personal"),
     desktopOperationFamily: read
   },
   "collaboration.preview_shared_memory": {

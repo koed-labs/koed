@@ -8,6 +8,12 @@ import {
 } from "@koed/core";
 import {
   capturedSessionSourceFrontierHash,
+  curatedSourceCommitmentHash,
+  curatedSourceAttestationFingerprint,
+  curatedSourceMaterialHash,
+  curatedSourceUpdateHash,
+  verifyCuratedSourceMaterial,
+  verifyCuratedSourceUpdate,
   classifyApprovalActivity,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
@@ -40,6 +46,9 @@ import {
   SHARED_SOURCE_PREVIEW_SCHEMA_VERSION,
   type SharedSourceArtifactReference,
   type SharedSourceArtifactV1,
+  type SignedCuratedSourceMaterialV1,
+  type SignedCuratedSourceUpdateV1,
+  type CuratedSourceCommitmentV1,
   type SharedSourcePreviewReference,
   type SharedSourcePreviewV1,
   type SharedMemorySourceRef,
@@ -211,6 +220,7 @@ export interface SharedMemorySourceBindingDto {
 export interface SharedMemoryCandidatePreviewRecord {
   previewId: string;
   previewHash: string;
+  curatedMaterialCommitmentHash?: string | null;
   previewRevision: 1;
   logicalMemoryId: string;
   source: SharedMemorySourceRef;
@@ -1080,6 +1090,7 @@ export interface SharedMemoryRepository {
       sourceCapabilities: SharedMemoryRepresentation[];
       activationRepresentation: SharedMemoryRepresentation;
       candidateHash: string;
+      curatedMaterialCommitmentHash?: string;
       sourceRevision: number;
       itemCount: number;
       excludedItemCount: number;
@@ -1170,7 +1181,7 @@ export interface SharedMemoryRepository {
         observed: number;
         maximum: number;
       };
-    }) => void;
+    }) => void | Promise<void>;
     ensureCompanion?: (input: {
       actor: ActorContext;
       grant: SharedMemoryGrantRecord;
@@ -1300,6 +1311,30 @@ export interface SharedMemoryRepository {
       candidate: SharedMemoryCandidatePreview;
     }
   ): Promise<SharedMemoryPersistedPreviewRecord>;
+  persistCapturedSessionCuratedSourceMaterial(
+    actor: ActorContext,
+    input: {
+      deviceCredentialId: string;
+      signed: SignedCuratedSourceMaterialV1;
+    }
+  ): Promise<{
+    status: "empty" | "ready";
+    materialHash: string;
+    sourceRevision: number;
+    preview: SharedMemoryPersistedPreviewRecord | null;
+  }>;
+  persistContinuousCuratedSourceUpdate(
+    actor: ActorContext,
+    input: {
+      deviceCredentialId: string;
+      signed: SignedCuratedSourceUpdateV1;
+    }
+  ): Promise<{
+    status: "empty" | "ready";
+    updateHash: string;
+    sourceRevision: number;
+    preview: SharedMemoryPersistedPreviewRecord | null;
+  }>;
   putSourceOwnerPolicy(
     actor: ActorContext,
     input: {
@@ -1332,6 +1367,27 @@ export interface SharedMemoryRepository {
       expectedCurrentVersion: number;
       maximumFidelity: SharedMemoryFidelityCeiling;
       includeCuratedMemory: boolean;
+    }
+  ): Promise<SharedMemoryPolicyRecord>;
+  getCuratedPolicyOptInReview(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      teamWorkspaceId?: string;
+      policyId: string;
+      expectedCurrentVersion: number;
+      maximumFidelity: SharedMemoryFidelityCeiling;
+    }
+  ): Promise<SharedMemoryPolicyRecord | null>;
+  optInCuratedPolicy(
+    actor: ActorContext,
+    input: {
+      mutationId: string;
+      teamId: string;
+      teamWorkspaceId?: string;
+      policyId: string;
+      expectedCurrentVersion: number;
+      maximumFidelity: SharedMemoryFidelityCeiling;
     }
   ): Promise<SharedMemoryPolicyRecord>;
   createSourceOwnerConsent(
@@ -3461,6 +3517,7 @@ const withTransaction = async <T>(
 };
 
 class SharedMemoryBundleInvariantError extends Error {}
+class SharedMemorySourceMaterialAbsentError extends SharedMemoryConflictError {}
 
 const consentMatchesBinding = (
   consent: SharedMemoryConsentRecord,
@@ -3625,6 +3682,62 @@ const requireTeamManager = async (
     [teamId, actor.userId]
   );
   if (!result.rows[0]) throw new SharedMemoryAuthorizationError();
+};
+
+// The approved Step-up is consumed later than the browser review. Lock each
+// live authority row in Team lifecycle order, then lock the policy row. A
+// concurrent role removal, Workspace access change, or Team shutdown must
+// finish before this check or wait until the opt-in transaction commits.
+const lockCuratedPolicyAdministrator = async (
+  client: SqlClient,
+  actor: ActorContext,
+  input: { teamId: string; teamWorkspaceId?: string }
+): Promise<void> => {
+  const team = await client.query<Row>(
+    `select id from teams where id=$1 and lifecycle='active'
+       and entitlement_status in ('active','grace') for update`,
+    [input.teamId]
+  );
+  const membership = await client.query<Row>(
+    `select id from team_memberships where team_id=$1 and user_id=$2
+       and role in ('owner','admin') and status='enabled'
+       and disabled_at is null for update`,
+    [input.teamId, actor.userId]
+  );
+  const user = await client.query<Row>(
+    `select id from users where id=$1 and disabled_at is null
+       and deleted_at is null for update`,
+    [actor.userId]
+  );
+  let workspace: Row | undefined;
+  let access: Row | undefined;
+  if (input.teamWorkspaceId) {
+    workspace = (
+      await client.query<Row>(
+        `select id from team_workspaces where id=$1 and team_id=$2
+           and lifecycle='active' and archived_at is null for update`,
+        [input.teamWorkspaceId, input.teamId]
+      )
+    ).rows[0];
+    access = (
+      await client.query<Row>(
+        `select team_workspace_id from team_workspace_access_grants
+          where team_id=$1 and team_workspace_id=$2 and user_id=$3
+            and access='write'
+            and disabled_at is null for update`,
+        [input.teamId, input.teamWorkspaceId, actor.userId]
+      )
+    ).rows[0];
+  }
+  if (
+    !team.rows[0] ||
+    !membership.rows[0] ||
+    !user.rows[0] ||
+    (input.teamWorkspaceId && (!workspace || !access))
+  )
+    throw new SharedMemoryAuthorizationError(
+      "Curated policy administrator authority is no longer current"
+    );
 };
 
 const requireSourceOwner = async (
@@ -4075,6 +4188,68 @@ const activePolicy = async (
   return (result.rows[0] as Row | undefined) ?? null;
 };
 
+// A Curated opt-in can only expand the current policy's Curated flag. A grant
+// bound to its immediately preceding restrictive version retains that exact
+// grant scope; any later policy mutation again fences the old version.
+const grantCompatiblePolicySql = (
+  alias: "tp" | "wp",
+  scope: "team" | "workspace"
+): string => {
+  const table =
+    scope === "team"
+      ? "team_representation_policies"
+      : "workspace_representation_policies";
+  const scopeMatch =
+    scope === "team"
+      ? `successor.team_id=${alias}.team_id`
+      : `successor.team_id=${alias}.team_id and successor.team_workspace_id=${alias}.team_workspace_id`;
+  return `(${alias}.superseded_at is null or (
+    ${alias}.include_curated_memory=false and exists (
+      select 1 from ${table} successor
+       where successor.policy_id=${alias}.policy_id
+         and successor.version=${alias}.version+1
+         and ${scopeMatch}
+         and successor.maximum_fidelity=${alias}.maximum_fidelity
+         and successor.include_curated_memory=true
+         and successor.superseded_at is null
+    )))`;
+};
+
+const loadGrantCompatibleBoundPolicy = async (
+  client: SqlClient,
+  input:
+    | { scope: "team"; teamId: string; policyId: string; version: number }
+    | {
+        scope: "workspace";
+        teamId: string;
+        teamWorkspaceId: string;
+        policyId: string;
+        version: number;
+      }
+): Promise<Row | null> => {
+  const workspace = input.scope === "workspace";
+  const table = workspace
+    ? "workspace_representation_policies"
+    : "team_representation_policies";
+  const alias = workspace ? "wp" : "tp";
+  const compatible = grantCompatiblePolicySql(
+    alias,
+    workspace ? "workspace" : "team"
+  );
+  const result = await client.query<Row>(
+    `select ${alias}.* from ${table} ${alias}
+      where ${alias}.policy_id=$1 and ${alias}.version=$2
+        and ${alias}.team_id=$3
+        ${workspace ? `and ${alias}.team_workspace_id=$4` : ""}
+        and ${compatible}
+      limit 1`,
+    workspace
+      ? [input.policyId, input.version, input.teamId, input.teamWorkspaceId]
+      : [input.policyId, input.version, input.teamId]
+  );
+  return result.rows[0] ?? null;
+};
+
 const requireCurrentPolicies = async (
   client: SqlClient,
   input: {
@@ -4445,13 +4620,13 @@ export const freezeSharedMemorySemanticRecallBoundaryWithClient = async (
                   join team_representation_policies tp
                     on tp.policy_id=grant_row.team_policy_id
                    and tp.version=grant_row.team_policy_version
-                   and tp.team_id=grant_row.team_id and tp.superseded_at is null
+                   and tp.team_id=grant_row.team_id and ${grantCompatiblePolicySql("tp", "team")}
                   join workspace_representation_policies wp
                     on wp.policy_id=grant_row.workspace_policy_id
                    and wp.version=grant_row.workspace_policy_version
                    and wp.team_id=grant_row.team_id
                    and wp.team_workspace_id=grant_row.team_workspace_id
-                   and wp.superseded_at is null
+                   and ${grantCompatiblePolicySql("wp", "workspace")}
                   left join memory_replicas mr on mr.id=grant_row.remote_replica_id
                    and mr.lifecycle='active' and mr.replica_role='target'
                    and mr.encryption_scope='owner_private_replica'
@@ -4657,10 +4832,10 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
        join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
          and op.version=g.source_owner_policy_version and op.superseded_at is null
        join team_representation_policies tp on tp.policy_id=g.team_policy_id
-         and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
+         and tp.version=g.team_policy_version and tp.team_id=g.team_id and ${grantCompatiblePolicySql("tp", "team")}
        join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
          and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
-         and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+         and wp.team_workspace_id=g.team_workspace_id and ${grantCompatiblePolicySql("wp", "workspace")}
        left join memory_replicas mr on mr.id=g.remote_replica_id
          and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
          and mr.lifecycle='active' and mr.disabled_at is null
@@ -4774,10 +4949,10 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
    join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
      and op.version=g.source_owner_policy_version and op.superseded_at is null
    join team_representation_policies tp on tp.policy_id=g.team_policy_id
-     and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
+     and tp.version=g.team_policy_version and tp.team_id=g.team_id and ${grantCompatiblePolicySql("tp", "team")}
    join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
      and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
-     and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+     and wp.team_workspace_id=g.team_workspace_id and ${grantCompatiblePolicySql("wp", "workspace")}
    left join memory_replicas mr on mr.id=g.remote_replica_id and mr.replica_role='target'
      and mr.encryption_scope='owner_private_replica' and mr.lifecycle='active' and mr.disabled_at is null
    left join cross_identity_sync_relationships sr on sr.local_replica_id=mr.id
@@ -4992,6 +5167,18 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
   }
   return { row, grant, representation, teamSourceBinding };
 };
+
+/** The signed Curated artifact must name the policy this activation can adopt. */
+export const pendingCuratedOwnerPolicyProposalMatches = (input: {
+  current: { policyId: string; version: number } | null;
+  artifact: { policyId: string; version: number };
+  policyChanged: boolean;
+}): boolean =>
+  input.current
+    ? input.artifact.policyId === input.current.policyId &&
+      input.artifact.version ===
+        input.current.version + (input.policyChanged ? 1 : 0)
+    : input.artifact.version === 1;
 
 export const createSharedMemoryRepository = (
   pool: pg.Pool,
@@ -5289,7 +5476,13 @@ export const createSharedMemoryRepository = (
   }): SharedMemoryPolicyRecord => {
     const policyId =
       input.policyId ??
-      (input.existing ? stringValue(input.existing.policy_id) : randomUUID());
+      (input.existing
+        ? stringValue(input.existing.policy_id)
+        : crossIdentitySyncDeterministicUuid({
+            protocol: "koed.source-owner-policy/v1",
+            logicalMemoryId: input.logicalMemoryId,
+            ownerPrincipalId: input.ownerPrincipalId
+          }));
     const version =
       input.version ??
       (input.existing ? numberValue(input.existing.version) + 1 : 1);
@@ -5726,6 +5919,8 @@ export const createSharedMemoryRepository = (
     sourceContentHash: string;
     items: SharedMemoryCanonicalSourceItemDto[];
     manifest: SharedSourceArtifactV1["manifest"];
+    curatedSourceMaterial?: SignedCuratedSourceMaterialV1;
+    curatedSourceUpdate?: SignedCuratedSourceUpdateV1;
   }): SharedSourceArtifactV1 => {
     const artifactBase: Omit<SharedSourceArtifactV1, "artifactHash"> = {
       schemaVersion: SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION,
@@ -5770,7 +5965,13 @@ export const createSharedMemoryRepository = (
       manifest: input.manifest,
       manifestHash: input.manifestHash,
       items: input.items,
-      sourceContentHash: input.sourceContentHash
+      sourceContentHash: input.sourceContentHash,
+      ...(input.curatedSourceMaterial
+        ? { curatedSourceMaterial: input.curatedSourceMaterial }
+        : {}),
+      ...(input.curatedSourceUpdate
+        ? { curatedSourceUpdate: input.curatedSourceUpdate }
+        : {})
     };
     const artifactHash = sharedSourceArtifactHash(artifactBase);
     return {
@@ -7240,6 +7441,11 @@ export const createSharedMemoryRepository = (
         }
       }
     }
+    if (items.length === 0 && manifest.length === 0) {
+      throw new SharedMemorySourceMaterialAbsentError(
+        "Authoritative Shared Memory source material is empty or invalid"
+      );
+    }
     if (
       items.length === 0 ||
       manifest.length === 0 ||
@@ -8025,6 +8231,7 @@ export const createSharedMemoryRepository = (
       authority?: SharedMemoryAuthorityContext;
       continuousGrantId?: string;
       internalPendingShareId?: string;
+      isolationAlreadySet?: boolean;
     }
   ): Promise<{
     context: AuthoritativeSyncContext;
@@ -8032,9 +8239,10 @@ export const createSharedMemoryRepository = (
     teamPolicy: SharedMemoryPolicyRecord;
     workspacePolicy: SharedMemoryPolicyRecord;
   }> => {
-    if (!delegatedDeviceActionGrant) {
+    if (!delegatedDeviceActionGrant && !input.isolationAlreadySet) {
       await client.query("set transaction isolation level repeatable read");
     }
+    let boundContinuousGrant: Row | null = null;
     const owner = await requireSourceOwner(
       client,
       actor,
@@ -8045,7 +8253,9 @@ export const createSharedMemoryRepository = (
         `select 1 from pending_share_operation_records
           where id=$1 and owner_user_id=$2 and logical_memory_id=$3
             and team_id=$4 and team_workspace_id=$5
-            and coalesce(replacement_representation,representation)=$6
+            and (coalesce(replacement_representation,representation)=$6
+              or ($6='curated_assertions' and include_curated_memory=true
+                  and replacement_mutation_id is null))
             and state='preparing' and revoked_at is null
           limit 1`,
         [
@@ -8076,9 +8286,8 @@ export const createSharedMemoryRepository = (
           "Continuous Share Grant authority is required"
         );
       }
-      const continuousAuthority = await client.query<{ allowed: boolean }>(
-        `select exists (
-           select 1
+      const continuousAuthority = await client.query<Row>(
+        `select g.*
              from team_memory_share_grant_records g
              join source_owner_representation_consent_records consent
                on consent.id=g.consent_id
@@ -8112,7 +8321,7 @@ export const createSharedMemoryRepository = (
                   else false end)
                 or ($8 = 'curated_assertions' and consent.include_curated_memory)
               )
-         ) as allowed`,
+           limit 1 for share of g,consent`,
         [
           input.continuousGrantId,
           input.logicalMemoryId,
@@ -8124,7 +8333,8 @@ export const createSharedMemoryRepository = (
           input.representation
         ]
       );
-      if (continuousAuthority.rows[0]?.allowed !== true) {
+      boundContinuousGrant = continuousAuthority.rows[0] ?? null;
+      if (!boundContinuousGrant) {
         throw new SharedMemoryAuthorizationError(
           "Active continuous consent is required"
         );
@@ -8151,12 +8361,12 @@ export const createSharedMemoryRepository = (
         "Continuous materialization requires the existing source-owner policy"
       );
     }
-    const teamPolicyRow = await activePolicy(client, {
+    let teamPolicyRow = await activePolicy(client, {
       table: "team_representation_policies",
       whereSql: "team_id=$1",
       parameters: [input.teamId]
     });
-    const workspacePolicyRow = await activePolicy(client, {
+    let workspacePolicyRow = await activePolicy(client, {
       table: "workspace_representation_policies",
       whereSql: "team_id=$1 and team_workspace_id=$2",
       parameters: [input.teamId, input.teamWorkspaceId]
@@ -8166,15 +8376,139 @@ export const createSharedMemoryRepository = (
         "Team and Workspace representation policies are required"
       );
     }
+    // The signed Curated source arrives before the Pending Share activates its
+    // source-owner policy. Reuse that exact artifact's proposal when building
+    // the activation preview; a second proposal would bind the grant to a
+    // different policy ID and make the signed source unpublishable.
+    let pendingCuratedOwnerPolicyId: string | undefined;
+    if (
+      input.internalPendingShareId &&
+      input.includeCuratedMemory &&
+      input.representation !== "curated_assertions"
+    ) {
+      const boundReceipt = await client.query<Row>(
+        `select curated_material_receipt
+           from pending_share_operations
+          where id=$1 and owner_user_id=$2 and logical_memory_id=$3
+            and team_id=$4 and team_workspace_id=$5
+            and state='preparing' and revoked_at is null
+          limit 1`,
+        [
+          input.internalPendingShareId,
+          actor.userId,
+          input.logicalMemoryId,
+          input.teamId,
+          input.teamWorkspaceId
+        ]
+      );
+      const receipt = boundReceipt.rows[0]?.curated_material_receipt as
+        | Record<string, unknown>
+        | null
+        | undefined;
+      if (receipt && Number(receipt.itemCount) > 0) {
+        const boundArtifact = await client.query<Row>(
+          `select artifact.source_owner_policy_id,
+                artifact.source_owner_policy_version
+           from pending_share_operations pending
+           join shared_source_artifacts artifact
+             on artifact.id::text=pending.curated_material_receipt->>'artifactId'
+            and artifact.logical_memory_id=pending.logical_memory_id
+            and artifact.owner_user_id=pending.owner_user_id
+            and artifact.owner_principal_id=$3
+            and artifact.team_id=pending.team_id
+            and artifact.team_workspace_id=pending.team_workspace_id
+            and artifact.source_revision=pending.source_revision
+            and artifact.representation='curated_assertions'
+            and artifact.maximum_fidelity=pending.maximum_fidelity
+            and artifact.include_curated_memory=true
+            and artifact.invalidated_at is null
+          where pending.id=$1 and pending.owner_user_id=$2
+            and pending.logical_memory_id=$4
+            and pending.team_id=$5 and pending.team_workspace_id=$6
+            and pending.maximum_fidelity=$7
+            and pending.curated_material_receipt is not null
+            and pending.state='preparing' and pending.revoked_at is null
+          limit 1`,
+          [
+            input.internalPendingShareId,
+            actor.userId,
+            owner.ownerPrincipalId,
+            input.logicalMemoryId,
+            input.teamId,
+            input.teamWorkspaceId,
+            input.maximumFidelity
+          ]
+        );
+        if (
+          !boundArtifact.rows[0] ||
+          !pendingCuratedOwnerPolicyProposalMatches({
+            current: existingOwnerPolicy
+              ? {
+                  policyId: stringValue(existingOwnerPolicy.policy_id),
+                  version: numberValue(existingOwnerPolicy.version)
+                }
+              : null,
+            artifact: {
+              policyId: stringValue(
+                boundArtifact.rows[0].source_owner_policy_id
+              ),
+              version: numberValue(
+                boundArtifact.rows[0].source_owner_policy_version
+              )
+            },
+            policyChanged
+          })
+        )
+          throw new SharedMemoryConflictError(
+            "Signed Curated source policy proposal is unavailable"
+          );
+        pendingCuratedOwnerPolicyId = stringValue(
+          boundArtifact.rows[0].source_owner_policy_id
+        );
+      }
+    }
     const ownerPolicy = policyChanged
       ? proposedSourceOwnerPolicy({
           existing: existingOwnerPolicy,
           logicalMemoryId: input.logicalMemoryId,
           ownerPrincipalId: owner.ownerPrincipalId,
           maximumFidelity: input.maximumFidelity,
-          includeCuratedMemory: input.includeCuratedMemory
+          includeCuratedMemory: input.includeCuratedMemory,
+          policyId: pendingCuratedOwnerPolicyId
         })
       : mapPolicy(existingOwnerPolicy!, "source_owner");
+    if (boundContinuousGrant) {
+      if (
+        boundContinuousGrant.maximum_fidelity !== input.maximumFidelity ||
+        boundContinuousGrant.include_curated_memory !==
+          input.includeCuratedMemory ||
+        boundContinuousGrant.source_owner_policy_id !== ownerPolicy.policyId ||
+        numberValue(boundContinuousGrant.source_owner_policy_version) !==
+          ownerPolicy.version
+      )
+        throw new SharedMemoryConflictError(
+          "Continuous preview must retain the approved grant scope"
+        );
+      const boundTeam = await loadGrantCompatibleBoundPolicy(client, {
+        scope: "team",
+        teamId: input.teamId,
+        policyId: stringValue(boundContinuousGrant.team_policy_id),
+        version: numberValue(boundContinuousGrant.team_policy_version)
+      });
+      const boundWorkspace = await loadGrantCompatibleBoundPolicy(client, {
+        scope: "workspace",
+        teamId: input.teamId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        policyId: stringValue(boundContinuousGrant.workspace_policy_id),
+        version: numberValue(boundContinuousGrant.workspace_policy_version)
+      });
+      if (!boundTeam || !boundWorkspace)
+        throw new SharedMemoryConflictError(
+          "Continuous grant policy is no longer current or compatibly restricted"
+        );
+      teamPolicyRow = boundTeam;
+      workspacePolicyRow = boundWorkspace;
+    }
     const teamPolicy = mapPolicy(teamPolicyRow, "team");
     const workspacePolicy = mapPolicy(workspacePolicyRow, "workspace");
     const effectiveMaximumFidelity = intersectSharedMemoryFidelityCeilings(
@@ -8436,6 +8770,1009 @@ export const createSharedMemoryRepository = (
         previewBody
       });
       return persisted.preview;
+    });
+  };
+
+  const assertCuratedDirectSourcesMapped = async (
+    client: pg.PoolClient,
+    context: AuthoritativeSyncContext,
+    commitment: CuratedSourceCommitmentV1
+  ): Promise<void> => {
+    const direct = commitment.assertions.flatMap(
+      (assertion) => assertion.directSources
+    );
+    if (direct.length > 2_048) {
+      throw new SharedMemoryConflictError(
+        "Curated direct-source provenance exceeds the consent boundary"
+      );
+    }
+    const sourceSessionId = commitment.source.sessionId;
+    if (direct.some((source) => source.sourceSessionId !== sourceSessionId)) {
+      throw new SharedMemoryConflictError(
+        "Curated direct sources must belong to the exact Captured Session"
+      );
+    }
+    const byKind = {
+      conversation_item: new Map<string, string>(),
+      memory_event: new Map<string, string>(),
+      memory_node: new Map<string, string>()
+    };
+    for (const source of direct) {
+      const known = byKind[source.kind].get(source.sourceId);
+      if (known && known !== source.revisionHash) {
+        throw new SharedMemoryConflictError(
+          "Curated direct source has conflicting signed revisions"
+        );
+      }
+      byKind[source.kind].set(source.sourceId, source.revisionHash);
+    }
+    const conversationIds = [...byKind.conversation_item.keys()];
+    if (conversationIds.length > 0) {
+      const mapped = await client.query<Row>(
+        `select external_item_id
+           from conversation_items
+          where owner_user_id=$1 and session_id=$2
+            and visibility='personal' and personal_deleted_at is null
+            and memory_excluded_at is null
+            and external_item_id=any($3::text[])
+            and canonical_item_key=('sync:' || $4::text || ':canonical-item:' || external_item_id)
+            and source_hash ~ '^[0-9a-f]{64}$'`,
+        [
+          context.ownerUserId,
+          context.localSessionId,
+          conversationIds,
+          context.syncRelationshipId
+        ]
+      );
+      if (
+        new Set(mapped.rows.map((row) => stringValue(row.external_item_id)))
+          .size !== conversationIds.length
+      )
+        throw new SharedMemoryConflictError(
+          "Curated conversation source is not in the current replica"
+        );
+    }
+    const eventIds = [...byKind.memory_event.keys()];
+    if (eventIds.length > 0) {
+      const mapped = await client.query<Row>(
+        `select mapping.origin_event_id
+           from sync_event_mappings mapping
+           join memory_events event on event.id=mapping.local_memory_event_id
+          where mapping.sync_relationship_id=$1 and mapping.active=true
+            and mapping.invalidated_at is null and mapping.source_cursor<=$2
+            and mapping.origin_event_id=any($3::uuid[])
+            and mapping.revision_hash ~ '^[0-9a-f]{64}$'
+            and event.owner_user_id=$4 and event.session_id=$5
+            and event.visibility='personal' and event.invalidated_at is null
+            and event.personal_deleted_at is null`,
+        [
+          context.syncRelationshipId,
+          context.sourceCursor,
+          eventIds,
+          context.ownerUserId,
+          context.localSessionId
+        ]
+      );
+      if (
+        new Set(mapped.rows.map((row) => stringValue(row.origin_event_id)))
+          .size !== eventIds.length
+      )
+        throw new SharedMemoryConflictError(
+          "Curated Memory Event is not in the current replica"
+        );
+    }
+    const nodeIds = [...byKind.memory_node.keys()];
+    if (nodeIds.length > 0) {
+      const mapped = await client.query<Row>(
+        `select mapping.origin_node_id
+           from sync_summary_node_mappings mapping
+           join memory_nodes node on node.id=mapping.local_memory_node_id
+          where mapping.sync_relationship_id=$1 and mapping.active=true
+            and mapping.invalidated_at is null
+            and mapping.origin_node_id=any($2::uuid[])
+            and mapping.revision_hash ~ '^[0-9a-f]{64}$'
+            and node.owner_user_id=$3 and node.session_id=$4
+            and node.visibility='personal' and node.invalidated_at is null
+            and node.personal_deleted_at is null`,
+        [
+          context.syncRelationshipId,
+          nodeIds,
+          context.ownerUserId,
+          context.localSessionId
+        ]
+      );
+      if (
+        new Set(mapped.rows.map((row) => stringValue(row.origin_node_id)))
+          .size !== nodeIds.length
+      )
+        throw new SharedMemoryConflictError(
+          "Curated LCM source is not in the current replica"
+        );
+    }
+  };
+
+  const persistCapturedSessionCuratedSourceMaterial = async (
+    actor: ActorContext,
+    input: Parameters<
+      SharedMemoryRepository["persistCapturedSessionCuratedSourceMaterial"]
+    >[1]
+  ): ReturnType<
+    SharedMemoryRepository["persistCapturedSessionCuratedSourceMaterial"]
+  > => {
+    const signed = input.signed;
+    const material = signed.material;
+    const commitment = material.commitment;
+    if (
+      commitment.items.some((item) =>
+        Object.hasOwn(item.content, "expansionItems")
+      )
+    ) {
+      throw new SharedMemoryConflictError(
+        "Signed Curated material cannot contain source expansion"
+      );
+    }
+    if (
+      material.commitmentHash !== curatedSourceCommitmentHash(commitment) ||
+      material.pendingShareId.length === 0
+    ) {
+      throw new SharedMemoryConflictError(
+        "Curated source commitment is invalid"
+      );
+    }
+    const materialHash = curatedSourceMaterialHash(material);
+    return withTransaction(pool, async (client) => {
+      if (!delegatedDeviceActionGrant) {
+        await client.query("set transaction isolation level repeatable read");
+      }
+      const pendingResult = await client.query<Row>(
+        `select pending.*,candidate.curated_material_commitment_hash,
+                candidate.preview_hash as candidate_preview_hash,
+                binding.source_kind,binding.source_session_id,
+                credential.metadata as credential_metadata,
+                credential.upstream_backend_id,
+                credential.enrollment_challenge_id,
+                challenge.metadata as challenge_metadata,
+                challenge.bound_by_user_id,challenge.redeemed_at as challenge_redeemed_at,
+                consent.state as source_consent_state,
+                consent.revoked_at as source_consent_revoked_at,
+                consent.expires_at as source_consent_expires_at
+           from pending_share_operations pending
+           join shared_memory_candidate_previews candidate
+             on candidate.id=pending.preview_id
+            and candidate.preview_hash=pending.preview_hash
+            and candidate.invalidated_at is null
+           join logical_memory_source_revision_bindings binding
+             on binding.source_revision_id=pending.source_revision_id
+           left join source_owner_representation_consents consent
+             on consent.id=pending.consent_id
+            and consent.logical_memory_id=pending.logical_memory_id
+            and consent.team_id=pending.team_id
+            and consent.team_workspace_id=pending.team_workspace_id
+           join device_credentials credential on credential.id=$3
+            and credential.owner_user_id=$2 and credential.revoked_at is null
+            and (credential.expires_at is null or credential.expires_at>now())
+           join device_enrollment_challenges challenge
+             on challenge.id=credential.enrollment_challenge_id
+          where pending.id=$1 and pending.owner_user_id=$2
+            and pending.state in ('preparing','activated')
+            and pending.revoked_at is null
+            and pending.replacement_mutation_id is null
+          for update of pending,candidate,credential`,
+        [material.pendingShareId, actor.userId, input.deviceCredentialId]
+      );
+      const pending = pendingResult.rows[0];
+      if (!pending)
+        throw new SharedMemoryAuthorizationError(
+          "Curated source upload requires an active Pending Share"
+        );
+      if (pending.state === "activated") {
+        const activatedConsent = await client.query<Row>(
+          `select state,revoked_at,expires_at
+             from source_owner_representation_consents
+            where id=$1 and logical_memory_id=$2 and team_id=$3
+              and team_workspace_id=$4 for update`,
+          [
+            pending.consent_id,
+            pending.logical_memory_id,
+            pending.team_id,
+            pending.team_workspace_id
+          ]
+        );
+        const consent = activatedConsent.rows[0];
+        if (
+          !consent ||
+          consent.state !== "active" ||
+          consent.revoked_at !== null ||
+          (consent.expires_at !== null &&
+            new Date(consent.expires_at as Date).getTime() <= Date.now())
+        )
+          throw new SharedMemoryConflictError(
+            "Curated source consent is no longer active"
+          );
+      }
+      if (
+        pending.source_kind !== "captured_session" ||
+        (pending.state === "activated" &&
+          (pending.source_consent_state !== "active" ||
+            pending.source_consent_revoked_at !== null ||
+            (pending.source_consent_expires_at !== null &&
+              new Date(pending.source_consent_expires_at as Date).getTime() <=
+                Date.now()))) ||
+        pending.include_curated_memory !== true ||
+        pending.consent_id !== material.consentId ||
+        pending.preview_hash !== material.previewHash ||
+        pending.curated_material_commitment_hash !== material.commitmentHash ||
+        pending.logical_memory_id !== commitment.source.logicalMemoryId ||
+        pending.source_session_id !== commitment.source.sessionId ||
+        numberValue(pending.source_revision) !== commitment.sourceRevision ||
+        pending.team_id !== commitment.teamId ||
+        pending.team_workspace_id !== commitment.teamWorkspaceId ||
+        pending.upstream_backend_id !== commitment.teamBackendId
+      ) {
+        throw new SharedMemoryConflictError(
+          "Curated source no longer matches the exact approved Share"
+        );
+      }
+      await requireWorkspaceSharePermission(
+        client,
+        actor,
+        commitment.teamId,
+        commitment.teamWorkspaceId
+      );
+      await lockSharedMemoryPublicationFenceWithClient(
+        client,
+        commitment.source.logicalMemoryId
+      );
+      for (const assertion of commitment.assertions) {
+        const fence = await client.query<Row>(
+          `select classification_version from team_memory_curated_assertion_fences
+            where logical_memory_id=$1 and assertion_id=$2 for update`,
+          [commitment.source.logicalMemoryId, assertion.assertionId]
+        );
+        if (
+          fence.rows[0] &&
+          numberValue(fence.rows[0].classification_version) >=
+            assertion.classificationVersion
+        )
+          throw new SharedMemoryConflictError(
+            "Curated source was withdrawn before upload"
+          );
+      }
+      const metadata = pending.credential_metadata as Record<string, unknown>;
+      const challengeMetadata = pending.challenge_metadata as Record<
+        string,
+        unknown
+      >;
+      const pinnedKeyId = metadata?.curatedSourceAttestationKeyId;
+      const pinnedPublicKey = metadata?.curatedSourceAttestationPublicKey;
+      if (
+        typeof pinnedKeyId !== "string" ||
+        typeof pinnedPublicKey !== "string" ||
+        metadata?.curatedSourceAttestationFingerprint !==
+          challengeMetadata?.curatedSourceAttestationFingerprint ||
+        (typeof pinnedPublicKey === "string" &&
+          metadata?.curatedSourceAttestationFingerprint !==
+            curatedSourceAttestationFingerprint(pinnedPublicKey)) ||
+        pinnedKeyId !== challengeMetadata?.curatedSourceAttestationKeyId ||
+        pinnedPublicKey !==
+          challengeMetadata?.curatedSourceAttestationPublicKey ||
+        pending.bound_by_user_id !== actor.userId ||
+        pending.challenge_redeemed_at === null ||
+        !verifyCuratedSourceMaterial(signed, {
+          keyId: pinnedKeyId,
+          publicKey: pinnedPublicKey
+        }) ||
+        metadata?.protocolDeploymentId !==
+          commitment.sourceDeploymentProtocolId ||
+        metadata?.sourceOwnerPrincipalId !== commitment.sourceOwnerPrincipalId
+      ) {
+        throw new SharedMemoryAuthorizationError(
+          "Curated source host attestation is unavailable"
+        );
+      }
+      const workspaceProject = await client.query<Row>(
+        `select id from workspace_projects where id=$1 and team_id=$2
+          and workspace_id=$3 and lifecycle='active' limit 1`,
+        [
+          commitment.workspaceProjectId,
+          commitment.teamId,
+          commitment.teamWorkspaceId
+        ]
+      );
+      if (
+        !workspaceProject.rows[0] ||
+        (pending.workspace_project_id !== null &&
+          pending.workspace_project_id !== commitment.workspaceProjectId)
+      ) {
+        throw new SharedMemoryConflictError(
+          "Curated source Project binding is unavailable"
+        );
+      }
+      const existingReceipt = pending.curated_material_receipt as Record<
+        string,
+        unknown
+      > | null;
+      if (existingReceipt) {
+        const currentPolicies = await requireCurrentPolicies(client, {
+          logicalMemoryId: commitment.source.logicalMemoryId,
+          ownerPrincipalId: commitment.sourceOwnerPrincipalId,
+          teamId: commitment.teamId,
+          teamWorkspaceId: commitment.teamWorkspaceId
+        });
+        if (
+          !fidelityConsentFromRow(currentPolicies.owner).includeCuratedMemory ||
+          !fidelityConsentFromRow(currentPolicies.team).includeCuratedMemory ||
+          !fidelityConsentFromRow(currentPolicies.workspace)
+            .includeCuratedMemory
+        )
+          throw new SharedMemoryConflictError(
+            "Curated source policy is no longer active"
+          );
+        if (
+          existingReceipt.materialHash !== materialHash ||
+          existingReceipt.commitmentHash !== material.commitmentHash
+        )
+          throw new SharedMemoryConflictError(
+            "Curated source upload changed after acknowledgement"
+          );
+        if (Number(existingReceipt.itemCount) > 0) {
+          const retained = await client.query<Row>(
+            `select id from shared_source_artifacts where id=$1
+              and logical_memory_id=$2 and owner_user_id=$3
+              and team_id=$4 and team_workspace_id=$5
+              and representation='curated_assertions'
+              and source_revision=$6 and invalidated_at is null limit 1`,
+            [
+              existingReceipt.artifactId,
+              commitment.source.logicalMemoryId,
+              actor.userId,
+              commitment.teamId,
+              commitment.teamWorkspaceId,
+              commitment.sourceRevision
+            ]
+          );
+          if (!retained.rows[0])
+            throw new SharedMemoryConflictError(
+              "Acknowledged Curated source is unavailable"
+            );
+        }
+        return {
+          status:
+            Number(existingReceipt.itemCount) === 0
+              ? ("empty" as const)
+              : ("ready" as const),
+          materialHash,
+          sourceRevision: commitment.sourceRevision,
+          preview: null
+        };
+      }
+      if (pending.state !== "preparing")
+        throw new SharedMemoryConflictError(
+          "Curated source upload is no longer pending"
+        );
+      const remoteReplica = await client.query<Row>(
+        `select replica.id from memory_replicas replica
+          join cross_identity_sync_relationships relationship
+            on relationship.local_replica_id=replica.id
+           and relationship.side='target' and relationship.revoked_at is null
+          where replica.logical_memory_id=$1 and replica.owner_user_id=$2
+            and replica.replica_role='target' and replica.lifecycle='active'
+            and replica.disabled_at is null limit 1`,
+        [commitment.source.logicalMemoryId, actor.userId]
+      );
+      if (!remoteReplica.rows[0])
+        throw new SharedMemoryConflictError(
+          "Curated source replica is not ready"
+        );
+      const { context } = await loadAuthoritativeSyncContext(client, actor, {
+        logicalMemoryId: commitment.source.logicalMemoryId,
+        remoteReplicaId: stringValue(remoteReplica.rows[0].id),
+        teamId: commitment.teamId,
+        teamWorkspaceId: commitment.teamWorkspaceId,
+        representation: "curated_assertions",
+        sourceCapabilities: representationArrayValue(
+          pending.source_capabilities
+        ),
+        activationRepresentation: representationValue(
+          pending.activation_representation
+        ),
+        mode: pending.mode as SharedMemoryConsentMode,
+        maximumFidelity:
+          pending.maximum_fidelity as SharedMemoryFidelityCeiling,
+        includeCuratedMemory: true,
+        internalPendingShareId: material.pendingShareId,
+        isolationAlreadySet: true
+      });
+      if (
+        context.sourceSessionId !== commitment.source.sessionId ||
+        context.sourceRevision !== commitment.sourceRevision ||
+        context.teamBackendId !== commitment.teamBackendId ||
+        context.ownerPrincipalId !== commitment.sourceOwnerPrincipalId ||
+        context.deviceCredentialId !== input.deviceCredentialId
+      )
+        throw new SharedMemoryConflictError(
+          "Curated source is outside the current replica frontier"
+        );
+      await assertCuratedDirectSourcesMapped(client, context, commitment);
+      const items = commitment.items.map((item) =>
+        validateSharedMemoryCanonicalSourceItem({
+          representation: "curated_assertions",
+          logicalMemoryId: context.logicalMemoryId,
+          sourceRevision: context.sourceRevision,
+          item: item as SharedMemorySourceItemInput
+        })
+      );
+      if (
+        items.length !== commitment.manifest.length ||
+        items.length !== commitment.assertions.length ||
+        new Set(items.map((item) => item.sourceId)).size !== items.length
+      ) {
+        throw new SharedMemoryConflictError(
+          "Curated source manifest is incomplete"
+        );
+      }
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index]!;
+        const entry = commitment.manifest[index]!;
+        const assertion = commitment.assertions[index]!;
+        const directIds = assertion.directSources.map(
+          (source) => source.sourceId
+        );
+        if (
+          item.itemType !== "curated_assertion" ||
+          entry.sourceId !== item.sourceId ||
+          assertion.assertionId !== item.sourceId ||
+          entry.sourceCursor !== commitment.sourceRevision ||
+          item.content.scopeProtocolVersion !== 1 ||
+          item.content.classificationVersion !==
+            assertion.classificationVersion ||
+          item.content.sourceCount !== directIds.length ||
+          entry.revisionHash !==
+            crossIdentitySyncDigest({
+              assertionText: item.content.assertionText,
+              topicTitle: item.content.topicTitle,
+              tags: item.content.tags,
+              classificationVersion: assertion.classificationVersion,
+              expiresAt: assertion.expiresAt,
+              sourceProjectId: commitment.sourceProjectId,
+              workspaceProjectId: commitment.workspaceProjectId,
+              directSources: assertion.directSources
+            }) ||
+          (assertion.expiresAt !== null &&
+            new Date(assertion.expiresAt).getTime() <= Date.now())
+        )
+          throw new SharedMemoryConflictError(
+            "Curated source direct provenance changed"
+          );
+        const fence = await client.query<Row>(
+          `select classification_version from team_memory_curated_assertion_fences
+            where logical_memory_id=$1 and assertion_id=$2 for update`,
+          [context.logicalMemoryId, assertion.assertionId]
+        );
+        if (
+          fence.rows[0] &&
+          numberValue(fence.rows[0].classification_version) >=
+            assertion.classificationVersion
+        )
+          throw new SharedMemoryConflictError(
+            "Curated source was withdrawn before upload"
+          );
+      }
+      let preview: SharedMemoryPersistedPreviewRecord | null = null;
+      let artifactId: string | null = null;
+      if (items.length > 0) {
+        const materialHashes = sourceMaterialHashes({
+          source: commitment.source,
+          representation: "curated_assertions",
+          logicalMemoryId: context.logicalMemoryId,
+          sourceCursor: context.sourceCursor,
+          manifest: commitment.manifest,
+          items
+        });
+        const artifactBody = buildArtifactBody({
+          context,
+          representation: "curated_assertions",
+          ...materialHashes,
+          items,
+          manifest: commitment.manifest,
+          curatedSourceMaterial: signed
+        });
+        const persisted = await persistArtifactAndPreview(client, actor, {
+          context,
+          artifactBody,
+          previewBody: buildPreviewBody({ artifact: artifactBody })
+        });
+        preview = persisted.preview;
+        artifactId = persisted.artifact.artifactId;
+      }
+      const receipt = {
+        materialHash,
+        commitmentHash: material.commitmentHash,
+        previewHash: material.previewHash,
+        consentId: material.consentId,
+        sourceRevision: commitment.sourceRevision,
+        itemCount: items.length,
+        artifactId
+      };
+      await client.query(
+        `update pending_share_operations set curated_material_receipt=$2::jsonb,
+             updated_at=now() where id=$1 and curated_material_receipt is null`,
+        [material.pendingShareId, JSON.stringify(receipt)]
+      );
+      return {
+        status: items.length === 0 ? ("empty" as const) : ("ready" as const),
+        materialHash,
+        sourceRevision: commitment.sourceRevision,
+        preview
+      };
+    });
+  };
+
+  const persistContinuousCuratedSourceUpdate = async (
+    actor: ActorContext,
+    input: Parameters<
+      SharedMemoryRepository["persistContinuousCuratedSourceUpdate"]
+    >[1]
+  ): ReturnType<
+    SharedMemoryRepository["persistContinuousCuratedSourceUpdate"]
+  > => {
+    const signed = input.signed;
+    const update = signed.update;
+    const commitment = update.commitment;
+    if (
+      commitment.items.some((item) =>
+        Object.hasOwn(item.content, "expansionItems")
+      )
+    ) {
+      throw new SharedMemoryConflictError(
+        "Signed Curated update cannot contain source expansion"
+      );
+    }
+    if (update.commitmentHash !== curatedSourceCommitmentHash(commitment))
+      throw new SharedMemoryConflictError(
+        "Curated source update commitment is invalid"
+      );
+    const updateHash = curatedSourceUpdateHash(update);
+    return withTransaction(pool, async (client) => {
+      if (!delegatedDeviceActionGrant)
+        await client.query("set transaction isolation level repeatable read");
+      const authority = await client.query<Row>(
+        `select pending.*,binding.source_kind,binding.source_session_id,
+                grant_row.id as active_grant_id,grant_row.consent_id as grant_consent_id,
+                grant_row.remote_replica_id as grant_replica_id,
+                grant_row.lifecycle as grant_lifecycle,grant_row.revoked_at as grant_revoked_at,
+                grant_row.curated_source_update_receipt,
+                grant_row.frozen_at as grant_frozen_at,
+                credential.metadata as credential_metadata,
+                credential.upstream_backend_id,
+                credential.enrollment_challenge_id,
+                challenge.metadata as challenge_metadata,
+                challenge.bound_by_user_id,challenge.redeemed_at as challenge_redeemed_at
+           from pending_share_operations pending
+           join logical_memory_source_revision_bindings binding
+             on binding.source_revision_id=pending.source_revision_id
+           join team_memory_share_grants grant_row on grant_row.id=pending.grant_id
+           join device_credentials credential on credential.id=$3
+            and credential.owner_user_id=$2 and credential.revoked_at is null
+            and (credential.expires_at is null or credential.expires_at>now())
+           join device_enrollment_challenges challenge
+             on challenge.id=credential.enrollment_challenge_id
+          where pending.id=$1 and pending.owner_user_id=$2
+            and pending.state='activated' and pending.revoked_at is null
+            and pending.replacement_mutation_id is null
+          for update of pending,grant_row,credential`,
+        [update.originalPendingShareId, actor.userId, input.deviceCredentialId]
+      );
+      const pending = authority.rows[0];
+      if (
+        !pending ||
+        pending.source_kind !== "captured_session" ||
+        pending.mode !== "continuous" ||
+        pending.include_curated_memory !== true ||
+        pending.active_grant_id !== update.grantId ||
+        pending.grant_consent_id !== update.consentId ||
+        pending.consent_id !== update.consentId ||
+        pending.preview_hash !== update.previewHash ||
+        pending.grant_lifecycle !== "active" ||
+        pending.grant_revoked_at !== null ||
+        pending.grant_frozen_at !== null ||
+        pending.logical_memory_id !== commitment.source.logicalMemoryId ||
+        pending.source_session_id !== commitment.source.sessionId ||
+        pending.team_id !== commitment.teamId ||
+        pending.team_workspace_id !== commitment.teamWorkspaceId ||
+        pending.upstream_backend_id !== commitment.teamBackendId ||
+        (pending.workspace_project_id !== null &&
+          pending.workspace_project_id !== commitment.workspaceProjectId)
+      ) {
+        throw new SharedMemoryAuthorizationError(
+          "Active continuous Curated consent is unavailable"
+        );
+      }
+      await lockSharedMemoryPublicationFenceWithClient(
+        client,
+        commitment.source.logicalMemoryId
+      );
+      const metadata = pending.credential_metadata as Record<string, unknown>;
+      const challengeMetadata = pending.challenge_metadata as Record<
+        string,
+        unknown
+      >;
+      const keyId = metadata?.curatedSourceAttestationKeyId;
+      const publicKey = metadata?.curatedSourceAttestationPublicKey;
+      if (
+        typeof keyId !== "string" ||
+        typeof publicKey !== "string" ||
+        metadata.curatedSourceAttestationFingerprint !==
+          challengeMetadata.curatedSourceAttestationFingerprint ||
+        metadata.curatedSourceAttestationFingerprint !==
+          curatedSourceAttestationFingerprint(publicKey) ||
+        keyId !== challengeMetadata.curatedSourceAttestationKeyId ||
+        publicKey !== challengeMetadata.curatedSourceAttestationPublicKey ||
+        pending.bound_by_user_id !== actor.userId ||
+        pending.challenge_redeemed_at === null ||
+        metadata.protocolDeploymentId !==
+          commitment.sourceDeploymentProtocolId ||
+        metadata.sourceOwnerPrincipalId !== commitment.sourceOwnerPrincipalId ||
+        !verifyCuratedSourceUpdate(signed, { keyId, publicKey })
+      ) {
+        throw new SharedMemoryAuthorizationError(
+          "Curated source update host attestation is unavailable"
+        );
+      }
+      await requireWorkspaceSharePermission(
+        client,
+        actor,
+        commitment.teamId,
+        commitment.teamWorkspaceId
+      );
+      const currentPolicies = await requireCurrentPolicies(client, {
+        logicalMemoryId: commitment.source.logicalMemoryId,
+        ownerPrincipalId: commitment.sourceOwnerPrincipalId,
+        teamId: commitment.teamId,
+        teamWorkspaceId: commitment.teamWorkspaceId
+      });
+      if (
+        !fidelityConsentFromRow(currentPolicies.owner).includeCuratedMemory ||
+        !fidelityConsentFromRow(currentPolicies.team).includeCuratedMemory ||
+        !fidelityConsentFromRow(currentPolicies.workspace).includeCuratedMemory
+      )
+        throw new SharedMemoryConflictError(
+          "Curated source policy is no longer active"
+        );
+      for (const assertion of commitment.assertions) {
+        if (
+          assertion.expiresAt !== null &&
+          new Date(assertion.expiresAt).getTime() <= Date.now()
+        )
+          throw new SharedMemoryConflictError(
+            "Curated update assertion has expired"
+          );
+        const fence = await client.query<Row>(
+          `select classification_version from team_memory_curated_assertion_fences
+            where logical_memory_id=$1 and assertion_id=$2 for update`,
+          [commitment.source.logicalMemoryId, assertion.assertionId]
+        );
+        if (
+          fence.rows[0] &&
+          numberValue(fence.rows[0].classification_version) >=
+            assertion.classificationVersion
+        )
+          throw new SharedMemoryConflictError(
+            "Curated update was withdrawn before upload"
+          );
+      }
+      const prior = pending.curated_source_update_receipt as Record<
+        string,
+        unknown
+      > | null;
+      if (prior) {
+        const priorGeneration = numberValue(prior.generation);
+        if (
+          update.generation < priorGeneration ||
+          (update.generation === priorGeneration &&
+            prior.updateHash !== updateHash)
+        )
+          throw new SharedMemoryConflictError(
+            "Curated source update generation is stale"
+          );
+        if (update.generation === priorGeneration) {
+          if (Number(prior.itemCount) > 0) {
+            const retained = await client.query<Row>(
+              `select id from shared_source_artifacts where id=$1
+                and logical_memory_id=$2 and owner_user_id=$3
+                and team_id=$4 and team_workspace_id=$5
+                and representation='curated_assertions'
+                and source_revision=$6 and invalidated_at is null limit 1`,
+              [
+                prior.artifactId,
+                commitment.source.logicalMemoryId,
+                actor.userId,
+                commitment.teamId,
+                commitment.teamWorkspaceId,
+                prior.sourceRevision
+              ]
+            );
+            if (!retained.rows[0])
+              throw new SharedMemoryConflictError(
+                "Acknowledged Curated update is unavailable"
+              );
+          }
+          return {
+            status:
+              Number(prior.itemCount) === 0
+                ? ("empty" as const)
+                : ("ready" as const),
+            updateHash,
+            sourceRevision: numberValue(prior.sourceRevision),
+            preview: null
+          };
+        }
+      } else if (update.generation < 1) {
+        throw new SharedMemoryConflictError(
+          "Curated source update generation is invalid"
+        );
+      }
+      const project = await client.query<Row>(
+        `select id from workspace_projects where id=$1 and team_id=$2
+          and workspace_id=$3 and lifecycle='active' limit 1`,
+        [
+          commitment.workspaceProjectId,
+          commitment.teamId,
+          commitment.teamWorkspaceId
+        ]
+      );
+      if (!project.rows[0])
+        throw new SharedMemoryConflictError(
+          "Curated source Project link is unavailable"
+        );
+      const { context } = await loadAuthoritativeSyncContext(client, actor, {
+        logicalMemoryId: commitment.source.logicalMemoryId,
+        remoteReplicaId: stringValue(pending.grant_replica_id),
+        teamId: commitment.teamId,
+        teamWorkspaceId: commitment.teamWorkspaceId,
+        representation: "curated_assertions",
+        sourceCapabilities: representationArrayValue(
+          pending.source_capabilities
+        ),
+        activationRepresentation: representationValue(
+          pending.activation_representation
+        ),
+        mode: "continuous",
+        maximumFidelity:
+          pending.maximum_fidelity as SharedMemoryFidelityCeiling,
+        includeCuratedMemory: true,
+        continuousGrantId: update.grantId,
+        isolationAlreadySet: true
+      });
+      if (
+        context.sourceSessionId !== commitment.source.sessionId ||
+        context.sourceRevision !== commitment.sourceRevision ||
+        context.teamBackendId !== commitment.teamBackendId ||
+        context.ownerPrincipalId !== commitment.sourceOwnerPrincipalId ||
+        context.deviceCredentialId !== input.deviceCredentialId
+      ) {
+        throw new SharedMemoryConflictError(
+          "Curated update is outside the current source frontier"
+        );
+      }
+      await assertCuratedDirectSourcesMapped(client, context, commitment);
+      const items = commitment.items.map((item) =>
+        validateSharedMemoryCanonicalSourceItem({
+          representation: "curated_assertions",
+          logicalMemoryId: context.logicalMemoryId,
+          sourceRevision: context.sourceRevision,
+          item: item as SharedMemorySourceItemInput
+        })
+      );
+      if (
+        items.length !== commitment.manifest.length ||
+        items.length !== commitment.assertions.length ||
+        new Set(items.map((item) => item.sourceId)).size !== items.length
+      )
+        throw new SharedMemoryConflictError(
+          "Curated source update manifest is incomplete"
+        );
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index]!;
+        const entry = commitment.manifest[index]!;
+        const assertion = commitment.assertions[index]!;
+        const sourceIds = assertion.directSources.map(
+          (source) => source.sourceId
+        );
+        if (
+          item.itemType !== "curated_assertion" ||
+          entry.sourceId !== item.sourceId ||
+          assertion.assertionId !== item.sourceId ||
+          entry.sourceCursor !== commitment.sourceRevision ||
+          item.content.scopeProtocolVersion !== 1 ||
+          item.content.classificationVersion !==
+            assertion.classificationVersion ||
+          item.content.sourceCount !== sourceIds.length ||
+          entry.revisionHash !==
+            crossIdentitySyncDigest({
+              assertionText: item.content.assertionText,
+              topicTitle: item.content.topicTitle,
+              tags: item.content.tags,
+              classificationVersion: assertion.classificationVersion,
+              expiresAt: assertion.expiresAt,
+              sourceProjectId: commitment.sourceProjectId,
+              workspaceProjectId: commitment.workspaceProjectId,
+              directSources: assertion.directSources
+            }) ||
+          (assertion.expiresAt !== null &&
+            new Date(assertion.expiresAt).getTime() <= Date.now())
+        )
+          throw new SharedMemoryConflictError(
+            "Curated update direct provenance changed"
+          );
+      }
+      let preview: SharedMemoryPersistedPreviewRecord | null = null;
+      let artifactId: string | null = null;
+      if (items.length > 0) {
+        const hashes = sourceMaterialHashes({
+          source: commitment.source,
+          representation: "curated_assertions",
+          logicalMemoryId: context.logicalMemoryId,
+          sourceCursor: context.sourceCursor,
+          manifest: commitment.manifest,
+          items
+        });
+        const artifactBody = buildArtifactBody({
+          context,
+          representation: "curated_assertions",
+          ...hashes,
+          items,
+          manifest: commitment.manifest,
+          curatedSourceUpdate: signed
+        });
+        const persisted = await persistArtifactAndPreview(client, actor, {
+          context,
+          artifactBody,
+          previewBody: buildPreviewBody({ artifact: artifactBody })
+        });
+        preview = persisted.preview;
+        artifactId = persisted.artifact.artifactId;
+      }
+      const currentHashes = new Map(
+        commitment.manifest.map((entry) => [
+          sharedMemoryGrantScopedSourceId(update.grantId, entry.sourceId),
+          entry.revisionHash
+        ])
+      );
+      const currentExpiries = new Map(
+        commitment.assertions.map((assertion) => [
+          sharedMemoryGrantScopedSourceId(
+            update.grantId,
+            assertion.assertionId
+          ),
+          assertion.expiresAt
+        ])
+      );
+      const oldRepresentations = await client.query<Row>(
+        `select id,state from team_memory_representations
+          where share_grant_id=$1 and representation='curated_assertions'
+            and frozen_snapshot=false and state in ('pending','available','stale')
+          for update`,
+        [update.grantId]
+      );
+      const oldItems = await client.query<Row>(
+        `select item.id,item.representation_id,item.pseudonymous_source_id,
+                eligibility.semantic_item_id as eligible_item_id,
+                eligibility.pinned_revision_hash,eligibility.blocked_at,
+                item.team_id,item.team_workspace_id,item.logical_memory_id
+           from team_memory_semantic_items item
+           left join team_memory_curated_item_eligibility eligibility
+             on eligibility.semantic_item_id=item.id
+          where item.share_grant_id=$1
+            and item.representation_id=any($2::uuid[])
+          for update of item`,
+        [update.grantId, oldRepresentations.rows.map((row) => row.id)]
+      );
+      const retainedCounts = new Map<string, number>();
+      const retainedExpiries = new Map<string, number[]>();
+      for (const oldItem of oldItems.rows) {
+        const representationId = stringValue(oldItem.representation_id);
+        const pseudonymousSourceId = stringValue(
+          oldItem.pseudonymous_source_id
+        );
+        const currentHash = currentHashes.get(pseudonymousSourceId);
+        const stillEligible =
+          oldItem.eligible_item_id !== null &&
+          oldItem.blocked_at === null &&
+          currentHash !== undefined &&
+          oldItem.pinned_revision_hash === currentHash;
+        if (stillEligible) {
+          retainedCounts.set(
+            representationId,
+            (retainedCounts.get(representationId) ?? 0) + 1
+          );
+          const expiry = currentExpiries.get(pseudonymousSourceId);
+          if (expiry !== null && expiry !== undefined) {
+            const times = retainedExpiries.get(representationId) ?? [];
+            times.push(new Date(expiry).getTime());
+            retainedExpiries.set(representationId, times);
+          }
+          continue;
+        }
+        await client.query(
+          `insert into team_memory_curated_item_eligibility (
+             semantic_item_id,representation_id,share_grant_id,team_id,
+             team_workspace_id,logical_memory_id,pseudonymous_source_id,
+             pinned_revision_hash,blocked_at
+           ) values ($1,$2,$3,$4,$5,$6,$7,$8,now())
+           on conflict (semantic_item_id) do update
+             set blocked_at=now(),updated_at=now()`,
+          [
+            oldItem.id,
+            representationId,
+            update.grantId,
+            oldItem.team_id,
+            oldItem.team_workspace_id,
+            oldItem.logical_memory_id,
+            oldItem.pseudonymous_source_id,
+            oldItem.pinned_revision_hash
+          ]
+        );
+        for (const dimensions of [384, 1024, 1536, 3072] as const) {
+          await client.query(
+            `delete from team_memory_semantic_vectors_${dimensions}
+              where semantic_item_id=$1`,
+            [oldItem.id]
+          );
+        }
+      }
+      for (const representation of oldRepresentations.rows) {
+        if (
+          representation.state !== "pending" &&
+          (retainedCounts.get(stringValue(representation.id)) ?? 0) > 0
+        ) {
+          const expiries = retainedExpiries.get(stringValue(representation.id));
+          await client.query(
+            `update team_memory_representations
+                set curated_expires_at=$2,updated_at=now()
+              where id=$1 and state in ('available','stale')`,
+            [
+              representation.id,
+              expiries && expiries.length > 0
+                ? new Date(Math.min(...expiries))
+                : null
+            ]
+          );
+          continue;
+        }
+        await client.query(
+          `update team_memory_representations set state='invalidated',
+              invalidated_at=coalesce(invalidated_at,now()),
+              invalidation_reason_code='curated_classification_changed',
+              record_version=record_version+1,updated_at=now()
+            where id=$1 and state in ('pending','available','stale')`,
+          [representation.id]
+        );
+      }
+      await client.query(
+        `update team_memory_share_grants
+            set curated_source_update_receipt=$2::jsonb,updated_at=now()
+          where id=$1`,
+        [
+          update.grantId,
+          JSON.stringify({
+            generation: update.generation,
+            materialHash: updateHash,
+            updateHash,
+            commitmentHash: update.commitmentHash,
+            sourceRevision: commitment.sourceRevision,
+            itemCount: items.length,
+            artifactId,
+            previewId: preview?.previewId ?? null
+          })
+        ]
+      );
+      return {
+        status: items.length === 0 ? ("empty" as const) : ("ready" as const),
+        updateHash,
+        sourceRevision: commitment.sourceRevision,
+        preview
+      };
     });
   };
 
@@ -9592,13 +10929,13 @@ export const createSharedMemoryRepository = (
           and op.superseded_at is null
          join team_representation_policies tp
            on tp.policy_id=g.team_policy_id and tp.version=g.team_policy_version
-          and tp.team_id=g.team_id and tp.superseded_at is null
+          and tp.team_id=g.team_id and ${grantCompatiblePolicySql("tp", "team")}
          join workspace_representation_policies wp
            on wp.policy_id=g.workspace_policy_id
           and wp.version=g.workspace_policy_version
           and wp.team_id=g.team_id
           and wp.team_workspace_id=g.team_workspace_id
-          and wp.superseded_at is null
+          and ${grantCompatiblePolicySql("wp", "workspace")}
          join privacy_classifier_generations generation
            on generation.id=semantic.classifier_generation_id
           and generation.version=semantic.classifier_version
@@ -9848,7 +11185,9 @@ export const createSharedMemoryRepository = (
     stallThresholdMs: number
   ): Promise<LoadedPendingShareProcessingContext | null> => {
     const pendingResult = await pool.query<Row>(
-      `select p.*,local_memory.local_session_id,lm.latest_source_revision,
+      `select p.*,state.curated_material_receipt,
+                candidate_physical.curated_material_commitment_hash,
+                local_memory.local_session_id,lm.latest_source_revision,
                 candidate.candidate_manifest,candidate.candidate_manifest_hash,
                 candidate.source_memory_event_id as candidate_source_memory_event_id,
                 candidate.item_count as candidate_item_count,
@@ -9859,6 +11198,7 @@ export const createSharedMemoryRepository = (
                 mr.id as remote_replica_id,mr.latest_revision,
                 sr.target_processing_cursor,sr.state as sync_state
            from pending_share_operation_records p
+           join pending_share_operations state on state.id=p.id
            join logical_memories lm
              on lm.id=p.logical_memory_id and lm.owner_user_id=p.owner_user_id
            left join local_captured_session_logical_memories local_memory
@@ -9870,6 +11210,8 @@ export const createSharedMemoryRepository = (
             and candidate.source_revision=coalesce(
               p.replacement_source_revision,p.source_revision
             )
+           join shared_memory_candidate_previews candidate_physical
+             on candidate_physical.id=candidate.id
            left join memory_replicas mr
              on mr.logical_memory_id=p.logical_memory_id
             and mr.owner_user_id=p.owner_user_id
@@ -9929,9 +11271,91 @@ export const createSharedMemoryRepository = (
     const stalled =
       Date.now() - new Date(pending.last_progress_at as Date).getTime() >=
       stallThresholdMs;
-    const readiness: PendingShareSourceReadinessDecision = notePreviewReady
-      ? { kind: "ready", remoteReplicaId: null }
-      : personalNote
+    const sourceReadiness: PendingShareSourceReadinessDecision =
+      notePreviewReady
+        ? { kind: "ready", remoteReplicaId: null }
+        : personalNote
+          ? {
+              kind: "waiting",
+              state: stalled ? "needs_attention" : "preparing",
+              stage: "uploading",
+              failureCode: stalled ? "source_preparation_stalled" : null,
+              visibleTransition:
+                workerExpected.state !==
+                  (stalled ? "needs_attention" : "preparing") ||
+                stringValue(pending.stage) !== "uploading" ||
+                nullableString(pending.redacted_failure_code) !==
+                  (stalled ? "source_preparation_stalled" : null)
+            }
+          : decidePendingShareSourceReadiness(
+              {
+                wantedRevision,
+                targetRevision: nullableNumber(
+                  pending.target_processing_cursor
+                ),
+                replicaRevision: nullableNumber(pending.latest_revision),
+                logicalRevision: numberValue(pending.latest_source_revision),
+                remoteReplicaId: nullableString(pending.remote_replica_id),
+                localSessionId: nullableString(pending.local_session_id),
+                lastProgressAtMs: new Date(
+                  pending.last_progress_at as Date
+                ).getTime(),
+                currentState: workerExpected.state,
+                currentStage: stringValue(pending.stage),
+                currentFailureCode: nullableString(
+                  pending.redacted_failure_code
+                )
+              },
+              stallThresholdMs,
+              Date.now()
+            );
+    const requiresCuratedSource =
+      !personalNote &&
+      pending.include_curated_memory === true &&
+      pending.replacement_mutation_id === null;
+    const curatedReceipt = pending.curated_material_receipt as Record<
+      string,
+      unknown
+    > | null;
+    if (requiresCuratedSource && curatedReceipt) {
+      if (
+        curatedReceipt.commitmentHash !==
+          pending.curated_material_commitment_hash ||
+        curatedReceipt.previewHash !== pending.preview_hash ||
+        curatedReceipt.consentId !== pending.consent_id ||
+        curatedReceipt.sourceRevision !== wantedRevision ||
+        !Number.isSafeInteger(curatedReceipt.itemCount) ||
+        Number(curatedReceipt.itemCount) < 0
+      )
+        throw new SharedMemoryConflictError(
+          "Pending Curated source receipt is invalid"
+        );
+      if (Number(curatedReceipt.itemCount) > 0) {
+        const artifact = await pool.query<Row>(
+          `select id from shared_source_artifacts where id=$1
+            and logical_memory_id=$2 and owner_user_id=$3
+            and team_id=$4 and team_workspace_id=$5
+            and representation='curated_assertions'
+            and source_revision=$6 and invalidated_at is null limit 1`,
+          [
+            curatedReceipt.artifactId,
+            pending.logical_memory_id,
+            pending.owner_user_id,
+            pending.team_id,
+            pending.team_workspace_id,
+            wantedRevision
+          ]
+        );
+        if (!artifact.rows[0])
+          throw new SharedMemoryConflictError(
+            "Pending Curated source artifact is missing"
+          );
+      }
+    }
+    const readiness: PendingShareSourceReadinessDecision =
+      requiresCuratedSource &&
+      sourceReadiness.kind === "ready" &&
+      !curatedReceipt
         ? {
             kind: "waiting",
             state: stalled ? "needs_attention" : "preparing",
@@ -9944,24 +11368,7 @@ export const createSharedMemoryRepository = (
               nullableString(pending.redacted_failure_code) !==
                 (stalled ? "source_preparation_stalled" : null)
           }
-        : decidePendingShareSourceReadiness(
-            {
-              wantedRevision,
-              targetRevision: nullableNumber(pending.target_processing_cursor),
-              replicaRevision: nullableNumber(pending.latest_revision),
-              logicalRevision: numberValue(pending.latest_source_revision),
-              remoteReplicaId: nullableString(pending.remote_replica_id),
-              localSessionId: nullableString(pending.local_session_id),
-              lastProgressAtMs: new Date(
-                pending.last_progress_at as Date
-              ).getTime(),
-              currentState: workerExpected.state,
-              currentStage: stringValue(pending.stage),
-              currentFailureCode: nullableString(pending.redacted_failure_code)
-            },
-            stallThresholdMs,
-            Date.now()
-          );
+        : sourceReadiness;
     return {
       pending,
       workerExpected,
@@ -11088,6 +12495,13 @@ export const createSharedMemoryRepository = (
         ]
       );
       if (!activated.rows[0]) return false;
+      // A signed Curated preview may be ready before the grant becomes active.
+      // Wake semantic reconciliation now that the grant can publish it.
+      if (context.includeCuratedMemory) {
+        await client.query(
+          "select pg_notify('koed_shared_memory_privacy','work')"
+        );
+      }
       await client.query(
         `update pending_share_outbox
               set state='completed',locked_at=null,updated_at=now()
@@ -11215,8 +12629,89 @@ export const createSharedMemoryRepository = (
     return "failed";
   };
 
+  const transientPendingShareDatabaseError = (error: unknown): boolean =>
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error.code === "40001" || error.code === "40P01");
+
+  const deferRolledBackPendingShare = async (
+    pendingShareId: string,
+    workerExpected: PendingShareWorkerExpected,
+    outboxAttemptCount: number
+  ): Promise<"waiting" | "skipped" | "exhausted"> =>
+    withTransaction(pool, async (client) => {
+      const deferred = await client.query<Row>(
+        `update pending_share_operations pending
+            set state='preparing',stage='activating',
+                source_update_state='preparing',redacted_failure_code=null,
+                attempt_count=pending.attempt_count+1,
+                next_attempt_at=least(
+                  now()+make_interval(
+                    secs=>power(2,least(pending.attempt_count,4))::integer),
+                  candidate.expires_at,
+                  coalesce(pending.share_expires_at,'infinity'::timestamptz)),
+                last_progress_at=now(),updated_at=now(),
+                operation_version=operation_version+1
+           from shared_memory_candidate_previews candidate
+          where pending.id=$1 and pending.state=$2
+            and pending.operation_version=$3
+            and candidate.id=coalesce(pending.replacement_preview_id,pending.preview_id)
+            and candidate.preview_hash=coalesce(
+              pending.replacement_preview_hash,pending.preview_hash)
+            and candidate.invalidated_at is null
+            and candidate.expires_at>now()
+            and (pending.share_expires_at is null or pending.share_expires_at>now())
+            and pending.revoked_at is null and pending.attempt_count<5
+          returning next_attempt_at`,
+        [pendingShareId, workerExpected.state, workerExpected.operationVersion]
+      );
+      if (!deferred.rows[0]) {
+        const current = await client.query<Row>(
+          `select pending.attempt_count,pending.share_expires_at,
+                  candidate.expires_at as preview_expires_at
+             from pending_share_operations pending
+             left join shared_memory_candidate_previews candidate
+               on candidate.id=coalesce(
+                    pending.replacement_preview_id,pending.preview_id)
+              and candidate.preview_hash=coalesce(
+                    pending.replacement_preview_hash,pending.preview_hash)
+            where pending.id=$1 and pending.state=$2
+              and pending.operation_version=$3 and pending.revoked_at is null`,
+          [
+            pendingShareId,
+            workerExpected.state,
+            workerExpected.operationVersion
+          ]
+        );
+        return current.rows[0] &&
+          (numberValue(current.rows[0].attempt_count) >= 5 ||
+            (current.rows[0].share_expires_at !== null &&
+              new Date(current.rows[0].share_expires_at as Date).getTime() <=
+                Date.now()) ||
+            (current.rows[0].preview_expires_at !== null &&
+              new Date(current.rows[0].preview_expires_at as Date).getTime() <=
+                Date.now()))
+          ? "exhausted"
+          : "skipped";
+      }
+      const outbox = await client.query(
+        `update pending_share_outbox
+            set state='pending',locked_at=null,available_at=$2,updated_at=now()
+          where pending_share_id=$1 and state='processing'
+            and attempt_count=$3`,
+        [pendingShareId, deferred.rows[0].next_attempt_at, outboxAttemptCount]
+      );
+      if (outbox.rowCount !== 1)
+        throw new SharedMemoryConflictError(
+          "Pending Share worker lease changed during transient retry"
+        );
+      return "waiting";
+    });
+
   const processClaimedPendingShare = async (
     pendingShareId: string,
+    outboxAttemptCount: number,
     stallThresholdMs: number,
     ensureCompanion: NonNullable<
       Parameters<SharedMemoryRepository["processPendingShares"]>[0]
@@ -11226,6 +12721,7 @@ export const createSharedMemoryRepository = (
     >["reportActivationFailure"]
   ): Promise<PendingShareProcessingOutcome> => {
     let workerExpected: PendingShareWorkerExpected | null = null;
+    let companionCallbackStarted = false;
     let failureStage: Parameters<
       NonNullable<
         NonNullable<
@@ -11276,6 +12772,11 @@ export const createSharedMemoryRepository = (
         preview,
         bundle,
         ensureCompanion
+          ? async (input) => {
+              companionCallbackStarted = true;
+              return ensureCompanion(input);
+            }
+          : undefined
       );
       failureStage = "publish";
       return (await publishPendingShareActivation(
@@ -11287,7 +12788,7 @@ export const createSharedMemoryRepository = (
         : "skipped";
     } catch (error) {
       try {
-        reportActivationFailure?.({
+        await reportActivationFailure?.({
           pendingShareId,
           failureStage,
           errorClass: error instanceof Error ? error.name : "UnknownError",
@@ -11312,6 +12813,18 @@ export const createSharedMemoryRepository = (
       } catch {
         // Diagnostics must not change the worker outcome.
       }
+      if (
+        workerExpected &&
+        !companionCallbackStarted &&
+        transientPendingShareDatabaseError(error)
+      ) {
+        const retry = await deferRolledBackPendingShare(
+          pendingShareId,
+          workerExpected,
+          outboxAttemptCount
+        );
+        if (retry !== "exhausted") return retry;
+      }
       return transitionPendingShareActivationError(
         pendingShareId,
         workerExpected,
@@ -11319,7 +12832,9 @@ export const createSharedMemoryRepository = (
       );
     }
   };
-  const claimPendingShares = (limit: number): Promise<string[]> =>
+  const claimPendingShares = (
+    limit: number
+  ): Promise<Array<{ pendingShareId: string; outboxAttemptCount: number }>> =>
     withTransaction(pool, async (client) => {
       const result = await client.query<Row>(
         `with candidates as (
@@ -11328,6 +12843,7 @@ export const createSharedMemoryRepository = (
                join pending_share_operation_records p on p.id=o.pending_share_id
               where p.state in ('preparing','needs_attention')
                 and p.revoked_at is null
+                and (p.next_attempt_at is null or p.next_attempt_at<=now())
                 and (
                   (o.state in ('pending','failed') and o.available_at<=now())
                   or (o.state='processing' and o.locked_at<now()-interval '5 minutes')
@@ -11341,10 +12857,13 @@ export const createSharedMemoryRepository = (
                   attempt_count=o.attempt_count+1
              from candidates c
             where o.id=c.id
-          returning o.pending_share_id`,
+          returning o.pending_share_id,o.attempt_count`,
         [limit]
       );
-      return result.rows.map((row) => stringValue(row.pending_share_id));
+      return result.rows.map((row) => ({
+        pendingShareId: stringValue(row.pending_share_id),
+        outboxAttemptCount: numberValue(row.attempt_count)
+      }));
     });
 
   const repairPendingShareCompanions = async (
@@ -11439,9 +12958,10 @@ export const createSharedMemoryRepository = (
       waiting: 0,
       failed: 0
     };
-    for (const pendingShareId of claimed) {
+    for (const claim of claimed) {
       const outcome = await processClaimedPendingShare(
-        pendingShareId,
+        claim.pendingShareId,
+        claim.outboxAttemptCount,
         stallThresholdMs,
         input.ensureCompanion,
         input.reportActivationFailure
@@ -11640,6 +13160,21 @@ export const createSharedMemoryRepository = (
       assertUuid(input.teamId, "teamId");
       assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
       assertHash(input.candidateHash, "candidateHash");
+      if (
+        (input.source.kind === "captured_session" &&
+          input.includeCuratedMemory) !==
+        (input.curatedMaterialCommitmentHash !== undefined)
+      ) {
+        throw new SharedMemoryConflictError(
+          "Exact-session Curated sharing requires a source commitment"
+        );
+      }
+      if (input.curatedMaterialCommitmentHash) {
+        assertHash(
+          input.curatedMaterialCommitmentHash,
+          "curatedMaterialCommitmentHash"
+        );
+      }
       const source = normalizedSourceRef(input.source, input.logicalMemoryId);
       if (!source) {
         throw new SharedMemoryConflictError(
@@ -11714,6 +13249,12 @@ export const createSharedMemoryRepository = (
           activationRepresentation: input.activationRepresentation,
           logicalMemoryId: input.logicalMemoryId,
           candidateHash: input.candidateHash,
+          ...(input.curatedMaterialCommitmentHash
+            ? {
+                curatedMaterialCommitmentHash:
+                  input.curatedMaterialCommitmentHash
+              }
+            : {}),
           sourceRevision: input.sourceRevision,
           itemCount: input.itemCount,
           excludedItemCount: input.excludedItemCount,
@@ -11738,6 +13279,14 @@ export const createSharedMemoryRepository = (
         ): SharedMemoryCandidatePreviewRecord => ({
           previewId: stringValue(row.id),
           previewHash: stringValue(row.preview_hash),
+          ...(row.curated_material_commitment_hash !== null &&
+          row.curated_material_commitment_hash !== undefined
+            ? {
+                curatedMaterialCommitmentHash: stringValue(
+                  row.curated_material_commitment_hash
+                )
+              }
+            : {}),
           previewRevision: 1,
           logicalMemoryId: stringValue(row.logical_memory_id),
           source: requiredSourceRefFromRow(row),
@@ -11800,6 +13349,12 @@ export const createSharedMemoryRepository = (
             activationRepresentation: candidate.activationRepresentation,
             logicalMemoryId: candidate.logicalMemoryId,
             candidateHash: candidate.sourceHash,
+            ...(candidate.curatedMaterialCommitmentHash
+              ? {
+                  curatedMaterialCommitmentHash:
+                    candidate.curatedMaterialCommitmentHash
+                }
+              : {}),
             sourceRevision: candidate.sourceRevision,
             itemCount: candidate.itemCount,
             excludedItemCount: candidate.excludedItemCount,
@@ -11940,10 +13495,11 @@ export const createSharedMemoryRepository = (
               representation_policy_revision,representation_policy_hash,
               content_policy_version,content_policy_hash,classifier_version,
               classifier_hash,share_expires_at,expires_at,created_at,
-              source_capabilities,activation_representation)
+              source_capabilities,activation_representation,
+              curated_material_commitment_hash)
            values ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16,$17,
                    $18,$19::jsonb,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,
-                   $30,$31)
+                   $30,$31,$32)
            returning *`,
           [
             previewId,
@@ -11976,7 +13532,8 @@ export const createSharedMemoryRepository = (
             previewExpiresAt,
             createdAt,
             input.sourceCapabilities,
-            input.activationRepresentation
+            input.activationRepresentation,
+            input.curatedMaterialCommitmentHash ?? null
           ]
         );
         return inserted.rows[0]
@@ -13553,6 +15110,12 @@ export const createSharedMemoryRepository = (
     async persistPersonalNoteSourceArtifact(actor, input) {
       return persistPersonalNoteSourceArtifact(actor, input);
     },
+    async persistCapturedSessionCuratedSourceMaterial(actor, input) {
+      return persistCapturedSessionCuratedSourceMaterial(actor, input);
+    },
+    async persistContinuousCuratedSourceUpdate(actor, input) {
+      return persistContinuousCuratedSourceUpdate(actor, input);
+    },
     async putSourceOwnerPolicy(actor, input) {
       assertUuid(input.mutationId, "mutationId");
       assertFidelityConsent(input);
@@ -13880,6 +15443,142 @@ export const createSharedMemoryRepository = (
           });
         }
         return mapPolicy(inserted.rows[0] as Row, "workspace");
+      });
+    },
+
+    async getCuratedPolicyOptInReview(actor, input) {
+      return withTransaction(pool, async (client) => {
+        await requireTeamManager(client, actor, input.teamId);
+        if (input.teamWorkspaceId)
+          await requireWorkspaceAccess(
+            client,
+            actor,
+            input.teamId,
+            input.teamWorkspaceId,
+            "write"
+          );
+        const workspace = Boolean(input.teamWorkspaceId);
+        const current = await activePolicy(client, {
+          table: workspace
+            ? "workspace_representation_policies"
+            : "team_representation_policies",
+          whereSql: workspace
+            ? "team_id=$1 and team_workspace_id=$2"
+            : "team_id=$1",
+          parameters: workspace
+            ? [input.teamId, input.teamWorkspaceId]
+            : [input.teamId]
+        });
+        if (
+          !current ||
+          current.policy_id !== input.policyId ||
+          numberValue(current.version) !== input.expectedCurrentVersion ||
+          current.maximum_fidelity !== input.maximumFidelity ||
+          current.include_curated_memory !== false
+        )
+          return null;
+        return mapPolicy(current, workspace ? "workspace" : "team");
+      });
+    },
+
+    async optInCuratedPolicy(actor, input) {
+      assertUuid(input.mutationId, "mutationId");
+      assertUuid(input.policyId, "policyId");
+      if (
+        !Number.isSafeInteger(input.expectedCurrentVersion) ||
+        input.expectedCurrentVersion < 1
+      )
+        throw new SharedMemoryConflictError();
+      return withTransaction(pool, async (client) => {
+        await lockCuratedPolicyAdministrator(client, actor, input);
+        const workspace = Boolean(input.teamWorkspaceId);
+        const table = workspace
+          ? "workspace_representation_policies"
+          : "team_representation_policies";
+        const current = await activePolicy(client, {
+          table,
+          whereSql: workspace
+            ? "team_id=$1 and team_workspace_id=$2"
+            : "team_id=$1",
+          parameters: workspace
+            ? [input.teamId, input.teamWorkspaceId]
+            : [input.teamId]
+        });
+        if (
+          !current ||
+          current.policy_id !== input.policyId ||
+          numberValue(current.version) !== input.expectedCurrentVersion ||
+          current.maximum_fidelity !== input.maximumFidelity ||
+          current.include_curated_memory !== false
+        )
+          throw new SharedMemoryConflictError("Curated policy review is stale");
+        const version = input.expectedCurrentVersion + 1;
+        const hash = sharedMemoryPolicyHash({
+          scope: workspace ? "workspace" : "team",
+          scopeId: workspace
+            ? `${input.teamId}:${input.teamWorkspaceId}`
+            : input.teamId,
+          policyId: input.policyId,
+          version,
+          maximumFidelity: input.maximumFidelity,
+          includeCuratedMemory: true
+        });
+        await client.query(
+          `update ${table} set superseded_at=now() where id=$1`,
+          [current.id]
+        );
+        const inserted = workspace
+          ? await client.query<Row>(
+              `insert into workspace_representation_policies (
+                 policy_id,team_id,team_workspace_id,version,maximum_fidelity,
+                 include_curated_memory,policy_hash,created_by_user_id,effective_at
+               ) values ($1,$2,$3,$4,$5,true,$6,$7,now()) returning *`,
+              [
+                input.policyId,
+                input.teamId,
+                input.teamWorkspaceId,
+                version,
+                input.maximumFidelity,
+                hash,
+                actor.userId
+              ]
+            )
+          : await client.query<Row>(
+              `insert into team_representation_policies (
+                 policy_id,team_id,version,maximum_fidelity,include_curated_memory,
+                 policy_hash,created_by_user_id,effective_at
+               ) values ($1,$2,$3,$4,true,$5,$6,now()) returning *`,
+              [
+                input.policyId,
+                input.teamId,
+                version,
+                input.maximumFidelity,
+                hash,
+                actor.userId
+              ]
+            );
+        await appendPolicyAudit(client, {
+          actorUserId: actor.userId,
+          ownerUserId: null,
+          action: workspace
+            ? "team.workspace.shared_memory_policy.curated_opt_in"
+            : "team.shared_memory_policy.curated_opt_in",
+          targetTable: table,
+          targetId: stringValue(inserted.rows[0]?.id),
+          mutationId: input.mutationId,
+          scope: workspace ? "workspace" : "team",
+          teamId: input.teamId,
+          ...(workspace ? { teamWorkspaceId: input.teamWorkspaceId } : {}),
+          policyId: input.policyId,
+          version,
+          previousVersion: input.expectedCurrentVersion,
+          maximumFidelity: input.maximumFidelity,
+          includeCuratedMemory: true
+        });
+        return mapPolicy(
+          inserted.rows[0] as Row,
+          workspace ? "workspace" : "team"
+        );
       });
     },
 
@@ -16297,13 +17996,13 @@ export const createSharedMemoryRepository = (
               and op.superseded_at is null
              join team_representation_policies tp
                on tp.policy_id=g.team_policy_id and tp.version=g.team_policy_version
-              and tp.team_id=g.team_id and tp.superseded_at is null
+              and tp.team_id=g.team_id and ${grantCompatiblePolicySql("tp", "team")}
              join workspace_representation_policies wp
                on wp.policy_id=g.workspace_policy_id
               and wp.version=g.workspace_policy_version
               and wp.team_id=g.team_id
               and wp.team_workspace_id=g.team_workspace_id
-              and wp.superseded_at is null
+              and ${grantCompatiblePolicySql("wp", "workspace")}
             where preview.invalidated_at is null
               and preview.owner_user_id is not null
               and ($2::uuid is null or g.id=$2)
@@ -17885,13 +19584,13 @@ export const createSharedMemoryRepository = (
                    join team_representation_policies tp
                      on tp.policy_id=g.team_policy_id
                     and tp.version=g.team_policy_version
-                    and tp.team_id=g.team_id and tp.superseded_at is null
+                    and tp.team_id=g.team_id and ${grantCompatiblePolicySql("tp", "team")}
                    join workspace_representation_policies wp
                      on wp.policy_id=g.workspace_policy_id
                     and wp.version=g.workspace_policy_version
                     and wp.team_id=g.team_id
                     and wp.team_workspace_id=g.team_workspace_id
-                    and wp.superseded_at is null
+                    and ${grantCompatiblePolicySql("wp", "workspace")}
                   where preview.id=$1 and preview.invalidated_at is null
                     and preview.preview_revision=$2
                     and preview.preview_hash=$3
@@ -17986,12 +19685,28 @@ export const createSharedMemoryRepository = (
             and g.team_id=semantic.team_id
             and g.team_workspace_id=semantic.team_workspace_id
             and g.lifecycle='active' and g.revoked_at is null
+           join team_memory_share_grants grant_state on grant_state.id=g.id
+           left join lateral (
+             select initial.curated_material_receipt
+               from pending_share_operations initial
+              where initial.grant_id=g.id
+                and initial.curated_material_receipt is not null
+              order by initial.created_at,initial.id limit 1
+           ) signed_initial on true
            join source_owner_representation_consent_records consent
              on consent.id=g.consent_id
             and consent.state='active' and consent.revoked_at is null
             and (consent.expires_at is null or consent.expires_at>now())
           where semantic.status='ready'
             and semantic.invalidated_at is null
+            and (semantic.representation<>'curated_assertions'
+              or signed_initial.curated_material_receipt is null
+              or (grant_state.curated_source_update_receipt is null
+                  and preview.source_artifact_id::text=
+                    signed_initial.curated_material_receipt->>'artifactId')
+              or (grant_state.curated_source_update_receipt is not null
+                  and semantic.source_preview_id::text=
+                    grant_state.curated_source_update_receipt->>'previewId'))
             and not exists (
               select 1 from pending_share_operation_records pending
                where pending.grant_id=g.id
@@ -18069,6 +19784,7 @@ export const createSharedMemoryRepository = (
       const command = async (client: pg.PoolClient) => {
         const grantResult = await client.query<Row>(
           `select g.*,grant_state.frozen_at as frozen_at,
+                grant_state.curated_source_update_receipt,
                 mr.id as authorized_replica_id,
                 sr.id as authorized_sync_relationship_id,
                 mr.freshness_status as replica_freshness_status,
@@ -18295,25 +20011,44 @@ export const createSharedMemoryRepository = (
           teamId: grant.teamId,
           teamWorkspaceId: grant.teamWorkspaceId
         });
+        const boundTeam = await loadGrantCompatibleBoundPolicy(client, {
+          scope: "team",
+          teamId: grant.teamId,
+          policyId: grant.teamPolicyId,
+          version: grant.teamPolicyVersion
+        });
+        const boundWorkspace = await loadGrantCompatibleBoundPolicy(client, {
+          scope: "workspace",
+          teamId: grant.teamId,
+          teamWorkspaceId: grant.teamWorkspaceId,
+          policyId: grant.workspacePolicyId,
+          version: grant.workspacePolicyVersion
+        });
+        if (!boundTeam || !boundWorkspace)
+          throw new SharedMemoryConflictError(
+            "Materialization requires a current or compatible approved policy"
+          );
+        const boundMaximumFidelity = intersectSharedMemoryFidelityCeilings(
+          fidelityConsentFromRow(currentPolicies.owner).maximumFidelity,
+          fidelityConsentFromRow(boundTeam).maximumFidelity,
+          fidelityConsentFromRow(boundWorkspace).maximumFidelity
+        );
+        const boundIncludeCuratedMemory =
+          fidelityConsentFromRow(currentPolicies.owner).includeCuratedMemory &&
+          fidelityConsentFromRow(boundTeam).includeCuratedMemory &&
+          fidelityConsentFromRow(boundWorkspace).includeCuratedMemory;
         if (
-          currentPolicies.maximumFidelity !== grant.maximumFidelity ||
-          currentPolicies.includeCuratedMemory !== grant.includeCuratedMemory ||
+          boundMaximumFidelity !== grant.maximumFidelity ||
+          boundIncludeCuratedMemory !== grant.includeCuratedMemory ||
           !sharedMemoryCeilingAuthorizes(
-            currentPolicies.maximumFidelity,
+            grant.maximumFidelity,
             preview.representation,
-            currentPolicies.includeCuratedMemory
+            grant.includeCuratedMemory
           ) ||
           stringValue(currentPolicies.owner.policy_id) !==
             grant.sourceOwnerPolicyId ||
           numberValue(currentPolicies.owner.version) !==
-            grant.sourceOwnerPolicyVersion ||
-          stringValue(currentPolicies.team.policy_id) !== grant.teamPolicyId ||
-          numberValue(currentPolicies.team.version) !==
-            grant.teamPolicyVersion ||
-          stringValue(currentPolicies.workspace.policy_id) !==
-            grant.workspacePolicyId ||
-          numberValue(currentPolicies.workspace.version) !==
-            grant.workspacePolicyVersion
+            grant.sourceOwnerPolicyVersion
         ) {
           throw new SharedMemoryConflictError(
             "Materialization requires the exact active policy intersection"
@@ -18451,7 +20186,7 @@ export const createSharedMemoryRepository = (
             }
           }
         }
-        const curatedManifest =
+        const curatedSource =
           preview.representation === "curated_assertions"
             ? (
                 await loadPersistedPreviewByReference(client, {
@@ -18459,8 +20194,48 @@ export const createSharedMemoryRepository = (
                   requiredMessage:
                     "Curated source manifest is unavailable for publication"
                 })
-              ).artifactBody.manifest
+              ).artifactBody
             : null;
+        const curatedManifest = curatedSource?.manifest ?? null;
+        if (
+          curatedSource?.curatedSourceMaterial ||
+          curatedSource?.curatedSourceUpdate
+        ) {
+          const currentUpdate =
+            grantRow.curated_source_update_receipt as Record<
+              string,
+              unknown
+            > | null;
+          if (curatedSource.curatedSourceUpdate) {
+            if (
+              currentUpdate?.previewId !== preview.previewId ||
+              currentUpdate?.artifactId !== artifact.artifactId ||
+              currentUpdate?.updateHash !==
+                curatedSource.curatedSourceUpdate.attestation.updateHash
+            )
+              throw new SharedMemoryConflictError(
+                "Curated update was superseded before publication"
+              );
+          } else {
+            const original = await client.query<Row>(
+              `select curated_material_receipt from pending_share_operations
+                where grant_id=$1 and curated_material_receipt is not null
+                order by created_at,id limit 1`,
+              [grant.id]
+            );
+            const receipt = original.rows[0]
+              ?.curated_material_receipt as Record<string, unknown> | null;
+            if (
+              currentUpdate ||
+              receipt?.artifactId !== artifact.artifactId ||
+              receipt?.materialHash !==
+                curatedSource.curatedSourceMaterial!.attestation.materialHash
+            )
+              throw new SharedMemoryConflictError(
+                "Curated source was superseded before publication"
+              );
+          }
+        }
         if (
           curatedManifest &&
           (curatedManifest.length !== sanitizedItems.length ||
@@ -18741,28 +20516,63 @@ export const createSharedMemoryRepository = (
         }
         if (preview.representation === "curated_assertions") {
           const assertionIds = sanitizedItems.map((item) => item.sourceId);
-          const expiry = await client.query<{
-            expires_at: Date | null;
-            selected_count: number;
-          }>(
-            `select min(expires_at) as expires_at,
-                    count(*)::integer as selected_count
-               from curated_memory_assertions
-              where id=any($1::uuid[]) and owner_user_id=$2
-                and status='current' and suppressed_at is null
-                and (expires_at is null or expires_at>now())`,
-            [assertionIds, actor.userId]
-          );
-          if (expiry.rows[0]?.selected_count !== new Set(assertionIds).size) {
-            throw new SharedMemoryConflictError(
-              "Curated assertion validity changed after preview approval"
+          let curatedExpiresAt: Date | null;
+          const signedCommitment =
+            curatedSource?.curatedSourceMaterial?.material.commitment ??
+            curatedSource?.curatedSourceUpdate?.update.commitment;
+          if (signedCommitment) {
+            const assertions = signedCommitment.assertions;
+            if (
+              assertions.length !== assertionIds.length ||
+              assertions.some(
+                (assertion, index) =>
+                  assertion.assertionId !== assertionIds[index] ||
+                  assertion.classificationVersion !==
+                    sanitizedItems[index]?.content.classificationVersion
+              )
+            ) {
+              throw new SharedMemoryConflictError(
+                "Curated source attestation no longer matches approved items"
+              );
+            }
+            const expiryTimes = assertions
+              .map((assertion) => assertion.expiresAt)
+              .filter((expiry): expiry is string => expiry !== null)
+              .map((expiry) => new Date(expiry).getTime());
+            if (expiryTimes.some((expiry) => expiry <= Date.now())) {
+              throw new SharedMemoryConflictError(
+                "Curated source expired before publication"
+              );
+            }
+            curatedExpiresAt =
+              expiryTimes.length > 0
+                ? new Date(Math.min(...expiryTimes))
+                : null;
+          } else {
+            const expiry = await client.query<{
+              expires_at: Date | null;
+              selected_count: number;
+            }>(
+              `select min(expires_at) as expires_at,
+                      count(*)::integer as selected_count
+                 from curated_memory_assertions
+                where id=any($1::uuid[]) and owner_user_id=$2
+                  and status='current' and suppressed_at is null
+                  and (expires_at is null or expires_at>now())`,
+              [assertionIds, actor.userId]
             );
+            if (expiry.rows[0]?.selected_count !== new Set(assertionIds).size) {
+              throw new SharedMemoryConflictError(
+                "Curated assertion validity changed after preview approval"
+              );
+            }
+            curatedExpiresAt = expiry.rows[0]?.expires_at ?? null;
           }
           await client.query(
             `update team_memory_representations
                 set curated_expires_at=$2
               where id=$1`,
-            [representationId, expiry.rows[0]?.expires_at ?? null]
+            [representationId, curatedExpiresAt]
           );
         }
         const finalAuthority = await client.query<Row>(
@@ -18802,13 +20612,13 @@ export const createSharedMemoryRepository = (
              join team_representation_policies tp
                on tp.policy_id=g.team_policy_id
               and tp.version=g.team_policy_version
-              and tp.team_id=g.team_id and tp.superseded_at is null
+              and tp.team_id=g.team_id and ${grantCompatiblePolicySql("tp", "team")}
              join workspace_representation_policies wp
                on wp.policy_id=g.workspace_policy_id
               and wp.version=g.workspace_policy_version
               and wp.team_id=g.team_id
               and wp.team_workspace_id=g.team_workspace_id
-              and wp.superseded_at is null
+              and ${grantCompatiblePolicySql("wp", "workspace")}
              join shared_source_preview_records preview
                on preview.id=$3 and preview.invalidated_at is null
               and preview.logical_memory_id=g.logical_memory_id
@@ -19145,6 +20955,55 @@ export const createSharedMemoryRepository = (
             staleState ? new Date() : null
           ]
         );
+        const signedCuratedUpdate =
+          grantRow.curated_source_update_receipt as Record<
+            string,
+            unknown
+          > | null;
+        if (
+          preview.representation === "curated_assertions" &&
+          signedCuratedUpdate?.previewId === preview.previewId &&
+          ["available", "stale"].includes(stringValue(finalized.rows[0]?.state))
+        ) {
+          const replacedItems = await client.query<Row>(
+            `select item.id from team_memory_semantic_items item
+               join team_memory_representations representation
+                 on representation.id=item.representation_id
+              where representation.share_grant_id=$1
+                and representation.id<>$2
+                and representation.representation='curated_assertions'
+                and representation.frozen_snapshot=false
+                and representation.state in ('available','stale')
+              for update of item,representation`,
+            [grant.id, representationId]
+          );
+          for (const replaced of replacedItems.rows) {
+            await client.query(
+              `update team_memory_curated_item_eligibility
+                  set blocked_at=now(),updated_at=now()
+                where semantic_item_id=$1 and blocked_at is null`,
+              [replaced.id]
+            );
+            for (const dimensions of [384, 1024, 1536, 3072] as const) {
+              await client.query(
+                `delete from team_memory_semantic_vectors_${dimensions}
+                  where semantic_item_id=$1`,
+                [replaced.id]
+              );
+            }
+          }
+          await client.query(
+            `update team_memory_representations
+                set state='invalidated',
+                    invalidated_at=coalesce(invalidated_at,now()),
+                    invalidation_reason_code='curated_classification_changed',
+                    record_version=record_version+1,updated_at=now()
+              where share_grant_id=$1 and id<>$2
+                and representation='curated_assertions'
+                and frozen_snapshot=false and state in ('available','stale')`,
+            [grant.id, representationId]
+          );
+        }
         if (
           !pendingContinuousNoteAdvancement?.rows[0] &&
           consent.mode === "continuous" &&
@@ -19250,7 +21109,13 @@ export const createSharedMemoryRepository = (
                 g.remote_replica_id,g.team_id,g.team_workspace_id,
                 g.maximum_fidelity,g.include_curated_memory,g.grant_version,
                 g.source_capabilities,g.activation_representation,g.mode,
-                consent.id as consent_id
+                consent.id as consent_id,
+                exists (
+                  select 1 from pending_share_operations original
+                   where original.grant_id=g.id
+                     and original.curated_material_receipt is not null
+                     and original.include_curated_memory=true
+                ) as signed_remote_curated_source
            from team_memory_share_grant_records g
            join team_memory_share_grants freeze_state on freeze_state.id=g.id
            join source_owner_representation_consent_records consent
@@ -19284,31 +21149,63 @@ export const createSharedMemoryRepository = (
           row.maximum_fidelity
         ) as SharedMemoryFidelityCeiling;
         const includeCuratedMemory = row.include_curated_memory === true;
-        const representations: SharedMemoryRepresentation[] = [
+        const consentedRepresentations: SharedMemoryRepresentation[] = [
           ...sharedMemoryRepresentationsForCeiling(maximumFidelity),
           ...(includeCuratedMemory ? (["curated_assertions"] as const) : [])
         ];
-        for (const representation of representations) {
-          const preview = await createAuthoritativeSourcePreview(
-            actor,
-            {
-              logicalMemoryId: stringValue(row.logical_memory_id),
-              remoteReplicaId: stringValue(row.remote_replica_id),
-              teamId: stringValue(row.team_id),
-              teamWorkspaceId: stringValue(row.team_workspace_id),
-              representation,
-              sourceCapabilities: representationArrayValue(
-                row.source_capabilities
-              ),
-              activationRepresentation: representationValue(
-                row.activation_representation
-              ),
-              mode: stringValue(row.mode) as SharedMemoryConsentMode,
-              maximumFidelity,
-              includeCuratedMemory
-            },
-            grantId
+        const sourceCapabilities = representationArrayValue(
+          row.source_capabilities
+        );
+        const activationRepresentation = representationValue(
+          row.activation_representation
+        );
+        const eligibleRepresentations = consentedRepresentations.filter(
+          (representation) =>
+            sourceCapabilities.includes(representation) &&
+            !(
+              representation === "curated_assertions" &&
+              row.signed_remote_curated_source === true
+            )
+        );
+        if (!eligibleRepresentations.includes(activationRepresentation)) {
+          throw new SharedMemoryConflictError(
+            "Continuous grant activation is outside its source and consent boundary"
           );
+        }
+        const representations = [
+          activationRepresentation,
+          ...eligibleRepresentations.filter(
+            (representation) => representation !== activationRepresentation
+          )
+        ];
+        for (const representation of representations) {
+          let preview: SharedMemoryPersistedPreviewRecord;
+          try {
+            preview = await createAuthoritativeSourcePreview(
+              actor,
+              {
+                logicalMemoryId: stringValue(row.logical_memory_id),
+                remoteReplicaId: stringValue(row.remote_replica_id),
+                teamId: stringValue(row.team_id),
+                teamWorkspaceId: stringValue(row.team_workspace_id),
+                representation,
+                sourceCapabilities,
+                activationRepresentation,
+                mode: stringValue(row.mode) as SharedMemoryConsentMode,
+                maximumFidelity,
+                includeCuratedMemory
+              },
+              grantId
+            );
+          } catch (error) {
+            if (
+              representation !== activationRepresentation &&
+              error instanceof SharedMemorySourceMaterialAbsentError
+            ) {
+              continue;
+            }
+            throw error;
+          }
           if (preview.sourceRevision !== input.sourceRevision) {
             throw new SharedMemoryConflictError(
               "Continuous preview revision does not match the synced replica"
@@ -19640,6 +21537,12 @@ export const createSharedMemoryRepository = (
               and credential.owner_user_id=g.owner_user_id
             where g.owner_user_id=$1 and g.include_curated_memory=true
               and g.lifecycle in ('active','unavailable')
+              and not exists (
+                select 1 from pending_share_operations original
+                 where original.grant_id=g.id
+                   and original.curated_material_receipt is not null
+                   and original.include_curated_memory=true
+              )
             order by g.id for update of g`,
           [actor.userId]
         );
@@ -19821,6 +21724,12 @@ export const createSharedMemoryRepository = (
           where g.owner_user_id=$1 and g.lifecycle='active' and g.revoked_at is null
             and freeze_state.frozen_at is null
             and g.include_curated_memory and c.include_curated_memory
+            and not exists (
+              select 1 from pending_share_operations original
+               where original.grant_id=g.id
+                 and original.curated_material_receipt is not null
+                 and original.include_curated_memory=true
+            )
           order by g.id`,
         [actor.userId]
       );
@@ -19942,10 +21851,10 @@ export const createSharedMemoryRepository = (
              and op.version=g.source_owner_policy_version and op.superseded_at is null
            join team_representation_policies tp on tp.policy_id=g.team_policy_id
              and tp.version=g.team_policy_version and tp.team_id=g.team_id
-             and tp.superseded_at is null
+             and ${grantCompatiblePolicySql("tp", "team")}
            join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
              and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
-             and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+             and wp.team_workspace_id=g.team_workspace_id and ${grantCompatiblePolicySql("wp", "workspace")}
            left join memory_replicas mr on mr.id=g.remote_replica_id and mr.replica_role='target'
              and mr.encryption_scope='owner_private_replica' and mr.lifecycle='active'
              and mr.disabled_at is null
@@ -20494,10 +22403,10 @@ export const createSharedMemoryRepository = (
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
              and op.version=g.source_owner_policy_version and op.superseded_at is null
            join team_representation_policies tp on tp.policy_id=g.team_policy_id
-             and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
+             and tp.version=g.team_policy_version and tp.team_id=g.team_id and ${grantCompatiblePolicySql("tp", "team")}
            join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
              and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
-             and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+             and wp.team_workspace_id=g.team_workspace_id and ${grantCompatiblePolicySql("wp", "workspace")}
            left join memory_replicas mr on mr.id=g.remote_replica_id
              and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
              and mr.lifecycle='active' and mr.disabled_at is null
@@ -20660,10 +22569,10 @@ export const createSharedMemoryRepository = (
                      and op.version=g.source_owner_policy_version and op.superseded_at is null
                    join team_representation_policies tp on tp.policy_id=g.team_policy_id
                      and tp.version=g.team_policy_version and tp.team_id=g.team_id
-                     and tp.superseded_at is null
+                     and ${grantCompatiblePolicySql("tp", "team")}
                    join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
                      and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
-                     and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+                     and wp.team_workspace_id=g.team_workspace_id and ${grantCompatiblePolicySql("wp", "workspace")}
                    left join memory_replicas mr on mr.id=g.remote_replica_id
                      and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
                      and mr.lifecycle='active' and mr.disabled_at is null
@@ -21065,9 +22974,9 @@ export const createSharedMemoryRepository = (
               on op.policy_id=g.source_owner_policy_id
               and op.version=g.source_owner_policy_version and op.superseded_at is null
              join team_representation_policies tp on tp.policy_id=g.team_policy_id
-              and tp.version=g.team_policy_version and tp.superseded_at is null
+              and tp.version=g.team_policy_version and ${grantCompatiblePolicySql("tp", "team")}
              join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
-              and wp.version=g.workspace_policy_version and wp.superseded_at is null
+              and wp.version=g.workspace_policy_version and ${grantCompatiblePolicySql("wp", "workspace")}
              join privacy_classifier_generations classifier
               on classifier.id=r.privacy_classifier_generation_id
               and classifier.classifier_hash=r.privacy_classifier_hash
@@ -21177,13 +23086,13 @@ export const createSharedMemoryRepository = (
              join team_representation_policies tp
                on tp.policy_id=g.team_policy_id
               and tp.version=g.team_policy_version
-              and tp.team_id=g.team_id and tp.superseded_at is null
+              and tp.team_id=g.team_id and ${grantCompatiblePolicySql("tp", "team")}
              join workspace_representation_policies wp
                on wp.policy_id=g.workspace_policy_id
               and wp.version=g.workspace_policy_version
               and wp.team_id=g.team_id
               and wp.team_workspace_id=g.team_workspace_id
-              and wp.superseded_at is null
+              and ${grantCompatiblePolicySql("wp", "workspace")}
              join shared_source_semantic_previews semantic
                on semantic.id=r.sanitized_source_preview_id
               and semantic.status='ready' and semantic.invalidated_at is null
@@ -21411,10 +23320,10 @@ export const createSharedMemoryRepository = (
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
              and op.version=g.source_owner_policy_version and op.superseded_at is null
            join team_representation_policies tp on tp.policy_id=g.team_policy_id
-             and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
+             and tp.version=g.team_policy_version and tp.team_id=g.team_id and ${grantCompatiblePolicySql("tp", "team")}
            join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
              and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
-             and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+             and wp.team_workspace_id=g.team_workspace_id and ${grantCompatiblePolicySql("wp", "workspace")}
            left join memory_replicas mr on mr.id=g.remote_replica_id and mr.lifecycle='active'
              and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
              and mr.disabled_at is null
@@ -21568,10 +23477,10 @@ export const createSharedMemoryRepository = (
            join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
              and op.version=g.source_owner_policy_version and op.superseded_at is null
            join team_representation_policies tp on tp.policy_id=g.team_policy_id
-             and tp.version=g.team_policy_version and tp.team_id=g.team_id and tp.superseded_at is null
+             and tp.version=g.team_policy_version and tp.team_id=g.team_id and ${grantCompatiblePolicySql("tp", "team")}
            join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
              and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
-             and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+             and wp.team_workspace_id=g.team_workspace_id and ${grantCompatiblePolicySql("wp", "workspace")}
            left join memory_replicas mr on mr.id=g.remote_replica_id and mr.lifecycle='active'
              and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
              and mr.disabled_at is null
@@ -21736,10 +23645,10 @@ export const createSharedMemoryRepository = (
              and op.version=g.source_owner_policy_version and op.superseded_at is null
            join team_representation_policies tp on tp.policy_id=g.team_policy_id
              and tp.version=g.team_policy_version and tp.team_id=g.team_id
-             and tp.superseded_at is null
+             and ${grantCompatiblePolicySql("tp", "team")}
            join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
              and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
-             and wp.team_workspace_id=g.team_workspace_id and wp.superseded_at is null
+             and wp.team_workspace_id=g.team_workspace_id and ${grantCompatiblePolicySql("wp", "workspace")}
            left join memory_replicas mr on mr.id=g.remote_replica_id
              and mr.replica_role='target' and mr.encryption_scope='owner_private_replica'
              and mr.lifecycle='active' and mr.disabled_at is null
@@ -22334,6 +24243,24 @@ export const createSharedMemoryRepository = (
             .sourceIds;
           const expansionItems = (content as { expansionItems?: unknown[] })
             .expansionItems;
+          const childRepresentation = (
+            child: SharedMemoryCanonicalSourceItemDto
+          ): SharedMemoryRepresentation | null =>
+            child.itemType === "lcm_rollup"
+              ? "lcm_rollups"
+              : child.itemType === "lcm_leaf"
+                ? "lcm_leaves"
+                : child.itemType === "curated_assertion"
+                  ? "curated_assertions"
+                  : [
+                        "user_message",
+                        "assistant_message",
+                        "thought",
+                        "tool_call",
+                        "tool_result"
+                      ].includes(child.itemType)
+                    ? "memory_events"
+                    : null;
           const pseudonymousSourceId = sharedMemoryGrantScopedSourceId(
             grant.id,
             item.sourceId
@@ -22354,7 +24281,20 @@ export const createSharedMemoryRepository = (
               ? {
                   expansionItems: (
                     expansionItems as SharedMemoryCanonicalSourceItemDto[]
-                  ).map((child) => grantScopeItem(child, true))
+                  )
+                    .filter((child) => {
+                      const childLayer = childRepresentation(child);
+                      return (
+                        childLayer !== null &&
+                        grant.sourceCapabilities.includes(childLayer) &&
+                        sharedMemoryCeilingAuthorizes(
+                          grant.maximumFidelity,
+                          childLayer,
+                          grant.includeCuratedMemory
+                        )
+                      );
+                    })
+                    .map((child) => grantScopeItem(child, true))
                 }
               : {})
           };

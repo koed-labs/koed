@@ -171,6 +171,11 @@ export const createProjectSharePolicyClient = (input: {
     intent: ProjectPolicyGrantIntent,
     payload: unknown
   ): Promise<unknown>;
+  prepareInitialSource(
+    ownerUserId: string,
+    teamBackendId: string,
+    sessionId: string
+  ): Promise<void>;
   stageLocal(
     personalProjectId: string,
     teamBackendId: string,
@@ -394,6 +399,22 @@ export const createProjectSharePolicyClient = (input: {
           });
           continue;
         }
+        await input.prepareInitialSource(
+          first.link.ownerUserId,
+          first.link.teamBackendId,
+          source.sessionId
+        );
+        const prepared = await resolve(personalProjectId, true);
+        if (
+          !samePolicy(prepared) ||
+          !prepared.policy.reviewSources.some(
+            (entry) =>
+              entry.sessionId === source.sessionId &&
+              entry.reviewLabel === source.reviewLabel &&
+              entry.eligible
+          )
+        )
+          throw new Error("Project summary sharing policy changed");
         try {
           const outcome = await input.stageLocal(
             personalProjectId,

@@ -489,6 +489,16 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
   ),
   route(
     "GET",
+    "/v1/workspace-projects/{projectId}/member-link-proof",
+    "device_credential",
+    "projects",
+    "Current joined member, active Workspace access, and confirmed Team copy are rechecked for Personal link confirmation.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/workspace-projects/{projectId}/tombstone-proof",
     "session_or_device_credential",
     "projects",
@@ -954,6 +964,16 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
   ),
   route(
     "POST",
+    "/v1/local-edge/projects/{projectId}/workspace-project-join-confirm",
+    "desktop_local_credential",
+    "projects",
+    "Loopback owner Desktop credential and independently enrolled Team credential require current joined-member proof and an empty Personal Project.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
     "/v1/local-edge/projects/{projectId}/project-share-policy/manifest",
     "desktop_local_credential",
     "shared_memory",
@@ -993,6 +1013,11 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
         "POST",
         "/v1/local-edge/projects/{projectId}/project-share-policy/stage-initial",
         "Stage an exact owner-local sanitized Captured Session candidate through Team Pending Share."
+      ],
+      [
+        "POST",
+        "/v1/local-edge/projects/{projectId}/project-share-policy/future-source-candidates",
+        "Page exact owner-local captures bound at creation to the active Project policy for trusted Desktop source preparation."
       ],
       [
         "POST",
@@ -3599,6 +3624,26 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/shared-memory/teams/{teamId}/policy/curated-opt-in",
+    "device_credential",
+    "shared_memory",
+    "Opt in to Curated Memory for a Team with an administrator Step-up Action Grant.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/policy/curated-opt-in",
+    "device_credential",
+    "shared_memory",
+    "Opt in to Curated Memory for a Workspace with an administrator Step-up Action Grant.",
+    "request_time_team_admin",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
     "/v1/shared-memory/previews",
     "session_or_device_credential",
     "shared_memory",
@@ -3633,6 +3678,26 @@ export const routeIdentityContracts = [
     "device_credential",
     "shared_memory",
     "Upload the exact owner-private source for a pending Personal Note share.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/shared-memory/pending-shares/{pendingShareId}/curated-source",
+    "device_credential",
+    "shared_memory",
+    "Receive the exact Personal-host-attested Curated source committed by one approved Pending Share.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/shared-memory/pending-shares/{pendingShareId}/curated-source/updates",
+    "device_credential",
+    "shared_memory",
+    "Receive a signed Curated classification generation under the original active Continuous Share Grant.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes

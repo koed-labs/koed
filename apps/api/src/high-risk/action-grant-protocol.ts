@@ -20,6 +20,7 @@ import {
   freezeShareGrantSchema,
   changeSharedMemoryFidelityBundleSchema,
   putTeamConversationSourceGrantSchema,
+  curatedPolicyOptInSchema,
   revokeShareGrantSchema,
   revokeTeamConversationSourceGrantSchema
 } from "../shared-memory/schemas.js";
@@ -61,7 +62,8 @@ import {
 } from "./shared-memory-action-definitions.js";
 import {
   sourceAdmissionActionGrantBinding,
-  projectSharePolicyActionGrantBinding
+  projectSharePolicyActionGrantBinding,
+  sharedMemoryCuratedPolicyOptInBinding
 } from "@koed/shared";
 import {
   bindConversationSourceDiscoveryOperation,
@@ -303,6 +305,9 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
         createSharedMemoryCandidatePreviewSchema.shape.logicalMemoryId,
       candidateHash:
         createSharedMemoryCandidatePreviewSchema.shape.candidateHash,
+      curatedMaterialCommitmentHash:
+        createSharedMemoryCandidatePreviewSchema.shape
+          .curatedMaterialCommitmentHash,
       sourceRevision:
         createSharedMemoryCandidatePreviewSchema.shape.sourceRevision,
       itemCount: createSharedMemoryCandidatePreviewSchema.shape.itemCount,
@@ -354,6 +359,27 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
       expectedPolicyVersion: z.number().int().nonnegative(),
       manifestId: uuidSchema,
       manifestHash: z.string().regex(/^[0-9a-f]{64}$/)
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("shared_memory.team_policy.curated_opt_in"),
+      teamId: uuidSchema,
+      ...curatedPolicyOptInSchema.omit({
+        authority: true,
+        includeCuratedMemory: true
+      }).shape
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("shared_memory.workspace_policy.curated_opt_in"),
+      teamId: uuidSchema,
+      teamWorkspaceId: uuidSchema,
+      ...curatedPolicyOptInSchema.omit({
+        authority: true,
+        includeCuratedMemory: true
+      }).shape
     })
     .strict(),
   z
@@ -866,6 +892,7 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             sourceCapabilities: intent.sourceCapabilities,
             logicalMemoryId: intent.logicalMemoryId,
             candidateHash: intent.candidate.candidateHash,
+            curatedMaterialCommitmentHash: intent.curatedMaterialCommitmentHash,
             sourceRevision: intent.candidate.sourceRevision,
             itemCount: intent.candidate.itemCount,
             excludedItemCount: intent.candidate.excludedItemCount,
@@ -1140,6 +1167,20 @@ export const resolveHighRiskActionGrantOperation = (input: {
         ...(intent.action === "shared_memory.project_share_policy.enable"
           ? { manifestId: intent.manifestId, manifestHash: intent.manifestHash }
           : {})
+      });
+    case "shared_memory.team_policy.curated_opt_in":
+    case "shared_memory.workspace_policy.curated_opt_in":
+      return sharedMemoryCuratedPolicyOptInBinding({
+        action: intent.action,
+        teamId: intent.teamId,
+        ...(intent.action === "shared_memory.workspace_policy.curated_opt_in"
+          ? { teamWorkspaceId: intent.teamWorkspaceId }
+          : {}),
+        referenceId: clientRequestId,
+        mutationId: intent.mutationId,
+        policyId: intent.policyId,
+        expectedCurrentVersion: intent.expectedCurrentVersion,
+        maximumFidelity: intent.maximumFidelity
       });
     case "shared_memory.revoke":
       return bindSharedMemoryRevokeOperation(intent, clientRequestId);

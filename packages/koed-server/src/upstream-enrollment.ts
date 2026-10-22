@@ -1,9 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   assertSecureHttpTransport,
+  createDeviceBoundSourceSigner,
   deleteLocalEdgeClientCredential,
   deleteUpstreamCredentialSecret,
   readLocalEdgeUpstreamEnrollmentBinding,
@@ -607,6 +608,11 @@ const createUpstreamChallenge = async (
     deviceInstanceId: string;
     protocolDeploymentId: string;
     sourceOwnerPrincipalId: string;
+    sourceAttestation?: {
+      keyId: string;
+      publicKey: string;
+      fingerprint: string;
+    };
     challengeHash: string;
     credentialKeyId: string;
     verifierSecret: string;
@@ -653,7 +659,16 @@ const createUpstreamChallenge = async (
         },
         metadata: {
           source: "koed-server-upstream-enroll",
-          requestId: input.requestId
+          requestId: input.requestId,
+          ...(input.sourceAttestation
+            ? {
+                curatedSourceAttestationKeyId: input.sourceAttestation.keyId,
+                curatedSourceAttestationPublicKey:
+                  input.sourceAttestation.publicKey,
+                curatedSourceAttestationFingerprint:
+                  input.sourceAttestation.fingerprint
+              }
+            : {})
         },
         ttl_seconds: 600
       })
@@ -1456,6 +1471,36 @@ const startUpstreamEnrollmentWithFetch = async (
 
   let challenge: { challengeId: string; activationUrl: string };
   try {
+    // Pin the verified Personal producer during browser-approved enrollment,
+    // before a separate exact-Session Curated sharing decision can use it.
+    // Keep this identical to ensureDeviceIdentity's disposable test proof path.
+    const sourceSigner = operationFamilies.includes("share_grant_management")
+      ? createDeviceBoundSourceSigner({
+          koedHome: paths.koedHome,
+          sourceGenerationId: identity.deploymentId!,
+          originKeyId: resolvedDeps.sourceOwnerPrincipalId,
+          ...(process.env.NODE_ENV === "test"
+            ? {
+                environment: {
+                  ...process.env,
+                  KOED_DEVICE_PROOF_DIR: resolve(
+                    `${paths.koedHome}-proof-root`,
+                    "proof"
+                  )
+                }
+              }
+            : {})
+        })
+      : null;
+    if (
+      sourceSigner &&
+      (sourceSigner.deploymentId !== identity.deploymentId ||
+        sourceSigner.deviceInstanceId !== deviceInstanceId)
+    ) {
+      throw new Error(
+        "Verified Personal source identity changed before enrollment."
+      );
+    }
     challenge = await createUpstreamChallenge(
       backend,
       {
@@ -1463,6 +1508,17 @@ const startUpstreamEnrollmentWithFetch = async (
         deviceInstanceId,
         protocolDeploymentId: identity.deploymentId!,
         sourceOwnerPrincipalId: resolvedDeps.sourceOwnerPrincipalId,
+        ...(sourceSigner
+          ? {
+              sourceAttestation: {
+                keyId: sourceSigner.keyId,
+                publicKey: sourceSigner.publicKey,
+                fingerprint: createHash("sha256")
+                  .update(Buffer.from(sourceSigner.publicKey, "base64url"))
+                  .digest("hex")
+              }
+            }
+          : {}),
         challengeHash,
         credentialKeyId,
         verifierSecret,

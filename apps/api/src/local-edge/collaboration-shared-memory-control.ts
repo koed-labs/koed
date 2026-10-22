@@ -188,6 +188,7 @@ const remotePreviewSchema = z
     representation: representationSchema,
     maximumFidelity: maximumFidelitySchema,
     includeCuratedMemory: z.boolean(),
+    curatedMaterialCommitmentHash: hashSchema.optional(),
     mode: z.enum(["snapshot", "continuous"]),
     binding: sourceBindingSchema,
     items: z.array(redactedSourceItemSchema).min(1).max(2_048),
@@ -212,6 +213,7 @@ const remoteCandidateAdmissionSchema = z
     representation: representationSchema,
     maximumFidelity: maximumFidelitySchema,
     includeCuratedMemory: z.boolean(),
+    curatedMaterialCommitmentHash: hashSchema.optional(),
     sourceRevision: z.number().int().safe().min(0),
     sourceHash: hashSchema,
     redactedContentHash: hashSchema,
@@ -373,7 +375,7 @@ const remoteTeamGrantSchema = z
   })
   .strict();
 
-const remoteOwnedShareGrantSchema = remoteGrantSchema.omit({
+export const remoteOwnedShareGrantSchema = remoteGrantSchema.omit({
   companionScope: true
 });
 
@@ -635,6 +637,11 @@ export interface CollaborationSharedMemoryAuthorityStore {
     mode: "snapshot" | "continuous";
     source: shared.SharedMemorySourceRef;
     sourceRevision: number;
+    consentId?: string;
+    previewHash?: string;
+    teamWorkspaceId?: string;
+    includeCuratedMemory?: boolean;
+    curatedMaterialCommitmentHash?: string;
   }): Promise<boolean>;
   claimPendingShareSourceWork(input?: { limit?: number }): Promise<
     Array<{
@@ -646,6 +653,12 @@ export interface CollaborationSharedMemoryAuthorityStore {
       mutationId: string;
       mode: "snapshot" | "continuous";
       source: shared.SharedMemorySourceRef;
+      sourceRevision: number;
+      consentId: string | null;
+      previewHash: string | null;
+      teamWorkspaceId: string | null;
+      includeCuratedMemory: boolean;
+      curatedMaterialCommitmentHash: string | null;
     }>
   >;
   finishPendingShareSourceWork(input: {
@@ -718,6 +731,20 @@ export interface CollaborationSharedMemoryControlOptions {
     sourceDeploymentProtocolId: string;
     sourceOwnerPrincipalId: string;
   } | null;
+  loadCuratedCandidateCommitment?(input: {
+    localOwnerUserId: string;
+    sessionId: string;
+    logicalMemoryId: string;
+    sourceRevision: number;
+    teamBackendId: string;
+    teamId: string;
+    teamWorkspaceId: string;
+  }): Promise<{
+    hash: string;
+    keyId: string;
+    fingerprint: string;
+    workspaceProjectId: string;
+  }>;
   requestPendingShareSourceWork?(): void;
   requestContinuousNoteAdvancementWork?(): void;
   readDesktopCredential?: DesktopCredentialReader;
@@ -1202,6 +1229,49 @@ const remoteRequest = async (
   return payload;
 };
 
+const loadBoundCuratedCommitment = async (
+  options: CollaborationSharedMemoryControlOptions,
+  authority: ResolvedAuthority,
+  input: {
+    sessionId: string;
+    logicalMemoryId: string;
+    sourceRevision: number;
+    teamId: string;
+    teamWorkspaceId: string;
+  }
+): Promise<{
+  hash: string;
+  keyId: string;
+  fingerprint: string;
+}> => {
+  if (!options.loadCuratedCandidateCommitment) {
+    throw new ControlFailure("not_available");
+  }
+  const material = await options.loadCuratedCandidateCommitment({
+    localOwnerUserId: authority.localOwnerUserId,
+    sessionId: input.sessionId,
+    logicalMemoryId: input.logicalMemoryId,
+    sourceRevision: input.sourceRevision,
+    teamBackendId: authority.backendId,
+    teamId: input.teamId,
+    teamWorkspaceId: input.teamWorkspaceId
+  });
+  const project = await remoteRequest(options, authority, {
+    method: "GET",
+    path: `/v1/workspace-projects/${material.workspaceProjectId}`
+  });
+  if (
+    project.id !== material.workspaceProjectId ||
+    project.teamId !== input.teamId ||
+    project.workspaceId !== input.teamWorkspaceId ||
+    project.lifecycle !== "active" ||
+    typeof project.copiedAt !== "string"
+  ) {
+    throw new ControlFailure("permission_denied");
+  }
+  return material;
+};
+
 interface ResolvedAuthority extends AuthorityIdentity {
   backend: LocalEdgeUpstreamBackend;
   desktopCredential: DesktopLocalCredentialAuthorization;
@@ -1614,6 +1684,11 @@ const previewDto = (
     activationRepresentation: preview.activationRepresentation,
     maximumFidelity: preview.maximumFidelity,
     includeCuratedMemory: preview.includeCuratedMemory,
+    ...(preview.curatedMaterialCommitmentHash
+      ? {
+          curatedMaterialCommitmentHash: preview.curatedMaterialCommitmentHash
+        }
+      : {}),
     mode: preview.mode,
     previewRevision: preview.previewRevision,
     sourceRevision: preview.sourceRevision,
@@ -1659,6 +1734,8 @@ const persistedPreviewMatches = (
   preview.activationRepresentation === remote.activationRepresentation &&
   preview.maximumFidelity === remote.maximumFidelity &&
   preview.includeCuratedMemory === remote.includeCuratedMemory &&
+  preview.curatedMaterialCommitmentHash ===
+    remote.curatedMaterialCommitmentHash &&
   preview.mode === remote.mode &&
   preview.sourceRevision === remote.sourceRevision &&
   preview.sourceHash === remote.sourceHash &&
@@ -2214,6 +2291,24 @@ const dispatchCandidatePreview = async (
   ) {
     throw new ControlFailure("conflict");
   }
+  if (candidateSessionId && command.input.includeCuratedMemory) {
+    const bound = await loadBoundCuratedCommitment(options, authority, {
+      sessionId: candidateSessionId,
+      logicalMemoryId: candidate.data.logicalMemoryId,
+      sourceRevision: candidate.data.sourceRevision,
+      teamId: command.input.teamId,
+      teamWorkspaceId: command.input.workspaceId
+    });
+    if (
+      command.input.curatedMaterialCommitmentHash !== bound.hash ||
+      command.input.candidate.curatedMaterialCommitmentHash !== bound.hash ||
+      command.input.candidate.curatedSourceAttestationKeyId !== bound.keyId ||
+      command.input.candidate.curatedSourceAttestationFingerprint !==
+        bound.fingerprint
+    ) {
+      throw new ControlFailure("conflict");
+    }
+  }
   const binding = sharedMemoryCandidatePreviewActionGrantBinding({
     referenceId: command.input.actionGrant.id,
     source: candidate.data.source,
@@ -2231,6 +2326,7 @@ const dispatchCandidatePreview = async (
     activationRepresentation: command.input.activationRepresentation,
     maximumFidelity: command.input.maximumFidelity,
     includeCuratedMemory: command.input.includeCuratedMemory,
+    curatedMaterialCommitmentHash: command.input.curatedMaterialCommitmentHash,
     mode: command.input.mode,
     expiresAt: command.input.candidate.expiresAt
   });
@@ -2262,6 +2358,8 @@ const dispatchCandidatePreview = async (
     admission.data.maximumFidelity !== command.input.maximumFidelity ||
     admission.data.includeCuratedMemory !==
       command.input.includeCuratedMemory ||
+    admission.data.curatedMaterialCommitmentHash !==
+      command.input.curatedMaterialCommitmentHash ||
     admission.data.mode !== command.input.mode ||
     admission.data.expiresAt !== command.input.candidate.expiresAt ||
     admission.data.itemCount !== candidate.data.itemCount ||
@@ -2288,6 +2386,7 @@ const dispatchCandidatePreview = async (
     representation: admission.data.representation,
     maximumFidelity: admission.data.maximumFidelity,
     includeCuratedMemory: admission.data.includeCuratedMemory,
+    curatedMaterialCommitmentHash: admission.data.curatedMaterialCommitmentHash,
     mode: admission.data.mode,
     binding: {
       sourceRevision: admission.data.sourceRevision,
@@ -2314,6 +2413,9 @@ const dispatchCandidatePreview = async (
     })
   );
   if (!persisted.success) throw new ControlFailure("not_available");
+  if (!persistedPreviewMatches(persisted.data, identity, remotePreview)) {
+    throw new ControlFailure("permission_denied");
+  }
   const dto = previewDto(
     authority,
     persisted.data,
@@ -2486,6 +2588,80 @@ const dispatchPreviewPage = async (
   return result;
 };
 
+const pendingShareSourceWorkAuthority = async (
+  options: CollaborationSharedMemoryControlOptions,
+  authority: ResolvedAuthority,
+  pendingShare: z.infer<typeof pendingShareSchema>,
+  expectedPreviewHash?: string
+) => {
+  // Existing non-Curated source work has no signed Curated material to upload.
+  // Only the Curated path requires the new approved-consent binding.
+  if (!pendingShare.includeCuratedMemory) {
+    return { includeCuratedMemory: false };
+  }
+  // Team creates the source-owner consent only when activation completes.
+  // The accepted Pending Share and the earlier reviewed preview authorize
+  // initial source preparation; both are checked again by the Team upload.
+  const identity = authorityIdentity(authority);
+  if (!expectedPreviewHash) {
+    const current = await remoteRequest(options, authority, {
+      method: "GET",
+      path: `/v1/shared-memory/owned-shares/pending/${encodeURIComponent(pendingShare.id)}`
+    });
+    const currentPreview = remotePreviewSchema.safeParse(current.preview);
+    const currentShare = pendingShareSchema.safeParse(
+      (current.share as { pendingShare?: unknown } | undefined)?.pendingShare
+    );
+    if (
+      !currentPreview.success ||
+      !currentShare.success ||
+      currentShare.data.id !== pendingShare.id ||
+      currentShare.data.mutationId !== pendingShare.mutationId
+    ) {
+      throw new ControlFailure("permission_denied");
+    }
+    expectedPreviewHash = currentPreview.data.previewHash;
+  }
+  if (
+    pendingShare.state !== "preparing" &&
+    !(
+      pendingShare.state === "activated" &&
+      pendingShare.sourceUpdateState === "active" &&
+      pendingShare.grantId
+    )
+  ) {
+    throw new ControlFailure("permission_denied");
+  }
+  const approvedPreview = await options.authorityStore.readAuthoritativePreview(
+    {
+      ...identity,
+      previewHash: expectedPreviewHash
+    }
+  );
+  if (
+    !approvedPreview ||
+    !sameIdentity(approvedPreview, identity) ||
+    approvedPreview.includeCuratedMemory !== true ||
+    approvedPreview.logicalMemoryId !== pendingShare.logicalMemoryId ||
+    approvedPreview.teamId !== pendingShare.teamId ||
+    approvedPreview.teamWorkspaceId !== pendingShare.workspaceId ||
+    approvedPreview.mode !== pendingShare.mode ||
+    approvedPreview.sourceRevision !== pendingShare.sourceRevision ||
+    crossIdentitySyncDigest(approvedPreview.source) !==
+      crossIdentitySyncDigest(pendingShare.source) ||
+    !approvedPreview.curatedMaterialCommitmentHash
+  ) {
+    throw new ControlFailure("permission_denied");
+  }
+  return {
+    consentId: pendingShare.consentId,
+    previewHash: expectedPreviewHash,
+    teamWorkspaceId: pendingShare.workspaceId,
+    includeCuratedMemory: true,
+    curatedMaterialCommitmentHash: approvedPreview.curatedMaterialCommitmentHash
+  };
+};
+
 const dispatchShare = async (
   options: CollaborationSharedMemoryControlOptions,
   authority: ResolvedAuthority,
@@ -2576,8 +2752,19 @@ const dispatchShare = async (
     pendingShare.data.maximumFidelity !== command.input.maximumFidelity ||
     pendingShare.data.includeCuratedMemory !==
       command.input.includeCuratedMemory ||
-    pendingShare.data.workspaceAccessState !== "none" ||
-    pendingShare.data.state !== "preparing"
+    (pendingShare.data.workspaceAccessState !== "none" &&
+      !(
+        pendingShare.data.state === "activated" &&
+        pendingShare.data.workspaceAccessState === "active" &&
+        pendingShare.data.sourceUpdateState === "active" &&
+        pendingShare.data.grantId
+      )) ||
+    (pendingShare.data.state !== "preparing" &&
+      !(
+        pendingShare.data.state === "activated" &&
+        pendingShare.data.sourceUpdateState === "active" &&
+        pendingShare.data.grantId
+      ))
   ) {
     throw new ControlFailure("permission_denied");
   }
@@ -2588,7 +2775,13 @@ const dispatchShare = async (
       mutationId: command.input.mutationId,
       mode: command.input.mode,
       source: pendingSource,
-      sourceRevision: pendingShare.data.sourceRevision
+      sourceRevision: pendingShare.data.sourceRevision,
+      ...(await pendingShareSourceWorkAuthority(
+        options,
+        authority,
+        pendingShare.data,
+        command.input.previewHash
+      ))
     });
   if (!persistedWork) throw new ControlFailure("not_available");
   options.requestPendingShareSourceWork?.();
@@ -3276,7 +3469,12 @@ const dispatchControlPendingShare = async (
         mutationId: pendingShare.data.mutationId,
         mode: pendingShare.data.mode,
         source,
-        sourceRevision: pendingShare.data.sourceRevision
+        sourceRevision: pendingShare.data.sourceRevision,
+        ...(await pendingShareSourceWorkAuthority(
+          options,
+          authority,
+          pendingShare.data
+        ))
       });
     if (!persistedWork) throw new ControlFailure("not_available");
     options.requestPendingShareSourceWork?.();
@@ -3489,7 +3687,13 @@ const dispatchChangeFidelity = async (
       mutationId: command.input.mutationId,
       mode: pendingShare.data.mode,
       source,
-      sourceRevision: pendingShare.data.sourceRevision
+      sourceRevision: pendingShare.data.sourceRevision,
+      ...(await pendingShareSourceWorkAuthority(
+        options,
+        authority,
+        pendingShare.data,
+        command.input.previewHash
+      ))
     });
   if (!persistedWork) throw new ControlFailure("not_available");
   options.requestPendingShareSourceWork?.();
@@ -3729,7 +3933,12 @@ export const createCollaborationSharedMemoryControl = (
             mutationId: pendingShare.mutationId,
             mode: pendingShare.mode,
             source: candidate.source,
-            sourceRevision: pendingShare.sourceRevision
+            sourceRevision: pendingShare.sourceRevision,
+            ...(await pendingShareSourceWorkAuthority(
+              options,
+              authority,
+              pendingShare
+            ))
           });
         if (!persisted) throw new ControlFailure("not_available");
       }
@@ -4039,7 +4248,41 @@ export const createCollaborationSharedMemoryControl = (
         ) {
           return failure(command, "not_available");
         }
-        const result = success(command, { candidate: candidate.data });
+        let curated:
+          | {
+              curatedMaterialCommitmentHash: string;
+              curatedSourceAttestationKeyId: string;
+              curatedSourceAttestationFingerprint: string;
+            }
+          | undefined;
+        if (command.input.curatedTarget) {
+          const authority = await resolveAuthority(
+            options,
+            command,
+            parsedContext.data
+          );
+          if (
+            authority.backendId !== command.input.curatedTarget.teamBackendId ||
+            source.kind !== "captured_session"
+          ) {
+            throw new ControlFailure("permission_denied");
+          }
+          const bound = await loadBoundCuratedCommitment(options, authority, {
+            sessionId: source.sessionId,
+            logicalMemoryId: candidate.data.logicalMemoryId,
+            sourceRevision: candidate.data.sourceRevision,
+            teamId: command.input.curatedTarget.teamId,
+            teamWorkspaceId: command.input.curatedTarget.teamWorkspaceId
+          });
+          curated = {
+            curatedMaterialCommitmentHash: bound.hash,
+            curatedSourceAttestationKeyId: bound.keyId,
+            curatedSourceAttestationFingerprint: bound.fingerprint
+          };
+        }
+        const result = success(command, {
+          candidate: { ...candidate.data, ...curated }
+        });
         return result ?? failure(command, "internal_error");
       }
       const authority = await resolveAuthority(

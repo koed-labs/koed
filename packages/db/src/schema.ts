@@ -9481,6 +9481,7 @@ export const sharedMemoryCandidatePreviews = pgTable(
     excludedItemCount: integer("excluded_item_count").notNull().default(0),
     candidateManifest: jsonb("candidate_manifest").notNull(),
     candidateManifestHash: text("candidate_manifest_hash").notNull(),
+    curatedMaterialCommitmentHash: text("curated_material_commitment_hash"),
     byteCount: integer("byte_count").notNull(),
     representationPolicyRevision: integer(
       "representation_policy_revision"
@@ -9564,6 +9565,11 @@ export const sharedMemoryCandidatePreviews = pgTable(
         and length(${table.classifierHash}) = 64`
     ),
     check(
+      "shared_memory_candidate_previews_curated_commitment_check",
+      sql`${table.curatedMaterialCommitmentHash} is null
+        or ${table.curatedMaterialCommitmentHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
       "shared_memory_candidate_previews_source_binding_check",
       sql`cardinality(${table.sourceCapabilities}) > 0
         and ${table.activationRepresentation} = any(${table.sourceCapabilities})
@@ -9610,6 +9616,7 @@ export const pendingShareOperations = pgTable(
     representation: sharedMemoryRepresentation("representation").notNull(),
     maximumFidelity: sharedMemoryRepresentation("maximum_fidelity").notNull(),
     includeCuratedMemory: boolean("include_curated_memory").notNull(),
+    curatedMaterialReceipt: jsonb("curated_material_receipt"),
     mode: sharedMemoryConsentMode("mode").notNull(),
     sourceRevision: bigint("source_revision", { mode: "number" }).notNull(),
     sourceHash: text("source_hash").notNull(),
@@ -9785,6 +9792,23 @@ export const pendingShareOperations = pgTable(
               ${table.lastControlAction} in ('retry','pause','resume','revoke')))
         and length(${table.requestHash}) = 64 and length(${table.previewHash}) = 64
         and length(${table.sourceHash}) = 64`
+    ),
+    check(
+      "pending_share_operations_curated_receipt_check",
+      sql`${table.curatedMaterialReceipt} is null or coalesce((
+        ${table.includeCuratedMemory} = true
+        and jsonb_typeof(${table.curatedMaterialReceipt}) = 'object'
+        and (${table.curatedMaterialReceipt}->>'materialHash') ~ '^[0-9a-f]{64}$'
+        and (${table.curatedMaterialReceipt}->>'commitmentHash') ~ '^[0-9a-f]{64}$'
+        and (${table.curatedMaterialReceipt}->>'previewHash') = ${table.previewHash}
+        and (${table.curatedMaterialReceipt}->>'consentId') = ${table.consentId}::text
+        and (${table.curatedMaterialReceipt}->>'sourceRevision')::bigint = ${table.sourceRevision}
+        and (${table.curatedMaterialReceipt}->>'itemCount')::integer between 0 and 100
+        and (((${table.curatedMaterialReceipt}->>'itemCount')::integer = 0
+             and ${table.curatedMaterialReceipt}->>'artifactId' is null)
+          or ((${table.curatedMaterialReceipt}->>'itemCount')::integer > 0
+             and (${table.curatedMaterialReceipt}->>'artifactId') ~ '^[0-9a-f-]{36}$'))
+      ), false)`
     ),
     check(
       "pending_share_operations_replacement_values_check",
@@ -10131,6 +10155,7 @@ export const teamMemoryShareGrants = pgTable(
     classifierVersion: integer("classifier_version"),
     sourceRevision: bigint("source_revision", { mode: "number" }),
     grantVersion: integer("grant_version").notNull().default(1),
+    curatedSourceUpdateReceipt: jsonb("curated_source_update_receipt"),
     revocationEpoch: bigint("revocation_epoch", { mode: "number" })
       .notNull()
       .default(0),
@@ -10324,6 +10349,26 @@ export const teamMemoryShareGrants = pgTable(
     check(
       "team_memory_share_grants_version_check",
       sql`${table.grantVersion} > 0 and ${table.revocationEpoch} >= 0`
+    ),
+    check(
+      "team_memory_share_grants_curated_update_receipt_check",
+      sql`${table.curatedSourceUpdateReceipt} is null or coalesce((
+        ${table.includeCuratedMemory} = true
+        and ${table.mode} = 'continuous'
+        and jsonb_typeof(${table.curatedSourceUpdateReceipt}) = 'object'
+        and (${table.curatedSourceUpdateReceipt}->>'generation')::bigint > 0
+        and (${table.curatedSourceUpdateReceipt}->>'sourceRevision')::bigint >= 0
+        and (${table.curatedSourceUpdateReceipt}->>'itemCount')::integer between 0 and 100
+        and (${table.curatedSourceUpdateReceipt}->>'materialHash') ~ '^[0-9a-f]{64}$'
+        and (${table.curatedSourceUpdateReceipt}->>'commitmentHash') ~ '^[0-9a-f]{64}$'
+        and (${table.curatedSourceUpdateReceipt}->>'updateHash') ~ '^[0-9a-f]{64}$'
+        and (((${table.curatedSourceUpdateReceipt}->>'itemCount')::integer = 0
+          and ${table.curatedSourceUpdateReceipt}->>'artifactId' is null
+          and ${table.curatedSourceUpdateReceipt}->>'previewId' is null)
+         or ((${table.curatedSourceUpdateReceipt}->>'itemCount')::integer > 0
+          and (${table.curatedSourceUpdateReceipt}->>'artifactId') ~ '^[0-9a-f-]{36}$'
+          and (${table.curatedSourceUpdateReceipt}->>'previewId') ~ '^[0-9a-f-]{36}$'))
+      ), false)`
     ),
     check(
       "team_memory_share_grants_retention_check",
@@ -15914,6 +15959,13 @@ export const collaborationPendingShareSourceWork = pgTable(
       .references(() => logicalMemorySourceRevisions.id, {
         onDelete: "restrict"
       }),
+    consentId: uuid("consent_id"),
+    previewHash: text("preview_hash"),
+    curatedMaterialCommitmentHash: text("curated_material_commitment_hash"),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    includeCuratedMemory: boolean("include_curated_memory")
+      .notNull()
+      .default(false),
     state: text("state").notNull().default("pending"),
     attemptCount: integer("attempt_count").notNull().default(0),
     availableAt: timestamp("available_at", { withTimezone: true })
@@ -15940,6 +15992,15 @@ export const collaborationPendingShareSourceWork = pgTable(
       sql`${table.state} in ('pending','processing','completed','failed')
         and ${table.attemptCount} >= 0`
     ),
+    check(
+      "csm_pending_source_work_curated_binding_check",
+      sql`(${table.previewHash} is null or ${table.previewHash} ~ '^[0-9a-f]{64}$')
+        and (${table.curatedMaterialCommitmentHash} is null or ${table.curatedMaterialCommitmentHash} ~ '^[0-9a-f]{64}$')
+        and (${table.includeCuratedMemory} = false or
+          (${table.consentId} is not null and ${table.previewHash} is not null
+           and ${table.curatedMaterialCommitmentHash} is not null
+           and ${table.teamWorkspaceId} is not null))`
+    ),
     foreignKey({
       columns: [table.sourceRevisionId, table.logicalMemoryId],
       foreignColumns: [
@@ -15948,6 +16009,72 @@ export const collaborationPendingShareSourceWork = pgTable(
       ],
       name: "csm_pending_source_work_revision_fk"
     }).onDelete("restrict")
+  ]
+);
+
+export const collaborationCuratedGrantSourceWork = pgTable(
+  "collaboration_curated_grant_source_work",
+  {
+    id: id(),
+    enrollmentId: uuid("enrollment_id")
+      .notNull()
+      .references(() => collaborationSharedMemoryEnrollments.id, {
+        onDelete: "cascade"
+      }),
+    originalPendingShareId: uuid("original_pending_share_id").notNull(),
+    consentId: uuid("consent_id").notNull(),
+    previewHash: text("preview_hash").notNull(),
+    curatedMaterialCommitmentHash: text(
+      "curated_material_commitment_hash"
+    ).notNull(),
+    localSessionId: uuid("local_session_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    sourceDeploymentProtocolId: uuid("source_deployment_protocol_id").notNull(),
+    sourceOwnerPrincipalId: uuid("source_owner_principal_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    mode: sharedMemoryConsentMode("mode").notNull().default("continuous"),
+    requestedGeneration: bigint("requested_generation", { mode: "number" })
+      .notNull()
+      .default(1),
+    deliveredGeneration: bigint("delivered_generation", { mode: "number" })
+      .notNull()
+      .default(0),
+    claimedGeneration: bigint("claimed_generation", { mode: "number" }),
+    state: text("state").notNull().default("pending"),
+    leaseToken: uuid("lease_token"),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    nextExpiryAt: timestamp("next_expiry_at", { withTimezone: true }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("csm_curated_grant_source_work_unique").on(
+      table.enrollmentId,
+      table.originalPendingShareId
+    ),
+    index("csm_curated_grant_source_work_claim_idx").on(
+      table.state,
+      table.availableAt,
+      table.id
+    ),
+    check(
+      "csm_curated_grant_source_work_binding_check",
+      sql`${table.mode} = 'continuous'
+        and ${table.previewHash} ~ '^[0-9a-f]{64}$'
+        and ${table.curatedMaterialCommitmentHash} ~ '^[0-9a-f]{64}$'
+        and ${table.requestedGeneration} >= ${table.deliveredGeneration}
+        and ${table.deliveredGeneration} >= 0
+        and (${table.claimedGeneration} is null or
+          (${table.claimedGeneration} > ${table.deliveredGeneration}
+           and ${table.claimedGeneration} <= ${table.requestedGeneration}))
+        and ${table.state} in ('pending','processing','failed','idle')
+        and ${table.attemptCount} >= 0`
+    )
   ]
 );
 

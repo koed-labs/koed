@@ -472,11 +472,9 @@ export const registerCuratedMemoryRoutes = (
       );
       if (!assertion)
         return reply.status(404).send({ error: "Curated Memory not found" });
-      if (assertion.scope !== "unscoped") {
-        return reply.status(409).send({
-          error: "Only unscoped Curated Memory can be classified here"
-        });
-      }
+      // Every owner scope change uses the same versioned withdrawal journal.
+      // The coordinator must acknowledge affected Team artifacts before the
+      // new Personal classification becomes active.
       const operation = await repo.prepareCuratedClassification(
         { userId: user.id },
         {

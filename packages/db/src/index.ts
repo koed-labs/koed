@@ -186,6 +186,19 @@ export {
   type CollaborationSharedMemorySourceBinding
 } from "./collaboration-shared-memory-authority-store.js";
 export {
+  curatedSharedSourceCommitment,
+  loadPersonalCuratedSharedSourceMaterial,
+  type CuratedSharedSourceMaterial
+} from "./curated-shared-source-producer.js";
+export {
+  claimCuratedGrantSourceWork,
+  enqueueCuratedGrantSourceWorkForAssertions,
+  enqueueDueCuratedGrantExpiryWork,
+  finishCuratedGrantSourceWork,
+  registerContinuousCuratedGrantSourceWork,
+  type CuratedGrantSourceWork
+} from "./curated-shared-source-work.js";
+export {
   acknowledgeCollaborationSubscriptionWithClient,
   appendCollaborationOutboxEventWithClient,
   collaborationSubscriptionPrincipalHash,

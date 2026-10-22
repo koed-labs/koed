@@ -86,7 +86,7 @@ const ENCRYPTED_MEMORY_NODE_JSON = {
 const hasEncryptableText = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
 
-const ensureCapturedSessionSourceRevision = async (
+export const ensureCapturedSessionSourceRevision = async (
   client: pg.PoolClient,
   input: {
     logicalMemoryId: string;
@@ -1331,11 +1331,12 @@ export const createCrossIdentitySyncRepository = (
            returning cursor
          )
          select case when exists (select 1 from owned_session)
-                then coalesce((
-                  select max(change.cursor)
+                then greatest(
+                  coalesce((select max(change.cursor)
                     from sync_semantic_changes change
-                   where change.session_id=$1
-                ),0)::text
+                   where change.session_id=$1),0),
+                  coalesce((select max(cursor) from inserted),0)
+                )::text
                 else null end as source_revision`,
         [sessionId, actor.userId]
       );

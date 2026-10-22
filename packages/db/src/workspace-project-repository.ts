@@ -513,14 +513,6 @@ export const createWorkspaceProjectRepository = (
           throw new WorkspaceProjectUnavailableError(
             "Current Team sharing target is unavailable"
           );
-        const existing = await one(
-          client,
-          `select id from workspace_projects
-          where team_id=$1 and owner_team_member_id=$2
-            and share_attempt_key=$3 for update`,
-          [input.teamId, member.id, input.shareAttemptKey]
-        );
-        if (existing) throw new WorkspaceProjectConflictError(existing);
         const prior = await one(
           client,
           `select id,workspace_id from workspace_project_share_cancellations
@@ -529,6 +521,50 @@ export const createWorkspaceProjectRepository = (
         );
         if (prior && prior.workspace_id !== input.workspaceId)
           throw new WorkspaceProjectConflictError(prior);
+        const existing = await one(
+          client,
+          `select id,workspace_id,lifecycle,share_attempt_key,
+                  copy_manifest_hash,copied_at
+             from workspace_projects
+            where team_id=$1 and owner_team_member_id=$2
+              and share_attempt_key=$3 for update`,
+          [input.teamId, member.id, input.shareAttemptKey]
+        );
+        if (existing && existing.workspace_id !== input.workspaceId)
+          throw new WorkspaceProjectConflictError(existing);
+        if (existing && !prior) {
+          if (existing.lifecycle !== "deleted")
+            throw new WorkspaceProjectConflictError(existing);
+          const tombstone = await one(
+            client,
+            `select
+               not exists(select 1 from workspace_project_members link
+                 where link.workspace_project_id=$1 and link.disabled_at is null)
+                 as all_member_links_disabled,
+               not exists(select 1 from team_memory_share_grants grant_row
+                 join workspace_project_share_grant_bindings binding
+                   on binding.share_grant_id=grant_row.id
+                 where binding.workspace_project_id=$1
+                   and grant_row.lifecycle='active'
+                   and grant_row.revoked_at is null
+                   and grant_row.frozen_at is null) as grants_frozen,
+               not exists(select 1 from collaboration_threads thread
+                 where thread.workspace_project_id=$1 and thread.scope='team'
+                   and thread.kind='project_thread'
+                   and thread.lifecycle='active') as thread_archived`,
+            [existing.id]
+          );
+          if (
+            !tombstone?.all_member_links_disabled ||
+            !tombstone.grants_frozen ||
+            !tombstone.thread_archived ||
+            Boolean(existing.copied_at) !==
+              (typeof existing.copy_manifest_hash === "string")
+          )
+            throw new WorkspaceProjectUnavailableError(
+              "Team Project tombstone is incomplete"
+            );
+        }
         await client.query(
           `insert into workspace_project_share_cancellations
           (id,team_id,workspace_id,owner_team_member_id,share_attempt_key)
@@ -556,7 +592,16 @@ export const createWorkspaceProjectRepository = (
           teamId: input.teamId,
           workspaceId: input.workspaceId,
           ownerUserId: actorUserId,
-          shareAttemptKey: input.shareAttemptKey
+          shareAttemptKey: input.shareAttemptKey,
+          ...(existing
+            ? {
+                terminalProject: {
+                  projectId: String(existing.id),
+                  copyManifestHash: nullableText(existing.copy_manifest_hash),
+                  copiedAt: existing.copied_at
+                }
+              }
+            : {})
         };
       });
     },
@@ -749,12 +794,34 @@ export const createWorkspaceProjectRepository = (
         copyManifestHash: String(row.copy_manifest_hash)
       };
     },
+    async getMemberLinkProof(actorUserId: string, projectId: string) {
+      const row = await currentMember(pool, actorUserId, projectId);
+      if (
+        row.owner_team_member_id === row.actor_team_member_id ||
+        !row.copied_at ||
+        typeof row.copy_manifest_hash !== "string"
+      )
+        throw new WorkspaceProjectUnavailableError(
+          "Joined Workspace Project copy is unavailable"
+        );
+      return {
+        projectId: String(row.id),
+        workspaceId: String(row.workspace_id),
+        teamId: String(row.team_id),
+        memberTeamMemberId: String(row.actor_team_member_id),
+        memberUserId: actorUserId,
+        projectVersion: Number(row.version),
+        memberVersion: Number(row.project_member_version)
+      };
+    },
     async getOwnerTombstoneProof(actorUserId: string, projectId: string) {
       const row = await one(
         pool,
         `
       select project.id,project.team_id,project.workspace_id,project.version,
-             project.deleted_at,owner_member.user_id as owner_user_id,
+             project.deleted_at,project.share_attempt_key,
+             project.copy_manifest_hash,project.copied_at,
+             owner_member.user_id as owner_user_id,
              not exists(select 1 from workspace_project_members link
                where link.workspace_project_id=project.id and link.disabled_at is null)
                as all_member_links_disabled,
@@ -793,6 +860,9 @@ export const createWorkspaceProjectRepository = (
         ownerUserId: actorUserId,
         version: Number(row.version),
         deletedAt: row.deleted_at,
+        shareAttemptKey: nullableText(row.share_attempt_key),
+        copyManifestHash: nullableText(row.copy_manifest_hash),
+        copiedAt: row.copied_at,
         allMemberLinksDisabled: true as const,
         grantsFrozen: true as const,
         threadArchived: true as const
@@ -1170,6 +1240,21 @@ export const createWorkspaceProjectRepository = (
         if (project.owner_team_member_id !== project.actor_team_member_id)
           throw new WorkspaceProjectUnavailableError(
             "Only the Workspace Project owner can copy first-share records"
+          );
+        const canceled = await one(
+          client,
+          `select id from workspace_project_share_cancellations
+            where team_id=$1 and owner_team_member_id=$2
+              and share_attempt_key=$3`,
+          [
+            project.team_id,
+            project.owner_team_member_id,
+            project.share_attempt_key
+          ]
+        );
+        if (canceled)
+          throw new WorkspaceProjectUnavailableError(
+            "First-share attempt was canceled"
           );
         const manifestHash = workspaceProjectCopyManifestHash(input);
         if (project.copied_at) {

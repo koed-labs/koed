@@ -252,6 +252,42 @@ export const createProjectSharePolicyService = (input: {
     finalizeAttempt: personal.finalizeProjectSharePolicyAttempt,
     sendPolicy: sendPolicy,
     consumeLocal: personal.consumeProjectSharePolicy,
+    prepareInitialSource: async (ownerUserId, teamBackendId, sessionId) => {
+      const context = projectPolicySender.getStore();
+      if (!context || context.signal.aborted || context.ownerId !== ownerUserId)
+        throw new Error("Project summary sharing window changed");
+      const before = await loadContext();
+      if (
+        before.state !== "ready" ||
+        before.backendId !== teamBackendId ||
+        !before.principalId
+      )
+        throw new Error("Project summary sharing Team authority changed");
+      const command = collaborationRendererCommandSchema.parse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: randomUUID(),
+        command: "collaboration.prepare_shared_memory_source",
+        input: { sessionId, consentedAt: new Date().toISOString() }
+      });
+      const result = collaborationCommandResultSchema.parse(
+        await sendCollaboration(command, context)
+      );
+      if (
+        context.signal.aborted ||
+        !result.ok ||
+        result.requestId !== command.requestId ||
+        result.command !== "collaboration.prepare_shared_memory_source" ||
+        result.data.entry.id !== sessionId
+      )
+        throw new Error("Project summary sharing source preparation failed");
+      const after = await loadContext();
+      if (
+        after.state !== "ready" ||
+        after.backendId !== teamBackendId ||
+        after.principalId !== before.principalId
+      )
+        throw new Error("Project summary sharing Team authority changed");
+    },
     stageLocal: personal.stageInitialProjectSharePolicy
   });
   const futurePolicySweep = createProjectSharePolicyFutureSweep({
@@ -296,6 +332,7 @@ export const createProjectSharePolicyService = (input: {
         selected.projectId
       );
       const matches = (current: typeof before) =>
+        current.link.ownerUserId === before.link.ownerUserId &&
         current.link.teamBackendId === selected.teamBackendId &&
         current.link.workspaceProjectId === selected.workspaceProjectId &&
         current.policy.projectId === selected.workspaceProjectId &&
@@ -309,11 +346,57 @@ export const createProjectSharePolicyService = (input: {
         current.policy.workspaceId === before.policy.workspaceId;
       if (!matches(before) || signal.aborted)
         throw new Error("Project policy reconciliation authority changed");
+      const candidates = await personal.futureProjectShareSourceCandidates(
+        selected.projectId,
+        selected.teamBackendId,
+        selected.workspaceProjectId,
+        selected.policyVersion,
+        cursor,
+        signal
+      );
+      if (
+        signal.aborted ||
+        !matches(await projectSharePolicy.currentForIssue(selected.projectId))
+      )
+        throw new Error("Project policy reconciliation authority changed");
+      for (const source of candidates.entries) {
+        if (
+          signal.aborted ||
+          !matches(await projectSharePolicy.currentForIssue(selected.projectId))
+        )
+          throw new Error("Project policy reconciliation authority changed");
+        const command = collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: randomUUID(),
+          command: "collaboration.prepare_shared_memory_source",
+          input: {
+            sessionId: source.sessionId,
+            consentedAt: new Date().toISOString()
+          }
+        });
+        const result = collaborationCommandResultSchema.parse(
+          await sendCollaboration(command, {
+            ownerId: before.link.ownerUserId,
+            signal,
+            emitCollaborationEvent: () => undefined
+          })
+        );
+        if (
+          signal.aborted ||
+          !result.ok ||
+          result.requestId !== command.requestId ||
+          result.command !== "collaboration.prepare_shared_memory_source" ||
+          result.data.entry.id !== source.sessionId ||
+          !matches(await projectSharePolicy.currentForIssue(selected.projectId))
+        )
+          throw new Error("Project policy future source preparation changed");
+      }
       const page = await personal.reconcileFutureProjectSharePolicy(
         selected.projectId,
         selected.teamBackendId,
         selected.workspaceProjectId,
         selected.policyVersion,
+        candidates.entries,
         cursor,
         signal
       );

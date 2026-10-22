@@ -252,6 +252,57 @@ describe("Curated assertion routes", () => {
     }
   });
 
+  it("keeps a Project-to-Me scope change pending until its Team withdrawal is acknowledged", async () => {
+    const assertion = {
+      ...baseAssertion,
+      scope: "project",
+      projectId,
+      classificationVersion: 7
+    };
+    const operation = {
+      id: randomUUID(),
+      assertionId,
+      ownerUserId: ownerId,
+      expectedVersion: 7,
+      nextVersion: 8,
+      scope: "me" as const,
+      projectId: null,
+      manifest: [{ backendId: "team-a" }],
+      backendAcks: [],
+      state: "pending" as const
+    };
+    const prepare = vi.fn(async () => operation);
+    const advance = vi.fn(async () => {
+      throw new Error("Team temporarily offline");
+    });
+    const { app, repo, context } = setup(
+      {
+        getCuratedMemoryAssertion: vi.fn(async () => assertion),
+        prepareCuratedClassification: prepare
+      },
+      advance as CuratedClassificationCoordinator["advance"]
+    );
+    apps.push(app);
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/curated/assertions/${assertionId}`,
+      headers: { cookie: "owner-session" },
+      payload: { scope: "me", expected_version: 7 }
+    });
+    expect(response.statusCode).toBe(202);
+    expect(context.auth.authenticateSession).toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledExactlyOnceWith(
+      { userId: ownerId },
+      { assertionId, expectedVersion: 7, scope: "me", projectId: null }
+    );
+    expect(advance).toHaveBeenCalledExactlyOnceWith(operation);
+    expect(repo.commitCuratedClassification).not.toHaveBeenCalled();
+    expect(response.json().operation).toMatchObject({
+      state: "pending",
+      expectedVersion: 7
+    });
+  });
+
   it("passes exact panel filters and returns owner-scoped replacement history", async () => {
     const { app, repo } = setup();
     apps.push(app);

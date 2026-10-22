@@ -378,10 +378,13 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         share_attempt_key: string;
         target_team_id: string | null;
         target_workspace_id: string | null;
+        manifest_hash: string;
+        snapshot: unknown;
         state: string;
       }>(
         `select attempt.team_backend_id,attempt.share_attempt_key,
-        attempt.target_team_id,attempt.target_workspace_id,attempt.state
+        attempt.target_team_id,attempt.target_workspace_id,
+        attempt.manifest_hash,attempt.snapshot,attempt.state
       from personal_workspace_project_share_attempts attempt
       join projects project on project.id=attempt.personal_project_id
         and project.owner_user_id=attempt.owner_user_id
@@ -390,12 +393,26 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         [ownerUserId, projectId]
       )
     ).rows[0];
+    const snapshot = row?.snapshot as
+      | { personalProjectVersion?: unknown }
+      | undefined;
+    if (
+      row &&
+      (!snapshot ||
+        !Number.isInteger(snapshot.personalProjectVersion) ||
+        Number(snapshot.personalProjectVersion) < 1)
+    )
+      throw new PersonalWorkspaceProjectConflictError(
+        "First-share snapshot changed"
+      );
     return row
       ? {
           teamBackendId: row.team_backend_id,
           shareAttemptKey: row.share_attempt_key,
           targetTeamId: row.target_team_id,
           targetWorkspaceId: row.target_workspace_id,
+          manifestHash: row.manifest_hash,
+          personalProjectVersion: Number(snapshot!.personalProjectVersion),
           state: row.state
         }
       : null;
@@ -408,6 +425,8 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
       shareAttemptKey: string;
       targetTeamId: string;
       targetWorkspaceId: string;
+      expectedManifestHash?: string;
+      expectedPersonalProjectVersion?: number;
     }
   ) {
     const client = await pool.connect();
@@ -415,8 +434,9 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
       await client.query("begin isolation level serializable");
       const project = await client.query<{
         workspace_project_id: string | null;
+        version: number;
       }>(
-        `select workspace_project_id from projects where id=$1 and owner_user_id=$2
+        `select workspace_project_id,version from projects where id=$1 and owner_user_id=$2
           and lifecycle='active' and deletion_phase is null for update`,
         [projectId, ownerUserId]
       );
@@ -424,8 +444,12 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
         throw new PersonalWorkspaceProjectConflictError(
           "Personal Project share changed"
         );
-      const attempt = await client.query<{ state: string }>(
-        `select state from personal_workspace_project_share_attempts
+      const attempt = await client.query<{
+        state: string;
+        manifest_hash: string;
+        snapshot: unknown;
+      }>(
+        `select state,manifest_hash,snapshot from personal_workspace_project_share_attempts
           where personal_project_id=$1 and owner_user_id=$2
             and team_backend_id=$3 and share_attempt_key=$4
             and target_team_id=$5 and target_workspace_id=$6 for update`,
@@ -444,6 +468,16 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
       )
         throw new PersonalWorkspaceProjectConflictError(
           "First-share attempt changed"
+        );
+      if (
+        input.expectedManifestHash !== undefined &&
+        (attempt.rows[0].manifest_hash !== input.expectedManifestHash ||
+          project.rows[0].version !== input.expectedPersonalProjectVersion ||
+          (attempt.rows[0].snapshot as { personalProjectVersion?: unknown })
+            ?.personalProjectVersion !== input.expectedPersonalProjectVersion)
+      )
+        throw new PersonalWorkspaceProjectConflictError(
+          "First-share snapshot changed during recovery"
         );
       if (attempt.rows[0].state === "pending")
         await client.query(
@@ -827,6 +861,195 @@ export const createPersonalWorkspaceProjectRepository = (pool: pg.Pool) => ({
       })),
       decks: await deckSnapshot(pool, ownerUserId, projectId)
     };
+  },
+
+  async linkJoinedMember(
+    ownerUserId: string,
+    projectId: string,
+    input: {
+      expectedPersonalProjectVersion: number;
+      teamBackendId: string;
+      teamId: string;
+      workspaceId: string;
+      workspaceProjectId: string;
+      teamPrincipalUserId: string;
+      localCredentialKeyId: string;
+      teamCredentialKeyId: string;
+    }
+  ) {
+    const client = await pool.connect();
+    try {
+      await client.query("begin isolation level serializable");
+      const current = (
+        await client.query<{
+          version: number;
+          team_backend_id: string | null;
+          team_workspace_id: string | null;
+          workspace_project_id: string | null;
+          project_share_policy_version: number | null;
+        }>(
+          `select version,team_backend_id,team_workspace_id,workspace_project_id,
+                  project_share_policy_version
+             from projects
+            where id=$1 and owner_user_id=$2 and lifecycle='active'
+              and deletion_phase is null for update`,
+          [projectId, ownerUserId]
+        )
+      ).rows[0];
+      if (!current)
+        throw new PersonalWorkspaceProjectUnavailableError(
+          "Personal Project unavailable"
+        );
+      const binding = (
+        await client.query<{ team_principal_user_id: string }>(
+          `select team_principal_user_id
+             from personal_workspace_project_principal_bindings
+            where local_user_id=$1 and team_backend_id=$2 for update`,
+          [ownerUserId, input.teamBackendId]
+        )
+      ).rows[0];
+      if (
+        binding &&
+        binding.team_principal_user_id !== input.teamPrincipalUserId
+      )
+        throw new PersonalWorkspaceProjectConflictError(
+          "Enrolled Team principal changed"
+        );
+      if (current.workspace_project_id !== null) {
+        if (
+          current.workspace_project_id !== input.workspaceProjectId ||
+          current.team_backend_id !== input.teamBackendId ||
+          current.team_workspace_id !== input.workspaceId ||
+          !binding
+        )
+          throw new PersonalWorkspaceProjectConflictError(
+            "Personal Project link changed"
+          );
+        await client.query(
+          `update personal_workspace_project_principal_bindings
+              set local_credential_key_id=$4,team_credential_key_id=$5,
+                  updated_at=now()
+            where local_user_id=$1 and team_backend_id=$2
+              and team_principal_user_id=$3`,
+          [
+            ownerUserId,
+            input.teamBackendId,
+            input.teamPrincipalUserId,
+            input.localCredentialKeyId,
+            input.teamCredentialKeyId
+          ]
+        );
+        await client.query("commit");
+        return { projectId, version: current.version, linked: true as const };
+      }
+      if (current.version !== input.expectedPersonalProjectVersion)
+        throw new PersonalWorkspaceProjectConflictError(
+          "Personal Project version changed"
+        );
+      if (
+        current.team_backend_id !== null ||
+        current.team_workspace_id !== null ||
+        current.project_share_policy_version !== null
+      )
+        throw new PersonalWorkspaceProjectConflictError(
+          "Personal Project already has a Team link or policy"
+        );
+      const occupied = (
+        await client.query<{ occupied: boolean }>(
+          `select (
+            exists(select 1 from personal_workspace_project_share_attempts
+                   where personal_project_id=$1)
+            or exists(select 1 from project_work_items where project_id=$1)
+            or exists(select 1 from project_sources where project_id=$1)
+            or exists(select 1 from project_decks where project_id=$1)
+            or exists(select 1 from scheduled_jobs where project_id=$1)
+            or exists(select 1 from project_local_contexts where project_id=$1)
+            or exists(select 1 from project_policy_session_grants where project_id=$1)
+            or exists(select 1 from project_share_policy_attempts where project_id=$1)
+            or exists(select 1 from project_share_policy_signing_keys where project_id=$1)
+            or exists(select 1 from curated_memory_assertions where project_id=$1)
+            or exists(select 1 from curated_memory_classification_operations
+                      where target_project_id=$1)
+            or exists(select 1 from sessions
+                      where automatic_personal_project_id=$1
+                         or project_override_personal_project_id=$1)
+            or exists(select 1 from managed_conversation_executions
+                      where project_id=$1::text)
+          ) as occupied`,
+          [projectId]
+        )
+      ).rows[0]?.occupied;
+      if (occupied)
+        throw new PersonalWorkspaceProjectConflictError(
+          "Personal Project contains private content or a pending share"
+        );
+      if (binding) {
+        await client.query(
+          `update personal_workspace_project_principal_bindings
+              set local_credential_key_id=$4,team_credential_key_id=$5,
+                  updated_at=now()
+            where local_user_id=$1 and team_backend_id=$2
+              and team_principal_user_id=$3`,
+          [
+            ownerUserId,
+            input.teamBackendId,
+            input.teamPrincipalUserId,
+            input.localCredentialKeyId,
+            input.teamCredentialKeyId
+          ]
+        );
+      } else {
+        const bound = await client.query<{ team_principal_user_id: string }>(
+          `insert into personal_workspace_project_principal_bindings
+             (local_user_id,team_backend_id,team_principal_user_id,
+              local_credential_key_id,team_credential_key_id)
+           values ($1,$2,$3,$4,$5)
+           on conflict (local_user_id,team_backend_id) do update
+             set local_credential_key_id=excluded.local_credential_key_id,
+                 team_credential_key_id=excluded.team_credential_key_id,
+                 updated_at=now()
+             where personal_workspace_project_principal_bindings.team_principal_user_id=
+                   excluded.team_principal_user_id
+           returning team_principal_user_id`,
+          [
+            ownerUserId,
+            input.teamBackendId,
+            input.teamPrincipalUserId,
+            input.localCredentialKeyId,
+            input.teamCredentialKeyId
+          ]
+        );
+        if (bound.rows[0]?.team_principal_user_id !== input.teamPrincipalUserId)
+          throw new PersonalWorkspaceProjectConflictError(
+            "Enrolled Team principal changed"
+          );
+      }
+      const updated = await client.query<{ version: number }>(
+        `update projects
+            set team_backend_id=$3,team_workspace_id=$4,workspace_project_id=$5,
+                share_policy_link_epoch=gen_random_uuid(),version=version+1,
+                updated_at=now()
+          where id=$1 and owner_user_id=$2 returning version`,
+        [
+          projectId,
+          ownerUserId,
+          input.teamBackendId,
+          input.workspaceId,
+          input.workspaceProjectId
+        ]
+      );
+      await client.query("commit");
+      return {
+        projectId,
+        version: updated.rows[0]!.version,
+        linked: true as const
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 
   async markMoved(

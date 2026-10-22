@@ -3,7 +3,10 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runDbMigrations } from "./migrate.js";
 import { createPersonalWorkspaceProjectRepository } from "./personal-workspace-project-repository.js";
-import { createWorkspaceProjectRepository } from "./workspace-project-repository.js";
+import {
+  createWorkspaceProjectRepository,
+  workspaceProjectCopyManifestHash
+} from "./workspace-project-repository.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
 
 const testUrl = process.env.KOED_HQ701_TEST_DATABASE_URL;
@@ -96,7 +99,20 @@ describe.skipIf(!testUrl)("HQ701 durable target and invitation handoff", () => {
       targetTeamId: targetTeam,
       targetWorkspaceId: targetWorkspace
     };
-    await repo.beginShare(owner, projectId, input);
+    const prepared = await repo.beginShare(owner, projectId, input);
+    const snapshotVersion = (
+      prepared.snapshot as {
+        personalProjectVersion: number;
+      }
+    ).personalProjectVersion;
+    expect(snapshotVersion).toBeGreaterThan(0);
+    await expect(
+      repo.cancelShare(owner, projectId, {
+        ...input,
+        expectedManifestHash: "f".repeat(64),
+        expectedPersonalProjectVersion: snapshotVersion
+      })
+    ).rejects.toThrow("snapshot changed");
     await expect(
       repo.cancelShare(owner, projectId, {
         ...input,
@@ -104,7 +120,13 @@ describe.skipIf(!testUrl)("HQ701 durable target and invitation handoff", () => {
       })
     ).rejects.toThrow("changed");
     expect(await repo.pendingShare(owner, projectId)).toMatchObject(input);
-    expect(await repo.cancelShare(owner, projectId, input)).toEqual({
+    expect(
+      await repo.cancelShare(owner, projectId, {
+        ...input,
+        expectedManifestHash: prepared.manifestHash,
+        expectedPersonalProjectVersion: snapshotVersion
+      })
+    ).toEqual({
       canceled: true,
       shareAttemptKey: input.shareAttemptKey
     });
@@ -200,6 +222,190 @@ describe.skipIf(!testUrl)("HQ701 durable target and invitation handoff", () => {
         ).canStart
       ).toBe(false);
     }
+  });
+
+  it("terminalizes an exact deleted first-share copy while metadata restore stays available", async () => {
+    const access = createTeamAccessRepository(pool);
+    const user = await seedUser("Deleted first-share owner");
+    const team = await access.createTeam(
+      { userId: user.id },
+      { name: "Deleted first-share Team" }
+    );
+    if (!team) throw new Error("Team fixture unavailable");
+    const workspace = (
+      await access.listTeamWorkspaces(
+        { userId: user.id },
+        { teamId: team.id, limit: 10 }
+      )
+    )?.find((item) => item.name === "General");
+    if (!workspace) throw new Error("Workspace fixture unavailable");
+    const repo = createWorkspaceProjectRepository(pool);
+    const input = {
+      teamId: team.id,
+      workspaceId: workspace.id,
+      name: "Deleted copy",
+      key: "DELCOPY",
+      shareAttemptKey: randomUUID()
+    };
+    const project = await repo.create(user.id, input);
+    const copy = {
+      expectedVersion: project.version,
+      personalProjectVersion: 1,
+      workItems: [],
+      sources: [],
+      decks: []
+    };
+    const manifestHash = workspaceProjectCopyManifestHash(copy);
+    const copied = await repo.copyFirstShare(user.id, project.id, copy);
+    const deleted = await repo.deleteProject(
+      user.id,
+      project.id,
+      copied.version
+    );
+    expect(deleted).toMatchObject({ lifecycle: "deleted" });
+    const scope = {
+      teamId: team.id,
+      workspaceId: workspace.id,
+      shareAttemptKey: input.shareAttemptKey
+    };
+    const receipt = await repo.cancelShareAttempt(user.id, scope);
+    expect(receipt).toMatchObject({
+      canceled: true,
+      terminalProject: {
+        projectId: project.id,
+        copyManifestHash: manifestHash
+      }
+    });
+    expect(await repo.cancelShareAttempt(user.id, scope)).toEqual(receipt);
+    await expect(repo.create(user.id, input)).rejects.toThrow("canceled");
+    const tombstone = await repo.getOwnerTombstoneProof(user.id, project.id);
+    expect(tombstone).toMatchObject({
+      shareAttemptKey: input.shareAttemptKey,
+      copyManifestHash: manifestHash,
+      allMemberLinksDisabled: true,
+      grantsFrozen: true,
+      threadArchived: true
+    });
+    const restored = await repo.restoreProject(
+      user.id,
+      project.id,
+      tombstone.version
+    );
+    expect(restored.lifecycle).toBe("active");
+    expect(await repo.cancelShareAttempt(user.id, scope)).toEqual(receipt);
+    await expect(repo.create(user.id, input)).rejects.toThrow("canceled");
+    await expect(repo.getOwnerLinkProof(user.id, project.id)).rejects.toThrow();
+
+    const raceTeam = await access.createTeam(
+      { userId: user.id },
+      { name: "Racing deleted share Team" }
+    );
+    if (!raceTeam) throw new Error("Race Team fixture unavailable");
+    const raceWorkspace = (
+      await access.listTeamWorkspaces(
+        { userId: user.id },
+        { teamId: raceTeam.id, limit: 10 }
+      )
+    )?.find((item) => item.name === "General");
+    if (!raceWorkspace) throw new Error("Race Workspace fixture unavailable");
+    const raceInput = {
+      ...input,
+      teamId: raceTeam.id,
+      workspaceId: raceWorkspace.id,
+      name: "Racing deleted copy",
+      key: "RACEDEL",
+      shareAttemptKey: randomUUID()
+    };
+    const racing = await repo.create(user.id, raceInput);
+    const racingCopy = await repo.copyFirstShare(user.id, racing.id, {
+      ...copy,
+      expectedVersion: racing.version
+    });
+    await repo.deleteProject(user.id, racing.id, racingCopy.version);
+    const racingTombstone = await repo.getOwnerTombstoneProof(
+      user.id,
+      racing.id
+    );
+    const outcomes = await Promise.allSettled([
+      repo.restoreProject(user.id, racing.id, racingTombstone.version),
+      repo.cancelShareAttempt(user.id, {
+        teamId: raceTeam.id,
+        workspaceId: raceWorkspace.id,
+        shareAttemptKey: raceInput.shareAttemptKey
+      })
+    ]);
+    expect(outcomes[0]?.status).toBe("fulfilled");
+    if (outcomes[1]?.status === "fulfilled") {
+      expect(outcomes[1].value.terminalProject?.projectId).toBe(racing.id);
+      await expect(repo.create(user.id, raceInput)).rejects.toThrow("canceled");
+    } else {
+      expect(outcomes[1]?.reason).toBeInstanceOf(Error);
+      expect(
+        (
+          await pool.query<{ count: string }>(
+            `select count(*) from workspace_project_share_cancellations
+            where team_id=$1 and share_attempt_key=$2`,
+            [raceTeam.id, raceInput.shareAttemptKey]
+          )
+        ).rows[0]?.count
+      ).toBe("0");
+    }
+  });
+
+  it("fences a deleted Team Project before any first-share copy or delayed copy replay", async () => {
+    const access = createTeamAccessRepository(pool);
+    const user = await seedUser("Uncopied share owner");
+    const team = await access.createTeam(
+      { userId: user.id },
+      { name: "Uncopied share Team" }
+    );
+    if (!team) throw new Error("Team fixture unavailable");
+    const workspace = (
+      await access.listTeamWorkspaces(
+        { userId: user.id },
+        { teamId: team.id, limit: 10 }
+      )
+    )?.find((item) => item.name === "General");
+    if (!workspace) throw new Error("Workspace fixture unavailable");
+    const repo = createWorkspaceProjectRepository(pool);
+    const input = {
+      teamId: team.id,
+      workspaceId: workspace.id,
+      name: "No copy before delete",
+      key: "NOCOPY",
+      shareAttemptKey: randomUUID()
+    };
+    const created = await repo.create(user.id, input);
+    await repo.deleteProject(user.id, created.id, created.version);
+    const receipt = await repo.cancelShareAttempt(user.id, input);
+    expect(receipt.terminalProject).toEqual({
+      projectId: created.id,
+      copyManifestHash: null,
+      copiedAt: null
+    });
+    const tombstone = await repo.getOwnerTombstoneProof(user.id, created.id);
+    expect(tombstone).toMatchObject({
+      shareAttemptKey: input.shareAttemptKey,
+      copyManifestHash: null,
+      copiedAt: null
+    });
+    const restored = await repo.restoreProject(
+      user.id,
+      created.id,
+      tombstone.version
+    );
+    expect(restored.lifecycle).toBe("active");
+    await expect(repo.create(user.id, input)).rejects.toThrow("canceled");
+    await expect(
+      repo.copyFirstShare(user.id, created.id, {
+        expectedVersion: tombstone.version + 1,
+        personalProjectVersion: 1,
+        workItems: [],
+        sources: [],
+        decks: []
+      })
+    ).rejects.toThrow();
+    expect(await repo.cancelShareAttempt(user.id, input)).toEqual(receipt);
   });
 
   it("keeps a canceled Team member key unusable without canceling another member's same key", async () => {
@@ -384,5 +590,184 @@ describe.skipIf(!testUrl)("HQ701 durable target and invitation handoff", () => {
         )
       ).rows[0]?.workspace_project_id
     ).toBe(project.id);
+  });
+
+  const projectBoundInvite = async (name: string) => {
+    const access = createTeamAccessRepository(pool);
+    const projects = createWorkspaceProjectRepository(pool);
+    const teamOwner = await seedUser(`${name} owner`);
+    const recipient = await seedUser(`${name} recipient`);
+    const team = await access.createTeam(
+      { userId: teamOwner.id },
+      { name: `${name} Team` }
+    );
+    if (!team) throw new Error("Team fixture unavailable");
+    const workspace = (
+      await access.listTeamWorkspaces(
+        { userId: teamOwner.id },
+        { teamId: team.id, limit: 10 }
+      )
+    )?.find((item) => item.name === "General");
+    if (!workspace) throw new Error("Workspace fixture unavailable");
+    const project = await projects.create(teamOwner.id, {
+      teamId: team.id,
+      workspaceId: workspace.id,
+      name: `${name} Project`,
+      key: `INV${randomUUID().slice(0, 6).toUpperCase()}`,
+      shareAttemptKey: randomUUID()
+    });
+    const origin = "b".repeat(64);
+    const invite = await access.createTeamInvite(
+      { userId: teamOwner.id },
+      {
+        teamId: team.id,
+        defaultTeamWorkspaceId: workspace.id,
+        workspaceProjectId: project.id,
+        expectedWorkspaceProjectVersion: project.version,
+        defaultWorkspaceAccess: "read",
+        email: `${recipient.id}@example.test`,
+        role: "member",
+        backendOriginHash: origin,
+        tokenHash: randomUUID().replaceAll("-", "").repeat(2),
+        expiresAt: new Date(Date.now() + 3_600_000)
+      }
+    );
+    if (!invite) throw new Error("Project-bound invite unavailable");
+    const review = await access.getTeamInviteDecisionReview(
+      { userId: recipient.id },
+      {
+        inviteId: invite.id,
+        expectedVersion: invite.version,
+        backendOriginHash: origin
+      }
+    );
+    if (!review) throw new Error("Project-bound invite review unavailable");
+    const accept = () =>
+      access.acceptTeamInvite({
+        inviteId: invite.id,
+        userId: recipient.id,
+        expectedVersion: invite.version,
+        expectedBackendOriginHash: origin,
+        expectedMembershipVersion: review.membershipVersion,
+        expectedMembershipStatus: review.membershipStatus,
+        expectedMembershipDisabledReason: review.membershipDisabledReason,
+        expectedLeaveGeneration: review.leaveGeneration
+      });
+    return {
+      access,
+      projects,
+      teamOwner,
+      recipient,
+      team,
+      workspace,
+      project,
+      invite,
+      origin,
+      accept
+    };
+  };
+
+  it("keeps a Project-bound invite bound and denies its reviewed acceptance after deletion", async () => {
+    const binding = await projectBoundInvite("Deleted invitation");
+    expect(
+      await binding.projects.deleteProject(
+        binding.teamOwner.id,
+        binding.project.id,
+        binding.project.version
+      )
+    ).toMatchObject({ projectId: binding.project.id, lifecycle: "deleted" });
+    const persisted = await pool.query<{
+      workspace_project_id: string | null;
+      lifecycle: string;
+    }>("select workspace_project_id,lifecycle from team_invites where id=$1", [
+      binding.invite.id
+    ]);
+    expect(persisted.rows[0]).toMatchObject({
+      workspace_project_id: binding.project.id,
+      lifecycle: "pending"
+    });
+    expect(
+      await binding.access.getTeamInviteDecisionReview(
+        { userId: binding.recipient.id },
+        {
+          inviteId: binding.invite.id,
+          expectedVersion: binding.invite.version,
+          backendOriginHash: binding.origin
+        }
+      )
+    ).toBeNull();
+    expect(await binding.accept()).toBeNull();
+    expect(
+      await binding.access.listMyTeamInvites(
+        { userId: binding.recipient.id },
+        binding.origin
+      )
+    ).not.toContainEqual(expect.objectContaining({ id: binding.invite.id }));
+    const membership = await pool.query(
+      "select id from team_memberships where team_id=$1 and user_id=$2",
+      [binding.team.id, binding.recipient.id]
+    );
+    const workspaceAccess = await pool.query(
+      "select user_id from team_workspace_access_grants where team_workspace_id=$1 and user_id=$2",
+      [binding.workspace.id, binding.recipient.id]
+    );
+    expect(membership.rows).toHaveLength(0);
+    expect(workspaceAccess.rows).toHaveLength(0);
+  });
+
+  it("serializes Project deletion with invitation acceptance without downgrading the target", async () => {
+    const binding = await projectBoundInvite("Racing invitation");
+    const [accepted, deleted] = await Promise.all([
+      binding.accept(),
+      binding.projects.deleteProject(
+        binding.teamOwner.id,
+        binding.project.id,
+        binding.project.version
+      )
+    ]);
+    expect(deleted).toMatchObject({
+      projectId: binding.project.id,
+      lifecycle: "deleted"
+    });
+    const persisted = await pool.query<{
+      workspace_project_id: string | null;
+      lifecycle: string;
+    }>("select workspace_project_id,lifecycle from team_invites where id=$1", [
+      binding.invite.id
+    ]);
+    expect(persisted.rows[0]?.workspace_project_id).toBe(binding.project.id);
+    expect(persisted.rows[0]?.lifecycle).toBe(
+      accepted ? "accepted" : "pending"
+    );
+    const membership = await pool.query(
+      "select id from team_memberships where team_id=$1 and user_id=$2",
+      [binding.team.id, binding.recipient.id]
+    );
+    const workspaceAccess = await pool.query(
+      "select user_id from team_workspace_access_grants where team_workspace_id=$1 and user_id=$2",
+      [binding.workspace.id, binding.recipient.id]
+    );
+    expect(membership.rows).toHaveLength(accepted ? 1 : 0);
+    expect(workspaceAccess.rows).toHaveLength(accepted ? 1 : 0);
+    expect(
+      await binding.access.getTeamInviteDecisionReview(
+        { userId: binding.recipient.id },
+        {
+          inviteId: binding.invite.id,
+          expectedVersion: binding.invite.version,
+          backendOriginHash: binding.origin
+        }
+      )
+    ).toBeNull();
+    expect(await binding.accept()).toBeNull();
+    const activeProjectMembership = await pool.query(
+      `select association.team_member_id
+         from workspace_project_members association
+         join team_memberships membership on membership.id=association.team_member_id
+        where association.workspace_project_id=$1
+          and membership.user_id=$2 and association.disabled_at is null`,
+      [binding.project.id, binding.recipient.id]
+    );
+    expect(activeProjectMembership.rows).toHaveLength(0);
   });
 });

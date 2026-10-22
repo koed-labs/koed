@@ -1,5 +1,6 @@
 import type { DeviceCredentialRecord } from "@koed/db";
 import {
+  curatedSourceAttestationFingerprint,
   fetchBoundedJsonObject,
   verifyLocalEdgeClientCredentialAuthorization
 } from "@koed/shared";
@@ -85,6 +86,21 @@ const publicDeviceEnrollmentChallenge = (challenge: {
 }) => {
   const metadata = redactMetadataSecrets(challenge.metadata);
   delete metadata[pendingDeviceCredentialMetadataKey];
+  const sourceKey = challenge.metadata.curatedSourceAttestationPublicKey;
+  const sourceFingerprint =
+    challenge.metadata.curatedSourceAttestationFingerprint;
+  if (typeof sourceKey === "string" && typeof sourceFingerprint === "string") {
+    const verifiedFingerprint = curatedSourceAttestationFingerprint(sourceKey);
+    if (verifiedFingerprint !== sourceFingerprint) {
+      throw Object.assign(
+        new Error("Curated source enrollment pin is invalid"),
+        {
+          statusCode: 409
+        }
+      );
+    }
+    metadata.highLevelContext = `Curated source host signing key SHA-256 fingerprint: ${verifiedFingerprint}`;
+  }
   const now = Date.now();
   const denied = metadata.enrollmentDecision === "denied";
   const expired = Date.parse(challenge.expiresAt) <= now;
@@ -157,6 +173,9 @@ const secretMetadataKeyParts = [
 ];
 
 const isSecretMetadataKey = (key: string): boolean => {
+  // This is a public verification key pinned by the browser-approved source
+  // enrollment. The corresponding private key never enters challenge metadata.
+  if (key === "curatedSourceAttestationPublicKey") return false;
   const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
   return secretMetadataKeyParts.some((part) => normalized.includes(part));
 };

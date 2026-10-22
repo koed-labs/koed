@@ -89,6 +89,11 @@ const run = async () => {
         (await window.webContents.capturePage()).toPNG()
       );
     };
+    // Pin the initial capture just as later captures pin their theme. System
+    // appearance may be dark during an overnight validation run.
+    await js(
+      "document.documentElement.classList.remove('dark'); document.documentElement.classList.add('light'); document.documentElement.dataset.theme='light'"
+    );
     await capture("deck-study-light.png");
     await js("document.querySelector('.hq-decks__card').click()");
     await waitFor(

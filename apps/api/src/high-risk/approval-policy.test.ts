@@ -47,6 +47,29 @@ const matrixCases: Array<{
   },
   {
     intent: {
+      action: "shared_memory.team_policy.curated_opt_in",
+      teamId: uuid(1),
+      mutationId: uuid(20),
+      policyId: uuid(21),
+      expectedCurrentVersion: 1,
+      maximumFidelity: "lcm_leaves"
+    },
+    expected: "step_up"
+  },
+  {
+    intent: {
+      action: "shared_memory.workspace_policy.curated_opt_in",
+      teamId: uuid(1),
+      teamWorkspaceId: uuid(2),
+      mutationId: uuid(22),
+      policyId: uuid(23),
+      expectedCurrentVersion: 1,
+      maximumFidelity: "lcm_leaves"
+    },
+    expected: "step_up"
+  },
+  {
+    intent: {
       action: "workspace_project.leave",
       teamId: uuid(1),
       projectId: uuid(2),

@@ -71,6 +71,7 @@ export function NowView({
   onMemoryPanelOpenChange,
   onOpenCitationMessage,
   onSelectProject,
+  onJoinedProject,
   onSelectDueItem,
   onSelectConversation,
   scheduledJobs,
@@ -98,6 +99,7 @@ export function NowView({
     >
   ) => Promise<boolean>;
   onSelectProject: (id: string) => void;
+  onJoinedProject?: (id: string) => Promise<void>;
   onSelectDueItem?: (projectId: string, itemId: string) => void;
   onSelectConversation: (need: NowNeed) => void;
   scheduledJobs?: ScheduledJobInventory;
@@ -172,11 +174,19 @@ export function NowView({
       : [];
   const [invitationError, setInvitationError] = useState("");
   const [invitationBusy, setInvitationBusy] = useState<string | null>(null);
+  const [joinRecovery, setJoinRecovery] = useState<{
+    authorityKey: string;
+    workspaceProjectId: string;
+    teamBackendId: string;
+    name: string;
+  } | null>(null);
   useEffect(() => {
     let active = true;
     setInvitationSnapshot(null);
     setInvitationError("");
     setInvitationBusy(null);
+    if (joinRecovery && joinRecovery.authorityKey !== authorityKey)
+      setJoinRecovery(null);
     if (!invitationsClient || !authorityKey) {
       return;
     }
@@ -216,6 +226,28 @@ export function NowView({
     setInvitationError("");
     try {
       await invitationsClient.decideInvitation(invite, decision);
+      if (invitationAuthority() !== decisionAuthority) return;
+      if (decision === "accept" && invite.project) {
+        const backendId = invitationsClient.current()?.connection.backendId;
+        if (!backendId || !projectsApi?.sharedJoinProject)
+          throw new Error("Joined Project setup is unavailable");
+        const recovery = {
+          authorityKey: decisionAuthority,
+          workspaceProjectId: invite.project.id,
+          teamBackendId: backendId,
+          name: invite.project.name
+        };
+        setJoinRecovery(recovery);
+        const joined = await projectsApi.sharedJoinProject(
+          recovery.workspaceProjectId,
+          recovery.teamBackendId
+        );
+        if (invitationAuthority() === decisionAuthority) {
+          await onJoinedProject?.(joined.id);
+          if (invitationAuthority() === decisionAuthority)
+            setJoinRecovery(null);
+        }
+      }
       if (invitationAuthority() === decisionAuthority)
         setRefreshKey((value) => value + 1);
     } catch {
@@ -227,6 +259,39 @@ export function NowView({
       }
     } finally {
       if (invitationAuthority() === decisionAuthority) setInvitationBusy(null);
+    }
+  };
+  const retryJoinedProject = async () => {
+    const recovery = joinRecovery;
+    if (
+      !recovery ||
+      recovery.authorityKey !== authorityKey ||
+      invitationAuthority() !== recovery.authorityKey ||
+      !projectsApi?.sharedJoinProject ||
+      invitationBusy
+    )
+      return;
+    setInvitationBusy(recovery.workspaceProjectId);
+    setInvitationError("");
+    try {
+      const joined = await projectsApi.sharedJoinProject(
+        recovery.workspaceProjectId,
+        recovery.teamBackendId
+      );
+      if (invitationAuthority() === recovery.authorityKey) {
+        await onJoinedProject?.(joined.id);
+        if (invitationAuthority() !== recovery.authorityKey) return;
+        setJoinRecovery(null);
+        setRefreshKey((value) => value + 1);
+      }
+    } catch {
+      if (invitationAuthority() === recovery.authorityKey)
+        setInvitationError(
+          "Project setup is incomplete. Retry to finish joining."
+        );
+    } finally {
+      if (invitationAuthority() === recovery.authorityKey)
+        setInvitationBusy(null);
     }
   };
   const [sourceApi, setSourceApi] =
@@ -596,6 +661,7 @@ export function NowView({
   const jobNeeds = scheduledJobs
     ? actionableScheduledRuns(scheduledJobs.jobs, scheduledJobs.runs)
     : [];
+  const pendingJoinCount = joinRecovery?.authorityKey === authorityKey ? 1 : 0;
   const setFold = (section: "needsFolded" | "projectsFolded") => {
     const next = { ...preferences, [section]: !preferences[section] };
     setPreferences(next);
@@ -608,7 +674,11 @@ export function NowView({
           className="hq-now__section"
           aria-label="Needs you"
           data-has-items={
-            needRows.length + jobNeeds.length + invitations.length > 0
+            needRows.length +
+              jobNeeds.length +
+              invitations.length +
+              pendingJoinCount >
+            0
           }
         >
           <header className="hq-now__section-header">
@@ -621,7 +691,10 @@ export function NowView({
               <i className="hq-now__section-dot" aria-hidden="true" />
               Needs you{" "}
               <span>
-                {needRows.length + jobNeeds.length + invitations.length}
+                {needRows.length +
+                  jobNeeds.length +
+                  invitations.length +
+                  pendingJoinCount}
               </span>
             </button>
             <button
@@ -640,6 +713,19 @@ export function NowView({
                 <p role="alert">{runtimeError}</p>
               ) : null}
               {invitationError ? <p role="alert">{invitationError}</p> : null}
+              {joinRecovery?.authorityKey === authorityKey ? (
+                <p role="status">
+                  {joinRecovery.name} was accepted but its Personal Project
+                  setup needs to finish.{" "}
+                  <button
+                    type="button"
+                    disabled={invitationBusy !== null}
+                    onClick={() => void retryJoinedProject()}
+                  >
+                    Retry setup
+                  </button>
+                </p>
+              ) : null}
               {invitations.map((invite) => (
                 <article
                   key={invite.id}
@@ -727,7 +813,11 @@ export function NowView({
                 (!scheduledJobs.loading &&
                   !scheduledJobs.error &&
                   !scheduledJobs.truncated)) &&
-              needRows.length + jobNeeds.length + invitations.length === 0 ? (
+              needRows.length +
+                jobNeeds.length +
+                invitations.length +
+                pendingJoinCount ===
+                0 ? (
                 <p className="hq-now__empty">Nothing needs you right now.</p>
               ) : null}
               {nowVisible(needRows, moreNeeds).map((entry) =>

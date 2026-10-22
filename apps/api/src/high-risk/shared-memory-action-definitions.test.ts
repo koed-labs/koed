@@ -13,7 +13,9 @@ import { describe, expect, it, vi } from "vitest";
 import { admitHighRiskActionGrant } from "./action-definitions.js";
 import { ActionApprovalPolicyError } from "./approval-policy.js";
 import {
+  highRiskActionGrantIntentFromCollaborationIntent,
   highRiskActionGrantIntentSchema,
+  resolveHighRiskActionGrantOperation,
   type HighRiskActionGrantIntent
 } from "./action-grant-protocol.js";
 
@@ -282,6 +284,143 @@ describe("Shared Memory action definitions", () => {
         expiresAt: null
       })
     });
+  });
+
+  it("binds exact Curated candidate commitment and rejects a substituted commitment hash", async () => {
+    const intent = {
+      action: "shared_memory.candidate_preview",
+      source: capturedSource,
+      sourceCapabilities: ["lcm_leaves"],
+      activationRepresentation: "lcm_leaves",
+      logicalMemoryId: ids.logicalMemory,
+      candidateHash: "c".repeat(64),
+      curatedMaterialCommitmentHash: "e".repeat(64),
+      sourceRevision: 4,
+      itemCount: 1,
+      excludedItemCount: 0,
+      manifest: [{ sourceId: ids.preview, revisionHash: "d".repeat(64) }],
+      byteCount: 256,
+      sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId: ids.actor,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      maximumFidelity: "lcm_leaves",
+      includeCuratedMemory: true,
+      mode: "continuous",
+      expiresAt: null
+    } as const satisfies HighRiskActionGrantIntent;
+    const { action, ...candidate } = intent;
+    expect(action).toBe("shared_memory.candidate_preview");
+    const approved = sharedMemoryCandidatePreviewActionGrantBinding({
+      ...candidate,
+      referenceId: ids.request
+    });
+    const substituted = sharedMemoryCandidatePreviewActionGrantBinding({
+      ...candidate,
+      referenceId: ids.request,
+      curatedMaterialCommitmentHash: "f".repeat(64)
+    });
+
+    expect(await admit(intent)).toMatchObject({ operation: approved });
+    expect(approved.requestHash).not.toBe(substituted.requestHash);
+  });
+
+  it("preserves Curated commitment from Collaboration intent through Team execution binding", async () => {
+    const commitmentHash = "e".repeat(64);
+    const candidate = {
+      source: capturedSource,
+      sourceCapabilities: ["lcm_leaves" as const],
+      activationRepresentation: "lcm_leaves" as const,
+      candidateHash: "c".repeat(64),
+      sourceRevision: 4,
+      itemCount: 1,
+      excludedItemCount: 0,
+      manifest: [{ sourceId: ids.preview, revisionHash: "d".repeat(64) }],
+      byteCount: 256,
+      mode: "continuous" as const,
+      expiresAt: null,
+      curatedMaterialCommitmentHash: commitmentHash,
+      curatedSourceAttestationKeyId: ids.actor,
+      curatedSourceAttestationFingerprint: "a".repeat(64)
+    };
+    const collaborationIntent = {
+      intent: "collaboration.preview_shared_memory" as const,
+      commandRequestId: randomUUID(),
+      source: capturedSource,
+      logicalMemoryId: ids.logicalMemory,
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      sourceCapabilities: candidate.sourceCapabilities,
+      activationRepresentation: candidate.activationRepresentation,
+      maximumFidelity: "lcm_leaves" as const,
+      includeCuratedMemory: true,
+      curatedMaterialCommitmentHash: commitmentHash,
+      mode: candidate.mode,
+      candidate
+    };
+    const sourceIdentity = {
+      sourceDeploymentProtocolId,
+      sourceOwnerPrincipalId: ids.actor
+    };
+    const translated = highRiskActionGrantIntentFromCollaborationIntent(
+      "https://team.example.test",
+      collaborationIntent,
+      undefined,
+      sourceIdentity
+    );
+    expect(translated).toMatchObject({
+      action: "shared_memory.candidate_preview",
+      curatedMaterialCommitmentHash: commitmentHash
+    });
+    expect(translated).not.toBeNull();
+    const resolved = await resolveHighRiskActionGrantOperation({
+      clientRequestId: ids.request,
+      intent: translated!
+    });
+    const dispatch = sharedMemoryCandidatePreviewActionGrantBinding({
+      referenceId: ids.request,
+      source: capturedSource,
+      ...sourceIdentity,
+      sourceCapabilities: candidate.sourceCapabilities,
+      logicalMemoryId: ids.logicalMemory,
+      candidateHash: candidate.candidateHash,
+      curatedMaterialCommitmentHash: commitmentHash,
+      sourceRevision: candidate.sourceRevision,
+      itemCount: candidate.itemCount,
+      excludedItemCount: candidate.excludedItemCount,
+      manifest: candidate.manifest,
+      byteCount: candidate.byteCount,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      activationRepresentation: candidate.activationRepresentation,
+      maximumFidelity: "lcm_leaves",
+      includeCuratedMemory: true,
+      mode: candidate.mode,
+      expiresAt: candidate.expiresAt
+    });
+    expect(resolved).toEqual(dispatch);
+    const changed = highRiskActionGrantIntentFromCollaborationIntent(
+      "https://team.example.test",
+      {
+        ...collaborationIntent,
+        curatedMaterialCommitmentHash: "f".repeat(64),
+        candidate: {
+          ...candidate,
+          curatedMaterialCommitmentHash: "f".repeat(64)
+        }
+      },
+      undefined,
+      sourceIdentity
+    );
+    expect(changed).not.toBeNull();
+    expect(
+      (
+        await resolveHighRiskActionGrantOperation({
+          clientRequestId: ids.request,
+          intent: changed!
+        })
+      )?.requestHash
+    ).not.toBe(dispatch.requestHash);
   });
 
   it("admits an exact authoritative preview as Direct", async () => {

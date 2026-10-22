@@ -76,6 +76,17 @@ const sharedDispatchSchema = z
     teamWorkItemVersion: z.number().int().positive()
   })
   .strict();
+const joinedMemberProofSchema = z
+  .object({
+    projectId: z.uuid(),
+    workspaceId: z.uuid(),
+    teamId: z.uuid(),
+    memberTeamMemberId: z.uuid(),
+    memberUserId: z.uuid(),
+    projectVersion: z.number().int().positive(),
+    memberVersion: z.number().int().positive()
+  })
+  .strict();
 
 export class WorkspaceProjectRemoteError extends Error {
   constructor(
@@ -153,6 +164,12 @@ export const createWorkspaceProjectDesktopService = (input: {
     workspaceId: string,
     expectedPersonalProjectVersion: number
   ): Promise<void>;
+  createJoinedProject: ReturnType<
+    typeof createWorkspaceProjectPersonalClient
+  >["createJoinedProject"];
+  confirmJoinedProject: ReturnType<
+    typeof createWorkspaceProjectPersonalClient
+  >["confirmJoinedProject"];
   stageTeamLeave(teamBackendId: string, teamId: string): Promise<unknown>;
   finishTeamLeave(teamBackendId: string, stageIds: string[]): Promise<unknown>;
   dispatchLocal(
@@ -246,6 +263,7 @@ export const createWorkspaceProjectDesktopService = (input: {
           | "sharedCreateWorkItem"
           | "sharedPatchWorkItem"
           | "sharedFirstShare"
+          | "sharedJoinProject"
           | "sharedShareContext"
           | "sharedPendingShare"
           | "sharedCancelPendingShare"
@@ -521,6 +539,70 @@ export const createWorkspaceProjectDesktopService = (input: {
       );
       if ((await input.identityKey()) !== identityKey)
         throw new Error("Projects profile changed during first share");
+      return { operation: request.operation, project };
+    }
+    if (request.operation === "sharedJoinProject") {
+      if (!input.loadShareContext)
+        throw new Error("Current Team sharing authority is unavailable");
+      const context = await checked(identityKey, input.loadShareContext);
+      if (
+        context.state !== "ready" ||
+        context.backendId !== request.teamBackendId ||
+        !context.principalId
+      )
+        throw new Error("Current Team sharing authority is unavailable");
+      const teamProject = workspaceProjectRecordSchema.parse(
+        await checked(identityKey, () =>
+          input.sendTeam(
+            request.teamBackendId,
+            `/v1/workspace-projects/${request.workspaceProjectId}/join`,
+            { method: "POST" }
+          )
+        )
+      );
+      if (
+        teamProject.id !== request.workspaceProjectId ||
+        teamProject.lifecycle !== "active" ||
+        !teamProject.copiedAt ||
+        !context.teams.some((team) =>
+          team.workspaces.some(
+            (workspace) =>
+              workspace.id === teamProject.workspaceId &&
+              workspace.access === "write"
+          )
+        )
+      )
+        throw new Error("Joined Team Project authority changed");
+      const proof = joinedMemberProofSchema.parse(
+        await checked(identityKey, () =>
+          input.sendTeam(
+            request.teamBackendId,
+            `/v1/workspace-projects/${request.workspaceProjectId}/member-link-proof`
+          )
+        )
+      );
+      if (
+        proof.projectId !== teamProject.id ||
+        proof.teamId !== teamProject.teamId ||
+        proof.workspaceId !== teamProject.workspaceId ||
+        proof.memberUserId !== context.principalId
+      )
+        throw new Error("Joined Team member proof changed");
+      const created = await checked(identityKey, () =>
+        input.createJoinedProject(
+          teamProject.id,
+          request.teamBackendId,
+          teamProject.name
+        )
+      );
+      const project = await checked(identityKey, () =>
+        input.confirmJoinedProject(
+          created.id,
+          teamProject.id,
+          request.teamBackendId,
+          created.version
+        )
+      );
       return { operation: request.operation, project };
     }
     if (request.operation === "sharedTeamLeaveStage") {

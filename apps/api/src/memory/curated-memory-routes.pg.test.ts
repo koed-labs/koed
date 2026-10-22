@@ -164,5 +164,29 @@ describeDb("Curated assertion HTTP with PostgreSQL", () => {
       scope: "project",
       projectId
     });
+    const stale = await app.inject({
+      method: "PATCH",
+      url: itemUrl,
+      headers: { cookie: "hq303_session=owner" },
+      payload: { scope: "me", expected_version: 1 }
+    });
+    expect(stale.statusCode).toBe(409);
+    const moved = await app.inject({
+      method: "PATCH",
+      url: itemUrl,
+      headers: { cookie: "hq303_session=owner" },
+      payload: { scope: "me", expected_version: 2 }
+    });
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json().assertion).toMatchObject({
+      scope: "me",
+      projectId: null,
+      classificationVersion: 3
+    });
+    const oldProject = await app.inject({
+      method: "GET",
+      url: `${listUrl}?scope=project&project_id=${projectId}&status=current`
+    });
+    expect(oldProject.json().assertions).toEqual([]);
   });
 });

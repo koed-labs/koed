@@ -93,7 +93,8 @@
     "fmt": "pnpm fmt:prettier",
     "fmt:check": "pnpm fmt:prettier:check",
     "fmt:prettier": "prettier --write .",
-    "fmt:prettier:check": "prettier --check ."
+    "fmt:prettier:check": "prettier --check .",
+    "test:hq-two-user": "node scripts/hq-two-user-integration.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

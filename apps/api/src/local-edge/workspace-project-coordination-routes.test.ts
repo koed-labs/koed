@@ -94,6 +94,7 @@ describe.skipIf(!testUrl)(
     let cancelReplyStatus = 200;
     let cancelReceiptOwner = ids.teamUser;
     let proofProject = ids.workspaceProject;
+    let memberProofUser = ids.teamUser;
     let statusPrincipal = ids.teamUser;
     let lifecycleProject = ids.workspaceProject;
     let lifecycleActive = true;
@@ -403,6 +404,19 @@ describe.skipIf(!testUrl)(
           };
         else if (
           path ===
+          `/v1/workspace-projects/${ids.workspaceProject}/member-link-proof`
+        )
+          payload = {
+            projectId: ids.workspaceProject,
+            workspaceId: ids.workspace,
+            teamId: ids.team,
+            memberTeamMemberId: ids.ownerMember,
+            memberUserId: memberProofUser,
+            projectVersion: 1,
+            memberVersion: 1
+          };
+        else if (
+          path ===
           `/v1/workspace-projects/${ids.workspaceProject}/deck-copy-map`
         )
           payload = {
@@ -681,6 +695,97 @@ describe.skipIf(!testUrl)(
         await admin.query(`drop database ${quote(database)}`);
       await admin?.end();
       if (home) rmSync(home, { recursive: true, force: true });
+    });
+
+    it("links only a pristine joined member Personal Project with current proof", async () => {
+      const repository = createProjectApiRepository(pool);
+      const empty = await repository.create(ids.personalUser, {
+        name: "Joined member blank",
+        idempotencyKey: `joined-member-${randomUUID()}`
+      });
+      const path = `/v1/local-edge/projects/${empty.id}/workspace-project-join-confirm`;
+      const body = {
+        teamBackendId: backendId,
+        workspaceProjectId: ids.workspaceProject,
+        expectedPersonalProjectVersion: empty.version
+      };
+      expect(
+        (
+          await send(path, {
+            ...body,
+            expectedPersonalProjectVersion: empty.version + 1
+          })
+        ).statusCode
+      ).toBe(409);
+      memberProofUser = randomUUID();
+      expect((await send(path, body)).statusCode).toBe(409);
+      memberProofUser = ids.teamUser;
+      const linked = await send(path, body);
+      expect(linked.statusCode).toBe(200);
+      expect(linked.json()).toMatchObject({
+        projectId: empty.id,
+        linked: true,
+        version: empty.version + 1
+      });
+      const repeated = await send(path, body);
+      expect(repeated.statusCode).toBe(200);
+      expect(repeated.json()).toEqual(linked.json());
+      const raced = await repository.create(ids.personalUser, {
+        name: "Joined member concurrent retry",
+        idempotencyKey: `joined-member-race-${randomUUID()}`
+      });
+      const raceBody = {
+        ...body,
+        expectedPersonalProjectVersion: raced.version
+      };
+      const racePath = `/v1/local-edge/projects/${raced.id}/workspace-project-join-confirm`;
+      const concurrent = await Promise.all([
+        send(racePath, raceBody),
+        send(racePath, raceBody)
+      ]);
+      expect(concurrent.map((response) => response.statusCode)).toEqual([
+        200, 200
+      ]);
+      expect(concurrent[0]!.json()).toEqual(concurrent[1]!.json());
+      const occupied = await repository.create(ids.personalUser, {
+        name: "Joined member occupied",
+        idempotencyKey: `joined-member-occupied-${randomUUID()}`
+      });
+      await createWorkItemRepository(pool).create(
+        ids.personalUser,
+        occupied.id,
+        {
+          kind: "todo",
+          title: "Private material",
+          goal: "Keep private",
+          origin: "me",
+          idempotencyKey: `private-${randomUUID()}`
+        }
+      );
+      const rejected = await send(
+        `/v1/local-edge/projects/${occupied.id}/workspace-project-join-confirm`,
+        { ...body, expectedPersonalProjectVersion: occupied.version }
+      );
+      expect(rejected.statusCode).toBe(409);
+      expect(
+        await createPersonalWorkspaceProjectRepository(pool).getLink(
+          ids.personalUser,
+          occupied.id
+        )
+      ).toBeNull();
+      const otherOwner = await repository.create(ids.teamUser, {
+        name: "Other owner's private Project",
+        idempotencyKey: `other-owner-${randomUUID()}`
+      });
+      expect(
+        (
+          await send(
+            `/v1/local-edge/projects/${otherOwner.id}/workspace-project-join-confirm`,
+            { ...body, expectedPersonalProjectVersion: otherOwner.version }
+          )
+        ).statusCode
+      ).toBe(404);
+      teamCalls.length = 0;
     });
 
     it("rejects Project classification for the real first-Again Note proposal", async () => {

@@ -3,6 +3,27 @@
 Project Share Policy uses these transaction boundaries. Its implementation
 and recovery rules are in [Project Share Policy backend lifecycle](./project-share-policy-backend.md).
 
+## Administrator Curated policy opt-in
+
+New Teams and Workspaces exclude Curated Memory by default. A Team manager
+must opt in separately for each policy through its exact browser Step-up
+review. The operation binds the Team, Workspace when applicable, policy ID,
+current version and unchanged maximum fidelity. It enables only the Curated
+policy flag. Ordinary policy updates continue to permit restrictions only.
+
+An administrator opt-in does not share any source. Existing grants keep their
+previous source-owner consent, fidelity, Curated flag, lifecycle and frozen
+frontier. It neither invalidates existing grants nor revives revoked or expired
+grants. Compatibility with the preceding policy version is limited to this
+same-lineage, one-version, same-fidelity false-to-true transition. Later
+restrictions continue to invalidate affected grants through the existing flow.
+
+Each source owner must still approve Curated sharing separately through Step-up
+for one exact Captured Session. The complete, nonempty direct-source set must
+belong to that Session and its owner-owned Project. Me and mixed-Session
+assertions remain excluded. A later Personal scope change must complete Team
+withdrawal before committing the new classification.
+
 ## Decision
 
 Defer extraction of a new deep workflow module. The load-bearing Shared Memory
@@ -229,3 +250,60 @@ decisions; an idempotent remote-operation journal; adapter-independent envelope
 validation; and parity tests against the repository transaction contract. No
 such duplicated workflow owner exists today, so no follow-on implementation
 tickets are created.
+
+## Curated source verification across backends
+
+A Team backend does not read the source owner's Personal canonical Curated
+Memory tables. The Personal service compiles a derived representation for one
+exact Captured Session from a coherent canonical snapshot. It checks the current
+Project link, the complete active direct-source set, classification versions,
+expiry and source frontier. Me, unscoped, mixed-session and non-Conversation
+sources remain excluded.
+
+The Personal service derives its signing key from its verified host proof. Its
+public key and fingerprint are pinned during fresh browser-approved source
+enrollment. The browser review shows the server-derived fingerprint through the
+existing context field. Device redemption cannot replace that approved key, and
+credential rotation cannot silently change it. Existing credentials without a
+verified pin cannot upload Curated source material; summary sharing retains its
+existing authority.
+
+Before sharing approval, only a commitment hash and source verification metadata
+leave the Personal service. The exact preview and source-owner Step-up bind that
+commitment. After approval, durable owner-local work sends the matching signed
+derived artifact. Initial delivery uses the accepted Pending Share and exact
+locally retained reviewed preview. The Team consent record is created during
+activation, after source delivery. Team verifies the enrolled signer, source
+identity, exact Session and synced source mappings, approved sharing operation,
+policy and current authority before acknowledging custody. Continuous updates
+also require the current Team consent. Team uses the existing privacy and
+semantic publication pipeline. Canonical Personal assertion tables are never
+replicated into Team.
+
+Before the first source-owner policy activates, each representation must retain
+the same proposed policy lineage. Activation adopts that exact proposal; a
+different policy that became current meanwhile makes the old proposal stale.
+A signed empty receipt requires no Curated artifact and still permits eligible
+summary activation.
+
+A signed empty set is an explicit outcome. It creates no Curated representation
+and does not prevent an otherwise eligible summary from activating. Initial
+Curated publication uses the approved source frontier; it does not require a new
+captured message to manufacture a later revision. Snapshot consent cannot gain
+later assertions.
+
+Continuous Curated updates use durable owner-local work and a signed monotonic
+generation under the same current exact-Session consent. Canonical changes queue
+that work in their own transaction; retries and expiry schedules survive restart.
+Team rejects old generations and rechecks withdrawal, revocation, expiry and
+frozen coverage before publication. A withdrawal acknowledgement fences older
+classification versions even if their first artifact has not arrived yet.
+Scope changes still wait for required Team acknowledgements before the Personal
+classification commits. Existing published coverage keeps its own lifecycle.
+
+An acknowledged update does not publish its additions. Until its replacement
+is ready, unchanged published assertions remain eligible only when their full
+canonical revision hashes still match the signed current set. Removed, changed
+or expired assertions are blocked immediately. Replacement publication and
+retirement of the old representation are atomic. A freeze during preparation
+retains the eligible published set and excludes unpublished additions.

@@ -39,6 +39,17 @@ Grant records retain their required logical memory ID, User ID, and source-owner
 provenance. Each member's private HQ Conversation belongs to their own Personal
 Project.
 
+A member confirms a new Personal link only after an explicit Team Project join.
+The owner-local `workspace-project-join-confirm` route requires both the local
+Desktop credential and the independently enrolled Team client credential. It
+fetches a current `member-link-proof` from the Team backend and binds the exact
+Team principal, Workspace and copied Project. The Personal write checks the
+expected Project version and requires an empty owner-owned Project, with no
+private sessions, sources, Work Items, Decks, jobs, Curated Memory or pending
+sharing operation. An exact retry is idempotent; it cannot overwrite a different
+link or silently move existing Personal content. This confirmation grants no
+summary, Curated Memory or Conversation Source Access consent.
+
 The local Project-to-Workspace mapping in
 `KOED_HOME/config/project-team-workspaces.json` is a recall-routing setting.
 It is not the member's Workspace Project link. It does not create a shared
@@ -63,6 +74,19 @@ attempt is pending. A retry with the same attempt key reuses that snapshot; a
 different attempt conflicts. The Team copy stores the immutable manifest hash,
 and the local edge confirms it against the enrolled Team principal before
 marking Personal rows moved. A lost confirmation response can be retried.
+
+If the Team Project is deleted before Personal confirmation, cancellation
+requires an exact Team terminal receipt. The Team transaction locks the owned
+attempt and deleted Project, verifies completed lifecycle effects, and records
+an immutable cancellation fence. The receipt binds the owner, Team, Workspace,
+attempt key and copied manifest, or confirms that no copy committed. The
+Personal transaction checks its pinned snapshot and version before releasing
+the edit fence. Missing access, an offline response or a 404 cannot establish
+that outcome. Unproven attempts stay pending with their original content intact.
+
+Metadata restore remains allowed by the normal lifecycle rules. It does not
+remove the cancellation fence: delayed create, first-share copy and Personal
+confirmation requests cannot resume the old attempt or its grants.
 
 The initiating Desktop performs an idempotent operation for one Personal Project
 and share attempt:
@@ -108,6 +132,16 @@ already associated with the exact shared Project at capture time. Moving an
 existing Conversation into the Project later requires a separate exact source
 share. Source Access and Curated Memory keep their separate consent and action
 tiers.
+
+Preparing the initial review also works for a Conversation that has never been
+shared. The trusted Personal service checks the current Project mapping and
+source ownership, prepares its local canonical source revision and binds the
+review to that exact source set. This preparation creates no Team content,
+Cross-Identity Sync relationship or Share Grant. Native approval and the
+existing Pending Share activation boundary still precede Team visibility.
+After approval, the Desktop prepares each exact owner source for the enrolled
+Team backend, then rechecks the active policy before staging it. Source
+preparation alone grants no Workspace access.
 
 Workspace Access `write` and `can_share_owned_memory` are granted only
 through the existing invitation and Workspace Access paths, under their

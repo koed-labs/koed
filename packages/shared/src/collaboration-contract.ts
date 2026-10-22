@@ -1808,9 +1808,28 @@ const sharedMemoryCandidateBindingSchema = z
       .positive()
       .max(256 * 1_024),
     mode: z.enum(["snapshot", "continuous"]),
-    expiresAt: collaborationTimestampSchema.nullable()
+    expiresAt: collaborationTimestampSchema.nullable(),
+    curatedMaterialCommitmentHash: sha256Schema.optional(),
+    curatedSourceAttestationKeyId: z.uuid().optional(),
+    curatedSourceAttestationFingerprint: sha256Schema.optional()
   })
-  .strict();
+  .strict()
+  .superRefine((candidate, context) => {
+    const fields = [
+      candidate.curatedMaterialCommitmentHash,
+      candidate.curatedSourceAttestationKeyId,
+      candidate.curatedSourceAttestationFingerprint
+    ];
+    if (
+      fields.some((field) => field !== undefined) &&
+      fields.some((field) => field === undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Curated candidate commitment and source pin must be complete"
+      });
+    }
+  });
 
 export const collaborationActionGrantIntentSchema = z
   .discriminatedUnion("intent", [
@@ -1929,6 +1948,7 @@ export const collaborationActionGrantIntentSchema = z
       activationRepresentation: sharedMemoryRepresentationSchema,
       maximumFidelity: sharedMemoryFidelityCeilingSchema,
       includeCuratedMemory: z.boolean(),
+      curatedMaterialCommitmentHash: sha256Schema.optional(),
       mode: z.enum(["snapshot", "continuous"]),
       candidate: sharedMemoryCandidateBindingSchema.optional()
     }),
@@ -2051,6 +2071,18 @@ export const collaborationActionGrantIntentSchema = z
       intent.intent === "collaboration.change_shared_memory_fidelity"
     ) {
       validateSharedMemorySelection(intent, context);
+    }
+    if (
+      intent.intent === "collaboration.preview_shared_memory" &&
+      (intent.source.kind === "captured_session" &&
+        intent.includeCuratedMemory) !==
+        (intent.curatedMaterialCommitmentHash !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["curatedMaterialCommitmentHash"],
+        message: "Exact-session Curated sharing requires a source commitment"
+      });
     }
     if (
       intent.intent === "collaboration.preview_shared_memory" &&
@@ -2472,6 +2504,7 @@ export const sharedMemoryPreviewSchema = z
     activationRepresentation: sharedMemoryRepresentationSchema,
     maximumFidelity: sharedMemoryFidelityCeilingSchema,
     includeCuratedMemory: z.boolean(),
+    curatedMaterialCommitmentHash: sha256Schema.optional(),
     mode: z.enum(["snapshot", "continuous"]),
     previewRevision: positiveVersionSchema,
     sourceRevision: nonNegativeSequenceSchema,
@@ -2489,6 +2522,17 @@ export const sharedMemoryPreviewSchema = z
   .strict()
   .superRefine((preview, context) => {
     validateSharedMemorySelection(preview, context);
+    if (
+      preview.curatedMaterialCommitmentHash !== undefined &&
+      (preview.source.kind !== "captured_session" ||
+        !preview.includeCuratedMemory)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["curatedMaterialCommitmentHash"],
+        message: "Curated source commitment requires a captured Session consent"
+      });
+    }
     if (
       preview.items.some(
         (item) => item.representation !== preview.activationRepresentation
@@ -2512,6 +2556,9 @@ export const sharedMemoryCandidatePreviewSchema = z
     expiresAt: collaborationTimestampSchema.nullable(),
     sourceRevision: nonNegativeSequenceSchema,
     candidateHash: sha256Schema,
+    curatedMaterialCommitmentHash: sha256Schema.optional(),
+    curatedSourceAttestationKeyId: z.uuid().optional(),
+    curatedSourceAttestationFingerprint: sha256Schema.optional(),
     itemCount: z.number().int().safe().nonnegative(),
     excludedItemCount: z.number().int().safe().nonnegative(),
     manifest: z
@@ -2529,6 +2576,25 @@ export const sharedMemoryCandidatePreviewSchema = z
   })
   .strict()
   .superRefine((candidate, context) => {
+    if (
+      [
+        candidate.curatedMaterialCommitmentHash,
+        candidate.curatedSourceAttestationKeyId,
+        candidate.curatedSourceAttestationFingerprint
+      ].filter((value) => value !== undefined).length !== 0 &&
+      [
+        candidate.curatedMaterialCommitmentHash,
+        candidate.curatedSourceAttestationKeyId,
+        candidate.curatedSourceAttestationFingerprint
+      ].filter((value) => value !== undefined).length !== 3
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["curatedMaterialCommitmentHash"],
+        message:
+          "Curated source commitment and signer identity must be complete"
+      });
+    }
     if (
       candidate.source.logicalMemoryId !== candidate.logicalMemoryId ||
       !candidate.sourceCapabilities.includes(candidate.activationRepresentation)
@@ -3174,7 +3240,16 @@ export const collaborationRendererCommandSchema = z
     command("collaboration.preview_shared_memory_candidate", {
       source: sharedMemorySourceRefSchema,
       activationRepresentation: sharedMemoryRepresentationSchema,
-      mode: z.enum(["snapshot", "continuous"])
+      mode: z.enum(["snapshot", "continuous"]),
+      curatedTarget: z
+        .object({
+          includeCuratedMemory: z.literal(true),
+          teamBackendId: z.string().trim().min(1).max(160),
+          teamId: z.uuid(),
+          teamWorkspaceId: z.uuid()
+        })
+        .strict()
+        .optional()
     }),
     command("collaboration.prepare_shared_memory_source", {
       sessionId: z.uuid(),
@@ -3198,6 +3273,7 @@ export const collaborationRendererCommandSchema = z
       activationRepresentation: sharedMemoryRepresentationSchema,
       maximumFidelity: sharedMemoryFidelityCeilingSchema,
       includeCuratedMemory: z.boolean(),
+      curatedMaterialCommitmentHash: sha256Schema.optional(),
       mode: z.enum(["snapshot", "continuous"]),
       candidate: sharedMemoryCandidateBindingSchema.optional(),
       actionGrant: collaborationActionGrantReferenceSchema
@@ -3292,6 +3368,30 @@ export const collaborationRendererCommandSchema = z
       rendererCommand.command === "collaboration.change_shared_memory_fidelity"
     ) {
       validateSharedMemorySelection(rendererCommand.input, context, ["input"]);
+    }
+    if (
+      rendererCommand.command === "collaboration.preview_shared_memory" &&
+      (rendererCommand.input.source.kind === "captured_session" &&
+        rendererCommand.input.includeCuratedMemory) !==
+        (rendererCommand.input.curatedMaterialCommitmentHash !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["input", "curatedMaterialCommitmentHash"],
+        message: "Exact-session Curated sharing requires a source commitment"
+      });
+    }
+    if (
+      rendererCommand.command ===
+        "collaboration.preview_shared_memory_candidate" &&
+      rendererCommand.input.curatedTarget &&
+      rendererCommand.input.source.kind !== "captured_session"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["input", "curatedTarget"],
+        message: "Curated source commitment requires one Captured Session"
+      });
     }
     if (
       rendererCommand.command === "collaboration.preview_shared_memory" &&

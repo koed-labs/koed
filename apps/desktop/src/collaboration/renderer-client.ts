@@ -431,6 +431,12 @@ export interface CollaborationRendererClient {
     source: SharedMemorySourceRef;
     activationRepresentation: SharedMemoryRepresentation;
     mode: "snapshot" | "continuous";
+    curatedTarget?: {
+      includeCuratedMemory: true;
+      teamBackendId: string;
+      teamId: string;
+      teamWorkspaceId: string;
+    };
   }): Promise<SharedMemoryCandidatePreview>;
   prepareSharedMemorySource(input: {
     sessionId: string;
@@ -454,11 +460,15 @@ export interface CollaborationRendererClient {
     maximumFidelity: SharedMemoryFidelityCeiling;
     includeCuratedMemory: boolean;
     mode: "snapshot" | "continuous";
+    curatedMaterialCommitmentHash?: string;
     candidate?: {
       source: SharedMemorySourceRef;
       sourceCapabilities: SharedMemoryRepresentation[];
       activationRepresentation: SharedMemoryRepresentation;
       candidateHash: string;
+      curatedMaterialCommitmentHash?: string;
+      curatedSourceAttestationKeyId?: string;
+      curatedSourceAttestationFingerprint?: string;
       sourceRevision: number;
       itemCount: number;
       excludedItemCount: number;
@@ -4642,18 +4652,106 @@ export const createCollaborationRendererClient = (
       return result.data.entry;
     },
     async previewSharedMemory(input) {
+      let preparedInput = input;
+      if (input.includeCuratedMemory) {
+        if (input.source.kind !== "captured_session") {
+          throw new Error("Curated sharing requires one Captured Session.");
+        }
+        const reviewedAuthority = requireSnapshot();
+        const backendId = reviewedAuthority.connection.backendId;
+        if (!backendId) {
+          throw new Error("The current Team source is unavailable.");
+        }
+        // Compute an owner-local commitment before asking for any sharing
+        // approval. The Team receives the hash, never the Curated source text.
+        const local = await command(
+          "collaboration.preview_shared_memory_candidate",
+          {
+            source: input.source,
+            activationRepresentation: input.activationRepresentation,
+            mode: input.mode,
+            curatedTarget: {
+              includeCuratedMemory: true,
+              teamBackendId: backendId,
+              teamId: input.teamId,
+              teamWorkspaceId: input.workspaceId
+            }
+          }
+        );
+        if (
+          !local.ok ||
+          local.command !== "collaboration.preview_shared_memory_candidate"
+        ) {
+          throw new Error("Unexpected collaboration result.");
+        }
+        const currentAuthority = requireSnapshot();
+        if (
+          currentAuthority.connection.backendId !== backendId ||
+          currentAuthority.navigation.personalOwner.id !==
+            reviewedAuthority.navigation.personalOwner.id ||
+          currentAuthority.navigation.teamPrincipal?.id !==
+            reviewedAuthority.navigation.teamPrincipal?.id ||
+          currentAuthority.connection.state !== "live"
+        ) {
+          throw new Error("The Team source changed. Refresh the preview.");
+        }
+        const candidate = local.data.candidate;
+        if (
+          candidate.source?.kind !== "captured_session" ||
+          candidate.source.sessionId !== input.source.sessionId ||
+          candidate.logicalMemoryId !== input.logicalMemoryId ||
+          !candidate.curatedMaterialCommitmentHash ||
+          !candidate.curatedSourceAttestationKeyId ||
+          !candidate.curatedSourceAttestationFingerprint ||
+          (input.curatedMaterialCommitmentHash !== undefined &&
+            input.curatedMaterialCommitmentHash !==
+              candidate.curatedMaterialCommitmentHash) ||
+          (input.candidate !== undefined &&
+            (input.candidate.sourceRevision !== candidate.sourceRevision ||
+              input.candidate.candidateHash !== candidate.candidateHash))
+        ) {
+          throw new Error(
+            "The Personal source changed or its verification is unavailable. Refresh the preview."
+          );
+        }
+        preparedInput = {
+          ...input,
+          sourceCapabilities: candidate.sourceCapabilities,
+          curatedMaterialCommitmentHash:
+            candidate.curatedMaterialCommitmentHash,
+          candidate: {
+            source: candidate.source,
+            sourceCapabilities: candidate.sourceCapabilities,
+            activationRepresentation: candidate.activationRepresentation,
+            candidateHash: candidate.candidateHash,
+            curatedMaterialCommitmentHash:
+              candidate.curatedMaterialCommitmentHash,
+            curatedSourceAttestationKeyId:
+              candidate.curatedSourceAttestationKeyId,
+            curatedSourceAttestationFingerprint:
+              candidate.curatedSourceAttestationFingerprint,
+            sourceRevision: candidate.sourceRevision,
+            itemCount: candidate.itemCount,
+            excludedItemCount: candidate.excludedItemCount,
+            manifest: candidate.manifest,
+            byteCount: candidate.byteCount,
+            mode: candidate.mode,
+            expiresAt: candidate.expiresAt
+          }
+        };
+      }
       const commandRequestId = crypto.randomUUID();
       const actionGrant = await waitForActionGrant({
         intent: "collaboration.preview_shared_memory",
         commandRequestId,
-        ...input
+        ...preparedInput
       });
       const result = await runApprovedAction(
         collaborationRendererCommandSchema.parse({
           contractVersion: COLLABORATION_CONTRACT_VERSION,
           requestId: commandRequestId,
           command: "collaboration.preview_shared_memory",
-          input: { ...input, actionGrant }
+          input: { ...preparedInput, actionGrant }
         })
       );
       if (

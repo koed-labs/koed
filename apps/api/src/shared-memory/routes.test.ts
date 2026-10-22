@@ -25,7 +25,13 @@ import {
   sharedMemoryGrantScopedSourceId,
   sharedMemoryCeilingAuthorizes,
   sharedMemoryRepresentationsForCeiling,
-  SharedMemoryConflictError
+  SharedMemoryConflictError,
+  curatedSourceCommitmentHash,
+  curatedSourceMaterialHash,
+  curatedSourceUpdateHash,
+  CURATED_SOURCE_COMMITMENT_PROTOCOL,
+  CURATED_SOURCE_MATERIAL_PROTOCOL,
+  CURATED_SOURCE_UPDATE_PROTOCOL
 } from "@koed/shared";
 import Fastify, { type FastifyRequest } from "fastify";
 import { describe, expect, it } from "vitest";
@@ -745,6 +751,28 @@ const createFixture = () => {
         sourceRevision: 1
       };
     },
+    async persistCapturedSessionCuratedSourceMaterial(actor, input) {
+      repositoryCalls += 1;
+      if (actor.userId !== ids.alice)
+        throw new SharedMemoryAuthorizationError();
+      return {
+        status: "empty" as const,
+        materialHash: input.signed.attestation.materialHash,
+        sourceRevision: input.signed.material.commitment.sourceRevision,
+        preview: null
+      };
+    },
+    async persistContinuousCuratedSourceUpdate(actor, input) {
+      repositoryCalls += 1;
+      if (actor.userId !== ids.alice)
+        throw new SharedMemoryAuthorizationError();
+      return {
+        status: "empty" as const,
+        updateHash: input.signed.attestation.updateHash,
+        sourceRevision: input.signed.update.commitment.sourceRevision,
+        preview: null
+      };
+    },
     async advanceContinuousPersonalNoteRevision(actor, input) {
       repositoryCalls += 1;
       if (actor.userId !== ids.alice) {
@@ -834,6 +862,12 @@ const createFixture = () => {
         input.maximumFidelity,
         input.includeCuratedMemory
       );
+    },
+    async getCuratedPolicyOptInReview() {
+      return null;
+    },
+    async optInCuratedPolicy() {
+      throw new Error("Curated opt-in requires a real Action Grant fixture");
     },
     async createSourceOwnerConsent(actor, input) {
       repositoryCalls += 1;
@@ -1458,6 +1492,52 @@ const ownerGrantIndexUrl = (fixture: ReturnType<typeof createFixture>) =>
   `/v1/shared-memory/logical-memories/${fixture.ids.logicalMemory}/share-grants`;
 
 describe("Shared Memory HTTP routes", () => {
+  it("denies Curated policy opt-in without a device Action Grant for both scopes", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    for (const url of [
+      `/v1/shared-memory/teams/${fixture.ids.teamA}/policy/curated-opt-in`,
+      `/v1/shared-memory/teams/${fixture.ids.teamA}/workspaces/${fixture.ids.workspaceA}/policy/curated-opt-in`
+    ]) {
+      const payload = {
+        mutationId: randomUUID(),
+        policyId: randomUUID(),
+        expectedCurrentVersion: 1,
+        maximumFidelity: "lcm_leaves",
+        includeCuratedMemory: true,
+        authority: {
+          action: SHARED_MEMORY_AUTHORITY,
+          source: "device_action_grant",
+          referenceId: randomUUID()
+        }
+      };
+      const browser = await app.inject({
+        method: "POST",
+        url,
+        headers: sessionHeaders(fixture.ids.alice),
+        payload
+      });
+      const noGrant = await app.inject({
+        method: "POST",
+        url,
+        headers: { authorization: "Koed-Device owner-share:secret" },
+        payload
+      });
+      const apiToken = await app.inject({
+        method: "POST",
+        url,
+        headers: { authorization: "Bearer token" },
+        payload
+      });
+      expect([
+        browser.statusCode,
+        noGrant.statusCode,
+        apiToken.statusCode
+      ]).toEqual([401, 403, 403]);
+    }
+    await app.close();
+  });
+
   it("requires device-bound provenance for candidate admission", async () => {
     const fixture = createFixture();
     const app = await buildTestServer(fixture);
@@ -1815,6 +1895,132 @@ describe("Shared Memory HTTP routes", () => {
       sourceOwnerPrincipalId: payload.sourceOwnerPrincipalId,
       candidate: { source, itemCount: 1, sourceRevision: 1 }
     });
+    await app.close();
+  });
+
+  it("accepts initial and later signed Curated generations only from the scoped owner device", async () => {
+    const fixture = createFixture();
+    const app = await buildTestServer(fixture);
+    const pendingShareId = randomUUID();
+    const grantId = randomUUID();
+    const consentId = randomUUID();
+    const commitment = {
+      protocol: CURATED_SOURCE_COMMITMENT_PROTOCOL,
+      source: {
+        kind: "captured_session" as const,
+        sessionId: randomUUID(),
+        logicalMemoryId: fixture.ids.logicalMemory
+      },
+      sourceDeploymentProtocolId: randomUUID(),
+      sourceOwnerPrincipalId: randomUUID(),
+      sourceProjectId: randomUUID(),
+      workspaceProjectId: randomUUID(),
+      teamBackendId: "team-fixture",
+      teamId: fixture.ids.teamA,
+      teamWorkspaceId: fixture.ids.workspaceA,
+      sourceRevision: 4,
+      manifest: [],
+      items: [],
+      assertions: []
+    };
+    const commitmentHash = curatedSourceCommitmentHash(commitment);
+    const material = {
+      protocol: CURATED_SOURCE_MATERIAL_PROTOCOL,
+      pendingShareId,
+      consentId,
+      previewHash: "a".repeat(64),
+      commitmentHash,
+      commitment
+    };
+    const signed = {
+      material,
+      attestation: {
+        keyId: randomUUID(),
+        publicKey: "a".repeat(43),
+        materialHash: curatedSourceMaterialHash(material),
+        signature: "a".repeat(86)
+      }
+    };
+    const initialUrl = `/v1/shared-memory/pending-shares/${pendingShareId}/curated-source`;
+    const owner = await app.inject({
+      method: "PUT",
+      url: initialUrl,
+      headers: { authorization: "Koed-Device owner-share:secret" },
+      payload: signed
+    });
+    const browser = await app.inject({
+      method: "PUT",
+      url: initialUrl,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: signed
+    });
+    const reader = await app.inject({
+      method: "PUT",
+      url: initialUrl,
+      headers: { authorization: "Koed-Device reader:secret" },
+      payload: signed
+    });
+    expect(owner.statusCode, owner.body).toBe(200);
+    expect(
+      jsonBody<{
+        pendingShareId: string;
+        commitmentHash: string;
+        status: string;
+      }>(owner)
+    ).toMatchObject({
+      pendingShareId,
+      commitmentHash,
+      status: "empty"
+    });
+    expect(jsonBody<Record<string, unknown>>(owner)).not.toHaveProperty(
+      "preview"
+    );
+    expect([browser.statusCode, reader.statusCode]).toEqual([401, 403]);
+
+    const update = {
+      protocol: CURATED_SOURCE_UPDATE_PROTOCOL,
+      originalPendingShareId: pendingShareId,
+      grantId,
+      consentId,
+      previewHash: material.previewHash,
+      generation: 3,
+      commitmentHash,
+      commitment
+    };
+    const signedUpdate = {
+      update,
+      attestation: {
+        keyId: signed.attestation.keyId,
+        publicKey: signed.attestation.publicKey,
+        updateHash: curatedSourceUpdateHash(update),
+        signature: signed.attestation.signature
+      }
+    };
+    const updateUrl = `${initialUrl}/updates`;
+    const accepted = await app.inject({
+      method: "PUT",
+      url: updateUrl,
+      headers: { authorization: "Koed-Device owner-share:secret" },
+      payload: signedUpdate
+    });
+    const wrongPath = await app.inject({
+      method: "PUT",
+      url: `/v1/shared-memory/pending-shares/${randomUUID()}/curated-source/updates`,
+      headers: { authorization: "Koed-Device owner-share:secret" },
+      payload: signedUpdate
+    });
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect(
+      jsonBody<{ generation: number; materialHash: string }>(accepted)
+    ).toMatchObject({
+      generation: 3,
+      materialHash: signedUpdate.attestation.updateHash
+    });
+    expect(jsonBody<Record<string, unknown>>(accepted)).not.toHaveProperty(
+      "preview"
+    );
+    expect(wrongPath.statusCode).toBe(409);
+    expect(fixture.repositoryCalls).toBe(2);
     await app.close();
   });
 

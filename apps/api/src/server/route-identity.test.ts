@@ -23,6 +23,28 @@ const openApiSecuritySchemes = openApiDocument.components
   .securitySchemes as Record<string, Record<string, unknown>>;
 
 describe("route identity contract", () => {
+  it("inventories the joined member Personal Project link authority", () => {
+    expect(
+      routeIdentityFor(
+        "GET",
+        "/v1/workspace-projects/{projectId}/member-link-proof"
+      )
+    ).toMatchObject({
+      identity: "device_credential",
+      domain: "projects",
+      teamAuthority: "request_time_team_workspace"
+    });
+    expect(
+      routeIdentityFor(
+        "POST",
+        "/v1/local-edge/projects/{projectId}/workspace-project-join-confirm"
+      )
+    ).toMatchObject({
+      identity: "desktop_local_credential",
+      domain: "projects",
+      teamAuthority: "none"
+    });
+  });
   it("inventories exact owner-local HQ catch-up and retry authority", () => {
     for (const path of [
       "/v1/projects/{id}/hq/catch-up",
@@ -806,6 +828,8 @@ describe("route identity contract", () => {
         "PUT /v1/shared-memory/source-owner-policies/{logicalMemoryId}",
         "PUT /v1/shared-memory/teams/{teamId}/policy",
         "PUT /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/policy",
+        "POST /v1/shared-memory/teams/{teamId}/policy/curated-opt-in",
+        "POST /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/policy/curated-opt-in",
         "POST /v1/shared-memory/previews",
         "POST /v1/shared-memory/candidate-previews",
         "POST /v1/shared-memory/pending-shares",
@@ -826,6 +850,7 @@ describe("route identity contract", () => {
         "POST /v1/local-edge/projects/{projectId}/project-share-policy/attempts/finalize",
         "POST /v1/local-edge/projects/{projectId}/project-share-policy/consume",
         "POST /v1/local-edge/projects/{projectId}/project-share-policy/stage-initial",
+        "POST /v1/local-edge/projects/{projectId}/project-share-policy/future-source-candidates",
         "POST /v1/local-edge/projects/{projectId}/project-share-policy/reconcile-future",
         "POST /v1/local-edge/projects/{projectId}/project-share-policy/make-private",
         "POST /v1/local-edge/projects/{projectId}/project-share-policy/session-status",
@@ -841,6 +866,8 @@ describe("route identity contract", () => {
         "POST /v1/local-edge/projects/{projectId}/project-share-policy/execution-receipts/read",
         "GET /v1/local-edge/project-share-policy/active-projects",
         "PUT /v1/shared-memory/pending-shares/{pendingShareId}/personal-note-source",
+        "PUT /v1/shared-memory/pending-shares/{pendingShareId}/curated-source",
+        "PUT /v1/shared-memory/pending-shares/{pendingShareId}/curated-source/updates",
         "POST /v1/shared-memory/personal-note-revisions/advance",
         "POST /v1/shared-memory/curated-withdrawals",
         "PUT /v1/shared-memory/share-grants/{shareGrantId}/fidelity-bundle",

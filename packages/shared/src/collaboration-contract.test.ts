@@ -1378,7 +1378,8 @@ describe("collaboration renderer commands", () => {
       {
         activationRepresentation: "curated_assertions",
         maximumFidelity: "lcm_rollups",
-        includeCuratedMemory: true
+        includeCuratedMemory: true,
+        curatedMaterialCommitmentHash: "c".repeat(64)
       }
     ]) {
       expect(
@@ -1399,6 +1400,62 @@ describe("collaboration renderer commands", () => {
         }).success
       ).toBe(true);
     }
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.preview_shared_memory",
+        input: {
+          source: capturedSource(),
+          sourceCapabilities: capturedSourceCapabilities,
+          activationRepresentation: "lcm_leaves",
+          logicalMemoryId: ids.logicalMemory,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          maximumFidelity: "lcm_leaves",
+          includeCuratedMemory: true,
+          mode: "continuous",
+          actionGrant: actionGrant()
+        }
+      }).success
+    ).toBe(false);
+    expect(
+      collaborationRendererCommandSchema.safeParse({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: ids.request,
+        command: "collaboration.preview_shared_memory",
+        input: {
+          source: capturedSource(),
+          sourceCapabilities: capturedSourceCapabilities,
+          activationRepresentation: "lcm_leaves",
+          logicalMemoryId: ids.logicalMemory,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          maximumFidelity: "lcm_leaves",
+          includeCuratedMemory: true,
+          curatedMaterialCommitmentHash: "c".repeat(64),
+          mode: "continuous",
+          candidate: {
+            source: capturedSource(),
+            sourceCapabilities: capturedSourceCapabilities,
+            activationRepresentation: "lcm_leaves",
+            candidateHash: "a".repeat(64),
+            sourceRevision: 1,
+            itemCount: 1,
+            excludedItemCount: 0,
+            manifest: [
+              { sourceId: ids.sharedSession, revisionHash: "b".repeat(64) }
+            ],
+            byteCount: 64,
+            mode: "continuous",
+            expiresAt: null,
+            curatedMaterialCommitmentHash: "c".repeat(64),
+            curatedSourceAttestationKeyId: ids.actionGrant
+          },
+          actionGrant: actionGrant()
+        }
+      }).success
+    ).toBe(false);
   });
 
   it("rejects retired selected and allowed representation aliases", () => {

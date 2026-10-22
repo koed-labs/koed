@@ -1,8 +1,10 @@
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  createDeviceBoundSourceSigner,
   readLocalEdgeClientCredentialAuthorization,
   readUpstreamCredentialAuthorization
 } from "@koed/shared";
@@ -806,11 +808,64 @@ describe("upstream enrollment orchestration", () => {
       admin: "enabled"
     });
 
-    await startUpstreamEnrollment(paths, "team-vps", {
+    let enrollmentBody: Record<string, unknown> | null = null;
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
       now: () => new Date("2026-01-01T00:02:00.000Z"),
       randomId: () => "enroll-shared-memory",
-      fetch: enrollmentFetch()
+      fetch: async (input, init) => {
+        const url =
+          typeof input === "string" || input instanceof URL ? input : input.url;
+        if (
+          init?.method === "POST" &&
+          new URL(String(url)).pathname ===
+            "/v1/local-edge/device-enrollments/challenges"
+        ) {
+          enrollmentBody = JSON.parse(String(init.body)) as Record<
+            string,
+            unknown
+          >;
+        }
+        return enrollmentFetch()(input, init);
+      }
     });
+    expect(started.ok, started.message).toBe(true);
+    const body = enrollmentBody as Record<string, unknown> | null;
+    expect(body).not.toBeNull();
+    const metadata = body!.metadata as Record<string, unknown>;
+    const publicKey = metadata.curatedSourceAttestationPublicKey as string;
+    expect(metadata.curatedSourceAttestationKeyId).toBe(remotePrincipalUserId);
+    expect(publicKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(metadata.curatedSourceAttestationFingerprint).toBe(
+      createHash("sha256")
+        .update(Buffer.from(publicKey, "base64url"))
+        .digest("hex")
+    );
+    const signer = createDeviceBoundSourceSigner({
+      koedHome: paths.koedHome,
+      sourceGenerationId: String(body!.protocol_deployment_id),
+      originKeyId: remotePrincipalUserId,
+      environment: {
+        ...process.env,
+        KOED_DEVICE_PROOF_DIR: resolve(`${paths.koedHome}-proof-root`, "proof")
+      }
+    });
+    const proof = Buffer.from(
+      "koed.curated-source-material/v1:enrollment-proof"
+    );
+    expect(
+      verify(
+        null,
+        proof,
+        createPublicKey({
+          key: { kty: "OKP", crv: "Ed25519", x: publicKey },
+          format: "jwk"
+        }),
+        Buffer.from(signer.sign(proof), "base64url")
+      )
+    ).toBe(true);
+    expect(JSON.stringify(metadata)).not.toMatch(
+      /privateKey|verifier_secret|hostProof/
+    );
 
     expect(
       readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")

@@ -188,7 +188,7 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     desktop: write
   },
   "collaboration.preview_shared_memory_candidate": {
-    scope: "personal",
+    scope: "dynamic",
     desktop: read
   },
   "collaboration.revoke_shared_memory_sync": {
@@ -303,6 +303,33 @@ describe("collaboration command registry", () => {
 
     expect(collaborationCommandScope(personalSend)).toBe("personal");
     expect(collaborationCommandScope(teamSend)).toBe("team");
+    const candidateInput = {
+      source: {
+        kind: "captured_session",
+        sessionId: threadId,
+        logicalMemoryId: messageId
+      },
+      activationRepresentation: "lcm_leaves",
+      mode: "continuous"
+    };
+    expect(
+      collaborationCommandScope(
+        command("collaboration.preview_shared_memory_candidate", candidateInput)
+      )
+    ).toBe("personal");
+    expect(
+      collaborationCommandScope(
+        command("collaboration.preview_shared_memory_candidate", {
+          ...candidateInput,
+          curatedTarget: {
+            includeCuratedMemory: true,
+            teamBackendId: "team-vps",
+            teamId,
+            teamWorkspaceId: workspaceId
+          }
+        })
+      )
+    ).toBe("team");
     expect(personalCollaborationOperationFor(teamSend)).toBeNull();
     expect(teamCollaborationOperationFor(personalSend)).toBeNull();
     expect(

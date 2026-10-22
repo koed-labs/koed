@@ -7,12 +7,14 @@ import {
 } from "node:crypto";
 import type pg from "pg";
 import {
+  crossIdentitySyncDeterministicUuid,
   signProjectSharePolicyProof,
   type EnvelopeEncryptionProvider,
   type EncryptedPayloadEnvelope,
   type ProjectSharePolicyProof
 } from "@koed/shared";
 import { capturedSessionMayLeavePersonalBoundary } from "./project-hq-privacy.js";
+import { ensureCapturedSessionSourceRevision } from "./cross-identity-sync-repository.js";
 import type { ProjectShareManifestEntry } from "./project-share-policy-repository.js";
 
 export class PersonalProjectSharePolicyConflictError extends Error {
@@ -354,6 +356,23 @@ export interface PersonalProjectSharePolicyRepository {
     personalProjectBindingHash: string;
     entries: ProjectShareManifestEntry[];
   }>;
+  listInitialManifestSources(input: {
+    ownerUserId: string;
+    projectId: string;
+    teamBackendId: string;
+    workspaceProjectId: string;
+  }): Promise<Array<{ sessionId: string; mappingRevision: number }>>;
+  prepareInitialManifestSource(input: {
+    ownerUserId: string;
+    projectId: string;
+    teamBackendId: string;
+    workspaceProjectId: string;
+    sessionId: string;
+    mappingRevision: number;
+    logicalMemoryId: string;
+    sourceRevision: number;
+    sourceDeploymentProtocolId: string;
+  }): Promise<void>;
   activateLocalPolicy(input: {
     ownerUserId: string;
     projectId: string;
@@ -369,6 +388,26 @@ export interface PersonalProjectSharePolicyRepository {
     workspaceProjectId: string;
     expectedVersion: number;
   }): Promise<void>;
+  listFutureSourceCandidates(input: {
+    ownerUserId: string;
+    projectId: string;
+    teamBackendId: string;
+    workspaceProjectId: string;
+    policyVersion: number;
+    cursor?: string;
+  }): Promise<{
+    entries: Array<{ sessionId: string; mappingRevision: number }>;
+    nextCursor: string | null;
+    hasMore: boolean;
+  }>;
+  exactFutureSourceCandidate(input: {
+    ownerUserId: string;
+    projectId: string;
+    teamBackendId: string;
+    workspaceProjectId: string;
+    policyVersion: number;
+    sessionId: string;
+  }): Promise<{ sessionId: string; mappingRevision: number } | null>;
   listFutureEligible(input: {
     ownerUserId: string;
     projectId: string;
@@ -492,6 +531,113 @@ const safeReviewLabel = (label: string, sessionId: string): string => {
   }
   return bounded;
 };
+const futureSourceRows = async (
+  client: pg.PoolClient,
+  input: {
+    ownerUserId: string;
+    projectId: string;
+    workspaceProjectId: string;
+    policyVersion: number;
+    linkEpoch: string;
+    deviceCredentialId: string;
+    cursor?: string;
+    targetSessionId?: string;
+  }
+): Promise<{
+  entries: Array<{ sessionId: string; mappingRevision: number }>;
+  nextCursor: string | null;
+  hasMore: boolean;
+}> => {
+  const limit = input.targetSessionId ? 1 : 20;
+  const result = await client.query<{
+    session_id: string;
+    mapping_revision: number;
+  }>(
+    `select session.id as session_id,
+            session.project_assignment_version as mapping_revision
+       from sessions session
+      where session.owner_user_id=$1 and session.visibility='personal'
+        and (case when session.project_override_at is not null
+              then session.project_override_personal_project_id
+              else session.automatic_personal_project_id end)=$2
+        and session.project_share_capture_workspace_project_id=$3
+        and session.project_share_capture_policy_version=$4
+        and session.project_share_capture_link_epoch=$5
+        and session.project_share_capture_device_credential_id=$6
+        and session.project_share_capture_context_version is not null
+        and session.project_share_capture_prepared_at is not null
+        and session.project_share_capture_prepared_at<=session.created_at
+        and session.project_share_private_at is null
+        and session.project_share_private_pending_at is null
+        and session.project_share_move_pending_at is null
+        and session.source_kind is not null
+        and session.source_adapter_version is not null
+        and coalesce(session.external_thread_id,session.external_session_id) is not null
+        and session.personal_deleted_at is null and session.invalidated_at is null
+        and session.delete_batch_id is null and session.forget_batch_id is null
+        and session.trashed_at is null
+        and exists (
+          select 1 from conversation_source_artifacts artifact
+           where artifact.session_id=session.id and artifact.owner_user_id=$1
+             and artifact.replica_role='origin_local'
+        )
+        and not exists (
+          select 1 from project_share_private_conversations private
+           where private.owner_user_id=$1
+             and private.source_runtime=session.source_runtime
+             and private.source_kind=session.source_kind
+             and private.source_adapter_version=session.source_adapter_version
+             and private.external_conversation_id=coalesce(
+               session.external_thread_id,session.external_session_id)
+        )
+        and not exists (
+          select 1 from project_share_local_issues issue
+           where issue.owner_user_id=$1 and issue.session_id=session.id
+        )
+        and not exists (
+          select 1 from project_policy_session_grants grant_row
+           where grant_row.owner_user_id=$1 and grant_row.session_id=session.id
+        )
+        and not exists (
+          select 1 from project_share_explicit_offers offer
+           where offer.owner_user_id=$1 and offer.session_id=session.id
+        )
+        and ($7::uuid is null or session.id>$7)
+        and ($8::uuid is null or session.id=$8)
+      order by session.id limit $9`,
+    [
+      input.ownerUserId,
+      input.projectId,
+      input.workspaceProjectId,
+      input.policyVersion,
+      input.linkEpoch,
+      input.deviceCredentialId,
+      input.cursor ?? null,
+      input.targetSessionId ?? null,
+      limit + 1
+    ]
+  );
+  const entries: Array<{ sessionId: string; mappingRevision: number }> = [];
+  const page = result.rows.slice(0, limit);
+  for (const row of page) {
+    if (
+      await capturedSessionMayLeavePersonalBoundary(
+        client,
+        input.ownerUserId,
+        row.session_id
+      )
+    )
+      entries.push({
+        sessionId: row.session_id,
+        mappingRevision: row.mapping_revision
+      });
+  }
+  return {
+    entries,
+    nextCursor: page.at(-1)?.session_id ?? null,
+    hasMore: result.rows.length > limit
+  };
+};
 const sessionRows = async (
   client: pg.Pool | pg.PoolClient,
   input: {
@@ -535,7 +681,7 @@ const sessionRows = async (
          on source_revision.logical_memory_id=memory.id
         and source_revision.owner_principal_id=memory.owner_principal_id
         and source_revision.source_session_id=session.id
-        and source_revision.revision=memory.latest_source_revision
+        and source_revision.source_cursor=memory.latest_source_revision
       where session.owner_user_id=$1 and session.visibility='personal'
         and (case when session.project_override_at is not null
               then session.project_override_personal_project_id
@@ -1972,8 +2118,236 @@ export const createPersonalProjectSharePolicyRepository = (
           input,
           current.share_policy_link_epoch
         ),
-        entries: (await sessionRows(client, input)).entries
+        entries: (
+          await sessionRows(client, {
+            ownerUserId: input.ownerUserId,
+            projectId: input.projectId
+          })
+        ).entries
       };
+    });
+  },
+  async listInitialManifestSources(input) {
+    return transaction(pool, async (client) => {
+      await client.query("set transaction isolation level repeatable read");
+      await project(client, input);
+      const eligible: Array<{ sessionId: string; mappingRevision: number }> =
+        [];
+      let cursor: string | null = null;
+      for (;;) {
+        const result: pg.QueryResult<{
+          session_id: string;
+          mapping_revision: number;
+        }> = await client.query<{
+          session_id: string;
+          mapping_revision: number;
+        }>(
+          `select session.id as session_id,
+                session.project_assignment_version as mapping_revision
+           from sessions session
+          where session.owner_user_id=$1 and session.visibility='personal'
+            and (case when session.project_override_at is not null
+                  then session.project_override_personal_project_id
+                  else session.automatic_personal_project_id end)=$2
+            and session.project_share_private_at is null
+            and session.project_share_private_pending_at is null
+            and session.project_share_move_pending_at is null
+            and session.source_kind is not null
+            and session.source_adapter_version is not null
+            and coalesce(session.external_thread_id,session.external_session_id) is not null
+            and exists (
+              select 1 from conversation_source_artifacts artifact
+               where artifact.session_id=session.id and artifact.owner_user_id=$1
+                 and artifact.replica_role='origin_local'
+            )
+            and not exists (
+              select 1 from project_share_private_conversations private
+               where private.owner_user_id=$1
+                 and private.source_runtime=session.source_runtime
+                 and private.source_kind=session.source_kind
+                 and private.source_adapter_version=session.source_adapter_version
+                 and private.external_conversation_id=coalesce(session.external_thread_id,session.external_session_id)
+            )
+            and session.personal_deleted_at is null
+            and session.invalidated_at is null
+            and session.delete_batch_id is null and session.forget_batch_id is null
+            and session.trashed_at is null
+            and ($3::uuid is null or session.id>$3)
+          order by session.id limit 101`,
+          [input.ownerUserId, input.projectId, cursor]
+        );
+        for (const row of result.rows) {
+          if (
+            await capturedSessionMayLeavePersonalBoundary(
+              client,
+              input.ownerUserId,
+              row.session_id
+            )
+          ) {
+            eligible.push({
+              sessionId: row.session_id,
+              mappingRevision: row.mapping_revision
+            });
+          }
+          if (eligible.length > 100)
+            throw new PersonalProjectSharePolicyConflictError(
+              "More than 100 eligible Captured Sessions exceed this policy's initial review limit"
+            );
+        }
+        if (result.rows.length < 101) break;
+        cursor = result.rows.at(-1)!.session_id;
+      }
+      return eligible;
+    });
+  },
+  async prepareInitialManifestSource(input) {
+    if (!Number.isSafeInteger(input.sourceRevision) || input.sourceRevision < 1)
+      throw new PersonalProjectSharePolicyConflictError(
+        "Captured Session source revision unavailable"
+      );
+    await transaction(pool, async (client) => {
+      await project(client, input, true);
+      const session = await client.query<{ id: string }>(
+        `select session.id from sessions session
+          where session.id=$1 and session.owner_user_id=$2
+            and session.visibility='personal'
+            and (case when session.project_override_at is not null
+                  then session.project_override_personal_project_id
+                  else session.automatic_personal_project_id end)=$3
+            and session.project_assignment_version=$4
+            and session.project_share_private_at is null
+            and session.project_share_private_pending_at is null
+            and session.project_share_move_pending_at is null
+            and session.source_kind is not null
+            and session.source_adapter_version is not null
+            and coalesce(session.external_thread_id,session.external_session_id) is not null
+            and exists (
+              select 1 from conversation_source_artifacts artifact
+               where artifact.session_id=session.id and artifact.owner_user_id=$2
+                 and artifact.replica_role='origin_local'
+            )
+            and not exists (
+              select 1 from project_share_private_conversations private
+               where private.owner_user_id=$2
+                 and private.source_runtime=session.source_runtime
+                 and private.source_kind=session.source_kind
+                 and private.source_adapter_version=session.source_adapter_version
+                 and private.external_conversation_id=coalesce(session.external_thread_id,session.external_session_id)
+            )
+            and session.personal_deleted_at is null and session.invalidated_at is null
+            and session.delete_batch_id is null and session.forget_batch_id is null
+            and session.trashed_at is null
+          for update`,
+        [
+          input.sessionId,
+          input.ownerUserId,
+          input.projectId,
+          input.mappingRevision
+        ]
+      );
+      if (
+        !session.rows[0] ||
+        !(await capturedSessionMayLeavePersonalBoundary(
+          client,
+          input.ownerUserId,
+          input.sessionId
+        ))
+      )
+        throw new PersonalProjectSharePolicyConflictError(
+          "Captured Session changed before local source preparation"
+        );
+      const deployment = await client.query<{ id: string }>(
+        `select id from deployment_identities
+          where locality='local' and protocol_deployment_id=$1
+            and disabled_at is null limit 1`,
+        [input.sourceDeploymentProtocolId]
+      );
+      if (!deployment.rows[0])
+        throw new PersonalProjectSharePolicyConflictError(
+          "Verified local source deployment changed"
+        );
+      const expectedId = crossIdentitySyncDeterministicUuid({
+        protocol: "koed.captured-session-sync/v1",
+        sourceDeploymentId: input.sourceDeploymentProtocolId,
+        sourceUserId: input.ownerUserId,
+        originSessionId: input.sessionId,
+        identity: "logical-memory"
+      });
+      if (input.logicalMemoryId !== expectedId)
+        throw new PersonalProjectSharePolicyConflictError(
+          "Captured Session source identity changed"
+        );
+      const cursor = await client.query<{ source_revision: string | null }>(
+        `select max(cursor)::text as source_revision
+           from sync_semantic_changes where session_id=$1`,
+        [input.sessionId]
+      );
+      if (Number(cursor.rows[0]?.source_revision ?? 0) !== input.sourceRevision)
+        throw new PersonalProjectSharePolicyConflictError(
+          "Captured Session source cursor changed"
+        );
+      const unprepared = await client.query(
+        `select 1 from memory_events event
+          where event.session_id=$1 and event.owner_user_id=$2
+            and event.event_type='captured'
+            and not exists (
+              select 1 from sync_semantic_changes change
+               where change.session_id=event.session_id
+                 and change.origin_event_id=event.id
+            ) limit 1`,
+        [input.sessionId, input.ownerUserId]
+      );
+      if (unprepared.rows[0])
+        throw new PersonalProjectSharePolicyConflictError(
+          "Captured Session source changed during local preparation"
+        );
+      const logical = await client.query(
+        `insert into logical_memories
+           (id,owner_user_id,owner_principal_id,origin_deployment_identity_id,
+            source_kind,logical_key,latest_source_revision)
+         values ($1,$2,$2,$3,'captured_session',$4,$5)
+         on conflict (id) do update
+           set latest_source_revision=greatest(logical_memories.latest_source_revision,
+                 excluded.latest_source_revision),updated_at=now()
+         where logical_memories.owner_user_id=excluded.owner_user_id
+           and logical_memories.owner_principal_id=excluded.owner_principal_id
+           and logical_memories.origin_deployment_identity_id=excluded.origin_deployment_identity_id
+           and logical_memories.source_kind=excluded.source_kind
+           and logical_memories.logical_key=excluded.logical_key
+         returning id`,
+        [
+          input.logicalMemoryId,
+          input.ownerUserId,
+          deployment.rows[0].id,
+          `captured-session:${input.sessionId}`,
+          input.sourceRevision
+        ]
+      );
+      if (!logical.rows[0])
+        throw new PersonalProjectSharePolicyConflictError(
+          "Captured Session logical memory identity changed"
+        );
+      await ensureCapturedSessionSourceRevision(client, {
+        logicalMemoryId: input.logicalMemoryId,
+        ownerPrincipalId: input.ownerUserId,
+        sourceSessionId: input.sessionId,
+        sourceRevision: input.sourceRevision
+      });
+      const local = await client.query(
+        `insert into local_captured_session_logical_memories
+           (logical_memory_id,local_session_id,owner_user_id)
+         values ($1,$2,$3)
+         on conflict (logical_memory_id) do update
+           set local_session_id=local_captured_session_logical_memories.local_session_id
+         where local_captured_session_logical_memories.local_session_id=excluded.local_session_id
+           and local_captured_session_logical_memories.owner_user_id=excluded.owner_user_id
+         returning logical_memory_id`,
+        [input.logicalMemoryId, input.sessionId, input.ownerUserId]
+      );
+      if (!local.rows[0])
+        throw new PersonalProjectSharePolicyConflictError(
+          "Captured Session local source binding changed"
+        );
     });
   },
   async activateLocalPolicy(input) {
@@ -2036,6 +2410,48 @@ export const createPersonalProjectSharePolicyRepository = (
         throw new PersonalProjectSharePolicyConflictError(
           "Local policy revocation changed"
         );
+    });
+  },
+  async listFutureSourceCandidates(input) {
+    return transaction(pool, async (client) => {
+      await client.query("set transaction isolation level repeatable read");
+      const current = await project(client, input);
+      if (
+        current.project_share_policy_version !== input.policyVersion ||
+        !current.project_share_policy_device_credential_id
+      )
+        throw new PersonalProjectSharePolicyConflictError(
+          "Policy version is not active locally"
+        );
+      return futureSourceRows(client, {
+        ...input,
+        linkEpoch: current.share_policy_link_epoch,
+        deviceCredentialId: current.project_share_policy_device_credential_id
+      });
+    });
+  },
+  async exactFutureSourceCandidate(input) {
+    return transaction(pool, async (client) => {
+      await client.query("set transaction isolation level repeatable read");
+      const current = await project(client, input);
+      if (
+        current.project_share_policy_version !== input.policyVersion ||
+        !current.project_share_policy_device_credential_id
+      )
+        throw new PersonalProjectSharePolicyConflictError(
+          "Policy version is not active locally"
+        );
+      return (
+        (
+          await futureSourceRows(client, {
+            ...input,
+            linkEpoch: current.share_policy_link_epoch,
+            deviceCredentialId:
+              current.project_share_policy_device_credential_id,
+            targetSessionId: input.sessionId
+          })
+        ).entries[0] ?? null
+      );
     });
   },
   async listFutureEligible(input) {

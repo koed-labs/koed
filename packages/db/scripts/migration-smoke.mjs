@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0083_managed_text_lifecycle_guard";
-const expectedLatestMigrationIndex = 83;
+const expectedLatestMigrationTag = "0084_narrow_war_machine";
+const expectedLatestMigrationIndex = 84;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -777,7 +777,37 @@ const assertLatestSchema = async (pool) => {
       ["origin", "text", "NO"],
       ["policy_generation", "integer", "YES"]
     ],
-    pending_share_operations: [["workspace_project_id", "uuid", "YES"]],
+    pending_share_operations: [
+      ["workspace_project_id", "uuid", "YES"],
+      ["curated_material_receipt", "jsonb", "YES"]
+    ],
+    shared_memory_candidate_previews: [
+      ["curated_material_commitment_hash", "text", "YES"]
+    ],
+    team_memory_share_grants: [
+      ["curated_source_update_receipt", "jsonb", "YES"]
+    ],
+    collaboration_pending_share_source_work: [
+      ["consent_id", "uuid", "YES"],
+      ["preview_hash", "text", "YES"],
+      ["curated_material_commitment_hash", "text", "YES"],
+      ["team_workspace_id", "uuid", "YES"],
+      ["include_curated_memory", "boolean", "NO"]
+    ],
+    collaboration_curated_grant_source_work: [
+      ["enrollment_id", "uuid", "NO"],
+      ["original_pending_share_id", "uuid", "NO"],
+      ["consent_id", "uuid", "NO"],
+      ["preview_hash", "text", "NO"],
+      ["curated_material_commitment_hash", "text", "NO"],
+      ["local_session_id", "uuid", "NO"],
+      ["logical_memory_id", "uuid", "NO"],
+      ["requested_generation", "bigint", "NO"],
+      ["delivered_generation", "bigint", "NO"],
+      ["claimed_generation", "bigint", "YES"],
+      ["lease_token", "uuid", "YES"],
+      ["next_expiry_at", "timestamp with time zone", "YES"]
+    ],
     project_decks: [
       ["id", "uuid", "NO"],
       ["project_id", "uuid", "NO"],
@@ -1102,6 +1132,43 @@ const assertLatestSchema = async (pool) => {
     );
   }
   const expectedConstraints = [
+    [
+      "collaboration_curated_grant_source_work",
+      "csm_curated_grant_source_work_unique",
+      "u"
+    ],
+    [
+      "collaboration_curated_grant_source_work",
+      "csm_curated_grant_source_work_binding_check",
+      "c"
+    ],
+    [
+      "collaboration_curated_grant_source_work",
+      "collaboration_curated_grant_source_work_enrollment_id_collaboration_shared_memory_enrollments_id_fk",
+      "f",
+      "collaboration_shared_memory_enrollments",
+      "c"
+    ],
+    [
+      "collaboration_pending_share_source_work",
+      "csm_pending_source_work_curated_binding_check",
+      "c"
+    ],
+    [
+      "pending_share_operations",
+      "pending_share_operations_curated_receipt_check",
+      "c"
+    ],
+    [
+      "shared_memory_candidate_previews",
+      "shared_memory_candidate_previews_curated_commitment_check",
+      "c"
+    ],
+    [
+      "team_memory_share_grants",
+      "team_memory_share_grants_curated_update_receipt_check",
+      "c"
+    ],
     ["team_leave_operations", "team_leave_operations_action_grant_unique", "u"],
     ["team_leave_operations", "team_leave_operations_state_check", "c"],
     ["team_leave_operations", "team_leave_operations_hash_check", "c"],
@@ -6049,6 +6116,51 @@ try {
           throw new Error(
             "0078-0082 leave reservation, receipt, or Personal stage schema missing"
           );
+      });
+    }
+  );
+
+  await runScenario(
+    "curated-source-0084-upgrade-rollback-and-rerun",
+    async () => {
+      const target = await createDisposableDatabase("curated_source_upgrade");
+      const predecessor = await createMigrationSlice(journal, 83, {
+        folderPrefix: "koed-curated-source-predecessor-"
+      });
+      const interrupted = await createMigrationSlice(journal, 84, {
+        folderPrefix: "koed-curated-source-interrupted-",
+        transformLastSql: (sql) => `${sql}--> statement-breakpoint\nselect 1/0;`
+      });
+      temporaryFolders.add(predecessor);
+      temporaryFolders.add(interrupted);
+      const priorRecords = await migrationRecords(
+        predecessor,
+        journal.entries.slice(0, 84)
+      );
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool, { migrationsFolder: predecessor });
+        const before = await schemaFingerprint(pool);
+        const failed = await runDbMigrations(pool, {
+          migrationsFolder: interrupted
+        }).then(
+          () => false,
+          () => true
+        );
+        if (!failed || (await schemaFingerprint(pool)) !== before) {
+          throw new Error(
+            "Interrupted 0084 migration leaked Curated transfer state"
+          );
+        }
+        await assertMigrationLedger(pool, priorRecords);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        await assertCurrentSchema(pool);
+        const stable = await schemaFingerprint(pool);
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, fullRecords);
+        if ((await schemaFingerprint(pool)) !== stable) {
+          throw new Error("0084 migration rerun changed schema");
+        }
       });
     }
   );

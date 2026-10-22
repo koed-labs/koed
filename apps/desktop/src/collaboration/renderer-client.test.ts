@@ -572,6 +572,13 @@ const success = (
           expiresAt: null,
           sourceRevision: candidate.sourceRevision,
           candidateHash: candidate.previewHash,
+          ...(command.input.curatedTarget
+            ? {
+                curatedMaterialCommitmentHash: "c".repeat(64),
+                curatedSourceAttestationKeyId: ids.user,
+                curatedSourceAttestationFingerprint: "d".repeat(64)
+              }
+            : {}),
           itemCount: candidate.itemCount,
           excludedItemCount: 0,
           manifest: candidate.items.map((item) => ({
@@ -585,6 +592,13 @@ const success = (
       break;
     }
     case "collaboration.preview_shared_memory":
+      data = {
+        preview: {
+          ...sharedPreview(),
+          includeCuratedMemory: command.input.includeCuratedMemory
+        }
+      };
+      break;
     case "collaboration.load_shared_memory_preview_page":
       data = { preview: sharedPreview() };
       break;
@@ -2027,6 +2041,71 @@ describe("collaboration renderer client", () => {
       );
       expect(grant).toBeDefined();
     }
+    client.dispose();
+  });
+
+  it("binds an owner-local Curated commitment before the Team preview approval and refuses a substituted hash", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    const input = {
+      source: {
+        kind: "captured_session" as const,
+        sessionId: ids.capturedSession,
+        logicalMemoryId: ids.logicalMemory
+      },
+      sourceCapabilities: ["memory_events" as const],
+      logicalMemoryId: ids.logicalMemory,
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      activationRepresentation: "memory_events" as const,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: true,
+      mode: "continuous" as const
+    };
+    const preview = await client.previewSharedMemory(input);
+    expect(preview.includeCuratedMemory).toBe(true);
+    const commands = mock.command.mock.calls.map(([command]) => command);
+    const candidateIndex = commands.findIndex(
+      (command) =>
+        command.command === "collaboration.preview_shared_memory_candidate"
+    );
+    const grantIndex = commands.findIndex(
+      (command) => command.command === "collaboration.request_action_grant"
+    );
+    expect(candidateIndex).toBeGreaterThan(-1);
+    expect(grantIndex).toBeGreaterThan(candidateIndex);
+    expect(commands[candidateIndex]?.input).toMatchObject({
+      curatedTarget: {
+        includeCuratedMemory: true,
+        teamBackendId: "up_team_example",
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace
+      }
+    });
+    expect(commands[grantIndex]?.input).toMatchObject({
+      intent: {
+        curatedMaterialCommitmentHash: "c".repeat(64),
+        includeCuratedMemory: true
+      }
+    });
+    expect(
+      commands.find(
+        (command) => command.command === "collaboration.preview_shared_memory"
+      )?.input
+    ).toMatchObject({ curatedMaterialCommitmentHash: "c".repeat(64) });
+    mock.command.mockClear();
+    await expect(
+      client.previewSharedMemory({
+        ...input,
+        curatedMaterialCommitmentHash: "f".repeat(64)
+      })
+    ).rejects.toThrow("Refresh the preview");
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.request_action_grant"
+      )
+    ).toBe(false);
     client.dispose();
   });
 

@@ -43,6 +43,7 @@ import {
   createCuratedMemoryRepository,
   suppressCuratedMemoryWithoutActiveEvidenceWithClient
 } from "./curated-memory-repository.js";
+import { enqueueCuratedGrantSourceWorkForAssertions } from "./curated-shared-source-work.js";
 import {
   activeCuratedMemoryEvidencePredicate,
   memoryNodeHasForgottenSessionPredicate
@@ -3977,6 +3978,11 @@ export const createMemorySourceRepository = (
       );
       await transactionalSharedMemoryRepository.reconcileCuratedGrantRepresentations(
         actor
+      );
+      await enqueueCuratedGrantSourceWorkForAssertions(
+        client,
+        actor.userId,
+        assertionIds
       );
     }
   });

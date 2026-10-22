@@ -15,6 +15,7 @@ import type {
 import { defaultFreshAuthenticationMaxAgeMs } from "@koed/db";
 import {
   sharedMemoryCandidatePreviewActionGrantBinding,
+  sharedMemoryCuratedPolicyOptInBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryFidelityBundleActionGrantBinding,
   sharedMemoryPreviewActionGrantBinding,
@@ -27,10 +28,15 @@ import {
   sharedMemoryTranscriptRevokeActionGrantBinding,
   pendingShareSchema,
   sharedMemoryGrantScopedSourceId,
+  signedCuratedSourceMaterialSchema,
+  signedCuratedSourceUpdateSchema,
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES,
   validateSharedMemoryCanonicalSourceItem,
   SharedMemoryConflictError,
   SharedMemorySourceItemRejectedError,
   type SharedMemoryCanonicalSourceItemDto,
+  type SignedCuratedSourceMaterialV1,
+  type SignedCuratedSourceUpdateV1,
   type SharedMemoryActionGrantBinding
 } from "@koed/shared";
 import {
@@ -56,6 +62,7 @@ import {
   personalNoteSourceArtifactUploadSchema,
   listWorkspaceSharedMemoryQuerySchema,
   putSharedMemoryPolicySchema,
+  curatedPolicyOptInSchema,
   putTeamConversationSourceGrantSchema,
   readGrantRepresentationPageQuerySchema,
   readGrantRepresentationQuerySchema,
@@ -73,6 +80,8 @@ import {
 
 const SMALL_BODY_LIMIT_BYTES = 32 * 1_024;
 const SOURCE_UPLOAD_BODY_LIMIT_BYTES = 300 * 1_024;
+const CURATED_SOURCE_UPLOAD_BODY_LIMIT_BYTES =
+  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES + 1_024 * 1_024;
 
 const forbidden = () =>
   Object.assign(new Error("Shared Memory operation is not authorized"), {
@@ -903,6 +912,80 @@ export const registerSharedMemoryRoutes = (
     }
   );
 
+  const registerCuratedPolicyOptIn = (
+    path: string,
+    action:
+      | "shared_memory.team_policy.curated_opt_in"
+      | "shared_memory.workspace_policy.curated_opt_in"
+  ) => {
+    app.post(
+      path,
+      { preHandler: context.writeRateLimit, bodyLimit: SMALL_BODY_LIMIT_BYTES },
+      async (request) => {
+        rejectApiToken(request);
+        const teamParams =
+          action === "shared_memory.team_policy.curated_opt_in"
+            ? teamPolicyParamsSchema.parse(request.params)
+            : workspacePolicyParamsSchema.parse(request.params);
+        const input = curatedPolicyOptInSchema.parse(request.body);
+        const authenticated = await authenticateSourceOwnerAuthority(
+          request,
+          context,
+          input.authority
+        );
+        if (authenticated.kind !== "device") throw forbidden();
+        const teamWorkspaceId =
+          action === "shared_memory.workspace_policy.curated_opt_in"
+            ? workspacePolicyParamsSchema.parse(request.params).teamWorkspaceId
+            : undefined;
+        const binding = sharedMemoryCuratedPolicyOptInBinding({
+          action,
+          teamId: teamParams.teamId,
+          ...(teamWorkspaceId ? { teamWorkspaceId } : {}),
+          referenceId: authenticated.authority.referenceId,
+          mutationId: input.mutationId,
+          policyId: input.policyId,
+          expectedCurrentVersion: input.expectedCurrentVersion,
+          maximumFidelity: input.maximumFidelity
+        });
+        const result = await executeRepositoryOperation(() =>
+          runHighRiskSharedMemoryWrite(
+            context,
+            authenticated,
+            binding,
+            async (repository) => ({
+              statusCode: 200,
+              body: {
+                policy: policyDto(
+                  await repository.optInCuratedPolicy(
+                    { userId: authenticated.actor.id },
+                    {
+                      mutationId: input.mutationId,
+                      teamId: teamParams.teamId,
+                      ...(teamWorkspaceId ? { teamWorkspaceId } : {}),
+                      policyId: input.policyId,
+                      expectedCurrentVersion: input.expectedCurrentVersion,
+                      maximumFidelity: input.maximumFidelity
+                    }
+                  )
+                )
+              }
+            })
+          )
+        );
+        return result.body;
+      }
+    );
+  };
+  registerCuratedPolicyOptIn(
+    "/v1/shared-memory/teams/:teamId/policy/curated-opt-in",
+    "shared_memory.team_policy.curated_opt_in"
+  );
+  registerCuratedPolicyOptIn(
+    "/v1/shared-memory/teams/:teamId/workspaces/:teamWorkspaceId/policy/curated-opt-in",
+    "shared_memory.workspace_policy.curated_opt_in"
+  );
+
   app.post(
     "/v1/shared-memory/candidate-previews",
     {
@@ -1135,6 +1218,92 @@ export const registerSharedMemoryRoutes = (
           )
       );
       return { preview: persistedPreviewDto(preview) };
+    }
+  );
+
+  app.put(
+    "/v1/shared-memory/pending-shares/:pendingShareId/curated-source",
+    {
+      preHandler: context.writeRateLimit,
+      bodyLimit: CURATED_SOURCE_UPLOAD_BODY_LIMIT_BYTES
+    },
+    async (request) => {
+      rejectApiToken(request);
+      const params = z
+        .object({ pendingShareId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const signed = signedCuratedSourceMaterialSchema.parse(
+        request.body
+      ) as SignedCuratedSourceMaterialV1;
+      if (signed.material.pendingShareId !== params.pendingShareId)
+        throw conflict();
+      const authenticated = await context.authenticateDeviceCredential(request);
+      if (
+        !authenticated.credential.operationFamilies.includes(
+          "share_grant_management"
+        )
+      )
+        throw forbidden();
+      const accepted = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .persistCapturedSessionCuratedSourceMaterial(
+            { userId: authenticated.user.id },
+            { deviceCredentialId: authenticated.credential.id, signed }
+          )
+      );
+      return {
+        pendingShareId: params.pendingShareId,
+        commitmentHash: signed.material.commitmentHash,
+        materialHash: accepted.materialHash,
+        sourceRevision: accepted.sourceRevision,
+        status: accepted.status
+      };
+    }
+  );
+
+  app.put(
+    "/v1/shared-memory/pending-shares/:pendingShareId/curated-source/updates",
+    {
+      preHandler: context.writeRateLimit,
+      bodyLimit: CURATED_SOURCE_UPLOAD_BODY_LIMIT_BYTES
+    },
+    async (request) => {
+      rejectApiToken(request);
+      const params = z
+        .object({ pendingShareId: z.uuid() })
+        .strict()
+        .parse(request.params);
+      const signed = signedCuratedSourceUpdateSchema.parse(
+        request.body
+      ) as SignedCuratedSourceUpdateV1;
+      if (signed.update.originalPendingShareId !== params.pendingShareId)
+        throw conflict();
+      const authenticated = await context.authenticateDeviceCredential(request);
+      if (
+        !authenticated.credential.operationFamilies.includes(
+          "share_grant_management"
+        )
+      )
+        throw forbidden();
+      const accepted = await executeRepositoryOperation(() =>
+        context
+          .requireSharedMemoryRepository()
+          .persistContinuousCuratedSourceUpdate(
+            { userId: authenticated.user.id },
+            { deviceCredentialId: authenticated.credential.id, signed }
+          )
+      );
+      return {
+        pendingShareId: params.pendingShareId,
+        grantId: signed.update.grantId,
+        generation: signed.update.generation,
+        commitmentHash: signed.update.commitmentHash,
+        materialHash: accepted.updateHash,
+        sourceRevision: accepted.sourceRevision,
+        status: accepted.status
+      };
     }
   );
 

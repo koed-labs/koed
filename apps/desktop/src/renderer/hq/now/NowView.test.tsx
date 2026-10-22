@@ -86,6 +86,148 @@ describe("Now view", () => {
     vi.restoreAllMocks();
   });
 
+  it("finishes an accepted Project invitation through the Personal join operation", async () => {
+    const ownerId = "00000000-0000-4000-8000-000000000001";
+    const workspaceProjectId = "00000000-0000-4000-8000-000000000005";
+    const invite: CollaborationMyInvitation = {
+      id: "00000000-0000-4000-8000-000000000002",
+      version: 1,
+      backendOriginHash: "a".repeat(64),
+      membershipVersion: null,
+      membershipStatus: null,
+      membershipDisabledReason: null,
+      leaveGeneration: 0,
+      team: { id: "00000000-0000-4000-8000-000000000003", name: "Team" },
+      workspace: {
+        id: "00000000-0000-4000-8000-000000000004",
+        name: "Workspace"
+      },
+      project: { id: workspaceProjectId, name: "Project" },
+      inviter: { displayName: "Owner", agentDisplayName: null },
+      role: "member",
+      effectiveRole: "member",
+      workspaceAccess: "write",
+      expiresAt: "2026-10-27T09:00:00.000Z"
+    };
+    const decideInvitation = vi.fn(async () => invite);
+    const sharedJoinProject = vi.fn(async () => ({ id: "personal-project" }));
+    const onJoinedProject = vi.fn(async () => {});
+    const client = {
+      current: () => ({
+        connection: { backendId: "team-backend", connectedAt: null },
+        navigation: { personalOwner: { id: ownerId }, teamPrincipal: null }
+      }),
+      currentRemoteUrl: () => "https://team.example.test",
+      subscribe: () => () => {},
+      listMyInvitations: async () => [invite],
+      decideInvitation
+    } as unknown as CollaborationRendererClient;
+    await act(async () =>
+      root.render(
+        <NowView
+          projects={[]}
+          approvals={[]}
+          ownerId={ownerId}
+          profileKey="team-backend||https://team.example.test"
+          invitationsClient={client}
+          projectsApi={{ sharedJoinProject } as unknown as ProjectsDesktopApi}
+          onJoinedProject={onJoinedProject}
+          onSelectProject={vi.fn()}
+          onSelectConversation={vi.fn()}
+        />
+      )
+    );
+    await act(async () =>
+      (
+        container.querySelector(
+          ".hq-now__invitation-actions button:last-child"
+        ) as HTMLButtonElement
+      ).click()
+    );
+    expect(decideInvitation).toHaveBeenCalledWith(invite, "accept");
+    expect(sharedJoinProject).toHaveBeenCalledWith(
+      workspaceProjectId,
+      "team-backend"
+    );
+    expect(onJoinedProject).toHaveBeenCalledWith("personal-project");
+    expect(container.textContent).not.toContain("Retry setup");
+  });
+
+  it("does not link an accepted invitation after the active profile switches", async () => {
+    const ownerId = "00000000-0000-4000-8000-000000000001";
+    const invite: CollaborationMyInvitation = {
+      id: "00000000-0000-4000-8000-000000000002",
+      version: 1,
+      backendOriginHash: "a".repeat(64),
+      membershipVersion: null,
+      membershipStatus: null,
+      membershipDisabledReason: null,
+      leaveGeneration: 0,
+      team: { id: "00000000-0000-4000-8000-000000000003", name: "Team" },
+      workspace: {
+        id: "00000000-0000-4000-8000-000000000004",
+        name: "Workspace"
+      },
+      project: {
+        id: "00000000-0000-4000-8000-000000000005",
+        name: "Project"
+      },
+      inviter: { displayName: "Owner", agentDisplayName: null },
+      role: "member",
+      effectiveRole: "member",
+      workspaceAccess: "write",
+      expiresAt: "2026-10-27T09:00:00.000Z"
+    };
+    let backend = "old";
+    const listeners = new Set<() => void>();
+    let finishAccept!: () => void;
+    const pendingAccept = new Promise<void>((resolve) => {
+      finishAccept = resolve;
+    });
+    const sharedJoinProject = vi.fn();
+    const client = {
+      current: () => ({
+        connection: { backendId: backend, connectedAt: null },
+        navigation: { personalOwner: { id: ownerId }, teamPrincipal: null }
+      }),
+      currentRemoteUrl: () => `https://${backend}.example.test`,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      listMyInvitations: async () => (backend === "old" ? [invite] : []),
+      decideInvitation: () => pendingAccept
+    } as unknown as CollaborationRendererClient;
+    const render = async () =>
+      root.render(
+        <NowView
+          projects={[]}
+          approvals={[]}
+          ownerId={ownerId}
+          profileKey={`${backend}||https://${backend}.example.test`}
+          invitationsClient={client}
+          projectsApi={{ sharedJoinProject } as unknown as ProjectsDesktopApi}
+          onSelectProject={vi.fn()}
+          onSelectConversation={vi.fn()}
+        />
+      );
+    await act(async () => render());
+    await act(async () =>
+      (
+        container.querySelector(
+          ".hq-now__invitation-actions button:last-child"
+        ) as HTMLButtonElement
+      ).click()
+    );
+    await act(async () => {
+      backend = "new";
+      for (const listener of listeners) listener();
+      await render();
+    });
+    await act(async () => finishAccept());
+    expect(sharedJoinProject).not.toHaveBeenCalled();
+  });
+
   it("clears invitations on backend switch and rejects a delayed old response", async () => {
     const ownerId = "00000000-0000-4000-8000-000000000001";
     const invite: CollaborationMyInvitation = {

@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
+import { projectSchema } from "@koed/shared/project-contract";
 import {
   workspaceProjectCopySchema,
   projectSourceSchema,
@@ -175,6 +177,29 @@ const futurePolicyPageSchema = z
         message: "Invalid future Project policy page"
       });
   });
+const futureSourceCandidatesSchema = z
+  .object({
+    entries: z
+      .array(
+        z
+          .object({
+            sessionId: z.uuid(),
+            mappingRevision: z.number().int().positive()
+          })
+          .strict()
+      )
+      .max(20),
+    hasMore: z.boolean(),
+    nextCursor: policyCursor.nullable()
+  })
+  .strict()
+  .superRefine((page, context) => {
+    if (page.hasMore !== (page.nextCursor !== null))
+      context.addIssue({
+        code: "custom",
+        message: "Invalid future Project source page"
+      });
+  });
 
 const snapshotSchema = z
   .object(workspaceProjectCopySchema.shape)
@@ -212,6 +237,76 @@ export const createWorkspaceProjectPersonalClient = (
       | "share_grant_management"
   ) => string
 ) => ({
+  async createJoinedProject(
+    workspaceProjectId: string,
+    teamBackendId: string,
+    name: string
+  ) {
+    // The Personal server scopes this key to its authenticated owner. A retry
+    // after Team join or an interrupted local confirm returns the same empty
+    // Project; the join-confirm endpoint rejects any occupied local content.
+    const idempotencyKey = `joined-workspace-project:${createHash("sha256")
+      .update(JSON.stringify([teamBackendId, workspaceProjectId]))
+      .digest("hex")}`;
+    return projectSchema.parse(
+      await sendPersonal("/v1/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name,
+          idempotencyKey
+        })
+      })
+    );
+  },
+  async confirmJoinedProject(
+    personalProjectId: string,
+    workspaceProjectId: string,
+    teamBackendId: string,
+    expectedPersonalProjectVersion: number
+  ) {
+    const receipt = z
+      .object({
+        projectId: z.uuid(),
+        version: z.number().int().positive(),
+        linked: z.literal(true)
+      })
+      .strict()
+      .parse(
+        await sendPersonal(
+          `/v1/local-edge/projects/${encodeURIComponent(personalProjectId)}/workspace-project-join-confirm`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-koed-team-client-credential": teamClientAuthorization(
+                teamBackendId,
+                "team_workspace_read"
+              )
+            },
+            body: JSON.stringify({
+              expectedPersonalProjectVersion,
+              teamBackendId,
+              workspaceProjectId
+            })
+          }
+        )
+      );
+    const result = projectSchema.parse(
+      await sendPersonal(
+        `/v1/projects/${encodeURIComponent(personalProjectId)}`
+      )
+    );
+    if (
+      receipt.projectId !== personalProjectId ||
+      receipt.version !== result.version ||
+      result.id !== personalProjectId ||
+      result.workspaceProjectId !== workspaceProjectId ||
+      result.teamBackendId !== teamBackendId
+    )
+      throw new Error("Joined Personal Project identity changed");
+    return result;
+  },
   async activeProjectSharePolicies(cursor?: string, signal?: AbortSignal) {
     return activePolicyProjectsSchema.parse(
       await sendPersonal(
@@ -220,11 +315,43 @@ export const createWorkspaceProjectPersonalClient = (
       )
     );
   },
+  async futureProjectShareSourceCandidates(
+    projectId: string,
+    teamBackendId: string,
+    workspaceProjectId: string,
+    expectedPolicyVersion: number,
+    cursor?: string,
+    signal?: AbortSignal
+  ) {
+    return futureSourceCandidatesSchema.parse(
+      await sendPersonal(
+        `/v1/local-edge/projects/${encodeURIComponent(projectId)}/project-share-policy/future-source-candidates`,
+        {
+          method: "POST",
+          signal,
+          headers: {
+            "content-type": "application/json",
+            "x-koed-team-client-credential": teamClientAuthorization(
+              teamBackendId,
+              "share_grant_management"
+            )
+          },
+          body: JSON.stringify({
+            teamBackendId,
+            workspaceProjectId,
+            expectedPolicyVersion,
+            ...(cursor ? { cursor } : {})
+          })
+        }
+      )
+    );
+  },
   async reconcileFutureProjectSharePolicy(
     projectId: string,
     teamBackendId: string,
     workspaceProjectId: string,
     expectedPolicyVersion: number,
+    preparedSources: Array<{ sessionId: string; mappingRevision: number }>,
     cursor?: string,
     signal?: AbortSignal
   ) {
@@ -245,6 +372,7 @@ export const createWorkspaceProjectPersonalClient = (
             teamBackendId,
             workspaceProjectId,
             expectedPolicyVersion,
+            preparedSources,
             ...(cursor ? { cursor } : {})
           })
         }

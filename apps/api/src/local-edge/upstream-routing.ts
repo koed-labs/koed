@@ -521,7 +521,7 @@ export const assertUpstreamOperationPathAllowed = (
         /^\/v1\/teams\/[0-9a-f-]{36}\/workspaces\/[0-9a-f-]{36}\/share-target$/i.test(
           pathname
         ) ||
-        /^\/v1\/workspace-projects\/[0-9a-f-]{36}(?:\/(?:work-items|sources|members|lifecycle|link-proof|tombstone-proof))?$/i.test(
+        /^\/v1\/workspace-projects\/[0-9a-f-]{36}(?:\/(?:work-items|sources|members|lifecycle|link-proof|member-link-proof|tombstone-proof))?$/i.test(
           pathname
         ) ||
         /^\/v1\/workspace-projects\/[0-9a-f-]{36}\/activity\/summary$/i.test(

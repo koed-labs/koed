@@ -204,6 +204,13 @@ export const projectsRequestSchema = z.discriminatedUnion("operation", [
     .strict(),
   z
     .object({
+      operation: z.literal("sharedJoinProject"),
+      workspaceProjectId: z.uuid(),
+      teamBackendId: z.string().min(1)
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal("sharedTeamLeaveStage"),
       teamBackendId: z.string().min(1),
       teamId: z.uuid()
@@ -539,6 +546,12 @@ export const projectsResultSchema = z.discriminatedUnion("operation", [
     .object({
       operation: z.literal("sharedFirstShare"),
       project: workspaceProjectRecordSchema
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("sharedJoinProject"),
+      project: projectSchema
     })
     .strict(),
   z
@@ -906,6 +919,10 @@ export interface ProjectsDesktopApi {
     teamBackendId: string,
     value: z.infer<typeof workspaceProjectCreateSchema>
   ): Promise<z.infer<typeof workspaceProjectRecordSchema>>;
+  sharedJoinProject?(
+    workspaceProjectId: string,
+    teamBackendId: string
+  ): Promise<z.infer<typeof projectSchema>>;
   sharedTeamLeaveStage?(
     teamBackendId: string,
     teamId: string

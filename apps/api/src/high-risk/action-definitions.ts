@@ -1,6 +1,7 @@
 import type {
   MemorySourceRepository,
-  ProjectSharePolicyRepository
+  ProjectSharePolicyRepository,
+  SharedMemoryRepository
 } from "@koed/db";
 
 import type { ActionApprovalPolicy } from "./approval-policy.js";
@@ -17,6 +18,7 @@ import { managedSourceActionDefinitions } from "./managed-source-action-definiti
 import { governanceActionDefinitions } from "./governance-action-definitions.js";
 import { workspaceProjectActionDefinitions } from "./workspace-project-action-definitions.js";
 import { projectSharePolicyActionDefinitions } from "./project-share-policy-action-definitions.js";
+import { curatedPolicyOptInActionDefinitions } from "./curated-policy-opt-in-action-definitions.js";
 
 type OperationFamily =
   | "admin"
@@ -64,6 +66,10 @@ interface HighRiskActionAdmission {
 interface HighRiskActionDefinitionAdmissionInput {
   repository: HighRiskActionDefinitionRepository;
   projectSharePolicyRepository?: ProjectSharePolicyRepository | null;
+  sharedMemoryRepository?: Pick<
+    SharedMemoryRepository,
+    "getCuratedPolicyOptInReview"
+  > | null;
   userId: string;
   upstreamBackendId?: string;
   currentDeviceInstanceId?: string;
@@ -91,6 +97,7 @@ export const highRiskActionDefinitions: Record<
   ...governanceActionDefinitions,
   ...workspaceProjectActionDefinitions,
   ...projectSharePolicyActionDefinitions,
+  ...curatedPolicyOptInActionDefinitions,
   "team.invite.create": teamInviteCreateActionDefinition
 };
 

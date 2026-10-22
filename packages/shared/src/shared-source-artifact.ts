@@ -3,6 +3,10 @@ import {
   crossIdentitySyncDigest
 } from "./cross-identity-sync.js";
 import type { SharedMemorySourceRef } from "./shared-memory-source.js";
+import type {
+  SignedCuratedSourceMaterialV1,
+  SignedCuratedSourceUpdateV1
+} from "./curated-source-material.js";
 
 export const SHARED_SOURCE_ARTIFACT_SCHEMA_VERSION = 1 as const;
 export const SHARED_SOURCE_PREVIEW_SCHEMA_VERSION = 1 as const;
@@ -95,6 +99,10 @@ export interface SharedSourceArtifactV1 {
   manifestHash: string;
   items: SharedSourceArtifactItemV1[];
   sourceContentHash: string;
+  /** Exact Personal-host attestation for a derived Curated representation. */
+  curatedSourceMaterial?: SignedCuratedSourceMaterialV1;
+  /** Signed later generation under the same active continuous consent. */
+  curatedSourceUpdate?: SignedCuratedSourceUpdateV1;
   artifactHash: string;
 }
 

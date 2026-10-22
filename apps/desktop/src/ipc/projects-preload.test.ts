@@ -4,6 +4,46 @@ import { createProjectsPreloadApi } from "./projects-preload.js";
 import { projectsCommandChannel } from "./projects-protocol.js";
 
 describe("Projects preload", () => {
+  it("requires the exact linked Personal Project after a Team join", async () => {
+    const workspaceProjectId = randomUUID();
+    const now = "2026-10-21T00:00:00.000Z";
+    const project = {
+      id: randomUUID(),
+      name: "Joined Project",
+      key: "JOIN",
+      folderPath: null,
+      lifecycle: "active",
+      deletionPhase: null,
+      deleteBatchId: null,
+      deletedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      version: 2,
+      teamBackendId: "team-backend",
+      teamWorkspaceId: randomUUID(),
+      workspaceProjectId
+    };
+    const invoke = vi.fn(async () => ({
+      operation: "sharedJoinProject",
+      project
+    }));
+    const api = createProjectsPreloadApi(invoke);
+    await expect(
+      api.sharedJoinProject!(workspaceProjectId, "team-backend")
+    ).resolves.toEqual(project);
+    expect(invoke).toHaveBeenCalledWith(projectsCommandChannel, {
+      operation: "sharedJoinProject",
+      workspaceProjectId,
+      teamBackendId: "team-backend"
+    });
+    invoke.mockResolvedValueOnce({
+      operation: "sharedJoinProject",
+      project: { ...project, workspaceProjectId: randomUUID() }
+    });
+    await expect(
+      api.sharedJoinProject!(workspaceProjectId, "team-backend")
+    ).rejects.toThrow("joined Project identity");
+  });
   it("rejects a cross-Project activity result before the renderer can use it", async () => {
     const id = randomUUID();
     const other = randomUUID();

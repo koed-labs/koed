@@ -216,6 +216,13 @@ const fixture = () => {
     state: "staged" as const,
     pendingShareId: randomUUID()
   }));
+  const prepareInitialSource = vi.fn<
+    (
+      ownerUserId: string,
+      teamBackendId: string,
+      sessionId: string
+    ) => Promise<void>
+  >(async () => undefined);
   const client = createProjectSharePolicyClient({
     loadContext,
     loadLink,
@@ -226,6 +233,7 @@ const fixture = () => {
     startAttempt,
     pendingAttempts,
     finalizeAttempt,
+    prepareInitialSource,
     stageLocal
   });
   return {
@@ -239,6 +247,7 @@ const fixture = () => {
       pending = value;
     },
     stageLocal,
+    prepareInitialSource,
     loadManifest,
     loadLocalState,
     setContext: (value: typeof context) => loadContext.mockResolvedValue(value),
@@ -437,6 +446,17 @@ describe("Project summary policy desktop boundary", () => {
       ids.workspaceProject,
       ids.session,
       1
+    );
+    expect(item.prepareInitialSource).toHaveBeenCalledExactlyOnceWith(
+      ids.owner,
+      ids.backend,
+      ids.session
+    );
+    expect(item.consumeLocal.mock.invocationCallOrder[0]).toBeLessThan(
+      item.prepareInitialSource.mock.invocationCallOrder[0]!
+    );
+    expect(item.prepareInitialSource.mock.invocationCallOrder[0]).toBeLessThan(
+      item.stageLocal.mock.invocationCallOrder[0]!
     );
     expect(item.consumeLocal).toHaveBeenCalledWith(
       ids.personal,
@@ -694,6 +714,36 @@ describe("Project summary policy desktop boundary", () => {
       ]
     });
     expect(item.stageLocal).not.toHaveBeenCalled();
+    expect(item.prepareInitialSource).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the approved policy after source preparation before staging", async () => {
+    const item = fixture();
+    item.setPolicy(policy("active", 1));
+    item.prepareInitialSource.mockImplementationOnce(async () => {
+      item.setPolicy(policy("revoked", 2));
+    });
+    await expect(item.client.stageInitial(ids.personal)).rejects.toThrow(
+      "policy changed"
+    );
+    expect(item.prepareInitialSource).toHaveBeenCalledExactlyOnceWith(
+      ids.owner,
+      ids.backend,
+      ids.session
+    );
+    expect(item.stageLocal).not.toHaveBeenCalled();
+  });
+
+  it("does not stage when local source preparation fails", async () => {
+    const item = fixture();
+    item.setPolicy(policy("active", 1));
+    item.prepareInitialSource.mockRejectedValueOnce(
+      new Error("source preparation unavailable")
+    );
+    await expect(item.client.stageInitial(ids.personal)).rejects.toThrow(
+      "source preparation unavailable"
+    );
+    expect(item.stageLocal).not.toHaveBeenCalled();
   });
 
   it("aborts a stage when Team policy authority changes before the effect", async () => {
@@ -712,6 +762,7 @@ describe("Project summary policy desktop boundary", () => {
     const item = fixture();
     item.setPolicy(policy("active", 1));
     item.sendPolicy
+      .mockResolvedValueOnce(policy("active", 1))
       .mockResolvedValueOnce(policy("active", 1))
       .mockResolvedValueOnce(policy("active", 1))
       .mockResolvedValueOnce(policy("revoked", 2));

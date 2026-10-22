@@ -5,6 +5,15 @@ the deterministic Team SaaS fixture as the known data world, then separates
 what is already automated from the gates that still need a human or staging
 environment.
 
+## HQ two-user contract
+
+The [HQ two-user integration](hq-two-user-integration.md) runs a separate
+`team_self_hosted` Team backend and two Personal backends over real HTTP. Use
+`pnpm test:hq-two-user` with its explicit disposable database prerequisite.
+It creates its own child databases and does not reset the Team SaaS fixture.
+This command is a separate CI requirement; it does not replace the launch
+validation gates below.
+
 ## Commands
 
 Run from the repository root.

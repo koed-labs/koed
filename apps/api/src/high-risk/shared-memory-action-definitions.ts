@@ -145,6 +145,7 @@ export const bindSharedMemoryCandidatePreviewOperation = (
     sourceCapabilities: intent.sourceCapabilities,
     logicalMemoryId: intent.logicalMemoryId,
     candidateHash: intent.candidateHash,
+    curatedMaterialCommitmentHash: intent.curatedMaterialCommitmentHash,
     sourceRevision: intent.sourceRevision,
     itemCount: intent.itemCount,
     excludedItemCount: intent.excludedItemCount,

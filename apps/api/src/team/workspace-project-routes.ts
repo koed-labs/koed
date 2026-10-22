@@ -313,6 +313,26 @@ export const registerWorkspaceProjectRoutes = (
     }
   );
   app.get(
+    "/v1/workspace-projects/:projectId/member-link-proof",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await input.auth.authenticateDeviceCredential(request);
+      if (!actor.credential.operationFamilies.includes("team_workspace_read"))
+        throw Object.assign(
+          new Error("Team Workspace read credential required"),
+          {
+            statusCode: 403
+          }
+        );
+      const { projectId } = projectParams.parse(request.params);
+      try {
+        return await repository().getMemberLinkProof(actor.user.id, projectId);
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
     "/v1/workspace-projects/:projectId/tombstone-proof",
     { preHandler: input.readRateLimit },
     async (request, reply) => {

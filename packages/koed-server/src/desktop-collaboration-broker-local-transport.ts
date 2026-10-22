@@ -112,8 +112,9 @@ const commandRequiresTeamBackend = (
     case "collaboration.reconnect_backend":
     case "collaboration.disconnect_backend":
     case "collaboration.create_personal_channel":
-    case "collaboration.preview_shared_memory_candidate":
       return false;
+    case "collaboration.preview_shared_memory_candidate":
+      return command.input.curatedTarget !== undefined;
     case "collaboration.select":
       return isTeamCollaborationSelection(command.input.selection);
     case "collaboration.rename_thread":

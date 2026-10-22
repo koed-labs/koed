@@ -9,6 +9,7 @@ import type {
   CuratedMemoryRepository
 } from "./curated-memory-repository.js";
 import type { CuratedMemoryRepositoryContext } from "./curated-memory-support.js";
+import { sessionExactCuratedAssertionSql } from "./approval-activity-sql.js";
 
 type OperationRow = {
   id: string;
@@ -188,8 +189,25 @@ export const createCuratedMemoryClassificationMethods = ({
              on enrollment.id=binding.enrollment_id
             and enrollment.local_owner_user_id=$1
           where local_source.owner_user_id=$1
-          order by enrollment.backend_id,local_source.logical_memory_id`,
-        [actor.userId]
+         union
+         select distinct enrollment.backend_id,local_source.local_session_id,
+                local_source.logical_memory_id
+           from collaboration_pending_share_source_work work
+           join collaboration_shared_memory_enrollments enrollment
+             on enrollment.id=work.enrollment_id
+            and enrollment.local_owner_user_id=$1
+            and enrollment.revoked_at is null
+           join local_captured_session_logical_memories local_source
+             on local_source.logical_memory_id=work.logical_memory_id
+            and local_source.owner_user_id=$1
+           join curated_memory_assertions cma
+             on cma.id=$2 and cma.owner_user_id=$1
+          where work.include_curated_memory=true
+            and work.consent_id is not null
+            and work.curated_material_commitment_hash is not null
+            and ${sessionExactCuratedAssertionSql("$1", "local_source.local_session_id")}
+          order by backend_id,logical_memory_id`,
+        [actor.userId, input.assertionId]
       );
       const groups = new Map<
         string,
@@ -478,8 +496,25 @@ export const createCuratedMemoryClassificationMethods = ({
              on binding.logical_memory_id=source.logical_memory_id
            join collaboration_shared_memory_enrollments enrollment
              on enrollment.id=binding.enrollment_id
-          where source.owner_user_id=$1 and enrollment.local_owner_user_id=$1`,
-        [actor.userId]
+          where source.owner_user_id=$1 and enrollment.local_owner_user_id=$1
+         union
+         select distinct enrollment.backend_id,source.logical_memory_id,
+                source.local_session_id
+           from collaboration_pending_share_source_work work
+           join collaboration_shared_memory_enrollments enrollment
+             on enrollment.id=work.enrollment_id
+            and enrollment.local_owner_user_id=$1
+            and enrollment.revoked_at is null
+           join local_captured_session_logical_memories source
+             on source.logical_memory_id=work.logical_memory_id
+            and source.owner_user_id=$1
+           join curated_memory_assertions cma
+             on cma.id=$2 and cma.owner_user_id=$1
+          where work.include_curated_memory=true
+            and work.consent_id is not null
+            and work.curated_material_commitment_hash is not null
+            and ${sessionExactCuratedAssertionSql("$1", "source.local_session_id")}`,
+        [actor.userId, row.assertion_id]
       );
       if (row.target_project_id)
         await assertNonConversationProjectSources(

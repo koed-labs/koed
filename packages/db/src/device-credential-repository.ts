@@ -1,4 +1,5 @@
 import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { curatedSourceAttestationFingerprint } from "@koed/shared";
 import { auditEventValues } from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
 import {
@@ -295,6 +296,52 @@ const validateCredentialKeyId = (value: string): string => {
   return credentialKeyId;
 };
 
+const curatedAttestationFields = [
+  "curatedSourceAttestationKeyId",
+  "curatedSourceAttestationPublicKey",
+  "curatedSourceAttestationFingerprint"
+] as const;
+
+const hasCuratedAttestationPin = (metadata: Record<string, unknown>): boolean =>
+  curatedAttestationFields.some((field) => metadata[field] !== undefined);
+
+const assertCuratedAttestationPin = (
+  metadata: Record<string, unknown>
+): void => {
+  if (!hasCuratedAttestationPin(metadata)) return;
+  const keyId = metadata.curatedSourceAttestationKeyId;
+  const publicKey = metadata.curatedSourceAttestationPublicKey;
+  const fingerprint = metadata.curatedSourceAttestationFingerprint;
+  if (
+    typeof keyId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      keyId
+    ) ||
+    typeof publicKey !== "string" ||
+    typeof fingerprint !== "string" ||
+    !/^[0-9a-f]{64}$/.test(fingerprint)
+  ) {
+    throw Object.assign(
+      new Error("Curated source attestation pin is invalid"),
+      {
+        statusCode: 400
+      }
+    );
+  }
+  try {
+    if (curatedSourceAttestationFingerprint(publicKey) !== fingerprint) {
+      throw new Error("fingerprint mismatch");
+    }
+  } catch {
+    throw Object.assign(
+      new Error("Curated source attestation pin is invalid"),
+      {
+        statusCode: 400
+      }
+    );
+  }
+};
+
 const assertRotationSourceIdentity = (
   rotationLineageId: string | null,
   activeMetadata: Record<string, unknown> | undefined,
@@ -308,6 +355,18 @@ const assertRotationSourceIdentity = (
   ) {
     throw Object.assign(
       new Error("Device credential rotation cannot change source identity"),
+      { statusCode: 403 }
+    );
+  }
+  if (
+    curatedAttestationFields.some(
+      (field) => activeMetadata[field] !== nextMetadata[field]
+    )
+  ) {
+    throw Object.assign(
+      new Error(
+        "Device credential rotation cannot change Curated source attestation"
+      ),
       { statusCode: 403 }
     );
   }
@@ -326,6 +385,7 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
     metadata?: Record<string, unknown>;
     expiresAt: Date;
   }): Promise<DeviceEnrollmentChallengeRecord> {
+    assertCuratedAttestationPin(input.metadata ?? {});
     const rows = await db
       .insert(deviceEnrollmentChallenges)
       .values({
@@ -397,6 +457,14 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
       if (!challenge) {
         return null;
       }
+      if (hasCuratedAttestationPin(challenge.metadata)) {
+        throw Object.assign(
+          new Error(
+            "Curated source attestation requires browser-approved enrollment"
+          ),
+          { statusCode: 403 }
+        );
+      }
       const operationFamilies = resolveCredentialOperationFamilies(
         challenge.requestedOperationFamilies,
         input.operationFamilies
@@ -438,6 +506,7 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         );
       }
       const metadata = input.metadata ?? challenge.metadata;
+      assertCuratedAttestationPin(metadata);
       assertRotationSourceIdentity(
         challenge.rotationLineageId,
         activeRows[0]?.metadata,
@@ -624,6 +693,17 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         );
       }
       const metadata = input.metadata ?? challenge.metadata;
+      assertCuratedAttestationPin(metadata);
+      if (
+        curatedAttestationFields.some(
+          (field) => metadata[field] !== challenge.metadata[field]
+        )
+      ) {
+        throw Object.assign(
+          new Error("Curated source attestation must match browser review"),
+          { statusCode: 403 }
+        );
+      }
       assertRotationSourceIdentity(
         challenge.rotationLineageId,
         activeRows[0]?.metadata,

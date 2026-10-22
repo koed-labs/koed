@@ -225,6 +225,42 @@ const withHashes = (
   requestHash: sharedMemoryGrantManagementRequestHash(input)
 });
 
+export const sharedMemoryCuratedPolicyOptInBinding = (input: {
+  action:
+    | "shared_memory.team_policy.curated_opt_in"
+    | "shared_memory.workspace_policy.curated_opt_in";
+  teamId: string;
+  teamWorkspaceId?: string;
+  referenceId: string;
+  mutationId: string;
+  policyId: string;
+  expectedCurrentVersion: number;
+  maximumFidelity: SharedMemoryFidelityCeiling;
+}): SharedMemoryActionGrantBinding => {
+  const workspace =
+    input.action === "shared_memory.workspace_policy.curated_opt_in";
+  if (workspace !== Boolean(input.teamWorkspaceId))
+    throw new TypeError("Exact Curated policy scope is required");
+  return withHashes({
+    operationFamily: "share_grant_management",
+    action: input.action,
+    teamId: input.teamId,
+    targetId: workspace ? input.teamWorkspaceId! : input.teamId,
+    method: "POST",
+    path: workspace
+      ? `/v1/shared-memory/teams/${input.teamId}/workspaces/${input.teamWorkspaceId}/policy/curated-opt-in`
+      : `/v1/shared-memory/teams/${input.teamId}/policy/curated-opt-in`,
+    body: {
+      mutationId: input.mutationId,
+      policyId: input.policyId,
+      expectedCurrentVersion: input.expectedCurrentVersion,
+      maximumFidelity: input.maximumFidelity,
+      includeCuratedMemory: true,
+      authority: authorityBody(input.referenceId)
+    }
+  });
+};
+
 const shareIntentScope = <T extends { referenceId: string }>(
   input: T
 ): string => {
@@ -280,6 +316,7 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
   sourceCapabilities: readonly SharedMemoryRepresentation[];
   logicalMemoryId: string;
   candidateHash: string;
+  curatedMaterialCommitmentHash?: string;
   sourceRevision: number;
   itemCount: number;
   byteCount: number;
@@ -308,6 +345,9 @@ export const sharedMemoryCandidatePreviewActionGrantBinding = (input: {
       sourceCapabilities: input.sourceCapabilities,
       logicalMemoryId: input.logicalMemoryId,
       candidateHash: input.candidateHash,
+      ...(input.curatedMaterialCommitmentHash
+        ? { curatedMaterialCommitmentHash: input.curatedMaterialCommitmentHash }
+        : {}),
       sourceRevision: input.sourceRevision,
       itemCount: input.itemCount,
       byteCount: input.byteCount,

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import assert from "node:assert/strict";
 
 import {
   COLLABORATION_CONTRACT_VERSION,
@@ -444,6 +445,9 @@ const createFixture = (
     loadLocalCandidatePreview?: NonNullable<
       CollaborationSharedMemoryControlOptions["loadLocalCandidatePreview"]
     >;
+    loadCuratedCandidateCommitment?: NonNullable<
+      CollaborationSharedMemoryControlOptions["loadCuratedCandidateCommitment"]
+    >;
     resolveCandidateSourceIdentity?: NonNullable<
       CollaborationSharedMemoryControlOptions["resolveCandidateSourceIdentity"]
     >;
@@ -489,6 +493,11 @@ const createFixture = (
     >;
     sourceRevision: number;
   }> = [];
+  const curatedSourceWork: Array<
+    Parameters<
+      CollaborationSharedMemoryAuthorityStore["persistPendingShareSourceWork"]
+    >[0]
+  > = [];
   const previews = new Map<string, CollaborationPersistedSharedMemoryPreview>();
   const consents = new Map<string, CollaborationPersistedSharedMemoryConsent>();
   const grants = new Map<string, CollaborationPersistedSharedMemoryGrant>();
@@ -619,6 +628,7 @@ const createFixture = (
       );
     },
     async persistPendingShareSourceWork(input) {
+      if (input.includeCuratedMemory) curatedSourceWork.push(input);
       pendingSourceWork.push({
         pendingShareId: input.pendingShareId,
         mutationId: input.mutationId,
@@ -739,6 +749,12 @@ const createFixture = (
             representation: recorded.body?.activationRepresentation,
             maximumFidelity: recorded.body?.maximumFidelity,
             includeCuratedMemory: recorded.body?.includeCuratedMemory,
+            ...(recorded.body?.curatedMaterialCommitmentHash
+              ? {
+                  curatedMaterialCommitmentHash:
+                    recorded.body.curatedMaterialCommitmentHash
+                }
+              : {}),
             sourceRevision: 4,
             sourceHash: hash,
             redactedContentHash: hash,
@@ -1012,6 +1028,17 @@ const createFixture = (
             grantVersion: 2
           })
         };
+      } else if (
+        recorded.method === "GET" &&
+        url.pathname.startsWith("/v1/workspace-projects/")
+      ) {
+        response = {
+          id: url.pathname.split("/").at(-1),
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          lifecycle: "active",
+          copiedAt: iso
+        };
       } else if (recorded.method === "GET") {
         const remote = overrides.remoteRead ?? defaultRead;
         const direction = url.searchParams.get("direction");
@@ -1062,6 +1089,7 @@ const createFixture = (
     prepareLocalLcmRepresentation:
       overrides.prepareLocalLcmRepresentation ?? (async () => "ready"),
     loadLocalCandidatePreview: overrides.loadLocalCandidatePreview,
+    loadCuratedCandidateCommitment: overrides.loadCuratedCandidateCommitment,
     loadPersonalNoteCandidatePreview:
       overrides.loadPersonalNoteCandidatePreview,
     resolveCandidateSourceIdentity:
@@ -1150,6 +1178,7 @@ const createFixture = (
     enrollmentBindings,
     grantPersistenceModes,
     pendingSourceWork,
+    curatedSourceWork,
     requeueLatestContinuousPersonalNoteAdvancementWork,
     resolvePreviewTargets,
     readAuthoritativeGrants
@@ -1839,6 +1868,146 @@ describe("collaboration Shared Memory control", () => {
       expect.stringMatching(/device-credentials\/status$/),
       "/v1/shared-memory/candidate-previews"
     ]);
+  });
+
+  it("preserves an exact Curated commitment from candidate through approved preview and source work", async () => {
+    const commitmentHash = "e".repeat(64);
+    let replayActivated = false;
+    const candidate = {
+      source: capturedSource,
+      sourceCapabilities: ["memory_events" as const],
+      activationRepresentation: "memory_events" as const,
+      mode: "continuous" as const,
+      expiresAt: null,
+      logicalMemoryId: ids.logicalMemory,
+      sourceRevision: 4,
+      candidateHash: hash,
+      itemCount: 1,
+      excludedItemCount: 0,
+      manifest: [{ sourceId: ids.source, revisionHash: hashB }],
+      byteCount: 128,
+      items: [
+        {
+          id: ids.source,
+          representation: "memory_events" as const,
+          sequence: 1,
+          occurredAt: iso,
+          sourceItems: [
+            {
+              id: ids.source,
+              sourceKind: "agent_message" as const,
+              occurredAt: iso,
+              body: "reviewed semantic candidate",
+              actorName: null,
+              toolName: null,
+              toolCallId: null
+            }
+          ]
+        }
+      ]
+    };
+    const fixture = createFixture({
+      previewTarget: false,
+      loadLocalCandidatePreview: async () => candidate,
+      loadCuratedCandidateCommitment: async () => ({
+        hash: commitmentHash,
+        keyId: ids.localOwner,
+        fingerprint: "f".repeat(64),
+        workspaceProjectId: uuidFor(171)
+      }),
+      mutateResponse: (request, response) => {
+        if (
+          !replayActivated ||
+          request.method !== "POST" ||
+          !request.pathname.endsWith("/v1/shared-memory/pending-shares")
+        )
+          return response;
+        const pendingShare = response.pendingShare as Record<string, unknown>;
+        return {
+          pendingShare: {
+            ...pendingShare,
+            state: "activated",
+            stage: "complete",
+            workspaceAccessState: "active",
+            sourceUpdateState: "active",
+            activatedAt: iso,
+            grantId: ids.grant,
+            grantVersion: 1
+          }
+        };
+      }
+    });
+    const preview = await fixture.control.dispatch(
+      {
+        ...previewCommand(),
+        input: {
+          ...previewCommand().input,
+          sourceCapabilities: candidate.sourceCapabilities,
+          includeCuratedMemory: true,
+          curatedMaterialCommitmentHash: commitmentHash,
+          candidate: {
+            source: capturedSource,
+            sourceCapabilities: candidate.sourceCapabilities,
+            activationRepresentation: candidate.activationRepresentation,
+            candidateHash: candidate.candidateHash,
+            sourceRevision: candidate.sourceRevision,
+            itemCount: candidate.itemCount,
+            excludedItemCount: candidate.excludedItemCount,
+            manifest: candidate.manifest,
+            byteCount: candidate.byteCount,
+            mode: candidate.mode,
+            expiresAt: candidate.expiresAt,
+            curatedMaterialCommitmentHash: commitmentHash,
+            curatedSourceAttestationKeyId: ids.localOwner,
+            curatedSourceAttestationFingerprint: "f".repeat(64)
+          }
+        }
+      },
+      context()
+    );
+    expect(preview).toMatchObject({
+      ok: true,
+      data: {
+        preview: {
+          previewHash: hashB,
+          includeCuratedMemory: true,
+          curatedMaterialCommitmentHash: commitmentHash
+        }
+      }
+    });
+    expect(fixture.previews.get(hashB)?.curatedMaterialCommitmentHash).toBe(
+      commitmentHash
+    );
+    fixture.consents.delete(ids.consent);
+    const command = {
+      ...shareCommand(),
+      input: {
+        ...shareCommand().input,
+        sourceCapabilities: candidate.sourceCapabilities,
+        includeCuratedMemory: true,
+        previewHash: hashB
+      }
+    } as const;
+    const share = await fixture.control.dispatch(command, context());
+    expect(share).toMatchObject({ ok: true });
+    expect(fixture.curatedSourceWork).toMatchObject([
+      {
+        consentId: ids.consent,
+        previewHash: hashB,
+        teamWorkspaceId: ids.workspace,
+        includeCuratedMemory: true,
+        curatedMaterialCommitmentHash: commitmentHash
+      }
+    ]);
+    replayActivated = true;
+    const replay = await fixture.control.dispatch(command, context());
+    assert.ok(replay);
+    expect(replay.ok, JSON.stringify(replay)).toBe(true);
+    expect(replay).toMatchObject({
+      ok: true,
+      data: { pendingShare: { state: "activated", grantId: ids.grant } }
+    });
+    expect(fixture.curatedSourceWork).toHaveLength(2);
   });
 
   it("rejects candidate execution when the backend lacks the source-admission protocol", async () => {

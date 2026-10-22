@@ -787,11 +787,19 @@ export const createMemoryAnswerTaskRepository = (
           throw new Error("Final Memory Question query does not match task");
         }
         const snapshot = acceptedInput as Record<string, unknown>;
+        // Managed Project recall derives its Project selector from the live
+        // owner-bound execution below. The executor discards caller-supplied
+        // Session and search-domain selectors for this branch.
+        const expectedSearchDomain = snapshot.managed_project_recall
+          ? "project"
+          : snapshot.search_domain;
+        const expectedSessionId = snapshot.managed_project_recall
+          ? null
+          : (snapshot.session_id ?? null);
         if (
-          (snapshot.search_domain !== undefined &&
-            snapshot.search_domain !== input.finalQuestion.searchDomain) ||
-          (snapshot.session_id ?? null) !==
-            (input.finalQuestion.sessionId ?? null)
+          (expectedSearchDomain !== undefined &&
+            expectedSearchDomain !== input.finalQuestion.searchDomain) ||
+          expectedSessionId !== (input.finalQuestion.sessionId ?? null)
         ) {
           throw new Error(
             "Final Memory Question search scope does not match task"

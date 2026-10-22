@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -766,6 +767,21 @@ describe("local edge upstream routing", () => {
   });
 
   it("keeps upstream proxy paths matched to the authorized operation family", () => {
+    const memberProof = `/v1/workspace-projects/${randomUUID()}/member-link-proof`;
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_workspace_read",
+        "GET",
+        memberProof
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertUpstreamOperationPathAllowed(
+        "team_workspace_write",
+        "GET",
+        memberProof
+      )
+    ).toThrow("not allowed for operation family");
     for (const [method, path] of [
       ["POST", "/v1/memory/search"],
       ["POST", "/v1/memory/answer?team_workspace_id=workspace"],

@@ -3,6 +3,7 @@ import type {
   HighRiskActionGrantBindingRecord,
   MemorySourceRepository,
   ProjectSharePolicyRepository,
+  SharedMemoryRepository,
   UserSessionContext
 } from "@koed/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -68,6 +69,10 @@ type HighRiskRepository = Pick<
 export interface HighRiskRouteContext {
   requireRepository(): HighRiskRepository;
   projectSharePolicyRepository?: ProjectSharePolicyRepository | null;
+  sharedMemoryRepository?: Pick<
+    SharedMemoryRepository,
+    "getCuratedPolicyOptInReview"
+  > | null;
   authenticateSessionContext: AuthHelpers["authenticateSessionContext"];
   authenticateDeviceCredential: AuthHelpers["authenticateDeviceCredential"];
   hashSecret: HashSecret;
@@ -220,6 +225,7 @@ export const registerHighRiskRoutes = (
       const admission = await admitHighRiskActionGrant({
         repository,
         projectSharePolicyRepository: context.projectSharePolicyRepository,
+        sharedMemoryRepository: context.sharedMemoryRepository,
         userId: auth.user.id,
         upstreamBackendId: auth.credential.upstreamBackendId,
         currentDeviceInstanceId: auth.credential.deviceInstanceId,

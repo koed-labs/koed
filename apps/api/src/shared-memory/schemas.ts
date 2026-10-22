@@ -284,6 +284,20 @@ export const putSharedMemoryPolicySchema = z
   })
   .strict();
 
+export const curatedPolicyOptInSchema = z
+  .object({
+    mutationId: uuidSchema,
+    policyId: uuidSchema,
+    expectedCurrentVersion: z.number().int().safe().positive(),
+    maximumFidelity: sharedMemoryFidelityCeilingSchema,
+    includeCuratedMemory: z.literal(true),
+    authority: sharedMemoryAuthoritySchema.refine(
+      (authority) => authority.source === "device_action_grant",
+      "A device Action Grant is required"
+    )
+  })
+  .strict();
+
 export const createSharedMemoryPreviewSchema = z
   .object({
     source: sharedMemorySourceRefSchema,
@@ -312,6 +326,7 @@ export const createSharedMemoryCandidatePreviewSchema = z
     sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
     logicalMemoryId: uuidSchema,
     candidateHash: sha256Schema,
+    curatedMaterialCommitmentHash: sha256Schema.optional(),
     sourceRevision: nonNegativeVersionSchema,
     itemCount: z.number().int().safe().positive().max(100),
     excludedItemCount: z.number().int().safe().nonnegative(),
@@ -339,6 +354,17 @@ export const createSharedMemoryCandidatePreviewSchema = z
   .superRefine((input, context) => {
     validateEffectiveSelection(input, context);
     validatePersonalNoteSelection(input, context);
+    if (
+      (input.source.kind === "captured_session" &&
+        input.includeCuratedMemory) !==
+      (input.curatedMaterialCommitmentHash !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["curatedMaterialCommitmentHash"],
+        message: "Exact-session Curated sharing requires a source commitment"
+      });
+    }
   });
 
 export const sharedSourcePreviewReferenceSchema = z

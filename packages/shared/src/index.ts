@@ -957,6 +957,7 @@ export {
   sharedMemoryCandidatePreviewActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   projectSharePolicyActionGrantBinding,
+  sharedMemoryCuratedPolicyOptInBinding,
   sharedMemoryRevokeActionGrantBinding,
   sharedMemoryFreezeActionGrantBinding,
   sourceAdmissionActionGrantBinding,
@@ -1289,6 +1290,33 @@ export type {
   SharedSourcePreviewReference,
   SharedSourcePreviewV1
 } from "./shared-source-artifact.js";
+export {
+  CURATED_SOURCE_COMMITMENT_PROTOCOL,
+  CURATED_SOURCE_MATERIAL_PROTOCOL,
+  CURATED_SOURCE_UPDATE_PROTOCOL,
+  curatedAssertionProvenanceSchema,
+  curatedDirectSourceSchema,
+  curatedSourceAttestationFingerprint,
+  curatedSourceCommitmentHash,
+  curatedSourceCommitmentSchema,
+  curatedSourceMaterialHash,
+  curatedSourceMaterialSchema,
+  curatedSourceUpdateHash,
+  curatedSourceUpdateSchema,
+  signCuratedSourceMaterial,
+  signCuratedSourceUpdate,
+  signedCuratedSourceMaterialSchema,
+  signedCuratedSourceUpdateSchema,
+  verifyCuratedSourceMaterial,
+  verifyCuratedSourceUpdate
+} from "./curated-source-material.js";
+export type {
+  CuratedSourceCommitmentV1,
+  CuratedSourceMaterialV1,
+  CuratedSourceUpdateV1,
+  SignedCuratedSourceMaterialV1,
+  SignedCuratedSourceUpdateV1
+} from "./curated-source-material.js";
 export type {
   NormalizedGitRemote,
   ProjectMetadataV1,

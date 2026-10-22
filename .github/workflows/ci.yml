@@ -175,6 +175,14 @@ jobs:
           KOED_TEST_REDIS_URL: redis://127.0.0.1:6379
         run: pnpm test
 
+      - name: HQ two-user real-service integration
+        env:
+          KOED_HQ713_TEST_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
+          KOED_HQ713_DESKTOP: "1"
+          KOED_HQ713_DESKTOP_OUTPUT: ${{ runner.temp }}/koed-hq-two-user
+          KOED_HQ713_RESULT_OUTPUT: ${{ runner.temp }}/koed-hq-two-user/results.json
+        run: xvfb-run --auto-servernum pnpm test:hq-two-user
+
       - name: Enforce required non-empty test suites
         env:
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed

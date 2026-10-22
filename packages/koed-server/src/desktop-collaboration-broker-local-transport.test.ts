@@ -481,6 +481,67 @@ describe("Desktop collaboration local transport", () => {
     });
   });
 
+  it("routes exact Curated candidate previews through the enrolled Team backend", async () => {
+    const resolveConnection = vi.fn(async (requiresTeamBackend: boolean) =>
+      requiresTeamBackend ? connection : personalConnection
+    );
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        upstream_backend_id?: string;
+        command: CollaborationRendererCommand;
+      };
+      expect(body.upstream_backend_id).toBe(connection.backendId);
+      return Response.json({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: body.command.requestId,
+        command: body.command.command,
+        ok: false,
+        error: {
+          code: "not_available",
+          userMessage: collaborationSafeErrorMessages.not_available,
+          retryable: false,
+          retryAfterMs: null
+        }
+      });
+    });
+    const transport = createDesktopCollaborationBrokerLocalTransport({
+      fetch: fetchMock,
+      resolveConnection
+    });
+    const command = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId,
+      command: "collaboration.preview_shared_memory_candidate",
+      input: {
+        source: {
+          kind: "captured_session",
+          sessionId: "00000000-0000-4000-8000-000000000008",
+          logicalMemoryId: "00000000-0000-4000-8000-000000000009"
+        },
+        activationRepresentation: "lcm_leaves",
+        mode: "continuous",
+        curatedTarget: {
+          includeCuratedMemory: true,
+          teamBackendId: connection.backendId,
+          teamId,
+          teamWorkspaceId: workspaceId
+        }
+      }
+    });
+
+    await expect(transport.request(command, context())).resolves.toMatchObject({
+      requestId,
+      command: "collaboration.preview_shared_memory_candidate",
+      ok: false,
+      error: { code: "not_available" }
+    });
+    expect(resolveConnection).toHaveBeenCalledWith(true, undefined);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      upstream_backend_id: connection.backendId,
+      command
+    });
+  });
+
   it.each([
     { kind: "team_people" as const, teamId },
     {

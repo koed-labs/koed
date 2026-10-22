@@ -4338,6 +4338,8 @@ export const createKoedServerManager = ({
     loadPersonalSource: workspaceProjectPersonal.sourceMetadata,
     loadLinkedPersonalSources: workspaceProjectPersonal.linkedSourcesMetadata,
     markPersonalMoved: workspaceProjectPersonal.markPersonalMoved,
+    createJoinedProject: workspaceProjectPersonal.createJoinedProject,
+    confirmJoinedProject: workspaceProjectPersonal.confirmJoinedProject,
     stageTeamLeave: workspaceProjectPersonal.stageTeamLeave,
     finishTeamLeave: workspaceProjectPersonal.finishTeamLeave,
     dispatchLocal: workspaceProjectPersonal.dispatchSharedWorkItem,
@@ -4362,6 +4364,7 @@ export const createKoedServerManager = ({
     request.operation === "sharedCancelPendingShare" ||
     request.operation === "sharedMembers" ||
     request.operation === "sharedFirstShare" ||
+    request.operation === "sharedJoinProject" ||
     request.operation === "sharedTeamLeaveStage" ||
     request.operation === "sharedTeamLeaveFinish" ||
     request.operation === "sharedAttachSource" ||

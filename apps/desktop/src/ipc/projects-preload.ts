@@ -168,6 +168,20 @@ export const createProjectsPreloadApi = (
         throw new Error("Invalid first-share Project identity.");
       return result.project;
     },
+    sharedJoinProject: async (workspaceProjectId, teamBackendId) => {
+      const result = await command({
+        operation: "sharedJoinProject",
+        workspaceProjectId,
+        teamBackendId
+      });
+      if (
+        result.operation !== "sharedJoinProject" ||
+        result.project.workspaceProjectId !== workspaceProjectId ||
+        result.project.teamBackendId !== teamBackendId
+      )
+        throw new Error("Invalid joined Project identity.");
+      return result.project;
+    },
     sharedTeamLeaveStage: async (teamBackendId, teamId) => {
       const result = await command({
         operation: "sharedTeamLeaveStage",

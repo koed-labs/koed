@@ -945,6 +945,9 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       ? "memory_events"
       : memory.representation;
   const includeCuratedMemory = memory.representation === "curated_assertions";
+  const sourceCapabilities = includeCuratedMemory
+    ? ["lcm_rollups", "lcm_leaves", "memory_events", "curated_assertions"]
+    : [memory.representation];
   const ownerPolicyHash = fixtureHash(`policy:owner:${memory.key}:hash`);
   const teamPolicyHash = fixtureHash("policy:team:hash");
   const workspacePolicyHash = fixtureHash(
@@ -1368,7 +1371,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
      ) values (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,1,1,1,$11,$12,$13,$14,$15,
        $16,$17,1,$18,1,$19,1,1,$20,1,$21,$22,$23,$24,$25,$26,$27,
-       array[$10]::shared_memory_representation[],$10
+       $28::shared_memory_representation[],$10
      )`,
     [
       artifactId,
@@ -1397,7 +1400,8 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       fixtureInfrastructure.sourceDeploymentId,
       ownerInfrastructure.remoteUserIdentityId,
       ownerInfrastructure.deviceCredentialId,
-      deviceProvenanceHash
+      deviceProvenanceHash,
+      sourceCapabilities
     ]
   );
   await runtime.upsertEncryptedFieldPayloadWithClient(
@@ -1439,7 +1443,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        activation_representation, mode
      ) values (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,1,$11,1,$12,$13,
-       array[$10]::shared_memory_representation[],$10,
+       $14::shared_memory_representation[],$10,
        'continuous'
      )`,
     [
@@ -1455,7 +1459,8 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       memory.representation,
       previewHash,
       sourceHash,
-      sourceContentHash
+      sourceContentHash,
+      sourceCapabilities
     ]
   );
   await runtime.upsertEncryptedFieldPayloadWithClient(
@@ -1500,7 +1505,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
      ) values (
        $1,$2,$3,$4,$5,$6,$7,$8,1,$9,1,$10,1,'continuous','active',1,
        $11,$12,$13,1,$14,1,null,$15,1,$16,1,$17,$18,$19,$20,$21,
-       array[$22]::shared_memory_representation[],$22
+       $23::shared_memory_representation[],$22
      )`,
     [
       memory.consentId,
@@ -1524,7 +1529,8 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
       classifierHash,
       sourceContentHash,
       memory.capturedAt,
-      memory.representation
+      memory.representation,
+      sourceCapabilities
     ]
   );
 
@@ -1549,7 +1555,7 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,1,$13,1,
        $14,$15,1,1,$16,1,1,$17,
        'fixture_browser_session',$6,$18,$19,$20,$21,$22,$23,$24,$25,
-       array[$26]::shared_memory_representation[],$26,
+       $27::shared_memory_representation[],$26,
        'continuous'
      )`,
     [
@@ -1582,7 +1588,8 @@ const seedSharedMemoryTopology = async (client, runtime, memory) => {
         : revoked
           ? "fixture_revoked_share_not_retained"
           : "fixture_active_team_share",
-      memory.representation
+      memory.representation,
+      sourceCapabilities
     ]
   );
 
@@ -4799,11 +4806,27 @@ export const validateFixture = async (client, runtime) => {
         ),
         `${memory.title} grant-scoped Curated expansion provenance`
       );
+    } else if (memory.representation === "lcm_leaves") {
+      const restrictedExpansion =
+        await runtime.sharedMemoryRepository.readGrantRepresentation(
+          { userId: fixtureUsers.alice.id },
+          {
+            shareGrantId: memory.shareGrantId,
+            representation: memory.representation,
+            includeExpansionMaterial: true
+          }
+        );
+      assertDeepEqual(
+        restrictedExpansion?.items[0]?.content?.expansionItems,
+        [],
+        `${memory.title} unapproved raw child stays excluded`
+      );
     }
     assertDeepEqual(
       {
         includeCuratedMemory: read.grant.includeCuratedMemory,
         maximumFidelity: read.grant.maximumFidelity,
+        sourceCapabilities: read.grant.sourceCapabilities,
         consentId: read.grant.consentId,
         id: read.grant.id,
         logicalMemoryId: read.grant.logicalMemoryId,
@@ -4817,6 +4840,15 @@ export const validateFixture = async (client, runtime) => {
           memory.representation === "curated_assertions"
             ? "memory_events"
             : memory.representation,
+        sourceCapabilities:
+          memory.representation === "curated_assertions"
+            ? [
+                "lcm_rollups",
+                "lcm_leaves",
+                "memory_events",
+                "curated_assertions"
+              ]
+            : [memory.representation],
         consentId: memory.consentId,
         id: memory.shareGrantId,
         logicalMemoryId: memory.logicalMemoryId,
