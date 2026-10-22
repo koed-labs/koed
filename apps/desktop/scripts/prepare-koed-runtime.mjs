@@ -2,15 +2,12 @@
 /* global console, process */
 import { createHash } from "node:crypto";
 import { canonicalArtifactBytes } from "../../../packages/koed-server/src/artifact-canonical-json.mjs";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
-import { inventoryRuntime } from "./finalize-runtime-manifests.mjs";
+import {
+  inventoryRuntime,
+  writeDesktopBundleManifest
+} from "./finalize-runtime-manifests.mjs";
 import {
   pruneSharedAppRuntimeMetadata,
   stageSharedAppRuntime
@@ -95,10 +92,7 @@ const bundleManifest = {
   },
   files: runtimeFiles
 };
-const bundleManifestPath = resolve(runtimeRoot, "desktop-bundle-manifest.json");
-writeFileSync(bundleManifestPath, `${JSON.stringify(bundleManifest)}\n`, {
-  mode: 0o600
-});
+writeDesktopBundleManifest(runtimeRoot, bundleManifest);
 const bundleManifestDigest = createHash("sha256")
   .update(canonicalArtifactBytes(bundleManifest))
   .digest("hex");

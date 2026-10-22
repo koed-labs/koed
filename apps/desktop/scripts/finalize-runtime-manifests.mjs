@@ -4,6 +4,7 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  chmodSync,
   writeFileSync
 } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -38,6 +39,12 @@ export const inventoryRuntime = (runtimeRoot, directory = runtimeRoot) => {
   return files.sort((left, right) => left.path.localeCompare(right.path));
 };
 
+export const writeDesktopBundleManifest = (runtimeRoot, bundle) => {
+  const bundlePath = resolve(runtimeRoot, "desktop-bundle-manifest.json");
+  writeFileSync(bundlePath, `${JSON.stringify(bundle)}\n`, { mode: 0o644 });
+  chmodSync(bundlePath, 0o644);
+};
+
 export const finalizeRuntimeManifests = (runtimeRoot) => {
   // Validate the complete tree before hashing native assets, which follow links.
   inventoryRuntime(runtimeRoot);
@@ -58,8 +65,9 @@ export const finalizeRuntimeManifests = (runtimeRoot) => {
     asset.sha256 = sha256Files(root, asset.expectedFiles);
   }
   writeFileSync(nativePath, `${JSON.stringify(native, null, 2)}\n`);
-  const bundlePath = resolve(runtimeRoot, "desktop-bundle-manifest.json");
-  const bundle = JSON.parse(readFileSync(bundlePath, "utf8"));
+  const bundle = JSON.parse(
+    readFileSync(resolve(runtimeRoot, "desktop-bundle-manifest.json"), "utf8")
+  );
   bundle.files = inventoryRuntime(runtimeRoot);
-  writeFileSync(bundlePath, `${JSON.stringify(bundle)}\n`);
+  writeDesktopBundleManifest(runtimeRoot, bundle);
 };
