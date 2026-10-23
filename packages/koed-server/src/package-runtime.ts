@@ -785,12 +785,17 @@ const migrationTimestamp = (
     : undefined;
 };
 
+export const isVersionDowngrade = (
+  currentVersion: string,
+  candidateVersion: string
+): boolean => compareVersions(candidateVersion, currentVersion) < 0;
+
 export const assertPackageMigrationCompatible = (
   currentManifest: KoedServerPackageManifest,
   nextManifest: KoedServerPackageManifest,
   allowDowngrade = false
 ): void => {
-  if (compareVersions(nextManifest.version, currentManifest.version) >= 0)
+  if (!isVersionDowngrade(currentManifest.version, nextManifest.version))
     return;
   if (!allowDowngrade) {
     throw new Error(

@@ -28,7 +28,7 @@ import {
   isRuntimeGenerationState,
   type RuntimeGenerationState
 } from "./runtime-state.js";
-import { assertPackageMigrationCompatible } from "./package-runtime.js";
+import { isVersionDowngrade } from "./package-runtime.js";
 import { renameAtomically } from "./generation-lifecycle-filesystem.js";
 import { acquireDirectoryLock } from "./directory-lock.js";
 
@@ -254,16 +254,6 @@ const assertNoActivePin = (
   )
     throw new Error("runtime generation is running or pinned");
 };
-const currentManifest = (generation: VerifiedGeneration) => ({
-  schemaVersion: 2 as const,
-  id: "koed-server" as const,
-  version: generation.productVersion,
-  platform: generation.base.manifest.target.platform,
-  architecture: generation.base.manifest.target.architecture,
-  packageKind: "app-runtime" as const,
-  createdAt: "1970-01-01T00:00:00.000Z"
-});
-
 export async function readCurrentGeneration(
   paths: KoedServerPaths
 ): Promise<VerifiedGeneration> {
@@ -612,10 +602,12 @@ export async function activateGeneration(
             )
           : await readStagedGeneration(paths, currentId);
         assertOwner(current, requester);
-        assertPackageMigrationCompatible(
-          currentManifest(current),
-          currentManifest(candidate)
-        );
+        if (
+          isVersionDowngrade(current.productVersion, candidate.productVersion)
+        )
+          throw new Error(
+            `Cannot activate generation ${candidate.productVersion} over active ${current.productVersion}: generation downgrades are not supported.`
+          );
       }
       writeCurrentPointer(paths, candidate.id);
       return candidate;

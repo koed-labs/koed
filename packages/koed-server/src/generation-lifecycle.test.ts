@@ -316,6 +316,66 @@ describe("generation lifecycle", () => {
     await upgraded.release();
   });
 
+  it("switches between same-version base-only and privacy generations", async () => {
+    const paths = pathsForTest();
+    const baseOnly = await stage(paths, "0.9.0");
+    const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
+    const fixture = await signedComponentFixture({
+      component: "privacy",
+      productVersion: "0.9.0",
+      target
+    });
+    temporaryRoots.push(fixture.root);
+    for (const [key, value] of fixture.input.trustedKeys)
+      fixtureKeys.value.set(key, value);
+    const privacy = await stageComponent(
+      paths,
+      {
+        kind: "offline",
+        archivePath: fixture.input.archivePath,
+        manifestPath: metadataFile(paths, fixture.input.manifestBytes),
+        signaturePath: metadataFile(
+          paths,
+          Buffer.from(JSON.stringify(fixture.input.signature))
+        )
+      },
+      {
+        expectedComponent: "privacy",
+        expectedVersion: "0.9.0",
+        target,
+        runtime: fixture.input.runtime
+      }
+    );
+    const withPrivacy = await stageGeneration(paths, {
+      base: baseOnly.base,
+      privacy,
+      owner
+    });
+    expect(withPrivacy.id).not.toBe(baseOnly.id);
+    await activateGeneration(paths, baseOnly.id, owner);
+    await activateGeneration(paths, withPrivacy.id, owner);
+    expect((await readCurrentGeneration(paths)).id).toBe(withPrivacy.id);
+    await activateGeneration(paths, baseOnly.id, owner);
+    expect((await readCurrentGeneration(paths)).id).toBe(baseOnly.id);
+  });
+
+  it("rejects generation downgrade without changing current pointer or retaining locks", async () => {
+    const paths = pathsForTest();
+    const older = await stage(paths, "0.9.0");
+    const current = await stage(paths, "0.9.1");
+    const newer = await stage(paths, "0.9.2");
+    await activateGeneration(paths, current.id, owner);
+    const pointerPath = resolve(paths.componentsDir, "current.json");
+    const pointer = readFileSync(pointerPath);
+    await expect(activateGeneration(paths, older.id, owner)).rejects.toThrow(
+      "Cannot activate generation 0.9.0 over active 0.9.1: generation downgrades are not supported."
+    );
+    expect(readFileSync(pointerPath)).toEqual(pointer);
+    expect((await readCurrentGeneration(paths)).id).toBe(current.id);
+    await activateGeneration(paths, newer.id, owner);
+    expect((await readCurrentGeneration(paths)).id).toBe(newer.id);
+  });
+
   it("pins selected generation for process lifetime and blocks activation/cleanup", async () => {
     const paths = pathsForTest();
     const current = await stage(paths, "0.9.0");
