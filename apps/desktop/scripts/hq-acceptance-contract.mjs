@@ -798,4 +798,49 @@ export const hqAcceptanceContract = [
     owners: ["HQ-520"],
     harness: "simulated-ipc"
   }
+{
+  "id": "U722.1",
+  "category": "unit",
+  "description": "Sharing metadata reflects current Project/Team visibility and effective removal/cancellation authority.",
+  "owners": [
+    "HQ-722"
+  ],
+  "harness": "unit"
+},
+{
+  "id": "N722.16",
+  "category": "unit",
+  "description": "Team sharing never includes Personal Conversation content/ids; Personal enrichment is current-owner bound.",
+  "owners": [
+    "HQ-722"
+  ],
+  "harness": "unit"
+},
+{
+  "id": "N722.27",
+  "category": "unit",
+  "description": "A failed or unenrolled backend remains explicit beside available backends; live events queue a fresh read.",
+  "owners": [
+    "HQ-722"
+  ],
+  "harness": "unit"
+},
+{
+  "id": "N722.33",
+  "category": "unit",
+  "description": "Cancellation capability follows current Team owner/admin authority, distinct from Project ownership.",
+  "owners": [
+    "HQ-722"
+  ],
+  "harness": "unit"
+},
+{
+  "id": "U722.2",
+  "category": "unit",
+  "description": "Typed read-only Desktop IPC rejects untrusted senders and stale Personal authority.",
+  "owners": [
+    "HQ-722"
+  ],
+  "harness": "unit"
+},
 ];

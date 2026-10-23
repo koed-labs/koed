@@ -3415,6 +3415,26 @@ export const routeIdentityContracts = [
     teamDeploymentModes
   ),
   route(
+    "GET",
+    "/v1/me/sharing",
+    "session_or_device_credential",
+    "team_memory",
+    "Read current Team sharing metadata visible to the authenticated User.",
+    "none",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/local-edge/sharing",
+    "desktop_local_credential",
+    "team_memory",
+    "Read the current Personal owner's enrolled Team sharing metadata aggregate.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
     "POST",
     "/v1/team-invites/accept-in-app",
     "device_credential",

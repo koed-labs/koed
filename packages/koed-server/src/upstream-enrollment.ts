@@ -80,6 +80,7 @@ export interface UpstreamEnrollmentRecord {
   localClientCredentialReference?: string;
   deviceCredentialId?: string;
   principalUserId?: string;
+  sourceOwnerPrincipalId?: string;
   createdAt: string;
   updatedAt: string;
   expiresAt: string | null;
@@ -354,6 +355,10 @@ const normalizeRecord = (
     ...(typeof record.principalUserId === "string" &&
     uuidPattern.test(record.principalUserId)
       ? { principalUserId: record.principalUserId.toLowerCase() }
+      : {}),
+    ...(typeof record.sourceOwnerPrincipalId === "string" &&
+    uuidPattern.test(record.sourceOwnerPrincipalId)
+      ? { sourceOwnerPrincipalId: record.sourceOwnerPrincipalId.toLowerCase() }
       : {}),
     createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
     updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now,
@@ -903,6 +908,7 @@ export const readUpstreamEnrollmentBinding = (
   enrollmentId: string;
   deviceCredentialId: string;
   principalUserId: string;
+  sourceOwnerPrincipalId?: string;
 } | null =>
   readLocalEdgeUpstreamEnrollmentBinding(
     paths.upstreamEnrollmentsPath,
@@ -1311,6 +1317,12 @@ const startUpstreamEnrollmentWithFetch = async (
       state: "pending",
       activationUrl: null,
       requestedOperationFamilies: operationFamilies,
+      ...(uuidPattern.test(resolvedDeps.sourceOwnerPrincipalId)
+        ? {
+            sourceOwnerPrincipalId:
+              resolvedDeps.sourceOwnerPrincipalId.toLowerCase()
+          }
+        : {}),
       transaction:
         rotation.state === "active"
           ? {
@@ -2658,6 +2670,9 @@ const disconnectUpstreamBackendEnrollmentWithFetch = async (
       state: "revoked",
       activationUrl: null,
       requestedOperationFamilies: [],
+      ...(existing?.sourceOwnerPrincipalId
+        ? { sourceOwnerPrincipalId: existing.sourceOwnerPrincipalId }
+        : {}),
       transaction: { kind: "initial" },
       transactionState: {
         ...createUpstreamEnrollmentTransaction({

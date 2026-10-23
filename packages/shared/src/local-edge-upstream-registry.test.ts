@@ -7,6 +7,7 @@ const firstCredential = "11111111-1111-4111-8111-111111111111";
 const firstPrincipal = "22222222-2222-4222-8222-222222222222";
 const currentCredential = "33333333-3333-4333-8333-333333333333";
 const currentPrincipal = "44444444-4444-4444-8444-444444444444";
+const sourceOwner = "55555555-5555-4555-8555-555555555555";
 
 const readFixture = (value: unknown) =>
   readLocalEdgeUpstreamEnrollmentBinding(
@@ -39,7 +40,8 @@ describe("local-edge upstream enrollment binding", () => {
             requestId: "current-enrollment",
             state: "exchanged",
             deviceCredentialId: currentCredential.toUpperCase(),
-            principalUserId: currentPrincipal.toUpperCase()
+            principalUserId: currentPrincipal.toUpperCase(),
+            sourceOwnerPrincipalId: sourceOwner.toUpperCase()
           }
         ]
       })
@@ -47,7 +49,8 @@ describe("local-edge upstream enrollment binding", () => {
       backendId,
       enrollmentId: "current-enrollment",
       deviceCredentialId: currentCredential,
-      principalUserId: currentPrincipal
+      principalUserId: currentPrincipal,
+      sourceOwnerPrincipalId: sourceOwner
     });
   });
 
@@ -76,6 +79,31 @@ describe("local-edge upstream enrollment binding", () => {
       deviceCredentialId: firstCredential,
       principalUserId: firstPrincipal
     });
+  });
+
+  it("keeps legacy and malformed source owner bindings unbound", () => {
+    for (const sourceOwnerPrincipalId of [undefined, "invalid-owner"]) {
+      expect(
+        readFixture({
+          schemaVersion: 1,
+          enrollments: [
+            {
+              backendId,
+              requestId: "legacy-enrollment",
+              state: "exchanged",
+              deviceCredentialId: currentCredential,
+              principalUserId: currentPrincipal,
+              sourceOwnerPrincipalId
+            }
+          ]
+        })
+      ).toEqual({
+        backendId,
+        enrollmentId: "legacy-enrollment",
+        deviceCredentialId: currentCredential,
+        principalUserId: currentPrincipal
+      });
+    }
   });
 
   it("fails closed for absent, pending, or malformed enrollment state", () => {

@@ -32,6 +32,108 @@ const integration = (title, record) => ({
 });
 
 export const ownedAcceptanceSuites = [
+{
+  "id": "U722.1",
+  "clause": "Sharing metadata reflects current Project/Team visibility and effective removal/cancellation authority.",
+  "proof": [
+    {
+      "kind": "vitest",
+      "file": "apps/api/src/team/sharing-read.pg.test.ts",
+      "title": "uses Team membership authority, Project owner visibility and metadata-only output",
+      "titleMatch": "exact-leaf-unique-in-file"
+    },
+    {
+      "kind": "vitest",
+      "file": "apps/api/src/team/sharing-read.test.ts",
+      "title": "projects only metadata and current Project owner authority",
+      "titleMatch": "exact-leaf-unique-in-file"
+    }
+  ]
+},
+{
+  "id": "N722.16",
+  "clause": "Team sharing never includes Personal Conversation content/ids; Personal enrichment is current-owner bound.",
+  "proof": [
+    {
+      "kind": "vitest",
+      "file": "packages/shared/src/sharing-contract.test.ts",
+      "title": "rejects a Personal Conversation id at every Team origin nesting",
+      "titleMatch": "exact-leaf-unique-in-file"
+    },
+    {
+      "kind": "vitest",
+      "file": "apps/api/src/local-edge/sharing-routes.test.ts",
+      "title": "rejects a Team response containing a Personal Conversation origin",
+      "titleMatch": "exact-leaf-unique-in-file"
+    },
+    {
+      "kind": "vitest",
+      "file": "apps/api/src/local-edge/sharing-routes.test.ts",
+      "title": "redacts the inviter's Agent name from pending incoming invitations",
+      "titleMatch": "exact-leaf-unique-in-file"
+    },
+    {
+      "kind": "vitest",
+      "file": "apps/api/src/local-edge/sharing-routes.test.ts",
+      "title": "fails the whole read when the current Personal profile changes during an upstream await",
+      "titleMatch": "exact-leaf-unique-in-file"
+    }
+  ]
+},
+{
+  "id": "N722.27",
+  "clause": "A failed or unenrolled backend remains explicit beside available backends; live events queue a fresh read.",
+  "proof": [
+    {
+      "kind": "vitest",
+      "file": "apps/api/src/local-edge/sharing-routes.test.ts",
+      "title": "retains an unavailable backend next to available metadata and does not reuse another owner's last reach",
+      "titleMatch": "exact-leaf-unique-in-file"
+    },
+    {
+      "kind": "vitest",
+      "file": "apps/api/src/local-edge/sharing-routes.test.ts",
+      "title": "reports unenrolled and disabled-policy backends explicitly",
+      "titleMatch": "exact-leaf-unique-in-file"
+    },
+    {
+      "kind": "vitest",
+      "file": "apps/desktop/src/renderer/hq/sharing/sharing-store.test.ts",
+      "title": "queues one refresh for collaboration invalidations received during a read",
+      "titleMatch": "exact-leaf-unique-in-file"
+    }
+  ]
+},
+{
+  "id": "N722.33",
+  "clause": "Cancellation capability follows current Team owner/admin authority, distinct from Project ownership.",
+  "proof": [
+    {
+      "kind": "vitest",
+      "file": "apps/api/src/team/sharing-read.pg.test.ts",
+      "title": "uses Team membership authority, Project owner visibility and metadata-only output",
+      "titleMatch": "exact-leaf-unique-in-file"
+    },
+    {
+      "kind": "vitest",
+      "file": "apps/api/src/team/sharing-read.test.ts",
+      "title": "limits cancellation to current Team managers and owner invitations to owners",
+      "titleMatch": "exact-leaf-unique-in-file"
+    }
+  ]
+},
+{
+  "id": "U722.2",
+  "clause": "Typed read-only Desktop IPC rejects untrusted senders and stale Personal authority.",
+  "proof": [
+    {
+      "kind": "vitest",
+      "file": "apps/desktop/src/koed-server/manager-sharing.test.ts",
+      "title": "returns a strict empty-backend read for unchanged authority",
+      "titleMatch": "exact-leaf-unique-in-file"
+    }
+  ]
+},
   {
     id: "U521.1",
     clause:

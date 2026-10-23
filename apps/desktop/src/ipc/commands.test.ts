@@ -12,6 +12,7 @@ import type {
 } from "../koed-server/manager.js";
 import { describe, expect, it, vi } from "vitest";
 import { invokeChannel, registerDesktopCommandHandlers } from "./commands.js";
+import { sharingChannel } from "./sharing-protocol.js";
 import {
   managedTextActionChannel,
   type ManagedTextActionRequest
@@ -132,6 +133,7 @@ describe("desktop IPC command registry", () => {
         actions: []
       })
     );
+    const sharing = vi.fn(async () => ({ backends: [] }));
     const setupInspect = vi.fn(async () => ({ state: "ready" }));
     const setupRun = vi.fn(async (_args, context) => {
       context.emitSetupProgress({ state: "running" });
@@ -258,6 +260,7 @@ describe("desktop IPC command registry", () => {
         managedConversation: managedConversation as never,
         managedProject: managedProject as never,
         managedTextActions,
+        sharing,
         managedPreview: {
           attach: vi.fn(),
           setBounds: vi.fn(),
@@ -287,6 +290,7 @@ describe("desktop IPC command registry", () => {
       managedConversation,
       managedProject,
       managedTextActions,
+      sharing,
       personalMemory,
       setupInspect,
       setupRun,
@@ -328,6 +332,34 @@ describe("desktop IPC command registry", () => {
         "Koed text actions are unavailable."
       );
       expect(managedTextActions).toHaveBeenCalledOnce();
+    } finally {
+      if (previousFlag === undefined)
+        delete process.env.KOED_DESKTOP_HQ_ENABLED;
+      else process.env.KOED_DESKTOP_HQ_ENABLED = previousFlag;
+    }
+  });
+
+  it("accepts only trusted, read-only Sharing IPC requests", async () => {
+    const previousFlag = process.env.KOED_DESKTOP_HQ_ENABLED;
+    try {
+      delete process.env.KOED_DESKTOP_HQ_ENABLED;
+      const { registered, sharing } = register();
+      const invoke = registered.get(sharingChannel)!;
+      await expect(invoke(renderer(), { operation: "read" })).resolves.toEqual({
+        backends: []
+      });
+      expect(sharing).toHaveBeenCalledOnce();
+      await expect(
+        invoke(renderer(), { operation: "remove", id: "target" })
+      ).rejects.toThrow();
+      await expect(
+        invoke(renderer("https://attacker.example/"), { operation: "read" })
+      ).rejects.toThrow("Untrusted Desktop IPC sender");
+      process.env.KOED_DESKTOP_HQ_ENABLED = "false";
+      await expect(invoke(renderer(), { operation: "read" })).rejects.toThrow(
+        "Sharing is unavailable"
+      );
+      expect(sharing).toHaveBeenCalledOnce();
     } finally {
       if (previousFlag === undefined)
         delete process.env.KOED_DESKTOP_HQ_ENABLED;

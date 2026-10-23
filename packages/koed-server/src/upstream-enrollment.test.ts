@@ -972,7 +972,8 @@ describe("upstream enrollment orchestration", () => {
       backendId: "team-vps",
       enrollmentId: "enroll-exchange",
       principalUserId: remotePrincipalUserId,
-      deviceCredentialId: remoteDeviceCredentialId
+      deviceCredentialId: remoteDeviceCredentialId,
+      sourceOwnerPrincipalId: remotePrincipalUserId
     });
   });
 
@@ -1047,6 +1048,7 @@ describe("upstream enrollment orchestration", () => {
   });
 
   it("authenticates replacement enrollment as an exact predecessor rotation", async () => {
+    const replacementOwner = "33333333-3333-4333-8333-333333333333";
     const paths = await registerValidatedBackend();
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {
       teamWorkspaceRead: "enabled"
@@ -1079,6 +1081,7 @@ describe("upstream enrollment orchestration", () => {
       | { authorization: string | null; credentialId: string | null }
       | undefined;
     const replacement = await startUpstreamEnrollment(paths, "team-vps", {
+      sourceOwnerPrincipalId: replacementOwner,
       now: () => new Date("2026-01-01T00:02:00.000Z"),
       randomId: () => "replacement-enrollment",
       fetch: async (input, init) => {
@@ -1109,6 +1112,10 @@ describe("upstream enrollment orchestration", () => {
       ok: true,
       state: "pending",
       enrollment: { requestId: "replacement-enrollment" }
+    });
+    expect(readUpstreamEnrollmentBinding(paths, "team-vps")).toMatchObject({
+      enrollmentId: "original-enrollment",
+      sourceOwnerPrincipalId: remotePrincipalUserId
     });
     expect(rotationRequest).toEqual({
       authorization: predecessorAuthorization,
@@ -1167,7 +1174,12 @@ describe("upstream enrollment orchestration", () => {
       }>;
     };
     expect(committedStore.enrollments.at(-1)).toMatchObject({
+      sourceOwnerPrincipalId: replacementOwner,
       transactionState: { phase: "committed", kind: "replacement" }
+    });
+    expect(readUpstreamEnrollmentBinding(paths, "team-vps")).toMatchObject({
+      enrollmentId: "replacement-enrollment",
+      sourceOwnerPrincipalId: replacementOwner
     });
     expect(
       committedStore.enrollments.at(-1)?.activeCredentialReference
@@ -1178,6 +1190,7 @@ describe("upstream enrollment orchestration", () => {
   });
 
   it("recovers a replacement interrupted after successor commit without deleting it", async () => {
+    const replacementOwner = "33333333-3333-4333-8333-333333333333";
     const paths = await registerValidatedBackend();
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {
       teamWorkspaceRead: "enabled"
@@ -1203,6 +1216,7 @@ describe("upstream enrollment orchestration", () => {
       admin: "enabled"
     });
     await startUpstreamEnrollment(paths, "team-vps", {
+      sourceOwnerPrincipalId: replacementOwner,
       now: () => new Date("2026-01-01T00:02:00.000Z"),
       randomId: () => "recovery-replacement",
       fetch: enrollmentFetch("pending", true)
@@ -1246,7 +1260,8 @@ describe("upstream enrollment orchestration", () => {
       readUpstreamCredentialAuthorization(paths.koedHome, predecessorReference)
     ).toBeNull();
     expect(readUpstreamEnrollmentBinding(paths, "team-vps")).toMatchObject({
-      enrollmentId: "recovery-replacement"
+      enrollmentId: "recovery-replacement",
+      sourceOwnerPrincipalId: replacementOwner
     });
 
     await expect(

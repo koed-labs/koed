@@ -43,6 +43,12 @@ import {
   type AgentsResult
 } from "./agents-protocol.js";
 import {
+  sharingChannel,
+  sharingRequestSchema,
+  sharingResultSchema
+} from "./sharing-protocol.js";
+import type { SharingOverview } from "@koed/shared";
+import {
   scheduledJobsChannel,
   scheduledJobsRequestSchema,
   scheduledJobsResultSchema,
@@ -285,6 +291,7 @@ export const registerDesktopCommandHandlers = (
     >;
     pickProjectFolder?: () => Promise<string | null>;
     agents?: (request: AgentsRequest) => Promise<AgentsResult>;
+    sharing?: () => Promise<SharingOverview>;
     scheduledJobs?: (
       request: ScheduledJobsRequest
     ) => Promise<ScheduledJobsResult>;
@@ -800,6 +807,17 @@ export const registerDesktopCommandHandlers = (
     )
       throw new Error("Invalid Agent identity.");
     return result;
+  });
+  ipcMain.handle(sharingChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (
+      !desktopFeatureFlagsFromEnvironment(process.env).hqEnabled ||
+      !options.sharing
+    )
+      throw new Error("Sharing is unavailable.");
+    sharingRequestSchema.parse(value);
+    return sharingResultSchema.parse(await options.sharing());
   });
   ipcMain.handle(scheduledJobsChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins))

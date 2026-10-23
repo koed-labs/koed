@@ -82,6 +82,8 @@ import { registerProjectSourceRoutes } from "../projects/source-routes.js";
 import { createProjectSourceIngestionService } from "../projects/source-ingestion-service.js";
 import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
 import { registerWorkspaceProjectRoutes } from "../team/workspace-project-routes.js";
+import { registerTeamSharingRoutes } from "../team/sharing-routes.js";
+import { registerSharingOverviewRoute } from "../local-edge/sharing-routes.js";
 import { registerWorkspaceProjectLinkRoutes } from "../projects/workspace-project-link-routes.js";
 import { registerWorkspaceProjectCoordinationRoutes } from "../local-edge/workspace-project-coordination-routes.js";
 import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
@@ -2572,6 +2574,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     writeRateLimit: rateLimitHandlers.memoryWrite
   });
   registerTeamRoutes(app, routeContext);
+  registerTeamSharingRoutes(app, {
+    pool,
+    auth: authHelpers,
+    readRateLimit: rateLimitHandlers.memoryRead
+  });
+  registerSharingOverviewRoute(app, routeContext, pool);
   registerWorkspaceProjectRoutes(app, {
     repository: workspaceProjectRepository,
     requireRepository,

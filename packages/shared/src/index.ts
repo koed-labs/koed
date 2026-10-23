@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
 export {
+  teamSharingReadSchema,
+  personalSharingReadSchema,
+  sharingOverviewSchema,
+  type TeamSharingRead,
+  type PersonalSharingRead,
+  type SharingOverview
+} from "./sharing-contract.js";
+export {
   workItemsFromDocParamsSchema,
   workItemsFromDocReadSchema,
   workItemsFromDocListSchema,

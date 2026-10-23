@@ -68,6 +68,7 @@ export interface LocalEdgeUpstreamEnrollmentBinding {
   enrollmentId: string;
   deviceCredentialId: string;
   principalUserId: string;
+  sourceOwnerPrincipalId?: string;
 }
 
 interface RegistryCacheEntry {
@@ -225,7 +226,13 @@ export const readLocalEdgeUpstreamEnrollmentBinding = (
       backendId,
       enrollmentId: record.requestId,
       deviceCredentialId: record.deviceCredentialId.toLowerCase(),
-      principalUserId: record.principalUserId.toLowerCase()
+      principalUserId: record.principalUserId.toLowerCase(),
+      ...(typeof record.sourceOwnerPrincipalId === "string" &&
+      uuidPattern.test(record.sourceOwnerPrincipalId)
+        ? {
+            sourceOwnerPrincipalId: record.sourceOwnerPrincipalId.toLowerCase()
+          }
+        : {})
     };
   } catch {
     return null;

@@ -38,6 +38,7 @@ import type {
 } from "../ipc/managed-text-action-protocol.js";
 import { createProjectSourceNativeClient } from "./project-source-native-client.js";
 import { createAgentsClient, type AgentsAuthority } from "./agents-client.js";
+import { sharingOverviewSchema, type SharingOverview } from "@koed/shared";
 import {
   createScheduledJobsClient,
   type ScheduledJobsAuthority
@@ -351,6 +352,7 @@ export interface KoedServerManager {
     request: ProjectHqConversationRequest
   ) => Promise<ProjectHqConversationResult>;
   agents: (request: AgentsRequest) => Promise<AgentsResult>;
+  sharing: () => Promise<SharingOverview>;
   scheduledJobs: (
     request: ScheduledJobsRequest
   ) => Promise<ScheduledJobsResult>;
@@ -5392,6 +5394,17 @@ export const createKoedServerManager = ({
       );
     }
   });
+  const sharing = async (): Promise<SharingOverview> => {
+    const authority = await projectsAuthority();
+    const payload = await agentsRequestJson(
+      "/v1/local-edge/sharing",
+      { method: "GET" },
+      authority
+    );
+    if ((await projectsAuthority()).key !== authority.key)
+      throw new PersonalMemoryBoundaryError("not_ready", true);
+    return sharingOverviewSchema.parse(payload);
+  };
   const scheduledJobs = createScheduledJobsClient({
     requestJson: agentsRequestJson,
     authority: async (): Promise<ScheduledJobsAuthority> => {
@@ -6603,6 +6616,7 @@ export const createKoedServerManager = ({
     },
     projectHqConversation,
     agents,
+    sharing,
     scheduledJobs,
     discoverProject: (cwd) =>
       runJson(["project", "discover", "--cwd", cwd], 30_000),

@@ -75,6 +75,10 @@
       "types": "./dist/scheduled-job-contract.d.ts",
       "import": "./dist/scheduled-job-contract.js"
     },
+    "./sharing-contract": {
+      "types": "./dist/sharing-contract.d.ts",
+      "import": "./dist/sharing-contract.js"
+    },
     "./scheduled-job-calendar": {
       "types": "./dist/scheduled-job-calendar.d.ts",
       "import": "./dist/scheduled-job-calendar.js"
