@@ -1857,7 +1857,7 @@ export const createKoedServerManager = ({
     askDesktop: callLocalDesktopAsk
   };
 
-  const runJson = (args: string[], timeout = 30_000) =>
+  const executeJson = (args: string[], timeout: number) =>
     new Promise<unknown>((resolvePromise) => {
       if (!existsSync(cliPath)) {
         resolvePromise(missingCliPayload());
@@ -1898,6 +1898,26 @@ export const createKoedServerManager = ({
         }
       );
     });
+
+  // HQ setup, status polling and the menu bar can ask for the same expensive
+  // read during startup. Share only the active process; never cache a result
+  // across inspections or coalesce mutations, enrollment or startup probes.
+  const activeStatusReads = new Map<string, Promise<unknown>>();
+  const runJson = (args: string[], timeout = 30_000): Promise<unknown> => {
+    const coalesce =
+      desktopFeatureFlagsFromEnvironment(environment).hqEnabled &&
+      ((args.length === 1 && args[0] === "status") ||
+        (args.length === 2 && args[0] === "package" && args[1] === "status"));
+    if (!coalesce) return executeJson(args, timeout);
+    const key = JSON.stringify([args, timeout]);
+    const active = activeStatusReads.get(key);
+    if (active) return active;
+    const read = executeJson(args, timeout).finally(() => {
+      if (activeStatusReads.get(key) === read) activeStatusReads.delete(key);
+    });
+    activeStatusReads.set(key, read);
+    return read;
+  };
 
   const createCollaborationTransport = () =>
     createCollaborationLocalTransport({

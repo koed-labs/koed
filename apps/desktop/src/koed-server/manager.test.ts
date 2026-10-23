@@ -90,6 +90,57 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe("Koed server desktop manager", () => {
+  it.each([true, false])(
+    "coalesces only active HQ status reads (HQ enabled: %s), then reads fresh after success or failure",
+    async (hqEnabled) => {
+      const calls: string[][] = [];
+      const pending: Array<(valid: boolean) => void> = [];
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: { KOED_DESKTOP_HQ_ENABLED: String(hqEnabled) },
+        createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+        existsSync: () => true,
+        execFile: (_command, args, _options, callback) => {
+          calls.push(args);
+          pending.push((valid) =>
+            callback(
+              null,
+              valid
+                ? JSON.stringify(healthyLocalServiceStatus())
+                : "invalid JSON",
+              ""
+            )
+          );
+        },
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+      const first = Array.from({ length: 3 }, () => manager.handlers.status!());
+      const copies = hqEnabled ? 1 : 3;
+      expect(calls.filter((args) => args[0] === "status")).toHaveLength(copies);
+      expect(calls.filter((args) => args[0] === "package")).toHaveLength(
+        copies
+      );
+      pending.splice(0).forEach((complete) => complete(true));
+      for (const result of await Promise.all(first)) {
+        expect(result).toMatchObject({ api: { state: "healthy" } });
+      }
+      const failed = manager.handlers.status!();
+      expect(calls.filter((args) => args[0] === "status")).toHaveLength(
+        copies + 1
+      );
+      pending.splice(0).forEach((complete) => complete(false));
+      await expect(failed).resolves.toMatchObject({ state: "needs_attention" });
+      const retry = manager.handlers.status!();
+      expect(calls.filter((args) => args[0] === "status")).toHaveLength(
+        copies + 2
+      );
+      pending.splice(0).forEach((complete) => complete(true));
+      await expect(retry).resolves.toMatchObject({ api: { state: "healthy" } });
+    }
+  );
+
   it("maps a 1 MiB source-backed owner Note without requiring duplicate event content", () => {
     const noteId = "11111111-1111-4111-8111-111111111111";
     const memoryEventId = "22222222-2222-4222-8222-222222222222";

@@ -88,6 +88,64 @@
       ],
       "@koed/worker/command-discovery-adapter-pi": [
         "apps/worker/src/command-discovery-adapter-pi.ts"
+      ],
+      "@koed/shared/source-control-v2": [
+        "packages/shared/src/source-control-v2.ts"
+      ],
+      "@koed/shared/client-foundation": [
+        "packages/shared/src/client-foundation.ts"
+      ],
+      "@koed/shared/project-contract": [
+        "packages/shared/src/project-contract.ts"
+      ],
+      "@koed/shared/flashcard-deck-contract": [
+        "packages/shared/src/flashcard-deck-contract.ts"
+      ],
+      "@koed/shared/project-activity-contract": [
+        "packages/shared/src/project-activity-contract.ts"
+      ],
+      "@koed/shared/workspace-project-contract": [
+        "packages/shared/src/workspace-project-contract.ts"
+      ],
+      "@koed/shared/project-thread-contract": [
+        "packages/shared/src/project-thread-contract.ts"
+      ],
+      "@koed/shared/scheduled-job-contract": [
+        "packages/shared/src/scheduled-job-contract.ts"
+      ],
+      "@koed/shared/scheduled-job-calendar": [
+        "packages/shared/src/scheduled-job-calendar.ts"
+      ],
+      "@koed/shared/hq-onboarding-contract": [
+        "packages/shared/src/hq-onboarding-contract.ts"
+      ],
+      "@koed/shared/agent-delegation-contract": [
+        "packages/shared/src/agent-delegation-contract.ts"
+      ],
+      "@koed/shared/private-network": [
+        "packages/shared/src/private-network.ts"
+      ],
+      "@koed/shared/managed-conversation-diff": [
+        "packages/shared/src/managed-conversation-diff.ts"
+      ],
+      "@koed/shared/managed-conversation-files": [
+        "packages/shared/src/managed-conversation-files.ts"
+      ],
+      "@koed/shared/managed-development-preview": [
+        "packages/shared/src/managed-development-preview.ts"
+      ],
+      "@koed/shared/managed-terminal": [
+        "packages/shared/src/managed-terminal.ts"
+      ],
+      "@koed/shared/source-control": ["packages/shared/src/source-control.ts"],
+      "@koed/shared/managed-memory-actions": [
+        "packages/shared/src/managed-memory-action-contract.ts"
+      ],
+      "@koed/shared/koed-text-action-contract": [
+        "packages/shared/src/koed-text-action-contract.ts"
+      ],
+      "@koed/db/managed-text-action-contract": [
+        "packages/db/src/managed-text-action-contract.ts"
       ]
     },
     "resolveJsonModule": true,

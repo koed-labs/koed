@@ -34,6 +34,11 @@ local runtime and services. After verification, **Continue to Koed** checks
 the stages again and proceeds to HQ role and Agent onboarding. The previous
 interface's setup presentation is used only when the HQ flag is disabled.
 
+During HQ startup, concurrent requests for the same full service status or
+package status share the in-flight inspection. Completed results are not
+cached: the next request checks again, including after an inspection fails.
+Setup still checks every required stage before continuing.
+
 HQ stores its resizable pane widths and context-pane visibility in the native
 Electron `userData/hq-layout-preferences.json` file. Drag a divider or focus it
 and use the arrow keys to resize; double-click a divider to reset its width.

@@ -7,6 +7,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { build } from "esbuild";
 import { storeDesktopLocalCredential } from "@koed/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -117,10 +119,27 @@ describe("Pi installed document Work Item tool", () => {
     process.env.KOED_MANAGED_DOC_EXECUTION_ID = executionId;
     process.env.KOED_MANAGED_DOC_EXECUTION_GENERATION = "2";
     process.env.KOED_MANAGED_DOC_API_URL = "http://127.0.0.1:32123";
-    process.env.KOED_MANAGED_DOC_HELPER_URL = new URL(
-      "../dist/work-items-from-doc-tool.js",
-      import.meta.url
-    ).href;
+    // Pi imports its installed helper through native ESM, outside Vitest's
+    // source aliases. Compile the real helper into this fixture instead of
+    // depending on stale workspace dist output in a fresh checkout.
+    const helperPath = join(ordinary.home, "work-items-from-doc-tool.mjs");
+    await build({
+      entryPoints: [
+        fileURLToPath(
+          new URL("../src/work-items-from-doc-tool.ts", import.meta.url)
+        )
+      ],
+      outfile: helperPath,
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      alias: {
+        "@koed/shared": fileURLToPath(
+          new URL("../../shared/src/index.ts", import.meta.url)
+        )
+      }
+    });
+    process.env.KOED_MANAGED_DOC_HELPER_URL = pathToFileURL(helperPath).href;
     const managed = await setup();
     expect(managed.tools.has("work_items_from_doc")).toBe(true);
     expect(managed.tools.has("flashcard_sources")).toBe(true);
