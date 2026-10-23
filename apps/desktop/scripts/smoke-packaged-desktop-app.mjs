@@ -429,7 +429,13 @@ const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
   ].join("\n\n");
 };
 
-const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
+const runPackagedCommand = (
+  layout,
+  koedHome,
+  args,
+  extraEnv = {},
+  timeoutMs
+) => {
   const result = spawnSync(
     layout.executable,
     [layout.runner, "node-script", layout.bundledCli, ...args],
@@ -437,7 +443,8 @@ const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
       cwd: layout.resourcesPath,
       env: createSmokeEnv(layout, koedHome, extraEnv),
       encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024
+      maxBuffer: 32 * 1024 * 1024,
+      ...(timeoutMs === undefined ? {} : { timeout: timeoutMs })
     }
   );
   return {
@@ -577,6 +584,87 @@ const assertInstalled = (payload, label) => {
       `${label} did not report install state: ${JSON.stringify(payload, null, 2)}`
     );
   }
+};
+
+const modelStatusInstalled = (kind, status) =>
+  status?.state === "installed" &&
+  (kind === "privacy" ? status.ok === true : status.ok !== false);
+
+export const preflightPackagedHqInspection = (
+  layout,
+  koedHome,
+  {
+    runCommand = runPackagedCommand,
+    now = performance.now.bind(performance),
+    onTiming = (label, durationMs) =>
+      console.error(
+        `[packaged-smoke] HQ inspector preflight ${label} finished in ${durationMs}ms`
+      )
+  } = {}
+) => {
+  const read = (
+    label,
+    args,
+    timeoutMs,
+    { allowMissingPackage = false } = {}
+  ) => {
+    const startedAt = now();
+    try {
+      const result = runCommand(layout, koedHome, args, {}, timeoutMs);
+      const payload = parseJsonOutput(label, result.stdout);
+      assertNoSourceCheckoutResolution(label, payload);
+      if (
+        result.status !== 0 &&
+        !(allowMissingPackage && payload?.state === "missing")
+      ) {
+        throw new Error(`${label} failed with exit status ${result.status}.`);
+      }
+      return payload;
+    } finally {
+      onTiming(label, Math.round(now() - startedAt));
+    }
+  };
+
+  const packageStatus = read(
+    "package status",
+    ["package", "status", "--json"],
+    60_000,
+    { allowMissingPackage: true }
+  );
+  if (
+    !(
+      (packageStatus?.ok === true &&
+        ["installed", "activated", "cleaned"].includes(packageStatus.state)) ||
+      packageStatus?.state === "missing"
+    )
+  ) {
+    throw new Error("HQ inspector preflight package status is not ready.");
+  }
+
+  const runtimeStatus = read(
+    "runtime status",
+    ["runtime", "status", "--provider", "packaged", "--json"],
+    60_000
+  );
+  if (runtimeStatus?.ok !== true || runtimeStatus.state !== "installed")
+    throw new Error("HQ inspector preflight runtime is not installed.");
+
+  for (const kind of ["embedding", "privacy"]) {
+    const modelStatus = read(
+      `${kind} model status`,
+      ["models", "status", "--kind", kind, "--json"],
+      60_000
+    );
+    if (!modelStatusInstalled(kind, modelStatus))
+      throw new Error(`HQ inspector preflight ${kind} model is not verified.`);
+  }
+
+  const status = read("status", ["status", "--json"], 120_000);
+  if (status?.ok !== true)
+    throw new Error("HQ inspector preflight daemon status is not healthy.");
+  assertPackagedDaemonReady(status, "HQ inspector preflight status");
+  if (status.lastVerification?.state !== "healthy")
+    throw new Error("HQ inspector preflight verification is not complete.");
 };
 
 const assertMissingAssets = (payload, label) => {
@@ -954,9 +1042,6 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   console.error(
     `[packaged-smoke] required model status diagnostics: ${modelStatusDiagnosticPath}`
   );
-  const modelStatusInstalled = (kind, status) =>
-    status?.state === "installed" &&
-    (kind === "privacy" ? status.ok === true : status.ok !== false);
   for (const kind of ["embedding", "privacy"]) {
     const modelStatus = runPackagedCommand(layout, koedHome, [
       "models",
@@ -1149,6 +1234,10 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   const doctorJson = verifiedSetup.doctor;
   const reconnectJson = verifiedSetup.reconnectStatus;
   finishPhase(timings, "packaged core and Codex setup", phaseStarted);
+
+  await measurePhase(timings, "production HQ inspector preflight", async () =>
+    preflightPackagedHqInspection(layout, koedHome)
+  );
 
   const packagedHqDefault = await measurePhase(
     timings,

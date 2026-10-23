@@ -16,6 +16,7 @@ import {
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import {
   assertNoSourceCheckoutResolution,
+  preflightPackagedHqInspection,
   waitForHealthyStatus
 } from "./smoke-packaged-desktop-app.mjs";
 
@@ -232,4 +233,89 @@ test("packaged smoke rejects source-checkout artifact resolution", () => {
       artifactPath: "/Applications/Koed.app/Contents/Resources/koed-runtime/api"
     })
   );
+});
+
+test("HQ inspector preflight checks real packaged statuses sequentially before GUI launch", () => {
+  const calls = [];
+  const timings = [];
+  const responses = [
+    { ok: false, state: "missing" }, // Bundled package fallback is healthy.
+    { ok: true, state: "installed" },
+    {
+      state: "installed",
+      message: "Embedding model checksum verified.",
+      modelPath: "/isolated/models/embedding.gguf"
+    },
+    {
+      ok: true,
+      state: "installed",
+      message: "Privacy model assets verified.",
+      modelPath: "/isolated/models/privacy"
+    },
+    {
+      ok: true,
+      ...healthyStatus(),
+      lastVerification: { state: "healthy" }
+    }
+  ];
+  preflightPackagedHqInspection({}, "/isolated", {
+    runCommand: (_layout, _home, args, _env, timeoutMs) => {
+      calls.push({ args, timeoutMs });
+      return {
+        status: 0,
+        stdout: JSON.stringify(responses[calls.length - 1])
+      };
+    },
+    now: () => calls.length * 5,
+    onTiming: (label, durationMs) => timings.push({ label, durationMs })
+  });
+  assert.deepEqual(
+    calls.map(({ args }) => args),
+    [
+      ["package", "status", "--json"],
+      ["runtime", "status", "--provider", "packaged", "--json"],
+      ["models", "status", "--kind", "embedding", "--json"],
+      ["models", "status", "--kind", "privacy", "--json"],
+      ["status", "--json"]
+    ]
+  );
+  assert.deepEqual(
+    calls.map(({ timeoutMs }) => timeoutMs),
+    [60_000, 60_000, 60_000, 60_000, 120_000]
+  );
+  assert.deepEqual(
+    timings.map(({ label, durationMs }) => [label, durationMs]),
+    [
+      ["package status", 5],
+      ["runtime status", 5],
+      ["embedding model status", 5],
+      ["privacy model status", 5],
+      ["status", 5]
+    ]
+  );
+});
+
+test("HQ inspector preflight stops on an unverified required model", () => {
+  const calls = [];
+  const responses = [
+    { ok: true, state: "installed" },
+    { ok: true, state: "installed" },
+    { state: "installed", message: "Verified", modelPath: "/embedding" },
+    { ok: false, state: "missing" }
+  ];
+  assert.throws(
+    () =>
+      preflightPackagedHqInspection({}, "/isolated", {
+        runCommand: (_layout, _home, args) => {
+          calls.push(args);
+          return {
+            status: 0,
+            stdout: JSON.stringify(responses[calls.length - 1])
+          };
+        },
+        onTiming: () => undefined
+      }),
+    /privacy model is not verified/
+  );
+  assert.equal(calls.length, 4);
 });
