@@ -19,8 +19,6 @@ precedence over its obsolete sharing, merging and Team-thread behavior.
   test files and unique test titles, or to the real two-user assertion records.
 - `scripts/hq-acceptance-parity.mjs` executes the owning harnesses and produces
   an assertion-level parity record. Unproved clauses remain explicit failures.
-- [The action catalogue review](hq-ui-action-parity.md) records the historical
-  controls and their current owners, overrides and unresolved coverage.
 
 Run the parity command after building the workspace. Use disposable PostgreSQL
 17 databases with pgvector and a role that can create the isolated child

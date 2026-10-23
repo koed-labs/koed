@@ -624,7 +624,7 @@ it("labels the enrolled Team principal as yourself when Personal and Team IDs di
     teamId,
     sender: {
       id: teamUserId,
-      displayName: "Jacobo",
+      displayName: "Alex",
       membershipState: "enabled"
     },
     senderKind: "user",
@@ -647,7 +647,7 @@ it("labels the enrolled Team principal as yourself when Personal and Team IDs di
           people: [
             {
               id: teamUserId,
-              displayName: "Jacobo",
+              displayName: "Alex",
               membershipState: "enabled"
             }
           ]
