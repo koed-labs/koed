@@ -1103,6 +1103,9 @@ const assertLatestSchema = async (pool) => {
       ["detached_generation", "integer", "NO"]
     ]
   };
+  const compareColumns = (a, b) =>
+    a.table_name.localeCompare(b.table_name) ||
+    a.column_name.localeCompare(b.column_name);
   const expectedColumns = Object.entries(columnsByTable)
     .flatMap(([table_name, columns]) =>
       columns.map(([column_name, data_type, is_nullable]) => ({
@@ -1112,11 +1115,7 @@ const assertLatestSchema = async (pool) => {
         is_nullable
       }))
     )
-    .sort(
-      (a, b) =>
-        a.table_name.localeCompare(b.table_name) ||
-        a.column_name.localeCompare(b.column_name)
-    );
+    .sort(compareColumns);
   const columns = await pool.query(
     `
     select required.table_name, required.column_name, actual.data_type, actual.is_nullable
@@ -1126,7 +1125,9 @@ const assertLatestSchema = async (pool) => {
     order by required.table_name, required.column_name`,
     [JSON.stringify(expectedColumns)]
   );
-  if (!isDeepStrictEqual(columns.rows, expectedColumns)) {
+  if (
+    !isDeepStrictEqual([...columns.rows].sort(compareColumns), expectedColumns)
+  ) {
     throw new Error(
       `Latest migration columns differ: ${JSON.stringify(columns.rows)}`
     );
