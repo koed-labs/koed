@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import {
   connect,
   redactLaunchOutput,
@@ -13,17 +14,24 @@ import {
 } from "./smoke-packaged-renderer-faults.mjs";
 
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
+const HQ_SURFACE_PHASE_TIMEOUT_MS = 180_000;
 
 export const waitForPackagedHqSurface = async ({
   readState,
   continueSetup,
   expectedSurface = "hq",
-  delayImpl = delay
+  delayImpl = delay,
+  nowImpl = () => performance.now()
 }) => {
   let state;
   let continuedSetup = false;
-  for (let attempt = 0; attempt < 300; attempt += 1) {
-    state = await readState();
+  let phaseStartedAt = nowImpl();
+  while (true) {
+    const candidate = await readState();
+    // A slow CDP read can finish after this phase's deadline. Keep the last
+    // in-budget state so a late shell or Continue button cannot pass the smoke.
+    if (nowImpl() - phaseStartedAt > HQ_SURFACE_PHASE_TIMEOUT_MS) break;
+    state = candidate;
     if (
       state?.hqEnabled === true &&
       (expectedSurface === "setup"
@@ -40,11 +48,15 @@ export const waitForPackagedHqSurface = async ({
     ) {
       await continueSetup();
       continuedSetup = true;
-      // Continue performs a new Native inspection and status refresh. Give
-      // that distinct phase the same bounded wait as initial inspection.
-      attempt = -1;
+      // Continue performs a fresh Native inspection and status refresh. Its
+      // phase gets the same 60s runtime + 120s check budget as initial setup.
+      phaseStartedAt = nowImpl();
+      continue;
     }
-    await delayImpl(100);
+    const remaining =
+      HQ_SURFACE_PHASE_TIMEOUT_MS - (nowImpl() - phaseStartedAt);
+    if (remaining <= 0) break;
+    await delayImpl(Math.min(100, remaining));
   }
   return state;
 };
