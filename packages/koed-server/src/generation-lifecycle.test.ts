@@ -376,6 +376,19 @@ describe("generation lifecycle", () => {
     expect((await readCurrentGeneration(paths)).id).toBe(newer.id);
   });
 
+  it("accepts SemVer prerelease upgrades and rejects return to earlier numeric prerelease", async () => {
+    const paths = pathsForTest();
+    const numeric = await stage(paths, "1.0.0-alpha.1");
+    const named = await stage(paths, "1.0.0-alpha.beta");
+    await activateGeneration(paths, numeric.id, owner);
+    await activateGeneration(paths, named.id, owner);
+    expect((await readCurrentGeneration(paths)).id).toBe(named.id);
+    await expect(activateGeneration(paths, numeric.id, owner)).rejects.toThrow(
+      /generation downgrades/
+    );
+    expect((await readCurrentGeneration(paths)).id).toBe(named.id);
+  });
+
   it("pins selected generation for process lifetime and blocks activation/cleanup", async () => {
     const paths = pathsForTest();
     const current = await stage(paths, "0.9.0");

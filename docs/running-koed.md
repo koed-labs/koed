@@ -196,7 +196,10 @@ paths. Source-checkout development retains source paths. Desktop-owned
 activation remains fail-closed until Desktop uses its validated private
 supervisor channel; environment flags cannot assert Desktop ownership.
 
-Empty production component trust roots remain blocked, and staging a verified
+This build includes the approved component public key; missing roots still fail
+closed. Remote signer authorization is independent of that configuration. The
+planned move to versioned manifest pins is described in
+[ADR 0057](adr/0057-versioned-component-manifest-pins.md). Staging a verified
 generation does not activate it.
 
 ### Explicit component provisioning
