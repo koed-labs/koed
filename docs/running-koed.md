@@ -620,6 +620,21 @@ Project metadata store, requires the stored absolute path to still exist, and
 uses the platform show-in-folder operation. The renderer cannot submit an
 arbitrary local path or fall back to opening a `file://` URL.
 
+### AI Client subscription usage in Desktop
+
+Settings › Agents shows a Usage table above Connections for connected AI
+Clients. Codex reports its default five-hour and weekly buckets; when a
+model-specific bucket applies, the table adds a short note without combining
+the two limits. Claude Code reports a limit when its next run supplies a rate
+limit event. Pi does not share subscription usage. The model menu shows a short
+line for each AI Client and links to Settings › Agents.
+
+The table shows provider-reported values and their observation age. A reading
+whose reset time has passed shows “—” until a new reading arrives. The refresh
+button runs a bounded Codex check and reports whether it succeeded, failed, or
+is unsupported. Claude Code updates on its next run. Koed does not estimate
+usage between readings.
+
 ### Managed Conversation permissions
 
 Migration `0037` requires an explicit alpha reset if managed execution records

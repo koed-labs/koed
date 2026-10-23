@@ -412,6 +412,14 @@
   padding: 6px 9px;
   font-size: 13px;
 }
+.hq-conversation-menu__usage {
+  padding: 3px 9px 6px;
+  color: var(--hq-muted);
+  font-size: 12px;
+}
+.hq-conversation-menu__usage--low {
+  color: var(--hq-heat-4);
+}
 .hq-conversation-menu p {
   color: var(--hq-muted, #a6aca5);
   font-size: 12px;

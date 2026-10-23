@@ -18,6 +18,12 @@ const unit = (file, title) => ({
   title,
   titleMatch: "exact-leaf-unique-in-file"
 });
+const hq521Native = (assertion) => ({
+  key: `HQ-521 native ${assertion}`,
+  runner: "apps/desktop/scripts/validate-hq521-native.mjs",
+  reportPath: "scratch/hq-521/HQ521.native.json",
+  proofId: assertion
+});
 const integration = (title, record) => ({
   kind: "hq713-record",
   file: real,
@@ -26,6 +32,117 @@ const integration = (title, record) => ({
 });
 
 export const ownedAcceptanceSuites = [
+  {
+    id: "U521.1",
+    clause:
+      "U1: Native Settings Agents puts usage above Connections and renders reported provider windows, bucket notes and restrictions.",
+    proof: [
+      hq521Native("U1"),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/hq-usage-model.test.ts",
+        "keeps Codex windows and model buckets distinct"
+      ),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/hq-usage-model.test.ts",
+        "uses Claude allowed without inventing a percentage and identifies Opus"
+      )
+    ]
+  },
+  {
+    id: "U521.2",
+    clause:
+      "U2: Native table reports age and source details, and refresh status reflects the actual Codex result.",
+    proof: [
+      hq521Native("U2"),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/HqUsageTable.test.tsx",
+        "reports refresh outcomes truthfully"
+      )
+    ]
+  },
+  {
+    id: "U521.3",
+    clause:
+      "U3: Native AI Client menu exposes usage lines and See usage opens Settings Agents.",
+    proof: [
+      hq521Native("U3"),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/HqUsageMenu.test.tsx",
+        "shows a usage line under each AI Client and opens Settings usage"
+      ),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/HqUsageMenu.test.tsx",
+        "colors the selected model's usage rather than the first model's usage"
+      )
+    ]
+  },
+  {
+    id: "N521.19",
+    clause:
+      "N19: Providers with no reading show unknown or not shared without a fabricated percentage.",
+    proof: [
+      hq521Native("N19"),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/hq-usage-model.test.ts",
+        "does not infer that a provider with no reading is fine"
+      )
+    ]
+  },
+  {
+    id: "N521.24",
+    clause:
+      "N24: Passed resets and stale observations never appear as zero or current fine usage.",
+    proof: [
+      hq521Native("N24"),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/hq-usage-model.test.ts",
+        "shows no percentage after reset or for unknown readings"
+      )
+    ]
+  },
+  {
+    id: "N521.34",
+    clause:
+      "N34: Distinct reported buckets, restrictions and Claude overage remain conservative.",
+    proof: [
+      unit(
+        "apps/desktop/src/renderer/hq/usage/hq-usage-model.test.ts",
+        "keeps Codex windows and model buckets distinct"
+      ),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/hq-usage-model.test.ts",
+        "keeps a more constrained global or overage weekly limit ahead of Opus"
+      ),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/hq-usage-model.test.ts",
+        "shows no percentage after reset or for unknown readings"
+      )
+    ]
+  },
+  {
+    id: "N521.35",
+    clause:
+      "N35: Completion re-reads, authority changes discard late results, invalidation resets refresh, and listeners unsubscribe.",
+    proof: [
+      hq521Native("N35"),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/HqUsageTable.test.tsx",
+        "subscribes before reading, then updates when a probe completes"
+      ),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/HqUsageTable.test.tsx",
+        "drops a response from an earlier authority and unsubscribes"
+      ),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/HqUsageTable.test.tsx",
+        "clears a pending refresh on account change and ignores its late checked result"
+      ),
+      unit(
+        "apps/desktop/src/renderer/hq/usage/HqUsageTable.test.tsx",
+        "clears pending refresh state when the usage stream invalidates"
+      )
+    ]
+  },
   {
     id: "U520.1",
     clause:

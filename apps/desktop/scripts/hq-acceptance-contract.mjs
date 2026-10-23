@@ -719,6 +719,62 @@ export const hqAcceptanceContract = [
     harness: "unit"
   },
   {
+    id: "U521.1",
+    category: "positive",
+    description:
+      "HQ-521 U1: Settings Agents usage table shows provider rows, reported windows, distinct Codex buckets and restrictions",
+    owners: ["HQ-521"],
+    harness: "native-desktop"
+  },
+  {
+    id: "U521.2",
+    category: "positive",
+    description:
+      "HQ-521 U2: reported freshness, source and reset details with truthful Codex refresh outcomes",
+    owners: ["HQ-521"],
+    harness: "native-desktop"
+  },
+  {
+    id: "U521.3",
+    category: "positive",
+    description:
+      "HQ-521 U3: AI Client model menu shows usage and See usage opens Settings Agents",
+    owners: ["HQ-521"],
+    harness: "native-desktop"
+  },
+  {
+    id: "N521.19",
+    category: "unit",
+    description:
+      "HQ-521 N19: missing provider readings are unknown or not shared, never estimated",
+    owners: ["HQ-521"],
+    harness: "unit"
+  },
+  {
+    id: "N521.24",
+    category: "unit",
+    description:
+      "HQ-521 N24: passed resets and stale readings never show zero or qualify as fine",
+    owners: ["HQ-521"],
+    harness: "unit"
+  },
+  {
+    id: "N521.34",
+    category: "unit",
+    description:
+      "HQ-521 N34: provider buckets, restrictions, overage and unknown values stay conservative",
+    owners: ["HQ-521"],
+    harness: "unit"
+  },
+  {
+    id: "N521.35",
+    category: "unit",
+    description:
+      "HQ-521 N35: usage updates respect account authority, completion, refresh and unsubscribe",
+    owners: ["HQ-521"],
+    harness: "unit"
+  },
+  {
     id: "U520.2",
     category: "unit",
     description:

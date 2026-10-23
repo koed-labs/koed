@@ -165,6 +165,7 @@ export function HqSettings(props: HqSettingsProps) {
             <HqSettingsAgents
               statusStore={props.statusStore}
               localAiClients={props.localAiClients}
+              authorityKey={props.personalMemoryAuthorityKey ?? ""}
             />
           </>
         ) : null}

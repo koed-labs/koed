@@ -6,6 +6,7 @@ import type {
 } from "@koed/shared/personal-desktop";
 
 import { App } from "./renderer/App.js";
+import { createHq521UsageFixture } from "./hq-usage-browser-fixture.js";
 import {
   COLLABORATION_DEFAULT_LIMITS,
   COLLABORATION_CONTRACT_VERSION,
@@ -53,6 +54,9 @@ import {
 } from "./renderer/hq/onboarding/onboarding-preference.js";
 
 const FIXTURE_ID = "hq-approved-map-fixture-v1";
+const hq521Capture =
+  new URLSearchParams(window.location.search).get("hq521Capture") === "yes";
+const hq521Usage = hq521Capture ? createHq521UsageFixture() : null;
 const FIXTURE_TIME = "2026-10-19T09:00:00.000Z";
 const SIDEBAR_FIXTURE_TIME = "2026-10-19T12:00:00.000Z";
 const hq108Overflow =
@@ -2009,6 +2013,7 @@ const installSettingsDesktop = () => {
     ...(hq603Capture ? { scheduledJobs: hq603ScheduledJobs } : {}),
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
     ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
+    ...(hq521Usage ? { localAiClients: hq521Usage.api } : {}),
     ...(hq106Capture || hq702Capture
       ? { personalMemory: sidebarPersonalMemoryApi }
       : {}),
@@ -2639,6 +2644,41 @@ const hq104ManagedConversations = {
   }),
   targets: async () => ({ operation: "targets", devices: [] })
 } as unknown as ManagedConversationDesktopApi;
+
+const hq521ManagedConversations: ManagedConversationDesktopApi = {
+  ...hq104ManagedConversations,
+  launchOptions: async () => {
+    const response = await hq104ManagedConversations.launchOptions();
+    const codex = response.options.instances[0]!;
+    return {
+      ...response,
+      options: {
+        ...response.options,
+        instances: [
+          codex,
+          {
+            ...codex,
+            instanceId: "claude.fixture",
+            driverId: "claude" as const,
+            displayName: "Claude",
+            models: [
+              { ...codex.models[0]!, id: "claude-opus", displayName: "Opus" }
+            ]
+          },
+          {
+            ...codex,
+            instanceId: "pi.fixture",
+            driverId: "pi" as const,
+            displayName: "Pi",
+            models: [
+              { ...codex.models[0]!, id: "pi-fixture", displayName: "Pi" }
+            ]
+          }
+        ]
+      }
+    };
+  }
+};
 
 const hq204ManagedConversations = {
   ...hq104ManagedConversations,
@@ -5584,6 +5624,14 @@ export function HqValidationApp() {
         }
       ).__koedHq711VisibilityFixture = hq711VisibilityFixture;
     window.__koedHqFixture = fixture;
+    if (hq521Usage)
+      (
+        window as Window & {
+          __koedHq521Usage?: ReturnType<
+            typeof createHq521UsageFixture
+          >["control"];
+        }
+      ).__koedHq521Usage = hq521Usage.control;
     if (hq701Capture)
       (
         window as Window & { __koedHq701Trace?: typeof hq701Trace }
@@ -5625,6 +5673,13 @@ export function HqValidationApp() {
     document.documentElement.dataset.browserValidationReady = "true";
     return () => {
       restoreDesktop();
+      delete (
+        window as Window & {
+          __koedHq521Usage?: ReturnType<
+            typeof createHq521UsageFixture
+          >["control"];
+        }
+      ).__koedHq521Usage;
       delete (window as Window & { __koedHq603Trace?: typeof hq603Trace })
         .__koedHq603Trace;
       delete (window as Window & { __koedHq306Trace?: typeof hq306Trace })
@@ -5673,15 +5728,17 @@ export function HqValidationApp() {
       personalMemoryApi={sidebarPersonalMemoryApi}
       projectsApi={sidebarProjectsApi}
       managedConversations={
-        hq308Capture
-          ? hq308ManagedConversations
-          : hq503Capture
-            ? hq503ManagedConversations
-            : hq207Capture
-              ? hq207ManagedConversations
-              : hq204Capture
-                ? hq204ManagedConversations
-                : hq104ManagedConversations
+        hq521Capture
+          ? hq521ManagedConversations
+          : hq308Capture
+            ? hq308ManagedConversations
+            : hq503Capture
+              ? hq503ManagedConversations
+              : hq207Capture
+                ? hq207ManagedConversations
+                : hq204Capture
+                  ? hq204ManagedConversations
+                  : hq104ManagedConversations
       }
       managedProject={hq405Capture ? hq405ManagedProject : null}
       statusReadyOverride

@@ -79,6 +79,12 @@ import { ManagedTextActions } from "./ManagedTextActions.js";
 import { CitedAnswer, CitationDetail } from "./Citations.js";
 import { citationAliasBatches } from "./citation-alias-batches.js";
 import { HqVisibilityLine } from "./HqVisibilityLine.js";
+import { useHqUsage } from "../usage/use-hq-usage.js";
+import {
+  usageMenuLine,
+  usageCell,
+  usageForWindow
+} from "../usage/hq-usage-model.js";
 import {
   hqVisibilityIdentity,
   useHqConversationVisibility,
@@ -115,7 +121,11 @@ export function HqConversationSettings({
   onChange,
   locked,
   disabled,
-  permissionOnly = false
+  permissionOnly = false,
+  localAiClients,
+  usageAuthorityKey = "",
+  usageRefreshKey,
+  onSeeUsage
 }: {
   options: ManagedConversationLaunchOptions | null;
   selection: HqSelection;
@@ -123,6 +133,10 @@ export function HqConversationSettings({
   locked?: boolean;
   disabled?: boolean;
   permissionOnly?: boolean;
+  localAiClients?: DesktopApi["localAiClients"];
+  usageAuthorityKey?: string;
+  usageRefreshKey?: string;
+  onSeeUsage?: () => void;
 }) {
   const instance = options?.instances.find(
     (item) => item.instanceId === selection.instanceId
@@ -131,6 +145,12 @@ export function HqConversationSettings({
   const supported = instance?.capabilities.permissionModes ?? [];
   const [moreModes, setMoreModes] = useState(false);
   const [modelList, setModelList] = useState(false);
+  const usage = useHqUsage(
+    localAiClients,
+    usageAuthorityKey,
+    modelList && !permissionOnly,
+    usageRefreshKey
+  );
   const efforts = model?.supportedReasoningEfforts ?? [];
   const effortIndex = Math.max(0, efforts.indexOf(selection.reasoningEffort));
   const effortButtons = useRef<Array<HTMLButtonElement | null>>([]);
@@ -292,28 +312,85 @@ export function HqConversationSettings({
                         chooseModel(instanceId, modelId);
                     }}
                   >
-                    {options?.instances.map((client) => (
-                      <DropdownMenuGroup key={client.instanceId}>
-                        <DropdownMenuLabel>
-                          {client.displayName}
-                        </DropdownMenuLabel>
-                        {client.models.map((item) => (
-                          <DropdownMenuRadioItem
-                            className="hq-conversation-menu__item"
-                            key={`${client.instanceId}:${item.id}`}
-                            value={`${client.instanceId}\u0000${item.id}`}
-                            disabled={
-                              !client.ready ||
-                              (locked &&
-                                client.instanceId !== selection.instanceId)
-                            }
+                    {options?.instances.map((client) => {
+                      const usageModel =
+                        client.instanceId === selection.instanceId
+                          ? selection.model
+                          : (client.models[0]?.id ?? "");
+                      return (
+                        <DropdownMenuGroup key={client.instanceId}>
+                          <DropdownMenuLabel>
+                            {client.displayName}
+                          </DropdownMenuLabel>
+                          <div
+                            className={`hq-conversation-menu__usage${
+                              (() => {
+                                const source =
+                                  client.driverId === "codex"
+                                    ? "codex_app_server"
+                                    : client.driverId === "claude"
+                                      ? "claude_agent_sdk"
+                                      : null;
+                                const own = usage.readings.filter(
+                                  (reading) =>
+                                    reading.instanceId === client.instanceId
+                                );
+                                return (
+                                  source &&
+                                  ["five", "week"].some(
+                                    (window) =>
+                                      usageCell(
+                                        usageForWindow(
+                                          own,
+                                          source,
+                                          window as "five" | "week",
+                                          usageModel
+                                        ).primary
+                                      ).low
+                                  )
+                                );
+                              })()
+                                ? " hq-conversation-menu__usage--low"
+                                : ""
+                            }`}
                           >
-                            {item.displayName ?? item.id}
-                          </DropdownMenuRadioItem>
-                        ))}
-                      </DropdownMenuGroup>
-                    ))}
+                            {usageMenuLine(
+                              client.displayName,
+                              client.driverId === "codex"
+                                ? "codex_app_server"
+                                : client.driverId === "claude"
+                                  ? "claude_agent_sdk"
+                                  : null,
+                              usage.readings.filter(
+                                (reading) =>
+                                  reading.instanceId === client.instanceId
+                              ),
+                              usageModel
+                            )}
+                          </div>
+                          {client.models.map((item) => (
+                            <DropdownMenuRadioItem
+                              className="hq-conversation-menu__item"
+                              key={`${client.instanceId}:${item.id}`}
+                              value={`${client.instanceId}\u0000${item.id}`}
+                              disabled={
+                                !client.ready ||
+                                (locked &&
+                                  client.instanceId !== selection.instanceId)
+                              }
+                            >
+                              {item.displayName ?? item.id}
+                            </DropdownMenuRadioItem>
+                          ))}
+                        </DropdownMenuGroup>
+                      );
+                    })}
                   </DropdownMenuRadioGroup>
+                  {onSeeUsage ? (
+                    <DropdownMenuItem onClick={onSeeUsage}>
+                      See usage <ChevronRight size={14} />
+                    </DropdownMenuItem>
+                  ) : null}
                   {locked ? (
                     <p>Start a new Conversation to change AI Client.</p>
                   ) : null}
@@ -446,7 +523,11 @@ function Composer({
   privateProjectHq,
   visibility,
   contextLabel,
-  onClearContext
+  onClearContext,
+  localAiClients,
+  usageAuthorityKey,
+  usageRefreshKey,
+  onSeeUsage
 }: {
   value: string;
   setValue: (value: string) => void;
@@ -473,6 +554,10 @@ function Composer({
   visibility: HqVisibility;
   contextLabel?: string | null;
   onClearContext?: () => void;
+  localAiClients?: DesktopApi["localAiClients"];
+  usageAuthorityKey?: string;
+  usageRefreshKey?: string;
+  onSeeUsage?: () => void;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const [cursor, setCursor] = useState(value.length);
@@ -636,6 +721,10 @@ function Composer({
             locked={locked}
             disabled={busy || active || settingsDisabled}
             permissionOnly={privateProjectHq}
+            localAiClients={localAiClients}
+            usageAuthorityKey={usageAuthorityKey}
+            usageRefreshKey={usageRefreshKey}
+            onSeeUsage={onSeeUsage}
           />
           {privateProjectHq ? (
             <span className="hq-project-conversation__status">Auto</span>
@@ -675,6 +764,8 @@ export function HqBlankConversation({
   variant = "blank",
   api,
   localAiClients,
+  usageAuthorityKey,
+  onSeeUsage,
   projects,
   project,
   onProjectChange,
@@ -688,6 +779,8 @@ export function HqBlankConversation({
   projects: readonly DesktopProject[];
   project: DesktopProject | null;
   localAiClients?: DesktopApi["localAiClients"];
+  usageAuthorityKey?: string;
+  onSeeUsage?: () => void;
   onProjectChange: (id: string) => void;
   lifecycle: ManagedConversationLifecycle;
   managedProject: ManagedProjectDesktopApi | null;
@@ -989,6 +1082,9 @@ export function HqBlankConversation({
           onProjectChange={launchAttempted ? undefined : onProjectChange}
           options={options}
           selection={selection}
+          localAiClients={localAiClients}
+          usageAuthorityKey={usageAuthorityKey}
+          onSeeUsage={onSeeUsage}
           onSelectionChange={
             launchAttempted
               ? () => undefined
@@ -1038,6 +1134,9 @@ export function HqBlankConversation({
 
 export function HqActiveConversation({
   api,
+  localAiClients,
+  usageAuthorityKey,
+  onSeeUsage,
   privateProjectHq = false,
   privateProjectHqTeamName,
   privateProjectHqIdentity,
@@ -1076,6 +1175,9 @@ export function HqActiveConversation({
   helperAgents = []
 }: {
   api: ManagedConversationDesktopApi | null;
+  localAiClients?: DesktopApi["localAiClients"];
+  usageAuthorityKey?: string;
+  onSeeUsage?: () => void;
   privateProjectHq?: boolean;
   privateProjectHqTeamName?: string | null;
   privateProjectHqIdentity?: ManagedConversationIdentity;
@@ -2924,6 +3026,14 @@ export function HqActiveConversation({
           projectId={project.id}
           options={options}
           selection={selection}
+          localAiClients={localAiClients}
+          usageAuthorityKey={usageAuthorityKey}
+          usageRefreshKey={
+            runtime?.latestCommand?.state === "completed"
+              ? runtime.latestCommand.id
+              : undefined
+          }
+          onSeeUsage={onSeeUsage}
           onSelectionChange={(value) => {
             if (!sendLocked && resumeStatus === "ready" && recoveryReady) {
               setSelection(value);

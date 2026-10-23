@@ -12,14 +12,17 @@ import {
   type IntegrationMutationCommand
 } from "./integration-model.js";
 import { HqSettingRow, HqSettingsDialog } from "./HqSettings.js";
+import { HqUsageTable } from "../usage/HqUsageTable.js";
 
 type Driver = "codex" | "claude" | "pi";
 export function HqSettingsAgents({
   statusStore,
-  localAiClients
+  localAiClients,
+  authorityKey = ""
 }: {
   statusStore: DesktopStatusStore;
   localAiClients?: DesktopApi["localAiClients"];
+  authorityKey?: string;
 }) {
   const snapshot = useDesktopStatus(statusStore);
   const [pending, setPending] = useState<IntegrationMutationCommand | null>(
@@ -133,6 +136,10 @@ export function HqSettingsAgents({
   );
   return (
     <>
+      <HqUsageTable
+        localAiClients={localAiClients}
+        authorityKey={authorityKey}
+      />
       <section aria-label="AI Client integrations">
         <h3 className="hq-settings__eyebrow">Connections</h3>
         {error || snapshot.error ? (

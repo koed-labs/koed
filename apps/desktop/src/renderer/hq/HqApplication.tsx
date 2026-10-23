@@ -3069,6 +3069,10 @@ export function HqApplication({
                 variant={route.kind === "home" && !blankOpen ? "now" : "blank"}
                 api={managedConversations ?? null}
                 localAiClients={localAiClients}
+                usageAuthorityKey={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}:${visibilityRevision ?? ""}`}
+                onSeeUsage={
+                  renderSettings ? () => openSettings("agents") : undefined
+                }
                 projects={projects}
                 project={
                   projects.find(({ id }) => id === blankProjectId) ?? null
@@ -3281,6 +3285,11 @@ export function HqApplication({
             personalMemoryStore ? (
             <HqActiveConversation
               key={route.sessionId}
+              localAiClients={localAiClients}
+              usageAuthorityKey={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}:${visibilityRevision ?? ""}`}
+              onSeeUsage={
+                renderSettings ? () => openSettings("agents") : undefined
+              }
               agentsApi={agentsApi}
               helperAgents={ownedAgents}
               visibilityClient={visibilityClient}

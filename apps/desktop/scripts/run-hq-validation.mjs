@@ -636,6 +636,48 @@ try {
     }
   }
   if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-521", "HQ521.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq521-electron-profile-")
+    );
+    try {
+      const result = spawnSync(
+        electronPath,
+        ["scripts/validate-hq521-native.mjs"],
+        {
+          cwd: desktopDir,
+          env: { ...process.env, KOED_HQ521_USER_DATA_DIR: profile },
+          stdio: "inherit",
+          timeout: 60_000
+        }
+      );
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ521.native", owner: "HQ-521", status: "pass" }
+        );
+        assert.deepEqual(report.assertions, [
+          "U1",
+          "U2",
+          "U3",
+          "N19",
+          "N24",
+          "N34",
+          "N35"
+        ]);
+        assert.ok(report.screenshots.includes("model-menu-light.png"));
+        assert.ok(report.screenshots.includes("settings-usage-light.png"));
+        assert.ok(report.screenshots.includes("settings-usage-dark.png"));
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
     const reportPath = resolve(scratchDir, "hq-520", "HQ520.native.json");
     await rm(reportPath, { force: true });
     const profile = await mkdtemp(
