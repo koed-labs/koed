@@ -300,6 +300,12 @@ describe("SetupChecklist", () => {
 
     const dialog = document.body.querySelector('[role="dialog"]');
     expect(dialog?.textContent).toContain("Set up Koed on this computer?");
+    expect(dialog?.textContent).toContain(
+      "Bundled-local setup installs and verifies local models."
+    );
+    expect(dialog?.textContent).toContain(
+      "External-service setup checks the configured model services."
+    );
     expect(run).not.toHaveBeenCalled();
     const confirm = [...dialog!.querySelectorAll("button")].find(
       (button) => button.textContent === "Set up Koed"

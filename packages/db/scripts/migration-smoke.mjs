@@ -1285,6 +1285,64 @@ const runScenario = async (name, callback) => {
   );
 };
 
+// Current-build acceptance does not require a historical database upgrade.
+if (process.argv.includes("--current-schema-only")) {
+  try {
+    const journal = await loadMigrationJournal();
+    const records = await migrationRecords(migrationsFolder, journal.entries);
+    await runScenario("clean-current-schema-and-restart", async () => {
+      const target = await createDisposableDatabase("current_schema");
+      await withPool(target.url, async (pool) => {
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, records);
+        await assertCurrentSchema(pool);
+        const owner = randomUUID();
+        await pool.query("insert into users (id,email) values ($1,$2)", [
+          owner,
+          `${owner}@example.test`
+        ]);
+        const before = {
+          schema: await schemaFingerprint(pool),
+          users: (await pool.query("select * from users order by id")).rows
+        };
+        await runDbMigrations(pool);
+        await assertMigrationLedger(pool, records);
+        await assertCurrentSchema(pool);
+        const after = {
+          schema: await schemaFingerprint(pool),
+          users: (await pool.query("select * from users order by id")).rows
+        };
+        if (!isDeepStrictEqual(after, before)) {
+          throw new Error(
+            "Current-schema restart changed schema or retained data"
+          );
+        }
+      });
+    });
+    console.log(
+      JSON.stringify(
+        {
+          status: "passed",
+          scope: "current-schema",
+          migrations: records.length,
+          latestTag: journal.entries.at(-1).tag,
+          scenarios: results
+        },
+        null,
+        2
+      )
+    );
+  } finally {
+    for (const database of disposableDatabases) {
+      await admin.query(
+        `drop database if exists ${quoteIdentifier(database)} with (force)`
+      );
+    }
+    await admin.end();
+  }
+  process.exit(0);
+}
+
 try {
   const journal = await assertAlphaMigrationContract();
   const pre0020Folder = await createMigrationSlice(journal, pre0020LastIndex, {

@@ -1,3 +1,4 @@
+import { resolveTakeoverSelectionTarget } from "../src/selection-sharing-source-availability.js";
 import type pg from "pg";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -119,6 +120,50 @@ describe.skipIf(!originUrl || !receiverUrl)(
       expect((await receiverRuntime.retainVerified(original)).applied).toBe(
         true
       );
+      const localProjectId = (
+        await receiverPool.query<{ local_project_id: string }>(
+          "select local_project_id from personal_membership_entities where owner_user_id=$1 and project_identity=$2 and entity_kind='project'",
+          [receiver.userId, empty.projectId]
+        )
+      ).rows[0]!.local_project_id;
+      const targetClient = await receiverPool.connect();
+      try {
+        const expected = {
+          kind: "project" as const,
+          project: { ownerUserId: receiver.userId, projectId: empty.projectId }
+        };
+        expect(
+          await resolveTakeoverSelectionTarget(targetClient, receiver.userId, {
+            kind: "project",
+            project: { ownerUserId: receiver.userId, projectId: localProjectId }
+          })
+        ).toEqual(expected);
+        expect(
+          await resolveTakeoverSelectionTarget(
+            targetClient,
+            receiver.userId,
+            expected
+          )
+        ).toEqual(expected);
+        expect(
+          await resolveTakeoverSelectionTarget(targetClient, receiver.userId, {
+            kind: "project",
+            project: {
+              ownerUserId: receiver.userId,
+              projectId: independent.projectId
+            }
+          })
+        ).toBeNull();
+        expect(
+          await resolveTakeoverSelectionTarget(
+            targetClient,
+            origin.userId,
+            expected
+          )
+        ).toBeNull();
+      } finally {
+        targetClient.release();
+      }
       const received = await receiverRepo.listNamedPersonalProjects(receiver);
       expect(
         received.filter((project) => project.name === "Equal name")
@@ -167,6 +212,17 @@ describe.skipIf(!originUrl || !receiverUrl)(
         );
         expect(state.rows[0]!.state).toBe("conflict");
         expect(state.rows[0]!.heads).toHaveLength(2);
+        const client = await pool.connect();
+        try {
+          expect(
+            await resolveTakeoverSelectionTarget(client, actor.userId, {
+              kind: "project",
+              project: { ownerUserId: actor.userId, projectId: empty.projectId }
+            })
+          ).toBeNull();
+        } finally {
+          client.release();
+        }
       }
       const conflicted = (
         await receiverRepo.listNamedPersonalProjects(receiver)

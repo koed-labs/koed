@@ -151,6 +151,12 @@ const rawItemForObservation = (input: {
   position: number;
 }): CodexTranscriptRawItem => {
   const itemDiscriminator = input.parsed.itemDiscriminator;
+  const itemKey = codexTranscriptItemKey({
+    sourceSessionId: input.adapter.sourceSessionId ?? "unknown-session",
+    transcriptPosition: input.position,
+    itemDiscriminator,
+    recordHash: input.recordHash
+  });
   return {
     sourceKind: "codex",
     sourceAdapterVersion: codexTranscriptAdapterVersion,
@@ -159,7 +165,7 @@ const rawItemForObservation = (input: {
     externalSessionId: input.adapter.sourceSessionId,
     externalThreadId: input.adapter.sourceSessionId,
     externalTurnId: input.assignedTurnId,
-    externalItemId: input.observation.externalItemId,
+    externalItemId: input.observation.externalItemId ?? itemKey,
     sourceRecordType: input.observation.sourceRecordType,
     sourceEventType: input.observation.sourceEventType,
     sourceLineNumber: input.observation.sourceLineNumber,
@@ -170,12 +176,7 @@ const rawItemForObservation = (input: {
     rawJson: input.observation.record,
     rawText: input.parsed.item?.content ?? input.observation.fallbackRawText,
     sourceHash: hash({ recordHash: input.recordHash, itemDiscriminator }),
-    idempotencyKey: codexTranscriptItemKey({
-      sourceSessionId: input.adapter.sourceSessionId ?? "unknown-session",
-      transcriptPosition: input.position,
-      itemDiscriminator,
-      recordHash: input.recordHash
-    }),
+    idempotencyKey: itemKey,
     projectionStatus: "pending",
     projectionVersion: codexTranscriptAdapterVersion,
     metadata: observationMetadata(input)

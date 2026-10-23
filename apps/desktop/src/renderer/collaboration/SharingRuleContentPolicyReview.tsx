@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
   noPrivacyLabelsPolicy,
-  privacyLabels,
-  type PrivacyLabel,
-  type PrivacyLabelPolicy,
-  type SharingRuleContentPolicyReview as ContentReview,
-  type SharingRuleDelivery
+  privacyLabels
+} from "@koed/shared/collaboration";
+import type {
+  PrivacyLabel,
+  PrivacyLabelPolicy,
+  SharingRuleContentPolicyReview as ContentReview,
+  SharingRuleDelivery
 } from "@koed/shared";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 import { failureMessage } from "./collaboration-primitives.js";
@@ -190,7 +192,7 @@ export function SharingRuleContentPolicyReview({
           </p>
           {review.disclosureIncrease ? (
             <p>
-              This policy may share more content. Native approval is required.
+              This policy may share more content. Fresh approval is required.
             </p>
           ) : null}
           <button

@@ -24,6 +24,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type {
   CollaborationApprovalReview,
+  SnapshotConversionScope,
   EncryptedPayloadEnvelope,
   ManagedConversationTargetReadinessEvidence,
   PrivacyLabelPolicy,
@@ -7159,7 +7160,7 @@ export const sharedMemoryCandidatePreviews = pgTable(
     check(
       "shared_memory_candidate_previews_values_check",
       sql`${table.previewRevision} = 1
-        and ${table.authoritySource} in ('browser_session','device_action_grant','continuous_consent')
+        and ${table.authoritySource} in ('browser_session','device_action_grant','continuous_consent','sharing_rule')
         and ${table.sourceRevision} >= 0
         and ${table.itemCount} between 1 and 100
         and ${table.excludedItemCount} >= 0
@@ -7200,6 +7201,7 @@ export const pendingShareOperations = pgTable(
     mutationId: uuid("mutation_id").notNull(),
     requestHash: text("request_hash").notNull(),
     logicalGrantId: uuid("logical_grant_id").notNull(),
+    reviewedGrantVersion: integer("reviewed_grant_version"),
     consentId: uuid("consent_id").notNull(),
     authoritySource: text("authority_source").notNull(),
     authorityReferenceId: uuid("authority_reference_id").notNull(),
@@ -7287,6 +7289,10 @@ export const pendingShareOperations = pgTable(
     )
   },
   (table) => [
+    check(
+      "pending_share_reviewed_grant_version_check",
+      sql`${table.reviewedGrantVersion} is null or ${table.reviewedGrantVersion}>0`
+    ),
     foreignKey({
       columns: [table.sourceRevisionId, table.logicalMemoryId],
       foreignColumns: [
@@ -7392,7 +7398,7 @@ export const pendingShareOperations = pgTable(
         and ${table.authoritySource} in ('browser_session','device_action_grant','sharing_rule')
         and ((${table.lastControlMutationId} is null and ${table.lastControlAction} is null)
           or (${table.lastControlMutationId} is not null and
-              ${table.lastControlAction} in ('retry','pause','resume','revoke')))
+              ${table.lastControlAction} in ('retry','pause','resume','revoke','stop_direct')))
         and length(${table.requestHash}) = 64 and length(${table.previewHash}) = 64
         and length(${table.sourceHash}) = 64`
     ),
@@ -7455,11 +7461,16 @@ export const pendingSharingRuleAdmissions = pgTable(
     admissionKind: text("admission_kind")
       .notNull()
       .default("conversation_create"),
+    portableSourceHash: text("portable_source_hash"),
+    snapshotConversion: jsonb(
+      "snapshot_conversion"
+    ).$type<SnapshotConversionScope>(),
     membershipId: uuid("membership_id"),
     expectedAuthorityVersion: integer("expected_authority_version"),
     expectedMembershipVersion: integer("expected_membership_version"),
     publisherFence: bigint("publisher_fence", { mode: "number" }),
     membershipRequestHash: text("membership_request_hash"),
+    existingSourceReadmission: jsonb("existing_source_readmission"),
     publisherCredentialId: uuid("publisher_credential_id")
       .notNull()
       .references(() => deviceCredentials.id, { onDelete: "restrict" }),
@@ -7468,6 +7479,18 @@ export const pendingSharingRuleAdmissions = pgTable(
     createdAt: now()
   },
   (table) => [
+    check(
+      "pending_existing_source_readmission_check",
+      sql`${table.existingSourceReadmission} is null or (${table.admissionKind}='repository_member' and jsonb_typeof(${table.existingSourceReadmission})='object')`
+    ),
+    check(
+      "pending_rule_portable_source_check",
+      sql`${table.portableSourceHash} is null or (${table.admissionKind}='conversation_create' and ${table.portableSourceHash} ~ '^[a-f0-9]{64}$')`
+    ),
+    check(
+      "pending_snapshot_conversion_check",
+      sql`${table.snapshotConversion} is null or (${table.admissionKind}='conversation_create' and jsonb_typeof(${table.snapshotConversion})='object')`
+    ),
     uniqueIndex("pending_sharing_rule_creation_unique")
       .on(table.ruleId)
       .where(sql`${table.admissionKind}='conversation_create'`),
@@ -8130,6 +8153,7 @@ export const teamMemorySharingRuleMembers = pgTable(
     ruleId: uuid("rule_id").notNull(),
     ownerUserId: uuid("owner_user_id").notNull(),
     logicalMemoryId: uuid("logical_memory_id").notNull(),
+    portableSourceHash: text("portable_source_hash"),
     state: text("state").notNull().default("present"),
     membershipVersion: integer("membership_version").notNull().default(1),
     selectionSnapshotVersion: uuid("selection_snapshot_version"),
@@ -8168,6 +8192,13 @@ export const teamMemorySharingRuleMembers = pgTable(
     unique("team_memory_rule_members_source_unique").on(
       table.ruleId,
       table.logicalMemoryId
+    ),
+    uniqueIndex("team_memory_rule_members_portable_source_unique")
+      .on(table.ruleId, table.portableSourceHash)
+      .where(sql`${table.portableSourceHash} is not null`),
+    check(
+      "team_memory_rule_members_portable_source_check",
+      sql`${table.portableSourceHash} is null or ${table.portableSourceHash} ~ '^[a-f0-9]{64}$'`
     ),
     unique("team_memory_rule_members_rule_unique").on(table.id, table.ruleId),
     check(
@@ -12918,7 +12949,9 @@ export const collaborationSharingRuleDeliveries = pgTable(
         onDelete: "cascade"
       }),
     mutationId: uuid("mutation_id").notNull(),
-    ruleId: uuid("rule_id").notNull(),
+    ruleId: uuid("rule_id"),
+    sourceLogicalMemoryId: uuid("source_logical_memory_id"),
+    teamWorkspaceId: uuid("team_workspace_id"),
     operationKind: text("operation_kind")
       .notNull()
       .default("conversation_create"),
@@ -12956,6 +12989,15 @@ export const collaborationSharingRuleDeliveries = pgTable(
     uniqueIndex("csm_rule_delivery_pending_creation_unique")
       .on(table.enrollmentId, table.ruleId)
       .where(sql`${table.state}='queued' and ${table.shareGrantId} is null`),
+    uniqueIndex("csm_owner_delivery_pending_exclusion_unique")
+      .on(
+        table.enrollmentId,
+        table.sourceLogicalMemoryId,
+        table.teamWorkspaceId
+      )
+      .where(
+        sql`${table.state}='queued' and ${table.operationKind} in ('workspace_exclude','workspace_restore')`
+      ),
     index("csm_rule_delivery_claim_idx").on(
       table.state,
       table.availableAt,
@@ -12970,7 +13012,18 @@ export const collaborationSharingRuleDeliveries = pgTable(
       "csm_rule_delivery_destination_check",
       sql`(${table.operationKind}='control' and ${table.shareGrantId} is not null and ${table.logicalGrantId} is null)
         or (${table.operationKind}='conversation_create' and ${table.shareGrantId} is null and ${table.logicalGrantId} is not null)
-        or (${table.operationKind} in ('repository_create','repository_control','detail','content_policy') and ${table.shareGrantId} is null and ${table.logicalGrantId} is null)`
+        or (${table.operationKind} in ('repository_create','repository_control','detail','content_policy','publisher_takeover') and ${table.shareGrantId} is null and ${table.logicalGrantId} is null)
+        or (${table.operationKind} in ('workspace_exclude','workspace_restore') and ${table.logicalGrantId} is null)`
+    ),
+    check(
+      "csm_owner_delivery_target_check",
+      sql`(
+      ${table.operationKind} in ('workspace_exclude','workspace_restore') and ${table.ruleId} is null
+        and ${table.sourceLogicalMemoryId} is not null and ${table.teamWorkspaceId} is not null
+    ) or (
+      ${table.operationKind} not in ('workspace_exclude','workspace_restore') and ${table.ruleId} is not null
+        and ${table.sourceLogicalMemoryId} is null and ${table.teamWorkspaceId} is null
+    )`
     ),
     check(
       "csm_rule_delivery_state_check",
@@ -12978,7 +13031,7 @@ export const collaborationSharingRuleDeliveries = pgTable(
     ),
     check(
       "csm_rule_delivery_failure_check",
-      sql`${table.failureCode} is null or ${table.failureCode} in ('offline','remote_unavailable','authority_unavailable','conflict','response_invalid')`
+      sql`${table.failureCode} is null or ${table.failureCode} in ('offline','remote_unavailable','source_unavailable','authority_unavailable','conflict','response_invalid')`
     ),
     check(
       "csm_rule_delivery_payload_check",
@@ -16153,6 +16206,91 @@ export const personalModelActivations = pgTable(
     check(
       "personal_model_activation_version_check",
       sql`${table.contractVersion}>0`
+    )
+  ]
+);
+
+// A Workspace veto outlives individual sharing reasons and their controls.
+export const teamMemoryWorkspaceExclusions = pgTable(
+  "team_memory_workspace_exclusions",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    logicalMemoryId: uuid("logical_memory_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    teamWorkspaceId: uuid("team_workspace_id").notNull(),
+    version: integer("version").notNull().default(1),
+    state: text("state").notNull().default("excluded"),
+    excludedAt: timestamp("excluded_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    restoredAt: timestamp("restored_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.logicalMemoryId, table.ownerUserId],
+      foreignColumns: [logicalMemories.id, logicalMemories.ownerUserId],
+      name: "team_memory_workspace_exclusion_owned_source_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "team_memory_workspace_exclusion_destination_fk"
+    }).onDelete("restrict"),
+    unique("team_memory_workspace_exclusion_owner_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    unique("team_memory_workspace_exclusion_scope_unique").on(
+      table.ownerUserId,
+      table.logicalMemoryId,
+      table.teamWorkspaceId
+    ),
+    check(
+      "team_memory_workspace_exclusion_state_check",
+      sql`${table.state} in ('excluded','restored') and (${table.state}='excluded')=(${table.restoredAt} is null)`
+    ),
+    check(
+      "team_memory_workspace_exclusion_version_check",
+      sql`${table.version}>0`
+    )
+  ]
+);
+
+export const teamMemoryWorkspaceExclusionMutations = pgTable(
+  "team_memory_workspace_exclusion_mutations",
+  {
+    mutationId: uuid("mutation_id").primaryKey(),
+    exclusionId: uuid("exclusion_id").notNull(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    operation: text("operation").notNull(),
+    requestHash: text("request_hash").notNull(),
+    resultVersion: integer("result_version").notNull(),
+    resultSnapshot: jsonb("result_snapshot").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.exclusionId, table.ownerUserId],
+      foreignColumns: [
+        teamMemoryWorkspaceExclusions.id,
+        teamMemoryWorkspaceExclusions.ownerUserId
+      ],
+      name: "team_memory_workspace_exclusion_mutation_owner_fk"
+    }).onDelete("restrict"),
+    unique("team_memory_workspace_exclusion_mutation_version_unique").on(
+      table.exclusionId,
+      table.resultVersion
+    ),
+    check(
+      "team_memory_workspace_exclusion_mutation_operation_check",
+      sql`${table.operation} in ('exclude','restore')`
+    ),
+    check(
+      "team_memory_workspace_exclusion_mutation_binding_check",
+      sql`${table.resultVersion}>0 and ${table.requestHash} ~ '^[a-f0-9]{64}$'`
     )
   ]
 );

@@ -6,10 +6,11 @@ slice is implemented, before dependent work relies on it. The User chose to
 omit the recommended minor changeset. Subsequent development and test Team
 Backends use the local Docker daemon, as requested by the User. No push, merge or deployment is implied.
 
-Current local status: P2-01 through P2-08 are complete.
-On 21 October 2026, the User approved the smaller operational alpha in the
-[current tickets](../tickets.md). P2-09 is deferred with partial implementation.
-P2-10 through P2-14 and the combined full-package gate are also deferred.
+The following alpha status records the accepted milestone. Current production
+progress is tracked in the [current tickets](../tickets.md) and the later
+production sections of this record. At alpha acceptance, P2-01 through P2-08
+were locally complete. On 21 October 2026, the User approved the smaller
+operational alpha, deferring P2-09 through P2-14 and the combined full-package gate.
 ALPHA-01 through ALPHA-05 are locally complete for the internal alpha trial.
 The native trial verified Conversation sharing, later Memory Events, completed
 LCM Leaves reaching the teammate, privacy masking, existing and future Git
@@ -1780,3 +1781,2021 @@ The updated alpha backend image built successfully and was loaded without a
 data reset. A normal owner Retry then completed the previously failed Project
 member: activated, complete, no error, revision 14 published, and Project reason
 active. No exhausted activation failure was logged after this retry.
+
+## PROD-01: Activation contention
+
+The local PostgreSQL diagnostic record identified a deadlock between preview
+preparation and target sync: preview held a source row while waiting for the
+shared device credential; sync held the credential while waiting for the source
+row. Repeated 40001 failures also occurred at the rule/member/consent authority
+query under a repeatable-read preview. Diagnostics were bounded to recent local
+logs and SQL shapes; this record retains no credentials or source content.
+
+The correction removes live source locks only from previews that own their
+repeatable-read snapshot and verifies existing immutable revision bindings
+without no-op rewrites. Inherited-isolation callers retain their locking path.
+Read-only Team and Workspace policy checks use shared locks. Both direct and
+rule activation have a three-attempt workflow limit for 40001/40P01. Generic
+activation failures no longer enter automatic companion repair.
+
+Simultaneous member admissions retain independent reasons on one destination
+grant, including when neither initially saw a grant. An uninterrupted audit
+sequence must prove additive admissions before an operation can recover across
+a newer grant version. Revocation, control and policy version changes cannot
+satisfy that proof. Every replay rechecks current authority. Exact candidate
+revision checks and stale-review rejection remain intact.
+
+A focused current-schema PostgreSQL 17 Docker run passed 25 repository cases
+(117 skipped) in 53 seconds. It covers direct 40001/40P01 recovery, persistent
+conflict exhaustion, immediate permission denial, credential revocation during
+recovery, bounded preview retries, the repeatable-read source snapshot with
+concurrent source-row updates, simultaneous rules against existing and newly
+created grants, a later signed source update racing with activation completion,
+both rules publishing revision 2 through normal reconciliation, revocation after
+an additive admission, independent concurrent Team destinations, companion
+creation, and six policy-edit lock-contention cases. No manual owner Retry was
+used in the new recovery or concurrent-admission cases. The Docker database was
+disposable and separate from the accepted alpha and its fixture.
+
+This is focused local repository evidence. It does not establish the PROD-06
+combined native journey, an external deployment, or a production release.
+
+A final focused rerun passed all four concurrent-admission and snapshot cases
+(138 skipped) after narrowing immutable-binding reuse to owned snapshot
+transactions and checking current authority before an additive-version replay.
+Database-package typechecking, test-source typechecking, targeted ESLint,
+Prettier, and whitespace checks passed. No broad suite, packaged build or
+changeset was added at this checkpoint. Continue with P2-10.
+
+## P2-10: Workspace Conversation exclusion
+
+Locally complete. The owner/source/Workspace exclusion has independent retained
+state and versioned mutation receipts. Native approval binds the exact owner,
+source, destination and versions. Desktop uses the existing encrypted delivery
+journal, waits for Team acknowledgment, then clears cached Team views and shows
+Excluded. Personal API Tokens cannot use the review or mutation routes.
+
+Focused checks against a disposable native ARM PostgreSQL fixture passed:
+
+- Exclusion after publication and after the owner loses Workspace Access,
+  exact replay, stale decisions and another owner's denial; Personal event data
+  remains unchanged and direct consent cannot restart publication.
+- Exclusion while the activation workflow is creating the companion: no late
+  activation or Team access survives the acknowledged exclusion.
+- Project publication with overlapping Folder and Git rules: published reads,
+  semantic recall and expansion of a previously returned candidate are denied.
+  An unrelated source remains readable until separately excluded. New source
+  admission is denied while the veto is active.
+- Two destinations for the same canonical source: excluding one leaves the
+  second Workspace readable and the owner-private replica active.
+- Two encrypted journal cases cover exact exclusion receipt validation,
+  restart/replay, owner isolation, encrypted credential/title custody, and the
+  existing control lease fencing.
+
+The final repository transaction rerun passed three cases (143 skipped), the
+overlapping-reason case passed (145 skipped), and the two-destination case
+passed in its focused run. Five focused HTTP/registry/Desktop cases and one
+native approval binding case passed. The selector delivery suite passed all 21
+small cases, including blocked admissions for Git, Folder and Project rules.
+The publisher retains its existing goal for a bounded inspection after 60 seconds;
+it neither prepares nor admits the excluded source.
+
+Shared, database, API, Desktop and test-source typechecks passed. Targeted lint,
+changed-file formatting and whitespace checks passed. No broad test suite,
+packaged build, changeset or external deployment was used for this checkpoint.
+This evidence does not complete P2-11 restoration or PROD-06's combined native
+journey and full selector/control matrix.
+
+## P2-11: Explicit exclusion removal and catch-up
+
+Locally complete. Restoration has a five-minute reviewed authority binding and
+requires native device approval in both HTTP and repository entry points. The
+retained exclusion version, source/destination, root grant, current rules,
+membership, consent and policies are rechecked under the existing transaction
+locks. Exact receipts survive retries without reapplying the mutation.
+
+Four focused disposable-DB lifecycle cases passed (145 skipped), using real
+scoped native Action Grants: active rules catch up a later source revision;
+paused and stopped rules remain unchanged and unreadable; no-rule restoration
+leaves direct snapshot consent revoked and publishes nothing. The paused case
+then explicitly resumes the rule without a new source revision and verifies
+normal preparation and publication of that same revision. Native approval is
+required even for an internal repository invocation. Stale decisions after rule
+controls and conflicting mutation replays are rejected.
+
+The combined selector case passed through native restoration (144 skipped in
+its five-case run). Project membership removed while excluded stays removed;
+restoring the source publishes nothing through that reason. Independent active
+Folder and Git reasons catch up another source without duplicate grants or new
+scope approval. Previously activated rule Shares return to active only after
+current authorized publication. Exclusion denial of old semantic candidates
+remains part of this same case.
+
+Three encrypted-journal cases passed (21 skipped), covering exclusion,
+restoration and existing rule controls across restart, exact receipt binding,
+owner isolation and protected title/credential custody. Focused native approval
+and registry checks passed. Three focused HTTP/Desktop checks passed (128
+skipped): Personal API Token and missing device approval denial, mismatched
+receipt rejection, and exclusion remaining visible during queued restoration
+until Team acknowledgment. A no-rule acknowledged restoration keeps the old
+snapshot unavailable.
+
+The implementation reuses normal preparation, Privacy work, publication and the
+existing encrypted journal. It adds no synthesis service, collection or delivery
+queue. The combined native multi-device journey remains PROD-06 work; these
+focused local checks do not establish release readiness.
+
+At the P2-11 integration checkpoint, shared, database, API, Desktop and test-source
+typechecks, targeted lint, formatting and whitespace checks passed. No changeset
+was added. Continue with PROD-02; the production goal remains open.
+
+## PROD-02: Normal LCM preparation
+
+The explicit preview helper previously compacted only the default
+`normal_embedding_lcm` class. Live captured sources use
+`live_capture_projection`, so their eligible fresh tails were not finalized by
+that request. Preparation now drains live, normal and historical classes for
+the selected session, with one total 1,000-call limit. It wakes the existing
+local summary service when it creates nodes. It does not close the captured
+Conversation, project an unfinished turn, or synthesize on the backend.
+
+The 13 focused candidate-preparation cases passed. Three disposable-DB boundary
+cases passed (273 skipped): live/historical class isolation, an unfinished agent
+turn remaining unsealed even under forced live-class preparation, and owner-only
+Approval Activity remaining outside semantic Memory. Current source-runtime
+preparation built successfully. A matching local Team fixture build and the
+configured AI Client publication check are in progress; this is not PROD-02
+completion evidence yet.
+
+PROD-02 is locally complete. The current source runtime and matching native ARM
+Team fixture image built successfully. The synthetic Cedar Conversation received
+one idempotent later turn through its managed Conversation prompt API. Its
+configured Codex client acknowledged the new 29-minute review window. The normal
+Desktop candidate-preview command finalized the two-event live tail and woke the
+existing local LCM Summary Service. That service submitted the new summary
+through the configured AI Client. No direct database preparation, forced summary
+submission script, new consent or publication workaround was used.
+
+The ordinary summary snapshot synced on its first attempt. Bob's authenticated
+Team `initial-view` returned HTTP 200 at source revision 22 with three LCM Leaves,
+including the new 29-minute window. The previously masked owner name remained
+absent from Team items. A read-only queue metadata check diagnosed progress;
+it did not change preparation, leases, sharing state or publication.
+
+The local embedding container was returning `LlamaServerError` during this run.
+One restart of that disposable dependency restored HTTP 200 embeddings without
+removing vectors or changing model, Privacy or permission settings. Some local
+embedding attempts had already exhausted retries; this run establishes the
+LCM preparation/synthesis/sync/publication path, not complete recovery of every
+pre-existing local embedding job. The broader recovery gate remains P2-13 and
+PROD-06.
+
+Two focused publication-authority cases also passed (147 skipped): real Project
+member LCM processing with pause, resume, stop and old-candidate denial, and
+concurrent Privacy work fenced after revocation. The 13 preparation cases and
+three database boundary cases remain valid. Source-runtime and fixture builds,
+targeted lint, formatting and whitespace checks passed. No broad suite or
+changeset was added. Continue with PROD-03.
+
+## PROD-03: both creation orders and independent snapshots
+
+Locally complete on 21 October 2026. A focused disposable PostgreSQL run passed
+seven cases: rule-first snapshot creation, a stale destination rejection,
+independent snapshot stop, the existing direct-first/native pending rule paths,
+and fresh-rule behavior after older whole-grant revocation. Five creation-order
+cases passed again after the final publication/replay fence changes. The new
+Pending Share is created through a native Action Grant; exact repeated acceptance
+returns the existing operation and does not duplicate the grant or contribution.
+
+The rule-first check publishes a raw fixed snapshot at revision 1 beside a
+rollup-only continuous rule, advances the rule to revision 2, and checks unchanged
+rule authority. Stopping the rule preserves the fixed snapshot; stopping only the
+snapshot denies its raw content and preserves the rule's revision-2 rollup.
+Non-owner stop and stale review are denied. The publication transaction retains
+the new representation as pending while the rule-created root remains active.
+
+The focused Desktop confirmation check passed. Native binding/policy checks
+passed (51 cases) and local-edge Action Grant mapping passed (21 cases).
+Shared test typechecking, Desktop typechecking, DB typechecking, targeted lint
+and diff checks passed. The general approval-policy catalog test exposed a
+sample-matrix gap for eight rule/exclusion actions. A subsequent bounded catalog
+update adds valid intents for all eight, retains exhaustive definition/schema
+equality, and validates every sampled intent before resolving its protected
+operation family. All 38 catalog cases pass. No broad harness expansion was added.
+
+The native supervisor was stopped before refreshing runtime outputs. Current
+source changes still require a managed source-runtime rebuild before live
+combined acceptance. No release artifact or changeset was produced.
+
+## PROD-04: accurate owner state
+
+Locally complete on 21 October 2026. Fifteen focused Desktop cases passed:
+failed preparation, Privacy filtering and publication each override an active
+rule's general label; a stopped snapshot retains the active contribution;
+existing terminal Privacy failure, refresh, transient-error recovery, selected
+row focus and retry refresh remain covered. Detail copy distinguishes current
+Personal preview, latest publication and fixed approval revisions, and explains
+independent retained access and Team acknowledgment.
+
+A focused repository case passed after giving the owned source a private title,
+Project name and Folder path. The owner summary retains the original title;
+Team representation reads exclude that private title and both metadata fields.
+Removed Workspace access still denies the owner preview while the durable reason
+remains inspectable. Targeted lint, formatting, Desktop typechecking and the
+managed source-runtime build passed. The owner-state build checkpoint fingerprint was
+`sha256:f4187b8e5d37a305d74b1c0d8d395b69c41680818c4f813b59d216c9170aa599`.
+The disposable native supervisor restarted and ordinary `/ready` returned 200.
+The existing Team Docker image has not yet been rebuilt for these source changes;
+matching packaged/Team artifacts and combined live validation remain PROD-05/06.
+
+An additional PROD-03 check also passed: a separately approved raw snapshot can
+activate a broader owner policy beside a rollup-only rule without changing that
+rule's authority, fixed publications or later updates.
+
+Before PROD-05, Koed returned uncertain acceptance without a task ID. Its receipt was not
+recoverable from the tool response. The initial text-based local lookup cannot
+establish acceptance because task requests are encrypted. A subsequent metadata
+lookup found the known previous receipt and no recent tasks for that same owner;
+collection of the known previous receipt confirmed restored Koed access. The new
+request initially remained unresolved. After a machine interruption, the User
+authorized one fresh retry following runtime recovery. That retry returned a
+task ID, was collected successfully, and found no relevant PROD-05 evidence.
+
+Recovery restored missing workspace dependencies with the frozen lockfile and
+rebuilt the source runtime. Docker required termination of a stalled backend
+before relaunch. Duplicate PROD-05 services remain stopped; the retained fixture
+uses one embedding service and one privacy service. Personal Memory and both
+retained Team API readiness endpoints returned HTTP 200. The source-runtime
+check passed with fingerprint
+`sha256:515803b66ee6c2a57a55f6ca9b2715bdf69b98b6bd37faa2d5008c16d494abfd`.
+These are recovery checks, not completion of packaged startup acceptance.
+
+The catalog-only follow-up changes a test source after the owner-state runtime
+checkpoint. Its 38 focused tests and targeted lint pass; production runtime
+outputs are unchanged. The next managed build must refresh the checkout
+fingerprint before another source-runtime restart.
+
+## PROD-05: Reproducible build and fresh startup checkpoint
+
+PROD-05 remains in progress. The following evidence is local development
+evidence; it does not establish external deployment or release readiness.
+
+The checked-in Team Dockerfile initially failed to compile `node-pty` on ARM64
+with Node 22. It now installs Python, Make and G++ in a separate build stage.
+The final service image excludes those tools. The actual API dependency resolves
+and spawns a native terminal successfully. The corrected Team image is
+`sha256:570a3d9b3ff58d71ca2151d0b9a68201daab2858e0231b32768b190d874c5dfc`.
+The embedding image is
+`sha256:c636510858159496b3520211f5cd422dee0c04d8c54432eb9543d881ad2aec48`.
+
+Artifact comparison found 15 obsolete JavaScript modules in Desktop that were
+absent from the clean Team image. TypeScript had retained outputs for deleted
+source files. Source-runtime preparation now clears compiled output and build
+state for its workspace closure after acquiring its lock and rejecting live
+supervisor leases. Workspace builds run serially. Desktop packaging uses this
+same preparation step. The deleted modules are absent after rebuilding. A
+comparison of the current service runtime files matches across API, Worker,
+server, database, Core, shared contracts, MCP Server, embedding and privacy
+services, including browser approval assets and prompts. Applied migration SQL
+and the journal also match. The comparison excludes type declarations, source
+maps, TypeScript build state, OS metadata and schema-generation snapshots omitted
+by packaging. It does not assert identical platform binaries or entire images.
+
+The macOS ARM64 package uses an ad-hoc development signature. Its current
+`app.asar` SHA-256 is
+`8b70e96a655471e1ef4b9abc3e5e483682b7865b472a812fc711bece857d3e97`.
+The local native asset staging used installed Homebrew assets. This proves local
+operation only: it does not prove portable redistributable native assets,
+Developer ID signing, notarization, or another supported platform. Those release
+inputs were not supplied or published.
+
+The standard server Compose file started against an isolated current-build
+database with all 70 migrations applied. Its normal `/models` mount used the
+verified Qwen3 0.6B model and the pinned Privacy Filter model cache. All services
+became healthy without the alpha's temporary model bridge. The production
+profile readiness check passed. Without WorkOS enabled, local authentication
+remains advertised by the supported Team Self-Hosted fallback; this is not
+evidence of verified WorkOS Team administration.
+
+For synthetic sign-in checks, the same disposable stack switched to the
+documented developer profile with the developer Team backend enabled. Keys and
+database identity were preserved. The guarded fixture seed validated seven
+Users, three Workspaces, fourteen memories and five collaboration threads.
+Alice's password sign-in and authenticated navigation returned 200. Anonymous
+navigation and an invalid password returned 401. After a clean Compose stop and
+restart, the existing browser session and Workspace data remained usable, and
+the fixture validation passed again. No historical database upgrade was tested.
+
+Packaged Desktop's Set up Koed flow displayed the new bundled-local versus
+external-service explanation. It completed normal model installation, started
+native services, provisioned its local API Token and passed final verification.
+API, database, queue, embedding, privacy, Local AI Runtime, API Token and MCP
+Server all reported healthy. The native device proof remained verified. A clean
+packaged CLI stop shut down native Postgres, embedding, privacy, API, Worker,
+Local AI Runtime and supervisor. Relaunch resumed the same current-build profile
+and `/ready` returned 200.
+
+Enrollment used documented upstream registration, capability refresh, explicit
+route policies and the exact local owner principal. The User approved the
+fixture enrollment after automatic approval review required action-time
+confirmation. Sign-in and approval ran in the in-app browser. Credential exchange
+completed and the native enrollment state reports `exchanged` with a configured
+credential. This is developer-fixture enrollment, not a WorkOS production proof.
+A subsequent unattended packaged CLI stop and daemon restart preserved that
+exchanged enrollment and configured credential. Core verification and `/ready`
+passed again, and the verified device identity was unchanged. No Keychain UI
+was used for this restart.
+
+Native window validation exposed a synchronous macOS Keychain wait. Draft-store
+provider selection is now deferred until use; missing draft reads and deletes
+do not initialize the provider. A provider error still rejects writes without
+falling back to weaker storage. The window appeared and setup completed, but a
+later process sample still found the main process in `SecItemCopyMatching`.
+Native UI automation then timed out. The User is away from the machine and
+instructed unattended continuation without depending on Keychain approval. The
+blocked GUI process was closed; the healthy packaged service runtime and
+exchanged enrollment remain available for CLI/API checks. Rebuilt ad-hoc signatures may
+request Keychain approval again; see Electron's
+[signing guidance for safeStorage](https://www.electronjs.org/docs/latest/api/safe-storage).
+This remaining native UI issue is not counted as a production pass.
+
+The bounded checks passed: thirteen source-runtime tests, seven draft-storage
+and startup tests, targeted lint, Electron typechecking, and relevant formatting.
+Existing setup-copy checks passed earlier. Drizzle generation now formats its
+metadata through the normal generation command; parsed metadata hashes remained
+unchanged by formatting, and migration consistency and formatting checks passed.
+No broad suite or changeset was added for this checkpoint.
+
+Reproduction follows the checked-in build and operation paths:
+
+1. Install frozen workspace dependencies. Build Desktop with
+   `pnpm desktop:package:mac`, providing native assets through the documented
+   `KOED_NATIVE_RUNTIME_SOURCE_DIR` input when bundling them. See
+   [native runtime assets](native-runtime-assets.md).
+2. Generate and retain one environment file, install models in the normal
+   `KOED_HOME` model directory, then use the checked-in
+   [server Compose instructions](../examples/server-compose/README.md).
+   Preserve all generated encryption and authentication values across restart.
+3. Launch packaged Desktop with a fresh Koed profile and isolated Electron UI
+   data, choose Set up Koed, and wait for final verification. Keep only one model
+   service pair running at a time on constrained development machines.
+4. Use the documented developer profile only for the disposable synthetic
+   fixture. Provision disposable fixture passwords privately. Review enrollment
+   in the in-app browser, exchange the approved credential, then stop and restart
+   the same deployment without resetting its data.
+
+At this checkpoint, native UI responsiveness and matching final artifacts
+remained outstanding. The 22 October checkpoint below supplies the final
+artifact identities. Native UI responsiveness remains open. WorkOS identity,
+portable native release assets, signing/notarization and external deployment
+evidence remain unavailable locally. The combined PROD-06 acceptance gate stays
+open.
+
+## PROD-05/06: Current-schema integration checkpoint, 22 October
+
+After the integration fixes below, Desktop and Team artifacts were rebuilt
+serially from the same current source. The
+executable files for API, Worker, server, database, Core, shared contracts, MCP
+Server, embedding and privacy matched across those artifacts. All 75 migration
+SQL files and the journal matched, ending at `0074_yellow_nightmare`. The macOS
+ARM64 development package passed strict signature and package-integrity checks,
+and its bundled CLI help ran without accessing Keychain secrets. The embedding
+image's service and Shared files match the same runtime checkpoint.
+
+| Artifact                                          | SHA-256                                                            |
+| ------------------------------------------------- | ------------------------------------------------------------------ |
+| macOS ARM64 `app.asar`                            | `fb6e7e8180045db9db3849e95352c807594c293a5e5e842c0799c4c87671d005` |
+| Team image                                        | `bdb0346fad06d5ebf311881a7913c8eb4bc636c2879d7d1bf575668552c1b35c` |
+| Embedding image                                   | `37f001d043cb73b2660642cfae385b56ebb7d9503fb9119f71583eaf5ce68cfc` |
+| Combined executable-component and schema identity | `fa64fdc5472ff0f3080422d511e774e2d1c6ee1f346940e9095f0d834b1ce90d` |
+
+These are local working-tree artifacts with an ad-hoc development signature.
+The comparison has the executable/schema scope described in the earlier
+checkpoint; it does not assert identical platform-native binaries. One embedding
+build exhausted Docker's disk cache. Reclaiming 14.46 GB of unused build cache
+allowed the normal build to complete. Images and data/model volumes were retained.
+
+A fresh isolated deployment followed the checked-in server Compose configuration
+with normal model mounts, new database volumes and one model-service pair.
+Public Privacy Filter cache files were reused in the normal model volume; no
+profile configuration, credentials or temporary model bridge were copied.
+All five final services became healthy under the stock Team Self-Hosted profile;
+readiness returned 200 and capabilities advertised that exact profile. The
+documented developer profile and developer
+Team backend switch supported the synthetic Users; this is local fixture
+evidence, not verified WorkOS identity or external deployment evidence.
+The guarded seed validated seven Users, three Workspaces, fourteen memories and
+five collaboration threads. The ordinary Worker embedded all ten active
+Team-visible representations. Alice and Bob signed in through HTTP and read
+authenticated navigation. Anonymous navigation was denied. Existing HTTP probes
+passed for browser-session and scoped-device representation reads, semantic
+recall, answer evidence, candidate expansion and graph denial. Local-edge routing
+remains unavailable without the enrolled local edge. Direct Personal API Token
+probes denied Team search, answers, expansion and graph reads. The full advertised
+Team Self-Hosted route inventory was tested separately under that profile:
+all 118 authority routes rejected the token, with nine 401 and 109 403 responses.
+The developer-profile inventory exposes only a smaller route subset and was not
+used to claim the full production matrix. Responses did not echo credentials.
+
+A clean shutdown stopped all five services successfully. Restarting the same
+developer fixture configuration and retained volumes preserved both sessions
+issued by this final build. Fixture integrity, authorized decryption, denial
+boundaries and all ten dimension-matched Team embeddings passed again. The
+standalone launch report marks backing tests `not_run` because those suites were
+collected separately in the phased execution described below.
+
+The existing encrypted backup helpers created and verified a same-build archive,
+rejected verification with a different archive key, and restored it into an
+isolated database with matching deployment encryption configuration. Comparisons
+covered all 262 public tables. The final runtime was quiesced, so every original
+row and value, including heartbeat timestamps, matched after excluding only the
+helper's exact added synthetic restore records.
+Original row identities and values matched, including eleven source consents,
+eleven grants, eleven direct reasons, representations, revocations and twelve
+retention policies, thirteen browser sessions and one Personal API Token created
+by the final artifact. The restored fixture passed its authorized encrypted reads
+and denial checks. This fixture has no selection-rule takeover or overlapping
+rule reasons: restoration of those combined native states remains open.
+
+The full launch command initially stopped on a stale assertion that migration
+0047 must be latest. Its migration gate now explicitly selects current-schema
+acceptance: apply the complete journal, verify the ledger and schema, create
+current data, rerun migrations, and verify unchanged schema and data. The
+75-migration check passed. Historical upgrade scenarios remain a separate command
+and are outside this work package.
+
+Realtime authorization fixtures also needed their current membership columns and
+a publication view bound to their temporary relations. Temporary tables now get
+explicit statistics because PostgreSQL autovacuum cannot analyze them. The
+production companion/realtime lookup bounds the publication view to the exact
+grant before joining its existing authorization predicates, avoiding multiplied
+source-binding branches during planning. Its four existing cumulative-detail,
+Curated Memory, downgrade and cross-Workspace cases passed in under two seconds
+without increasing their timeout or removing assertions. The required full
+collaboration suite also passed, including its 26 repository cases.
+
+The encrypted Personal regression slice exposed another planning delay in LCM
+inspection. The authorized event page is now materialized before linked-node
+metadata hydration. Existing owner, source, recursive-node and cursor checks
+remain intact. The disposable repository fixture also refreshes statistics after
+truncation so estimates from earlier cases do not trigger excessive JIT work.
+A timeout had let a still-running test restore its process profile during a later
+case; isolated checks confirmed that the encryption assertion was a cascade from
+that timeout. Five encryption regressions and five exact-node, provenance and
+cursor-order regressions now pass under the unchanged PostgreSQL JIT defaults
+and original test timeouts. JIT was disabled only for one diagnostic run.
+
+The final API gate found an out-of-date endpoint inventory and incomplete test
+environment isolation. The inventory now pins the twenty selector, publisher,
+detail and content-policy endpoints added by this work. Disposable child tests
+remove service encryption aliases as well as API-prefixed keys, so a test that
+deliberately omits a provider cannot inherit the deployment's valid provider.
+The parent fixture retains its own keys. The API, source-access, retrieval,
+hosted-operations and workflow-performance gates then passed.
+
+The server image intentionally omits Electron's binary payload. The existing
+standalone Desktop scripts ran on the host instead. They exposed renderer
+imports through the server-oriented Shared barrel, which evaluated Node-only
+hashing and binary helpers in the sandbox. The sharing editors now import values
+from the browser collaboration contract entry point; snapshot comparison uses
+the existing browser-safe canonical digest. Server cryptography, classifier
+identity, and secure credential storage remain unchanged. Nine focused browser
+contract/editor cases passed. The Project workspace, Folder, transfer,
+Conversation-card, collaboration and managed-preview scripts passed, including
+privacy-safe Team reads, owner-only previews, revision publication, independent
+controls, accessibility and stale-access purge. Assertions now use the accepted
+explicit published-revision, privacy-stage and failure wording. This is
+standalone synthetic renderer evidence, not the combined enrolled-device gate.
+
+Full formatting and workspace typechecking passed at this checkpoint. A single
+full lint process exceeded both the 1.5 GB and 3 GB heap limits. Bounded invocations
+of the same ESLint configuration then passed all 1,779 repository source files in
+23 batches with a 2 GB heap limit. The subsequently changed repository and
+fixture files passed an additional lint check. Native
+Desktop, the combined two-device journey, portable release assets,
+Developer ID signing/notarization, WorkOS and remote staging remain unverified.
+No Keychain approval, changeset, push, release or external deployment was used.
+
+The remaining production dispositions are:
+
+| Ticket          | Local evidence                                                                            | Remaining acceptance                                                                  |
+| --------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| PROD-01         | Concurrent activation, retries and current-authority denial                               | Combined journey                                                                      |
+| P2-10 / P2-11   | Workspace exclusion and reviewed restoration                                              | Combined retry, recovery and takeover intersections                                   |
+| PROD-02         | Normal AI Client LCM preparation and later Team publication                               | Combined queued exclusions and controls                                               |
+| PROD-03 / P2-12 | Independent creation orders and explicit snapshot conversion                              | Combined native controls and Source Access                                            |
+| PROD-04         | Accurate owner labels, source titles, refresh and reason controls                         | Combined native explanations                                                          |
+| P2-09A / P2-09B | Restrictive and explicitly approved broader policy changes                                | Combined native policy and exclusion interactions                                     |
+| P2-13           | Interrupted history, restart, exact receipts and convergence                              | Combined native recovery                                                              |
+| P2-14           | Native authority, publisher fencing, receiving identity and retained admissions           | Actual two-device transfer, former-publisher replay and source changes                |
+| PROD-05         | Matching artifacts, fresh current-schema Compose operation, package integrity and restart | Packaged native responsiveness and current enrolled-device journey                    |
+| PROD-06         | Same-build encrypted fixture restoration and applicable automated gates                   | Full combined native journey, restoration of combined rule state and release decision |
+
+Reuse the accepted P2-01 through P2-08 evidence. OS-protected native approval
+cannot be replaced by a browser fixture, repository test or weaker credential
+store. The User is away and cannot answer Keychain prompts, so the combined
+native gate remains unavailable unattended. WorkOS, remote staging, portable
+native release assets and release signing require their actual deployment inputs;
+local fixture success does not satisfy them. Production release-candidate
+readiness is not asserted, and publication remains a separate decision.
+
+## PROD-05: Resumed native installation, 22 October
+
+The User returned to the machine and made interactive approval available.
+The first resumed launches showed no Keychain prompt. Brief samples of the
+native main process showed its normal event loop rather than `SecItemCopyMatching`.
+The User subsequently confirmed approving a Keychain prompt. The earlier
+unattended Keychain limitation does not describe this resumed run.
+
+Native startup exposed a separate installation failure. Installed library links
+pointed into the previous app bundle. The preceding service-only package replaced
+that bundle without native resources, so `llama-server --version` failed to load
+`@rpath/libllama-common.0.dylib`. The Embedding Service reached its startup timeout.
+
+The packaged installer now preserves relative symlink targets when it copies
+native assets into `KOED_HOME/runtime`. A regression installs a linked library,
+removes its source component, and reads the installed library successfully. It
+also proves that the installed checksum and status remain valid. All thirteen
+packaged-runtime cases and targeted lint passed. No validation or credential
+protection was removed.
+
+Desktop was rebuilt through the documented native-asset input. The package
+passed signature and integrity checks. Normal packaged installation restored
+Postgres and llama.cpp in the disposable profile while retaining its database,
+identity, credentials and models. The installed library link is relative, and
+the native embedding model loaded successfully in about two seconds.
+Automatic transcript discovery is disabled only in the synthetic test launchers.
+
+The earlier trial profile's final check timed out in MCP diagnostics. Native
+acceptance moved to three fresh synthetic profiles: two devices for Alice and
+one for Bob. They have separate Personal databases, roles, generated encryption
+configuration, Codex homes and Electron data. They share one model-service pair
+through supported external dependency configuration. The test Compose override
+binds dependency ports only to loopback. The Team fixture database remains intact.
+
+Fresh external setup exposed a separate ordering failure. External embedding
+readiness comes from the local API, but the model stage ran before that API
+started. The external model stage now starts the normal managed local services
+before evaluating their existing model and Privacy readiness results. It does
+not install or start Operator-managed dependencies. Bundled-local model
+installation keeps its existing path. Four focused checks pass, including fresh
+external startup, rejected startup, existing local model installation and required
+Privacy health. Targeted lint, package compilation and integrity checks pass.
+
+The rebuilt Desktop `app.asar` SHA-256 is
+`a51aa5d4c61e0747799732b0cc1c9ab18711435f0c2be8e56afa37085da2b18b`.
+The matching Team image is
+`sha256:3dcd39dcc61df31793fbc9487bf90a78b88fa0b008b3e44030cc8c2892a10037`.
+All ten executable/schema components match again. The unchanged embedding image
+still matches the Shared and embedding service files. All 75 migrations remain
+unchanged. These identities supersede the earlier artifacts in this record.
+
+The first fresh native profile completed core setup and final verification. Its
+API, database, model services, Local AI Runtime and local API Token report
+healthy; device identity reports verified platform protection. The external test
+launcher supplies model-service credentials and the profile's API Token pepper
+explicitly, keeping credential setup consistent with the running API. The native
+Personal shell reports that Koed is ready. With the User's explicit approval,
+the local fixture accepted Alice's first device enrollment, and the local edge
+exchanged and validated its protected credential. Shutdown completed and the
+enrolled profile was relaunched. Startup and local authentication are healthy
+after restart. The native app recognizes Alice and the fixture Team, lists the
+prepared Shared Memory in Electron Team App, and displays Bob's Memory Event
+beside the two companion discussion messages. This completes the local PROD-05
+packaged-operation criterion. The remaining native profiles and the combined
+two-owner, two-Workspace, two-device journey remain in PROD-06.
+
+Alice's second native profile also completed core verification and exchanged its
+approved fixture credential. Its operator-provisioned migration schema needed
+ownership by that profile's existing database owner. This correction was limited
+to the disposable database; the runtime role received no global privileges.
+
+The combined journey then exposed a pairing-service startup defect. A healthy
+local Personal runtime using external dependencies did not start its owner-only
+request control socket, so Devices incorrectly reported that Koed needed to
+start. The supervisor now starts that service for local Personal runtime mode
+with either dependency mode. External server mode remains excluded. The
+private-interface listener still requires an explicit device request, and the
+existing encrypted exchange and signed enrollment checks remain unchanged.
+All 41 supervisor checks pass, including the real Unix control socket, shutdown
+cleanup, and exclusion of external server mode. Targeted lint passes. The native
+package was rebuilt and passed signature and integrity checks. Its `app.asar`
+SHA-256 is `746789c88ab61d6a705532dfb828e6ae7a5df752fdec4d48b8ab9dcf06bf5ba2`.
+The matching Team image is
+`sha256:325a2fca8588b34ed0d4e5c240996144ccb6f269a53de866784a7f7e4227f7bd`.
+All ten executable/schema components match. Only the server component changed;
+the other nine, including the 75-migration schema, are unchanged. These identities
+supersede the preceding resumed artifacts. The fixture services were restarted
+without reseeding, and Alice's second profile was relaunched for the native
+pairing retry. The combined gate remains open.
+
+The rebuilt second profile's supervisor reaches healthy core startup in about
+eleven seconds. Its owner-only pairing socket now responds with the expected
+no-pending-request result, replacing the earlier unavailable-service failure.
+The native main process subsequently waits in `SecItemCopyMatching` while the
+macOS approval agent is running. The User is away, so no approval or native UI
+pairing result is assumed. Protected identity and credential stores are retained;
+the remaining native journey awaits that OS approval.
+
+While the native approval is pending, the supported packaged daemon command
+starts Bob's fresh profile successfully. API, current-schema database, models,
+Local AI Runtime and local authentication report healthy. Under the User's
+existing explicit authorization for all three fixture enrollments, a separate
+synthetic Bob session approves his challenge through the fixture HTTP API.
+The resulting credential is bound to the fixture's Bob account and is exchanged
+and validated locally. This is API enrollment evidence; Bob's native UI has not
+been tested.
+
+Read-only checks verify three distinct server-confirmed device credential IDs.
+The two Alice profiles bind to Alice and each receive three Workspaces. Bob binds
+to Bob, receives two Workspaces and cannot see the Cloud Workspace where his
+access is disabled. Alice's first profile also restarts as a healthy packaged
+daemon on the rebuilt artifact. The original fixture data and all profile
+credential lineages remain intact. These checks prepare the combined journey;
+they do not replace native pairing, owner review or the outstanding combined-state
+restore proof.
+
+After Keychain approval, the second native app recovers and reports ready. Its
+Devices flow creates a pairing request successfully. The request retains its
+identity, waiting state and expiry through normal app shutdown and supported
+daemon restart. The first native app creates an empty Personal Device Group and
+reviews that exact request. Connection remains at the confirmation step pending
+the User's separate approval for Personal device access.
+
+The User then approved that test-device connection. The original ten-minute
+request had expired and was refused. A renewed request for the same receiving
+profile completed through the native review. Both profiles report the same
+signed group head and epoch, with two active members; the native Devices view
+shows Fixture Alice A and Fixture Alice B as paired. This proves enrollment,
+not delivery of source content.
+
+While that approval is pending, a bounded synthetic producer creates one source
+in Bob's isolated Personal profile through the production Transcript Watcher.
+The watcher ingests four source records without errors. The retained journal and
+canonical cursor both reach all 950 source bytes; the Captured Session has
+Personal visibility and a portable Git Anchor. Personal search uses semantic
+vectors and returns the two synthetic source items from that Session. This first
+fixture producer did not record a source-time Folder observation, so the original
+Folder correctly remains unresolved. It is not evidence for Folder selection.
+Subsequent synthetic sources use the normal capture-context observation function
+before capture. The existing unresolved origin is preserved.
+
+After pairing, three new synthetic Alice sources captured twelve records without
+errors. Each has a distinct, known original Folder and the same portable Git
+Anchor. Their completed turns exposed two integration defects before successful
+replication could be claimed. The joining supervisor woke the worker before
+binding its runtime to the local User. The wake now follows that binding, as in
+the existing Desktop path; all eleven pairing-client checks pass and require that
+ordering. A normal post-binding wake restored signed capability negotiation on
+the existing test devices.
+
+Codex records without provider item ids also lacked the stable source item id
+required by Personal publication. The transcript adapter now retains its existing
+deterministic record key as the fallback source id. It does not infer a provider
+semantic identity or alter Projection eligibility. Eleven adapter checks pass,
+including replay, segment boundaries, distinct repeated records and preserved
+provider ids. All 62 watcher checks pass with normal filesystem access. The
+sandbox run reached the filesystem watcher handle limit and is not counted as a
+pass. Targeted lint passes. A native rebuild is in progress; replication and the
+combined native gate remain open. Existing test records are retained as evidence
+of the earlier failure and are not rewritten as a compatibility migration.
+
+The next native run exposed connection starvation on the receiving API. Several
+relay wake listeners remained leased while their durable mailbox checks waited
+for database capacity. Disconnect handling was installed only after those
+checks. The held-wake route now installs notification, disconnect and deadline
+handling before the check and races it against those wake signals. All eleven
+relay-route cases pass, including real loopback disconnects and notifications
+while the mailbox check is deliberately pending. The existing signed request,
+current membership and durable read checks remain required. The combined gate
+remains open until this correction is packaged and exercised on both devices.
+
+The corrected package materialized all three fresh sources on Alice's second
+device. Each replica is ready with four source items and a distinct local
+Session. Authenticated Session reads return 200 in milliseconds. Original Folder
+identity and paths, signed originating owner and logical Session identity are
+preserved; the receiving projection uses its own local User scope as designed.
+This is delivery evidence, but final inbox acknowledgment remains open: an older
+package can retry after a newer package has advanced the same origin cursor.
+The worker now reads its authenticated recipient cursor and skips an unnecessary
+backward write. Replica data planes expose only their requesting recipient's
+signed cursor read, using the same current membership validation as cursor
+writes. The server's backward-write rejection remains unchanged. Thirty worker
+runtime checks and eleven relay-route checks pass, including out-of-order and
+large cursor values, malformed cursor denial and replica read boundaries. The
+final native retry and matching-artifact refresh remain outstanding.
+
+Both profiles report healthy API, database, Worker and Privacy readiness on that
+package. Personal semantic search on the receiving profile returns the synthetic
+primary source using vector retrieval. Separate configuration inboxes exposed a
+completion-state mismatch: verified non-source packages do not pass through the
+source materialization transition, so their completion was rejected. The worker
+now marks that verified non-source outcome explicitly after materialization and
+ACK. Completion keeps the current worker lease and null source-retention binding;
+source-package completion retains its original checks. All eleven worker service
+cases pass. The real PostgreSQL reconciliation case also passes, including
+unverified completion, wrong-worker and repeated-completion denial alongside
+existing source materialization checks. Previously failed test inboxes are kept
+as failure evidence; no quarantine or security check is reset to claim success.
+
+After a further rebuilt-app Keychain prompt, the User approved macOS access and
+the native UI resumed. A queued synthetic turn initially failed because Docker's
+disk was full. Removing only unused, rebuildable build cache older than one hour
+freed about 9.8 GB; database volumes and profile stores were retained. Retrying the
+existing transcript consumed exactly its three queued records without appending
+another turn. Both native profiles then reported healthy local services.
+
+The native UI created the private Project `Synthetic release acceptance` and
+included one current synthetic Conversation. A normal owner-scoped runtime wake
+refreshed the recipients' expired capability advertisements. The later source
+turn reached acknowledgment, and new non-source inboxes completed successfully.
+Both profiles return the same Project catalog and revision. Receiving membership
+uses its own local Session and preserves the signed original source reference.
+These are native creation and encrypted configuration delivery results; the
+manual wake does not prove idle recovery.
+
+Idle recipients had no configuration-capability refresh until new work woke
+them. New work could itself require a fresh recipient advertisement, leaving a
+publication cycle pending. Configuration advertisements now refresh through the
+existing one-minute peer-maintenance path, before checking whether a direct
+endpoint exists. The same path is tested without a peer endpoint, with immediate
+duplicate refresh suppressed and a later refresh after a minute. Thirty runtime
+checks and eleven service checks pass, and targeted lint passes. Capability
+expiry and signed current-membership validation are unchanged. Packaged idle
+acceptance passes: after 203 seconds without a manual wake, a new synthetic turn
+arrived on the second device through normal encrypted delivery. All three
+Conversations retain their signed source identity and original Folder context.
+A private Project catalog and its included Conversation also converge between
+devices. The rebuilt Desktop and Team artifacts match across all ten runtime
+components, with 75 current migrations; the local Team services were refreshed
+without reseeding or replacing encryption keys.
+
+The first native Shares load exposed incomplete stock fixture companions: two
+Alice-owned fixture grants had no discussion, although the owner list reported
+Workspace content available. Creating those two synthetic discussions through
+the supported scoped-device API completed the fixture data; it did not reset
+fixture state or weaken response validation. Combined native sharing and
+takeover acceptance remains open. Alice's native candidate preview to Electron
+was correctly denied because write access alone does not grant owned-Memory
+sharing permission. A fixed Memory Events snapshot to her authorized Cloud
+Workspace completed browser consent in the in-app browser. Source delivery
+remained pending while Sync was disabled. The User explicitly approved adding
+Sync to all three disposable profiles; normal replacement enrollment retained
+their device identities and fixture principals and added only that family.
+The accepted snapshot recovered through normal source preparation and became
+active at its exact approved revision, with its source title restored. Native
+Git Anchor creation then exposed a local binding defect: Team authenticated the
+replacement device credential, but local enrollment validation checked only the
+unchanged owner and backend. Local delivery still referenced the retired
+credential and rejected the approved operation before any rule-creation request
+reached Team. Enrollment checks now optionally require the server-confirmed
+credential ID, and the native control path supplies it. A mismatch reuses the
+existing verified enrollment-rotation path and retires previous local authority.
+Sixty-five API checks, thirty-one real-database authority checks and targeted
+lint pass. A missed API interface declaration was caught by packaging and aligned
+with the database contract. The active snapshot also passes current-fixture
+read and semantic-recall checks: Carol receives its new synthetic content, while
+Bob's disabled Cloud membership and non-member Frank receive 403 without content.
+The authorized response exposes no local Folder path or private Project name.
+The rebuilt packaged API now reads the three owner Shares successfully with
+one active local enrollment matching the server-confirmed replacement credential.
+The previous credential is no longer locally bound; background startup had
+completed rebinding before the explicit read. Matching Desktop and Team runtime
+components and all 75 migrations were recorded again, and the local fixture was
+refreshed without reseeding. A new rebuilt-app Keychain wait was confirmed by
+a bounded native sample and cleared by the User. The same-build app restart
+then reached healthy startup. Native Git rule delivery and combined native
+acceptance remain open; a subsequent local connection reset is being diagnosed
+while the direct fixture credentials continue to authenticate.
+
+## P2-13: Expired and unavailable history checkpoint
+
+The reconciliation catch path discarded a failed proposal but retained its
+expired or unavailable change cursor. Every later attempt could fail on that
+same cursor without starting a replacement baseline. Abandoning such a scan now
+clears the retry cursor while retaining the installed generation and source
+delivery state.
+
+Six focused repository cases pass for Git Anchor, exact Folder and private
+Project selectors, each with expired and unavailable history. Expiry uses a
+25-hour clock advance. Missing history removes only the selected disposable
+cursor. Immutable cursor records are not rewritten. Each case proves that the
+old complete generation survives the failed scan, a new complete baseline can
+commit, and an ambiguous remote request retains its exact mutation, request
+hash and body through recovery and subsequent source changes. Existing checks
+continue to fence obsolete source leases and recover the exact receipt.
+
+Fresh stop initiation also has an explicit supported boundary. A new stop
+requires the existing current online Action Grant review. An offline or
+temporarily unavailable review now explains that the User must connect and
+that Team access may remain until approval and acknowledgment. Four focused
+renderer-client checks cover Conversation and selection-rule stops; no native
+approval callback or execution command is issued after the failed review.
+Previously approved queued controls keep their existing durable retry path.
+This does not add fully offline approval.
+
+A further combined encrypted-journal regression passes for a simulated 25-hour
+outage with two Workspaces. It reconstructs the journal and reconciler, preserves
+the committed baselines, retries an approved queued stop with its original intent,
+and catches up one addition and one removal in the other Workspace. It also
+retains two later Memory Events, preserves stopped versus active state, and
+proves stable stop receipts and no duplicate source work after convergence.
+This check uses validated synthetic Team acknowledgments: it does not prove
+remote content publication or read-back of the later Memory Events. Targeted
+lint and test typechecking pass.
+
+The repository checks used their isolated test database. The current-build
+CLI/API fixture journey below completes the actual publication and read-back
+portion. Native UI acceptance remains in PROD-06.
+
+## P2-09A: Active policy processing checkpoint
+
+A focused repository regression now extends the existing paused-history checks
+with an active rule. It prepares a later source revision explicitly, claims its
+Privacy work, then applies a reviewed restrictive amendment through a real
+native Action Grant. The old representation immediately becomes unreadable;
+the old processing targets cannot be read or claimed. Exact amendment replay
+returns the same receipt, while a changed mutation with the stale review fails.
+Reprocessing publishes revision 2 under the restricted content policy. Merely
+reviewing a broader proposal leaves the published policy unchanged. Executing
+its fresh reviewed amendment restores the prior content policy without changing
+active state or owner fidelity permission. Targeted lint and test typechecking
+pass. This single test passed in 40.55 seconds with a bounded 60-second timeout.
+
+This checkpoint uses the isolated repository-test database and synthetic Privacy
+classification results. It proves authority and publication identity, not the
+classifier's masking accuracy. Overlapping reasons, the complete HTTP/native/
+browser/durable path and consistent owner entry-point enablement remain open.
+P2-09 editing stays disabled while those slices are completed.
+
+## P2-09A and P2-09B: Reviewed content-policy operation
+
+The production path restores the owner-scoped HTTP review and device-only write,
+current-state approval admission, native and fresh browser decisions, and the
+encrypted durable delivery worker. The worker now handles the exact
+content-policy receipt rather than falling through into Conversation creation.
+Previous, required, added and effective masks are visible in approval. Broader
+Memory Events disclosure requires browser step-up; other reviewed policy changes
+use native review. Review identity includes the complete current rule, members,
+destination, enclosing policy and expiry. API Tokens remain denied.
+
+The active overlap regression passed with real repository publication and
+semantic authorization. An independent paused rollup preserves revision 1 under
+its own policy, while the amended rule cannot use that policy to expose Memory
+Events or LCM Leaves. Restriction immediately removes richer detail from reads,
+indexed recall and cached evidence expansion. Old claimed Privacy work is denied.
+Fresh approved broader processing publishes revision 2 and a subsequent revision 3. A stopped rule stays stopped after an amendment and after replay of an older
+accepted receipt; source preparation remains denied, while the independent paused
+rollup remains readable. The paused-only regression also passes and retains its
+exact published revision through restriction and restoration. These tests use
+synthetic classification results and the isolated repository-test database;
+they do not establish classifier accuracy or the combined native package gate.
+
+Focused API checks pass for current-review and stale-review admission, approval
+tiers, native/browser decisions, exact HTTP authorization, and durable delivery
+recovery after a lost response and expired local custody. The full five-file API
+run passed 205 of 206 cases; its sole failure was an outdated expectation for the
+already-added nullable grant version. After correcting that expectation, all 44
+HTTP route cases pass; the other four files passed unchanged.
+
+The owner editor is restored in both Conversation and selector rule controls.
+Two focused editor tests pass: initial policy discovery cannot submit a proposal;
+required categories remain checked and disabled; confirmation submits the exact
+reviewed scope; a failed approval or write requires another review. Delivery copy
+shows pending Team acknowledgment, including retained access until restrictive
+changes are acknowledged. Final Desktop integration, lint and type checks are
+recorded with the completion checkpoint below.
+
+Completion checkpoint: P2-09A and P2-09B are locally complete. The active combined
+case passes with future publication and stopped-state checks; the paused case
+passes in 23.97 seconds. These history cases have explicit 90-second caps.
+The complete 91-case Desktop App run passed 90 cases and identified an old
+owner-route fixture with no sharing reason; the corrected fixture now includes
+its direct authority and the Excluded section, and that case passes on rerun.
+All three detail-editor cases and both new policy-editor cases pass. Approval-policy
+and Shared Memory admission suites pass all 91 cases. API and Desktop source
+typechecks, targeted lint, and typechecking of the changed policy tests pass.
+The combined native journey and final matching artifacts remain in PROD-06;
+these local checks did not require Keychain approval.
+
+## P2-12: Explicit snapshot conversion
+
+The existing reviewed Conversation-rule operation now accepts one exact fixed
+snapshot scope. It binds the selected reason and consent, consent version,
+fixed revision, detail, Curated Memory choice and expiry to the existing source,
+destination and grant-version proof. The approval refreshes this scope. No
+selector rule or extra future member authority is created. New metadata lives
+in `pending_sharing_rule_admissions.snapshot_conversion`; migration 0070 and
+its generated snapshot pass the migration consistency check.
+
+The same Pending Share source workflow prepares the continuous reason. Before
+initialization, it locks source then root authority and verifies the selected
+snapshot again. The snapshot stays readable until the new reason has an eligible
+publication. Retirement of that exact snapshot consent commits with Pending
+Share completion and one ordinary lifecycle notification. Independent reasons
+and Conversation Source Access use their existing authority. No separate
+publication engine or backend synthesis is introduced.
+
+A focused repository case passes through real native Action Grants for preview
+and conversion. It rejects stale snapshot scope without creating a rule,
+recovers exact requests, preserves the fixed snapshot during Privacy preparation,
+pauses and resumes before first publication, retires the snapshot at completion,
+publishes later completed summaries, and denies queued work after stop. An
+independent paused rule still serves revision 1, and an unrelated source in
+another Workspace remains unchanged. Fresh review and a second request are
+rejected after initialization, while the original request still recovers its
+receipt. The conversion and ordinary snapshot-overlap cases pass together
+(2 cases, 36.90 seconds) with per-case 90-second caps. Test data and synthetic
+classification results remain confined to the isolated repository-test database.
+
+Three editor checks pass for exact source/destination and unchanged limits,
+explicit confirmation, rejection of changed snapshot authority, and fresh review
+after failed approval or execution. HTTP, current approval-scope and durable
+lost-response cases pass, including byte-identical retries carrying the selected
+snapshot. The final three-file API run passes all 158 cases. Shared and database
+builds, migration consistency, targeted lint and changed-test typechecking pass.
+Final source and Desktop integration checks follow below. No Keychain approval
+was required for this local evidence.
+
+Completion checkpoint: P2-12 is locally complete. Final API source and Desktop
+source typechecks pass. All 94 cases in the Desktop App and conversion-editor
+run pass, and all 158 cases in the three-file API run pass. The final two
+repository cases also prove one lifecycle notification at conversion completion
+and that ordinary rule creation still leaves its independent snapshot fixed.
+The combined native Source Access journey, final matching artifacts and broader
+production gate remain PROD-06. No changeset was added.
+
+## P2-13: Current-build Team outage and read-back
+
+The local Team self-hosted fixture ran the current server image
+`sha256:acc444199c2345e83228526b846f939966bc04b61f1b27b55436ac3dbedf3ad5`
+with the original authorized publisher and one shared model pair. No credentials
+were reactivated, operation families expanded, or Keychain approvals required.
+All sources were isolated synthetic Captured Sessions; unrelated Personal
+Conversations were excluded by a fresh unique Git Anchor.
+
+Carol successfully read two synthetic publications in each of Cloud Memory
+Platform and Managed Knowledge Ingestion. The stop was reviewed while online,
+then durably queued while the Team backend was stopped. The publisher also
+stopped. Only the two selected synthetic cursor records were removed. During
+the interruption, one matching Conversation was added, one changed Git Anchor,
+and two later turns were captured through raw-item ingestion and Projection.
+Both publisher and backend restarted with the same identity and custody.
+
+Recovery cleared the missing checkpoints and installed complete replacement
+baselines. The queued approval expired before reconnection: its original exact
+operation remained needs review, with no false stopped acknowledgment. A fresh
+reviewed stop succeeded at authority version 8 and publisher fence 2. Replaying
+that exact completed stop twice returned identical acknowledged receipts. The
+expired approval was not extended or reused for new execution.
+
+Carol's five final reads returned the expected results: both stopped-destination
+reads and the removed member in the independent Workspace returned 403. The
+remaining member returned 200 with both later-turn markers. The added member
+returned 200 with its synthetic marker. Metadata checks found five destination
+roots, exactly one per source and destination. Normal owner retry controls
+settled two failed publication attempts without replacing their Pending Share
+identities; both remaining members finish activated. The stopped rule finishes
+stopped, and the independent rule remains active.
+
+The initial ad hoc source setup was invalid: it omitted raw contributors, then
+canonical contributor manifests and source timestamps. Publication and sync
+rejected these incomplete sources. Those harness-only memberships were retired
+through owner overrides. The accepted baseline used fresh timestamped raw items
+and successful normal Projection before sharing. Temporary diagnostics existed
+only inside the disposable container; it was recreated from the unmodified
+current image before this outage journey. No production checks were relaxed.
+
+The 25-hour duration and selector matrix remain covered by the focused
+repository cases above. The actual fixture uses a bounded interruption and
+unavailable history rather than waiting 25 hours. This completes local P2-13
+acceptance, with expired uncommitted controls explicitly requiring fresh review.
+It does not establish native UI or final packaged-artifact acceptance.
+
+## P2-14: Publisher identity and verified source-mapping foundation
+
+Owner-only rule and sharing-reason DTOs now carry the recorded publisher's
+device identity and label. Authorization availability remains distinct from
+connectivity. The focused expired-publisher repository case passes, including
+reader denial of the owner's rule list. Shared and DB builds, Desktop
+typechecking and targeted lint passed for this first slice.
+
+Migration 0071 adds a nullable owner-scoped portable-source digest to rule
+members, with a partial unique index per rule. Native admission binds this
+identity once, verifies the original capture-sync identity against the current
+publisher credential and canonical source root, and rejects a second logical
+source claiming that member identity. It stores no plaintext portable origin
+identifiers. The repository publication case passes exact replay, collision
+denial and ordinary later-turn publication. Its additional source-lookup checks
+pass for the owner, return no mapping for an unknown source, and reject another
+owner or publisher.
+
+The new device-only owner endpoint resolves an existing identity without
+creating sharing or source authority. Its focused HTTP check rejects Personal
+API Tokens, browser sessions, insufficient device scopes and a caller-supplied
+publisher credential. Private repository failures remain redacted.
+
+Receiving delivery uses an existing source only after fresh checks against its
+authenticated Personal source binding, retained package, ready receiving
+materialization, current selector and Git/Folder context versions. It cannot
+fall back to a guessed native identity. Twelve delivery cases across Git Anchor,
+Folder and Project prove that missing mappings, stale/unavailable evidence and
+absent Team members remain pending without a new admission or upload. Together
+with the existing delivery cases, all 33 tests pass.
+
+The existing signed, encrypted two-device Personal source-context journey also
+passes with real receiving-checkpoint assertions for Git Anchor and original
+Folder selection. The original source is resolved; a local Conversation with the
+same provider identifier and a stale context version are rejected. The real
+receiving checkpoint also fails the native-source authorization check. Six journal
+history cases pass with a native Personal origin in a distinct namespace from
+the Team transport. Their source corrections use the reviewed causal path.
+Native and receiving identities remain separate.
+
+P2-14 remains in progress. The backend transfer protocol is now implemented and
+focused PostgreSQL cases pass for active and paused rules. Each uses a real
+receiving-device native Action Grant and exact receipt replay. They reject the
+former publisher's reads/writes, unknown source identity, another owner, the
+current publisher as receiver and ordinary unscoped mutation. Published revision
+1 remains available; later source sync retains its original identity and publishes
+revision 2 after active transfer or an explicit resume. Root grant IDs and consent
+IDs remain unchanged. Removing the verified portable member binding prevents
+preparation. Stale former-publisher preparation and a revoked original sync
+credential also fail. These are API/repository checks, not native GUI acceptance.
+
+The six-case selector/transfer regression initially exceeded the default
+15-second test timeout. With a bounded 60-second timeout, Git Anchor, portable
+source, Folder and both transfer cases passed; Project exposed a fixture leak
+from the deliberate revoked-source denial. The test now stops that rule through
+the ordinary reviewed owner control. Both transfer cases and Project pass together
+after that cleanup. No production timeout or authorization behavior was relaxed.
+
+The source continuation checks exposed two assumptions that the publisher must
+be the source credential, in preparation and materialization. The reviewed
+transfer path now requires an existing native-bound portable member and the
+committed native transfer receipt before accepting that distinction. Current
+publication authority, original source sync authorization, exact preparation,
+Privacy and Workspace exclusions remain mandatory.
+
+The focused HTTP, native approval, selector review and delivery suite passes 177
+cases. Folder scope retains original provenance across local owner translation;
+Project descriptor checks distinguish a portable identity from a local lookalike.
+Shared and DB builds, API source and focused test typechecks, targeted lint,
+formatting and whitespace checks pass after the continuation adjustment.
+
+Receiving local availability review, baseline installation, durable owner controls,
+Conversation identity binding and combined takeover acceptance remain unfinished.
+Current packaged artifacts and fixture images predate this slice and must be
+rebuilt for final acceptance. No changeset was added.
+
+### Conversation rule origin retention
+
+Migration `0072_familiar_gamma_corps.sql` adds a nullable validated origin digest
+to Conversation Pending Share rule admissions. The native creation request binds
+the optional Personal origin. Admission verifies the native authoritative source;
+only the digest is retained in the pending record and activated member. Internal
+activation must match that pending digest, and ordinary standalone rule creation
+cannot inject a digest.
+
+A real native-approved PostgreSQL case passes admission replay, changed-identity
+replay denial, absence of plaintext origin in pending metadata, activated member
+digest retention and an authorized second device's Conversation takeover review.
+The existing explicit snapshot conversion case passes alongside it. The focused
+native approval and HTTP suite passes 103 cases, including request-hash changes
+when the Personal origin changes. Shared and DB builds, API and focused test
+typechecks, and targeted lint pass. This is backend continuity evidence: local
+first-party availability verification and owner takeover controls remain open.
+
+### First-party Conversation origin verification
+
+The local owner review now obtains an optional origin from the exact ready
+native Personal source. The reader requires an available native binding and
+resolved context state, rejects retained packages and PDS/Team receiving replicas,
+and checks the canonical logical Team source. Approval mapping preserves that
+origin, and approval preflight, new durable delivery and queued execution each
+verify it. Unavailable source evidence leaves an explicit pending request. Both
+owner creation placements retain the origin, including snapshot conversion.
+
+The focused API local-control suite passes 82 cases. Added checks reject a
+changed origin, an unavailable source or mismatched logical Memory before
+approval, preserve the verified origin in the remote approval request, reject a
+tampered origin before saving delivery, and defer queued execution without a
+remote write when local source evidence is missing. The existing exact retry
+case recovers after evidence becomes available.
+
+A native signed-source journal case passes the new Conversation reader. The
+existing signed encrypted two-device Personal source journey passes against a
+fresh database pair and explicitly denies native Conversation origin resolution
+for the receiving checkpoint. Shared and DB builds, API/Desktop source and
+focused test typechecks, targeted lint, formatting and whitespace checks pass.
+Publisher takeover controls and the fresh receiving baseline remain unfinished;
+these checks do not stand in for the combined native takeover journey.
+
+### Receiving takeover source and Project identity proof
+
+The local journal now exposes a receiving takeover source reader. It accepts an
+exact available native source or authenticated retained checkpoint with ready
+materialization and resolved Git/Folder state. A selected Git Anchor, Folder or
+Project must still match current Personal membership and exclusions. The reader
+returns original Personal identity and current local context; it neither creates
+a Team binding nor permits a new native source admission.
+
+The focused native signed-source journal case passes. The existing signed,
+encrypted two-device source-context journey passes in a fresh database pair and
+verifies receiving Git Anchor and original Folder evidence, wrong-owner denial,
+and continued denial of native source creation from receiving checkpoints.
+
+The existing signed two-device membership journey also passes. A receiving native
+Project view ID and its portable identity resolve to the same signed catalog
+identity. A separate same-name local Project cannot substitute for that identity;
+a wrong owner and conflicted catalog heads are denied. A Project alias is never
+guessed from a name or path. DB build, focused test typecheck and targeted lint
+pass. Owner takeover commands, exact local review integration and fresh baseline
+installation remain open.
+
+### Receiving takeover review boundary
+
+The typed local review command and renderer client now request takeover review
+for a chosen verified local source. The Team request excludes local source
+pointers and private selector references. Its response must preserve the exact
+rule, Team, Workspace, authority version, publisher fence, receiver credential,
+original Personal identity and selector scope. The local intent and accepted
+transition schemas enforce the same rule/destination relationship and exact
+active/paused publisher transition without new consent.
+
+Thirteen focused review cases pass across Conversation, Git Anchor, Folder and
+Project scopes. They reject missing receiving authority, unavailable/local-only
+source evidence and changed source, local owner, receiver, destination, version
+or selector. The companion local evidence check accepts a newer context that
+still matches the approved selector and denies missing evidence. Accepted-scope
+checks reject wrong fences, credentials and state/catch-up transitions for both
+active and paused rules. Existing command-registry and local sharing-control
+checks pass alongside the review boundary suite. Shared build, API/Desktop and
+focused test typechecks, targeted lint, formatting and whitespace checks pass.
+
+This exposes review capability only. Local native grant request wiring, durable
+transfer, fresh receiving baseline installation and interactive owner controls
+remain open, together with the combined native takeover journey.
+
+### Native takeover delivery and receiving history installation
+
+The local publisher mutation now passes through receiving evidence preflight,
+native Action Grant admission and protected custody, the encrypted delivery queue,
+and exact Team receipt validation. The renderer client follows the same approval
+and acknowledgment workflow as other rule controls. The Team request excludes
+local source pointers and selector references. Each queued execution rechecks
+receiving source evidence. When evidence disappears, only a read-only receipt
+request is permitted until it returns.
+
+Migration `0073_dear_yellowjacket.sql` permits the publisher-transfer operation
+and the explicit source-unavailable retry code in the local delivery journal.
+The latter fixes the constraint mismatch found while exercising missing evidence.
+Transfer acknowledgment and receiving history installation share one transaction.
+A transferred scope retains the exact approved Team selector and receipt, with a
+local target and no fabricated creation-review token. Previous source/page work
+is superseded, lease and delivery epochs advance, and generation, proposal and
+consumer cursor start empty.
+
+Three PostgreSQL cases pass for active, paused and first-time receiving histories.
+They cover encrypted receipt retention, source-unavailable retry, wrong-mutation
+receipt denial, former-lease rejection, empty initial history, new local generation
+and checkpoint, no inherited remote source tuple, and exact delivery replay.
+The normal local selection enumeration completes from the receiving database.
+These are storage and current-selection checks; they do not prove full existing
+Team member reconciliation.
+
+The five focused API/approval/review suites pass 156 checks. The new integration
+case uses the real local preflight and durable worker: unavailable evidence causes
+no mutation request, a lost response retries the identical request, a wrong-mutation
+reply is rejected, and the exact receipt settles without reacquiring protected
+custody or creating Pending Share source work. Preflight initially rejected the
+full local mutation envelope as extra review fields; it now projects the exact
+review evidence before validation. API, Desktop and focused test typechecks,
+Shared/DB builds, targeted lint, formatting and migration checks pass.
+
+P2-14 remains open. A fresh receiving device has no prior source journal with which
+to discover Team members removed from the selection before takeover. Existing
+Team membership must be reconciled against verified Personal evidence before the
+baseline can be called complete; unavailable and local-only sources must remain
+pending. Interactive controls remain unexposed until that gap is closed, followed
+by the combined two-device and offline former-publisher journey.
+
+### Receipt recovery after source evidence disappears
+
+Read-only receipt routes now recover a committed publisher transfer or Conversation
+creation with the exact original Action Grant binding. They use the existing
+atomic receipt executor. The unused-approval callback returns no result, so it
+cannot consume approval or perform the mutation; an already committed operation
+returns its original encrypted receipt. An unusable grant has no retry authority.
+The worker retains valid uncommitted work as source-unavailable and sends unusable
+approval to review. Source availability is never bypassed for a fresh execution.
+
+The focused HTTP and durable-worker suites pass 108 checks, including evidence
+loss before execution and after response loss, no mutation during receipt probes,
+and wrong-mutation receipt denial. Two real PostgreSQL transfer cases also pass
+unused-approval preservation and exact replay without a second mutation. A
+further focused HTTP check covers an unissued grant returning no pending authority.
+
+### Existing member discovery boundary
+
+The current publisher can request at most 100 existing members per inventory page,
+using an exact authority version and publisher fence. Keyset pagination returns
+member and logical Memory IDs, state/version and the opaque owner-scoped origin
+hash. Missing hashes remain visible; no local source binding is fabricated. The
+endpoint exposes no source content, Personal origin identifiers or private paths.
+Personal API Tokens, browser sessions and devices without publisher operation
+families cannot use it. Repository authorization also denies another owner, the
+former publisher and stale authority/fence values.
+
+This is bounded discovery, not a historical membership snapshot or a completed
+receiving baseline. Integration must resolve hashes against verified local
+Personal evidence, finish the full paged scan before installing its replacement
+baseline, retain missing evidence as pending, and revalidate current member
+versions for each eventual mutation. Interactive takeover remains unexposed.
+
+Focused HTTP checks pass for strict inputs, authenticated publisher dispatch,
+pagination forwarding and redacted denial. Real PostgreSQL cases pass for active
+and paused transfers, former-publisher and other-owner denial, stale scope denial
+and retention of null origin hashes. A separate pagination check uses 101 members
+and verifies a 100-entry first page, one-entry final page, strict ordering and no
+duplicates. Its inert sources retain valid source bindings and receive no consent
+or publication.
+
+The local journal also exposes a paged verified Personal binding scan independent
+of the selected Git Anchor, Folder or Project. It checks owner, exact native
+pointers, authenticated receiving/native provenance and available source context.
+It includes retained explicit deletions for later selection evaluation. It does
+not infer selector membership or authorize removal. The existing signed,
+encrypted two-device source journey passes receiving discovery and wrong-owner
+denial.
+
+### Durable receiving member reconciliation
+
+Transferred histories now stage the Team inventory after completing their new
+Personal enumeration and before installing the replacement source plan. Each
+phase reads at most 100 Team members or verified Personal bindings. Matching
+portable hashes are evaluated against the completed local selection checkpoint.
+Conclusive nonmatching/deleted sources receive removal goals for existing Team
+members. Unavailable sources remain unresolved, and missing bindings remain
+counted as pending without fabricated native pointers or new source authority.
+
+Inventory pages, binding cursors and unmatched member counts stay encrypted
+across restarts. Pages retain their rule, destination, selector, authority and
+publisher fence, with ordered unique member IDs and advancing cursors. Scope
+changes restart the replacement baseline. Fresh writes pause during staging,
+including attempts from previously claimed leases; outstanding requests can
+settle. Transferred histories rescan even when their Personal checkpoint has no
+changes, so later available evidence converges.
+
+Three PostgreSQL storage cases pass for active, paused and first-time histories.
+The fresh case scans 101 Team members, recreates the service between phases,
+proves no delivery before complete installation, rejects changed destination/fence
+and duplicate pages, removes a verified nonmatching source, and retains 100
+unavailable/unmapped members. Later available evidence resolves one member
+without a selector change, reducing the pending count to 99. Team inventory is
+mocked at this storage boundary; actual publisher authorization and signed
+two-device binding discovery are covered separately. The existing delivery/control
+suites pass 94 checks. A transport check also verifies current scope discovery,
+pinned pagination, device authentication, conflict restart and private-pointer
+omission. Shared/DB builds, API/test types, targeted lint and formatting pass.
+The combined native two-device journey and interactive owner controls remain open.
+
+### Receiving Project rule discovery
+
+The first-party rule list now supplies its Personal target to the local command.
+The local edge verifies that target against the requested selector and resolves
+a receiving Project view through available signed catalog identity. Only the
+normalized selector and page controls reach Team. The response must retain that
+selector. Missing or wrong-owner identity evidence fails before rule lookup.
+The normalization reader reuses the signed two-device Project alias resolver
+already exercised above; it grants no source or sharing authority.
+
+A focused local-control case verifies normalized lookup, private native-ID
+omission, missing/wrong-owner proof denial and target/selector mismatch denial.
+The existing Desktop sharing review checks also pass with Personal targets sent
+for Git Anchor, Folder and Project rule lists.
+
+Re-entry remains an explicit P2-14 follow-up: a receiving checkpoint currently
+defers a removed member instead of creating native admission or source-upload
+work. Fifteen focused cases across the three selection kinds confirm the existing
+authority boundary, including removed members. This is safe pending behavior, not
+evidence that the complete re-entry journey works.
+
+### Project identity at creation and queue admission
+
+Creation review now resolves the same Project identity used for rule discovery.
+The completed local review still binds the exact native target, owner,
+destination and source snapshot. Its Team selector uses the verified portable
+identity. Fresh queue admission resolves that identity again before validating
+the completed review and acquiring protected approval custody. An altered local
+target cannot reuse the earlier review token. The Desktop retains queued status
+using the exact local target when its native view differs from the Team selector.
+
+Locally created Projects remain supported before Personal sync is configured.
+The resolver requires an owned active Project, its native creation history and
+current native catalog head, with no associated received catalog. Pending or
+conflicting received evidence cannot fall back to a local UUID. The stricter
+takeover source resolver retains its existing signed-catalog requirement.
+
+The three focused review/control/Desktop suites pass 84 checks, including
+portable creation lookup, private native-target omission, missing evidence
+denial, completed-token binding and queued UI status. One native PostgreSQL
+Project case verifies sharing without Personal sync, refusal to fall back while
+a pending catalog exists, and recovery when that pending evidence is removed.
+Shared selector hashes in the renderer use the browser-safe canonical digest.
+The complete native two-device journey remains open.
+
+### Owner publisher controls
+
+The Desktop now exposes publisher review on selection rule cards and Conversation
+rule details. Selection choices use bounded Personal review pages, preserve native
+receiving pointers and omit local-only identities. Conversation choices come from
+local Personal navigation. The exact local review is checked against the current
+rule, destination, authority, fence and selected source before native approval.
+Returned normalized Project targets remain part of that reviewed local intent.
+
+The control shows old/new device labels and preserved active/paused state. It uses
+the existing protected native approval and durable transfer client, then records
+queued delivery through the existing owner status and acknowledgment refresh.
+Expired, mismatched and superseded reviews cannot request approval; busy controls
+prevent duplicate confirmation. Scope changes and unmounts discard late results.
+
+Fourteen focused UI checks pass, including paused-state preservation, one native
+request before queued delivery, stale/expired review denial, private source choice
+paging and the existing three-selector owner flows. Three focused owner-route
+checks pass, including Conversation choices taken from local navigation without
+an automatic approval request. Desktop/test typechecks, targeted lint and the
+production renderer build pass. Packaged native acceptance remains open, along
+with the combined two-device and synced-source re-entry journeys.
+
+### Existing-source re-entry authority
+
+A read-only repository helper now checks an existing member removed by selection
+after a committed publisher transfer. It requires current owner/Workspace sharing
+permission, unchanged approved rule policy, exact authority/fence/member/grant
+versions, a native-bound portable source, and an active original sync credential.
+The synchronized replica and cached Session must remain available. Current source
+policy and previously admitted source capabilities must cover the unchanged rule.
+
+Only automatic selection removal qualifies. Explicitly revoked members, other
+consent revocation causes, Workspace exclusions, stale or foreign authority,
+reduced source policy, missing identity evidence and revoked original credentials
+are denied. Canonical Team identity is derived again from the original sync
+credential and source Session; the receiving publisher creates no new origin.
+
+One PostgreSQL case passes the positive and denial checks after real native rule
+transfer and member removal. It verifies unchanged consent, Pending Share, source
+binding, grant and membership state, with removed content still unreadable.
+The read-only authority helper creates no preview, consent or source work.
+
+Existing-source preparation now uses the current encrypted Team cache in an
+owned repeatable-read transaction. It rechecks the exact retained authority,
+original active source credential, source Session, source revision and current
+owner-policy version. It cannot expand source policy or substitute the receiving
+publisher's identity. Transient snapshot/deadlock failures have the same bounded
+whole-transaction retry used by ordinary source preparation.
+
+The candidate manifest is derived from current active original sync mappings,
+using the same manifest reconstruction as Pending Share validation. Incomplete
+mappings reject preparation. The PostgreSQL case verifies current content after
+a later original-source revision, denies missing mappings and invalid authority,
+and retains removed membership, revoked consent, unchanged grants and no new
+Pending Share or source origin. Four selected PostgreSQL cases pass, including
+existing repository, folder and Project admission after the shared manifest
+reconstruction change. DB build, API/test typechecks, targeted lint and formatting
+pass.
+
+### Retained-source admission and delivery
+
+The current publisher can now submit an exact retained-source admission for a
+previously published member removed automatically by selection. The request
+contains current selection context and portable source identity, with no source
+bytes, native source IDs, candidate preview or client-supplied authority proof.
+Team validates the existing binding and unchanged approved future scope, prepares
+a current candidate from encrypted source cache, and records immutable retained
+proof on the Pending Share. This proof retains the owner-scoped portable digest
+and a digest of exact source authority, with no raw Personal origin identifiers.
+Activation reconstructs the authority from current rows before comparing it.
+Native source creation and binding are unchanged.
+
+The background worker rechecks original active sync credentials, current source
+policy, exact publisher/fence/member/grant versions and Workspace exclusions
+before creating consent and activating membership. A retained candidate requires
+its persisted proof. This path cannot expand source policy. It creates a new
+consent under the approved future rule, preserves the old revoked consent and
+reuses the destination grant. Exact receipt replay needs no source re-upload or
+fresh candidate generation. Migration 0074 adds retained admission proof and the
+server-created candidate authority marker; migration consistency checks pass.
+
+Four focused PostgreSQL cases pass: source authority/preparation, revision-2
+readmission and publication on the same grant, original credential revocation
+before activation, and source policy reduction before activation. The latter two
+create no fresh consent and publish no removed content. All 94 local delivery and
+API route checks pass, including three-selector retained delivery, ambiguous
+accepted receipts, replay after a newer removal goal, no receiving source upload,
+and rejection of unauthenticated or forged source/authority fields.
+
+### Stale retained-admission recovery
+
+An unresolved member can now replace stale retained admission work only when its
+latest accepted Pending Share carries the server-created candidate marker and
+retained portable proof. Explicitly revoked operations cannot use this path.
+The current owner, original source, policy, Workspace and native-approved future
+scope are checked again before replacement. Revalidation happens before the old
+pending operation is retired, and receipt replay retains the original result.
+Healthy preparing work with unchanged source, publisher and selection context
+cannot be replaced.
+
+Owner-private member inspection indicates whether a retained operation needs
+readmission. Local delivery uses this signal or changed selection context, and
+leaves unsupported native pending sources unavailable. Accepted retained work
+remains eligible for inspection every 30 seconds until Team initializes the
+member. This uses existing durable delivery state, survives journal restart and
+stops when the member is present. Ordinary native admission acknowledgment is
+unchanged; an older receipt cannot acknowledge a newer removal goal.
+
+A PostgreSQL recovery case verifies healthy-work rejection, later original-source
+revision 3, obsolete-operation retirement, immutable old receipt recovery, no
+consent for the retired operation and publication on the same destination grant.
+The encrypted journal case verifies delayed observation after restart and clean
+completion. All 54 local delivery cases pass, including healthy-pending deferral,
+server-signaled recovery and changed-context recovery across three selectors.
+
+### Unpublished native-admission continuation
+
+A native source that was accepted but still unresolved at publisher transfer can
+now continue under the current rule. Team verifies its original accepted native
+candidate, native-bound portable membership, current original sync relationship,
+current Workspace permission and unchanged approved future scope. The source
+cache must have reached the revision accepted by the original operation. A
+recorded continuation links retirement of that native operation to the new
+retained operation; later activation reconstructs the same exact authority.
+
+The destination may still be absent. In that case continuation reuses the native
+operation's planned logical destination and creates one grant through the normal
+activation path. An initial source policy is allowed only when no policy history
+exists, bounded by the original candidate and current rule. Its identity remains
+stable across preparation and activation. An existing reduced policy cannot be
+expanded, and revoked native admissions cannot use this path. Missing original
+source data remains unavailable. Canceled retained requests use bounded 30-second
+retry scheduling; ordinary native cancellation keeps its existing schedule.
+
+Eight focused PostgreSQL cases pass together. These include first publication
+with no prior destination or source policy, explicit native-admission cancellation,
+a later restrictive source policy, and the five retained admission/recovery
+cases. The first-publication case verifies one destination grant, one initial
+source policy and no consent for the retired original operation. Local delivery
+covers continuation without an existing grant and no receiving source upload.
+
+The combined native two-device journey and matching final builds remain
+unverified; these repository and delivery checks do not establish packaged native
+acceptance.
+
+## Enrolled native selector and lifecycle checkpoint, 22 October
+
+Matching Desktop r9 and Team artifacts completed the enrolled Alice journey for
+Git Anchor, exact Folder and named Project sharing. The User approved each exact
+synthetic scope. Git Anchor sharing targets Cloud Memory Platform; exact Folder
+sharing targets Managed Knowledge Ingestion and excludes child Folders. Project
+sharing targets Cloud Memory Platform and includes its one synthetic Conversation.
+All use Memory Events with Curated Memory excluded. Personal Project names and
+local Folder paths were absent from authorized Team reads. The fixture's Alice
+Electron sharing denial was preserved; Workspace write access alone did not
+permit sharing.
+
+A later captured turn became readable in both approved destinations through
+normal source synchronization and Privacy processing. Each destination retained
+one logical contribution. The earlier direct snapshot retained revision 14
+alongside the independent Git Anchor reason. Project pause retained its published
+revision 16 while Git Anchor sharing published revision 51 for the same source.
+Native resume caught the Project reason up to revision 51. Native stop removed
+only that reason; the Git Anchor contribution remained readable. Encrypted
+Personal replication retained the three current sources' origin identity and
+original Folder context on Alice's second device. Earlier captures without
+portable item identity remain explicit unavailable evidence rather than being
+rewritten or guessed.
+
+The owner Conversation Share dialog then exposed a response-contract mismatch:
+the owner grant index deliberately omits companion scope, but the local reader
+required it. Valid owner requests therefore failed with `permission_denied` even
+though the remote index returned 200. The local reader now parses the existing
+owner-safe grant contract and uses the same companion-scope reconstruction as
+the owner inventory. Owner and logical Memory identity checks, pagination,
+version checks and authenticated companion resolution remain in place. The
+regression reproduces the prior failure with the actual owner-safe response;
+all 67 focused local-control cases passed, including wrong-owner and wrong-source
+denial. Packaged verification then found a second mismatch: companion creation
+used the owner logical Memory ID where the Team route requires its existing
+grant-scoped source ID. The local caller now uses that grant-scoped ID in both
+the request and exact response validation. The test fixture follows the actual
+Team contract. All 69 focused cases pass, including missing-companion recovery
+and rejection of a raw owner ID in the Team response. Refreshed packaged
+verification now passes for both affected Conversations through the actual
+packaged API, preserving their existing grants and revisions. The packaged
+profile is healthy after a normal service restart, and package signature and
+integrity verification pass. The first rebuilt package failed the companion
+check and was superseded; it is not counted as accepted evidence.
+
+The combined native second-owner, publisher-transfer, exclusion/policy,
+Conversation-rule and Source Access checks remain open. Earlier repository
+checks do not substitute for those native criteria. The User is away from the
+machine again; unattended work must not depend on another Keychain approval.
+
+The matching Team build encountered Docker disk exhaustion. PostgreSQL stopped
+and recovered through its normal WAL recovery after space was reclaimed. No
+database repair, reseed, cursor reset or encryption-key replacement was used.
+Unused build cache and four untagged superseded images generated by this work
+were removed; current images, all databases/model volumes and the original alpha
+environment were preserved. Disk headroom was checked before retrying the build.
+This is an observed local capacity failure, not a product authorization failure.
+
+### Refreshed artifact and restoration checkpoint
+
+Desktop and Team were rebuilt after both owner-reader corrections. All ten
+executable/schema component identities match. Desktop retains `app.asar`
+`f9af0e54e41dd66be195b29179e0766f69b750bef09cacb4bfb3f2a53d054b22`;
+the Team image is
+`0ac96836a83fda272b9643f28fab0211262cde74ee66575dd4e106aa44b3eed9`.
+The combined component identity is
+`75332572fabab53109b5c8482f0a2c441a7b040d6a97e04f8989416b63177d9a`.
+The schema remains 75 migrations ending at `0074_yellow_nightmare`. An unchanged
+`app.asar` alone does not identify the service code packaged outside it.
+
+All five services reached health after deploying the matching local image without
+reseeding. Authorized synthetic reads and recall returned 200; disabled Workspace
+and non-member reads and recall returned 403. Team responses contained neither
+local Folder paths nor the private Project name. The later turn remained readable
+through the active Git Anchor reason, while the Project reason remained stopped,
+with one logical contribution.
+
+A quiesced encrypted backup of this enrolled native state restored into an
+isolated same-build database with the retained encryption configuration. Exact
+row/value digests match across all 262 public tables, excluding only the backup
+operator's documented target-only encrypted restore sentinel. This includes three
+selection rules and nine memberships, independent reasons, grants, consent,
+revocation and retention rows, encrypted representations and publication identity.
+Normal archive verification and restore sentinel decryption pass; a wrong archive
+key is denied. The strict stock-fixture thread inventory was not rerun because
+approved native sharing intentionally extends it. This restoration does not yet
+cover the unfinished native publisher takeover.
+
+The restored database was then served by the same verified image with the same
+keys on the fixture's loopback port while its source server was stopped.
+Authorized read and semantic recall returned 200 with the expected synthetic
+content. Disabled Workspace and non-member requests returned 403 with no content
+marker. The restored active Git Anchor reason retained revisions 16 and 51; the
+Project reason remained stopped with no published representations. The source
+still had one logical contribution. The disposable restore-check container was
+stopped and removed, and the fixture returned to its source database. All five
+services are healthy. Native profiles remain stopped, and this checkpoint
+required no Keychain approval.
+
+### Receiving-device readiness and native approval limit
+
+Alice B starts the matching package with its existing enrollment and paired
+Personal data. Its packaged local control plane reports healthy. All three
+current Personal replicas return 200 through the normal owner API, retaining
+portable Git identity and original Folder context while Alice A is offline.
+
+The packaged local owner API prepares exact publisher-transfer reviews for the
+existing Git Anchor and Folder rules. Each review recognizes Alice B's current
+credential, the original synchronized source, current active rule state,
+authority version 1 and publisher fence 1. Project discovery resolves its
+replicated private Project identity to the same stopped Team rule. These
+read-only operations do not transfer publication, create consent or resume the
+Project rule. The reviews expire and must be refreshed before approval.
+
+The native UI stopped responding during this launch. A bounded one-second sample
+found its main thread in `SecItemCopyMatching` and macOS SecurityAgent was running.
+The User is away and cannot approve Keychain requests. Normal termination did not
+end the blocked main process; only the disposable GUI was then terminated. The
+protected credential store and local services were preserved. No OS approval,
+insecure storage fallback or publisher transfer was performed. This is a real
+limit on the remaining native journey, rather than evidence that takeover passed.
+
+### Native Git Anchor publisher transfer
+
+After the User approved the current Keychain prompt, the same receiving process
+recovered. The User then approved the exact native Git Anchor publisher transfer
+from Alice A to Alice B, preserving the active Cloud Memory Platform rule at
+Memory Events detail with Curated Memory excluded and its Git selection unchanged.
+The native action was acknowledged. Team authority and publisher fence advanced
+to 2. All ten source/destination contribution identities and existing grant,
+reason and consent identities stayed unchanged.
+
+Alice A queued a later synthetic turn while offline, then drained it through the
+normal Transcript Watcher after restart. The later revision was published under
+Alice B's authority/fence 2. Its verified encrypted Personal checkpoint arrived
+on Alice B through ordinary paired-device delivery, preserving original Folder
+and portable Git identity. Both old-fence and current-fence publication attempts
+by Alice A returned 403 without mutation audit rows. Its original source Sync
+remained authorized. The six retained rule members survived, while Alice B had
+only three verified local sources; missing local-only sources were not guessed
+or removed. Authorized read and semantic recall included the later turn; disabled
+Workspace and non-member requests remained denied without private context.
+
+This completes P2-14's local native Git Anchor journey. The earlier encrypted
+restore predates this transfer; final same-build restoration must include it.
+Other combined native controls remain open under PROD-06.
+
+### Native startup and post-transfer owner reconciliation corrections
+
+A cold native launch left collaboration offline despite healthy API/database
+services because its recovery gate depended on a stale saved verification result.
+A regression reproduced the missing retry. Desktop now uses API/database
+readiness for the existing bounded recovery; onboarding retains its full setup
+checks. All 93 App cases pass, including offline recovery and nonretryable
+permission denial.
+
+After the transfer, the native source Share dialog exposed a second valid owner
+read being rejected. The authenticated grant's update timestamp advanced while
+its direct snapshot stayed at the same effective source revision. Reconciliation
+had required both to advance. It now accepts a newer timestamp with an equal or
+higher revision, keeping all authority fields identical. Both local API and
+encrypted storage retain rollback and authority-change denial. The focused
+regression failed before this correction. Packaged verification is pending.
+
+The refreshed Desktop package passes integrity verification, and all ten runtime
+and schema components match the refreshed Team image
+`21b4ec86f9f91e684b7c0de266c34154890e67f7d544ce1876792920f5cf6158`.
+The component identity is
+`02f630aaba93955b5ef913c5aeac911cf91a1e80029926c048d0e51ec31422ec`.
+The external renderer bundle identity is
+`98c2d42529ea3c670fea0097945a3fea9f2babc36e4962ccf9d1fc8e38294dbf`;
+`app.asar` remains unchanged because renderer assets are packaged separately.
+Both APIs report ready after the normal same-key refresh. The actual packaged
+owner reader passes for both affected Conversations, retaining the fixed snapshot
+at revision 14 and the independent live destination at revision 53.
+
+The native Alice process encountered another Keychain wait after rebuilding. The
+User approved it. That same process recovered healthy service state, Team
+navigation and Recents without a retry or renderer reload. The source Share
+dialog now lists both destinations and their controls without the access error.
+An extra default GUI opened by UI-tool selection was closed; observations from
+that separate default window are excluded from acceptance evidence.
+
+The 74 focused API and 32 PostgreSQL authority cases pass, as do all 93 App cases.
+Production typechecks pass in both package builds. A full test typecheck exceeded
+the 2 GB heap cap and is recorded as unavailable for this refresh. Targeted
+API, PostgreSQL and Desktop test typechecks pass under the same cap after fixing
+the test fixture's declared mode union. No additional product change was needed.
+
+The native explicit snapshot conversion reached its exact browser step-up review
+for Alice A's primary snapshot, revision 14, in Cloud Memory Platform, Memory
+Events, Curated Memory excluded, no expiry. Human approval was requested. The
+review expired without approval; no conversion committed. Conversation Source
+manifest reads returned 404 for authorized Memory reader Carol, disabled
+Workspace member Bob and non-member Frank before a source grant. The native
+source-access request was denied before an approval was created. Read-only
+metadata confirms that this Team-side synchronized session has no retained
+Conversation Source Artifact. Personal paired checkpoints do not substitute for
+that separately authorized Team source prerequisite. Positive native Source
+Access remains unverified; the denial is not counted as a successful source grant.
+
+A native restrictive exclusion then exposed a durable-delivery dispatch omission.
+Both Workspace exclusion and restoration were supported by request persistence,
+authority binding and receipt handling, but absent from the delivery command
+allowlist. The approved exclusion entered `needs_review` with
+`authority_unavailable` before contacting Team. No Team exclusion committed.
+Two delivery regressions reproduced the failure. The queue now admits both
+existing command kinds through the normal authenticated authority and exact
+Action Grant path. All 76 focused local-control cases pass. Packaged verification
+of this correction remains pending.
+
+### Delivery correction and committed-transfer restore checkpoint
+
+The delivery correction is packaged. Desktop integrity verification passes, and
+all ten runtime/schema components match Team image
+`061a35152e976a4bd0a48960be1a86cdf2646e8a53abb51fa24bdacf2671ce44`.
+The combined component identity is
+`36d651bf1f53b5a9b9c62719004cf5803eea76c1b87ba4c6f5c3307b44feac84`.
+The renderer identity remains
+`98c2d42529ea3c670fea0097945a3fea9f2babc36e4962ccf9d1fc8e38294dbf`.
+The embedding image and 75-migration schema remain unchanged. All five services
+became healthy after the same-key local refresh. Authorized synthetic reads and
+recall returned the later turn; disabled Workspace and non-member requests were
+denied without private Folder or Project context.
+
+With native profiles stopped and Team writes quiesced, an encrypted same-build
+backup containing the committed publisher transfer and later source publication
+restored into an isolated database. Exact values and row counts match across all
+262 public tables, excluding only the backup operator's exact target-only restore
+sentinel. Archive verification and sentinel decryption pass; a wrong archive key
+is denied. This preserves consent, revocations, retention, independent reasons,
+publication identity and transfer authority. The extended native inventory is
+not presented as a fresh stock-fixture topology check.
+
+The same verified image and encryption configuration then served the restored
+database on the loopback fixture port while the source server stayed stopped.
+Carol's read and semantic recall returned the later synthetic turn. Bob's disabled
+Workspace and Frank's non-member requests returned 403 without content markers.
+The owner inventory preserves all ten distinct contribution identities and their
+reason, consent, authority and publisher identities. The Git Anchor rule remains
+active with Alice B, authority version 2 and publisher fence 2. The Project rule
+remains stopped. The restore-check container was stopped and removed, and the
+source database was resumed. Native delivery verification of the exclusion fix
+and the remaining combined controls are still open.
+
+### Current fixture source-format correction
+
+A bounded read of the existing signed source fixtures returned 503 for the active
+continuous case. The normal worker reported zero source materialization targets.
+The three retained artifact rows were mislabeled `jsonl`, while all five signed
+segment manifests already declared `codex_rollout_jsonl`, the format accepted by
+the current sanitizer. The fixture generator now writes that canonical artifact
+format. No legacy-format support was added to production readers.
+
+The existing live-database fixture test now verifies that both active source
+grants reach the production sanitizer target query. It failed with zero targets
+before the correction; all five fixture tests pass afterward, including complete
+seed/reset and encryption-provider invariants. The running local fixture received
+only the three deterministic metadata-label corrections, after verifying every
+signed segment already used the canonical format. Source bytes, signatures,
+grants, consents and native sharing state were preserved. A normal server restart
+materialized the sanitized derivatives without a cursor reset or manual wake.
+
+Current-build HTTP read-back passes for Carol's continuous and fixed-snapshot
+source cases. The continuous derivative covers both committed segments; the
+snapshot covers only its approved first segment. Response digests and no-store
+headers verify, the synthetic email/API-key canaries are absent, and later
+snapshot content is excluded. Revoked source and Frank's non-member reads return 404. This establishes a usable existing fixture source case for Bob's remaining
+native controls. Alice's newer synchronized primary has no retained Team source
+artifact and still cannot grant source access. No new source grants were created.
+The Team tooling image was refreshed to
+`69ddd0bca42f6af0d8fd8a8d426448a61ef05d9aec05f763a5ba6634d606bdaf`.
+All ten runtime/schema component identities remain unchanged and match Desktop
+under `36d651bf1f53b5a9b9c62719004cf5803eea76c1b87ba4c6f5c3307b44feac84`.
+Desktop was not rebuilt. The same native process remains open at its previously
+requested Keychain approval.
+
+During this tooling refresh, Docker Desktop's internal filesystem exhausted its
+space even though the host still had free disk. PostgreSQL stopped after failed
+restart attempts, and Redis reported AOF write errors. Unused build cache and
+three verified untagged, unreferenced superseded images from this work were
+removed. Current images, all containers, all database/model volumes and the
+original alpha environment were retained. Docker's internal filesystem then had
+4.3 GB free. No further heavy build was required.
+
+PostgreSQL completed normal WAL recovery after its existing container was started;
+no database files were repaired, reset or reseeded. Redis resumed AOF writes and
+reported persistence status `ok` without a reset. Normal dependent-service
+restarts reached health. The current-image source privacy, fixed-snapshot bounds,
+revoked/non-member denial, native Memory read/recall and ten-contribution identity
+checks pass after recovery. The failed native exclusion remains uncommitted.
+
+A quiesced encrypted checkpoint of this recovered canonical source state passes
+exact row/value comparison across all 262 public tables in an isolated restore.
+It includes three signed source artifacts, five original segments, three source
+grants, two sanitized artifacts and two sanitized chunks. Wrong archive keys are
+denied and restore sentinel decryption passes. Restored-service source read-back
+also passes: continuous and snapshot source bounds, digest verification, canary
+redaction, revoked/non-member denial and the native Memory read/recall boundaries
+match the source deployment. All ten contribution, consent, reason and publisher
+identities remain unchanged. The restored container was stopped and removed, and
+the source deployment resumed normally. This checkpoint does not complete the
+remaining native UI gates.
+
+### Native restart, exclusion and restoration
+
+After a machine restart on 23 October, the existing five-service Docker fixture
+recovered without a rebuild or reseed. The unchanged packaged Desktop reopened
+Alice A with healthy API, database, model services and local authentication. No
+new Keychain approval was required for this launch.
+
+A fresh native review excluded the current child Conversation from Cloud Memory
+Platform after Git publication had transferred to Alice B. Durable delivery was
+acknowledged on its first attempt. The owner view showed the Workspace exclusion
+and explained that every sharing reason was blocked. Carol's direct read returned
+403 and recall omitted that grant; Frank's read and recall returned 403. The
+independent primary contribution remained readable and recallable. The previous
+failed delivery was retained as requiring review and was not reset or replayed.
+
+The User then approved the exact native restoration review. Its delivery was
+also acknowledged on the first attempt. Carol could read the child again under
+the existing Git rule, preserving publisher authority version 2 and fence 2.
+The stopped Project rule remained stopped. This verifies the packaged exclusion
+and restoration delivery fix through actual native controls and Team reads.
+
+The User also authorized the primary snapshot conversion. Its fresh review was
+approved as synthetic Alice through the in-app browser: fixed revision 14,
+Cloud Memory Platform, Memory Events, Curated Memory excluded, this Conversation
+only and no expiry. Desktop retrieved the approval and created the continuous
+Conversation rule. Its pending publication activated at revision 53 on the same
+destination grant, then retired only the selected fixed snapshot's direct consent.
+The independent Git reason retained its existing authority, consent and published
+revisions, and the Folder destination remained unchanged. Native pause retained
+revision 53 and readable Team content; resume returned the Conversation rule to
+active under the same approved scope. The old fixed snapshot stayed stopped.
+Native stop subsequently removed only the converted Conversation rule's access.
+The existing Git reason remained active, and Carol's read and recall still
+returned the later primary content. Bob and Frank remained denied in Cloud.
+
+### Native second-owner sharing and independent Source Access
+
+Bob's existing disposable profile completed normal packaged core setup against
+the shared external model services. It preserved its enrollment and synthetic
+Conversation. The User approved continuous Conversation sharing to Electron
+Team App at Memory Events detail with Curated Memory excluded. The normal
+in-app-browser review was approved as Bob. Publication activated at revision 2;
+Carol's direct read and recall returned the synthetic content, while Frank's
+equivalent requests returned 403.
+
+Bob's existing Timeline grant showed continuous Source Access in the native
+editor. Before revocation, Carol read the sanitized source with verified digest,
+snapshot bounds and canary redaction; existing unauthorized cases remained
+denied. The User explicitly approved revoking only this source capability.
+Native review and execution completed, and the editor changed to “Not allowed.”
+Carol's source manifest then returned 404 while the Timeline semantic Memory
+and Bob's new native contribution remained readable. Frank remained denied.
+No replacement source grant was created.
+
+The native content-policy editor also demonstrated that all eight enclosing
+required redaction categories were selected and disabled. No required category
+could be turned off. Positive policy amendment evidence remains the focused
+publication, approval, HTTP and renderer checks recorded earlier; this native
+observation proves the enclosing-policy restriction, not an additional amendment.
+
+Bob's native detail amendment was explicitly approved in both directions. Reducing
+the active Conversation rule from Memory Events to LCM Rollups advanced its
+authority and consent versions and denied Carol's event read with 403. Recall
+omitted the exact grant identity. The independent Timeline Memory stayed readable
+and its source stayed revoked. A separately approved in-app-browser step-up
+restored Memory Events detail. The same grant became readable and appeared in
+recall again; Frank remained denied throughout. Query text echoed in an answer
+response is not counted as retrieval evidence.
+
+A final quiesced checkpoint of this original fixture state passes encrypted
+backup verification, wrong-key denial and exact comparison of all 262 tables
+against an isolated restore. The restored service preserves Alice's ten and Bob's
+three distinct contribution identities, reason and consent versions, detail,
+source revocation and publisher authority. Authorized and denied reads/recall,
+independent source snapshot bounds, canary redaction and source revocation pass
+through the actual restored service. The original fixture was resumed afterward.
+
+### Isolated native content-policy amendments
+
+The User approved one bounded check in the restored synthetic copy because the
+original fixture requires every category and therefore has no editable rule
+category. The existing versioned policy repository made only Private dates
+optional in that isolated database. The other seven categories stayed required.
+The original database was checked before and after the journey: its deployment
+policy remains version 1 with all eight categories required, and Bob's original
+rule remains authority version 3 with no rule-specific policy amendment.
+
+The same packaged Bob profile opened against the isolated copy and recovered
+automatically once its API and database were ready. Its editor exposed only
+Private dates and locked the seven required categories. The User approved adding
+that rule mask. Because the enclosing policy hash had changed, the previous
+effective mask could not be proven; the app correctly required fresh browser
+approval rather than treating that uncertainty as consent. The in-app-browser
+review completed, normal delivery reached authority version 4 and content-policy
+version 1, and publication resumed under the effective all-eight-category mask.
+
+The User then separately approved removing only that added mask. The new review
+showed the exact previously masked, required and newly permitted categories.
+Fresh authenticated browser approval reached authority version 5 and content-policy
+version 2, with only Private dates newly permitted. The rule stayed active at
+Memory Events detail, with Curated Memory excluded and the same contribution.
+Authorized direct reads and grant-scoped recall passed after each amendment;
+Frank remained denied and the independent source revocation remained enforced.
+These are native approval, authority and publication checks. The existing source
+canary and focused classifier evidence retain their separate scope.
+
+The native app and its background services were stopped normally. The isolated
+policy-check container was stopped and removed, and the original five-service
+fixture resumed healthy. No original policy, consent or rule was relaxed to make
+this check pass. The prior exact original-state restore checkpoint remains valid.
+
+### Exclusion during claimed policy reprocessing
+
+One additional bounded repository case reuses the existing active-policy journey
+to cover the remaining processing intersection. It prepares and claims work
+under the reviewed restrictive policy, excludes the Conversation, and verifies
+that preparation, claimed-target reads, publication, semantic reads and recall
+remain denied. Only a fresh reviewed restoration permits reprocessing. The
+existing journey then completes broader-policy approval, later publication and
+stop under unchanged owner fidelity limits. The case passes in 24.74 seconds
+within its 90-second limit, using synthetic classification and an isolated
+disposable PostgreSQL database.
+
+An initial runner used a test database containing another suite's local deployment
+identity and failed before any test ran. The bounded retry used a fresh dedicated
+database and removed only that database afterward. The fixture and native data
+were never repository-test targets. No broader suite was repeated for this
+test-only addition.
+
+### Native snapshot-after-rule form correction
+
+The final original-fixture check found that the native Share dialog offered
+**Add fixed snapshot** for Alice's rule-shared Conversation, then disabled
+**Review** as if every active destination were a duplicate. It also treated the
+rule's already activated Pending Share as unresolved work. The backend and
+approval checks recorded earlier did not expose this renderer defect.
+
+The renderer now allows only the intended additional reason: snapshot mode on
+an active captured Conversation destination with an existing rule and no direct
+reason. Activated Pending Shares no longer block that operation; unresolved work
+still does. Confirmation continues through the existing exact logical grant ID,
+expected grant version, preview and fresh consent path. No server authority or
+approval condition changed.
+
+The focused regression failed with the active destination before the correction
+and passes afterward, including denial while its pending work is still preparing.
+All 95 Desktop App cases, targeted lint and changed-test typechecking pass.
+The initial test queried a portal through the wrong container and was corrected
+before recording the meaningful red/green result. The Desktop package refresh
+passes integrity verification. Its 377-file external renderer identity is
+`92f4c15e08990388be3d44fddff79e024de425b0c624e040048673352e829cf9`.
+The archive remains `f9af0e54e41dd66be195b29179e0766f69b750bef09cacb4bfb3f2a53d054b22`.
+All ten service/schema components remain unchanged and match the current Team
+image under `36d651bf1f53b5a9b9c62719004cf5803eea76c1b87ba4c6f5c3307b44feac84`.
+The Team image was not rebuilt for this renderer-only correction. Actual native
+completion remains pending; PROD-03 is reopened until then.
+
+### Packaged snapshot-after-rule completion
+
+The refreshed native package completed the separate fixed snapshot review beside
+Alice's active transferred Git Anchor rule. The User approved the exact current
+revision 51, six Memory Events, Cloud Memory Platform destination and exclusion of
+Curated Memory. Authenticated approval used the in-app browser. The existing
+logical contribution and grant were reused; the new direct reason has its own
+consent. The stopped Project reason stayed stopped.
+
+Privacy filtering remained visible until the normal five-minute retry activated
+the snapshot. Acceptance was at 09:12:09 UTC and activation at 09:17:10 UTC on
+23 October. No manual queue reset, retry, cursor change or backend correction was
+needed. A later synthetic turn used the normal Capture Hook and Transcript
+Watcher, then encrypted Personal replication to Alice B. The Git publisher reached
+revision 55 under authority and fence version 2. The snapshot retained only
+revision 51. The native view displayed both boundaries and the stopped Project.
+Carol's read and exact-grant recall returned the later turn; disabled Cloud
+access for Bob and nonmember Frank returned 403. Team responses contained no
+local Folder path or private Project name. Three receiving Personal replicas
+remained ready with distinct local identities and preserved original Folder
+provenance. PROD-03 is locally complete again.
+
+### Queued LCM exclusion and final original-state restore
+
+The existing combined Project exclusion case now also prepares and sanitizes a
+later LCM revision while leaving publication queued. The reviewed Workspace
+exclusion is applied before publication. The normal ready-publication reconciler
+creates no publication for that revision; reads, recall and cached evidence
+expansion remain denied. Overlapping Git Anchor and Folder reasons obey the same
+veto. Removing Project membership while excluded prevents restoration from
+readmitting it; independent eligible reasons recover only after reviewed
+restoration. The single isolated PostgreSQL case passes in 31.94 seconds.
+
+The first attempt exceeded the default 15-second test limit. A second attempt
+exceeded the default ten-second migration hook during concurrent local checks.
+Neither established a product failure. The final serial run used bounded
+60-second setup and 90-second execution limits and passed. Targeted lint,
+changed-test typechecking and formatting pass. No new production path or harness
+framework was added, and this test-only change requires no artifact refresh.
+
+All native profiles and the original Team service were stopped normally for the
+final checkpoint. The encrypted same-build archive verifies, rejects the wrong
+archive key and restores into the isolated smoke database. All 262 source tables
+match exactly after excluding only the backup tool's documented synthetic target
+sentinel. The actual restored Team service then passes:
+
+- Exact owner-state comparison for Alice's ten and Bob's three contributions,
+  including reason/consent identities, stopped and active rules, fixed approval
+  revision, detail, source revocation and transferred publisher authority.
+- Carol's authorized read and exact-grant recall of Alice's later turn, with Bob's
+  disabled Cloud access and Frank's nonmember access denied.
+- Bob's native Conversation and independent Timeline semantic access, with the
+  Timeline source still revoked and Frank denied.
+- Independent fixed source snapshot bounds, sanitized-source digest and canary
+  checks, existing revoked-source denial and nonmember denial.
+
+The restored check service is temporary. Resume the original database and service
+following the check. The final identities remain the renderer, runtime, images
+and schema recorded in the preceding packaged snapshot checkpoint. The local
+candidate uses an ad-hoc signature and local Homebrew smoke assets; no portable
+release, WorkOS, GPU or remote-staging qualification is inferred.
+
+## PROD-06 final local disposition, 23 October 2026
+
+This checkpoint supersedes earlier open native acceptance tables without changing
+the scope of their historical results. The combined journey uses Alice A and B,
+Bob, three independent Workspaces and the same matching current-build services.
+It completes local production release-candidate acceptance. It does not authorize
+release publication or external deployment.
+
+| Criterion                                                     | Final evidence and disposition                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Conversation, Git Anchor, exact Folder and Project rules      | Enrolled native creation, exact selection, later turns, independent destinations and owner controls pass; stopped Project remains stopped.                                                                                                                                  |
+| Both creation orders and explicit conversion                  | Native direct-first and rule-first flows pass. Conversion retains the old snapshot until publication, then retires only that reason. A separate new snapshot remains fixed while the existing Git rule advances.                                                            |
+| Two owners and two Personal devices                           | Native Bob Conversation shares and Alice A/B encrypted replication pass; distinct receiving identities and original Folder provenance are retained.                                                                                                                         |
+| Privacy, revoked, disabled, retained and nonmember boundaries | Full fixture and focused semantic/evidence/expansion checks remain valid; final restored-service read/recall and source-denial checks pass.                                                                                                                                 |
+| Exclusions during activation retry and queued LCM work        | Existing bounded activation exclusion case and final queued-LCM Project case deny late publication; cached expansion remains denied.                                                                                                                                        |
+| Exclusions during policy processing, recovery and takeover    | Claimed-policy exclusion regression passes. Existing durable recovery checks and actual native exclusion/restoration after committed B takeover pass, with former-publisher writes denied.                                                                                  |
+| Policy and detail changes                                     | Native detail reduction/increase passes on the original fixture. Explicitly approved native policy amendments pass in the isolated restored copy; the original all-eight-required policy remains unchanged.                                                                 |
+| Packaged operation and restart                                | Core setup, enrollment, model readiness, machine interruption, shutdown and restart pass; secure storage remains enabled.                                                                                                                                                   |
+| Same-build backup and restore                                 | Final encrypted 262-table comparison and actual restored-service authority and identity checks pass.                                                                                                                                                                        |
+| Integrated checks                                             | Applicable full fixture, semantic recall, Personal, current-schema, format, lint, production typecheck and build results are retained. Subsequent changed files pass scoped checks; full test-source typechecking exceeded the 2 GB cap and remains explicitly unavailable. |
+| Operator and candidate handoff                                | Supported build/run/backup steps and exact artifact identities are recorded. Unavailable deployment qualifications remain separate release prerequisites in the candidate status record.                                                                                    |
+
+The [candidate status record](team-continuous-sharing-release-candidate.md) is the
+operator handoff. The User's decision to omit a changeset remains in effect.
+No push, PR, merge, remote deployment or release publication was performed.

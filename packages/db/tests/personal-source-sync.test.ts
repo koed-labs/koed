@@ -1,4 +1,11 @@
 import { createMemoryEngine } from "@koed/core";
+import {
+  resolveNativeSharingSource,
+  resolvePublisherTakeoverSource,
+  readPublisherTakeoverSourceBindings,
+  resolveNativeConversationSharingSource,
+  resolveReplicaSharingSource
+} from "../src/selection-sharing-source-availability.js";
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
@@ -31,7 +38,8 @@ import {
   type PersonalGitContext,
   type PersonalFolderObservation,
   type PdsSessionPackage,
-  type PdsSessionCheckpointManifest
+  type PdsSessionCheckpointManifest,
+  type SelectionSharingGoal
 } from "@koed/shared";
 import {
   createDbPool,
@@ -521,6 +529,127 @@ describe.skipIf(!originUrl || !receiverUrl)(
         { limit: 100 }
       );
       expect(projected.memoryEventsCreated).toBeGreaterThan(0);
+      if (initial.folder.original.state !== "known")
+        throw new Error("Expected verified original Folder");
+      for (const target of [
+        { kind: "repository" as const, repository: gitA },
+        {
+          kind: "folder" as const,
+          folder: initial.folder.original.value.reference
+        }
+      ]) {
+        const page = await receiverRepo.startPersonalSelectionEnumeration(
+          receiver,
+          { target }
+        );
+        const entry = page.entries.find(
+          (value) => value.source.localSessionId === remoteId
+        );
+        expect(entry?.source.identityState).toBe("verified");
+        const goal: SelectionSharingGoal = {
+          source: entry!.source,
+          desired: "present",
+          snapshotVersion: page.snapshotVersion,
+          contextHash: "a".repeat(64)
+        };
+        const client = await receiverPool.connect();
+        try {
+          await client.query("begin");
+          const resolved = await resolveReplicaSharingSource(client, {
+            ownerUserId: receiver.userId,
+            goal,
+            target
+          });
+          const takeover = await resolvePublisherTakeoverSource(client, {
+            ownerUserId: receiver.userId,
+            sessionId: remoteId,
+            target
+          });
+          expect(takeover).toMatchObject({
+            sourceIdentity: resolved,
+            source: {
+              localSessionId: remoteId,
+              localLogicalSessionId: entry!.source.localLogicalSessionId,
+              identityState: "verified"
+            },
+            target
+          });
+          const bindings = await readPublisherTakeoverSourceBindings(client, {
+            ownerUserId: receiver.userId
+          });
+          expect(
+            bindings.entries.find(
+              (value) => value.source.localSessionId === remoteId
+            )?.source
+          ).toEqual(takeover!.source);
+          expect(
+            (
+              await readPublisherTakeoverSourceBindings(client, {
+                ownerUserId: origin.userId
+              })
+            ).entries
+          ).toEqual([]);
+          expect(
+            await resolvePublisherTakeoverSource(client, {
+              ownerUserId: origin.userId,
+              sessionId: remoteId,
+              target
+            })
+          ).toBeNull();
+          expect(
+            await resolveNativeConversationSharingSource(client, {
+              ownerUserId: receiver.userId,
+              sessionId: remoteId,
+              deploymentProtocolId: randomUUID()
+            })
+          ).toBeNull();
+          expect(
+            await resolveNativeSharingSource(client, {
+              ownerUserId: receiver.userId,
+              goal,
+              target,
+              deploymentProtocolId: randomUUID()
+            })
+          ).toBeNull();
+          expect(resolved).toEqual({
+            originatingDeploymentId: fixture.origin.deploymentId,
+            originatingDeviceId: fixture.origin.deviceId,
+            logicalSessionId: source.logicalSessionId
+          });
+          expect(
+            await resolveReplicaSharingSource(client, {
+              ownerUserId: receiver.userId,
+              target,
+              goal: {
+                ...goal,
+                source: { ...goal.source, localSessionId: localSameProvider.id }
+              }
+            })
+          ).toBeNull();
+          expect(
+            await resolveReplicaSharingSource(client, {
+              ownerUserId: receiver.userId,
+              target,
+              goal: {
+                ...goal,
+                source: {
+                  ...goal.source,
+                  contextVersion: {
+                    ...goal.source.contextVersion,
+                    git: goal.source.contextVersion.git + 1
+                  }
+                }
+              }
+            })
+          ).toBeNull();
+          await client.query("commit");
+        } catch (error) {
+          await client.query("rollback");
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
       const vector = Array.from({ length: 1024 }, (_, index) =>
         index === 0 ? 1 : 0
       );

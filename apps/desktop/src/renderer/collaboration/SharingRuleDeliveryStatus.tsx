@@ -1,11 +1,18 @@
 import type { SharingRuleDelivery } from "@koed/shared/collaboration";
 
 const requestLabel = (intent: SharingRuleDelivery["intent"]) => {
+  if ("scope" in intent)
+    return "restoration" in intent ? "Remove exclusion" : "Workspace exclusion";
   if ("operationKind" in intent)
-    return intent.operationKind === "detail"
-      ? "Rule detail change"
-      : "Content policy change";
-  if (!("controlAction" in intent)) return "Continuous sharing";
+    return intent.operationKind === "publisher_takeover"
+      ? "Publisher transfer"
+      : intent.operationKind === "detail"
+        ? "Rule detail change"
+        : "Content policy change";
+  if (!("controlAction" in intent))
+    return "snapshotConversion" in intent && intent.snapshotConversion
+      ? "Snapshot conversion"
+      : "Continuous sharing";
   return {
     stop: "Stop",
     pause: "Pause",
@@ -39,12 +46,12 @@ export function SharingRuleDeliveryStatus({
             {delivery.presentation.workspaceName}
           </p>
           <p role={delivery.state === "queued" ? "status" : "alert"}>
-            {"operationKind" in delivery.intent &&
-            delivery.intent.operationKind === "content_policy"
-              ? "Content-policy editing is unavailable in this alpha. This request will not be sent again. Team acknowledgment is unconfirmed; existing policy restrictions still apply."
+            {delivery.state === "queued" &&
+            delivery.failureCode === "source_unavailable"
+              ? "The verified Conversation source is unavailable on this device. This request remains pending until its source is available."
               : delivery.state === "queued"
-                ? `${requestLabel(delivery.intent)} requested here. Waiting for Team acknowledgment.${"controlAction" in delivery.intent && delivery.intent.controlAction === "stop" ? " Team access may remain until acknowledged." : ""}`
-                : "Team acknowledgment could not be confirmed. Refresh sharing and review the rule again."}
+                ? `${requestLabel(delivery.intent)} requested here. Waiting for Team acknowledgment.${"restoration" in delivery.intent ? " The exclusion remains in effect until acknowledged." : ""}${("scope" in delivery.intent && !("restoration" in delivery.intent)) || ("controlAction" in delivery.intent && delivery.intent.controlAction === "stop") || ("operationKind" in delivery.intent && delivery.intent.operationKind === "content_policy") ? " Team access may remain until acknowledged." : ""}`
+                : `Team acknowledgment could not be confirmed. Refresh sharing and review the ${"scope" in delivery.intent ? "exclusion" : "rule"} again.`}
           </p>
           {delivery.state === "needs_review" ? (
             <button type="button" onClick={onRefresh}>

@@ -897,7 +897,7 @@ const run = async () => {
     );
     await waitFor(
       alice,
-      `${bodyIncludes("Revision 1")} && ${bodyIncludes("Two independent reviewers are required.")} && ${bodyExcludes("Privacy-safe replacement content.")}`,
+      `${bodyIncludes("Latest published source revision: 1.")} && ${bodyIncludes("Two independent reviewers are required.")} && ${bodyExcludes("Privacy-safe replacement content.")}`,
       "last authorized Note revision while update is preparing"
     );
     await evaluate(
@@ -906,7 +906,7 @@ const run = async () => {
     );
     await waitFor(
       alice,
-      `${bodyIncludes("Continuous browser revision two")} && ${bodyIncludes("Revision 2")} && ${bodyIncludes("Privacy-safe replacement content.")}`,
+      `${bodyIncludes("Continuous browser revision two")} && ${bodyIncludes("Latest published source revision: 2.")} && ${bodyIncludes("Privacy-safe replacement content.")}`,
       "atomically published Continuous Note revision two"
     );
     await trustedClick(alice, `${byText("button", "Modify")}`);
@@ -966,14 +966,14 @@ const run = async () => {
     );
     await waitFor(
       alice,
-      `${bodyIncludes("Updates paused")} && ${bodyIncludes("Revision 2")} && ${bodyIncludes("Privacy-safe replacement content.")} && ${bodyExcludes("Catch up only after updates resume.")}`,
+      `${bodyIncludes("Updates paused")} && ${bodyIncludes("Latest published source revision: 2.")} && ${bodyIncludes("Privacy-safe replacement content.")} && ${bodyExcludes("Catch up only after updates resume.")}`,
       "paused Note Share retains its last authorized revision"
     );
     await trustedClick(alice, `${byText("button", "Modify")}`);
     await trustedClick(alice, `${byText("button", "Resume updates")}`);
     await waitFor(
       alice,
-      bodyIncludes("Sharing updates"),
+      bodyIncludes("Preparation stage: privacy filtering."),
       "Continuous Note catch-up preparation"
     );
     const resumeNote = await lastCommand(
@@ -991,7 +991,7 @@ const run = async () => {
     );
     await waitFor(
       alice,
-      `${bodyIncludes("Continuous browser revision three")} && ${bodyIncludes("Revision 3")} && ${bodyIncludes("Catch up only after updates resume.")}`,
+      `${bodyIncludes("Continuous browser revision three")} && ${bodyIncludes("Latest published source revision: 3.")} && ${bodyIncludes("Catch up only after updates resume.")}`,
       "resumed Continuous Note catches up to revision three"
     );
 
@@ -1074,7 +1074,7 @@ const run = async () => {
       `document.activeElement?.textContent?.includes('Packaged revocation fixture') &&
         document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged revocation fixture') &&
         [...document.querySelectorAll('[role="status"][aria-live="polite"]')]
-          .some((item) => item.textContent?.includes('Packaged asynchronous sharing: Update needs attention'))`,
+          .some((item) => item.textContent?.includes('Packaged asynchronous sharing: Needs attention'))`,
       "stable selection and live announcement after background update"
     );
     await setReducedMotion(alice);

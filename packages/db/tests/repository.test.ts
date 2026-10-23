@@ -1181,6 +1181,7 @@ describeDb("memory repository visibility", () => {
     pool = createDbPool({ connectionString: databaseUrl });
     repo = createMemorySourceRepository(pool);
     await runDbMigrations(pool);
+    await pool.query("analyze");
   });
 
   it("runs Personal Device relay cleanup against PostgreSQL", async () => {
@@ -4968,6 +4969,9 @@ describeDb("memory repository visibility", () => {
         restart identity cascade
       `
     );
+    // TRUNCATE does not refresh planner statistics. Keep each small fixture
+    // independent from estimates collected while earlier cases populated it.
+    await pool.query("analyze");
   });
 
   afterAll(async () => {
@@ -23507,6 +23511,18 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       { limit: 10 }
     );
+    await expect(
+      repo.createLcmNodes(
+        { userId: alice.id },
+        {
+          visibility: "personal",
+          sessionId: session.id,
+          workClass: "live_capture_projection",
+          force: true,
+          requestedRepresentation: "lcm_leaves"
+        }
+      )
+    ).resolves.toMatchObject({ leafNodeIds: [], rollupNodeId: null });
     const messages = await pool.query<{ content: string }>(
       "select content from messages where session_id = $1 order by created_at asc",
       [session.id]

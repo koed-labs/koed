@@ -873,10 +873,13 @@ export {
   sharedMemoryConversationRuleCreationActionGrantBinding,
   sharedMemoryRepositoryRuleCreationActionGrantBinding,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryWorkspaceRestorationActionGrantBinding,
+  sharedMemoryWorkspaceExclusionActionGrantBinding,
   sharedMemoryRuleControlActionGrantBinding,
   sharedMemoryRuleDetailActionGrantBinding,
   sharedMemoryRuleContentPolicyActionGrantBinding,
   sharedMemoryRepositoryRuleControlActionGrantBinding,
+  sharedMemoryPublisherTakeoverActionGrantBinding,
   sharedMemoryRepositorySnapshotActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding
@@ -1943,9 +1946,12 @@ export {
   repositorySharingRuleCreationReviewRequestSchema,
   repositorySharingRuleCreationLocalIntentSchema,
   repositorySharingRuleMemberAdmissionSchema,
+  repositorySharingRuleMemberReadmissionSchema,
   repositorySharingRuleMemberAcceptanceSchema,
   repositorySharingRuleMembersInspectSchema,
   repositorySharingRuleMembersStateSchema,
+  repositorySharingRuleMemberInventoryInputSchema,
+  repositorySharingRuleMemberInventorySchema,
   repositorySharingRuleMemberContextSchema,
   repositorySharingRuleMemberContextResultSchema,
   repositorySharingRuleMemberRemovalSchema,
@@ -1964,6 +1970,8 @@ export {
   type ConversationSharingRuleCreationResult,
   type SharingRuleMutationIntent,
   type ConversationSharingRuleCreationIntent,
+  snapshotConversionScopeSchema,
+  type SnapshotConversionScope,
   conversationSharingRuleCreationReviewInputSchema,
   conversationSharingRuleCreationReviewSchema,
   type ConversationSharingRuleCreationReviewInput,
@@ -1982,3 +1990,31 @@ export type {
 export * from "./sharing-rule-detail-contract.js";
 
 export * from "./sharing-rule-content-policy-contract.js";
+export * from "./workspace-conversation-exclusion-contract.js";
+export { sharingRulePublisherSchema } from "./sharing-rule-publisher-contract.js";
+export type { SharingRulePublisher } from "./sharing-rule-publisher-contract.js";
+export {
+  sharingRuleSourceIdentitySchema,
+  sharingRuleSourceIdentityHash
+} from "./sharing-rule-source-identity.js";
+export type { SharingRuleSourceIdentity } from "./sharing-rule-source-identity.js";
+export {
+  sharingRulePublisherTakeoverLocalReviewSchema,
+  sharingRulePublisherTakeoverLocalIntentSchema,
+  sharingRulePublisherTakeoverAppliedScopeSchema,
+  sharingRulePublisherTakeoverReviewInputSchema,
+  sharingRulePublisherTakeoverReviewSchema,
+  sharingRulePublisherTakeoverIntentSchema,
+  sharingRulePublisherTakeoverResultSchema
+} from "./team-sharing-review-contract.js";
+export type {
+  SharingRulePublisherTakeoverLocalReview,
+  SharingRulePublisherTakeoverLocalIntent,
+  SharingRulePublisherTakeoverAppliedScope,
+  SharingRulePublisherTakeoverReviewInput,
+  SharingRulePublisherTakeoverReview,
+  SharingRulePublisherTakeoverIntent,
+  SharingRulePublisherTakeoverResult
+} from "./team-sharing-review-contract.js";
+
+export { transferredSelectionSharingScopeSchema } from "./selection-sharing-journal.js";

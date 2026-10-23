@@ -3605,6 +3605,17 @@ export const registerCollaborationCommandRoute = (
                     desktopCredentialKeyId: credential.credentialKeyId
                   })
               : undefined,
+          resolvePublisherTakeoverReview: options.sharedMemoryControl
+            ? (intent) =>
+                options.sharedMemoryControl!.verifyPublisherTakeoverReview(
+                  intent,
+                  {
+                    upstreamBackendId: input.upstream_backend_id,
+                    localOwnerUserId: user.id,
+                    desktopCredentialKeyId: credential.credentialKeyId
+                  }
+                )
+            : undefined,
           resolveRepositoryRuleCreationReview: options.sharedMemoryControl
             ? async (intent) => {
                 const result = await options.sharedMemoryControl!.dispatch(

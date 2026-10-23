@@ -1,9 +1,12 @@
+import { SharingRuleContentPolicyReview } from "./SharingRuleContentPolicyReview.js";
+import { SharingRulePublisherReview } from "./SharingRulePublisherReview.js";
 import { SharingRuleDetailReview } from "./SharingRuleDetailReview.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   OwnedRepositorySharingRule,
   SharingRuleDelivery
 } from "@koed/shared";
+import { canonicalJsonDigest as crossIdentitySyncDigest } from "@koed/shared/collaboration";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 import { SharingRuleDeliveryStatus } from "./SharingRuleDeliveryStatus.js";
 import { failureMessage } from "./collaboration-primitives.js";
@@ -17,16 +20,23 @@ export type RepositorySharingRulesClient = Pick<
   | "amendRuleDetail"
   | "reviewRuleContentPolicy"
   | "amendRuleContentPolicy"
+  | "reviewPublisherTakeover"
+  | "takeOverPublisher"
+  | "reviewGitAnchorSharing"
 >;
 export function RepositorySharingRules({
   client,
   selector,
+  target: selectionTarget,
   creation
 }: {
   client: RepositorySharingRulesClient;
   selector: Parameters<
     RepositorySharingRulesClient["listRepositoryRules"]
   >[0]["selector"];
+  target?: Parameters<
+    RepositorySharingRulesClient["listRepositoryRules"]
+  >[0]["target"];
   creation: SharingRuleDelivery | null;
 }) {
   const [rules, setRules] = useState<OwnedRepositorySharingRule[]>([]),
@@ -46,6 +56,7 @@ export function RepositorySharingRules({
       try {
         const page = await client.listRepositoryRules({
           selector,
+          ...(selectionTarget ? { target: selectionTarget } : {}),
           afterRuleId: after,
           limit: 50
         });
@@ -78,7 +89,7 @@ export function RepositorySharingRules({
           setLoading(false);
       }
     },
-    [client, selector]
+    [client, selector, selectionTarget]
   );
   useEffect(() => {
     targetEpoch.current++;
@@ -96,12 +107,17 @@ export function RepositorySharingRules({
     if (!creation || !("includesFutureConversations" in creation.intent))
       return;
     const createdSelector = creation.intent.selector;
+    const sameLocalTarget =
+      selectionTarget &&
+      crossIdentitySyncDigest(creation.intent.review.target) ===
+        crossIdentitySyncDigest(selectionTarget);
     if (
-      createdSelector.kind !== selector.kind ||
-      createdSelector.key !== selector.key ||
-      (createdSelector.kind === "device_local_repository" &&
-        selector.kind === "device_local_repository" &&
-        createdSelector.originatingDeviceId !== selector.originatingDeviceId)
+      !sameLocalTarget &&
+      (createdSelector.kind !== selector.kind ||
+        createdSelector.key !== selector.key ||
+        (createdSelector.kind === "device_local_repository" &&
+          selector.kind === "device_local_repository" &&
+          createdSelector.originatingDeviceId !== selector.originatingDeviceId))
     )
       return;
     setDeliveries((previous) => [
@@ -111,7 +127,7 @@ export function RepositorySharingRules({
       )
     ]);
     if (creation.state === "acknowledged") void load(null);
-  }, [creation, load, selector]);
+  }, [creation, load, selector, selectionTarget]);
   useEffect(() => {
     const pending = deliveries.filter(
       (delivery) => delivery.state === "queued"
@@ -129,6 +145,8 @@ export function RepositorySharingRules({
             const current = found.find(
               (entry) =>
                 entry.intent.mutationId === delivery.intent.mutationId &&
+                "ruleId" in entry.intent &&
+                "ruleId" in delivery.intent &&
                 entry.intent.ruleId === delivery.intent.ruleId
             );
             if (current) updates.push(current);
@@ -222,6 +240,7 @@ export function RepositorySharingRules({
         const pending = deliveries.some(
           (delivery) =>
             delivery.state === "queued" &&
+            "ruleId" in delivery.intent &&
             delivery.intent.ruleId === rule.ruleId
         );
         const disabled = busy !== null || pending;
@@ -260,11 +279,28 @@ export function RepositorySharingRules({
                 Conversations.
               </p>
             )}
+            {rule.publisher ? (
+              <p>Publisher: {rule.publisher.label ?? "Unnamed device"}</p>
+            ) : null}
             {!rule.publisherAvailable && rule.state !== "stopped" ? (
               <p>
                 The recorded publisher is unavailable. You can still pause or
                 stop this rule.
               </p>
+            ) : null}
+            {selectionTarget && rule.state !== "stopped" ? (
+              <SharingRulePublisherReview
+                client={client}
+                ruleId={rule.ruleId}
+                teamId={rule.team.id}
+                workspaceId={rule.workspace.id}
+                authorityVersion={rule.authorityVersion}
+                publisherFence={rule.publisherFence}
+                maximumFidelity={rule.maximumFidelity}
+                target={selectionTarget}
+                disabled={disabled}
+                onDelivery={recordDelivery}
+              />
             ) : null}
             <SharingRuleDetailReview
               key={rule.authorityVersion}
@@ -274,6 +310,16 @@ export function RepositorySharingRules({
               workspaceId={rule.workspace.id}
               maximumFidelity={rule.maximumFidelity}
               includeCuratedMemory={rule.includeCuratedMemory}
+              disabled={disabled}
+              onDelivery={recordDelivery}
+            />
+            <SharingRuleContentPolicyReview
+              key={`${rule.ruleId}:content:${rule.authorityVersion}`}
+              client={client}
+              ruleId={rule.ruleId}
+              teamId={rule.team.id}
+              workspaceId={rule.workspace.id}
+              authorityVersion={rule.authorityVersion}
               disabled={disabled}
               onDelivery={recordDelivery}
             />

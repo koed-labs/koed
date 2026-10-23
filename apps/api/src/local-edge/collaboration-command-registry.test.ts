@@ -192,6 +192,21 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
     desktop: read
   },
   "collaboration.create_repository_rule": { scope: "team", desktop: write },
+  "collaboration.review_workspace_restoration": {
+    scope: "team",
+    desktop: read
+  },
+  "collaboration.review_workspace_exclusion": { scope: "team", desktop: read },
+  "collaboration.restore_conversation_to_workspace": {
+    scope: "team",
+    desktop: write
+  },
+  "collaboration.exclude_conversation_from_workspace": {
+    scope: "team",
+    desktop: write
+  },
+  "collaboration.take_over_publisher": { scope: "team", desktop: write },
+  "collaboration.review_publisher_takeover": { scope: "team", desktop: read },
   "collaboration.review_rule_detail": { scope: "team", desktop: read },
   "collaboration.amend_rule_detail": { scope: "team", desktop: write },
   "collaboration.review_rule_content_policy": { scope: "team", desktop: read },

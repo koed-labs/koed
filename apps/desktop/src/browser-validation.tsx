@@ -1571,6 +1571,7 @@ const explainFixtureShare = (share: OwnedShareItem): OwnedShareItem => {
     ...share,
     summary: {
       ...share.summary,
+      workspaceExclusion: null,
       sharingReasons: grantId
         ? [
             {
@@ -1721,6 +1722,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       },
       lastReadyRevision: 12,
       lastSuccessfulUpdateAt: timestamp,
+      workspaceExclusion: null,
       sharingReasons: []
     }
   };
@@ -1771,6 +1773,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
       authorizedPreview: null,
       lastReadyRevision: 12,
       lastSuccessfulUpdateAt: timestamp,
+      workspaceExclusion: null,
       sharingReasons: []
     }
   };
@@ -2573,6 +2576,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
               },
               lastReadyRevision: 1,
               lastSuccessfulUpdateAt: timestamp,
+              workspaceExclusion: null,
               sharingReasons: []
             }
           };
@@ -3086,6 +3090,7 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
         },
         lastReadyRevision: note.revision,
         lastSuccessfulUpdateAt: timestamp,
+        workspaceExclusion: null,
         sharingReasons: []
       }
     };

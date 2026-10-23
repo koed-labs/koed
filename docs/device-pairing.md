@@ -10,6 +10,12 @@ Use a private LAN or Tailscale network. An internet-accessible pairing relay and
 restricted-network traversal are not included. The installation that created the
 Personal Device Group remains its Authority/Relay host and must be reachable.
 
+The local Personal runtime provides pairing controls with either bundled-local
+or Operator-managed external dependencies. Database and model placement do not
+change the pairing protocol. External server deployments do not provide this
+local request service. Its control socket is owner-only; a private-interface
+request listener starts only when a User creates a device request.
+
 ## Joining through SSH
 
 On the joining device, run:
@@ -72,6 +78,8 @@ in HTTP requests. Inspection is read-only. Explicit acceptance sends the existin
 short-lived invitation through the encrypted exchange; the joining supervisor
 then executes the existing signed enrollment, Key Bundle, and local reconciliation
 protocol. The internal invitation is never displayed in the new flow.
+The joining runtime is bound to its local User before its worker is woken, so
+the first synchronization cycle uses the receiving installation's local authority.
 
 Direction and message IDs are authenticated, replayed messages are rejected, and
 acceptance is serialized and persisted before enrollment starts. Repeating the

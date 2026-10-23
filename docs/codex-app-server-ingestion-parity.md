@@ -48,6 +48,14 @@ external threads. For external threads, the explicit JSONL
 `event_msg:user_message` is the projectable prompt representation. Content
 hashes are observation integrity checks and are never matching keys.
 
+For transcript records without a provider item id, `externalItemId` retains the
+adapter's deterministic source-record key (session, position, discriminator, and
+record digest). Personal device publication uses this stable source identity.
+It does not establish provider semantic identity, create a canonical matching
+key, or make an otherwise raw-only record eligible for Projection. Provider ids
+remain unchanged when present, and replaying the same journal segment preserves
+the source-record key.
+
 If a projectable event has no exact provider identity, the adapter stores an
 `identity_unresolved` raw observation, excludes it from Projection, and fails
 the managed turn visibly. It does not guess from content or create a second

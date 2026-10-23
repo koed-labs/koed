@@ -1,9 +1,16 @@
 import {
+  workspaceConversationRestorationIntentSchema,
+  workspaceConversationExclusionIntentSchema,
+  workspaceConversationExclusionSchema
+} from "./workspace-conversation-exclusion-contract.js";
+import {
   sharingRuleContentPolicyIntentSchema,
   sharingRuleContentPolicyAppliedScopeSchema,
   sharingRuleApprovedAmendmentFields
 } from "./sharing-rule-content-policy-contract.js";
 import { z } from "zod";
+import { sharingRulePublisherSchema } from "./sharing-rule-publisher-contract.js";
+import { sharingRuleSourceIdentitySchema } from "./sharing-rule-source-identity.js";
 import {
   canonicalJsonDeterministicUuid as crossIdentitySyncDeterministicUuid,
   canonicalJsonDigest as crossIdentitySyncDigest
@@ -60,15 +67,27 @@ export const sharingSelectionTargetSchema = z.discriminatedUnion("kind", [
     })
     .strict()
 ]);
-/** Folder paths and private provenance remain local. The full, exact Personal
- * reference contributes to this opaque identity, including device/incarnation. */
+/** Folder paths and private provenance remain local. Ownership is enforced by
+ * the authenticated rule owner; local owner IDs must not change portable scope.
+ * Project callers resolve native view IDs to their verified portable identity.
+ * Folder identity retains every original deployment/device/profile/incarnation. */
 export const sharingSelectionDescriptor = (
   target: z.infer<typeof sharingSelectionTargetSchema>
 ): z.infer<typeof sharingSelectionSelectorSchema> => {
-  if (target.kind === "project")
-    return { kind: "project", key: crossIdentitySyncDigest(target.project) };
-  if (target.kind === "folder")
-    return { kind: "folder", key: crossIdentitySyncDigest(target.folder) };
+  if (target.kind === "project") {
+    const identity = personalProjectReferenceSchema
+      .omit({ ownerUserId: true })
+      .strip()
+      .parse(target.project);
+    return { kind: "project", key: crossIdentitySyncDigest(identity) };
+  }
+  if (target.kind === "folder") {
+    const identity = personalFolderReferenceSchema
+      .omit({ ownerUserId: true })
+      .strip()
+      .parse(target.folder);
+    return { kind: "folder", key: crossIdentitySyncDigest(identity) };
+  }
   const git = target.repository;
   return git.kind === "portable_repository"
     ? { kind: git.kind, key: git.key }
@@ -139,6 +158,7 @@ export type RepositorySharingRuleCreationResult = z.infer<
 export const repositorySharingRuleMemberAdmissionSchema = z
   .object({
     ruleId: z.uuid(),
+    sourceIdentity: sharingRuleSourceIdentitySchema.optional(),
     selectionSnapshotVersion: z.uuid(),
     sourceContextHash: hash,
     selectorBindingHash: hash,
@@ -148,6 +168,22 @@ export const repositorySharingRuleMemberAdmissionSchema = z
     expectedMembershipVersion: z.number().int().safe().nonnegative(),
     expectedGrantVersion: z.number().int().safe().positive().nullable(),
     publisherFence: z.number().int().safe().positive()
+  })
+  .strict();
+/** A current publisher may re-admit only a previously native-bound source.
+ * Source bytes, native identifiers and candidate previews are resolved by Team. */
+export const repositorySharingRuleMemberReadmissionSchema = z
+  .object({
+    mutationId: z.uuid(),
+    consentId: z.uuid(),
+    logicalMemoryId: z.uuid(),
+    membership: repositorySharingRuleMemberAdmissionSchema
+      .omit({ ruleId: true })
+      .extend({
+        sourceIdentity: sharingRuleSourceIdentitySchema,
+        expectedMembershipVersion: z.number().int().safe().positive(),
+        expectedGrantVersion: z.number().int().safe().positive().nullable()
+      })
   })
   .strict();
 export const repositorySharingRuleMemberAcceptanceSchema = z
@@ -163,6 +199,39 @@ export const repositorySharingRuleMemberAcceptanceSchema = z
 export const repositorySharingRuleMembersInspectSchema = z
   .object({
     logicalMemoryIds: z.array(z.uuid()).min(1).max(100)
+  })
+  .strict();
+/** Discovery under the current publisher, including sources absent from its
+ * current Personal selection. Opaque origins grant no source authority. */
+export const repositorySharingRuleMemberInventoryInputSchema = z
+  .object({
+    expectedAuthorityVersion: z.number().int().safe().positive(),
+    publisherFence: z.number().int().safe().positive(),
+    afterMembershipId: z.uuid().optional()
+  })
+  .strict();
+export const repositorySharingRuleMemberInventorySchema = z
+  .object({
+    ruleId: z.uuid(),
+    teamId: z.uuid(),
+    teamWorkspaceId: z.uuid(),
+    authorityVersion: z.number().int().safe().positive(),
+    publisherFence: z.number().int().safe().positive(),
+    selectorBindingHash: hash,
+    entries: z
+      .array(
+        z
+          .object({
+            membershipId: z.uuid(),
+            logicalMemoryId: z.uuid(),
+            membershipVersion: z.number().int().safe().positive(),
+            state: z.enum(["present", "removed", "revoked", "unresolved"]),
+            portableSourceHash: hash.nullable()
+          })
+          .strict()
+      )
+      .max(100),
+    nextAfterMembershipId: z.uuid().nullable()
   })
   .strict();
 export const repositorySharingRuleMembersStateSchema = z
@@ -185,6 +254,7 @@ export const repositorySharingRuleMembersStateSchema = z
         z
           .object({
             logicalMemoryId: z.uuid(),
+            workspaceExcluded: z.boolean(),
             grant: z
               .object({
                 id: z.uuid(),
@@ -216,6 +286,7 @@ export const repositorySharingRuleMembersStateSchema = z
                 pendingShare: z
                   .object({
                     id: z.uuid(),
+                    requiresReadmission: z.boolean().optional(),
                     state: z.enum([
                       "preparing",
                       "needs_attention",
@@ -487,7 +558,8 @@ export const ownedRepositorySharingRuleSchema =
     .omit({ state: true })
     .extend({
       state: z.enum(["active", "paused", "stopped"]),
-      publisherAvailable: z.boolean()
+      publisherAvailable: z.boolean(),
+      publisher: sharingRulePublisherSchema.nullable().optional()
     })
     .strict();
 export const ownedRepositorySharingRulesPageSchema = z
@@ -546,8 +618,26 @@ export type ConversationSharingRuleControlResult = z.infer<
   typeof conversationSharingRuleControlResultSchema
 >;
 
+/** Exact fixed-snapshot authority selected for an explicit one-source conversion.
+ * Destination identity and root version are bound by the enclosing rule review. */
+export const snapshotConversionScopeSchema = z
+  .object({
+    reasonId: z.uuid(),
+    consentId: z.uuid(),
+    consentVersion: z.number().int().safe().positive(),
+    sourceRevision: z.number().int().safe().positive(),
+    maximumFidelity: z.enum(sharedMemoryFidelityCeilings),
+    includeCuratedMemory: z.boolean(),
+    expiresAt: z.iso.datetime({ offset: true }).nullable()
+  })
+  .strict();
+export type SnapshotConversionScope = z.infer<
+  typeof snapshotConversionScopeSchema
+>;
+
 export const conversationSharingRuleCreationReviewInputSchema = z
   .object({
+    snapshotReasonId: z.uuid().optional(),
     previewId: z.uuid(),
     previewHash: hash,
     previewRevision: z.number().int().safe().positive(),
@@ -559,6 +649,8 @@ export const conversationSharingRuleCreationReviewInputSchema = z
 export const conversationSharingRuleCreationReviewSchema =
   conversationSharingRuleCreationReviewInputSchema
     .extend({
+      snapshotConversion: snapshotConversionScopeSchema.optional(),
+      sourceIdentity: sharingRuleSourceIdentitySchema.optional(),
       source: z
         .object({
           kind: z.literal("captured_session"),
@@ -587,6 +679,16 @@ export const conversationSharingRuleCreationReviewSchema =
     })
     .strict()
     .superRefine((review, context) => {
+      if (
+        (review.snapshotReasonId === undefined) !==
+          (review.snapshotConversion === undefined) ||
+        (review.snapshotConversion &&
+          review.snapshotConversion.reasonId !== review.snapshotReasonId)
+      )
+        context.addIssue({
+          code: "custom",
+          message: "A conversion review must bind its selected snapshot reason"
+        });
       if (review.source.logicalMemoryId !== review.logicalMemoryId)
         context.addIssue({
           code: "custom",
@@ -602,7 +704,10 @@ export type ConversationSharingRuleCreationReview = z.infer<
 
 export const conversationSharingRuleCreationIntentSchema =
   conversationSharingRuleCreationReviewInputSchema
+    .omit({ snapshotReasonId: true })
     .extend({
+      snapshotConversion: snapshotConversionScopeSchema.optional(),
+      sourceIdentity: sharingRuleSourceIdentitySchema.optional(),
       mutationId: z.uuid(),
       ruleId: z.uuid(),
       logicalGrantId: z.uuid(),
@@ -632,6 +737,218 @@ export const conversationSharingRuleCreationIntentSchema =
     .strict();
 export type ConversationSharingRuleCreationIntent = z.infer<
   typeof conversationSharingRuleCreationIntentSchema
+>;
+
+export const sharingRulePublisherTakeoverReviewInputSchema = z
+  .object({
+    ruleId: z.uuid(),
+    teamId: z.uuid(),
+    teamWorkspaceId: z.uuid(),
+    expectedAuthorityVersion: z.number().int().safe().positive(),
+    publisherFence: z.number().int().safe().positive(),
+    sourceIdentity: sharingRuleSourceIdentitySchema
+  })
+  .strict();
+
+export const sharingRulePublisherTakeoverReviewSchema =
+  sharingRulePublisherTakeoverReviewInputSchema
+    .extend({
+      selectorKind: z.enum([
+        "captured_session",
+        "repository",
+        "folder",
+        "project"
+      ]),
+      state: z.enum(["active", "paused"]),
+      maximumFidelity: z.enum(sharedMemoryFidelityCeilings),
+      includeCuratedMemory: z.boolean(),
+      effectivePrivacyPolicyHash: hash,
+      teamName: z.string().min(1).max(4096),
+      workspaceName: z.string().min(1).max(4096),
+      currentPublisher: sharingRulePublisherSchema,
+      receivingPublisher: sharingRulePublisherSchema,
+      logicalMemoryId: z.uuid(),
+      membershipId: z.uuid(),
+      shareGrantId: z.uuid(),
+      membershipVersion: z.number().int().safe().positive(),
+      selectionScope: repositorySharingRuleCreationIntentSchema.nullable(),
+      expiresAt: z.iso.datetime({ offset: true })
+    })
+    .strict()
+    .superRefine((review, context) => {
+      const scope = review.selectionScope;
+      if (
+        !review.receivingPublisher.available ||
+        review.currentPublisher.credentialId ===
+          review.receivingPublisher.credentialId
+      )
+        context.addIssue({
+          code: "custom",
+          message:
+            "Publisher takeover requires a different authorized receiving device"
+        });
+      if (
+        (review.selectorKind === "captured_session") !== (scope === null) ||
+        (scope &&
+          (scope.ruleId !== review.ruleId ||
+            scope.teamId !== review.teamId ||
+            scope.teamWorkspaceId !== review.teamWorkspaceId ||
+            scope.maximumFidelity !== review.maximumFidelity ||
+            scope.includeCuratedMemory !== review.includeCuratedMemory ||
+            scope.effectivePrivacyPolicyHash !==
+              review.effectivePrivacyPolicyHash ||
+            (scope.selector.kind === "folder" ||
+            scope.selector.kind === "project"
+              ? scope.selector.kind
+              : "repository") !== review.selectorKind))
+      )
+        context.addIssue({
+          code: "custom",
+          message:
+            "Publisher takeover must preserve the exact approved rule scope"
+        });
+    });
+
+export const sharingRulePublisherTakeoverIntentSchema = z
+  .object({
+    mutationId: z.uuid(),
+    review: sharingRulePublisherTakeoverReviewSchema
+  })
+  .strict();
+export const sharingRulePublisherTakeoverResultSchema = z
+  .object({
+    mutationId: z.uuid(),
+    ruleId: z.uuid(),
+    state: z.enum(["active", "paused"]),
+    authorityVersion: z.number().int().safe().positive(),
+    publisherFence: z.number().int().safe().positive(),
+    previousPublisherCredentialId: z.uuid(),
+    publisherCredentialId: z.uuid(),
+    catchUpState: z.enum(["idle", "queued"]),
+    approvedAt: z.iso.datetime({ offset: true })
+  })
+  .strict();
+export type SharingRulePublisherTakeoverReviewInput = z.infer<
+  typeof sharingRulePublisherTakeoverReviewInputSchema
+>;
+export type SharingRulePublisherTakeoverReview = z.infer<
+  typeof sharingRulePublisherTakeoverReviewSchema
+>;
+export type SharingRulePublisherTakeoverIntent = z.infer<
+  typeof sharingRulePublisherTakeoverIntentSchema
+>;
+export type SharingRulePublisherTakeoverResult = z.infer<
+  typeof sharingRulePublisherTakeoverResultSchema
+>;
+
+/** Local source pointers and private selector references stay on the receiving
+ * device. Only the nested backend review participates in the Team operation. */
+const publisherTakeoverLocalReview = z
+  .object({
+    review: sharingRulePublisherTakeoverReviewSchema,
+    localSource:
+      personalSelectionConsumerPageSchema.shape.entries.element.shape.source,
+    target: sharingSelectionTargetSchema.optional()
+  })
+  .strict();
+const validatePublisherTakeoverLocalReview = (
+  value: z.infer<typeof publisherTakeoverLocalReview>,
+  context: z.RefinementCtx
+) => {
+  const portable = value.localSource.portable;
+  if (
+    !portable ||
+    value.localSource.identityState !== "verified" ||
+    crossIdentitySyncDigest(
+      sharingRuleSourceIdentitySchema.strip().parse(portable)
+    ) !== crossIdentitySyncDigest(value.review.sourceIdentity)
+  )
+    context.addIssue({
+      code: "custom",
+      message: "Publisher takeover requires the exact verified Personal source"
+    });
+  const scope = value.review.selectionScope;
+  if (
+    scope
+      ? !value.target ||
+        crossIdentitySyncDigest(sharingSelectionDescriptor(value.target)) !==
+          crossIdentitySyncDigest(scope.selector)
+      : value.target !== undefined
+  )
+    context.addIssue({
+      code: "custom",
+      message: "Publisher takeover requires its unchanged selector scope"
+    });
+  const targetOwner =
+    value.target?.kind === "project"
+      ? value.target.project.ownerUserId
+      : value.target?.kind === "folder"
+        ? value.target.folder.ownerUserId
+        : portable?.ownerUserId;
+  if (targetOwner !== portable?.ownerUserId)
+    context.addIssue({
+      code: "custom",
+      message:
+        "The receiving source and selection must belong to the same local owner"
+    });
+};
+export const sharingRulePublisherTakeoverLocalReviewSchema =
+  publisherTakeoverLocalReview.superRefine(
+    validatePublisherTakeoverLocalReview
+  );
+export const sharingRulePublisherTakeoverLocalIntentSchema =
+  publisherTakeoverLocalReview
+    .extend({
+      operationKind: z.literal("publisher_takeover"),
+      mutationId: z.uuid(),
+      ruleId: z.uuid(),
+      teamId: z.uuid(),
+      teamWorkspaceId: z.uuid()
+    })
+    .superRefine((value, context) => {
+      validatePublisherTakeoverLocalReview(value, context);
+      if (
+        value.ruleId !== value.review.ruleId ||
+        value.teamId !== value.review.teamId ||
+        value.teamWorkspaceId !== value.review.teamWorkspaceId
+      )
+        context.addIssue({
+          code: "custom",
+          message:
+            "Publisher takeover must preserve its reviewed rule and destination"
+        });
+    });
+export const sharingRulePublisherTakeoverAppliedScopeSchema = z
+  .object({
+    review: sharingRulePublisherTakeoverReviewSchema,
+    result: sharingRulePublisherTakeoverResultSchema
+  })
+  .strict()
+  .superRefine(({ review, result }, context) => {
+    if (
+      result.ruleId !== review.ruleId ||
+      result.previousPublisherCredentialId !==
+        review.currentPublisher.credentialId ||
+      result.publisherCredentialId !== review.receivingPublisher.credentialId ||
+      result.authorityVersion !== review.expectedAuthorityVersion + 1 ||
+      result.publisherFence !== review.publisherFence + 1 ||
+      result.state !== review.state ||
+      result.catchUpState !== (review.state === "active" ? "queued" : "idle")
+    )
+      context.addIssue({
+        code: "custom",
+        message:
+          "Publisher takeover requires the exact accepted publisher transition"
+      });
+  });
+export type SharingRulePublisherTakeoverLocalReview = z.infer<
+  typeof sharingRulePublisherTakeoverLocalReviewSchema
+>;
+export type SharingRulePublisherTakeoverLocalIntent = z.infer<
+  typeof sharingRulePublisherTakeoverLocalIntentSchema
+>;
+export type SharingRulePublisherTakeoverAppliedScope = z.infer<
+  typeof sharingRulePublisherTakeoverAppliedScopeSchema
 >;
 
 export const conversationSharingRuleCreationResultSchema = z
@@ -685,6 +1002,9 @@ export const sharingRuleContentPolicyLocalIntentSchema =
         });
     });
 export const sharingRuleMutationIntentSchema = z.union([
+  sharingRulePublisherTakeoverLocalIntentSchema,
+  workspaceConversationRestorationIntentSchema,
+  workspaceConversationExclusionIntentSchema,
   sharingRuleDetailLocalIntentSchema,
   sharingRuleContentPolicyLocalIntentSchema,
   repositorySharingRuleControlIntentSchema,
@@ -712,13 +1032,17 @@ export const sharingRuleDeliverySchema = z
         repositorySharingRuleCreationResultSchema
       ])
       .nullable(),
+    publisherTakeover:
+      sharingRulePublisherTakeoverAppliedScopeSchema.optional(),
     detailAmendment: sharingRuleDetailAppliedScopeSchema.optional(),
     contentPolicyAmendment:
       sharingRuleContentPolicyAppliedScopeSchema.optional(),
+    exclusion: workspaceConversationExclusionSchema.optional(),
     failureCode: z
       .enum([
         "offline",
         "remote_unavailable",
+        "source_unavailable",
         "authority_unavailable",
         "conflict",
         "response_invalid"
@@ -729,7 +1053,69 @@ export const sharingRuleDeliverySchema = z
   .strict()
   .superRefine((delivery, context) => {
     const acknowledged = delivery.state === "acknowledged";
-    if ("operationKind" in delivery.intent) {
+    const transferring =
+      "operationKind" in delivery.intent &&
+      delivery.intent.operationKind === "publisher_takeover";
+    if (!transferring && delivery.publisherTakeover !== undefined)
+      context.addIssue({
+        code: "custom",
+        message:
+          "Only a publisher takeover delivery may contain a transfer receipt"
+      });
+    if ("scope" in delivery.intent) {
+      const result = delivery.exclusion;
+      if (
+        acknowledged !== (result !== undefined) ||
+        delivery.control !== null ||
+        delivery.creation !== null ||
+        delivery.detailAmendment !== undefined ||
+        delivery.contentPolicyAmendment !== undefined ||
+        (result &&
+          (result.ownerUserId !== delivery.intent.scope.ownerUserId ||
+            result.logicalMemoryId !== delivery.intent.scope.logicalMemoryId ||
+            result.teamId !== delivery.intent.scope.teamId ||
+            result.teamWorkspaceId !== delivery.intent.scope.teamWorkspaceId ||
+            result.state !==
+              ("restoration" in delivery.intent ? "restored" : "excluded") ||
+            result.version !==
+              delivery.intent.scope.expectedExclusionVersion + 1))
+      )
+        context.addIssue({
+          code: "custom",
+          message:
+            "An exclusion delivery requires its exact Workspace acknowledgment"
+        });
+      return;
+    }
+    if (delivery.exclusion !== undefined)
+      context.addIssue({
+        code: "custom",
+        path: ["exclusion"],
+        message:
+          "Only an exclusion delivery may contain an exclusion acknowledgment"
+      });
+    if (
+      "operationKind" in delivery.intent &&
+      delivery.intent.operationKind === "publisher_takeover"
+    ) {
+      const scope = delivery.publisherTakeover;
+      if (
+        delivery.control !== null ||
+        delivery.creation !== null ||
+        delivery.detailAmendment !== undefined ||
+        delivery.contentPolicyAmendment !== undefined ||
+        acknowledged !== (scope !== undefined) ||
+        (scope &&
+          (scope.result.mutationId !== delivery.intent.mutationId ||
+            crossIdentitySyncDigest(scope.review) !==
+              crossIdentitySyncDigest(delivery.intent.review)))
+      )
+        context.addIssue({
+          code: "custom",
+          message:
+            "Publisher takeover delivery requires its exact accepted review and receipt"
+        });
+    } else if ("operationKind" in delivery.intent) {
       const scope =
         delivery.intent.operationKind === "detail"
           ? delivery.detailAmendment

@@ -205,6 +205,7 @@ const fixture = (
     resolveNativeSource: vi
       .fn()
       .mockResolvedValue({ logicalMemoryId, sessionId }),
+    resolveExistingSource: vi.fn().mockResolvedValue(null),
     persistAttempt: vi.fn().mockResolvedValue(attempt),
     acknowledgeSource: vi.fn().mockResolvedValue(undefined),
     cancelAttempt: vi.fn().mockResolvedValue(undefined),
@@ -230,6 +231,260 @@ const fixture = (
 describe.each(["repository", "folder", "project"] as const)(
   "selection sharing exact delivery" + ": %s",
   (selectorKind) => {
+    it.each([
+      "present",
+      "missing_mapping",
+      "unready",
+      "removed_member",
+      "absent_member"
+    ] as const)(
+      "keeps a receiving checkpoint within its existing source authority: %s",
+      async (availability) => {
+        const f = fixture("present", selectorKind);
+        f.lease.data.attempt = null;
+        const sourceIdentity = {
+          originatingDeploymentId: "signed-original-deployment",
+          originatingDeviceId: "signed-original-device",
+          logicalSessionId: "signed-original-conversation"
+        };
+        f.lease.goal.source.portable = {
+          ...sourceIdentity,
+          ownerUserId: f.lease.identity.localOwnerUserId
+        };
+        f.lease.goal.source.identityState = "verified";
+        f.journal.resolveNativeSource.mockResolvedValue(null);
+        f.journal.resolveExistingSource.mockResolvedValue(
+          availability === "unready" ? null : sourceIdentity
+        );
+        f.transport.resolvePortableSource = vi
+          .fn()
+          .mockResolvedValue(
+            availability === "missing_mapping"
+              ? null
+              : f.attempt.logicalMemoryId
+          );
+        const intent = f.lease.progress.intent;
+        vi.mocked(f.transport.inspect).mockResolvedValue({
+          ruleId: intent.ruleId,
+          state: "active",
+          authorityVersion: 3,
+          publisherFence: 2,
+          selectorBindingHash: crossIdentitySyncDigest(intent.selector),
+          effectivePrivacyPolicyHash: intent.effectivePrivacyPolicyHash,
+          teamId: intent.teamId,
+          teamWorkspaceId: intent.teamWorkspaceId,
+          maximumFidelity: intent.maximumFidelity,
+          includeCuratedMemory: false,
+          entries: [
+            {
+              logicalMemoryId: f.attempt.logicalMemoryId,
+              workspaceExcluded: false,
+              grant: null,
+              member:
+                availability === "absent_member"
+                  ? null
+                  : {
+                      id: f.attempt.membershipId,
+                      version: 1,
+                      state:
+                        availability === "removed_member"
+                          ? "removed"
+                          : "present",
+                      selectionSnapshotVersion: randomUUID(),
+                      sourceContextHash: f.lease.goal.contextHash,
+                      gitContextVersion: 1,
+                      folderContextVersion: 1,
+                      pendingShare: null
+                    }
+            }
+          ]
+        });
+        const result = await f.run();
+        expect(result.acknowledged).toBe(availability === "present" ? 1 : 0);
+        expect(f.transport.prepareAdmission).not.toHaveBeenCalled();
+        expect(f.transport.queueSource).not.toHaveBeenCalled();
+        expect(f.transport.send).not.toHaveBeenCalled();
+        expect(f.journal.persistAttempt).not.toHaveBeenCalled();
+        if (availability !== "present")
+          expect(f.journal.deferSource).toHaveBeenCalledOnce();
+        if (availability === "unready")
+          expect(f.transport.resolvePortableSource).not.toHaveBeenCalled();
+      }
+    );
+    it.each([
+      "accepted",
+      "lost_response",
+      "canceled",
+      "replay",
+      "pending_recovery",
+      "native_pending",
+      "healthy_pending",
+      "context_recovery"
+    ] as const)(
+      "delivers retained-source re-entry without a native upload: %s",
+      async (outcome) => {
+        const f = fixture("present", selectorKind);
+        f.lease.data.attempt = null;
+        const sourceIdentity = {
+          originatingDeploymentId: "native-A",
+          originatingDeviceId: "device-A",
+          logicalSessionId: "conversation-A"
+        };
+        f.journal.resolveNativeSource.mockResolvedValue(null);
+        f.journal.resolveExistingSource.mockResolvedValue(sourceIdentity);
+        f.transport.resolvePortableSource = vi
+          .fn()
+          .mockResolvedValue(f.attempt.logicalMemoryId);
+        const intent = f.lease.progress.intent;
+        vi.mocked(f.transport.inspect).mockResolvedValue({
+          ruleId: intent.ruleId,
+          state: "active",
+          authorityVersion: 3,
+          publisherFence: 2,
+          selectorBindingHash: crossIdentitySyncDigest(intent.selector),
+          effectivePrivacyPolicyHash: intent.effectivePrivacyPolicyHash,
+          teamId: intent.teamId,
+          teamWorkspaceId: intent.teamWorkspaceId,
+          maximumFidelity: intent.maximumFidelity,
+          includeCuratedMemory: false,
+          entries: [
+            {
+              logicalMemoryId: f.attempt.logicalMemoryId,
+              workspaceExcluded: false,
+              grant:
+                outcome === "native_pending"
+                  ? null
+                  : {
+                      id: randomUUID(),
+                      logicalGrantId: randomUUID(),
+                      version: 5,
+                      lifecycle: "active"
+                    },
+              member: {
+                id: f.attempt.membershipId,
+                version: 1,
+                state: [
+                  "pending_recovery",
+                  "native_pending",
+                  "healthy_pending",
+                  "context_recovery"
+                ].includes(outcome)
+                  ? "unresolved"
+                  : "removed",
+                selectionSnapshotVersion: randomUUID(),
+                sourceContextHash:
+                  outcome === "context_recovery"
+                    ? "a".repeat(64)
+                    : f.lease.goal.contextHash,
+                gitContextVersion: 1,
+                folderContextVersion: 1,
+                pendingShare: [
+                  "pending_recovery",
+                  "native_pending",
+                  "healthy_pending",
+                  "context_recovery"
+                ].includes(outcome)
+                  ? {
+                      id: randomUUID(),
+                      state: "preparing",
+                      requiresReadmission:
+                        outcome === "pending_recovery" ||
+                        outcome === "native_pending"
+                    }
+                  : null
+              }
+            }
+          ]
+        });
+        const receipt = {
+          ...f.receipt,
+          membershipVersion: 2,
+          authorityVersion: 3,
+          publisherFence: 2
+        };
+        f.journal.persistAttempt.mockImplementation(
+          async (_lease, request) => request
+        );
+        vi.mocked(f.transport.send).mockResolvedValue({ admission: receipt });
+        if (outcome === "lost_response") {
+          vi.mocked(f.transport.send).mockRejectedValue(
+            new Error("response lost")
+          );
+          vi.mocked(f.transport.cancel).mockImplementation(async (attempt) => ({
+            ruleId: intent.ruleId,
+            mutationId: attempt.mutationId,
+            kind: attempt.kind,
+            logicalMemoryId: attempt.logicalMemoryId,
+            membershipId: attempt.membershipId,
+            requestHash: attempt.requestHash,
+            state: "accepted",
+            receipt
+          }));
+        }
+        if (outcome === "canceled") {
+          vi.mocked(f.transport.send).mockRejectedValue(
+            new Error("Source cache unavailable")
+          );
+          vi.mocked(f.transport.cancel).mockImplementation(async (attempt) => ({
+            ruleId: intent.ruleId,
+            mutationId: attempt.mutationId,
+            kind: attempt.kind,
+            logicalMemoryId: attempt.logicalMemoryId,
+            membershipId: attempt.membershipId,
+            requestHash: attempt.requestHash,
+            state: "canceled"
+          }));
+          expect((await f.run()).acknowledged).toBe(0);
+          const request = f.journal.persistAttempt.mock.calls[0]![1];
+          expect(f.journal.cancelAttempt).toHaveBeenCalledExactlyOnceWith(
+            f.lease,
+            {
+              mutationId: request.mutationId,
+              requestHash: request.requestHash,
+              retrySeconds: 30
+            }
+          );
+          expect(f.transport.prepareAdmission).not.toHaveBeenCalled();
+          expect(f.transport.queueSource).not.toHaveBeenCalled();
+          return;
+        }
+        if (outcome === "healthy_pending") {
+          expect((await f.run()).acknowledged).toBe(0);
+          expect(f.journal.persistAttempt).not.toHaveBeenCalled();
+          expect(f.transport.send).not.toHaveBeenCalled();
+          expect(f.transport.prepareAdmission).not.toHaveBeenCalled();
+          expect(f.transport.queueSource).not.toHaveBeenCalled();
+          return;
+        }
+        expect((await f.run()).acknowledged).toBe(1);
+        const request = f.journal.persistAttempt.mock.calls[0]![1];
+        expect(request.sourceWorkMode).toBe("retained");
+        expect(request.body).not.toHaveProperty("source");
+        expect(request.body).not.toHaveProperty("preview");
+        expect(request.body.membership).toMatchObject({
+          sourceIdentity,
+          expectedGrantVersion: outcome === "native_pending" ? null : 5
+        });
+        expect(
+          f.journal.persistAttempt.mock.invocationCallOrder[0]
+        ).toBeLessThan(
+          vi.mocked(f.transport.send).mock.invocationCallOrder[0]!
+        );
+        if (outcome === "replay") {
+          f.lease.data.attempt = request;
+          f.lease.goal.desired = "removed";
+          f.journal.resolveExistingSource.mockResolvedValue(null);
+          expect((await f.run()).acknowledged).toBe(1);
+          expect(f.journal.persistAttempt).toHaveBeenCalledTimes(1);
+        }
+        expect(f.transport.prepareAdmission).not.toHaveBeenCalled();
+        expect(f.transport.queueSource).not.toHaveBeenCalled();
+        expect(f.journal.acknowledgeSource).toHaveBeenCalledWith(
+          f.lease,
+          expect.objectContaining({ observePending: true })
+        );
+      }
+    );
     it("journals a new eligible admission before sending its strict Pending Share request", async () => {
       const f = fixture("present", selectorKind);
       f.lease.data.attempt = null;
@@ -248,6 +503,7 @@ describe.each(["repository", "folder", "project"] as const)(
         entries: [
           {
             logicalMemoryId: f.attempt.logicalMemoryId,
+            workspaceExcluded: false,
             grant: null,
             member: null
           }
@@ -309,6 +565,39 @@ describe.each(["repository", "folder", "project"] as const)(
       expect(f.journal.persistAttempt.mock.invocationCallOrder[0]).toBeLessThan(
         vi.mocked(f.transport.send).mock.invocationCallOrder[0]!
       );
+    });
+    it("retains an excluded admission goal without previewing or sending it", async () => {
+      const f = fixture("present", selectorKind);
+      f.lease.data.attempt = null;
+      const intent = f.lease.progress.intent;
+      vi.mocked(f.transport.inspect).mockResolvedValue({
+        ruleId: intent.ruleId,
+        state: "active",
+        authorityVersion: 1,
+        publisherFence: 1,
+        selectorBindingHash: crossIdentitySyncDigest(intent.selector),
+        effectivePrivacyPolicyHash: intent.effectivePrivacyPolicyHash,
+        teamId: intent.teamId,
+        teamWorkspaceId: intent.teamWorkspaceId,
+        maximumFidelity: intent.maximumFidelity,
+        includeCuratedMemory: false,
+        entries: [
+          {
+            logicalMemoryId: f.attempt.logicalMemoryId,
+            workspaceExcluded: true,
+            grant: null,
+            member: null
+          }
+        ]
+      });
+      expect((await f.run()).acknowledged).toBe(0);
+      expect(f.journal.deferSource).toHaveBeenCalledExactlyOnceWith(
+        f.lease,
+        60
+      );
+      expect(f.journal.acknowledgeSource).not.toHaveBeenCalled();
+      expect(f.transport.prepareAdmission).not.toHaveBeenCalled();
+      expect(f.transport.send).not.toHaveBeenCalled();
     });
     it("does not preview or admit an unavailable native source", async () => {
       const f = fixture("present", selectorKind);

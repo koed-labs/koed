@@ -23,6 +23,7 @@ import {
 import type pg from "pg";
 import {
   seedSelectionSharingProgress,
+  seedTransferredSelectionSharingProgress,
   recordSelectionSharingDetailScope,
   recordSelectionSharingContentPolicyScope
 } from "./selection-sharing-journal.js";
@@ -186,14 +187,18 @@ interface SharingRuleDeliveryPayload {
   presentation: SharingRuleDelivery["presentation"];
   control: SharingRuleDelivery["control"];
   creation: SharingRuleDelivery["creation"];
+  publisherTakeover?: SharingRuleDelivery["publisherTakeover"];
   detailAmendment?: SharingRuleDelivery["detailAmendment"];
   contentPolicyAmendment?: SharingRuleDelivery["contentPolicyAmendment"];
+  exclusion?: SharingRuleDelivery["exclusion"];
 }
 type SharingRuleDeliveryRow = ProtectedRow & {
   id: string;
   enrollment_id: string;
   mutation_id: string;
-  rule_id: string;
+  rule_id: string | null;
+  source_logical_memory_id: string | null;
+  team_workspace_id: string | null;
   share_grant_id: string | null;
   logical_grant_id: string | null;
   operation_kind:
@@ -202,7 +207,10 @@ type SharingRuleDeliveryRow = ProtectedRow & {
     | "repository_create"
     | "repository_control"
     | "detail"
-    | "content_policy";
+    | "content_policy"
+    | "publisher_takeover"
+    | "workspace_exclude"
+    | "workspace_restore";
   intent_hash: string;
   state: SharingRuleDelivery["state"];
   failure_code: SharingRuleDelivery["failureCode"];
@@ -244,14 +252,18 @@ export interface CollaborationSharedMemoryAuthorityStore {
     outcome: "acknowledged" | "retry" | "needs_review";
     control?: NonNullable<SharingRuleDelivery["control"]>;
     creation?: NonNullable<SharingRuleDelivery["creation"]>;
+    publisherTakeover?: NonNullable<SharingRuleDelivery["publisherTakeover"]>;
     detailAmendment?: NonNullable<SharingRuleDelivery["detailAmendment"]>;
     contentPolicyAmendment?: NonNullable<
       SharingRuleDelivery["contentPolicyAmendment"]
     >;
+    exclusion?: NonNullable<SharingRuleDelivery["exclusion"]>;
     failureCode?: SharingRuleDelivery["failureCode"];
   }): Promise<SharingRuleDelivery | null>;
   isEnrollmentBound(
-    input: CollaborationSharedMemoryAuthorityIdentity
+    input: CollaborationSharedMemoryAuthorityIdentity & {
+      remoteDeviceId?: string;
+    }
   ): Promise<boolean>;
   resolvePreviewTarget(
     input: CollaborationSharedMemoryAuthorityIdentity & {
@@ -505,12 +517,17 @@ const validRuleDeliveryPayload = (
     (value.control === null ||
       sharingRuleDeliverySchema.shape.control.safeParse(value.control)
         .success) &&
+    sharingRuleDeliverySchema.shape.publisherTakeover.safeParse(
+      value.publisherTakeover
+    ).success &&
     sharingRuleDeliverySchema.shape.contentPolicyAmendment.safeParse(
       value.contentPolicyAmendment
     ).success &&
     sharingRuleDeliverySchema.shape.detailAmendment.safeParse(
       value.detailAmendment
     ).success &&
+    sharingRuleDeliverySchema.shape.exclusion.safeParse(value.exclusion)
+      .success &&
     (value.creation === null ||
       conversationSharingRuleCreationResultSchema.safeParse(value.creation)
         .success ||
@@ -533,15 +550,32 @@ const ruleDeliveryIntentHash = (
   });
 
 const ruleDeliveryOperationKind = (intent: SharingRuleMutationIntent) =>
-  "operationKind" in intent
-    ? intent.operationKind
-    : "controlAction" in intent
-      ? "selectorKind" in intent
-        ? "repository_control"
-        : "control"
-      : "source" in intent
-        ? "conversation_create"
-        : "repository_create";
+  "scope" in intent
+    ? "restoration" in intent
+      ? "workspace_restore"
+      : "workspace_exclude"
+    : "operationKind" in intent
+      ? intent.operationKind
+      : "controlAction" in intent
+        ? "selectorKind" in intent
+          ? "repository_control"
+          : "control"
+        : "source" in intent
+          ? "conversation_create"
+          : "repository_create";
+
+const ruleDeliveryRuleId = (intent: SharingRuleMutationIntent) =>
+  "scope" in intent ? null : intent.ruleId;
+const ruleDeliverySourceId = (intent: SharingRuleMutationIntent) =>
+  "scope" in intent ? intent.scope.logicalMemoryId : null;
+const ruleDeliveryWorkspaceId = (intent: SharingRuleMutationIntent) =>
+  "scope" in intent ? intent.scope.teamWorkspaceId : null;
+const ruleDeliveryGrantId = (intent: SharingRuleMutationIntent) =>
+  "scope" in intent
+    ? intent.scope.shareGrantId
+    : "shareGrantId" in intent
+      ? intent.shareGrantId
+      : null;
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -633,7 +667,7 @@ const canRefreshAuthoritativeGrant = (
     next.grant.lifecycle !== "active" ||
     current.grant.revokedAt !== null ||
     next.grant.revokedAt !== null ||
-    next.grant.sourceRevision <= current.grant.sourceRevision ||
+    next.grant.sourceRevision < current.grant.sourceRevision ||
     Date.parse(next.grant.updatedAt) <= Date.parse(current.grant.updatedAt)
   ) {
     return false;
@@ -1441,15 +1475,20 @@ export const createCollaborationSharedMemoryAuthorityStore = (
       !sameIdentity(payload.identity, identity) ||
       payload.remoteDeviceId !== remoteDeviceId ||
       payload.intent.mutationId !== row.mutation_id ||
-      payload.intent.ruleId !== row.rule_id ||
+      ruleDeliveryRuleId(payload.intent) !== row.rule_id ||
+      ruleDeliverySourceId(payload.intent) !== row.source_logical_memory_id ||
+      ruleDeliveryWorkspaceId(payload.intent) !== row.team_workspace_id ||
       row.operation_kind !== ruleDeliveryOperationKind(payload.intent) ||
-      ("shareGrantId" in payload.intent
-        ? payload.intent.shareGrantId !== row.share_grant_id ||
+      ("scope" in payload.intent
+        ? payload.intent.scope.shareGrantId !== row.share_grant_id ||
           row.logical_grant_id !== null
-        : "logicalGrantId" in payload.intent
-          ? payload.intent.logicalGrantId !== row.logical_grant_id ||
-            row.share_grant_id !== null
-          : row.share_grant_id !== null || row.logical_grant_id !== null) ||
+        : "shareGrantId" in payload.intent
+          ? payload.intent.shareGrantId !== row.share_grant_id ||
+            row.logical_grant_id !== null
+          : "logicalGrantId" in payload.intent
+            ? payload.intent.logicalGrantId !== row.logical_grant_id ||
+              row.share_grant_id !== null
+            : row.share_grant_id !== null || row.logical_grant_id !== null) ||
       ruleDeliveryIntentHash(payload) !== row.intent_hash
     )
       return null;
@@ -1471,6 +1510,9 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         row.state === "acknowledged"
           ? payload.contentPolicyAmendment
           : undefined,
+      exclusion: row.state === "acknowledged" ? payload.exclusion : undefined,
+      publisherTakeover:
+        row.state === "acknowledged" ? payload.publisherTakeover : undefined,
       failureCode: row.failure_code,
       updatedAt: row.updated_at.toISOString()
     });
@@ -1517,7 +1559,7 @@ export const createCollaborationSharedMemoryAuthorityStore = (
           return null;
         await lockBinding(
           client,
-          `csm:rule-delivery:${enrollment.id}:${input.intent.ruleId}`
+          `csm:rule-delivery:${enrollment.id}:${ruleDeliveryRuleId(input.intent) ?? `${ruleDeliverySourceId(input.intent)}:${ruleDeliveryWorkspaceId(input.intent)}`}`
         );
         const existing = await client.query<SharingRuleDeliveryRow>(
           `select * from collaboration_sharing_rule_deliveries where enrollment_id=$1 and mutation_id=$2 for update`,
@@ -1543,11 +1585,15 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         };
         if (!validRuleDeliveryPayload(payload)) return null;
         const pending = await client.query(
-          `select id from collaboration_sharing_rule_deliveries where enrollment_id=$1 and rule_id=$2 and state='queued' and ((share_grant_id is null)=$3::boolean) limit 1`,
+          `select id from collaboration_sharing_rule_deliveries where enrollment_id=$1 and rule_id is not distinct from $2::uuid
+            and state='queued' and ((share_grant_id is null)=$3::boolean)
+            and source_logical_memory_id is not distinct from $4::uuid and team_workspace_id is not distinct from $5::uuid limit 1`,
           [
             enrollment.id,
-            input.intent.ruleId,
-            !("shareGrantId" in input.intent)
+            ruleDeliveryRuleId(input.intent),
+            ruleDeliveryGrantId(input.intent) === null,
+            ruleDeliverySourceId(input.intent),
+            ruleDeliveryWorkspaceId(input.intent)
           ]
         );
         if (pending.rowCount) return null;
@@ -1560,21 +1606,23 @@ export const createCollaborationSharedMemoryAuthorityStore = (
         });
         const saved = await client.query<SharingRuleDeliveryRow>(
           `insert into collaboration_sharing_rule_deliveries
-          (id,enrollment_id,mutation_id,rule_id,share_grant_id,logical_grant_id,intent_hash,protected_dto,protected_dto_hash,operation_kind)
-          values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10) returning *`,
+          (id,enrollment_id,mutation_id,rule_id,share_grant_id,logical_grant_id,intent_hash,protected_dto,protected_dto_hash,operation_kind,source_logical_memory_id,team_workspace_id)
+          values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12) returning *`,
           [
             workId,
             enrollment.id,
             input.intent.mutationId,
-            input.intent.ruleId,
-            "shareGrantId" in input.intent ? input.intent.shareGrantId : null,
+            ruleDeliveryRuleId(input.intent),
+            ruleDeliveryGrantId(input.intent),
             "logicalGrantId" in input.intent
               ? input.intent.logicalGrantId
               : null,
             ruleDeliveryIntentHash(input),
             JSON.stringify(encrypted.envelope),
             encrypted.hash,
-            ruleDeliveryOperationKind(input.intent)
+            ruleDeliveryOperationKind(input.intent),
+            ruleDeliverySourceId(input.intent),
+            ruleDeliveryWorkspaceId(input.intent)
           ]
         );
         return publicRuleDelivery(saved.rows[0]!, payload);
@@ -1705,14 +1753,18 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             control: input.control ?? null,
             creation: input.creation ?? null,
             detailAmendment: input.detailAmendment,
+            publisherTakeover: input.publisherTakeover,
             contentPolicyAmendment: input.contentPolicyAmendment,
+            exclusion: input.exclusion,
             failureCode: null,
             updatedAt: new Date().toISOString()
           });
           payload.control = receipt.control;
           payload.creation = receipt.creation;
           payload.detailAmendment = receipt.detailAmendment;
+          payload.publisherTakeover = receipt.publisherTakeover;
           payload.contentPolicyAmendment = receipt.contentPolicyAmendment;
+          payload.exclusion = receipt.exclusion;
         }
         if (input.outcome !== "retry") payload.actionGrant = null;
         const encrypted = await encryptedDto(provider, {
@@ -1737,6 +1789,20 @@ export const createCollaborationSharedMemoryAuthorityStore = (
             encrypted.hash
           ]
         );
+        if (
+          input.outcome === "acknowledged" &&
+          payload.publisherTakeover &&
+          "operationKind" in payload.intent &&
+          payload.intent.operationKind === "publisher_takeover"
+        )
+          await seedTransferredSelectionSharingProgress(client, provider, {
+            enrollmentId: enrollment.id,
+            creationDeliveryId: row.id,
+            identity: input.identity,
+            remoteDeviceId: enrollment.remote_device_id,
+            intent: payload.intent,
+            scope: payload.publisherTakeover
+          });
         if (input.outcome === "acknowledged" && payload.detailAmendment)
           await recordSelectionSharingDetailScope(client, provider, {
             identity: input.identity,
@@ -1780,7 +1846,17 @@ export const createCollaborationSharedMemoryAuthorityStore = (
     bindCompanionSession,
 
     async isEnrollmentBound(identity) {
-      return (await activeEnrollment(pool, identity)) !== null;
+      if (
+        identity.remoteDeviceId !== undefined &&
+        !isUuid(identity.remoteDeviceId)
+      )
+        return false;
+      const enrollment = await activeEnrollment(pool, identity);
+      return (
+        enrollment !== null &&
+        (identity.remoteDeviceId === undefined ||
+          enrollment.remote_device_id === identity.remoteDeviceId)
+      );
     },
 
     async resolvePreviewTarget(input) {

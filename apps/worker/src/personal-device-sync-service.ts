@@ -485,6 +485,7 @@ export const createPdsLocalSyncService = (input: {
               !(await input.repository.completePdsInbox({
                 workerId,
                 inboxId: entry.id,
+                verifiedNonSource: true,
                 state: "ready"
               }))
             ) {

@@ -3,8 +3,8 @@ import {
   sharingRuleContentPolicyReviewSchema
 } from "@koed/shared";
 
-/** A valid pre-alpha request, used to prove that disabling editing happens
- * before approval, queue persistence, or remote delivery. */
+/** A complete content-policy review for approval, authorization and delivery
+ * boundary tests. Repository tests construct reviews from current authority. */
 export const contentPolicyReviewFixture = (ids: {
   ruleId: string;
   teamId: string;

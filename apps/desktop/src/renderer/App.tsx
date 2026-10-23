@@ -683,10 +683,7 @@ export function App({
     readTheme,
     readTheme
   );
-  const collaboration = useCollaborationController(
-    client,
-    localSetupReady ?? false
-  );
+  const collaboration = useCollaborationController(client, personalMemoryReady);
   const route = currentNavigationEntry(navigation).route;
   const selectedAskThreadId =
     route.kind === "personal-memory-ask" ? route.askThreadId : undefined;

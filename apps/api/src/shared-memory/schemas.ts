@@ -1,10 +1,14 @@
 import {
   COLLABORATION_SOURCE_PAGE_MAX_ITEMS,
   conversationSharingRuleControlIntentSchema,
+  snapshotConversionScopeSchema,
+  sharingRuleSourceIdentitySchema,
   repositorySharingRuleCreationIntentSchema,
   repositorySharingRuleControlIntentSchema,
   sharingRuleDetailIntentSchema,
   sharingRuleContentPolicyIntentSchema,
+  workspaceConversationRestorationIntentSchema,
+  workspaceConversationExclusionIntentSchema,
   repositorySharingRuleMemberAdmissionSchema,
   personalNoteSourceSelectionIssues,
   sharedMemoryCandidatePreviewSchema,
@@ -204,6 +208,16 @@ export const sharedMemoryAuthoritySchema = z.discriminatedUnion("source", [
   deviceSharedMemoryAuthoritySchema
 ]);
 
+export const restoreWorkspaceConversationSchema =
+  workspaceConversationRestorationIntentSchema
+    .safeExtend({ authority: deviceSharedMemoryAuthoritySchema })
+    .strict();
+
+export const excludeWorkspaceConversationSchema =
+  workspaceConversationExclusionIntentSchema
+    .extend({ authority: sharedMemoryAuthoritySchema })
+    .strict();
+
 export const createRepositorySharingRuleSchema =
   repositorySharingRuleCreationIntentSchema
     .extend({ authority: deviceSharedMemoryAuthoritySchema })
@@ -292,7 +306,7 @@ export const controlPendingShareSchema = z
   .object({
     mutationId: uuidSchema,
     expectedOperationVersion: z.number().int().safe().positive(),
-    action: z.enum(["retry", "pause", "resume", "revoke"])
+    action: z.enum(["retry", "pause", "resume", "revoke", "stop_direct"])
   })
   .strict();
 
@@ -376,6 +390,7 @@ export const createPendingShareSchema = z
     activationRepresentation: sharedMemoryRepresentationSchema,
     mutationId: uuidSchema,
     logicalGrantId: uuidSchema,
+    expectedGrantVersion: positiveVersionSchema.nullable().default(null),
     consentId: uuidSchema,
     logicalMemoryId: uuidSchema,
     teamId: uuidSchema,
@@ -403,6 +418,8 @@ export const createConversationSharingRuleSchema =
       })
       .strict(),
     mode: z.literal("continuous"),
+    snapshotConversion: snapshotConversionScopeSchema.optional(),
+    sourceIdentity: sharingRuleSourceIdentitySchema.optional(),
     ruleId: uuidSchema,
     expectedGrantVersion: positiveVersionSchema.nullable(),
     effectivePrivacyPolicyHash: z.string().regex(/^[a-f0-9]{64}$/)

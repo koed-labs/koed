@@ -1812,10 +1812,60 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/shared-memory/sharing-rules/{ruleId}/publisher-review",
+    "device_credential",
+    "shared_memory",
+    "Review an exact owner-authorized transfer to a different publisher using an existing verified source identity and unchanged rule scope.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/sharing-rules/{ruleId}/publisher",
+    "device_credential",
+    "shared_memory",
+    "Transfer the rule publisher under an exact receiving-device native Action Grant, advancing its authority and publisher fence while retaining consent and state.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/repository-rules/{ruleId}/members/inventory",
+    "device_credential",
+    "shared_memory",
+    "Read at most 100 owner-private existing member origins under the exact current publisher authority and fence, without creating source or sharing authority.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/repository-rules/{ruleId}/members/resolve",
+    "device_credential",
+    "shared_memory",
+    "Resolve one exact owner-private Personal origin under the current rule publisher without creating source or sharing authority.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
     "/v1/shared-memory/repository-rules/{ruleId}/members/inspect",
     "device_credential",
     "shared_memory",
     "Inspect owner-private member and grant versions for at most 100 exact sources under one publisher.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/repository-rules/{ruleId}/members/readmit",
+    "device_credential",
+    "shared_memory",
+    "Re-admit an existing native-bound source under the current publisher and unchanged future rule scope, without a receiving source upload.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes
@@ -1846,6 +1896,26 @@ export const routeIdentityContracts = [
     "device_credential",
     "shared_memory",
     "Remove one rule's reason with current publisher and member versions, including while paused.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/sharing-rules/{ruleId}/publisher/receipt",
+    "device_credential",
+    "shared_memory",
+    "Read an exact committed publisher-transfer receipt without executing or consuming a fresh Action Grant.",
+    "request_time_shared_memory_owner",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/shared-memory/conversation-rules/receipt",
+    "device_credential",
+    "shared_memory",
+    "Read an exact committed Conversation rule creation receipt without executing or consuming a fresh Action Grant.",
     "request_time_shared_memory_owner",
     "implemented",
     teamDeploymentModes

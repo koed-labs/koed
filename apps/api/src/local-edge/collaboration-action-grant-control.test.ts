@@ -1,3 +1,4 @@
+import { publisherTakeoverReviewFixture } from "../shared-memory/test-fixtures/publisher-takeover-review.js";
 import { contentPolicyReviewFixture } from "../shared-memory/test-fixtures/rule-content-policy-review.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -194,8 +195,10 @@ describe("collaboration Action Grant control", () => {
     return { koedHome, nowRef, fetchMock, control, context };
   };
 
-  it("disables alpha content-policy approval requests before contacting Team", async () => {
-    const fixture = createFixture();
+  it("requests a content-policy Action Grant through the authorized Team route", async () => {
+    const fixture = createFixture({
+      context: { operationFamilies: new Set(["share_grant_management"]) }
+    });
     const result = await fixture.control.dispatch(
       parsedCommand({
         command: "collaboration.request_action_grant",
@@ -218,11 +221,15 @@ describe("collaboration Action Grant control", () => {
       }),
       fixture.context
     );
-    expect(result).toMatchObject({
-      ok: false,
-      error: { code: "not_available" }
+    expect(result).toMatchObject({ ok: true });
+    expect(fixture.fetchMock).toHaveBeenCalledOnce();
+    const [, init] = fixture.fetchMock.mock.calls[0]!;
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      intent: {
+        action: "shared_memory.rule_content_policy",
+        mutationId: ids.mutation
+      }
     });
-    expect(fixture.fetchMock).not.toHaveBeenCalled();
   });
 
   const requestCommand = (): CreateWorkspaceGrantCommand => {
@@ -286,6 +293,7 @@ describe("collaboration Action Grant control", () => {
           activationRepresentation: "memory_events",
           mutationId: ids.mutation,
           logicalGrantId: ids.logicalGrant,
+          expectedGrantVersion: null,
           consentId: ids.consent,
           logicalMemoryId: ids.logicalMemory,
           teamId: ids.team,
@@ -543,6 +551,127 @@ describe("collaboration Action Grant control", () => {
     });
   });
 
+  it("requires local publisher takeover proof before requesting its exact native operation", async () => {
+    const review = publisherTakeoverReviewFixture({
+      ruleId: ids.selector,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      receivingCredentialId: ids.device
+    });
+    const verify = vi
+      .fn<
+        NonNullable<
+          CollaborationActionGrantControlContext["resolvePublisherTakeoverReview"]
+        >
+      >()
+      .mockResolvedValue(true);
+    const fixture = createFixture({
+      context: {
+        operationFamilies: new Set(["share_grant_management"]),
+        resolvePublisherTakeoverReview: verify
+      }
+    });
+    const command = parsedCommand<RequestActionGrantCommand>({
+      command: "collaboration.request_action_grant",
+      input: {
+        intent: {
+          intent: "collaboration.take_over_publisher",
+          commandRequestId: ids.commandRequest,
+          operationKind: "publisher_takeover",
+          mutationId: ids.mutation,
+          ruleId: review.ruleId,
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          review,
+          localSource: {
+            localSessionId: ids.localSession,
+            localLogicalSessionId: ids.logicalMemory,
+            identityState: "verified",
+            portable: { ownerUserId: ids.principal, ...review.sourceIdentity },
+            contextVersion: { git: 1, folder: 1 }
+          }
+        }
+      }
+    });
+    expect(
+      await fixture.control.dispatch(command, fixture.context)
+    ).toMatchObject({ ok: true });
+    expect(verify).toHaveBeenCalledWith(command.input.intent);
+    const payload = JSON.parse(
+      String(fixture.fetchMock.mock.calls[0]![1]?.body)
+    ) as { intent: Record<string, unknown> };
+    expect(payload.intent).toEqual({
+      action: "shared_memory.publisher_takeover",
+      mutationId: ids.mutation,
+      review
+    });
+    expect(payload.intent).not.toHaveProperty("localSource");
+    fixture.fetchMock.mockClear();
+    verify.mockResolvedValue(false);
+    expect(
+      await fixture.control.dispatch(command, fixture.context)
+    ).toMatchObject({ ok: false });
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("checks and binds the verified Conversation origin before requesting native approval", async () => {
+    const sourceIdentity = {
+      originatingDeploymentId: "personal-origin",
+      originatingDeviceId: "personal-device",
+      logicalSessionId: ids.localSession
+    };
+    const check = vi
+      .fn<
+        NonNullable<
+          CollaborationActionGrantControlContext["resolveSharedMemoryConsentPreview"]
+        >
+      >()
+      .mockResolvedValue({ previewId: ids.remoteReplica });
+    const fixture = createFixture({
+      context: {
+        operationFamilies: new Set(["share_grant_management"]),
+        resolveSharedMemoryConsentPreview: check
+      }
+    });
+    const source = shareGrantCommand().input.intent;
+    if (source.intent !== "collaboration.share_memory")
+      throw new Error("Expected share intent");
+    const command = parsedCommand<RequestActionGrantCommand>({
+      command: "collaboration.request_action_grant",
+      input: {
+        intent: {
+          ...source,
+          intent: "collaboration.create_conversation_rule",
+          mode: "continuous",
+          source: capturedSource,
+          ruleId: ids.selector,
+          previewId: ids.remoteReplica,
+          effectivePrivacyPolicyHash: "c".repeat(64),
+          sourceIdentity
+        }
+      }
+    });
+    expect(
+      await fixture.control.dispatch(command, fixture.context)
+    ).toMatchObject({ ok: true });
+    expect(check).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceIdentity, source: capturedSource })
+    );
+    const payload = JSON.parse(
+      String(fixture.fetchMock.mock.calls[0]![1]?.body)
+    ) as { intent: Record<string, unknown> };
+    expect(payload.intent).toMatchObject({
+      action: "shared_memory.conversation_rule_create",
+      sourceIdentity
+    });
+    fixture.fetchMock.mockClear();
+    check.mockResolvedValue(null);
+    expect(
+      await fixture.control.dispatch(command, fixture.context)
+    ).toMatchObject({ ok: false });
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+  });
+
   it("resolves the persisted preview before binding a one-review share bundle", async () => {
     const resolveSharedMemoryConsentPreview = vi.fn(async () => ({
       previewId: ids.remoteReplica
@@ -587,6 +716,7 @@ describe("collaboration Action Grant control", () => {
       activationRepresentation: "memory_events",
       mutationId: ids.mutation,
       logicalGrantId: ids.logicalGrant,
+      expectedGrantVersion: null,
       consentId: ids.consent,
       logicalMemoryId: ids.logicalMemory,
       teamId: ids.team,
@@ -613,6 +743,7 @@ describe("collaboration Action Grant control", () => {
         activationRepresentation: "memory_events",
         mutationId: ids.mutation,
         logicalGrantId: ids.logicalGrant,
+        expectedGrantVersion: null,
         logicalMemoryId: ids.logicalMemory,
         teamId: ids.team,
         workspaceId: ids.workspace,

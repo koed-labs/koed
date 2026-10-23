@@ -40,6 +40,8 @@ export function GitAnchorSharingReview({
     | "amendRuleDetail"
     | "reviewRuleContentPolicy"
     | "amendRuleContentPolicy"
+    | "reviewPublisherTakeover"
+    | "takeOverPublisher"
   >;
   target: GitAnchorSharingReviewInput["target"];
   selectionTitle?: string;
@@ -379,6 +381,7 @@ export function GitAnchorSharingReview({
         <RepositorySharingRules
           client={client}
           selector={selector}
+          target={target}
           creation={creation}
         />
       </div>

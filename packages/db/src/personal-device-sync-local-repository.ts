@@ -410,6 +410,7 @@ export interface PersonalDeviceSyncLocalRepository {
     workerId: string;
     inboxId: string;
     retainedPackageId?: string;
+    verifiedNonSource?: true;
     state: "ready" | "quarantined";
   }): Promise<boolean>;
   markPdsInboxFailure(input: {
@@ -2366,8 +2367,15 @@ export const createPersonalDeviceSyncLocalRepository = (
          and (($2::uuid is null and retained_package_id is null)
            or retained_package_id=$2)
          and lease_owner=$3
-         and lease_until>=now() and state='processing'`,
-      [input.inboxId, input.retainedPackageId, input.workerId, input.state]
+         and lease_until>=now()
+         and (state='processing' or ($5 and $4='ready' and retained_package_id is null and state='downloading'))`,
+      [
+        input.inboxId,
+        input.retainedPackageId,
+        input.workerId,
+        input.state,
+        input.verifiedNonSource === true
+      ]
     );
     return result.rowCount === 1;
   },

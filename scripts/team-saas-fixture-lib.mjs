@@ -2317,7 +2317,7 @@ const seedConversationSourceFixture = async (client, runtime) => {
          origin_public_key, redacted_source_label, finalized_at
        ) values (
          $1,$2,$3,$4,$5,'main','primary',null,'jsonl','origin_local',
-         'codex','codex',$6,$7,'jsonl',1,'codex-transcript-v1','finalized',
+         'codex','codex',$6,$7,'codex_rollout_jsonl',1,'codex-transcript-v1','finalized',
          0,0,0,0,$8,$9,$8,$10,$11,$11,'envelope_db',$12,
          $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
          'Fixture Codex session',$19

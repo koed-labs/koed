@@ -132,7 +132,18 @@ export const createPdsConfigurationRuntime = (
       publicKey: author.signingPublicKey
     });
   };
+  const refreshCapabilities = async () => {
+    if (Date.now() - advertisedAt < 60_000) return;
+    await input
+      .relay()
+      .advertiseConfigurationCapabilities([
+        "source_context_v1",
+        "project_membership_v1"
+      ]);
+    advertisedAt = Date.now();
+  };
   return {
+    refreshCapabilities,
     async requireSourceContextRecipients() {
       requirePdsConfigurationCapability({
         ...authority,
@@ -156,13 +167,7 @@ export const createPdsConfigurationRuntime = (
       try {
         const relay = input.relay();
         // Capability refresh does not depend on direct peer routes or a local relay endpoint.
-        if (Date.now() - advertisedAt >= 60_000) {
-          await relay.advertiseConfigurationCapabilities([
-            "source_context_v1",
-            "project_membership_v1"
-          ]);
-          advertisedAt = Date.now();
-        }
+        await refreshCapabilities();
         const pending = await input.repository.listPendingPersonalConfiguration(
           {
             ...scope,

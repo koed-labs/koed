@@ -68,6 +68,12 @@ export interface CollaborationActionGrantControlContext {
   operationFamilies: ReadonlySet<
     "action_grant" | "share_grant_management" | "managed_execution"
   >;
+  resolvePublisherTakeoverReview?: (
+    input: Extract<
+      CollaborationActionGrantIntent,
+      { intent: "collaboration.take_over_publisher" }
+    >
+  ) => Promise<boolean>;
   resolveRepositoryRuleCreationReview?: (
     input: Extract<
       CollaborationActionGrantIntent,
@@ -92,6 +98,7 @@ export interface CollaborationActionGrantControlContext {
     mode: "snapshot" | "continuous";
   }) => Promise<{ remoteReplicaId: string } | null>;
   resolveSharedMemoryConsentPreview?: (input: {
+    sourceIdentity?: import("@koed/shared").SharingRuleSourceIdentity;
     source: SharedMemorySourceRef;
     sourceCapabilities: Array<
       "memory_events" | "lcm_leaves" | "lcm_rollups" | "curated_assertions"
@@ -427,11 +434,14 @@ export const createCollaborationActionGrantControl = (
           const intent = collaborationActionGrantIntentSchema.parse(
             command.input.intent
           );
-          if (intent.intent === "collaboration.amend_rule_content_policy")
-            return failure(command, new ControlFailure("not_available"));
           if (
             intent.intent === "collaboration.create_repository_rule" &&
             !(await context.resolveRepositoryRuleCreationReview?.(intent))
+          )
+            return failure(command, new ControlFailure("permission_denied"));
+          if (
+            intent.intent === "collaboration.take_over_publisher" &&
+            !(await context.resolvePublisherTakeoverReview?.(intent))
           )
             return failure(command, new ControlFailure("permission_denied"));
           const previewTarget =
@@ -453,6 +463,11 @@ export const createCollaborationActionGrantControl = (
             intent.intent === "collaboration.create_conversation_rule" ||
             intent.intent === "collaboration.change_shared_memory_fidelity"
               ? await context.resolveSharedMemoryConsentPreview?.({
+                  ...(intent.intent ===
+                    "collaboration.create_conversation_rule" &&
+                  intent.sourceIdentity
+                    ? { sourceIdentity: intent.sourceIdentity }
+                    : {}),
                   source: intent.source,
                   sourceCapabilities: intent.sourceCapabilities,
                   activationRepresentation: intent.activationRepresentation,

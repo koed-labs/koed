@@ -4,8 +4,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -247,6 +249,52 @@ describe("packaged runtime provisioning", () => {
     expect(
       existsSync(resolve(root, "koed-runtime", "postgres", "bin", "psql"))
     ).toBe(true);
+  });
+
+  it("keeps installed library links usable after the source app bundle is removed", () => {
+    const root = tempDir();
+    const source = createPackagedPostgres(root);
+    mkdirSync(resolve(source, "lib"));
+    writeFileSync(resolve(source, "lib", "libpq.5.dylib"), "library fixture");
+    symlinkSync("libpq.5.dylib", resolve(source, "lib", "libpq.dylib"));
+    const files = [
+      "bin/initdb",
+      "bin/pg_ctl",
+      "bin/psql",
+      "lib/libpq.5.dylib",
+      "lib/libpq.dylib"
+    ];
+    writeManifest(root, {
+      expectedFiles: files,
+      sha256: sha256PackagedRuntimeFiles(source, files)
+    });
+    const koedPaths = paths(root);
+
+    const installed = installPackagedRuntime(
+      koedPaths,
+      env(root),
+      validationHost
+    );
+    expect(installed.ok).toBe(true);
+    rmSync(source, { recursive: true });
+
+    const library = resolve(
+      root,
+      "home",
+      "runtime",
+      "postgres",
+      "lib",
+      "libpq.dylib"
+    );
+    expect(readlinkSync(library)).toBe("libpq.5.dylib");
+    expect(readFileSync(library, "utf8")).toBe("library fixture");
+    const status = collectPackagedRuntimeStatus(
+      koedPaths,
+      env(root),
+      validationHost
+    );
+    expect(status.ok).toBe(true);
+    expect(status.assets[0]?.installedSha256).toBe(installed.assets[0]?.sha256);
   });
 
   it("marks installed packaged assets incompatible when validation fails", () => {

@@ -101,6 +101,7 @@ const harness = (completionFailure?: CompletionFailure) => {
 
   const runCalls: string[][] = [];
   const localCalls: string[] = [];
+  let localUserBound = false;
   const completionMessageIds: string[] = [];
   let localRequestCount = 0;
   const invitation = {
@@ -130,6 +131,7 @@ const harness = (completionFailure?: CompletionFailure) => {
           localGroupReconciliation: { group_id: "group-1" }
         };
       }
+      localUserBound = true;
       return { ok: true, state: "bound", message: "" };
     }
   );
@@ -137,6 +139,9 @@ const harness = (completionFailure?: CompletionFailure) => {
   const fetch = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
     const url = new URL(String(input));
     if (url.origin === localOrigin) {
+      if (url.pathname.endsWith("/local-runtime-wake")) {
+        expect(localUserBound).toBe(true);
+      }
       localCalls.push(url.pathname);
       localRequestCount += 1;
       return new Response(

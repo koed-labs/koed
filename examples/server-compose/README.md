@@ -6,6 +6,9 @@ its deployment dependencies. It is separate from
 starter for source checkouts where `koed-server` runs on the host.
 The `koed-server` image includes the PostgreSQL 17 client tools required by
 backup, restore, migration-acceptance, and launch-validation operations.
+Its build stage includes the compiler tools needed when a native dependency
+has no matching prebuilt binary. Those tools are excluded from the final
+service image.
 
 From the repo root:
 
@@ -97,6 +100,22 @@ docker compose --env-file .env -f examples/server-compose/docker-compose.yml exe
 
 Do not use that smoke-test shortcut as the normal Codex/MCP topology when a
 local `koed-server` is available.
+
+For local Docker Desktop builds, check free space inside Docker as well as on the
+host. Image layers and database WAL use the Docker disk image; host free space
+does not establish that this internal filesystem has room. With the stack running:
+
+```bash
+docker compose --env-file .env -f examples/server-compose/docker-compose.yml exec privacy-service df -h /
+docker system df
+```
+
+After a disk-full failure, reclaim unused build cache or identified superseded
+images while preserving database/model volumes and encryption configuration.
+Start affected services normally and verify database recovery, Redis persistence,
+API readiness and authorized/denied reads before continuing. Do not reset data to
+clear a capacity failure. See [backup and restore](../../docs/hosted-backups.md)
+for recovery when normal startup cannot recover.
 
 Stop and remove the stack:
 

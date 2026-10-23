@@ -212,7 +212,9 @@ ordinary Workspace write access as sharing authority.
 
 Conversation Source Access is an independent capability. Most active Shared
 Memory grants deliberately have no source grant. The fixture adds only these
-three deterministic, origin-signed, encrypted owner-source cases:
+three deterministic, origin-signed, encrypted owner-source cases.
+Their artifact format is the supported `codex_rollout_jsonl`; `jsonl` describes
+record framing and is not the artifact format.
 
 | Source                      | Shared Memory                | Mode                  | Expected behavior                                                                                                                                                                                                                                     |
 | --------------------------- | ---------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -1,30 +1,39 @@
 # Shared Memory owner workflow model
 
-## Operational alpha boundary
+## Current production implementation
 
-The [operational alpha](../tickets.md) disables rule content-policy editing.
-Desktop omits the editors for Conversation, Git Anchor, Folder, and Project
-rules. The HTTP review and amendment routes reject requests, native commands
-reject them before approval or queue creation, and Action Grant admission does
-not create a new approval. Pending native and browser requests cannot approve
-this action. Existing approval and policy records remain intact.
+The [production plan](../tickets.md) restores rule content-policy editing after
+local acceptance of P2-09A and P2-09B. Conversation, Git Anchor, Folder, and
+Project rules use the same reviewed amendment and durable delivery boundaries.
+Restrictive changes remove unsupported access immediately. Broader changes
+require fresh approval against current owner, Team, and Workspace permissions.
+Stopped rules remain stopped.
 
-The local delivery worker moves previously queued content-policy edits to
-`needs_review` without sending them or acknowledging them. Desktop explains
-that editing is unavailable and the prior remote outcome remains unconfirmed.
-An earlier request may already have committed remotely. The worker retains its
-encrypted intent and clears the retry credential through the existing delivery
-transition. It does not roll back or broaden stored restrictions.
+The [accepted alpha](archive/2026-10-21-operational-alpha/tickets.md) disabled
+these editors. That restriction describes the archived build. Current policy
+editing is enabled through Desktop, HTTP, native approval, and browser approval.
+The [validation record](team-continuous-sharing-validation.md) records the local
+evidence and the outstanding combined native acceptance gate.
 
-Current Privacy checks, creation, detail changes, and pause/resume/stop remain
-enabled. The P2-09 implementation sections below describe deferred internals;
-they do not make policy editing available in the alpha.
+Captured Session sharing also requires the upstream Sync route policy and a
+current device enrollment that includes `sync`, in addition to Share Grant
+management. Candidate preview and consent do not grant Sync implicitly. If Sync
+is unavailable, an accepted share remains pending with no Workspace content
+access until its source can be uploaded. Enable `--sync enabled` explicitly and
+approve a replacement enrollment when the current credential lacks that family.
+Personal Note sharing uses its separate source-upload path.
+
+A replacement enrollment is bound locally only after Team confirms its current
+credential ID and principal. The owner and backend alone cannot establish that
+the cached sharing enrollment is current. Rebinding retires local authority for
+the previous credential through the existing rotation path; it does not reuse
+an old approval for a new credential.
 
 This document describes the current source-based sharing implementation.
 The agreed [recall and continuous sharing model](recall-and-continuous-sharing-model.md)
 describes continuous selection of existing and future sources, with automatic
-resume catch-up. The alpha demonstrates selected Conversation and Git Anchor
-flows; the broader package acceptance matrix remains open.
+resume catch-up. The complete two-owner, two-Workspace, two-device native
+journey remains open in PROD-06.
 
 Desktop Shares refreshes immediately on owner status events and authoritative
 connection recovery. While a Pending Share is preparing or a sharing reason has
@@ -36,6 +45,12 @@ thirty seconds, respecting a longer server retry delay; access denials do not
 retry. These are status reads, not retries of privacy processing or sharing
 mutations. Using Retry on a failed Pending Share restarts these reads when
 preparation resumes.
+
+The owner grant index omits companion scope. The local reader validates the
+owner and requested logical Memory, then reconstructs that scope from the
+verified grant. Companion discussion requests and responses use the existing
+grant-scoped Team source ID. A raw owner source ID or a different grant,
+Workspace or Team cannot satisfy that response check.
 
 The owner source preview follows the latest published revision under that
 entry's current consent. Its preview must match the same owner, source,
@@ -66,12 +81,40 @@ authority and source state. Other errors are not retried. A caller-owned
 transaction remains the caller's responsibility; preview preparation never
 restarts part of an enclosing consent or publication transaction.
 
-Rule-member activation retries its idempotent admission workflow up to three
-attempts when PostgreSQL reports a serialization failure (40001) or deadlock
-(40P01). Each attempt reloads current rule and grant authority through the normal
-activation path. Permission failures and other errors are not retried. If all
-three attempts conflict, the Pending Share still requires attention and an
-explicit Retry. This does not automatically resume an already-failed operation.
+Rule-member and direct activation retry their idempotent workflows up to three
+attempts for PostgreSQL serialization failures (40001) and deadlocks (40P01).
+The operation, consent and mutation identities survive replay. Each attempt
+reloads and checks authority; permission failures and other genuine failures do
+not retry. Exhaustion leaves the operation needing attention. Companion repair
+handles an explicitly unavailable companion, rather than resuming arbitrary
+activation failures or resetting the conflict limit.
+
+An owned repeatable-read preview reads one consistent source generation without
+locking the live logical-memory, replica and sync-relationship rows. Its shared
+device-credential lock fences revocation until commit. Existing immutable
+source-revision bindings are verified without rewriting or locking the live
+source head. Creation of a missing binding and callers that inherit transaction
+isolation retain their existing locking paths. Consent, materialization and
+publication still check current authority. A source advancing beyond an exact
+candidate review does not silently replace that review.
+
+Readers take shared locks on unchanged Team and Workspace representation
+policies; policy edits still take exclusive locks. This avoids serializing
+independent destinations and avoids upgrading a policy reader's shared lock
+later in the activation transaction.
+
+Independent automatic rule-member admissions may prepare the same source and
+destination concurrently. They keep separate consent, membership and Pending
+Share identities and use one destination grant. A competing admission can
+advance the grant version without changing its existing authority. Recovery
+requires a complete, owner-scoped audit sequence proving that every intervening
+version added a rule reason and preserved destination authority. First-grant
+creation additionally requires its recorded creation event. Missing proof or an
+intervening control, revocation, policy or fidelity change fails closed. Recovery
+reloads current rule, publisher, membership, consent and privacy authority before
+replaying; it does not approve a stale control or share review. When two pending
+members initially saw no grant, the later admission resolves to the grant
+created by its sibling while preserving its original operation and request receipt.
 
 ## Decision
 
@@ -686,10 +729,18 @@ Session authority. Other sharing reasons still determine current access.
 
 The owner can inspect recent requests after a Desktop restart, including when
 Team sharing lists are unavailable. That panel shows up to 100 recent rules.
-Opening a share also reads its own delivery records. Native review still requires
-Team access before the local API can accept a newly approved execution request.
-A stop that starts before any online review remains part of the interruption
-recovery work.
+Opening a share also reads its own delivery records. A fresh stop requires a
+current Team review before the local API can accept an approved execution
+request. When that review is unavailable offline, Desktop explains that the
+User must reconnect and that Team access may remain. It does not invent an
+offline Action Grant or turn cached rule details into approval. A stop already
+reviewed and approved online can still queue, survive an outage and recover its
+exact receipt as described above. If its approval expires before the Team accepts
+the stop, the request moves to needs review and Team access can remain. Reconnect,
+review the current rule and approve a new stop. An expired approval can recover
+an already committed receipt, but cannot execute a new stop. This is the
+supported offline boundary;
+fresh fully offline approval is unavailable.
 
 ## Reviewed creation of a Conversation rule
 
@@ -786,6 +837,10 @@ baseline. Until that final transaction, source delivery sees only the previous
 complete baseline. Failed or expired enumeration discards the proposal without
 removing installed members. Missing or unavailable source data cannot prove a
 removal; only an explicit deletion or confirmed selector mismatch can do so.
+An expired or unavailable selection cursor also clears the retry checkpoint, so
+the next reconciliation starts a new complete enumeration. The installed
+generation and exact outstanding source requests remain intact during that
+replacement; restarting cannot turn a failed scan into removal evidence.
 
 The journal retains exact outstanding requests across newer membership goals.
 An acknowledgment completes only the goal that request carried. Enrollment
@@ -1021,9 +1076,9 @@ new rule version. Paused rules wait for an explicit resume before new admission.
 Local acceptance is recorded in the [P2-08 validation record](team-continuous-sharing-validation.md#p2-08-local-acceptance).
 The combined native package journey remains open.
 
-## Rule content policy under implementation (P2-09)
+## Rule content policy
 
-A rule's content policy will add Privacy redaction requirements under the
+A rule's content policy adds Privacy redaction requirements under the
 current owner, Team and Workspace constraints. It cannot relax those enclosing
 requirements. This uses the existing Privacy categories; it is an implementation
 choice for P2-09, not an additional domain collection or a named Team policy.
@@ -1079,7 +1134,9 @@ The owner-facing editor is available from Conversation and selector rule
 controls. It loads the current added categories before editing, keeps required
 categories enabled and shows previous and proposed effective redaction in a
 separate review. Changed categories and expired reviews require another review.
-Confirmation then opens native approval and records the delivery request.
+Confirmation requests fresh approval and records the delivery request. A broader
+Memory Events policy requires browser step-up approval; other reviewed policy
+changes use native review. The complete current review binds either approval.
 
 Returning to an earlier policy can now requeue its exact derivative after policy
 or authority supersession. Explicit material invalidations stay invalidated.
@@ -1088,8 +1145,11 @@ bindings, then produce a fresh sanitized payload. A content amendment releases
 old processing leases, including when the content policy later returns to the
 same hash.
 
-Historical publication and restoration are connected in the source worktree and
-await runtime acceptance. This section is not P2-09 acceptance evidence.
+Focused local checks cover active and paused publication, future revisions,
+independent reasons, immediate recall and cached expansion denial, exact delivery
+receipt recovery and stopped-state preservation. See the
+[production validation record](team-continuous-sharing-validation.md#p2-09a-and-p2-09b-reviewed-content-policy-operation).
+The combined native package journey remains open.
 
 Historical preparation now has a storage link to the exact original publication.
 Its source proof checks the revision, representation and content hashes when
@@ -1109,3 +1169,315 @@ After native content-policy approval, exact retained history can recover that
 availability only when final publication passes current permissions. The rule
 and its consent keep their paused state. Pending approval and remediation flows
 must finish through their own controls.
+
+## Workspace Conversation exclusion
+
+An owner can exclude a captured Conversation from one Workspace from its Shares
+view. Native approval names the Conversation, Team and Workspace and explains
+that the block covers direct sharing and every Conversation, Git Anchor, Folder
+and Project reason. Personal Memory and other destinations remain independent.
+
+The backend stores the exclusion by owner, logical source and Workspace,
+independently of rule lifecycle. A retained version fences stale owner decisions.
+The owner can restrict an existing destination after losing Workspace Access;
+reviewing an unrelated destination still requires current destination permission.
+Personal API Tokens cannot review or apply the action.
+
+The mutation holds the existing source-policy and destination locks, checks the
+reviewed grant and exclusion versions, and records an exact replay receipt. It
+invalidates candidate and Privacy preparation, removes indexed Team semantic
+items, invalidates published representations, and revokes separate Conversation
+source access. Direct consent and direct pending work stop. Rule authority and
+membership remain retained for a later explicit restoration review; exclusion
+does not pause, stop or expand a rule.
+
+Publication, Team reads, semantic recall, evidence expansion and Conversation
+source access all check the same owner/source/Workspace veto. Active-source and
+retained-history processing also skip excluded sources. Active Privacy leases
+are released, and excluded member deadlines do not wake the backend worker. A previously returned
+candidate cannot bypass the current access check. Personal source data remains
+intact, and source-context correction and membership removal may still proceed.
+A publisher retains a blocked new-member goal in the same encrypted journal
+and checks the veto again after 60 seconds without preparing or admitting it.
+
+Desktop reuses native Action Grants and the existing encrypted sharing-delivery
+journal. Its queued state explicitly says access may remain until Team
+acknowledgment. Only an exact receipt acknowledges the exclusion and clears
+cached Team views. The owner Shares view then shows Excluded and blocks the
+Team preview. This section describes exclusion; explicit restoration and its
+catch-up acceptance belong to P2-11.
+
+## Remove a Workspace Conversation exclusion
+
+Removing an exclusion requires a fresh native review. The review names the
+source and destination and lists current rules, their lifecycle, membership and
+eligibility. Its five-minute validity and digest bind the retained exclusion,
+root grant, rule and publisher versions, source membership, consent and current
+owner, Team and Workspace policies. A stale decision cannot remove the veto.
+Current Workspace sharing permission is required; Personal API Tokens and
+browser-only authority cannot perform the restoration.
+
+Restoration takes the existing source and destination locks and rechecks the
+review before consuming native authority. It advances the retained exclusion
+version and root grant version and records an exact replay receipt. It does not
+restore direct consent, separately revoked Conversation source access, or any
+published representation. Those remain unavailable until separately authorized.
+
+Current active members are scheduled through normal source preparation, Privacy
+processing and publication. Each stage checks current membership, consent,
+policy, publisher and Workspace authority. Removed members stay removed. A
+publisher with an unadmitted selection goal checks current Personal membership
+before admission; the Team Backend never invents membership in a private Project
+or Folder. No eligible active rule means no publication.
+
+Paused and stopped rules keep their lifecycle. Their invalidated publications
+stay unreadable after restoration. A later explicit Resume can prepare the same
+source revision under current active authority. Released Privacy leases and
+changed grant versions prevent earlier in-flight work from finalizing with old
+authority. Previously activated rule Shares show preparation while catch-up is
+pending and return to active only after a fresh authorized publication.
+
+The Desktop Remove exclusion action uses the same native approval and encrypted
+delivery journal as exclusion. While queued, the source remains Excluded and the
+UI says the veto remains in effect until Team acknowledgment. An exact restored
+receipt refreshes owner state and clears Team caches. Catch-up is separate from
+acknowledgment and does not imply immediate Team availability.
+
+## Explicit LCM preview preparation
+
+A selected captured Conversation can contain live Projection work, normal
+Memory Events and historical-import work. Explicit LCM preview preparation drains
+those work classes separately for that one session, prioritizing live work and
+keeping one total compaction bound. It can finalize eligible tails below the
+ordinary threshold without sealing an unfinished agent turn or changing the
+Conversation's resumable lifecycle. Approval Activity remains excluded by the
+existing Projection and semantic-source checks.
+
+When explicit preview creates LCM nodes, it wakes the existing local LCM Summary
+Service. That service uses the configured AI Client for synthesis; the backend
+continues to own preparation and publication only. Selection review with
+preparation disabled remains read-only. Team publication still requires current
+sharing, Privacy, membership, publisher and Workspace authority.
+
+## Independently adding a direct snapshot
+
+A User can add a direct snapshot after a rule has created the destination Share
+Grant. Native review binds the existing logical grant identity and exact current
+grant version, as well as the candidate source, fixed revision, detail and expiry.
+An omitted destination version means a new destination; it never silently reuses
+an existing contribution. Stale approval is rejected before creating the Pending
+Share and is checked again when attaching the direct reason.
+
+The native Share dialog offers **Add fixed snapshot** for a captured Conversation
+whose active destination has a rule and no direct reason. Its review remains
+available when the rule's Pending Share has already activated. An unresolved
+Pending Share still blocks another operation for that destination. Existing
+direct reasons and live rules retain their separate duplicate-operation guards.
+
+The new reason has its own consent. Rule consent, state, approved repository
+context and publications remain unchanged. The existing root stays available
+while the snapshot passes its own Privacy work. Its new representation remains
+pending until the normal companion/publication transaction commits. Later rule
+updates do not advance the fixed snapshot.
+
+When an independent active or paused rule retains access, **Stop this snapshot**
+withdraws only the selected direct snapshot consent and invalidates its content
+and semantic items. It preserves rule consent and publications. The owner must
+confirm that scope. Exact operation-version checks and mutation replay protect
+the stop. When it is the final reason, the ordinary **Revoke all sharing** control
+owns grant revocation, cascades and retention. Stopped reasons are not resurrected
+by adding a fresh rule; snapshot conversion is a separate reviewed operation.
+
+## Convert one fixed snapshot
+
+From the fixed snapshot's reason in Shares, choose **Convert snapshot to
+continuous sharing**. The review names that Conversation and destination, its
+fixed revision, and the existing detail and expiry limits. This conversion does
+not admit other members of a Project, Git Anchor or Folder. Required current
+Privacy and fidelity permissions still apply. Approval uses the existing native
+review or browser step-up policy for Conversation rules.
+
+The request binds the exact snapshot reason, consent version and destination
+grant version. The existing encrypted delivery journal preserves that request
+and recovers its receipt after a lost response. The Pending Share admission
+stores the selected snapshot scope separately from ongoing selector admissions.
+A stale snapshot cannot initialize a replacement rule. Once a conversion is
+pending or its replacement rule is active or paused, another fresh conversion
+of the same snapshot is rejected; exact receipt recovery remains available.
+
+The fixed snapshot stays readable while the approved Conversation rule prepares
+and publishes. Completion retires only that snapshot consent in the same
+transaction that completes the Pending Share. Existing independent rules,
+other sources and Workspaces, and separately authorized Conversation Source
+Access keep their own authority. Completion emits the existing Share Grant
+lifecycle notification so clients refresh current access. The new rule's
+ordinary pause, resume and stop controls govern its subsequent revisions.
+
+## Owner state and revision explanations
+
+The owner list prioritizes a failed or interrupted Pending Share over another
+reason's general update label. The detail view names preparation, Privacy
+filtering and publication stages, and explains when independent reasons may
+retain access. A direct snapshot stop leaves the contribution in Active when an
+independent reason still permits access. A Workspace exclusion takes precedence
+over all of these labels.
+
+The owner view distinguishes the latest published source revision, the source
+revision shown by its Personal preview, and each snapshot's fixed approval
+revision. Reviewing again and changing detail retain the known source title.
+Owner summaries prefer the owner's local captured title; Team reads continue to
+use their separately filtered representation title. The owner-only query does
+not add private Project or Folder metadata to Team responses. Existing event,
+polling, transient-failure, selection and focus behavior remains in use.
+
+## Publisher identity and source continuity
+
+Owner sharing views show the device label of the rule's recorded publisher. An
+unnamed device is shown as such. Publisher availability describes the stored
+credential's current authorization, including expiry and required operation
+families. It does not prove that the device is online or that its local sources
+are currently available. Publisher device identity is owner-private metadata;
+Team representations and reader results do not include it.
+
+A native publisher may bind its verified Personal source origin when admitting
+a rule member. Team storage retains an owner-scoped digest of that origin,
+with at most one member for the same source under a rule. Conversation rule
+creation can carry the verified Personal origin in its exact native-approved
+request. Pending admission checks the native capture-sync source and retains
+only its digest; activation copies that digest to the Conversation rule member.
+The pending digest must match the internal activation request, and a standalone
+rule-creation call cannot inject one. Changed-identity replay is rejected.
+The first-party owner review obtains this origin from the exact owned native
+Session and its available Personal source binding. It requires ready source
+materialization and resolved context state, excludes received checkpoints and
+retained source packages, and checks the canonical Team source identity. It does
+not derive provenance from a provider identifier or filesystem path. The local
+approval request and each new durable delivery independently check the origin.
+Queued execution repeats that check; unavailable or changed source evidence
+keeps the request pending instead of executing it. Both ordinary Conversation
+sharing and explicit snapshot conversion carry the verified origin when present.
+A current publisher can resolve the exact origin to the existing logical Memory. The lookup cannot
+create a source, consent, grant, membership or publication.
+
+A receiving Personal checkpoint must retain its original source identity and
+Folder provenance. Before using an existing Team binding, local delivery checks
+its authenticated retained package, ready materialization, current local
+selection and context versions. A matching provider identifier or local path
+does not establish that binding. A missing or unavailable binding remains
+pending. A receiving checkpoint cannot create another source origin or upload
+a new native source through this path. Native Personal origin identifiers and
+Team transport deployment identifiers have separate namespaces.
+
+The device-only publisher review binds the receiving credential, current rule
+version and fence, destination, existing source member, unchanged scope and
+Privacy policy, and current active or paused state. A different authorized device
+must obtain an exact native Action Grant. Browser sessions and Personal API
+Tokens cannot transfer publication. Applying the approval atomically changes the
+publisher, increments authority and the publisher fence, and retains the rule's
+state. Exact delivery replay returns the original receipt. Existing grants,
+consent and source identities remain unchanged.
+
+New publication must match the current publisher and fence. Existing published
+Memory remains authorized by its retained publication. Later source revisions
+keep their original sync credential and provenance: a different rule publisher
+can prepare and materialize them only with a native-bound portable member and
+the committed native transfer receipt. Original source authorization, Privacy,
+consent and Workspace exclusion checks still apply. A transfer does not recreate
+an unavailable source or authorize a new source origin.
+
+The receiving source reader checks an exact owned Session and its available
+Personal binding, ready materialization and resolved source context. A receiving
+checkpoint must retain its authenticated package and actual PDS replica; a native
+source must not be a receiving replica. Optional selection proof checks current
+Personal membership and exclusions. The result contains Personal evidence for an
+existing Team member, and creates no grant, consent or source upload.
+
+Opaque Folder scope excludes the local owner ID, while retaining every original
+deployment, device, profile and directory incarnation. Project scope similarly
+uses its verified portable Project identity under the authenticated owner, rather
+than a receiving device's native Project view ID. A native Project view resolves
+only through its available signed membership catalog. Missing, conflicting,
+deleted or ambiguous catalog identities stay unavailable. Local paths and labels
+are not identity evidence.
+
+The local takeover review command reads receiving evidence before requesting the
+owner-authorized Team review. It sends the Personal origin and rule versions;
+local Session IDs and Folder/Project references remain in the local review.
+The response must name the authenticated receiving credential, requested rule,
+destination and current authority. Selection reviews must preserve the exact
+selector, while Conversation reviews carry no selector target. The reusable
+local evidence check rejects unavailable or changed source pointers and origins.
+
+The local mutation now verifies receiving evidence before requesting native
+approval, before storing new work and before each queued execution. Its Team
+request binds only the exact backend review and mutation. The encrypted journal
+retains that request across response loss. If receiving evidence disappears, a
+read-only receipt request can collect an already committed transfer. It cannot
+perform a fresh mutation or consume unused approval. Uncommitted work with valid
+approval stays queued for evidence; unusable approval requires another review.
+A mismatched receipt cannot acknowledge the work. Conversation creation uses the
+same receipt recovery boundary. Acknowledgment records the exact
+publisher transition and starts a new receiving selection history atomically.
+An existing local history is fenced and superseded. No former generation,
+consumer cursor, completion token or source attempt is reused. Current Personal
+selection enumeration installs its own new generation and checkpoint.
+
+Receiving reconciliation now resolves existing Team members against verified
+Personal evidence, including sources outside the current selection. A fresh
+device does not infer removals from an empty local journal.
+The current publisher can now discover existing members in pages of at most 100,
+bound to the current authority version and publisher fence. Pages contain Team
+member identities and opaque owner-scoped Personal origin hashes, including null
+hashes when identity evidence is missing. They contain no Personal source names,
+paths or origin identifiers, and create no source or sharing authority. This
+inventory is followed by bounded local binding scans and selection evaluation.
+Known nonmatching or explicitly deleted sources receive removal goals;
+unavailable and unmapped sources remain pending. The complete paged scan is
+staged before installing a fresh local generation. Fresh writes pause during
+staging; outstanding ambiguous requests can still settle. Replacement scans pick
+up later Personal evidence without requiring a selector change. Each eventual
+write rechecks current Team member authority.
+Project rule discovery resolves this device's native Project view through its
+available signed Personal catalog identity. The local Project reference stays
+on the device; Team lookup uses the verified portable selector. Missing catalog
+evidence keeps discovery unavailable rather than guessing from a Project name.
+Creation review and fresh queued requests use the same verified identity while
+retaining the completed local selection review. A Project created on this device
+can still be shared before Personal sync is configured. This requires its own
+native creation history; a pending or conflicting received catalog cannot use
+that local path.
+Owners can open **Transfer publisher** from a Personal selection's sharing rules
+or a Conversation rule's sharing details. Select a local Personal Conversation
+already shared by the rule, review the old and receiving publishers, then continue
+to native approval. Selection choices load in bounded pages and exclude local-only
+identities. The review checks availability and exact rule membership again.
+Paused rules remain paused. Queued delivery stays visible until Team acknowledgment.
+A previously published source removed automatically by selection can re-enter
+when current Personal evidence matches again. Team uses the original synchronized
+source and creates fresh consent under the existing rule; the receiving device
+uploads no new source. The original source credential and current policies must
+still authorize it. Explicit member revocation and Workspace exclusion continue
+to deny re-entry. If the source changes during retained admission, Team checks a
+fresh candidate and retires obsolete pending work. Healthy pending work stays
+intact. If the publisher changes before a native admission has published, the
+receiving publisher can continue that original accepted source. Canceled
+admissions stay revoked, and newer source-policy restrictions still apply. The
+native Git Anchor two-device acceptance journey passes locally in P2-14; final
+combined controls and transfer-state restoration remain in PROD-06.
+Publisher transfer does not grant authority to edit or resume the originating
+Conversation.
+
+Owner grant reconciliation also accepts a strictly newer authenticated update
+timestamp when the effective source revision is unchanged. A direct snapshot can
+stay fixed while another sharing reason advances the underlying grant metadata.
+The source revision cannot decrease. Consent, mode, scope, fidelity and all other
+authority fields must stay identical within the same grant version. Neither a
+metadata refresh nor a publisher transfer authorizes new sharing.
+
+Workspace exclusion and restoration use the same durable delivery queue as rule
+controls. Delivery resolves the current enrollment and submits the exact approved
+Action Grant before accepting Team acknowledgment. A request that reaches
+`needs_review` has not confirmed a restriction or restoration; refresh authoritative
+state and review again. Source Access additionally requires a retained Team-side
+Conversation Source Artifact. An encrypted Personal device checkpoint alone
+does not grant Team source access or satisfy that source-readiness check.

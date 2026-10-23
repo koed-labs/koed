@@ -137,6 +137,47 @@ describeDb("Personal Device Sync local reconciliation", () => {
       ]);
 
       const packageId = `package-${randomUUID()}`;
+      const configurationPackageId = `configuration-${randomUUID()}`;
+      await localRepository.receivePdsInbox({
+        userId,
+        groupId,
+        packageId: configurationPackageId,
+        sourceManifestHash: `configuration-hash-${randomUUID()}`
+      });
+      const configurationWorker = `configuration-worker-${randomUUID()}`;
+      const configurationInbox = (
+        await localRepository.claimPdsInbox({
+          workerId: configurationWorker,
+          limit: 100
+        })
+      ).find((entry) => entry.packageId === configurationPackageId)!;
+      const completion = {
+        workerId: configurationWorker,
+        inboxId: configurationInbox.id,
+        state: "ready" as const
+      };
+      await expect(localRepository.completePdsInbox(completion)).resolves.toBe(
+        false
+      );
+      await expect(
+        localRepository.completePdsInbox({
+          ...completion,
+          workerId: `wrong-${randomUUID()}`,
+          verifiedNonSource: true
+        })
+      ).resolves.toBe(false);
+      await expect(
+        localRepository.completePdsInbox({
+          ...completion,
+          verifiedNonSource: true
+        })
+      ).resolves.toBe(true);
+      await expect(
+        localRepository.completePdsInbox({
+          ...completion,
+          verifiedNonSource: true
+        })
+      ).resolves.toBe(false);
       const sourceManifestHash = `manifest-${randomUUID()}`;
       await expect(
         localRepository.receivePdsInbox({

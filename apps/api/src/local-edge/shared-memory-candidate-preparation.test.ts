@@ -13,7 +13,7 @@ describe("prepareLocalLcmCandidateRepresentation", () => {
         leafNodeIds: ["leaf-1"],
         rollupNodeId: null
       })
-      .mockResolvedValueOnce({ leafNodeIds: [], rollupNodeId: null });
+      .mockResolvedValue({ leafNodeIds: [], rollupNodeId: null });
 
     await prepareLocalLcmCandidateRepresentation({
       repository: { createLcmNodes },
@@ -22,13 +22,30 @@ describe("prepareLocalLcmCandidateRepresentation", () => {
       representation: "lcm_leaves"
     });
 
-    expect(createLcmNodes).toHaveBeenCalledTimes(2);
+    expect(createLcmNodes).toHaveBeenCalledTimes(4);
+    expect(createLcmNodes).toHaveBeenNthCalledWith(
+      3,
+      { userId: "owner-1" },
+      expect.objectContaining({
+        workClass: "normal_embedding_lcm",
+        sessionId: "session-1"
+      })
+    );
+    expect(createLcmNodes).toHaveBeenNthCalledWith(
+      4,
+      { userId: "owner-1" },
+      expect.objectContaining({
+        workClass: "historical_import_backfill",
+        sessionId: "session-1"
+      })
+    );
     expect(createLcmNodes).toHaveBeenNthCalledWith(
       1,
       { userId: "owner-1" },
       {
         visibility: "personal",
         sessionId: "session-1",
+        workClass: "live_capture_projection",
         force: true,
         requestedRepresentation: "lcm_leaves"
       }
@@ -55,10 +72,12 @@ describe("prepareLocalLcmCandidateRepresentation", () => {
 
 describe("createLocalSharedMemoryCandidatePreparation", () => {
   const repository = () => ({
-    createLcmNodes: vi.fn(async () => ({
-      leafNodeIds: [],
-      rollupNodeId: null
-    })),
+    createLcmNodes: vi.fn<MemorySourceRepository["createLcmNodes"]>(
+      async () => ({
+        leafNodeIds: [],
+        rollupNodeId: null
+      })
+    ),
     getSharedMemoryLcmSyncState: vi.fn(
       async (): Promise<"pending" | "ready"> => "ready"
     ),
@@ -136,6 +155,30 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
       { userId: "owner-1" },
       expect.objectContaining({ canonicalCapturedSessionEventsOnly: true })
     );
+  });
+
+  it("wakes the existing summary service after explicit preview creates LCM work", async () => {
+    const candidateRepository = repository();
+    candidateRepository.createLcmNodes.mockResolvedValueOnce({
+      leafNodeIds: ["leaf-1"],
+      rollupNodeId: null
+    });
+    const requestLcmSummaryWork = vi.fn(async () => undefined);
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork
+    });
+    const input = {
+      localOwnerUserId: "owner-1",
+      sessionId: "session-1",
+      representation: "lcm_leaves" as const,
+      mode: "continuous" as const
+    };
+    await preparation.loadCandidatePreview(input);
+    expect(requestLcmSummaryWork).toHaveBeenCalledOnce();
+    await preparation.loadCandidatePreview(input);
+    expect(requestLcmSummaryWork).toHaveBeenCalledOnce();
   });
 
   it("inspects an exact source without creating missing summaries during selection review", async () => {

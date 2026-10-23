@@ -280,6 +280,26 @@ test("Team SaaS fixture can seed and validate a live database", async (t) => {
 
     const runtime = await createFixtureRuntime(pool);
     await seedFixture(client, runtime);
+    const sourceTargets =
+      await runtime.privacyRepository.listSourceMaterializationTargets({
+        limit: 100
+      });
+    const expectedSourceGrants = fixtureConversationSources
+      .filter((source) => source.lifecycle === "active")
+      .map(
+        (source) =>
+          fixtureMemoryRows.find((memory) => memory.key === source.memoryKey)
+            .shareGrantId
+      )
+      .sort();
+    assert.deepEqual(
+      sourceTargets
+        .filter((target) => expectedSourceGrants.includes(target.shareGrantId))
+        .map((target) => target.shareGrantId)
+        .sort(),
+      expectedSourceGrants,
+      "Every active fixture source must reach the production sanitizer"
+    );
     const first = await validateFixture(client, runtime);
     assert.equal(first.users, 7);
     assert.equal(first.workspaces, 3);

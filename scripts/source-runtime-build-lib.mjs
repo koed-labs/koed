@@ -582,8 +582,9 @@ const manifestFor = (state, spec, now) => ({
 });
 
 const defaultBuild = (repoRoot, spec) => {
-  const args = spec.rootPackages.flatMap((name) => ["--filter", `${name}...`]);
-  args.push("build");
+  const args = ["--recursive", "--workspace-concurrency=1"];
+  args.push(...spec.rootPackages.flatMap((name) => ["--filter", `${name}...`]));
+  args.push("run", "build");
   const result = spawnSync("pnpm", args, {
     cwd: repoRoot,
     env: process.env,
@@ -628,6 +629,19 @@ export const prepareSourceRuntime = async (
         2
       )}\n`
     );
+    // TypeScript leaves outputs behind when a source file is deleted. Remove
+    // the previous runtime only after acquiring the lock and rejecting leases.
+    for (const workspacePackage of before.calculated.packages) {
+      rmSync(resolve(workspacePackage.path, "dist"), {
+        recursive: true,
+        force: true
+      });
+      for (const entry of readdirSync(workspacePackage.path)) {
+        if (entry.endsWith(".tsbuildinfo")) {
+          rmSync(resolve(workspacePackage.path, entry), { force: true });
+        }
+      }
+    }
     runBuild(repoRoot, spec);
     const after = inspectSourceRuntime(repoRoot, { ...options, spec });
     if (before.calculated.fingerprint !== after.calculated.fingerprint) {

@@ -251,6 +251,29 @@ describe("Git Anchor sharing review", () => {
     expect(() =>
       validateCompletedGitAnchorRuleCreationIntent(intent, deps)
     ).not.toThrow();
+    const portableTarget = {
+      ...target,
+      project: { ...target.project, projectId: id(64) }
+    };
+    const portableIntent = {
+      ...intent,
+      selector: sharingSelectionDescriptor(portableTarget)
+    };
+    expect(() =>
+      validateCompletedGitAnchorRuleCreationIntent(portableIntent, {
+        ...deps,
+        resolvedTarget: portableTarget
+      })
+    ).not.toThrow();
+    expect(() =>
+      validateCompletedGitAnchorRuleCreationIntent(portableIntent, deps)
+    ).toThrow(SharingReviewConflict);
+    expect(() =>
+      validateCompletedGitAnchorRuleCreationIntent(
+        { ...portableIntent, review: { ...review, target: portableTarget } },
+        { ...deps, resolvedTarget: portableTarget }
+      )
+    ).toThrow(SharingReviewConflict);
     const binding = sharedMemoryRepositoryRuleCreationActionGrantBinding({
       ...repositorySharingRuleCreationIntentSchema.strip().parse(intent),
       referenceId: id(22)
@@ -496,5 +519,56 @@ describe("Git Anchor sharing review", () => {
     await expect(reviewGitAnchorSharing(input, expired)).rejects.toBeInstanceOf(
       SharingReviewConflict
     );
+  });
+});
+
+describe("portable sharing selector identity", () => {
+  it("normalizes only the local Folder owner and retains original Folder provenance", () => {
+    const folder = {
+      ownerUserId: id(6),
+      folderId: "folder-a",
+      originatingDeploymentId: "origin-deployment",
+      originatingDeviceId: "origin-device",
+      originatingProfileId: "origin-profile",
+      directoryIncarnationId: "original-directory"
+    };
+    const original = sharingSelectionDescriptor({ kind: "folder", folder });
+    expect(
+      sharingSelectionDescriptor({
+        kind: "folder",
+        folder: { ...folder, ownerUserId: id(7) }
+      })
+    ).toEqual(original);
+    for (const change of [
+      { folderId: "folder-b" },
+      { originatingDeploymentId: "other-deployment" },
+      { originatingDeviceId: "other-device" },
+      { originatingProfileId: "other-profile" },
+      { directoryIncarnationId: "replacement-directory" }
+    ])
+      expect(
+        sharingSelectionDescriptor({
+          kind: "folder",
+          folder: { ...folder, ...change }
+        })
+      ).not.toEqual(original);
+  });
+  it("retains the verified portable Project identity across local owner translation", () => {
+    const original = sharingSelectionDescriptor({
+      kind: "project",
+      project: { ownerUserId: id(6), projectId: "verified-portable-project" }
+    });
+    expect(
+      sharingSelectionDescriptor({
+        kind: "project",
+        project: { ownerUserId: id(7), projectId: "verified-portable-project" }
+      })
+    ).toEqual(original);
+    expect(
+      sharingSelectionDescriptor({
+        kind: "project",
+        project: { ownerUserId: id(7), projectId: "local-view-lookalike" }
+      })
+    ).not.toEqual(original);
   });
 });

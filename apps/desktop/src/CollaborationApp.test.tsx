@@ -1077,6 +1077,12 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       throw new Error("Unexpected Git Anchor rule creation");
     }),
     listRepositoryRules: vi.fn(async () => ({ rules: [], nextCursor: null })),
+    takeOverPublisher: vi.fn(async () => {
+      throw new Error("No publisher takeover configured");
+    }),
+    reviewPublisherTakeover: vi.fn(async () => {
+      throw new Error("No publisher takeover review configured");
+    }),
     reviewRuleDetail: vi.fn(async () => {
       throw new Error("No detail review configured");
     }),
@@ -1096,6 +1102,18 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       throw new Error("No detail amendment configured");
     }),
     listSharingRuleDeliveries: vi.fn(async () => []),
+    reviewWorkspaceRestoration: vi.fn(async () => {
+      throw new Error("Unexpected restoration review");
+    }),
+    restoreConversationToWorkspace: vi.fn(async () => {
+      throw new Error("Unexpected restoration");
+    }),
+    reviewWorkspaceExclusion: vi.fn(async () => {
+      throw new Error("No Workspace exclusion review configured");
+    }),
+    excludeConversationFromWorkspace: vi.fn(async () => {
+      throw new Error("No Workspace exclusion configured");
+    }),
     revokeSharedMemory: vi.fn(async () => {
       throw new Error(
         "Shared Memory owner flow is not configured in this fixture"
@@ -1344,6 +1362,7 @@ const activatedOwnedShare = (): Extract<
     },
     lastReadyRevision: 12,
     lastSuccessfulUpdateAt: at,
+    workspaceExclusion: null,
     sharingReasons: []
   }
 });
@@ -1986,6 +2005,7 @@ describe("CollaborationApp", () => {
           },
           lastReadyRevision: null,
           lastSuccessfulUpdateAt: null,
+          workspaceExclusion: null,
           sharingReasons: []
         }
       };
@@ -2502,7 +2522,32 @@ describe("CollaborationApp", () => {
         },
         lastReadyRevision: 12,
         lastSuccessfulUpdateAt: at,
-        sharingReasons: []
+        workspaceExclusion: null,
+        sharingReasons: [
+          {
+            id: uuid(617),
+            kind: "direct",
+            rule: null,
+            consentId: uuid(614),
+            consentVersion: 1,
+            mode: "continuous",
+            updateState: "active",
+            maximumFidelity: "memory_events",
+            includeCuratedMemory: false,
+            permittedRepresentations: ["memory_events"],
+            maximumAuthorizedSourceRevision: null,
+            expiresAt: null,
+            repositorySnapshot: {
+              version: 1,
+              classification: "unresolved",
+              fingerprint: null,
+              label: null,
+              branchObservation: null
+            },
+            repositorySnapshotSourceRevision: 12,
+            publishedRepresentations: []
+          }
+        ]
       }
     };
     const paused: OwnedShareItem = {
@@ -2607,7 +2652,7 @@ describe("CollaborationApp", () => {
       [...document.body.querySelectorAll(".collab-share-section h2")].map(
         (heading) => heading.textContent
       )
-    ).toEqual(["Active", "Pending", "Revoked"]);
+    ).toEqual(["Active", "Pending", "Excluded", "Revoked"]);
     const shareRow = document.body.querySelector(".collab-share-row");
     expect(
       shareRow?.querySelector(".desktop-team-disc.collab-share-team-badge")
@@ -2771,6 +2816,116 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).toContain("Revoked");
   });
 
+  it.each(["activated", "preparing"] as const)(
+    "adds a fixed snapshot beside a rule only after its pending share is %s",
+    async (state) => {
+      const snapshot = baseSnapshot();
+      const entry = snapshot.navigation.personal.memory[0]!;
+      const owned = activatedOwnedShare();
+      owned.pendingShare.state = state;
+      owned.pendingShare.source = {
+        kind: "captured_session",
+        sessionId: entry.id,
+        logicalMemoryId: entry.logicalMemoryId!
+      };
+      owned.pendingShare.logicalMemoryId = entry.logicalMemoryId!;
+      owned.summary.source = owned.pendingShare.source;
+      owned.summary.sharingReasons = [
+        {
+          id: uuid(705),
+          kind: "rule",
+          rule: {
+            id: uuid(706),
+            selectorKind: "repository",
+            authorityVersion: 1,
+            publisherFence: 1,
+            state: "active",
+            catchUpState: "idle",
+            failureCode: null
+          },
+          consentId: owned.pendingShare.consentId,
+          consentVersion: 1,
+          mode: "continuous",
+          updateState: "active",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          permittedRepresentations: ["memory_events"],
+          maximumAuthorizedSourceRevision: null,
+          expiresAt: null,
+          repositorySnapshot: {
+            version: 1,
+            classification: "unresolved",
+            fingerprint: null,
+            label: null,
+            branchObservation: null
+          },
+          repositorySnapshotSourceRevision: 12,
+          publishedRepresentations: []
+        }
+      ];
+      const grant: SharedMemoryGrant = {
+        ...owned.pendingShare,
+        id: owned.pendingShare.grantId!,
+        source: owned.pendingShare.source,
+        ownerUserId: ids.remoteMark,
+        fidelityPolicyRevision: 1,
+        grantVersion: 2,
+        lifecycle: "active",
+        companionThreadId: ids.discussion
+      };
+      const client = createClient(snapshot);
+      vi.mocked(client.listOwnedSharedMemoryGrants).mockResolvedValue([grant]);
+      vi.mocked(client.listOwnedShares).mockResolvedValue({
+        shares: [owned],
+        nextCursor: null
+      });
+      await act(async () =>
+        root.render(
+          <CollaborationModalLayer
+            client={client}
+            snapshot={snapshot}
+            markdownAdapters={{
+              openExternal: vi.fn(),
+              writeClipboard: vi.fn()
+            }}
+            modal={{ kind: "share_personal_memory", sessionId: entry.id }}
+            onModalChange={vi.fn()}
+          />
+        )
+      );
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("Add fixed snapshot")
+      );
+      await click(container, "Add fixed snapshot");
+      const review = document.body.querySelector<HTMLButtonElement>(
+        ".collab-consent-action"
+      )!;
+      expect(review.disabled).toBe(state !== "activated");
+      expect(client.shareMemory).not.toHaveBeenCalled();
+      if (state !== "activated") return;
+      await click(container, "Review");
+      await vi.waitFor(() =>
+        expect(
+          document.body.querySelector(".collab-preview-list")
+        ).not.toBeNull()
+      );
+      expect(client.previewSharedMemory).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "snapshot" })
+      );
+      await click(container, "Share");
+      expect(client.shareMemory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          logicalGrantId: grant.logicalGrantId,
+          expectedGrantVersion: grant.grantVersion,
+          mode: "snapshot",
+          source: grant.source
+        })
+      );
+      expect(client.createConversationRule).not.toHaveBeenCalled();
+      expect(client.changeSharedMemoryFidelity).not.toHaveBeenCalled();
+    }
+  );
+
   it("reviews the received Project before explicitly updating an existing share", async () => {
     const snapshot = baseSnapshot();
     const entry = snapshot.navigation.personal.memory[0]!;
@@ -2907,6 +3062,7 @@ describe("CollaborationApp", () => {
         authorizedPreview: null,
         lastReadyRevision: 12,
         lastSuccessfulUpdateAt: at,
+        workspaceExclusion: null,
         sharingReasons: []
       }
     };
@@ -3041,6 +3197,7 @@ describe("CollaborationApp", () => {
         authorizedPreview: null,
         lastReadyRevision: 12,
         lastSuccessfulUpdateAt: at,
+        workspaceExclusion: null,
         sharingReasons: []
       }
     };
@@ -3369,6 +3526,7 @@ describe("CollaborationApp", () => {
         authorizedPreview: null,
         lastReadyRevision: null,
         lastSuccessfulUpdateAt: null,
+        workspaceExclusion: null,
         sharingReasons: []
       }
     };
@@ -3494,6 +3652,82 @@ describe("CollaborationApp", () => {
 
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
   });
+
+  it.each(["offline", "permission_denied"] as const)(
+    "recovers collaboration after local API readiness with stale verification (%s)",
+    async (code) => {
+      const healthy = { state: "healthy" as const, message: "Ready" };
+      const status: KoedServerStatus = {
+        ok: true,
+        state: "healthy",
+        koedHome: "/tmp/existing-koed-home",
+        generatedAt: "2026-10-22T00:00:00.000Z",
+        runtimeMode: "local-personal",
+        dependencyMode: "external",
+        api: { ...healthy, url: "http://127.0.0.1:3300" },
+        database: healthy,
+        redis: healthy,
+        workerQueues: healthy,
+        embeddingService: healthy,
+        apiToken: { ...healthy, configured: true },
+        mcpServer: healthy,
+        localAiRuntime: healthy,
+        captureHook: healthy,
+        codex: { ...healthy, configured: true },
+        lcmSummaryService: healthy,
+        upstreamBackends: {
+          ...healthy,
+          registered: 1,
+          validated: 1,
+          stale: 0,
+          failed: 0,
+          notChecked: 0
+        },
+        lastVerification: {
+          state: "needs_attention",
+          message: "The saved verification needs refreshing.",
+          checkedAt: "2026-10-21T00:00:00.000Z"
+        },
+        serverPackage: healthy
+      };
+      window.koedDesktop = {
+        invoke: async <T = unknown,>(): Promise<T> => status as T
+      };
+      const client = createClient();
+      client.current = () => null;
+      vi.mocked(client.load).mockRejectedValueOnce(
+        new CollaborationClientError({
+          code,
+          userMessage: collaborationSafeErrorMessages[code],
+          retryable: code === "offline",
+          retryAfterMs: null
+        })
+      );
+      await act(async () =>
+        root.render(
+          <App
+            collaborationClient={client}
+            onboardingComplete
+            personalMemoryApi={null}
+            statusStoreOverride={new DesktopStatusStore()}
+          />
+        )
+      );
+      if (code === "offline") {
+        await vi.waitFor(() => expect(client.load).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() =>
+          expect(
+            document.body.querySelector('button[title="Atlas Research"]')
+          ).not.toBeNull()
+        );
+      } else {
+        expect(client.load).toHaveBeenCalledOnce();
+        expect(
+          document.body.querySelector('button[title="Atlas Research"]')
+        ).toBeNull();
+      }
+    }
+  );
 
   it("keeps an onboarded device in the app shell while services recover", async () => {
     const starting = {
@@ -4988,6 +5222,7 @@ describe("CollaborationApp", () => {
         authorizedPreview: null,
         lastReadyRevision: null,
         lastSuccessfulUpdateAt: null,
+        workspaceExclusion: null,
         sharingReasons: []
       }
     };
@@ -5019,6 +5254,183 @@ describe("CollaborationApp", () => {
     expect(
       document.body.querySelector(".collab-share-row-error")
     ).not.toBeNull();
+  });
+
+  it("shows a Workspace exclusion as pending until acknowledged and then clears the Team preview", async () => {
+    const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+    const active = activatedOwnedShare();
+    let current: OwnedShareItem = active;
+    let delivery: SharingRuleDelivery | null = null;
+    const client = createClient(snapshot);
+    const scope = {
+      ownerUserId: ids.mark,
+      logicalMemoryId: ids.logicalMemory,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      shareGrantId: active.pendingShare.grantId!,
+      expectedGrantVersion: 2,
+      expectedExclusionVersion: 0
+    };
+    vi.mocked(client.reviewWorkspaceExclusion).mockResolvedValue({
+      scope,
+      source: {
+        logicalMemoryId: ids.logicalMemory,
+        title: active.summary.sourceTitle
+      },
+      team: { id: ids.team, name: active.summary.teamName },
+      workspace: { id: ids.workspace, name: active.summary.workspaceName },
+      exclusion: null
+    });
+    vi.mocked(client.excludeConversationFromWorkspace).mockImplementation(
+      async (intent) => {
+        delivery = {
+          intent,
+          presentation: {
+            sourceTitle: active.summary.sourceTitle,
+            teamName: active.summary.teamName,
+            workspaceName: active.summary.workspaceName
+          },
+          state: "queued",
+          control: null,
+          creation: null,
+          failureCode: null,
+          updatedAt: at
+        };
+        return delivery;
+      }
+    );
+    vi.mocked(client.listSharingRuleDeliveries).mockImplementation(async () =>
+      delivery ? [delivery] : []
+    );
+    vi.mocked(client.listOwnedShares).mockImplementation(
+      async ({ history }) => ({
+        shares: history ? [] : [current],
+        nextCursor: null
+      })
+    );
+    vi.mocked(client.getOwnedShare).mockImplementation(async () => current);
+    await act(async () =>
+      root.render(
+        <PersonalMemoryView
+          client={client}
+          initialSection="shares"
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          onShare={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+    await click(container, "Exclude from Workspace");
+    expect(client.excludeConversationFromWorkspace).toHaveBeenCalledWith({
+      mutationId: expect.any(String),
+      scope
+    });
+    expect(document.body.textContent).toContain(
+      "Waiting for Team acknowledgment"
+    );
+    expect(document.body.textContent).not.toContain("Blocked by exclusion");
+    const queued = delivery as SharingRuleDelivery | null;
+    if (!queued) throw new Error("Expected exclusion delivery");
+    const exclusion = {
+      id: uuid(990),
+      ownerUserId: scope.ownerUserId,
+      logicalMemoryId: ids.logicalMemory,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      state: "excluded" as const,
+      version: 1,
+      excludedAt: at,
+      restoredAt: null,
+      updatedAt: at
+    };
+    current = {
+      ...active,
+      summary: { ...active.summary, workspaceExclusion: exclusion }
+    };
+    delivery = { ...queued, state: "acknowledged", exclusion };
+    await vi.waitFor(
+      () => expect(document.body.textContent).toContain("Blocked by exclusion"),
+      { timeout: 6000 }
+    );
+    expect(document.body.textContent).toContain("Excluded");
+    expect(document.body.textContent).toContain("Personal Memory");
+    expect(
+      Array.from(document.body.querySelectorAll("button")).some(
+        (button) => button.textContent === "Exclude from Workspace"
+      )
+    ).toBe(false);
+    const restorationScope = {
+      ...scope,
+      expectedExclusionVersion: 1,
+      expectedGrantVersion: 3
+    };
+    const restoration = {
+      scope: restorationScope,
+      source: {
+        logicalMemoryId: ids.logicalMemory,
+        title: active.summary.sourceTitle
+      },
+      team: { id: ids.team, name: active.summary.teamName },
+      workspace: { id: ids.workspace, name: active.summary.workspaceName },
+      exclusion,
+      rules: [],
+      authorityHash: "a".repeat(64),
+      reviewHash: "b".repeat(64),
+      expiresAt: "2099-01-01T00:00:00.000Z"
+    };
+    vi.mocked(client.reviewWorkspaceRestoration).mockResolvedValue(restoration);
+    vi.mocked(client.restoreConversationToWorkspace).mockImplementation(
+      async (intent) => {
+        delivery = { ...queued, intent, state: "queued" };
+        return delivery;
+      }
+    );
+    await click(container, "Remove exclusion");
+    expect(client.restoreConversationToWorkspace).toHaveBeenCalledWith({
+      mutationId: expect.any(String),
+      scope: restorationScope,
+      restoration
+    });
+    expect(document.body.textContent).toContain(
+      "the exclusion remains in effect until acknowledged"
+    );
+    expect(document.body.textContent).toContain("Blocked by exclusion");
+    const pendingRestoration = delivery as SharingRuleDelivery | null;
+    if (!pendingRestoration) throw new Error("Expected restoration delivery");
+    const restored = {
+      ...exclusion,
+      state: "restored" as const,
+      version: 2,
+      restoredAt: at
+    };
+    current = {
+      ...active,
+      pendingShare: {
+        ...active.pendingShare,
+        state: "revoked",
+        workspaceAccessState: "revoked",
+        sourceUpdateState: "stopped"
+      },
+      summary: {
+        ...active.summary,
+        workspaceContentAccess: "unavailable",
+        authorizedPreview: null,
+        workspaceExclusion: restored
+      }
+    };
+    delivery = {
+      ...pendingRestoration,
+      state: "acknowledged",
+      exclusion: restored
+    };
+    await vi.waitFor(
+      () =>
+        expect(document.body.textContent).not.toContain("Blocked by exclusion"),
+      { timeout: 6000 }
+    );
+    expect(document.body.textContent).toContain(
+      "Workspace content unavailable"
+    );
   });
 
   it.each([false, true])(
@@ -5069,7 +5481,7 @@ describe("CollaborationApp", () => {
         )
       );
       const row = document.body.querySelector<HTMLButtonElement>(
-        '[aria-label="Async sharing fixture, Launch Plans, preparing"]'
+        '[aria-label="Async sharing fixture, Launch Plans, Privacy filtering"]'
       );
       expect(row).not.toBeNull();
       row!.focus();
@@ -5175,6 +5587,7 @@ describe("CollaborationApp", () => {
       ...current,
       summary: {
         ...current.summary,
+        workspaceExclusion: null,
         sharingReasons: current.summary.sharingReasons.map((reason) => ({
           ...reason,
           updateState: "paused"
@@ -5189,6 +5602,216 @@ describe("CollaborationApp", () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
     expect(client.listOwnedShares).toHaveBeenCalledTimes(readsAfterPause);
+  });
+
+  it.each(["syncing", "privacy_filtering", "activating"] as const)(
+    "shows a failed %s operation before an independent active rule",
+    async (stage) => {
+      const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+      const owned = activatedOwnedShare();
+      owned.pendingShare.state = "needs_attention";
+      owned.pendingShare.stage = stage;
+      owned.pendingShare.sourceUpdateState = "failed";
+      owned.pendingShare.redactedFailureCode = "activation_failed";
+      owned.summary.sharingReasons = [
+        {
+          id: uuid(981),
+          kind: "rule",
+          consentId: uuid(982),
+          consentVersion: 1,
+          mode: "continuous",
+          updateState: "active",
+          maximumFidelity: "lcm_rollups",
+          includeCuratedMemory: false,
+          permittedRepresentations: ["lcm_rollups"],
+          maximumAuthorizedSourceRevision: null,
+          expiresAt: null,
+          repositorySnapshot: {
+            version: 1,
+            classification: "unresolved",
+            fingerprint: null,
+            label: null,
+            branchObservation: null
+          },
+          repositorySnapshotSourceRevision: 12,
+          publishedRepresentations: [
+            {
+              representation: "lcm_rollups",
+              sourceRevision: 12,
+              recordVersion: 1,
+              state: "available"
+            }
+          ],
+          rule: {
+            id: uuid(983),
+            selectorKind: "captured_session",
+            authorityVersion: 1,
+            publisherFence: 1,
+            state: "active",
+            catchUpState: "idle",
+            failureCode: null
+          }
+        }
+      ];
+      const client = createClient(snapshot);
+      vi.mocked(client.listOwnedShares).mockImplementation(
+        async ({ history }) => ({
+          shares: history ? [] : [owned],
+          nextCursor: null
+        })
+      );
+      vi.mocked(client.getOwnedShare).mockResolvedValue(owned);
+      await act(async () =>
+        root.render(
+          <PersonalMemoryView
+            client={client}
+            initialSection="shares"
+            markdownAdapters={{
+              openExternal: vi.fn(),
+              writeClipboard: vi.fn()
+            }}
+            onShare={vi.fn()}
+            snapshot={snapshot}
+          />
+        )
+      );
+      await vi.waitFor(() =>
+        expect(
+          document.body.querySelector(
+            `[aria-label="${owned.summary.sourceTitle}, Launch Plans, Needs attention"]`
+          )
+        ).not.toBeNull()
+      );
+      expect(document.body.textContent).toContain(
+        `Preparation stage: ${stage === "syncing" ? "preparing source" : stage === "privacy_filtering" ? "privacy filtering" : "publishing"}.`
+      );
+      expect(document.body.textContent).toContain(
+        "Independent sharing reasons may still provide access under their own consent."
+      );
+      expect(document.body.textContent).toContain(
+        "Latest published source revision: 12."
+      );
+      expect(
+        document.body.querySelector(".collab-share-row-error")
+      ).not.toBeNull();
+    }
+  );
+
+  it("confirms stopping only a fixed snapshot while an independent rule retains access", async () => {
+    const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+    const owned = activatedOwnedShare();
+    owned.pendingShare.mode = "snapshot";
+    owned.pendingShare.sourceUpdateState = "stopped";
+    owned.summary.mode = "snapshot";
+    const base = {
+      consentId: owned.pendingShare.consentId,
+      consentVersion: 1,
+      maximumFidelity: "memory_events" as const,
+      includeCuratedMemory: false,
+      permittedRepresentations: ["memory_events" as const],
+      expiresAt: null,
+      repositorySnapshot: {
+        version: 1 as const,
+        classification: "unresolved" as const,
+        fingerprint: null,
+        label: null,
+        branchObservation: null
+      },
+      repositorySnapshotSourceRevision: 12,
+      publishedRepresentations: []
+    };
+    owned.summary.sharingReasons = [
+      {
+        ...base,
+        id: uuid(971),
+        kind: "direct",
+        rule: null,
+        mode: "snapshot",
+        updateState: "fixed_snapshot",
+        maximumAuthorizedSourceRevision: 12
+      },
+      {
+        ...base,
+        id: uuid(972),
+        kind: "rule",
+        consentId: uuid(973),
+        mode: "continuous",
+        updateState: "active",
+        maximumAuthorizedSourceRevision: null,
+        rule: {
+          id: uuid(974),
+          selectorKind: "captured_session",
+          authorityVersion: 1,
+          publisherFence: 1,
+          state: "active",
+          catchUpState: "idle",
+          failureCode: null
+        }
+      }
+    ];
+    const client = createClient(snapshot);
+    vi.mocked(client.listOwnedShares).mockImplementation(
+      async ({ history }) => ({
+        shares: history ? [] : [owned],
+        nextCursor: null
+      })
+    );
+    vi.mocked(client.getOwnedShare).mockResolvedValue(owned);
+    vi.mocked(client.controlPendingShare).mockImplementation(async () => {
+      owned.summary.sharingReasons[0]!.updateState = "stopped";
+      return {
+        ...owned.pendingShare,
+        state: "revoked",
+        operationVersion: 4,
+        revokedAt: at,
+        workspaceAccessState: "revoked"
+      };
+    });
+    await act(async () =>
+      root.render(
+        <PersonalMemoryView
+          client={client}
+          initialSection="shares"
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          onShare={vi.fn()}
+          snapshot={snapshot}
+        />
+      )
+    );
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Stop this snapshot")
+    );
+    await click(container, "Transfer publisher");
+    const choices = document.querySelector(
+      'fieldset[aria-label="Transfer rule publisher"] select'
+    )!;
+    expect(
+      [...choices.querySelectorAll("option")].map((option) => option.value)
+    ).toEqual([
+      "",
+      ...snapshot.navigation.personal.memory.map((entry) => entry.id)
+    ]);
+    expect(client.reviewPublisherTakeover).not.toHaveBeenCalled();
+    expect(client.takeOverPublisher).not.toHaveBeenCalled();
+    await click(container, "Cancel publisher transfer");
+    await click(container, "Stop this snapshot");
+    expect(client.controlPendingShare).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Independent sharing rules keep their own approved access and updates."
+    );
+    await click(container, "Confirm stop this snapshot");
+    await vi.waitFor(() =>
+      expect(client.controlPendingShare).toHaveBeenCalledWith({
+        pendingShareId: owned.pendingShare.id,
+        expectedOperationVersion: 3,
+        action: "stop_direct"
+      })
+    );
+    expect(
+      document.body.querySelector(".collab-share-state.active")
+    ).not.toBeNull();
+    expect(client.revokeSharedMemory).not.toHaveBeenCalled();
+    expect(client.controlSharingRule).not.toHaveBeenCalled();
   });
 
   it("resumes Shares completion refresh after retrying a failed activation", async () => {
@@ -6828,6 +7451,7 @@ pnpm test
           },
           lastReadyRevision: 12,
           lastSuccessfulUpdateAt: at,
+          workspaceExclusion: null,
           sharingReasons: []
         }
       };

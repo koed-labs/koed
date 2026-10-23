@@ -663,8 +663,6 @@ export const redeemPersonalDevicePairing = async (options: {
   const localUserId = localGroup.local_user_id;
   if (typeof localUserId !== "string")
     throw new Error("Local Personal identity binding failed.");
-  await localRequest("/v1/personal-device-sync/local-runtime-wake");
-
   await options.runPersonalSync(
     [
       "join",
@@ -687,6 +685,7 @@ export const redeemPersonalDevicePairing = async (options: {
       fetch: controlFetch
     }
   );
+  await localRequest("/v1/personal-device-sync/local-runtime-wake");
   let completion: Record<string, unknown> | undefined;
   for (let attempt = 0; attempt < COMPLETION_ATTEMPTS; attempt += 1) {
     try {

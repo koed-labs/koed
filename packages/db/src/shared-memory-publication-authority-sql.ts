@@ -1,5 +1,17 @@
 // SQL fragments accept only trusted, repository-owned expressions. Values from
 // requests belong in query parameters. These helpers never decrypt source data.
+export const workspaceSourceIsNotExcludedSql = (scope: {
+  ownerUserId: string;
+  logicalMemoryId: string;
+  teamWorkspaceId: string;
+}): string => `not exists (
+  select 1 from team_memory_workspace_exclusions workspace_exclusion
+   where workspace_exclusion.owner_user_id=${scope.ownerUserId}
+     and workspace_exclusion.logical_memory_id=${scope.logicalMemoryId}
+     and workspace_exclusion.team_workspace_id=${scope.teamWorkspaceId}
+     and workspace_exclusion.state='excluded'
+)`;
+
 export const cumulativeRepresentationAuthorizationSql = (
   representationSql: string,
   aliases: {
@@ -76,7 +88,11 @@ export const sharingRuleMembershipSql = (
 export const sharingReasonAuthorizesRepresentationSql = (
   representation = "r",
   grant = "g"
-): string => `exists (
+): string => `(${workspaceSourceIsNotExcludedSql({
+  ownerUserId: `${grant}.owner_user_id`,
+  logicalMemoryId: `${grant}.logical_memory_id`,
+  teamWorkspaceId: `${grant}.team_workspace_id`
+})} and exists (
   select 1 from team_memory_reason_publications publication
   join team_memory_share_reasons reason
     on reason.id=publication.reason_id
@@ -107,11 +123,13 @@ export const sharingReasonAuthorizesRepresentationSql = (
         and rule.effective_privacy_policy_hash=${representation}.effective_privacy_policy_hash
         and ${grantAuthorizesRepresentationSql(`${representation}.representation`, "rule")})
     )
-)`;
+))`;
 
 // A companion or lifecycle notification needs at least one exact, currently
 // permitted publication. Keep this an EXISTS so overlapping reasons never
-// multiply collaboration rows or consume pagination capacity.
+// multiply collaboration rows or consume pagination capacity. Bound the view
+// to this grant before joining the authorization predicates; otherwise its
+// source-binding branches can multiply during planning of realtime queries.
 export const publishedSharedMemoryAuthorizationSql = (scope: {
   shareGrantId: string;
   teamId: string;
@@ -120,7 +138,12 @@ export const publishedSharedMemoryAuthorizationSql = (scope: {
   representationId?: string;
   representation?: string;
 }): string => `exists (
-  select 1 from team_memory_publication_grant_records published_grant
+  select 1 from lateral (
+    select publication.* from team_memory_publication_grant_records publication
+    where publication.id=${scope.shareGrantId}
+      ${scope.representationId ? `and publication.publication_representation_id=${scope.representationId}` : ""}
+    offset 0
+  ) published_grant
   join team_memory_representations published_representation
     on published_representation.id=published_grant.publication_representation_id
    and published_representation.share_grant_id=published_grant.id

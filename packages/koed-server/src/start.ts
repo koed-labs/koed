@@ -1369,10 +1369,7 @@ export const startKoedServer = async ({
           );
     manageChild("worker", worker);
     emitStartupMilestone("worker_process_spawned");
-    if (
-      config.runtimeMode === "local-personal" &&
-      useBundledLocalDependencies
-    ) {
+    if (config.runtimeMode === "local-personal") {
       deviceRequestService = await startDeviceRequestService({
         paths,
         host: environment.KOED_PDS_REQUEST_HOST?.trim() || undefined,

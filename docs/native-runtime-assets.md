@@ -59,6 +59,11 @@ KOED_NATIVE_RUNTIME_SOURCE_DIR=/tmp/koed-native-runtime pnpm desktop:package:mac
 
 `prepare-koed-runtime.mjs` copies staged assets into packaged `koed-runtime`, deploys the built Embedding Service runtime, and writes a platform/architecture manifest with SHA-256 verification. If `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set but no recognized native assets are staged, packaging fails instead of silently producing a missing-native runtime package. If no native asset source is provided, Desktop still packages JS/service artifacts, while `koed runtime status/install` reports missing native assets with Homebrew repair guidance.
 
+The packaged installer preserves relative library links when it copies assets
+into `KOED_HOME/runtime`. Installed libraries remain available after the source
+app bundle is replaced or removed. Installation retains the manifest checksum,
+executable, and loader validation requirements.
+
 Native runtime artifacts can be assembled and validated locally with:
 
 ```bash

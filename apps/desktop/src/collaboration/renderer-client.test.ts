@@ -1282,6 +1282,79 @@ describe("collaboration renderer client", () => {
     client.dispose();
   });
 
+  it.each(
+    (["selection", "conversation"] as const).flatMap((kind) =>
+      (["offline", "temporarily_unavailable"] as const).map((code) => ({
+        kind,
+        code
+      }))
+    )
+  )(
+    "requires an online review for a fresh $kind stop when $code",
+    async ({ kind, code }) => {
+      const mock = createBridge(fixture({ selectedTeam: true }));
+      mock.command.mockImplementation(async (command) => {
+        if (command.command === "collaboration.request_action_grant") {
+          return collaborationCommandResultSchema.parse({
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: command.requestId,
+            command: command.command,
+            ok: false,
+            error: {
+              code,
+              userMessage: collaborationSafeErrorMessages[code],
+              retryable: true,
+              retryAfterMs: null
+            }
+          });
+        }
+        return success(command, fixture({ selectedTeam: true }), new Map());
+      });
+      const confirmNativeReview = vi.fn(async () => true);
+      const client = createCollaborationRendererClient(mock.bridge, {
+        confirmNativeReview
+      });
+      await client.load();
+      const input = {
+        mutationId: id(61),
+        ruleId: id(62),
+        teamId: ids.team,
+        workspaceId: ids.workspace,
+        expectedAuthorityVersion: 1,
+        controlAction: "stop" as const
+      };
+      try {
+        await expect(
+          kind === "selection"
+            ? client.controlRepositoryRule({
+                selectorKind: "selection",
+                publisherFence: 1,
+                ...input
+              })
+            : client.controlSharingRule({
+                shareGrantId: ids.shareGrant,
+                reasonId: id(63),
+                expectedGrantVersion: 1,
+                ...input
+              })
+        ).rejects.toMatchObject({
+          code,
+          message: expect.stringContaining("Team access can remain")
+        });
+        expect(confirmNativeReview).not.toHaveBeenCalled();
+        expect(
+          mock.command.mock.calls.some(
+            ([command]) =>
+              command.command === "collaboration.control_repository_rule" ||
+              command.command === "collaboration.control_sharing_rule"
+          )
+        ).toBe(false);
+      } finally {
+        client.dispose();
+      }
+    }
+  );
+
   it("obtains an approved one-use Action Grant before creating a Team", async () => {
     const mock = createBridge();
     const client = createCollaborationRendererClient(mock.bridge);

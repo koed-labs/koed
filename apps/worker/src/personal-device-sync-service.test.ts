@@ -63,6 +63,7 @@ describe("Personal Device Sync service", () => {
     expect(repository.completePdsInbox).toHaveBeenCalledWith({
       workerId: "worker",
       inboxId: "inbox",
+      verifiedNonSource: true,
       state: "ready"
     });
     expect(repository.materializePdsReplica).not.toHaveBeenCalled();

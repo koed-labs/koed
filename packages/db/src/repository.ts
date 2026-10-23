@@ -7145,6 +7145,8 @@ export const createMemorySourceRepository = (
       };
 
       const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+      // The linked-node aggregate preserves each event. Bound its lineage work
+      // to the authorized page and prevent duplication across source branches.
       const result = await pool.query<Parameters<typeof mapLcmGraphEvent>[0]>(
         `
         with cursor_order as (
@@ -7675,11 +7677,15 @@ export const createMemorySourceRepository = (
                 )
               )
             )
+        ), selected_events as materialized (
+          select * from visible_events
+          order by order_at desc, source_sequence desc nulls last, id desc
+          limit $10
         )
         select
           ve.*,
           coalesce(linked_node_ids.linked_node_ids, array[]::text[]) as linked_node_ids
-        from visible_events ve
+        from selected_events ve
         left join lateral (
           select array_agg(mns.memory_node_id::text order by mns.source_order) as linked_node_ids
           from memory_node_sources mns

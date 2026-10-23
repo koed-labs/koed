@@ -283,6 +283,12 @@ uses this boundary. Owner checks and exact target matching run before pagination
 and candidate limits. Unknown targets return no sources. A snapshot belonging to
 another User fails before the source query.
 
+Event inspection selects and materializes the authorized, ordered page before
+hydrating linked-node metadata. The metadata aggregate preserves every selected
+event, and each linked node still passes the existing recursive source proof.
+This bounds metadata work to the page and avoids repeating its lineage query
+across the event-source branches. Cursor order and page membership stay unchanged.
+
 Inspection keeps the existing raw-source view. Trusted inspection readers can
 show a captured source that is still pending semantic processing. Raw Approval
 Activity remains visible under its existing presentation policy. The diagnostic

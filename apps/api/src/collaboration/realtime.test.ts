@@ -2095,6 +2095,7 @@ describe("collaboration realtime protocol", () => {
           authorizedPreview: null,
           lastReadyRevision: null,
           lastSuccessfulUpdateAt: null,
+          workspaceExclusion: null,
           sharingReasons: []
         }
       }))

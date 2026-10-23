@@ -753,7 +753,11 @@ const copyAsset = (
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
   rmSync(tmp, { recursive: true, force: true });
   rmSync(target, { recursive: true, force: true });
-  cpSync(source, tmp, { recursive: true, preserveTimestamps: true });
+  cpSync(source, tmp, {
+    recursive: true,
+    preserveTimestamps: true,
+    verbatimSymlinks: true
+  });
   for (const executable of Object.values(asset.executablePaths)) {
     chmodSync(safeResolve(tmp, executable), 0o755);
   }

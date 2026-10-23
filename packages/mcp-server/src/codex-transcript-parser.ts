@@ -2087,7 +2087,7 @@ export const buildCodexTranscriptConversationItems = (
         externalSessionId: input.sourceSessionId,
         externalThreadId: canonicalThreadId,
         externalTurnId: assignedTurnId,
-        externalItemId: rawExternalItemId(record),
+        externalItemId: adaptedItem.externalItemId,
         sourceRecordType: rawRecordType(record),
         sourceEventType: rawEventType(record),
         sourceLineNumber,

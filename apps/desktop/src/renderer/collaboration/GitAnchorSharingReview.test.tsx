@@ -14,6 +14,9 @@ const reviewClient = (
   reviewGitAnchorSharing: CollaborationRendererClient["reviewGitAnchorSharing"]
 ) => ({
   reviewGitAnchorSharing,
+  reviewPublisherTakeover:
+    vi.fn<CollaborationRendererClient["reviewPublisherTakeover"]>(),
+  takeOverPublisher: vi.fn<CollaborationRendererClient["takeOverPublisher"]>(),
   listRepositoryRules: vi.fn<
     CollaborationRendererClient["listRepositoryRules"]
   >(async () => ({ rules: [], nextCursor: null })),
@@ -180,7 +183,11 @@ describe("Git Anchor sharing review dialog", () => {
       const final = { ...page(true), target },
         client = reviewClient(vi.fn().mockResolvedValue(final));
       const scope = {
-        selector: sharingSelectionDescriptor(target),
+        selector: sharingSelectionDescriptor(
+          target.kind === "project"
+            ? { ...target, project: { ...target.project, projectId: id(99) } }
+            : target
+        ),
         teamId: id(1),
         teamWorkspaceId: id(2),
         maximumFidelity: "lcm_rollups" as const,
@@ -232,6 +239,12 @@ describe("Git Anchor sharing review dialog", () => {
         [...document.querySelectorAll("button")].find(
           (button) => button.textContent === "Share existing and future Memory"
         )!;
+      expect(client.listRepositoryRules).toHaveBeenCalledWith({
+        selector: sharingSelectionDescriptor(target),
+        target,
+        afterRuleId: null,
+        limit: 50
+      });
       expect(share().disabled).toBe(true);
       await select(0, id(1));
       await select(1, id(2));

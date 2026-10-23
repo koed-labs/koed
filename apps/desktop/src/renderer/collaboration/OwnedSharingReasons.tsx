@@ -21,6 +21,7 @@ export function OwnedSharingReasons({
   representationLabel,
   deliveries = [],
   busy = false,
+  workspaceExcluded = false,
   onControl,
   detailReview
 }: {
@@ -28,6 +29,7 @@ export function OwnedSharingReasons({
   detailReview?: (reason: OwnedSharingReason, queued: boolean) => ReactNode;
   deliveries?: SharingRuleDelivery[];
   busy?: boolean;
+  workspaceExcluded?: boolean;
   onControl?: (
     reason: OwnedSharingReason,
     action: ConversationSharingRuleControlIntent["controlAction"]
@@ -52,9 +54,14 @@ export function OwnedSharingReasons({
         reasons.map((reason) => {
           const delivery = deliveries.find(
             (item) =>
-              item.intent.ruleId === reason.rule?.id &&
-              (!("reasonId" in item.intent) ||
-                item.intent.reasonId === reason.id)
+              ("snapshotConversion" in item.intent &&
+                item.intent.snapshotConversion?.reasonId === reason.id &&
+                item.intent.snapshotConversion.consentId ===
+                  reason.consentId) ||
+              ("ruleId" in item.intent &&
+                item.intent.ruleId === reason.rule?.id &&
+                (!("reasonId" in item.intent) ||
+                  item.intent.reasonId === reason.id))
           );
           const queued = delivery?.state === "queued";
           const expired =
@@ -76,16 +83,18 @@ export function OwnedSharingReasons({
                     : "Direct share"}
                 </strong>{" "}
                 ·{" "}
-                {reason.updateState === "active" &&
-                reason.rule?.selectorKind === "folder"
-                  ? "Updates active for eligible Conversations in this exact Folder."
+                {workspaceExcluded
+                  ? "Blocked by this Workspace exclusion. This reason cannot publish or grant access here."
                   : reason.updateState === "active" &&
-                      reason.rule?.selectorKind === "project"
-                    ? "Updates active while this Conversation remains in the private Project."
+                      reason.rule?.selectorKind === "folder"
+                    ? "Updates active for eligible Conversations in this exact Folder."
                     : reason.updateState === "active" &&
-                        reason.rule?.selectorKind === "repository"
-                      ? "Updates active for eligible Conversations matching this Git Anchor."
-                      : updateExplanation[reason.updateState]}
+                        reason.rule?.selectorKind === "project"
+                      ? "Updates active while this Conversation remains in the private Project."
+                      : reason.updateState === "active" &&
+                          reason.rule?.selectorKind === "repository"
+                        ? "Updates active for eligible Conversations matching this Git Anchor."
+                        : updateExplanation[reason.updateState]}
               </p>
               <p>
                 Consent permits{" "}
@@ -94,7 +103,9 @@ export function OwnedSharingReasons({
                   .join(", ") || "no representations"}
                 .
                 {reason.maximumAuthorizedSourceRevision !== null
-                  ? ` Limited to source revision ${reason.maximumAuthorizedSourceRevision}.`
+                  ? reason.mode === "snapshot"
+                    ? ` Fixed approval: source revision ${reason.maximumAuthorizedSourceRevision}.`
+                    : ` Limited to source revision ${reason.maximumAuthorizedSourceRevision}.`
                   : " Future eligible revisions are permitted while updates are active."}
               </p>
               {reason.rule?.catchUpState === "needs_attention" ? (
@@ -155,7 +166,7 @@ export function OwnedSharingReasons({
                   this rule again.
                 </p>
               ) : null}
-              {reason.rule ? detailReview?.(reason, queued) : null}
+              {detailReview?.(reason, queued)}
               {onControl && reason.rule && reason.rule.state !== "stopped" ? (
                 <div
                   className="collab-share-header-actions"

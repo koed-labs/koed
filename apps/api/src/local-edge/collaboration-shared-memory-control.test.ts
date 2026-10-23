@@ -1,12 +1,18 @@
+import { publisherTakeoverReviewFixture } from "../shared-memory/test-fixtures/publisher-takeover-review.js";
 import { contentPolicyReviewFixture } from "../shared-memory/test-fixtures/rule-content-policy-review.js";
 import { randomUUID } from "node:crypto";
 
 import {
   COLLABORATION_CONTRACT_VERSION,
   crossIdentitySyncDigest,
+  sharedMemoryGrantScopedSourceId,
+  sharingSelectionDescriptor,
   crossIdentitySyncDeterministicUuid,
   type ConversationSharingRuleCreationIntent,
   sharingRuleDetailReviewSchema,
+  sharingRuleDeliverySchema,
+  sharingRulePublisherTakeoverLocalIntentSchema,
+  selectionSharingProgressSchema,
   type SharingRuleDelivery
 } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -193,6 +199,7 @@ const grantResponse = (
     maximumFidelity?: "memory_events" | "lcm_leaves" | "lcm_rollups";
     includeCuratedMemory?: boolean;
     consentId?: string;
+    mode?: "snapshot" | "continuous";
     sourceRevision?: number;
     updatedAt?: string;
   } = {}
@@ -200,7 +207,7 @@ const grantResponse = (
   source: capturedSource,
   sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"] as const,
   activationRepresentation: "memory_events" as const,
-  mode: "continuous" as const,
+  mode: input.mode ?? "continuous",
   id: ids.grant,
   logicalGrantId: ids.logicalGrant,
   logicalMemoryId: ids.logicalMemory,
@@ -450,6 +457,8 @@ const createFixture = (
       CollaborationSharedMemoryControlOptions["loadLocalCandidatePreview"]
     >;
     selectionReviewRepository?: CollaborationSharedMemoryControlOptions["selectionReviewRepository"];
+    readNativeConversationSource?: CollaborationSharedMemoryControlOptions["readNativeConversationSource"];
+    readPublisherTakeoverSource?: CollaborationSharedMemoryControlOptions["readPublisherTakeoverSource"];
     resolveCandidateSourceIdentity?: NonNullable<
       CollaborationSharedMemoryControlOptions["resolveCandidateSourceIdentity"]
     >;
@@ -994,7 +1003,12 @@ const createFixture = (
       ) {
         const shareGrants = overrides.remoteOwnerGrants ?? [grantResponse()];
         response = {
-          shareGrants,
+          shareGrants: shareGrants.map(
+            ({ companionScope: _scope, ...grant }) => {
+              void _scope;
+              return grant;
+            }
+          ),
           pagination: {
             limit: 100,
             offset: 0,
@@ -1025,7 +1039,9 @@ const createFixture = (
       ) {
         if (
           overrides.deniedDiscussionLogicalMemoryIds?.some((logicalMemoryId) =>
-            url.pathname.includes(`/${logicalMemoryId}/discussion`)
+            url.pathname.includes(
+              `/${sharedMemoryGrantScopedSourceId(String(recorded.body?.shareGrantId), logicalMemoryId)}/discussion`
+            )
           )
         ) {
           return json({ error: "forbidden" }, 403);
@@ -1036,7 +1052,10 @@ const createFixture = (
             kind: "shared_session_discussion",
             teamId: ids.team,
             teamWorkspaceId: ids.workspace,
-            sharedLogicalMemoryId: ids.logicalMemory,
+            sharedLogicalMemoryId: sharedMemoryGrantScopedSourceId(
+              ids.grant,
+              ids.logicalMemory
+            ),
             shareGrantId: ids.grant
           }
         };
@@ -1115,6 +1134,8 @@ const createFixture = (
           : overrides.upstreamAuthorization),
     authorityStore: store,
     selectionReviewRepository: overrides.selectionReviewRepository,
+    readNativeConversationSource: overrides.readNativeConversationSource,
+    readPublisherTakeoverSource: overrides.readPublisherTakeoverSource,
     prepareLocalLcmRepresentation:
       overrides.prepareLocalLcmRepresentation ?? (async () => "ready"),
     loadLocalCandidatePreview: overrides.loadLocalCandidatePreview,
@@ -1244,6 +1265,234 @@ const loadInitialSource = async (
 };
 
 describe("collaboration Shared Memory control", () => {
+  it("binds receiving Project creation to verified portable identity while retaining its completed native review", async () => {
+    const target = {
+      kind: "project" as const,
+      project: { ownerUserId: ids.localOwner, projectId: uuidFor(983) }
+    };
+    const portable = {
+      ...target,
+      project: { ...target.project, projectId: uuidFor(984) }
+    };
+    const selection = {
+      version: 1 as const,
+      ownerUserId: ids.localOwner,
+      target
+    };
+    const repository: NonNullable<
+      CollaborationSharedMemoryControlOptions["selectionReviewRepository"]
+    > = {
+      startPersonalSelectionEnumeration: vi.fn(async () => ({
+        version: 1 as const,
+        snapshotVersion: uuidFor(985),
+        selection,
+        entries: [],
+        nextCursor: null,
+        changeCursor: uuidFor(986),
+        expiresAt: "2099-01-01T00:00:00.000Z"
+      })),
+      continuePersonalSelectionEnumeration: vi.fn(),
+      listLcmGraphThreads: vi.fn(),
+      reconcilePersonalSelectionChanges: vi.fn(async () => ({
+        version: 1 as const,
+        selection,
+        events: [],
+        nextCursor: null,
+        changeCursor: uuidFor(987),
+        reconciliationRequired: false,
+        expiresAt: "2099-01-01T00:00:00.000Z"
+      }))
+    };
+    const fixture = createFixture({
+      selectionReviewRepository: repository,
+      loadLocalCandidatePreview: async () => null
+    });
+    const readTarget = vi
+      .fn<
+        NonNullable<
+          CollaborationSharedMemoryControlOptions["readSharingSelectionTarget"]
+        >
+      >()
+      .mockResolvedValue(portable);
+    const reviewRequest = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async (_url, init) =>
+        json({
+          review: {
+            scope: {
+              ...(JSON.parse(String(init?.body)) as Record<string, unknown>),
+              teamPolicyVersion: 1,
+              teamPolicyHash: hash,
+              workspacePolicyVersion: 1,
+              workspacePolicyHash: hashB,
+              effectivePrivacyPolicyHash: hashC
+            },
+            teamName: "Team",
+            workspaceName: "Workspace"
+          }
+        })
+      );
+    const control = createCollaborationSharedMemoryControl({
+      ...fixture.options,
+      readSharingSelectionTarget: readTarget,
+      fetch: (url, init) =>
+        String(url).endsWith("/repository-rules/review")
+          ? reviewRequest(url, init)
+          : fixture.options.fetch(url, init)
+    });
+    const input = {
+      target,
+      teamId: ids.team,
+      workspaceId: ids.workspace,
+      representation: "memory_events" as const
+    };
+    const completed = await control.dispatch(
+      {
+        ...commandBase("collaboration.review_git_anchor_sharing"),
+        input: { ...input, cursor: null }
+      },
+      context()
+    );
+    if (
+      !completed?.ok ||
+      completed.command !== "collaboration.review_git_anchor_sharing"
+    )
+      throw new Error("Missing completed local review");
+    const reviewInput = {
+      ...input,
+      completionToken: completed.data.review.completionToken!
+    };
+    expect(
+      await control.dispatch(
+        {
+          ...commandBase("collaboration.review_repository_rule_creation"),
+          input: reviewInput
+        },
+        context()
+      )
+    ).toMatchObject({
+      ok: true,
+      data: {
+        review: { scope: { selector: sharingSelectionDescriptor(portable) } }
+      }
+    });
+    expect(readTarget).toHaveBeenCalledExactlyOnceWith({
+      ownerUserId: ids.localOwner,
+      target
+    });
+    const body = String(reviewRequest.mock.calls[0]![1]?.body);
+    expect(body).not.toContain(target.project.projectId);
+    expect(body).not.toContain("completionToken");
+    expect(body).not.toContain("ownerUserId");
+    readTarget.mockResolvedValueOnce(null);
+    expectFailure(
+      await control.dispatch(
+        {
+          ...commandBase("collaboration.review_repository_rule_creation"),
+          input: reviewInput
+        },
+        context()
+      ),
+      "not_available"
+    );
+    expect(reviewRequest).toHaveBeenCalledTimes(1);
+    expect(fixture.pendingSourceWork).toEqual([]);
+  });
+  it("lists a receiving Project's existing rules through verified portable identity while keeping its local target private", async () => {
+    const fixture = createFixture();
+    const target = {
+      kind: "project" as const,
+      project: { ownerUserId: ids.localOwner, projectId: uuidFor(980) }
+    };
+    const portable = {
+      ...target,
+      project: { ...target.project, projectId: uuidFor(981) }
+    };
+    const readTarget = vi
+      .fn<
+        NonNullable<
+          CollaborationSharedMemoryControlOptions["readSharingSelectionTarget"]
+        >
+      >()
+      .mockResolvedValue(portable);
+    const page = {
+      rules: [
+        {
+          ruleId: uuidFor(982),
+          selector: sharingSelectionDescriptor(portable),
+          state: "active",
+          team: { id: ids.team, name: "Team" },
+          workspace: { id: ids.workspace, name: "Workspace" },
+          maximumFidelity: "lcm_rollups",
+          includeCuratedMemory: false,
+          authorityVersion: 4,
+          publisherFence: 3,
+          publisherAvailable: true
+        }
+      ],
+      nextCursor: null
+    };
+    const remote = vi.fn<typeof fetch>().mockResolvedValue(json({ page }));
+    const control = createCollaborationSharedMemoryControl({
+      ...fixture.options,
+      readSharingSelectionTarget: readTarget,
+      fetch: (url, init) =>
+        String(url).endsWith("/repository-rules/owned")
+          ? remote(url, init)
+          : fixture.options.fetch(url, init)
+    });
+    const input = {
+      selector: sharingSelectionDescriptor(target),
+      target,
+      afterRuleId: null,
+      limit: 50
+    };
+    expect(
+      await control.dispatch(
+        { ...commandBase("collaboration.list_repository_rules"), input },
+        context()
+      )
+    ).toMatchObject({ ok: true, data: { page } });
+    expect(readTarget).toHaveBeenCalledExactlyOnceWith({
+      ownerUserId: ids.localOwner,
+      target
+    });
+    expect(JSON.parse(String(remote.mock.calls[0]![1]?.body))).toEqual({
+      selector: sharingSelectionDescriptor(portable),
+      afterRuleId: null,
+      limit: 50
+    });
+    expect(String(remote.mock.calls[0]![1]?.body)).not.toContain(
+      target.project.projectId
+    );
+    for (const invalid of [
+      null,
+      {
+        ...portable,
+        project: { ...portable.project, ownerUserId: ids.upstreamUser }
+      }
+    ]) {
+      readTarget.mockResolvedValueOnce(invalid);
+      expectFailure(
+        await control.dispatch(
+          { ...commandBase("collaboration.list_repository_rules"), input },
+          context()
+        ),
+        "not_available"
+      );
+    }
+    expectFailure(
+      await control.dispatch(
+        {
+          ...commandBase("collaboration.list_repository_rules"),
+          input: { ...input, selector: sharingSelectionDescriptor(portable) }
+        },
+        context()
+      ),
+      "invalid_input"
+    );
+    expect(remote).toHaveBeenCalledTimes(1);
+  });
   it("reviews an owner selection while sending only destination policy reads to the Team backend", async () => {
     const target = {
       kind: "repository" as const,
@@ -1900,7 +2149,22 @@ describe("collaboration Shared Memory control", () => {
   });
 
   it("resolves a consent preview only for its exact persisted source", async () => {
-    const fixture = createFixture();
+    const sourceIdentity = {
+      originatingDeploymentId: "personal-origin",
+      originatingDeviceId: "personal-device",
+      logicalSessionId: capturedSource.sessionId
+    };
+    const readSource = vi
+      .fn<
+        NonNullable<
+          CollaborationSharedMemoryControlOptions["readNativeConversationSource"]
+        >
+      >()
+      .mockResolvedValue({
+        logicalMemoryId: ids.logicalMemory,
+        sourceIdentity
+      });
+    const fixture = createFixture({ readNativeConversationSource: readSource });
     const input = {
       source: capturedSource,
       sourceCapabilities: [
@@ -1922,6 +2186,38 @@ describe("collaboration Shared Memory control", () => {
     await expect(
       fixture.control.resolveConsentPreview(input, context())
     ).resolves.toEqual({ previewId: ids.preview });
+    await expect(
+      fixture.control.resolveConsentPreview(
+        { ...input, sourceIdentity },
+        context()
+      )
+    ).resolves.toEqual({ previewId: ids.preview });
+    await expect(
+      fixture.control.resolveConsentPreview(
+        {
+          ...input,
+          sourceIdentity: { ...sourceIdentity, logicalSessionId: uuidFor(998) }
+        },
+        context()
+      )
+    ).resolves.toBeNull();
+    readSource.mockResolvedValueOnce(null);
+    await expect(
+      fixture.control.resolveConsentPreview(
+        { ...input, sourceIdentity },
+        context()
+      )
+    ).resolves.toBeNull();
+    readSource.mockResolvedValueOnce({
+      sourceIdentity,
+      logicalMemoryId: uuidFor(997)
+    });
+    await expect(
+      fixture.control.resolveConsentPreview(
+        { ...input, sourceIdentity },
+        context()
+      )
+    ).resolves.toBeNull();
     await expect(
       fixture.control.resolveConsentPreview(
         {
@@ -2137,7 +2433,7 @@ describe("collaboration Shared Memory control", () => {
     expect(fixture.requests).toHaveLength(0);
   });
 
-  it("reconciles authoritative remote owner grants before listing them", async () => {
+  it("reconciles owner-safe remote grants without a companion scope", async () => {
     const fixture = createFixture();
     const result = await fixture.control.dispatch(
       {
@@ -2163,6 +2459,57 @@ describe("collaboration Shared Memory control", () => {
       `/v1/shared-memory/logical-memories/${ids.logicalMemory}/share-grants`
     ]);
   });
+
+  it.each([{ ownerUserId: uuidFor(990) }, { logicalMemoryId: uuidFor(991) }])(
+    "rejects an owner grant outside the requested identity: %j",
+    async (scope) => {
+      const fixture = createFixture({
+        remoteOwnerGrants: [{ ...grantResponse(), ...scope }]
+      });
+      const result = await fixture.control.dispatch(
+        {
+          ...commandBase("collaboration.list_owned_shared_memory_grants"),
+          input: { logicalMemoryId: ids.logicalMemory }
+        },
+        context()
+      );
+      expectFailure(result, "permission_denied");
+    }
+  );
+
+  it.each([false, true])(
+    "resolves a missing owner companion through its exact grant-scoped source (%s)",
+    async (wrongSource) => {
+      const fixture = createFixture({
+        mutateResponse: (request, response) => {
+          if (wrongSource && request.pathname.endsWith("/discussion")) {
+            return {
+              ...response,
+              thread: {
+                ...(response.thread as Record<string, unknown>),
+                sharedLogicalMemoryId: ids.logicalMemory
+              }
+            };
+          }
+          return response;
+        }
+      });
+      fixture.grants.delete(ids.grant);
+      const result = await fixture.control.dispatch(
+        {
+          ...commandBase("collaboration.list_owned_shared_memory_grants"),
+          input: { logicalMemoryId: ids.logicalMemory }
+        },
+        context()
+      );
+      if (wrongSource) expectFailure(result, "permission_denied");
+      else expect(result).toMatchObject({ ok: true });
+      expect(fixture.requests.at(-1)?.pathname).toBe(
+        `/v1/collaboration/teams/${ids.team}/workspaces/${ids.workspace}/shared-sessions/${sharedMemoryGrantScopedSourceId(ids.grant, ids.logicalMemory)}/discussion`
+      );
+      expect(fixture.grants.has(ids.grant)).toBe(!wrongSource);
+    }
+  );
 
   it("reconciles a newer unavailable grant snapshot without weakening optimistic writes", async () => {
     const fixture = createFixture({
@@ -2194,38 +2541,72 @@ describe("collaboration Shared Memory control", () => {
     });
   });
 
-  it("reconciles monotonic source freshness within the same grant version", async () => {
-    const fixture = createFixture({
-      remoteOwnerGrants: [
-        grantResponse({
-          sourceRevision: 11,
-          updatedAt: "2026-07-17T12:11:00.000Z"
-        })
-      ]
-    });
-    const result = await fixture.control.dispatch(
-      {
-        ...commandBase("collaboration.list_owned_shared_memory_grants"),
-        input: { logicalMemoryId: ids.logicalMemory }
-      },
-      context()
-    );
+  it.each([11, 4])(
+    "reconciles monotonic grant metadata at source revision %s",
+    async (sourceRevision) => {
+      const fixture = createFixture({
+        remoteOwnerGrants: [
+          grantResponse({
+            sourceRevision,
+            updatedAt: "2026-07-17T12:11:00.000Z"
+          })
+        ]
+      });
+      const result = await fixture.control.dispatch(
+        {
+          ...commandBase("collaboration.list_owned_shared_memory_grants"),
+          input: { logicalMemoryId: ids.logicalMemory }
+        },
+        context()
+      );
 
-    expect(result).toMatchObject({
-      ok: true,
-      data: {
-        grants: [
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          grants: [
+            {
+              id: ids.grant,
+              grantVersion: 1,
+              sourceRevision,
+              lifecycle: "active"
+            }
+          ]
+        }
+      });
+      expect(fixture.grantPersistenceModes).toEqual(["authoritative_snapshot"]);
+    }
+  );
+
+  it.each([
+    { sourceRevision: 3 },
+    { consentId: uuidFor(819) },
+    { mode: "snapshot" as const },
+    { updatedAt: "2026-07-16T12:00:00.000Z" }
+  ])(
+    "rejects same-version grant metadata regression or authority changes (%j)",
+    async (changed) => {
+      const fixture = createFixture({
+        remoteOwnerGrants: [
           {
-            id: ids.grant,
-            grantVersion: 1,
-            sourceRevision: 11,
-            lifecycle: "active"
+            ...grantResponse({ updatedAt: "2026-07-17T12:11:00.000Z" }),
+            ...changed
           }
         ]
-      }
-    });
-    expect(fixture.grantPersistenceModes).toEqual(["authoritative_snapshot"]);
-  });
+      });
+      const result = await fixture.control.dispatch(
+        {
+          ...commandBase("collaboration.list_owned_shared_memory_grants"),
+          input: { logicalMemoryId: ids.logicalMemory }
+        },
+        context()
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "permission_denied" }
+      });
+      expect(fixture.grantPersistenceModes).toEqual([]);
+    }
+  );
 
   it("keeps Pending Shares visible when an older grant is no longer accessible", async () => {
     const inaccessibleLogicalMemoryId = uuidFor(810);
@@ -2297,6 +2678,7 @@ describe("collaboration Shared Memory control", () => {
         },
         lastReadyRevision: null,
         lastSuccessfulUpdateAt: null,
+        workspaceExclusion: null,
         sharingReasons: []
       }
     };
@@ -2354,7 +2736,7 @@ describe("collaboration Shared Memory control", () => {
         (request) =>
           request.method === "POST" &&
           request.pathname.includes(
-            `/${inaccessibleLogicalMemoryId}/discussion`
+            `/${sharedMemoryGrantScopedSourceId(inaccessibleGrantId, inaccessibleLogicalMemoryId)}/discussion`
           )
       )
     ).toBe(false);
@@ -2392,6 +2774,7 @@ describe("collaboration Shared Memory control", () => {
           authorizedPreview: null,
           lastReadyRevision: 4,
           lastSuccessfulUpdateAt: iso,
+          workspaceExclusion: null,
           sharingReasons: []
         }
       };
@@ -2543,6 +2926,7 @@ describe("collaboration Shared Memory control", () => {
         },
         lastReadyRevision: 4,
         lastSuccessfulUpdateAt: iso,
+        workspaceExclusion: null,
         sharingReasons: []
       }
     };
@@ -2627,6 +3011,7 @@ describe("collaboration Shared Memory control", () => {
         },
         lastReadyRevision: 4,
         lastSuccessfulUpdateAt: iso,
+        workspaceExclusion: null,
         sharingReasons: []
       }
     };
@@ -2893,6 +3278,7 @@ describe("collaboration Shared Memory control", () => {
               authorizedPreview: null,
               lastReadyRevision: 4,
               lastSuccessfulUpdateAt: iso,
+              workspaceExclusion: null,
               sharingReasons: []
             }
           }
@@ -3525,6 +3911,31 @@ describe("collaboration Shared Memory control", () => {
     ]);
   });
 
+  it("rebinds a rotated credential even when the owner and backend are unchanged", async () => {
+    const fixture = createFixture({ bindEnrollment: true });
+    const binding = vi
+      .spyOn(fixture.store, "isEnrollmentBound")
+      .mockImplementation(async (identity) => !identity.remoteDeviceId);
+
+    await expect(
+      fixture.control.dispatch(previewCommand(), context())
+    ).resolves.toMatchObject({ ok: true });
+    expect(binding).toHaveBeenCalledWith({
+      backendId: "team-backend",
+      localOwnerUserId: ids.localOwner,
+      upstreamUserId: ids.upstreamUser,
+      remoteDeviceId: ids.remoteDevice
+    });
+    expect(fixture.enrollmentBindings).toEqual([
+      {
+        backendId: "team-backend",
+        localOwnerUserId: ids.localOwner,
+        upstreamUserId: ids.upstreamUser,
+        remoteDeviceId: ids.remoteDevice
+      }
+    ]);
+  });
+
   it("fails closed when preview persistence is unavailable", async () => {
     const previewGap = createFixture({ persistPreview: false });
     expectFailure(
@@ -3711,278 +4122,360 @@ describe("collaboration Shared Memory control", () => {
     expect(result).toBeNull();
     expect(fixture.requests).toHaveLength(0);
   });
-  it("disables alpha content-policy commands and suspends existing delivery without acknowledgment", async () => {
-    const fixture = createFixture();
-    const review = contentPolicyReviewFixture({
-      ruleId: uuidFor(950),
-      teamId: ids.team,
-      teamWorkspaceId: ids.workspace
-    });
-    const intent = {
-      operationKind: "content_policy" as const,
-      mutationId: uuidFor(951),
-      ruleId: review.ruleId,
-      teamId: ids.team,
-      teamWorkspaceId: ids.workspace,
-      review
-    };
-    const persist = vi.spyOn(fixture.store, "persistRuleDelivery");
-    const { teamWorkspaceId, ...localIntent } = intent;
-    expectFailure(
-      await fixture.control.dispatch(
-        {
-          ...commandBase("collaboration.review_rule_content_policy"),
-          input: {
-            ruleId: review.ruleId,
-            teamId: ids.team,
-            workspaceId: ids.workspace,
-            labels: review.labels
-          }
+  it.each(["exclude", "restore"] as const)(
+    "delivers a persisted Workspace %s through the authenticated queue",
+    async (action) => {
+      const fixture = createFixture();
+      const scope = {
+        ownerUserId: ids.upstreamUser,
+        logicalMemoryId: ids.logicalMemory,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        expectedExclusionVersion: action === "restore" ? 1 : 0,
+        shareGrantId: ids.grant,
+        expectedGrantVersion: 1
+      };
+      const excluded = {
+        id: uuidFor(970),
+        ownerUserId: ids.upstreamUser,
+        logicalMemoryId: ids.logicalMemory,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        version: 1,
+        state: "excluded" as const,
+        excludedAt: iso,
+        restoredAt: null,
+        updatedAt: iso
+      };
+      const intent = {
+        mutationId: uuidFor(971),
+        scope,
+        ...(action === "restore"
+          ? {
+              restoration: {
+                scope,
+                source: {
+                  logicalMemoryId: ids.logicalMemory,
+                  title: "Conversation"
+                },
+                team: { id: ids.team, name: "Engineering" },
+                workspace: { id: ids.workspace, name: "Platform" },
+                exclusion: excluded,
+                rules: [],
+                authorityHash: hash,
+                expiresAt: "2099-01-01T00:00:00.000Z",
+                reviewHash: hashB
+              }
+            }
+          : {})
+      };
+      const delivery = sharingRuleDeliverySchema.parse({
+        intent,
+        presentation: {
+          sourceTitle: "Conversation",
+          teamName: "Engineering",
+          workspaceName: "Platform"
         },
-        context()
-      ),
-      "not_available"
-    );
-    expectFailure(
-      await fixture.control.dispatch(
-        {
-          ...commandBase("collaboration.amend_rule_content_policy"),
-          input: {
-            ...localIntent,
-            workspaceId: teamWorkspaceId,
-            actionGrant: { id: ids.actionGrant }
-          }
-        },
-        context()
-      ),
-      "not_available"
-    );
-    expect(persist).not.toHaveBeenCalled();
-    expect(fixture.requests).toHaveLength(0);
-    const work = {
-      workId: uuidFor(952),
-      leaseVersion: 1,
-      identity: {
+        state: "queued",
+        control: null,
+        creation: null,
+        failureCode: null,
+        updatedAt: iso
+      });
+      const identity = {
         backendId: "team-backend",
         localOwnerUserId: ids.localOwner,
         upstreamUserId: ids.upstreamUser
-      },
-      remoteDeviceId: ids.remoteDevice,
-      requestId: uuidFor(953),
-      actionGrantId: ids.actionGrant,
-      actionGrant: "hrg_00000000000000000000000000000000",
-      intent,
-      presentation: {
-        sourceTitle: "Trial rule",
-        teamName: review.teamName,
-        workspaceName: review.workspaceName
-      }
-    };
-    vi.spyOn(fixture.store, "claimRuleDeliveries").mockResolvedValue([work]);
-    const finish = vi.spyOn(fixture.store, "finishRuleDelivery");
-    expect(await fixture.control.reconcileRuleDeliveries()).toEqual({
-      processed: 1,
-      acknowledged: 0
-    });
-    expect(finish).toHaveBeenCalledExactlyOnceWith({
-      workId: work.workId,
-      leaseVersion: 1,
-      identity: work.identity,
-      outcome: "needs_review",
-      failureCode: "authority_unavailable"
-    });
-    expect(fixture.requests).toHaveLength(0);
-  });
-
-  it("delivers an approved rule detail amendment durably and recovers the exact receipt after a lost response", async () => {
-    const fixture = createFixture();
-    const review = sharingRuleDetailReviewSchema.parse({
-      ruleId: uuidFor(950),
-      teamId: ids.team,
-      teamWorkspaceId: ids.workspace,
-      selectorKind: "project",
-      state: "paused",
-      maximumFidelity: "lcm_leaves",
-      includeCuratedMemory: false,
-      previousMaximumFidelity: "lcm_rollups",
-      previousIncludeCuratedMemory: false,
-      expectedAuthorityVersion: 3,
-      publisherFence: 1,
-      teamPolicyVersion: 1,
-      teamPolicyHash: hash,
-      workspacePolicyVersion: 1,
-      workspacePolicyHash: hash,
-      effectivePrivacyPolicyHash: hashB,
-      policyBindingHash: hash,
-      memberBindingHash: hash,
-      memberCount: 4,
-      ownerPolicyExpansionCount: 0,
-      disclosureIncrease: true,
-      teamName: "Engineering",
-      workspaceName: "Platform",
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      reviewHash: hashC
-    });
-    const intent = {
-      operationKind: "detail" as const,
-      mutationId: uuidFor(951),
-      ruleId: review.ruleId,
-      teamId: ids.team,
-      teamWorkspaceId: ids.workspace,
-      review
-    };
-    const delivery: SharingRuleDelivery = {
-      intent,
-      presentation: {
-        sourceTitle: review.ruleId,
-        teamName: review.teamName,
-        workspaceName: review.workspaceName
-      },
-      state: "queued",
-      control: null,
-      creation: null,
-      failureCode: null,
-      updatedAt: iso
-    };
-    const lifecycle = fixture.options.actionGrantLifecycle!;
-    vi.spyOn(lifecycle, "read").mockReturnValue({
-      version: 1,
-      actionGrant: { id: ids.actionGrant },
-      approvalTier: "native_review",
-      state: "approved",
-      activationUrl: null,
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      review: {
-        version: 1,
-        title: "Change rule detail?",
-        description: "The whole rule.",
-        consequence: "Keep paused state.",
-        confirmLabel: "Change detail",
-        details: [
-          { label: "Rule", value: review.ruleId },
-          { label: "Team", value: review.teamName },
-          { label: "Workspace", value: review.workspaceName }
-        ]
-      }
-    });
-    const persist = vi
-      .spyOn(fixture.store, "persistRuleDelivery")
-      .mockResolvedValueOnce(null)
-      .mockResolvedValue(delivery);
-    const resolve = vi.spyOn(lifecycle, "resolve");
-    const approvedAt = new Date().toISOString();
-    const receipt = {
-      mutationId: intent.mutationId,
-      approvedAt,
-      ruleId: intent.ruleId,
-      state: "paused" as const,
-      authorityVersion: 4,
-      publisherFence: 1,
-      maximumFidelity: "lcm_leaves" as const,
-      includeCuratedMemory: false,
-      memberCount: 4
-    };
-    const post = vi
-      .fn<typeof fetch>()
-      .mockRejectedValueOnce(new Error("response lost after commit"))
-      .mockResolvedValue(
-        new Response(JSON.stringify({ detailAmendment: receipt }), {
-          status: 200
+      };
+      vi.spyOn(fixture.store, "claimRuleDeliveries").mockResolvedValue([
+        {
+          identity,
+          remoteDeviceId: ids.remoteDevice,
+          requestId: uuidFor(972),
+          actionGrantId: ids.actionGrant,
+          actionGrant: "hrg_" + "a".repeat(32),
+          intent: delivery.intent,
+          presentation: delivery.presentation,
+          workId: uuidFor(973),
+          leaseVersion: 1
+        }
+      ]);
+      const receipt: NonNullable<SharingRuleDelivery["exclusion"]> =
+        action === "restore"
+          ? {
+              ...excluded,
+              version: 2,
+              state: "restored",
+              restoredAt: "2026-07-17T12:01:00.000Z",
+              updatedAt: "2026-07-17T12:01:00.000Z"
+            }
+          : excluded;
+      const finish = vi
+        .spyOn(fixture.store, "finishRuleDelivery")
+        .mockResolvedValue({
+          ...delivery,
+          state: "acknowledged",
+          exclusion: receipt
+        });
+      const post = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ exclusion: receipt }), { status: 200 })
+        );
+      const path =
+        "/v1/shared-memory/workspace-exclusions" +
+        (action === "restore" ? "/restore" : "");
+      const control = createCollaborationSharedMemoryControl({
+        ...fixture.options,
+        fetch: (url, init) =>
+          String(url).endsWith(path)
+            ? post(url, init)
+            : fixture.options.fetch!(url, init)
+      });
+      expect(await control.reconcileRuleDeliveries()).toEqual({
+        processed: 1,
+        acknowledged: 1
+      });
+      expect(post).toHaveBeenCalledOnce();
+      expect(JSON.parse(String(post.mock.calls[0]![1]!.body))).toMatchObject({
+        mutationId: intent.mutationId,
+        scope
+      });
+      expect(finish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          identity,
+          outcome: "acknowledged",
+          exclusion: receipt
         })
       );
-    const fetcher: typeof fetch = (url, init) =>
-      String(url).endsWith("/detail-review")
-        ? Promise.resolve(
-            new Response(JSON.stringify({ review }), { status: 200 })
-          )
-        : String(url).endsWith("/detail")
-          ? post(url, init)
-          : fixture.options.fetch!(url, init);
-    const control = createCollaborationSharedMemoryControl({
-      ...fixture.options,
-      fetch: fetcher
-    });
-    expect(
-      await control.dispatch(
-        {
-          ...commandBase("collaboration.review_rule_detail"),
-          input: {
-            ruleId: review.ruleId,
+    }
+  );
+
+  it.each(["detail", "content_policy"] as const)(
+    "delivers an approved $0 amendment durably and recovers the exact receipt after a lost response",
+    async (kind) => {
+      const contentPolicy = kind === "content_policy";
+      const suffix = contentPolicy ? "content-policy" : "detail";
+      const receiptKey = contentPolicy
+        ? "contentPolicyAmendment"
+        : "detailAmendment";
+
+      const fixture = createFixture();
+      const review = contentPolicy
+        ? contentPolicyReviewFixture({
+            ruleId: uuidFor(950),
             teamId: ids.team,
-            workspaceId: ids.workspace,
+            teamWorkspaceId: ids.workspace
+          })
+        : sharingRuleDetailReviewSchema.parse({
+            ruleId: uuidFor(950),
+            teamId: ids.team,
+            teamWorkspaceId: ids.workspace,
+            selectorKind: "project",
+            state: "paused",
             maximumFidelity: "lcm_leaves",
-            includeCuratedMemory: false
-          }
+            includeCuratedMemory: false,
+            previousMaximumFidelity: "lcm_rollups",
+            previousIncludeCuratedMemory: false,
+            expectedAuthorityVersion: 3,
+            publisherFence: 1,
+            teamPolicyVersion: 1,
+            teamPolicyHash: hash,
+            workspacePolicyVersion: 1,
+            workspacePolicyHash: hash,
+            effectivePrivacyPolicyHash: hashB,
+            policyBindingHash: hash,
+            memberBindingHash: hash,
+            memberCount: 4,
+            ownerPolicyExpansionCount: 0,
+            disclosureIncrease: true,
+            teamName: "Engineering",
+            workspaceName: "Platform",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            reviewHash: hashC
+          });
+      const intent = {
+        operationKind: kind,
+        mutationId: uuidFor(951),
+        ruleId: review.ruleId,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        review
+      };
+      const delivery = sharingRuleDeliverySchema.parse({
+        intent,
+        presentation: {
+          sourceTitle: review.ruleId,
+          teamName: review.teamName,
+          workspaceName: review.workspaceName
         },
-        context()
-      )
-    ).toMatchObject({ ok: true, data: { review } });
-    const { teamWorkspaceId, ...localIntent } = intent;
-    expect(
-      await control.dispatch(
-        {
-          ...commandBase("collaboration.amend_rule_detail"),
-          input: {
-            ...localIntent,
-            workspaceId: teamWorkspaceId,
-            actionGrant: { id: ids.actionGrant }
-          }
-        },
-        context()
-      )
-    ).toMatchObject({ ok: true, data: { delivery } });
-    expect(post).not.toHaveBeenCalled();
-    const saved = persist.mock.calls[1]![0];
-    expect(saved.presentation).toEqual(delivery.presentation);
-    const work = {
-      ...saved,
-      presentation: delivery.presentation,
-      actionGrant: saved.actionGrant!,
-      workId: uuidFor(952),
-      leaseVersion: 1
-    };
-    vi.spyOn(fixture.store, "claimRuleDeliveries").mockResolvedValue([work]);
-    const finish = vi
-      .spyOn(fixture.store, "finishRuleDelivery")
-      .mockResolvedValue(delivery);
-    expect(await control.reconcileRuleDeliveries()).toEqual({
-      processed: 1,
-      acknowledged: 0
-    });
-    expect(finish).toHaveBeenLastCalledWith(
-      expect.objectContaining({ outcome: "retry" })
-    );
-    resolve.mockReturnValue(null);
-    const scope = { approvedAt, review, result: receipt };
-    finish.mockResolvedValue({
-      ...delivery,
-      state: "acknowledged",
-      detailAmendment: scope
-    });
-    const restarted = createCollaborationSharedMemoryControl({
-      ...fixture.options,
-      fetch: fetcher
-    });
-    expect(await restarted.reconcileRuleDeliveries()).toEqual({
-      processed: 1,
-      acknowledged: 1
-    });
-    expect(finish).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        outcome: "acknowledged",
-        detailAmendment: scope
-      })
-    );
-    expect(post).toHaveBeenCalledTimes(2);
-    const wire = post.mock.calls.map(([url, init]) => ({
-      url: String(url),
-      method: init?.method,
-      headers: Object.fromEntries(new Headers(init?.headers)),
-      body: init?.body
-    }));
-    expect(wire[1]).toEqual(wire[0]);
-    expect(resolve).toHaveBeenCalledTimes(1);
-  });
+        state: "queued",
+        control: null,
+        creation: null,
+        failureCode: null,
+        updatedAt: iso
+      });
+      const lifecycle = fixture.options.actionGrantLifecycle!;
+      vi.spyOn(lifecycle, "read").mockReturnValue({
+        version: 1,
+        actionGrant: { id: ids.actionGrant },
+        approvalTier: "native_review",
+        state: "approved",
+        activationUrl: null,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        review: {
+          version: 1,
+          title: "Change rule detail?",
+          description: "The whole rule.",
+          consequence: "Keep paused state.",
+          confirmLabel: "Change detail",
+          details: [
+            { label: "Rule", value: review.ruleId },
+            { label: "Team", value: review.teamName },
+            { label: "Workspace", value: review.workspaceName }
+          ]
+        }
+      });
+      const persist = vi
+        .spyOn(fixture.store, "persistRuleDelivery")
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(delivery);
+      const resolve = vi.spyOn(lifecycle, "resolve");
+      const approvedAt = new Date().toISOString();
+      const receipt = {
+        mutationId: intent.mutationId,
+        approvedAt,
+        ruleId: intent.ruleId,
+        state: "paused" as const,
+        authorityVersion: review.expectedAuthorityVersion + 1,
+        publisherFence: 1,
+        ...(contentPolicy && "labels" in review
+          ? {
+              contentPolicyVersion: review.expectedContentPolicyVersion + 1,
+              labels: review.labels,
+              globalPolicyHash: review.globalPolicyHash,
+              effectivePrivacyPolicyHash: review.effectivePrivacyPolicyHash
+            }
+          : {
+              maximumFidelity: "lcm_leaves" as const,
+              includeCuratedMemory: false
+            }),
+        memberCount: review.memberCount
+      };
+      const post = vi
+        .fn<typeof fetch>()
+        .mockRejectedValueOnce(new Error("response lost after commit"))
+        .mockResolvedValue(
+          new Response(JSON.stringify({ [receiptKey]: receipt }), {
+            status: 200
+          })
+        );
+      const fetcher: typeof fetch = (url, init) =>
+        String(url).endsWith(`/${suffix}-review`)
+          ? Promise.resolve(
+              new Response(JSON.stringify({ review }), { status: 200 })
+            )
+          : String(url).endsWith(`/${suffix}`)
+            ? post(url, init)
+            : fixture.options.fetch!(url, init);
+      const control = createCollaborationSharedMemoryControl({
+        ...fixture.options,
+        fetch: fetcher
+      });
+      expect(
+        await control.dispatch(
+          {
+            ...commandBase(
+              contentPolicy
+                ? "collaboration.review_rule_content_policy"
+                : "collaboration.review_rule_detail"
+            ),
+            input: {
+              ruleId: review.ruleId,
+              teamId: ids.team,
+              workspaceId: ids.workspace,
+              ...(contentPolicy && "labels" in review
+                ? { labels: review.labels }
+                : {
+                    maximumFidelity: "lcm_leaves",
+                    includeCuratedMemory: false
+                  })
+            }
+          },
+          context()
+        )
+      ).toMatchObject({ ok: true, data: { review } });
+      const { teamWorkspaceId, ...localIntent } = intent;
+      expect(
+        await control.dispatch(
+          {
+            ...commandBase(
+              contentPolicy
+                ? "collaboration.amend_rule_content_policy"
+                : "collaboration.amend_rule_detail"
+            ),
+            input: {
+              ...localIntent,
+              workspaceId: teamWorkspaceId,
+              actionGrant: { id: ids.actionGrant }
+            }
+          },
+          context()
+        )
+      ).toMatchObject({ ok: true, data: { delivery } });
+      expect(post).not.toHaveBeenCalled();
+      const saved = persist.mock.calls[1]![0];
+      expect(saved.presentation).toEqual(delivery.presentation);
+      const work = {
+        ...saved,
+        presentation: delivery.presentation,
+        actionGrant: saved.actionGrant!,
+        workId: uuidFor(952),
+        leaseVersion: 1
+      };
+      vi.spyOn(fixture.store, "claimRuleDeliveries").mockResolvedValue([work]);
+      const finish = vi
+        .spyOn(fixture.store, "finishRuleDelivery")
+        .mockResolvedValue(delivery);
+      expect(await control.reconcileRuleDeliveries()).toEqual({
+        processed: 1,
+        acknowledged: 0
+      });
+      expect(finish).toHaveBeenLastCalledWith(
+        expect.objectContaining({ outcome: "retry" })
+      );
+      resolve.mockReturnValue(null);
+      const scope = { approvedAt, review, result: receipt };
+      finish.mockResolvedValue({
+        ...delivery,
+        state: "acknowledged",
+        [receiptKey]: scope
+      });
+      const restarted = createCollaborationSharedMemoryControl({
+        ...fixture.options,
+        fetch: fetcher
+      });
+      expect(await restarted.reconcileRuleDeliveries()).toEqual({
+        processed: 1,
+        acknowledged: 1
+      });
+      expect(finish).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          outcome: "acknowledged",
+          [receiptKey]: scope
+        })
+      );
+      expect(post).toHaveBeenCalledTimes(2);
+      const wire = post.mock.calls.map(([url, init]) => ({
+        url: String(url),
+        method: init?.method,
+        headers: Object.fromEntries(new Headers(init?.headers)),
+        body: init?.body
+      }));
+      expect(wire[1]).toEqual(wire[0]);
+      expect(resolve).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it("queues an approved control locally and recovers its lost Team receipt after custody expires", async () => {
     const fixture = createFixture();
@@ -4128,35 +4621,247 @@ describe("collaboration Shared Memory control", () => {
     );
     expect([...fixture.grants.entries()]).toEqual(originalGrants);
   });
-  it("recovers accepted rule creation before starting source work after a lost response", async () => {
+  it("reads bounded publisher inventory with fresh authority and pinned pagination, without sending Personal pointers", async () => {
     const fixture = createFixture();
-    const intent: ConversationSharingRuleCreationIntent = {
-      mutationId: uuidFor(920),
-      ruleId: uuidFor(921),
-      logicalGrantId: ids.logicalGrant,
-      consentId: ids.consent,
-      source: capturedSource,
-      sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
-      activationRepresentation: "memory_events",
-      logicalMemoryId: ids.logicalMemory,
+    const review = publisherTakeoverReviewFixture({
+      ruleId: uuidFor(970),
       teamId: ids.team,
       teamWorkspaceId: ids.workspace,
-      previewId: ids.preview,
-      previewHash: hash,
-      previewRevision: 1,
-      mode: "continuous",
-      maximumFidelity: "memory_events",
-      includeCuratedMemory: false,
-      expiresAt: null,
-      expectedGrantVersion: null,
-      effectivePrivacyPolicyHash: hashB
+      receivingCredentialId: ids.remoteDevice
+    });
+    const target = {
+      kind: "repository",
+      repository: {
+        kind: "portable_repository",
+        key: "gr_inventory",
+        root: "/private/inventory",
+        branch: null,
+        reason: "origin",
+        checkoutId: null,
+        originatingDeviceId: "private-device",
+        selectedRemote: null,
+        anchorDisplay: "Private anchor"
+      }
     };
+    const creation = {
+      ruleId: review.ruleId,
+      mutationId: uuidFor(971),
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      selector: { kind: "portable_repository", key: "gr_inventory" },
+      maximumFidelity: "lcm_rollups",
+      includeCuratedMemory: false,
+      includesFutureConversations: true,
+      selectionSnapshotVersion: uuidFor(972),
+      completedReviewHash: hash,
+      teamPolicyVersion: 1,
+      teamPolicyHash: hash,
+      workspacePolicyVersion: 1,
+      workspacePolicyHash: hash,
+      effectivePrivacyPolicyHash: hash
+    };
+    const data = selectionSharingProgressSchema.parse({
+      version: 1,
+      identity: {
+        backendId: "team-backend",
+        localOwnerUserId: ids.localOwner,
+        upstreamUserId: ids.upstreamUser
+      },
+      remoteDeviceId: ids.remoteDevice,
+      intent: {
+        ...creation,
+        review: { target },
+        publisherTakeover: {
+          review: {
+            ...review,
+            selectorKind: "repository",
+            selectionScope: creation
+          },
+          result: {
+            mutationId: uuidFor(973),
+            ruleId: review.ruleId,
+            state: "active",
+            authorityVersion: 4,
+            publisherFence: 3,
+            previousPublisherCredentialId: review.currentPublisher.credentialId,
+            publisherCredentialId: ids.remoteDevice,
+            catchUpState: "queued",
+            approvedAt: iso
+          }
+        }
+      },
+      currentGeneration: null,
+      changeCursor: null,
+      proposal: {
+        generation: uuidFor(974),
+        snapshotVersion: uuidFor(975),
+        nextCursor: null,
+        changeCursor: uuidFor(976),
+        pageCount: 1,
+        planPage: 0,
+        missingAfter: null,
+        phase: "inventory",
+        inventory: {
+          afterMembershipId: null,
+          page: null,
+          afterBindingId: null,
+          unmatchedMembershipIds: [],
+          pendingMemberCount: 0,
+          scope: null
+        }
+      }
+    });
+    const lease = {
+      progressId: uuidFor(977),
+      leaseVersion: 1,
+      identity: data.identity,
+      remoteDeviceId: ids.remoteDevice,
+      data
+    };
+    const inventory = {
+      ruleId: review.ruleId,
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      authorityVersion: 9,
+      publisherFence: 7,
+      selectorBindingHash: crossIdentitySyncDigest(creation.selector),
+      entries: [],
+      nextAfterMembershipId: null
+    };
+    const reads = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        json({
+          members: {
+            ...inventory,
+            state: "active",
+            effectivePrivacyPolicyHash: hash,
+            maximumFidelity: "lcm_rollups",
+            includeCuratedMemory: false,
+            nextAfterMembershipId: undefined
+          }
+        })
+      )
+      .mockResolvedValueOnce(json({ inventory }))
+      .mockResolvedValueOnce(json({ inventory }))
+      .mockResolvedValueOnce(json({ error: "conflict" }, 409));
+    const reconcile = vi
+      .fn<
+        NonNullable<
+          CollaborationSharedMemoryControlOptions["reconcileSelectionSharing"]
+        >
+      >()
+      .mockImplementation(async (owner, read) => {
+        expect(owner).toBe(ids.localOwner);
+        expect(await read(lease)).toEqual(inventory);
+        data.proposal!.inventory!.scope = {
+          authorityVersion: 9,
+          publisherFence: 7
+        };
+        data.proposal!.inventory!.afterMembershipId = uuidFor(978);
+        expect(await read(lease)).toEqual(inventory);
+        await expect(read(lease)).rejects.toMatchObject({
+          code: "selection_enumeration_stale"
+        });
+      });
+    const control = createCollaborationSharedMemoryControl({
+      ...fixture.options,
+      fetch: (url, init) =>
+        String(url).includes("/members/")
+          ? reads(url, init)
+          : fixture.options.fetch(url, init),
+      reconcileSelectionSharing: reconcile
+    });
+    expect(await control.reconcileRuleDeliveries()).toEqual({
+      processed: 0,
+      acknowledged: 0
+    });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveBeenCalledTimes(4);
+    const wire = reads.mock.calls.map(([url, init]) => ({
+      url: String(url),
+      body: JSON.parse(String(init?.body)) as unknown,
+      authorization: new Headers(init?.headers).get("authorization")
+    }));
+    expect(wire[0]!.body).toEqual({
+      logicalMemoryIds: [review.logicalMemoryId]
+    });
+    expect(wire[1]!.body).toEqual({
+      expectedAuthorityVersion: 9,
+      publisherFence: 7
+    });
+    expect(wire[2]!.body).toEqual({
+      expectedAuthorityVersion: 9,
+      publisherFence: 7,
+      afterMembershipId: uuidFor(978)
+    });
+    for (const request of wire)
+      expect(request.authorization).toBe(
+        "Koed-Device upstream-key:upstream-secret"
+      );
+    expect(JSON.stringify(wire)).not.toContain("/private/inventory");
+    expect(JSON.stringify(wire)).not.toContain("localOwnerUserId");
+  });
+  it("verifies native takeover approval and recovers its exact durable receipt after unavailable evidence and response loss", async () => {
+    const review = publisherTakeoverReviewFixture({
+      ruleId: uuidFor(960),
+      teamId: ids.team,
+      teamWorkspaceId: ids.workspace,
+      receivingCredentialId: ids.remoteDevice
+    });
+    const localSource = {
+      localSessionId: ids.localSession,
+      localLogicalSessionId: uuidFor(961),
+      identityState: "verified" as const,
+      portable: { ownerUserId: ids.localOwner, ...review.sourceIdentity },
+      contextVersion: { git: 1, folder: 1 }
+    };
+    const readSource = vi
+      .fn<
+        NonNullable<
+          CollaborationSharedMemoryControlOptions["readPublisherTakeoverSource"]
+        >
+      >()
+      .mockResolvedValue({
+        sourceIdentity: review.sourceIdentity,
+        source: localSource
+      });
+    const fixture = createFixture({ readPublisherTakeoverSource: readSource });
+    const intent = sharingRulePublisherTakeoverLocalIntentSchema.parse({
+      operationKind: "publisher_takeover",
+      mutationId: uuidFor(962),
+      ruleId: review.ruleId,
+      teamId: review.teamId,
+      teamWorkspaceId: review.teamWorkspaceId,
+      review,
+      localSource
+    });
+    const { teamWorkspaceId, ...localIntent } = intent;
+    const input = { ...localIntent, workspaceId: teamWorkspaceId };
+    const approval = {
+      ...input,
+      intent: "collaboration.take_over_publisher" as const,
+      commandRequestId: uuidFor(963)
+    };
+    expect(
+      await fixture.control.verifyPublisherTakeoverReview(approval, context())
+    ).toBe(true);
+    readSource.mockResolvedValueOnce(null);
+    expect(
+      await fixture.control.verifyPublisherTakeoverReview(approval, context())
+    ).toBe(false);
+    expect(
+      await fixture.control.verifyPublisherTakeoverReview(
+        { ...approval, teamId: uuidFor(964) },
+        context()
+      )
+    ).toBe(false);
     const delivery: SharingRuleDelivery = {
       intent,
       presentation: {
-        sourceTitle: "Conversation one",
-        teamName: "Engineering",
-        workspaceName: "Platform"
+        sourceTitle: "Conversation",
+        teamName: "Team",
+        workspaceName: "Workspace"
       },
       state: "queued",
       control: null,
@@ -4164,25 +4869,25 @@ describe("collaboration Shared Memory control", () => {
       failureCode: null,
       updatedAt: iso
     };
-    const lifecycle = fixture.options.actionGrantLifecycle!;
-    const resolve = vi.spyOn(lifecycle, "resolve");
+    const lifecycle = fixture.options.actionGrantLifecycle!,
+      resolve = vi.spyOn(lifecycle, "resolve");
     vi.spyOn(lifecycle, "read").mockReturnValue({
       version: 1,
       actionGrant: { id: ids.actionGrant },
-      approvalTier: "step_up",
+      approvalTier: "native_review",
       state: "approved",
       activationUrl: null,
       expiresAt: "2099-01-01T00:00:00.000Z",
       review: {
         version: 1,
-        title: "Start continuous sharing?",
-        description: "One Conversation only.",
-        consequence: "Eligible later Memory is included.",
-        confirmLabel: "Start continuous sharing",
+        title: "Continue sharing from this device?",
+        description: "Same approved rule.",
+        consequence: "The publisher changes.",
+        confirmLabel: "Transfer publisher",
         details: [
-          { label: "Conversation", value: "Conversation one" },
-          { label: "Team", value: "Engineering" },
-          { label: "Workspace", value: "Platform" }
+          { label: "Rule", value: "Conversation" },
+          { label: "Team", value: "Team" },
+          { label: "Workspace", value: "Workspace" }
         ]
       }
     });
@@ -4190,145 +4895,445 @@ describe("collaboration Shared Memory control", () => {
       .spyOn(fixture.store, "persistRuleDelivery")
       .mockResolvedValueOnce(null)
       .mockResolvedValue(delivery);
-    const preview = vi
-      .spyOn(fixture.store, "readAuthoritativePreview")
-      .mockRejectedValue(new Error("preview cache expired"));
-    const { teamWorkspaceId, ...input } = intent;
     expect(
       await fixture.control.dispatch(
         {
-          ...commandBase("collaboration.create_conversation_rule"),
-          input: {
-            ...input,
-            workspaceId: teamWorkspaceId,
-            actionGrant: { id: ids.actionGrant }
-          }
+          ...commandBase("collaboration.take_over_publisher"),
+          input: { ...input, actionGrant: { id: ids.actionGrant } }
         },
         context()
       )
     ).toMatchObject({ ok: true, data: { delivery: { state: "queued" } } });
-    expect(fixture.requests).toEqual([]);
-    expect(preview).not.toHaveBeenCalled();
     const saved = persist.mock.calls[1]![0];
-    const work = {
-      ...saved,
-      presentation: delivery.presentation,
-      actionGrant: saved.actionGrant!,
-      workId: uuidFor(922),
-      leaseVersion: 1
+    expect(saved.intent).toEqual(intent);
+    vi.spyOn(fixture.store, "claimRuleDeliveries").mockResolvedValue([
+      {
+        ...saved,
+        actionGrant: saved.actionGrant!,
+        presentation: delivery.presentation,
+        workId: uuidFor(965),
+        leaseVersion: 1
+      }
+    ]);
+    const transfer = {
+      mutationId: intent.mutationId,
+      ruleId: intent.ruleId,
+      state: review.state,
+      authorityVersion: review.expectedAuthorityVersion + 1,
+      publisherFence: review.publisherFence + 1,
+      previousPublisherCredentialId: review.currentPublisher.credentialId,
+      publisherCredentialId: review.receivingPublisher.credentialId,
+      catchUpState: "queued",
+      approvedAt: iso
     };
-    vi.spyOn(fixture.store, "claimRuleDeliveries").mockResolvedValue([work]);
-    const pendingShareId = crossIdentitySyncDeterministicUuid({
-      kind: "pending_share",
-      mutationId: intent.mutationId
-    });
-    const receipt = { pendingShareId, sourceRevision: 4 };
     const finish = vi
       .spyOn(fixture.store, "finishRuleDelivery")
-      .mockImplementation(async (input) =>
-        input.outcome === "acknowledged"
-          ? { ...delivery, state: "acknowledged", creation: receipt }
+      .mockImplementation(async (value) =>
+        value.outcome === "acknowledged"
+          ? {
+              ...delivery,
+              state: "acknowledged",
+              publisherTakeover: value.publisherTakeover
+            }
           : delivery
       );
-    const sourceWork = vi
-      .spyOn(fixture.store, "persistPendingShareSourceWork")
-      .mockResolvedValueOnce(false)
-      .mockResolvedValue(true);
-    const requestSourceWork = vi.fn();
-    const pending = {
-      source: capturedSource,
-      sourceCapabilities: intent.sourceCapabilities,
-      activationRepresentation: intent.activationRepresentation,
-      id: pendingShareId,
-      mutationId: intent.mutationId,
-      logicalGrantId: intent.logicalGrantId,
-      consentId: intent.consentId,
-      logicalMemoryId: intent.logicalMemoryId,
-      teamId: ids.team,
-      workspaceId: ids.workspace,
-      maximumFidelity: intent.maximumFidelity,
-      includeCuratedMemory: false,
-      mode: "continuous",
-      sourceRevision: 4,
-      state: "preparing",
-      stage: "accepted",
-      workspaceAccessState: "none",
-      sourceUpdateState: "preparing",
-      operationVersion: 1,
-      attemptCount: 0,
-      redactedFailureCode: null,
-      lastProgressAt: iso,
-      createdAt: iso,
-      updatedAt: iso,
-      activatedAt: null,
-      revokedAt: null,
-      grantId: null,
-      grantVersion: null
-    };
+    const sourceWork = vi.spyOn(fixture.store, "persistPendingShareSourceWork");
     const post = vi
       .fn<typeof fetch>()
-      .mockRejectedValueOnce(new Error("response lost after Team commit"))
+      .mockRejectedValue(new Error("response lost after transfer commit"));
+    const probe = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ publisherTransfer: null, receiptPending: true }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            publisherTransfer: { ...transfer, mutationId: uuidFor(966) }
+          }),
+          { status: 200 }
+        )
+      )
       .mockImplementation(
         async () =>
-          new Response(
-            JSON.stringify({ ruleId: intent.ruleId, pendingShare: pending }),
-            { status: 202 }
-          )
+          new Response(JSON.stringify({ publisherTransfer: transfer }), {
+            status: 200
+          })
       );
-    const fetcher: typeof fetch = (url, init) =>
-      String(url).endsWith("/conversation-rules")
-        ? post(url, init)
-        : fixture.options.fetch!(url, init);
-    const first = createCollaborationSharedMemoryControl({
+    const control = createCollaborationSharedMemoryControl({
       ...fixture.options,
-      fetch: fetcher,
-      requestPendingShareSourceWork: requestSourceWork
+      fetch: (url, init) =>
+        String(url).endsWith("/publisher/receipt")
+          ? probe(url, init)
+          : String(url).endsWith("/publisher")
+            ? post(url, init)
+            : fixture.options.fetch(url, init)
     });
-    expect(await first.reconcileRuleDeliveries()).toEqual({
+    readSource.mockResolvedValueOnce(null);
+    expect(await control.reconcileRuleDeliveries()).toEqual({
       processed: 1,
       acknowledged: 0
     });
-    expect(sourceWork).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(finish).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        outcome: "retry",
+        failureCode: "source_unavailable"
+      })
+    );
     resolve.mockReturnValue(null);
-    const restarted = createCollaborationSharedMemoryControl({
-      ...fixture.options,
-      fetch: fetcher,
-      requestPendingShareSourceWork: requestSourceWork
+    expect(await control.reconcileRuleDeliveries()).toEqual({
+      processed: 1,
+      acknowledged: 0
     });
-    expect(await restarted.reconcileRuleDeliveries()).toEqual({
+    readSource.mockResolvedValueOnce(null);
+    expect(await control.reconcileRuleDeliveries()).toEqual({
       processed: 1,
       acknowledged: 0
     });
     expect(finish).toHaveBeenLastCalledWith(
-      expect.objectContaining({ outcome: "retry" })
+      expect.objectContaining({
+        outcome: "retry",
+        failureCode: "response_invalid"
+      })
     );
-    expect(requestSourceWork).not.toHaveBeenCalled();
-    expect(await restarted.reconcileRuleDeliveries()).toEqual({
+    readSource.mockResolvedValueOnce(null);
+    expect(await control.reconcileRuleDeliveries()).toEqual({
       processed: 1,
       acknowledged: 1
     });
-    expect(sourceWork).toHaveBeenLastCalledWith({
-      identity: saved.identity,
-      pendingShareId,
-      mutationId: intent.mutationId,
-      mode: "continuous",
-      source: capturedSource,
-      sourceRevision: 4
-    });
     expect(finish).toHaveBeenLastCalledWith(
-      expect.objectContaining({ outcome: "acknowledged", creation: receipt })
+      expect.objectContaining({
+        outcome: "acknowledged",
+        publisherTakeover: { review, result: transfer }
+      })
     );
-    expect(requestSourceWork).toHaveBeenCalledTimes(1);
     expect(resolve).toHaveBeenCalledTimes(1);
-    expect(preview).not.toHaveBeenCalled();
-    const requests = post.mock.calls.map(([url, init]) => ({
+    expect(sourceWork).not.toHaveBeenCalled();
+    const wire = post.mock.calls.map(([url, init]) => ({
       url: String(url),
       method: init?.method,
-      headers: Object.fromEntries(new Headers(init?.headers)),
-      body: init?.body
+      body: init?.body,
+      headers: Object.fromEntries(new Headers(init?.headers))
     }));
-    expect(requests).toHaveLength(3);
-    expect(requests[1]).toEqual(requests[0]);
-    expect(requests[2]).toEqual(requests[0]);
+    expect(wire).toHaveLength(1);
+    expect(probe).toHaveBeenCalledTimes(3);
+    for (const [, init] of probe.mock.calls) {
+      expect(init?.body).toBe(wire[0]!.body);
+      expect(Object.fromEntries(new Headers(init?.headers))).toEqual(
+        wire[0]!.headers
+      );
+    }
+    expect(String(wire[0]!.body)).not.toContain("localSource");
+    expect(String(wire[0]!.body)).not.toContain(ids.localOwner);
   });
+
+  it.each([false, true, "verified_origin"] as const)(
+    "recovers accepted Conversation creation with explicit snapshot conversion=$0 before source work after a lost response",
+    async (variant) => {
+      const converting = variant === true;
+      const verified = variant === "verified_origin";
+      const sourceIdentity = {
+        originatingDeploymentId: "personal-origin",
+        originatingDeviceId: "personal-device",
+        logicalSessionId: capturedSource.sessionId
+      };
+      const readSource = vi
+        .fn<
+          NonNullable<
+            CollaborationSharedMemoryControlOptions["readNativeConversationSource"]
+          >
+        >()
+        .mockResolvedValue({
+          sourceIdentity,
+          logicalMemoryId: ids.logicalMemory
+        });
+      const fixture = createFixture({
+        readNativeConversationSource: readSource
+      });
+      const intent: ConversationSharingRuleCreationIntent = {
+        ...(converting
+          ? {
+              snapshotConversion: {
+                reasonId: uuidFor(930),
+                consentId: uuidFor(931),
+                consentVersion: 2,
+                sourceRevision: 1,
+                maximumFidelity: "memory_events" as const,
+                includeCuratedMemory: false,
+                expiresAt: null
+              }
+            }
+          : {}),
+        ...(verified ? { sourceIdentity } : {}),
+        mutationId: uuidFor(920),
+        ruleId: uuidFor(921),
+        logicalGrantId: ids.logicalGrant,
+        consentId: ids.consent,
+        source: capturedSource,
+        sourceCapabilities: ["lcm_rollups", "lcm_leaves", "memory_events"],
+        activationRepresentation: "memory_events",
+        logicalMemoryId: ids.logicalMemory,
+        teamId: ids.team,
+        teamWorkspaceId: ids.workspace,
+        previewId: ids.preview,
+        previewHash: hash,
+        previewRevision: 1,
+        mode: "continuous",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        expiresAt: null,
+        expectedGrantVersion: converting ? 3 : null,
+        effectivePrivacyPolicyHash: hashB
+      };
+      const delivery: SharingRuleDelivery = {
+        intent,
+        presentation: {
+          sourceTitle: "Conversation one",
+          teamName: "Engineering",
+          workspaceName: "Platform"
+        },
+        state: "queued",
+        control: null,
+        creation: null,
+        failureCode: null,
+        updatedAt: iso
+      };
+      const lifecycle = fixture.options.actionGrantLifecycle!;
+      const resolve = vi.spyOn(lifecycle, "resolve");
+      vi.spyOn(lifecycle, "read").mockReturnValue({
+        version: 1,
+        actionGrant: { id: ids.actionGrant },
+        approvalTier: "step_up",
+        state: "approved",
+        activationUrl: null,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        review: {
+          version: 1,
+          title: "Start continuous sharing?",
+          description: "One Conversation only.",
+          consequence: "Eligible later Memory is included.",
+          confirmLabel: "Start continuous sharing",
+          details: [
+            { label: "Conversation", value: "Conversation one" },
+            { label: "Team", value: "Engineering" },
+            { label: "Workspace", value: "Platform" }
+          ]
+        }
+      });
+      const persist = vi
+        .spyOn(fixture.store, "persistRuleDelivery")
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(delivery);
+      const preview = vi
+        .spyOn(fixture.store, "readAuthoritativePreview")
+        .mockRejectedValue(new Error("preview cache expired"));
+      const { teamWorkspaceId, ...input } = intent;
+      if (verified) {
+        persist.mockReset().mockResolvedValue(null);
+        expectFailure(
+          await fixture.control.dispatch(
+            {
+              ...commandBase("collaboration.create_conversation_rule"),
+              input: {
+                ...input,
+                sourceIdentity: {
+                  ...sourceIdentity,
+                  logicalSessionId: uuidFor(991)
+                },
+                workspaceId: teamWorkspaceId,
+                actionGrant: { id: ids.actionGrant }
+              }
+            },
+            context()
+          ),
+          "permission_denied"
+        );
+        expect(resolve).not.toHaveBeenCalled();
+        expect(persist).toHaveBeenCalledTimes(1);
+        persist
+          .mockReset()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValue(delivery);
+      }
+      expect(
+        await fixture.control.dispatch(
+          {
+            ...commandBase("collaboration.create_conversation_rule"),
+            input: {
+              ...input,
+              workspaceId: teamWorkspaceId,
+              actionGrant: { id: ids.actionGrant }
+            }
+          },
+          context()
+        )
+      ).toMatchObject({ ok: true, data: { delivery: { state: "queued" } } });
+      expect(fixture.requests).toEqual([]);
+      expect(preview).not.toHaveBeenCalled();
+      const saved = persist.mock.calls[1]![0];
+      const work = {
+        ...saved,
+        presentation: delivery.presentation,
+        actionGrant: saved.actionGrant!,
+        workId: uuidFor(922),
+        leaseVersion: 1
+      };
+      vi.spyOn(fixture.store, "claimRuleDeliveries").mockResolvedValue([work]);
+      const pendingShareId = crossIdentitySyncDeterministicUuid({
+        kind: "pending_share",
+        mutationId: intent.mutationId
+      });
+      const receipt = { pendingShareId, sourceRevision: 4 };
+      const finish = vi
+        .spyOn(fixture.store, "finishRuleDelivery")
+        .mockImplementation(async (input) =>
+          input.outcome === "acknowledged"
+            ? { ...delivery, state: "acknowledged", creation: receipt }
+            : delivery
+        );
+      const sourceWork = vi
+        .spyOn(fixture.store, "persistPendingShareSourceWork")
+        .mockResolvedValueOnce(false)
+        .mockResolvedValue(true);
+      const requestSourceWork = vi.fn();
+      const pending = {
+        source: capturedSource,
+        sourceCapabilities: intent.sourceCapabilities,
+        activationRepresentation: intent.activationRepresentation,
+        id: pendingShareId,
+        mutationId: intent.mutationId,
+        logicalGrantId: intent.logicalGrantId,
+        consentId: intent.consentId,
+        logicalMemoryId: intent.logicalMemoryId,
+        teamId: ids.team,
+        workspaceId: ids.workspace,
+        maximumFidelity: intent.maximumFidelity,
+        includeCuratedMemory: false,
+        mode: "continuous",
+        sourceRevision: 4,
+        state: "preparing",
+        stage: "accepted",
+        workspaceAccessState: "none",
+        sourceUpdateState: "preparing",
+        operationVersion: 1,
+        attemptCount: 0,
+        redactedFailureCode: null,
+        lastProgressAt: iso,
+        createdAt: iso,
+        updatedAt: iso,
+        activatedAt: null,
+        revokedAt: null,
+        grantId: null,
+        grantVersion: null
+      };
+      const post = vi
+        .fn<typeof fetch>()
+        .mockRejectedValueOnce(new Error("response lost after Team commit"))
+        .mockImplementation(
+          async () =>
+            new Response(
+              JSON.stringify({ ruleId: intent.ruleId, pendingShare: pending }),
+              { status: 202 }
+            )
+        );
+      const probe = vi.fn<typeof fetch>().mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify(
+              post.mock.calls.length
+                ? { ruleId: intent.ruleId, pendingShare: pending }
+                : {
+                    ruleId: intent.ruleId,
+                    pendingShare: null,
+                    receiptPending: true
+                  }
+            ),
+            { status: post.mock.calls.length ? 202 : 200 }
+          )
+      );
+      const fetcher: typeof fetch = (url, init) =>
+        String(url).endsWith("/conversation-rules/receipt")
+          ? probe(url, init)
+          : String(url).endsWith("/conversation-rules")
+            ? post(url, init)
+            : fixture.options.fetch(url, init);
+      const first = createCollaborationSharedMemoryControl({
+        ...fixture.options,
+        fetch: fetcher,
+        requestPendingShareSourceWork: requestSourceWork
+      });
+      if (verified) {
+        readSource.mockResolvedValueOnce(null);
+        expect(await first.reconcileRuleDeliveries()).toEqual({
+          processed: 1,
+          acknowledged: 0
+        });
+        expect(post).not.toHaveBeenCalled();
+        expect(finish).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            outcome: "retry",
+            failureCode: "source_unavailable"
+          })
+        );
+      }
+      expect(await first.reconcileRuleDeliveries()).toEqual({
+        processed: 1,
+        acknowledged: 0
+      });
+      expect(sourceWork).not.toHaveBeenCalled();
+      resolve.mockReturnValue(null);
+      const restarted = createCollaborationSharedMemoryControl({
+        ...fixture.options,
+        fetch: fetcher,
+        requestPendingShareSourceWork: requestSourceWork
+      });
+      if (verified) readSource.mockResolvedValueOnce(null);
+      expect(await restarted.reconcileRuleDeliveries()).toEqual({
+        processed: 1,
+        acknowledged: 0
+      });
+      expect(finish).toHaveBeenLastCalledWith(
+        expect.objectContaining({ outcome: "retry" })
+      );
+      expect(requestSourceWork).not.toHaveBeenCalled();
+      expect(await restarted.reconcileRuleDeliveries()).toEqual({
+        processed: 1,
+        acknowledged: 1
+      });
+      expect(sourceWork).toHaveBeenLastCalledWith({
+        identity: saved.identity,
+        pendingShareId,
+        mutationId: intent.mutationId,
+        mode: "continuous",
+        source: capturedSource,
+        sourceRevision: 4
+      });
+      expect(finish).toHaveBeenLastCalledWith(
+        expect.objectContaining({ outcome: "acknowledged", creation: receipt })
+      );
+      expect(requestSourceWork).toHaveBeenCalledTimes(1);
+      expect(resolve).toHaveBeenCalledTimes(1);
+      expect(preview).not.toHaveBeenCalled();
+      if (converting)
+        expect(JSON.parse(String(post.mock.calls[0]![1]?.body))).toMatchObject({
+          snapshotConversion: intent.snapshotConversion
+        });
+      const requests = post.mock.calls.map(([url, init]) => ({
+        url: String(url),
+        method: init?.method,
+        headers: Object.fromEntries(new Headers(init?.headers)),
+        body: init?.body
+      }));
+      expect(requests).toHaveLength(verified ? 2 : 3);
+      expect(requests[1]).toEqual(requests[0]);
+      if (verified) {
+        expect(probe).toHaveBeenCalledTimes(2);
+        expect(probe.mock.calls[1]![1]?.body).toBe(requests[0]!.body);
+      } else expect(requests[2]).toEqual(requests[0]);
+    }
+  );
 });

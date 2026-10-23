@@ -21,6 +21,7 @@ import {
 } from "@koed/shared";
 import {
   createReloadablePdsWorkerRuntimeFromEnvironment,
+  advancePdsReceivedSourceCursor,
   deliverPdsPackageDirect,
   materializePdsSession,
   pdsCheckpointMaterializationSource,
@@ -31,6 +32,52 @@ import {
   resolvePdsProviderRuntimeSecret,
   validatePdsLifecycleStatementBinding
 } from "./personal-device-sync-runtime.js";
+
+describe("PDS received source cursors", () => {
+  it.each([
+    [undefined, "0", true],
+    ["0", "1", true],
+    ["2", "2", false],
+    ["2", "1", false],
+    ["9007199254740993", "9007199254740992", false]
+  ] as const)(
+    "continues an ACK at recorded cursor %s for source %s",
+    async (current, next, advance) => {
+      const client = {
+        cursors: vi.fn(async () => ({
+          cursors:
+            current === undefined
+              ? []
+              : [{ originDeviceId: "origin", sequence: current }]
+        })),
+        advanceCursor: vi.fn(async () => ({}))
+      };
+      await advancePdsReceivedSourceCursor(client, "origin", next);
+      expect(client.advanceCursor).toHaveBeenCalledTimes(advance ? 1 : 0);
+      if (advance)
+        expect(client.advanceCursor).toHaveBeenCalledWith("origin", next);
+    }
+  );
+  it.each([
+    {},
+    { cursors: [{ originDeviceId: "origin", sequence: "-1" }] },
+    {
+      cursors: [
+        { originDeviceId: "origin", sequence: "2" },
+        { originDeviceId: "origin", sequence: "3" }
+      ]
+    }
+  ])("rejects an invalid recorded cursor without writing", async (response) => {
+    const client = {
+      cursors: vi.fn(async () => response),
+      advanceCursor: vi.fn()
+    };
+    await expect(
+      advancePdsReceivedSourceCursor(client, "origin", "1")
+    ).rejects.toThrow("PdsCryptoCursorError");
+    expect(client.advanceCursor).not.toHaveBeenCalled();
+  });
+});
 
 const testRelayId = (value: string): string =>
   createHash("sha256")
@@ -179,6 +226,7 @@ it("imports authenticated encrypted Project configuration without a Session and 
     applyPdsDeletionFloors: vi.fn().mockResolvedValue(undefined),
     getPdsInboundTransport: vi.fn().mockResolvedValue(pkg.header.transportId),
     personalProjectSelections: { appendVerified },
+    personalConfiguration: {},
     createCapturedSession: vi.fn()
   } as unknown as MemorySourceRepository;
   const secret = {
@@ -213,15 +261,17 @@ it("imports authenticated encrypted Project configuration without a Session and 
     "fetch",
     vi.fn(async (url: string | URL | Request) => {
       const path = new URL(String(url)).pathname;
-      const body = path.endsWith("/lifecycle")
-        ? { deletion_floors: [] }
-        : path.includes("/chunks/")
-          ? { chunk: pkg.chunks[Number(path.split("/").at(-1))]! }
-          : {
-              header: pkg.header,
-              envelopes: pkg.envelopes,
-              transport: { relayAcceptedAt: new Date().toISOString() }
-            };
+      const body = path.endsWith("/configuration-capabilities")
+        ? { accepted: true }
+        : path.endsWith("/lifecycle")
+          ? { deletion_floors: [] }
+          : path.includes("/chunks/")
+            ? { chunk: pkg.chunks[Number(path.split("/").at(-1))]! }
+            : {
+                header: pkg.header,
+                envelopes: pkg.envelopes,
+                transport: { relayAcceptedAt: new Date().toISOString() }
+              };
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { "content-type": "application/json" }
@@ -236,6 +286,22 @@ it("imports authenticated encrypted Project configuration without a Session and 
       envelopeEncryptionProvider: {} as never
     })!;
     expect(await runtime.heartbeatGroups?.()).toEqual([groupId]);
+    await runtime.refreshPeerRoutes?.();
+    await runtime.refreshPeerRoutes?.();
+    const capabilityPosts = () =>
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([url]) =>
+          new URL(String(url)).pathname.endsWith("/configuration-capabilities")
+        );
+    expect(capabilityPosts()).toHaveLength(1);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    try {
+      await runtime.refreshPeerRoutes?.();
+      expect(capabilityPosts()).toHaveLength(2);
+    } finally {
+      clock.mockRestore();
+    }
     const work = {
       workerId: "worker",
       inboxId: "inbox",

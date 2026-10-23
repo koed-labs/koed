@@ -5254,8 +5254,10 @@ export const createKoedServerManager = ({
       }
       case "model": {
         if (usesExternalModels()) {
+          // External embedding readiness is reported by the local API.
+          // Start that API before asking it to validate Operator-managed models.
           const ready = setupExternalModelServicesHealthy(
-            await statusWithEnrollmentReconciliation(),
+            await start(),
             requiredModelKinds.some((kind) => kind === "privacy")
           );
           return {

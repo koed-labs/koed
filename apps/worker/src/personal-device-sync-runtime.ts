@@ -444,6 +444,32 @@ type PdsDirectPeerClient = Pick<
   "upload" | "waitForWake" | "peerReceipt"
 >;
 
+/** An older package ACK must not roll back a relay's already advanced cursor. */
+export const advancePdsReceivedSourceCursor = async (
+  client: Pick<PdsRelayClient, "cursors" | "advanceCursor">,
+  originDeviceId: string,
+  sequence: string
+): Promise<void> => {
+  const response = record(await client.cursors(), "cursors");
+  if (!Array.isArray(response.cursors) || !/^(0|[1-9][0-9]*)$/.test(sequence))
+    throw new TypeError("PdsCryptoCursorError");
+  let current: string | undefined;
+  for (const value of response.cursors) {
+    const cursor = record(value, "cursor");
+    if (
+      typeof cursor.originDeviceId !== "string" ||
+      typeof cursor.sequence !== "string" ||
+      !/^(0|[1-9][0-9]*)$/.test(cursor.sequence)
+    )
+      throw new TypeError("PdsCryptoCursorError");
+    if (cursor.originDeviceId !== originDeviceId) continue;
+    if (current !== undefined) throw new TypeError("PdsCryptoCursorError");
+    current = cursor.sequence;
+  }
+  if (current === undefined || BigInt(current) < BigInt(sequence))
+    await client.advanceCursor(originDeviceId, sequence);
+};
+
 export const deliverPdsPackageDirect = async (input: {
   pkg: PdsSessionPackage;
   clients: ReadonlyMap<string, PdsDirectPeerClient> | null;
@@ -636,6 +662,7 @@ const createPdsWorkerRuntimeFromSecret = (
         return Promise.resolve([secret.groupId]);
       },
       async refreshPeerRoutes() {
+        await configuration?.refreshCapabilities();
         const peerEndpoint = resolvePdsPeerEndpoint(environment);
         if (!peerEndpoint || !localRelay) {
           peerRoutes = new Map();
@@ -1628,10 +1655,20 @@ const createPdsWorkerRuntimeFromSecret = (
         await client.acknowledge(ack);
         if (work.sourceSequence !== undefined) {
           await Promise.all([
-            client.advanceCursor(work.originDeviceId, work.sourceSequence),
+            advancePdsReceivedSourceCursor(
+              client,
+              work.originDeviceId,
+              work.sourceSequence
+            ),
             ...(client === relay
               ? []
-              : [relay.advanceCursor(work.originDeviceId, work.sourceSequence)])
+              : [
+                  advancePdsReceivedSourceCursor(
+                    relay,
+                    work.originDeviceId,
+                    work.sourceSequence
+                  )
+                ])
           ]);
         }
         downloaded.delete(work.inboxId);

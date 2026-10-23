@@ -11,13 +11,22 @@ import {
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryConversationRuleCreationActionGrantBinding,
   sharedMemoryRepositoryRuleCreationActionGrantBinding,
+  sharedMemoryPublisherTakeoverActionGrantBinding,
+  sharingRulePublisherTakeoverIntentSchema,
+  sharingRulePublisherTakeoverReviewInputSchema,
   repositorySharingRuleCreationIntentSchema,
   repositorySharingRuleCreationReviewSchema,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryWorkspaceRestorationActionGrantBinding,
+  workspaceConversationRestorationIntentSchema,
+  sharedMemoryWorkspaceExclusionActionGrantBinding,
+  workspaceConversationExclusionIntentSchema,
   sharedMemoryRuleControlActionGrantBinding,
   sharedMemoryRuleDetailActionGrantBinding,
   sharedMemoryRuleContentPolicyActionGrantBinding,
   sharingRuleDetailReviewInputSchema,
+  sharingRuleContentPolicyReviewInputSchema,
+  privacyLabels,
   sharedMemoryRepositoryRuleControlActionGrantBinding,
   repositorySharingRuleControlIntentSchema,
   sharedMemoryRepositorySnapshotActionGrantBinding,
@@ -49,7 +58,10 @@ type SharedMemoryAction =
   | "shared_memory.rule_detail"
   | "shared_memory.rule_content_policy"
   | "shared_memory.repository_rule_control"
+  | "shared_memory.publisher_takeover"
   | "shared_memory.revoke"
+  | "shared_memory.workspace_restore"
+  | "shared_memory.workspace_exclude"
   | "shared_memory.update_repository_snapshot"
   | "shared_memory.conversation_source_grant"
   | "shared_memory.conversation_source_revoke"
@@ -68,10 +80,13 @@ type SharedMemoryActionRepository = Pick<
   | "getConversationSharingRuleControlReview"
   | "getSharingRuleDetailReview"
   | "getSharingRuleContentPolicyReview"
+  | "getSharingRulePublisherTakeoverReview"
   | "getConversationSharingRuleCreationReview"
   | "getRepositorySharingRuleCreationReview"
   | "getRepositorySharingRuleControlReview"
   | "getSharedMemoryRevokeReview"
+  | "getWorkspaceConversationRestorationReview"
+  | "getWorkspaceConversationExclusionReview"
   | "reviewGrantRepositorySnapshot"
   | "getSharedMemoryFidelityChangeReview"
   | "getTeamConversationSourceGrantReview"
@@ -81,6 +96,7 @@ interface SharedMemoryAdmissionInput {
   repository: SharedMemoryActionRepository;
   userId: string;
   clientRequestId: string;
+  currentDeviceCredentialId?: string;
   intent: HighRiskActionGrantIntent;
 }
 
@@ -89,6 +105,18 @@ const requireReview = <T>(value: T | null, context: string): T =>
     value,
     `${context} requires complete current source-owner, destination, preview, policy, and grant context`
   );
+
+export const bindSharedMemoryPublisherTakeoverOperation = (
+  intent: Extract<
+    SharedMemoryActionIntent,
+    { action: "shared_memory.publisher_takeover" }
+  >,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  sharedMemoryPublisherTakeoverActionGrantBinding({
+    ...sharingRulePublisherTakeoverIntentSchema.strip().parse(intent),
+    referenceId
+  });
 
 const reviewed = (
   disposition: "native_review" | "step_up",
@@ -190,6 +218,7 @@ export const bindSharedMemoryPendingShareOperation = (
     activationRepresentation: intent.activationRepresentation,
     mutationId: intent.mutationId,
     logicalGrantId: intent.logicalGrantId,
+    expectedGrantVersion: intent.expectedGrantVersion,
     logicalMemoryId: intent.logicalMemoryId,
     teamId: intent.teamId,
     teamWorkspaceId: intent.teamWorkspaceId,
@@ -288,6 +317,30 @@ export const bindSharedMemoryRevokeOperation = (
     reasonCode: intent.reasonCode
   });
 
+export const bindSharedMemoryWorkspaceRestorationOperation = (
+  intent: Extract<
+    SharedMemoryActionIntent,
+    { action: "shared_memory.workspace_restore" }
+  >,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  sharedMemoryWorkspaceRestorationActionGrantBinding({
+    ...workspaceConversationRestorationIntentSchema.strip().parse(intent),
+    referenceId
+  });
+
+export const bindSharedMemoryWorkspaceExclusionOperation = (
+  intent: Extract<
+    SharedMemoryActionIntent,
+    { action: "shared_memory.workspace_exclude" }
+  >,
+  referenceId: string
+): HighRiskResolvedActionGrantOperation =>
+  sharedMemoryWorkspaceExclusionActionGrantBinding({
+    ...workspaceConversationExclusionIntentSchema.strip().parse(intent),
+    referenceId
+  });
+
 export const bindSharedMemoryRepositorySnapshotOperation = (
   intent: Extract<
     SharedMemoryActionIntent,
@@ -367,14 +420,23 @@ const shareReview = (
   reviewed(
     intent.maximumFidelity === "memory_events" ? "step_up" : "native_review",
     {
-      title: "Share Personal Memory with this Workspace?",
-      description: review.sourceOwnerPolicyWillActivate
-        ? "One decision activates the reviewed source policy, records exact consent, and creates the corresponding Share Grant."
-        : "One decision records the exact source-owner consent and creates the corresponding Share Grant.",
+      title:
+        intent.expectedGrantVersion != null
+          ? "Add a fixed snapshot to this Workspace?"
+          : "Share Personal Memory with this Workspace?",
+      description:
+        intent.expectedGrantVersion != null
+          ? "This adds a separately approved fixed snapshot to the existing contribution. Independent sharing rules keep their own consent, detail, and lifecycle."
+          : review.sourceOwnerPolicyWillActivate
+            ? "One decision activates the reviewed source policy, records exact consent, and creates the corresponding Share Grant."
+            : "One decision records the exact source-owner consent and creates the corresponding Share Grant.",
       consequence: review.sourceOwnerPolicyWillReplace
         ? "This expands the owner policy ceiling for the approved detail. Existing sharing reasons retain their own consent limits."
         : "Authorized Workspace members can recall every complete Memory layer through the approved maximum fidelity under the exact mode and expiry.",
-      confirmLabel: "Share Memory",
+      confirmLabel:
+        intent.expectedGrantVersion != null
+          ? "Add fixed snapshot"
+          : "Share Memory",
       details: [
         { label: "Personal Memory", value: sourceName(review) },
         { label: "Logical Memory", value: review.source.logicalMemoryId },
@@ -581,6 +643,7 @@ const pendingShareDefinition = {
         {
           logicalMemoryId: input.intent.logicalMemoryId,
           logicalGrantId: input.intent.logicalGrantId,
+          expectedGrantVersion: input.intent.expectedGrantVersion,
           teamId: input.intent.teamId,
           teamWorkspaceId: input.intent.teamWorkspaceId,
           consentId: input.intent.consentId,
@@ -616,6 +679,9 @@ const conversationRuleCreationDefinition = {
       await input.repository.getConversationSharingRuleCreationReview(
         { userId: input.userId },
         {
+          ...(intent.snapshotConversion
+            ? { snapshotReasonId: intent.snapshotConversion.reasonId }
+            : {}),
           previewId: intent.previewId,
           previewHash: intent.previewHash,
           previewRevision: intent.previewRevision,
@@ -627,6 +693,7 @@ const conversationRuleCreationDefinition = {
       "Continuous Conversation rule creation"
     );
     const expected = {
+      snapshotConversion: intent.snapshotConversion ?? null,
       logicalMemoryId: intent.logicalMemoryId,
       teamId: intent.teamId,
       teamWorkspaceId: intent.teamWorkspaceId,
@@ -644,6 +711,7 @@ const conversationRuleCreationDefinition = {
       expiresAt: intent.expiresAt
     };
     const actual = {
+      snapshotConversion: review.snapshotConversion ?? null,
       logicalMemoryId: review.logicalMemoryId,
       teamId: review.teamId,
       teamWorkspaceId: review.teamWorkspaceId,
@@ -676,13 +744,26 @@ const conversationRuleCreationDefinition = {
           ? "step_up"
           : "native_review",
         {
-          title: "Share this Conversation continuously?",
+          title: review.snapshotConversion
+            ? "Convert this snapshot to continuous sharing?"
+            : "Share this Conversation continuously?",
           description:
             "This rule shares existing eligible Memory and later eligible turns and completed summaries from this Conversation.",
-          consequence:
-            "Existing sharing reasons keep their own consent limits. Pause retains previously shared Memory. Stop removes only this rule's access.",
-          confirmLabel: "Start continuous sharing",
+          consequence: review.snapshotConversion
+            ? "Only this Conversation becomes continuous. The selected fixed snapshot stays available until publication is ready, then its direct consent is retired. Other sharing reasons and Conversation Source Access keep their own authority."
+            : "Existing sharing reasons keep their own consent limits. Pause retains previously shared Memory. Stop removes only this rule's access.",
+          confirmLabel: review.snapshotConversion
+            ? "Convert snapshot"
+            : "Start continuous sharing",
           details: [
+            ...(review.snapshotConversion
+              ? [
+                  {
+                    label: "Snapshot revision",
+                    value: String(review.snapshotConversion.sourceRevision)
+                  }
+                ]
+              : []),
             { label: "Conversation", value: review.sourceTitle },
             { label: "Logical Memory", value: review.logicalMemoryId },
             { label: "Team", value: review.teamName },
@@ -858,6 +939,112 @@ const revokeDefinition = {
   }
 };
 
+const workspaceRestorationDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    if (input.intent.action !== "shared_memory.workspace_restore") return null;
+    const intent = input.intent;
+    const current = requireReview(
+      await input.repository.getWorkspaceConversationRestorationReview(
+        { userId: input.userId },
+        {
+          logicalMemoryId: intent.scope.logicalMemoryId,
+          teamId: intent.scope.teamId,
+          teamWorkspaceId: intent.scope.teamWorkspaceId
+        },
+        intent.restoration.expiresAt
+      ),
+      "Workspace restoration"
+    );
+    requireActionReview(
+      crossIdentitySyncDigest(current) ===
+        crossIdentitySyncDigest(intent.restoration) &&
+        crossIdentitySyncDigest(current.scope) ===
+          crossIdentitySyncDigest(intent.scope)
+        ? current
+        : null,
+      "The Workspace restoration review is stale"
+    );
+    return {
+      operation: bindSharedMemoryWorkspaceRestorationOperation(
+        intent,
+        input.clientRequestId
+      ),
+      policy: reviewed("native_review", {
+        title: "Remove this Workspace exclusion?",
+        description: "Allow eligible sharing through current active rules.",
+        consequence:
+          "Active rules can catch up eligible history after current membership and policy checks. Paused and stopped rules stay unchanged. Revoked direct snapshots stay stopped. Without an eligible active rule, nothing is published.",
+        confirmLabel: "Remove exclusion",
+        details: [
+          { label: "Conversation", value: current.source.title },
+          { label: "Team", value: current.team.name },
+          { label: "Workspace", value: current.workspace.name },
+          {
+            label: "Eligible active rules",
+            value: String(current.rules.filter((rule) => rule.eligible).length)
+          },
+          ...current.rules.map((rule) => ({
+            label: `Rule ${rule.ruleId}`,
+            value: `${rule.selectorKind}: ${rule.state}${rule.eligible ? "; eligible to catch up" : "; no publication scheduled"}`
+          }))
+        ]
+      })
+    };
+  }
+};
+
+const workspaceExclusionDefinition = {
+  operationFamily: "share_grant_management" as const,
+  async admit(input: SharedMemoryAdmissionInput) {
+    if (input.intent.action !== "shared_memory.workspace_exclude") return null;
+    const intent = input.intent;
+    const review = requireReview(
+      await input.repository.getWorkspaceConversationExclusionReview(
+        { userId: input.userId },
+        {
+          logicalMemoryId: intent.scope.logicalMemoryId,
+          teamId: intent.scope.teamId,
+          teamWorkspaceId: intent.scope.teamWorkspaceId
+        }
+      ),
+      "Workspace exclusion"
+    );
+    requireActionReview(
+      review.exclusion?.state === "excluded" ||
+        crossIdentitySyncDigest(review.scope) !==
+          crossIdentitySyncDigest(intent.scope)
+        ? null
+        : review,
+      "The Workspace exclusion review is stale"
+    );
+    return {
+      operation: bindSharedMemoryWorkspaceExclusionOperation(
+        intent,
+        input.clientRequestId
+      ),
+      policy: reviewed("native_review", {
+        title: "Exclude this Conversation from the Workspace?",
+        description:
+          "Remove this Conversation's shared Memory from this Workspace through every sharing reason.",
+        consequence:
+          "Current and future sharing to this Workspace stays blocked until you explicitly remove the exclusion. Personal Memory and other Workspaces remain available. Existing direct snapshots stay stopped.",
+        confirmLabel: "Exclude from Workspace",
+        details: [
+          { label: "Conversation", value: review.source.title },
+          { label: "Team", value: review.team.name },
+          { label: "Workspace", value: review.workspace.name },
+          {
+            label: "Sharing affected",
+            value:
+              "Direct sharing and all Conversation, Git Anchor, Folder and Project rules for this Conversation"
+          }
+        ]
+      })
+    };
+  }
+};
+
 const fidelityChangeDefinition = {
   operationFamily: "share_grant_management" as const,
   async admit(input: SharedMemoryAdmissionInput) {
@@ -1018,9 +1205,76 @@ const repositorySnapshotDefinition = {
 export const sharedMemoryActionDefinitions = {
   "shared_memory.rule_content_policy": {
     operationFamily: "share_grant_management" as const,
-    // Deferred from the alpha: do not create an approval for an unavailable edit.
-    admit() {
-      return Promise.resolve(null);
+    async admit(input: SharedMemoryAdmissionInput) {
+      if (input.intent.action !== "shared_memory.rule_content_policy")
+        return null;
+      const expected = input.intent.review;
+      const review = requireReview(
+        await input.repository.getSharingRuleContentPolicyReview(
+          { userId: input.userId },
+          sharingRuleContentPolicyReviewInputSchema.strip().parse(expected),
+          expected.expiresAt
+        ),
+        "Rule content-policy amendment"
+      );
+      requireReview(
+        crossIdentitySyncDigest(review) === crossIdentitySyncDigest(expected)
+          ? review
+          : null,
+        "Current rule, member and policy versions"
+      );
+      const categories = (labels: typeof review.labels) =>
+        privacyLabels
+          .filter((label) => labels[label])
+          .map((label) => label.replaceAll("_", " "))
+          .join(", ") || "None";
+      return {
+        operation: bindSharedMemoryRuleContentPolicyOperation(
+          input.intent,
+          input.clientRequestId
+        ),
+        policy: reviewed(
+          review.disclosureIncrease &&
+            review.maximumFidelity === "memory_events"
+            ? "step_up"
+            : "native_review",
+          {
+            title: "Change this rule’s content policy?",
+            description: `Apply this policy to existing and future eligible Memory in ${review.workspaceName}.`,
+            consequence:
+              "Restrictions apply immediately. Independently authorized content remains shared. Owner, Team and Workspace requirements still apply. Paused and stopped rules keep their state.",
+            confirmLabel: review.disclosureIncrease
+              ? "Confirm increased sharing"
+              : "Change content policy",
+            details: [
+              { label: "Rule", value: review.ruleId },
+              { label: "Team", value: review.teamName },
+              { label: "Workspace", value: review.workspaceName },
+              {
+                label: "Previously masked categories",
+                value:
+                  review.previousEffectiveLabels === null
+                    ? "Unknown; review increased sharing"
+                    : categories(review.previousEffectiveLabels)
+              },
+              {
+                label: "Rule masked categories",
+                value: categories(review.labels)
+              },
+              {
+                label: "New masked categories",
+                value: categories(review.effectiveLabels)
+              },
+              {
+                label: "Required masked categories",
+                value: categories(review.requiredLabels)
+              },
+              { label: "Existing members", value: String(review.memberCount) },
+              { label: "Rule state", value: review.state }
+            ]
+          }
+        )
+      };
     }
   },
   "shared_memory.rule_detail": {
@@ -1167,6 +1421,102 @@ export const sharedMemoryActionDefinitions = {
       };
     }
   },
+  "shared_memory.publisher_takeover": {
+    operationFamily: "share_grant_management" as const,
+    async admit(input: SharedMemoryAdmissionInput) {
+      if (
+        input.intent.action !== "shared_memory.publisher_takeover" ||
+        !input.currentDeviceCredentialId
+      )
+        return null;
+      const intent = input.intent;
+      if (
+        intent.review.receivingPublisher.credentialId !==
+        input.currentDeviceCredentialId
+      )
+        return null;
+      const review = requireReview(
+        await input.repository.getSharingRulePublisherTakeoverReview(
+          { userId: input.userId },
+          {
+            ...sharingRulePublisherTakeoverReviewInputSchema
+              .strip()
+              .parse(intent.review),
+            receivingCredentialId: input.currentDeviceCredentialId
+          },
+          intent.review.expiresAt
+        ),
+        "Publisher takeover"
+      );
+      requireReview(
+        crossIdentitySyncDigest(review) ===
+          crossIdentitySyncDigest(intent.review)
+          ? review
+          : null,
+        "Exact publisher takeover"
+      );
+      return {
+        operation: bindSharedMemoryPublisherTakeoverOperation(
+          intent,
+          input.clientRequestId
+        ),
+        policy: reviewed("native_review", {
+          title: "Continue sharing from this device?",
+          description:
+            "Transfer this rule's publication responsibility to the reviewed receiving device.",
+          consequence:
+            "The rule keeps its approved scope and current state. Previously shared Memory remains available. Future writes require the receiving publisher. Synchronized Conversations keep their original source authority.",
+          confirmLabel: "Transfer publisher",
+          details: [
+            {
+              label: "Current publisher",
+              value: review.currentPublisher.label ?? "Unnamed device"
+            },
+            {
+              label: "Receiving publisher",
+              value: review.receivingPublisher.label ?? "Unnamed device"
+            },
+            { label: "Team", value: review.teamName },
+            { label: "Workspace", value: review.workspaceName },
+            {
+              label: "Rule",
+              value:
+                review.selectorKind === "captured_session"
+                  ? "Conversation"
+                  : review.selectorKind === "repository"
+                    ? "Git Anchor"
+                    : review.selectorKind === "folder"
+                      ? "Folder"
+                      : "Project"
+            },
+            { label: "Rule identity", value: review.ruleId },
+            ...(review.selectionScope
+              ? [
+                  {
+                    label:
+                      review.selectorKind === "repository"
+                        ? "Git Anchor identity"
+                        : review.selectorKind === "folder"
+                          ? "Folder identity"
+                          : "Project identity",
+                    value: review.selectionScope.selector.key
+                  }
+                ]
+              : []),
+            { label: "State", value: review.state },
+            {
+              label: "Shared detail",
+              value: fidelityLabel(review.maximumFidelity)
+            },
+            {
+              label: "Curated Memory",
+              value: curatedMemoryLabel(review.includeCuratedMemory)
+            }
+          ]
+        })
+      };
+    }
+  },
   "shared_memory.conversation_rule_create": conversationRuleCreationDefinition,
   "shared_memory.rule_control": ruleControlDefinition,
   "shared_memory.repository_rule_control": repositoryRuleControlDefinition,
@@ -1175,6 +1525,8 @@ export const sharedMemoryActionDefinitions = {
   "shared_memory.pending_share": pendingShareDefinition,
   "shared_memory.preview": previewDefinition,
   "shared_memory.revoke": revokeDefinition,
+  "shared_memory.workspace_restore": workspaceRestorationDefinition,
+  "shared_memory.workspace_exclude": workspaceExclusionDefinition,
   "shared_memory.conversation_source_grant": conversationSourceGrantDefinition,
   "shared_memory.conversation_source_revoke":
     conversationSourceRevokeDefinition,

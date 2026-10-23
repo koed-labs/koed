@@ -648,6 +648,14 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: write
   },
+  "collaboration.take_over_publisher": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.review_publisher_takeover": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
   "collaboration.review_rule_detail": {
     scope: "team",
     desktopOperationFamily: read
@@ -673,6 +681,22 @@ export const collaborationCommandRegistry = {
     desktopOperationFamily: read
   },
   "collaboration.revoke_shared_memory": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.review_workspace_restoration": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.review_workspace_exclusion": {
+    scope: "team",
+    desktopOperationFamily: read
+  },
+  "collaboration.restore_conversation_to_workspace": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
+  "collaboration.exclude_conversation_from_workspace": {
     scope: "team",
     desktopOperationFamily: write
   },

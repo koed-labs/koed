@@ -1,5 +1,8 @@
 export { createAuditRepository } from "./audit-repository.js";
-export { createSelectionSharingReconciliation } from "./selection-sharing-reconciliation.js";
+export {
+  createSelectionSharingReconciliation,
+  type SelectionSharingInventoryReader
+} from "./selection-sharing-reconciliation.js";
 export {
   createSelectionSharingJournal,
   recordSelectionSharingDetailScope,

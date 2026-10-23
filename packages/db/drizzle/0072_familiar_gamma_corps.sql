@@ -1,0 +1,2 @@
+ALTER TABLE "pending_sharing_rule_admissions" ADD COLUMN "portable_source_hash" text;--> statement-breakpoint
+ALTER TABLE "pending_sharing_rule_admissions" ADD CONSTRAINT "pending_rule_portable_source_check" CHECK ("pending_sharing_rule_admissions"."portable_source_hash" is null or ("pending_sharing_rule_admissions"."admission_kind"='conversation_create' and "pending_sharing_rule_admissions"."portable_source_hash" ~ '^[a-f0-9]{64}$'));

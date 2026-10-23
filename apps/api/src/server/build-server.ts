@@ -1120,8 +1120,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
               ? createSelectionSharingJournal(pool, envelopeEncryptionProvider)
               : undefined,
           reconcileSelectionSharing: selectionSharingReconciliation
-            ? (ownerUserId) =>
-                selectionSharingReconciliation.reconcile(ownerUserId)
+            ? (ownerUserId, readInventory) =>
+                selectionSharingReconciliation.reconcile(
+                  ownerUserId,
+                  5,
+                  readInventory
+                )
             : undefined,
           selectionReviewRepository: repository ?? undefined,
           requestRuleDelivery: () => requestRuleDelivery?.(),

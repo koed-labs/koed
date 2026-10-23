@@ -1,4 +1,5 @@
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { request as httpRequest } from "node:http";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -67,6 +68,101 @@ const relayContext = (
   }) as unknown as ApiRouteContext;
 
 describe("PDS relay routes", () => {
+  it.each(["notification", "disconnect"] as const)(
+    "releases a wake listener on %s while its durable check is waiting",
+    async (event) => {
+      const keys = generateKeyPairSync("ed25519");
+      let resolveMailbox!: (value: {
+        transports: [];
+        nextCursor: null;
+      }) => void;
+      let mailboxStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        mailboxStarted = resolve;
+      });
+      const mailbox = new Promise<{ transports: []; nextCursor: null }>(
+        (resolve) => {
+          resolveMailbox = resolve;
+        }
+      );
+      let notify!: (message: { channel: string; payload: string }) => void;
+      let released!: () => void;
+      const release = new Promise<void>((resolve) => {
+        released = resolve;
+      });
+      const repository = {
+        authenticatePdsRelayRequest: vi.fn(async () => ({
+          groupDbId: "group-db",
+          groupId: "group",
+          headHash: "head",
+          epoch: "1",
+          deviceId,
+          signingKeyId,
+          signingPublicKey: keys.publicKey.export({ format: "jwk" }).x!,
+          recipientDeviceIds: [deviceId],
+          certificate: {}
+        })),
+        consumePdsRelayRequestNonce: vi.fn(async () => undefined),
+        listPdsRelayMailbox: vi.fn(() => {
+          mailboxStarted();
+          return mailbox;
+        }),
+        hasPdsRelayAcknowledgement: vi.fn(async () => false)
+      };
+      const client = {
+        query: vi.fn().mockResolvedValue(undefined),
+        on: vi.fn((_name, listener) => {
+          notify = listener;
+        }),
+        removeAllListeners: vi.fn(),
+        release: vi.fn(() => released())
+      };
+      const app = Fastify();
+      registerPersonalDeviceSyncRelayRoutes(
+        app,
+        relayContext(repository, {
+          connect: vi.fn().mockResolvedValue(client)
+        })
+      );
+      const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+      const target = "/v1/personal-device-sync/relay/wake";
+      const request = httpRequest(origin + target, {
+        headers: {
+          "x-pds-membership-certificate": certificate,
+          "x-pds-relay-proof": relayProof({
+            privateKey: keys.privateKey,
+            target,
+            nonce: Buffer.alloc(32, 8).toString("base64url")
+          })
+        }
+      });
+      const response = new Promise<number | undefined>((resolve) => {
+        request.on("response", (value) => {
+          value.resume();
+          resolve(value.statusCode);
+        });
+        request.on("error", () => resolve(undefined));
+      });
+      request.end();
+      try {
+        await started;
+        if (event === "disconnect") request.destroy();
+        else notify({ channel: "koed_pds_relay_wake", payload: "group" });
+        await release;
+        expect(client.release).toHaveBeenCalledOnce();
+        expect(client.query).toHaveBeenLastCalledWith(
+          "unlisten koed_pds_relay_wake"
+        );
+        if (event === "notification") expect(await response).toBe(200);
+        else await response;
+      } finally {
+        request.destroy();
+        resolveMailbox({ transports: [], nextCursor: null });
+        await app.close();
+      }
+    }
+  );
+
   it("stores and returns only signed, current peer route advertisements", async () => {
     const keys = generateKeyPairSync("ed25519");
     const publicKey = keys.publicKey.export({ format: "jwk" }).x!;
@@ -166,7 +262,10 @@ describe("PDS relay routes", () => {
         certificate: {}
       })),
       consumePdsRelayRequestNonce: vi.fn(async () => undefined),
-      getPdsPeerReceipt: vi.fn(async () => canonicalAck)
+      getPdsPeerReceipt: vi.fn(async () => canonicalAck),
+      listPdsRelayCursors: vi.fn(async () => [
+        { originDeviceId: "origin", sequence: "2" }
+      ])
     };
     const context = relayContext(repository);
     context.personalDeviceSync.authoritySigner = null;
@@ -205,6 +304,27 @@ describe("PDS relay routes", () => {
     });
     expect(receipt.statusCode).toBe(200);
     expect(receipt.json()).toEqual({ canonicalAck });
+    const cursorTarget = "/v1/personal-device-sync/relay/cursors";
+    const cursors = await app.inject({
+      method: "GET",
+      url: cursorTarget,
+      headers: {
+        "x-pds-membership-certificate": certificate,
+        "x-pds-relay-proof": relayProof({
+          privateKey: keys.privateKey,
+          target: cursorTarget,
+          nonce: Buffer.alloc(32, 13).toString("base64url")
+        })
+      }
+    });
+    expect(cursors.statusCode).toBe(200);
+    expect(repository.listPdsRelayCursors).toHaveBeenCalledWith(
+      expect.objectContaining({ deviceId, groupId: "group" })
+    );
+    context.personalDeviceSync.secureKeyProvider = null;
+    expect(
+      (await app.inject({ method: "GET", url: cursorTarget })).statusCode
+    ).toBe(503);
     await app.close();
   });
 

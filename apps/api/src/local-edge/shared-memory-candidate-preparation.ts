@@ -20,25 +20,42 @@ export const prepareLocalLcmCandidateRepresentation = async (input: {
   ownerUserId: string;
   sessionId: string;
   representation: LocalLcmRepresentation;
-}): Promise<void> => {
-  for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    const compaction = await input.repository.createLcmNodes(
-      { userId: input.ownerUserId },
-      {
-        visibility: "personal",
-        sessionId: input.sessionId,
-        force: true,
-        requestedRepresentation: input.representation
+}): Promise<boolean> => {
+  let remaining = 1_000;
+  let createdNodes = false;
+  for (const workClass of [
+    "live_capture_projection",
+    "normal_embedding_lcm",
+    "historical_import_backfill"
+  ] as const) {
+    let exhausted = false;
+    while (remaining > 0) {
+      remaining -= 1;
+      const compaction = await input.repository.createLcmNodes(
+        { userId: input.ownerUserId },
+        {
+          visibility: "personal",
+          sessionId: input.sessionId,
+          workClass,
+          force: true,
+          requestedRepresentation: input.representation
+        }
+      );
+      if (
+        compaction.leafNodeIds.length === 0 &&
+        compaction.rollupNodeId === null
+      ) {
+        exhausted = true;
+        break;
       }
-    );
-    if (
-      compaction.leafNodeIds.length === 0 &&
-      compaction.rollupNodeId === null
-    ) {
-      return;
+      createdNodes = true;
     }
+    if (!exhausted)
+      throw new Error(
+        "Share-bound LCM compaction exceeded its bounded work limit"
+      );
   }
-  throw new Error("Share-bound LCM compaction exceeded its bounded work limit");
+  return createdNodes;
 };
 
 type CandidateRepository = Pick<
@@ -251,13 +268,15 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
         });
       }
     } else {
-      if (input.prepareLcm !== false)
-        await prepareLocalLcmCandidateRepresentation({
+      if (input.prepareLcm !== false) {
+        const createdNodes = await prepareLocalLcmCandidateRepresentation({
           repository: options.repository,
           ownerUserId: input.localOwnerUserId,
           sessionId: input.sessionId,
           representation: input.representation
         });
+        if (createdNodes) await options.requestLcmSummaryWork();
+      }
       const kind = input.representation === "lcm_leaves" ? "leaf" : "rollup";
       const syncEligibleNodeIds = new Set(
         await options.repository.listCapturedSessionSyncEligibleLcmNodeIds(

@@ -1,3 +1,5 @@
+import { SnapshotConversionReview } from "./SnapshotConversionReview.js";
+import { SharingRuleContentPolicyReview } from "./SharingRuleContentPolicyReview.js";
 import { SharingRuleDetailReview } from "./SharingRuleDetailReview.js";
 import {
   type SharingRuleDelivery,
@@ -94,6 +96,7 @@ import {
 } from "./collaboration-primitives.js";
 import { PeopleView } from "./PeopleView.js";
 import { OwnedSharingReasons } from "./OwnedSharingReasons.js";
+import { SharingRulePublisherReview } from "./SharingRulePublisherReview.js";
 import { SharingRuleDeliveryStatus } from "./SharingRuleDeliveryStatus.js";
 import { GitAnchorSharingReview } from "./GitAnchorSharingReview.js";
 import { type DraftAuthority } from "../state/drafts.js";
@@ -397,7 +400,7 @@ function PersonalMemoryProjectsView({
   );
 }
 
-type OwnedShareSection = "pending" | "active" | "revoked";
+type OwnedShareSection = "pending" | "active" | "revoked" | "excluded";
 
 const ownedShareRecord = (item: OwnedShareItem) =>
   item.kind === "pending" ? item.pendingShare : item.grant;
@@ -429,6 +432,21 @@ const loadOwnedSharePages = async (
 const ownedShareKey = (item: OwnedShareItem): string =>
   `${item.kind}:${ownedShareRecord(item).id}`;
 
+const ownerSharingOperationKey = (
+  intent: SharingRuleDelivery["intent"]
+): string =>
+  "scope" in intent
+    ? `workspace:${intent.scope.logicalMemoryId}:${intent.scope.teamWorkspaceId}`
+    : `rule:${intent.ruleId}`;
+const ownerSharingOperationGrant = (
+  intent: SharingRuleDelivery["intent"]
+): string | null =>
+  "scope" in intent
+    ? intent.scope.shareGrantId
+    : "shareGrantId" in intent
+      ? intent.shareGrantId
+      : null;
+
 const ownedShareRepresentation = (
   item: OwnedShareItem
 ): SharedMemoryRepresentation | null =>
@@ -437,6 +455,7 @@ const ownedShareRepresentation = (
     : item.grant.activationRepresentation;
 
 const ownedShareSection = (item: OwnedShareItem): OwnedShareSection => {
+  if (item.summary.workspaceExclusion?.state === "excluded") return "excluded";
   if (
     item.sourceAccess?.lifecycle !== "active" &&
     item.summary.sharingReasons.length > 0 &&
@@ -446,6 +465,15 @@ const ownedShareSection = (item: OwnedShareItem): OwnedShareSection => {
     )
   )
     return "revoked";
+  if (
+    item.kind === "pending" &&
+    item.pendingShare.state === "revoked" &&
+    item.summary.workspaceContentAccess === "available" &&
+    item.summary.sharingReasons.some((reason) =>
+      ["active", "paused", "fixed_snapshot"].includes(reason.updateState)
+    )
+  )
+    return "active";
   if (
     (item.kind === "pending" && item.pendingShare.state === "revoked") ||
     (item.kind === "grant" &&
@@ -466,6 +494,23 @@ const ownedShareSection = (item: OwnedShareItem): OwnedShareSection => {
 };
 
 const ownedShareStatus = (item: OwnedShareItem): string => {
+  if (item.summary.workspaceExclusion?.state === "excluded")
+    return "Excluded from Workspace";
+  if (
+    item.kind === "pending" &&
+    item.pendingShare.redactedFailureCode === "workspace_restoring"
+  )
+    return "Preparing eligible sharing";
+  if (item.kind === "pending") {
+    if (["failed", "needs_attention"].includes(item.pendingShare.state))
+      return "Needs attention";
+    if (item.pendingShare.sourceUpdateState === "failed")
+      return "Update needs attention";
+    if (item.pendingShare.state === "preparing") {
+      const stage = pendingShareStageLabel(item.pendingShare.stage);
+      return stage[0]!.toUpperCase() + stage.slice(1);
+    }
+  }
   const reasons = item.summary.sharingReasons;
   if (reasons.some((reason) => reason.updateState === "active"))
     return reasons.some(
@@ -512,7 +557,9 @@ const ownedShareStatus = (item: OwnedShareItem): string => {
 };
 
 const ownedShareHasError = (item: OwnedShareItem): boolean =>
+  item.summary.workspaceExclusion?.state !== "excluded" &&
   item.kind === "pending" &&
+  item.pendingShare.redactedFailureCode !== "workspace_restoring" &&
   (item.pendingShare.redactedFailureCode !== null ||
     item.pendingShare.state === "failed" ||
     item.pendingShare.state === "needs_attention" ||
@@ -635,6 +682,9 @@ function OwnedSharesWorkspace({
   const [shareEventRevision, setShareEventRevision] = useState(0);
   const [modifyShareKey, setModifyShareKey] = useState<string | null>(null);
   const [revokeShareKey, setRevokeShareKey] = useState<string | null>(null);
+  const [directStopConsentId, setDirectStopConsentId] = useState<string | null>(
+    null
+  );
   const revokeApprovalBaselineRef = useRef<ReadonlySet<string> | null>(null);
   const shareRowRefs = useRef(new Map<string, HTMLButtonElement>());
   const lastFocusedShareKeyRef = useRef<string | null>(null);
@@ -881,9 +931,7 @@ function OwnedSharesWorkspace({
           if (delivery.state === "acknowledged")
             acknowledgeRuleDelivery(
               delivery.intent.mutationId,
-              "shareGrantId" in delivery.intent
-                ? delivery.intent.shareGrantId
-                : null
+              ownerSharingOperationGrant(delivery.intent)
             );
         }
         if (next.some((delivery) => delivery.state === "queued"))
@@ -933,7 +981,10 @@ function OwnedSharesWorkspace({
           )?.syncState ?? null)
         : null
     );
-    if (listedShare.summary.workspaceContentAccess === "unavailable") {
+    if (
+      listedShare.summary.workspaceContentAccess === "unavailable" ||
+      listedShare.summary.workspaceExclusion?.state === "excluded"
+    ) {
       setPreview(null);
       setPreviewState("ready");
       return;
@@ -1034,13 +1085,13 @@ function OwnedSharesWorkspace({
   }, [client]);
 
   const openSourceReview = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string, sourceTitle: string) => {
       await runOperation(async () => {
         const entry =
           snapshot.navigation.personal.memory.find(
             (candidate) => candidate.id === sessionId
           ) ?? (await client.prepareSharedMemorySource({ sessionId }));
-        setSourceReviewEntry(entry);
+        setSourceReviewEntry({ ...entry, title: sourceTitle });
         setModifyShareKey(null);
       });
     },
@@ -1068,7 +1119,10 @@ function OwnedSharesWorkspace({
           snapshot.navigation.personal.memory.find(
             (candidate) => candidate.id === sessionId
           ) ?? (await client.prepareSharedMemorySource({ sessionId }));
-        setDetailChange({ entry, share });
+        setDetailChange({
+          entry: { ...entry, title: share.summary.sourceTitle },
+          share
+        });
         setModifyShareKey(null);
       });
     },
@@ -1294,7 +1348,9 @@ function OwnedSharesWorkspace({
             });
       setRuleDeliveries((current) => [
         ...current.filter(
-          (item) => item.intent.ruleId !== delivery.intent.ruleId
+          (item) =>
+            ownerSharingOperationKey(item.intent) !==
+            ownerSharingOperationKey(delivery.intent)
         ),
         delivery
       ]);
@@ -1302,10 +1358,75 @@ function OwnedSharesWorkspace({
       if (delivery.state === "acknowledged")
         acknowledgeRuleDelivery(
           delivery.intent.mutationId,
-          "shareGrantId" in delivery.intent
-            ? delivery.intent.shareGrantId
-            : null
+          ownerSharingOperationGrant(delivery.intent)
         );
+    });
+  };
+  const excludeConversation = async (item: OwnedShareItem) => {
+    const record = ownedShareRecord(item);
+    await runOperation(async () => {
+      const review = await client.reviewWorkspaceExclusion({
+        logicalMemoryId: item.summary.source.logicalMemoryId,
+        teamId: record.teamId,
+        teamWorkspaceId: record.workspaceId
+      });
+      const delivery = await client.excludeConversationFromWorkspace({
+        mutationId: crypto.randomUUID(),
+        scope: review.scope
+      });
+      setRuleDeliveries((current) => [
+        ...current.filter(
+          (entry) =>
+            ownerSharingOperationKey(entry.intent) !==
+            ownerSharingOperationKey(delivery.intent)
+        ),
+        delivery
+      ]);
+      setRuleDeliveryRevision((revision) => revision + 1);
+      if (delivery.state === "acknowledged")
+        acknowledgeRuleDelivery(
+          delivery.intent.mutationId,
+          ownerSharingOperationGrant(delivery.intent)
+        );
+      setShareAnnouncement(
+        delivery.state === "acknowledged"
+          ? `${item.summary.sourceTitle}: excluded from ${item.summary.workspaceName}`
+          : "Workspace exclusion requested. Waiting for Team acknowledgment; access may remain until acknowledged."
+      );
+    });
+  };
+  const restoreConversation = async (item: OwnedShareItem) => {
+    const record = ownedShareRecord(item);
+    await runOperation(async () => {
+      const restoration = await client.reviewWorkspaceRestoration({
+        logicalMemoryId: item.summary.source.logicalMemoryId,
+        teamId: record.teamId,
+        teamWorkspaceId: record.workspaceId
+      });
+      const delivery = await client.restoreConversationToWorkspace({
+        mutationId: crypto.randomUUID(),
+        scope: restoration.scope,
+        restoration
+      });
+      setRuleDeliveries((current) => [
+        ...current.filter(
+          (entry) =>
+            ownerSharingOperationKey(entry.intent) !==
+            ownerSharingOperationKey(delivery.intent)
+        ),
+        delivery
+      ]);
+      setRuleDeliveryRevision((revision) => revision + 1);
+      if (delivery.state === "acknowledged")
+        acknowledgeRuleDelivery(
+          delivery.intent.mutationId,
+          ownerSharingOperationGrant(delivery.intent)
+        );
+      setShareAnnouncement(
+        delivery.state === "acknowledged"
+          ? "Exclusion removed. Eligible active rules can catch up after current membership and policy checks."
+          : "Removing exclusion requested. Waiting for Team acknowledgment; the exclusion remains in effect until acknowledged."
+      );
     });
   };
   const deliveryPanel = (
@@ -1333,8 +1454,8 @@ function OwnedSharesWorkspace({
   const sectionOrder = visibleShares.some(
     (item) => ownedShareSection(item) === "pending"
   )
-    ? (["pending", "active", "revoked"] as const)
-    : (["active", "pending", "revoked"] as const);
+    ? (["pending", "active", "excluded", "revoked"] as const)
+    : (["active", "pending", "excluded", "revoked"] as const);
   const sections = sectionOrder.map((section) => ({
     section,
     items: visibleShares.filter((item) => ownedShareSection(item) === section)
@@ -1509,10 +1630,53 @@ function OwnedSharesWorkspace({
                 </p>
               </div>
               <div className="collab-share-header-actions">
+                {selectedShare.summary.source.kind === "captured_session" &&
+                selectedSection !== "excluded" ? (
+                  <button
+                    type="button"
+                    className="danger-secondary"
+                    disabled={
+                      operationBusy ||
+                      ruleDeliveries.some(
+                        (delivery) =>
+                          delivery.state === "queued" &&
+                          "scope" in delivery.intent &&
+                          delivery.intent.scope.logicalMemoryId ===
+                            selectedShare.summary.source.logicalMemoryId &&
+                          delivery.intent.scope.teamWorkspaceId ===
+                            ownedShareRecord(selectedShare).workspaceId
+                      )
+                    }
+                    onClick={() => void excludeConversation(selectedShare)}
+                  >
+                    Exclude from Workspace
+                  </button>
+                ) : null}
+                {selectedSection === "excluded" ? (
+                  <button
+                    type="button"
+                    disabled={
+                      operationBusy ||
+                      ruleDeliveries.some(
+                        (delivery) =>
+                          delivery.state === "queued" &&
+                          "scope" in delivery.intent &&
+                          delivery.intent.scope.logicalMemoryId ===
+                            selectedShare.summary.source.logicalMemoryId &&
+                          delivery.intent.scope.teamWorkspaceId ===
+                            ownedShareRecord(selectedShare).workspaceId
+                      )
+                    }
+                    onClick={() => void restoreConversation(selectedShare)}
+                  >
+                    Remove exclusion
+                  </button>
+                ) : null}
                 <button
                   className="collab-share-modify-button"
                   disabled={
                     selectedSection === "revoked" ||
+                    selectedSection === "excluded" ||
                     selectedShare.summary.workspaceContentAccess ===
                       "unavailable"
                   }
@@ -1543,6 +1707,14 @@ function OwnedSharesWorkspace({
                 </button>
               </div>
             </header>
+            {selectedSection === "excluded" ? (
+              <p className="collab-share-preview-notice" role="status">
+                This Conversation is excluded from{" "}
+                {selectedShare.summary.workspaceName}. Every sharing reason and
+                later publication is blocked here. Personal Memory and other
+                Workspaces remain available. Direct snapshots stay stopped.
+              </p>
+            ) : null}
             <div className="collab-share-facts" aria-label="Share summary">
               <span>
                 <strong>Status</strong>
@@ -1558,9 +1730,12 @@ function OwnedSharesWorkspace({
               </span>
               <span>
                 <strong>Updates</strong>
-                {selectedShare.kind === "grant" && sourceSyncState === "paused"
-                  ? "Updates paused"
-                  : ownedShareStatus(selectedShare)}
+                {selectedSection === "excluded"
+                  ? "Blocked by exclusion"
+                  : selectedShare.kind === "grant" &&
+                      sourceSyncState === "paused"
+                    ? "Updates paused"
+                    : ownedShareStatus(selectedShare)}
               </span>
               <span>
                 <strong>Source access</strong>
@@ -1570,12 +1745,38 @@ function OwnedSharesWorkspace({
               </span>
               <span>
                 <strong>Workspace access</strong>
-                {selectedShare.summary.workspaceContentAccess === "available"
-                  ? "Available"
-                  : "Unavailable"}
+                {selectedSection === "excluded"
+                  ? "Excluded"
+                  : selectedShare.summary.workspaceContentAccess === "available"
+                    ? "Available"
+                    : "Unavailable"}
               </span>
             </div>
+            {selectedShare.kind === "pending" &&
+            !["activated", "revoked"].includes(
+              selectedShare.pendingShare.state
+            ) ? (
+              <p role="status">
+                Preparation stage:{" "}
+                {pendingShareStageLabel(selectedShare.pendingShare.stage)}.
+                {ownedShareHasError(selectedShare)
+                  ? " Needs attention; retry or review the failed operation from Modify."
+                  : " Waiting for Team publication."}
+                {selectedShare.summary.sharingReasons.some((reason) =>
+                  ["active", "paused", "fixed_snapshot"].includes(
+                    reason.updateState
+                  )
+                )
+                  ? " Independent sharing reasons may still provide access under their own consent."
+                  : ""}
+              </p>
+            ) : null}
+            <p>
+              Latest published source revision:{" "}
+              {selectedShare.summary.lastReadyRevision ?? "None"}.
+            </p>
             <OwnedSharingReasons
+              workspaceExcluded={selectedSection === "excluded"}
               reasons={selectedShare.summary.sharingReasons}
               pending={selectedSection === "pending"}
               representationLabel={representationLabel}
@@ -1583,11 +1784,12 @@ function OwnedSharesWorkspace({
               busy={operationBusy}
               onControl={(reason, action) => void controlRule(reason, action)}
               detailReview={(reason, queued) => {
-                if (!reason.rule) return null;
                 const onDelivery = (delivery: SharingRuleDelivery) => {
                   setRuleDeliveries((current) => [
                     ...current.filter(
-                      (entry) => entry.intent.ruleId !== delivery.intent.ruleId
+                      (entry) =>
+                        ownerSharingOperationKey(entry.intent) !==
+                        ownerSharingOperationKey(delivery.intent)
                     ),
                     delivery
                   ]);
@@ -1595,18 +1797,178 @@ function OwnedSharesWorkspace({
                   if (delivery.state === "acknowledged")
                     acknowledgeRuleDelivery(delivery.intent.mutationId, null);
                 };
+                if (!reason.rule) {
+                  const source = ownedShareRecord(selectedShare).source;
+                  const binding = ownedShareGrantBinding(selectedShare);
+                  const conversion =
+                    reason.updateState === "fixed_snapshot" &&
+                    source?.kind === "captured_session" &&
+                    binding ? (
+                      <SnapshotConversionReview
+                        client={client}
+                        source={source}
+                        reason={reason}
+                        grantVersion={binding.grantVersion}
+                        teamId={ownedShareRecord(selectedShare).teamId}
+                        workspaceId={
+                          ownedShareRecord(selectedShare).workspaceId
+                        }
+                        disabled={
+                          operationBusy ||
+                          queued ||
+                          selectedSection === "excluded"
+                        }
+                        onDelivery={onDelivery}
+                      />
+                    ) : null;
+                  const directPending = ownedShares.find(
+                    (entry) =>
+                      entry.kind === "pending" &&
+                      entry.pendingShare.consentId === reason.consentId &&
+                      entry.pendingShare.state === "activated" &&
+                      entry.pendingShare.mode === "snapshot"
+                  );
+                  const independentRule =
+                    selectedShare.summary.sharingReasons.some(
+                      (entry) =>
+                        entry.rule &&
+                        entry.rule.state !== "stopped" &&
+                        !["stopped", "expired"].includes(entry.updateState)
+                    );
+                  if (
+                    reason.updateState !== "fixed_snapshot" ||
+                    !independentRule ||
+                    directPending?.kind !== "pending" ||
+                    selectedSection === "excluded"
+                  )
+                    return conversion;
+                  return (
+                    <>
+                      {conversion}
+                      {directStopConsentId === reason.consentId ? (
+                        <div>
+                          <p>
+                            Stop only this fixed snapshot? Independent sharing
+                            rules keep their own approved access and updates.
+                          </p>
+                          <button
+                            type="button"
+                            disabled={operationBusy}
+                            onClick={() => {
+                              void runOperation(async () => {
+                                const updated =
+                                  await client.controlPendingShare({
+                                    pendingShareId:
+                                      directPending.pendingShare.id,
+                                    expectedOperationVersion:
+                                      directPending.pendingShare
+                                        .operationVersion,
+                                    action: "stop_direct"
+                                  });
+                                setOwnedShares((current) =>
+                                  current.map((entry) =>
+                                    entry.kind === "pending" &&
+                                    entry.pendingShare.id === updated.id
+                                      ? { ...entry, pendingShare: updated }
+                                      : entry
+                                  )
+                                );
+                                setDirectStopConsentId(null);
+                                await refreshSharingReasons(selectedShare);
+                                setShareEventRevision(
+                                  (revision) => revision + 1
+                                );
+                              });
+                            }}
+                          >
+                            Confirm stop this snapshot
+                          </button>
+                          <button
+                            type="button"
+                            disabled={operationBusy}
+                            onClick={() => setDirectStopConsentId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={operationBusy}
+                          onClick={() =>
+                            setDirectStopConsentId(reason.consentId)
+                          }
+                        >
+                          Stop this snapshot
+                        </button>
+                      )}
+                    </>
+                  );
+                }
                 return (
-                  <SharingRuleDetailReview
-                    key={`${reason.rule.id}:detail:${reason.rule.authorityVersion}`}
-                    client={client}
-                    ruleId={reason.rule.id}
-                    teamId={ownedShareRecord(selectedShare).teamId}
-                    workspaceId={ownedShareRecord(selectedShare).workspaceId}
-                    maximumFidelity={reason.maximumFidelity}
-                    includeCuratedMemory={reason.includeCuratedMemory}
-                    disabled={operationBusy || queued}
-                    onDelivery={onDelivery}
-                  />
+                  <>
+                    {reason.rule.publisher ? (
+                      <p>
+                        Publisher:{" "}
+                        {reason.rule.publisher.label ?? "Unnamed device"}
+                      </p>
+                    ) : null}
+                    {reason.rule.selectorKind === "captured_session" &&
+                    reason.rule.state !== "stopped" ? (
+                      <SharingRulePublisherReview
+                        client={client}
+                        ruleId={reason.rule.id}
+                        teamId={ownedShareRecord(selectedShare).teamId}
+                        workspaceId={
+                          ownedShareRecord(selectedShare).workspaceId
+                        }
+                        authorityVersion={reason.rule.authorityVersion}
+                        publisherFence={reason.rule.publisherFence}
+                        maximumFidelity={reason.maximumFidelity}
+                        sourceChoices={snapshot.navigation.personal.memory.map(
+                          (entry) => ({
+                            sessionId: entry.id,
+                            title: entry.title
+                          })
+                        )}
+                        disabled={
+                          operationBusy ||
+                          queued ||
+                          selectedSection === "excluded"
+                        }
+                        onDelivery={onDelivery}
+                      />
+                    ) : null}
+                    <SharingRuleDetailReview
+                      key={`${reason.rule.id}:detail:${reason.rule.authorityVersion}`}
+                      client={client}
+                      ruleId={reason.rule.id}
+                      teamId={ownedShareRecord(selectedShare).teamId}
+                      workspaceId={ownedShareRecord(selectedShare).workspaceId}
+                      maximumFidelity={reason.maximumFidelity}
+                      includeCuratedMemory={reason.includeCuratedMemory}
+                      disabled={
+                        operationBusy ||
+                        queued ||
+                        selectedSection === "excluded"
+                      }
+                      onDelivery={onDelivery}
+                    />
+                    <SharingRuleContentPolicyReview
+                      key={`${reason.rule.id}:content:${reason.rule.authorityVersion}`}
+                      client={client}
+                      ruleId={reason.rule.id}
+                      teamId={ownedShareRecord(selectedShare).teamId}
+                      workspaceId={ownedShareRecord(selectedShare).workspaceId}
+                      authorityVersion={reason.rule.authorityVersion}
+                      disabled={
+                        operationBusy ||
+                        queued ||
+                        selectedSection === "excluded"
+                      }
+                      onDelivery={onDelivery}
+                    />
+                  </>
                 );
               }}
             />
@@ -1619,13 +1981,19 @@ function OwnedSharesWorkspace({
               {preview ? (
                 <header>
                   <p>
-                    {`${representationLabel(preview.activationRepresentation)} · ${preview.itemCount} ${preview.itemCount === 1 ? "item" : "items"} · Revision ${preview.sourceRevision}`}
+                    {`${representationLabel(preview.activationRepresentation)} · ${preview.itemCount} ${preview.itemCount === 1 ? "item" : "items"} · Preview source revision ${preview.sourceRevision}`}
                   </p>
                 </header>
               ) : null}
               <div className="collab-share-preview-window">
-                {selectedShare.summary.workspaceContentAccess ===
-                "unavailable" ? (
+                {selectedSection === "excluded" ? (
+                  <StateView
+                    icon={<LockKeyhole />}
+                    title="Excluded from Workspace"
+                    message="Open the Conversation in Personal Memory to view your source."
+                  />
+                ) : selectedShare.summary.workspaceContentAccess ===
+                  "unavailable" ? (
                   <StateView
                     icon={<CircleAlert />}
                     title="Workspace content unavailable"
@@ -1784,7 +2152,8 @@ function OwnedSharesWorkspace({
                     disabled={operationBusy}
                     onClick={() =>
                       void openSourceReview(
-                        modifiedShare.summary.sourceSessionId!
+                        modifiedShare.summary.sourceSessionId!,
+                        modifiedShare.summary.sourceTitle
                       )
                     }
                     type="button"
@@ -2861,6 +3230,7 @@ function SharedMemoryOwnerModal({
     (share) =>
       share.teamId === teamId &&
       share.workspaceId === workspaceId &&
+      share.state !== "activated" &&
       share.state !== "revoked" &&
       !(
         share.state === "failed" &&
@@ -2869,6 +3239,13 @@ function SharedMemoryOwnerModal({
   );
   const creatingConversationRule =
     workflow?.kind === "new" && mode === "continuous";
+  const addingFixedSnapshot =
+    workflow?.kind === "new" &&
+    mode === "snapshot" &&
+    selectedDestinationGrant?.lifecycle === "active" &&
+    selectedDestinationGrant.source.kind === "captured_session" &&
+    ownerRuleGrantIds.has(selectedDestinationGrant.id) &&
+    !ownerDirectGrantIds.has(selectedDestinationGrant.id);
   const consentActionLabel = creatingConversationRule
     ? "Start continuous sharing"
     : workflow?.kind === "change"
@@ -3332,6 +3709,9 @@ function SharedMemoryOwnerModal({
           logicalGrantId: review.logicalGrantId,
           expectedGrantVersion: review.expectedGrantVersion,
           effectivePrivacyPolicyHash: review.effectivePrivacyPolicyHash,
+          ...(review.sourceIdentity
+            ? { sourceIdentity: review.sourceIdentity }
+            : {}),
           source: review.source,
           sourceCapabilities: review.sourceCapabilities,
           activationRepresentation: review.activationRepresentation,
@@ -3350,8 +3730,8 @@ function SharedMemoryOwnerModal({
         completedShareKey =
           shared.creation && "pendingShareId" in shared.creation
             ? `pending:${shared.creation.pendingShareId}`
-            : `rule:${shared.intent.ruleId}`;
-      } else if (targetGrant) {
+            : ownerSharingOperationKey(shared.intent);
+      } else if (targetGrant && ownerDirectGrantIds.has(targetGrant.id)) {
         const refreshedGrants = await client.listOwnedSharedMemoryGrants({
           logicalMemoryId: candidate.logicalMemoryId
         });
@@ -3404,7 +3784,8 @@ function SharedMemoryOwnerModal({
           sourceCapabilities: candidate.sourceCapabilities,
           activationRepresentation: candidate.activationRepresentation,
           mutationId: crypto.randomUUID(),
-          logicalGrantId: crypto.randomUUID(),
+          logicalGrantId: targetGrant?.logicalGrantId ?? crypto.randomUUID(),
+          expectedGrantVersion: targetGrant?.grantVersion ?? null,
           consentId,
           logicalMemoryId: candidate.logicalMemoryId,
           teamId,
@@ -3661,6 +4042,30 @@ function SharedMemoryOwnerModal({
                         <div className="collab-owner-grant-actions">
                           {active &&
                           grant.source.kind === "captured_session" &&
+                          !ownerDirectGrantIds.has(grant.id) ? (
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={busy}
+                              onClick={() => {
+                                setTeamId(grant.teamId);
+                                setWorkspaceId(grant.workspaceId);
+                                setMode("snapshot");
+                                setMaximumFidelity(grant.maximumFidelity);
+                                setIncludeCuratedMemory(
+                                  grant.includeCuratedMemory
+                                );
+                                setPreview(null);
+                                setCandidate(null);
+                                setWorkflow({ kind: "new" });
+                                setError("");
+                              }}
+                            >
+                              Add fixed snapshot
+                            </button>
+                          ) : null}
+                          {active &&
+                          grant.source.kind === "captured_session" &&
                           !ownerLiveRuleGrantIds.has(grant.id) ? (
                             <button
                               type="button"
@@ -3890,10 +4295,14 @@ function SharedMemoryOwnerModal({
                     </label>
                     {selectedDestinationGrant?.lifecycle === "active" ? (
                       <p className="collab-form-error" role="alert">
-                        {creatingConversationRule &&
-                        !ownerLiveRuleGrantIds.has(selectedDestinationGrant.id)
-                          ? "This adds a continuous rule. Existing sharing reasons keep their own consent and snapshots."
-                          : "This Workspace already has this Shared Memory. Manage its rules and detail from Personal Memory → Shares."}
+                        {addingFixedSnapshot
+                          ? "This adds a fixed snapshot. Existing sharing reasons keep their own consent and updates."
+                          : creatingConversationRule &&
+                              !ownerLiveRuleGrantIds.has(
+                                selectedDestinationGrant.id
+                              )
+                            ? "This adds a continuous rule. Existing sharing reasons keep their own consent and snapshots."
+                            : "This Workspace already has this Shared Memory. Manage its rules and detail from Personal Memory → Shares."}
                       </p>
                     ) : selectedDestinationGrant?.lifecycle === "revoked" ? (
                       <p className="collab-form-context">
@@ -4028,6 +4437,7 @@ function SharedMemoryOwnerModal({
                   availableTeams.length === 0 ||
                   (workflow.kind === "new" &&
                     selectedDestinationGrant?.lifecycle === "active" &&
+                    !addingFixedSnapshot &&
                     (!creatingConversationRule ||
                       ownerLiveRuleGrantIds.has(
                         selectedDestinationGrant.id

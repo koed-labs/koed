@@ -876,6 +876,10 @@ Listening begins before the durable mailbox check, closing the check/listen
 race. Duplicate or missed wakes are harmless. Continuous interval polling is
 not a V1 synchronization path; connection recovery backoff and persisted retry
 due-times may schedule bounded reconciliation.
+Notification and disconnect handlers are installed before the durable check.
+A disconnect or the held-request deadline releases its listening connection
+even when that check is waiting for database capacity. A notification received
+during the check also completes the wake; it need not wait for another event.
 
 `PackageAck` is exactly `protocol`, `groupId`, `transportId`, `packageId`,
 `sourceManifestHash`, `recipientDeviceId`,
@@ -899,6 +903,25 @@ therefore repaired by the post-listen durable check without interval polling.
 The receiver keeps its local inbox leased until materialization, relay ACK, and
 durable local completion all succeed; an ACK failure leaves the inbox
 retryable.
+After a valid package ACK, the receiver reads its own authenticated cursor on
+each serving data plane. If a newer package already advanced that origin's
+cursor, the older ACK continues without attempting to move it backward. Cursor
+reads on a replica remain signed, current-membership operations scoped to the
+requesting recipient. The server continues to reject backward cursor writes.
+
+Verified configuration, Project selection and semantic artifact packages have no
+source-retention row. After secure materialization and ACK, the worker marks
+their inbox completion explicitly as non-source work. Completion still requires
+the current unexpired worker lease, no retained source package, and a ready
+outcome. Source packages retain the processing-state and retained-package binding
+requirements.
+
+The existing one-minute peer-maintenance path also refreshes signed configuration
+capability advertisements, including on devices without a direct peer endpoint.
+An idle recipient therefore keeps its source-context and Project-membership
+support current before a new publication needs it. The three-minute capability
+expiry and current-membership checks remain unchanged; this maintenance does not
+poll mailbox or lifecycle state.
 
 After every snapshot recipient ACKs, relay deletes encrypted chunk bytes and
 recipient envelopes 7 days later. If a snapshot recipient is revoked **after

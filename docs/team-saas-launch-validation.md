@@ -47,6 +47,16 @@ credentials, WorkOS credentials, staged route credentials, or service endpoints
 from the target deployment. Required token and session secrets are generated
 for the test run, and child processes run with `NODE_ENV=test`.
 Profile-specific tests configure and verify their intended profile explicitly.
+Isolation removes both the API-prefixed deployment encryption inputs and their
+Personal and Team service aliases. The parent fixture process keeps its own
+provider configuration; disposable child tests supply only their synthetic keys.
+
+The launch migration gate uses `pnpm db:migrate:acceptance --current-schema-only`.
+It applies the complete current journal to a disposable database, checks the
+schema and migration ledger, then reruns migrations and verifies that schema and
+newly created data remain unchanged. Historical upgrade scenarios remain a
+separate `pnpm db:migrate:acceptance` check; they are outside the current-build
+production acceptance scope.
 
 The Conversation Source Access gate starts with deterministic fixture rows for
 independent source grants, exact owner-private source, sanitized Team reads,

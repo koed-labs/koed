@@ -9,10 +9,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPdsApplicationSecretStore } from "@koed/shared";
+import { safeStorage } from "electron";
 
 vi.mock("electron", () => ({
   safeStorage: {
-    isEncryptionAvailable: () => true,
+    isEncryptionAvailable: vi.fn(() => true),
     getSelectedStorageBackend: () => "libsecret",
     encryptString: (value: string) => Buffer.from(`encrypted:${value}`),
     decryptString: (value: Buffer) =>
@@ -31,6 +32,34 @@ afterEach(() => {
 });
 
 describe("managed conversation draft storage", () => {
+  it("defers a blocked Keychain check until use and never falls back after failure", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "koed-drafts-"));
+    directories.push(directory);
+    const check = vi.mocked(safeStorage.isEncryptionAvailable);
+    const calls = check.mock.calls.length;
+    check.mockImplementationOnce(() => {
+      throw new Error("Keychain locked");
+    });
+
+    const store = createManagedConversationDraftStore({
+      userDataPath: directory
+    });
+    expect(check.mock.calls.length).toBe(calls);
+    await expect(store.get("draft")).resolves.toBeNull();
+    await expect(store.delete("draft")).resolves.toBeUndefined();
+    expect(check.mock.calls.length).toBe(calls);
+    await expect(store.put("draft", "private-value")).rejects.toThrow(
+      "Keychain locked"
+    );
+    expect(check.mock.calls.length).toBe(calls + 1);
+    expect(() =>
+      readFileSync(join(directory, "managed-conversation-drafts.json"))
+    ).toThrow();
+    expect(() =>
+      readFileSync(join(directory, "managed-conversation-drafts.key"))
+    ).toThrow();
+  });
+
   it("reads legacy encrypted draft files without parsing them as PDS state", async () => {
     const directory = mkdtempSync(join(tmpdir(), "koed-drafts-"));
     directories.push(directory);

@@ -1,10 +1,18 @@
+import { canonicalJsonDigest } from "./canonical-json-digest.js";
 import {
   sharingRuleContentPolicyAppliedScopeSchema,
   sharingRuleApprovedAmendmentFields
 } from "./sharing-rule-content-policy-contract.js";
 import { z } from "zod";
 import { personalSelectionConsumerPageSchema } from "./personal-selection-consumer-contract.js";
-import { repositorySharingRuleCreationLocalIntentSchema } from "./team-sharing-review-contract.js";
+import {
+  repositorySharingRuleCreationLocalIntentSchema,
+  repositorySharingRuleCreationIntentSchema,
+  sharingSelectionTargetSchema,
+  sharingSelectionDescriptor,
+  repositorySharingRuleMemberInventorySchema,
+  sharingRulePublisherTakeoverAppliedScopeSchema
+} from "./team-sharing-review-contract.js";
 import { sharingRuleDetailAppliedScopeSchema } from "./sharing-rule-detail-contract.js";
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -24,20 +32,66 @@ export const selectionSharingProposalSchema = z
     pageCount: z.number().int().safe().nonnegative(),
     planPage: z.number().int().safe().nonnegative(),
     missingAfter: z.uuid().nullable(),
-    phase: z.enum(["enumerating", "present", "missing", "commit"])
+    phase: z.enum(["enumerating", "inventory", "present", "missing", "commit"]),
+    inventory: z
+      .object({
+        afterMembershipId: z.uuid().nullable(),
+        page: repositorySharingRuleMemberInventorySchema.nullable(),
+        afterBindingId: z.uuid().nullable(),
+        unmatchedMembershipIds: z.array(z.uuid()).max(100),
+        pendingMemberCount: z.number().int().safe().nonnegative(),
+        scope: z
+          .object({
+            authorityVersion: z.number().int().safe().positive(),
+            publisherFence: z.number().int().safe().positive()
+          })
+          .strict()
+          .nullable()
+      })
+      .strict()
+      .optional()
   })
   .strict();
+/** A transferred scope retains the approved Team selector and receipt. Its local
+ * target starts a new consumer history; no old completion token is fabricated. */
+export const transferredSelectionSharingScopeSchema =
+  repositorySharingRuleCreationIntentSchema
+    .extend({
+      review: z.object({ target: sharingSelectionTargetSchema }).strict(),
+      publisherTakeover: sharingRulePublisherTakeoverAppliedScopeSchema
+    })
+    .strict()
+    .superRefine((value, context) => {
+      const approved = value.publisherTakeover.review.selectionScope;
+      if (
+        !approved ||
+        canonicalJsonDigest(
+          repositorySharingRuleCreationIntentSchema.strip().parse(value)
+        ) !== canonicalJsonDigest(approved) ||
+        canonicalJsonDigest(sharingSelectionDescriptor(value.review.target)) !==
+          canonicalJsonDigest(approved.selector)
+      )
+        context.addIssue({
+          code: "custom",
+          message:
+            "Transferred selection progress requires its unchanged approved selector scope"
+        });
+    });
 export const selectionSharingProgressSchema = z
   .object({
     version: z.literal(1),
     identity: selectionSharingIdentitySchema,
     remoteDeviceId: z.uuid(),
-    intent: repositorySharingRuleCreationLocalIntentSchema,
+    intent: z.union([
+      repositorySharingRuleCreationLocalIntentSchema,
+      transferredSelectionSharingScopeSchema
+    ]),
     detailAmendment: sharingRuleDetailAppliedScopeSchema.optional(),
     contentPolicyAmendment:
       sharingRuleContentPolicyAppliedScopeSchema.optional(),
     currentGeneration: z.uuid().nullable(),
     changeCursor: z.uuid().nullable(),
+    pendingMemberCount: z.number().int().safe().nonnegative().optional(),
     proposal: selectionSharingProposalSchema.nullable()
   })
   .strict()
@@ -83,13 +137,19 @@ export const selectionSharingAttemptSchema = z
     mutationId: z.uuid(),
     deliveryEpoch: z.number().int().safe().nonnegative(),
     kind: z.enum(["admit", "context", "remove"]),
+    sourceWorkMode: z.literal("retained").optional(),
     goalHash: hash,
     requestHash: hash,
     logicalMemoryId: z.uuid(),
     membershipId: z.uuid(),
     body: z.record(z.string(), z.json())
   })
-  .strict();
+  .strict()
+  .refine(
+    (attempt) =>
+      attempt.sourceWorkMode === undefined || attempt.kind === "admit",
+    { message: "Retained source work requires an admission" }
+  );
 export const selectionSharingSourceStateSchema = z
   .object({
     sourceKey: hash,

@@ -27,6 +27,7 @@ import {
   vi
 } from "vitest";
 import { resolveKoedServerPaths } from "./paths.js";
+import { deviceRequestCommand } from "./personal-device-request.js";
 import {
   provisionDesktopApiToken,
   provisionDesktopLocalCredential,
@@ -1991,6 +1992,42 @@ describe("start supervisor", () => {
     }
   );
 
+  it("serves local Personal pairing controls with external dependencies and closes them on shutdown", async () => {
+    const root = tempDir();
+    const paths = resolveKoedServerPaths({ KOED_HOME: root });
+    const controller = new AbortController();
+    let nextPid = 200;
+    const running = startKoedServer({
+      signal: controller.signal,
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_RUNTIME_MODE: "local-personal",
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/db",
+        REDIS_URL: "redis://operator:6379",
+        EMBEDDING_SERVICE_URL: "http://operator:8000",
+        MEMORY_API_TOKEN: "test-runtime-token"
+      },
+      spawnSync: () => spawnResult(),
+      spawn: () => child(nextPid++),
+      collectStatus: async () => healthyStatus(root)
+    });
+    try {
+      await vi.waitFor(async () => {
+        await expect(deviceRequestCommand(paths, "status")).rejects.toThrow(
+          "No pending device request. Create one first."
+        );
+      });
+    } finally {
+      controller.abort();
+      await running;
+    }
+    await expect(deviceRequestCommand(paths, "status")).rejects.toThrow(
+      "Start Koed before connecting this device."
+    );
+  });
+
   it("starts app services without managing external dependencies", async () => {
     const root = tempDir();
     const commands: Array<{ command: string; args: string[] }> = [];
@@ -2075,6 +2112,12 @@ describe("start supervisor", () => {
       expect(runtime.services).not.toContain("local-ai-runtime");
       expect(runtime.processes).not.toHaveProperty("localAiRuntime");
       expect(existsSync(resolve(root, "run/koed-server.json"))).toBe(true);
+      await expect(
+        deviceRequestCommand(
+          resolveKoedServerPaths({ KOED_HOME: root }),
+          "status"
+        )
+      ).rejects.toThrow("Start Koed before connecting this device.");
     } finally {
       controller.abort();
       await running;

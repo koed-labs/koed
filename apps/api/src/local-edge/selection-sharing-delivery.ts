@@ -5,12 +5,14 @@ import {
   crossIdentitySyncDeterministicUuid,
   repositorySharingRuleMembersStateSchema,
   repositorySharingRuleMemberAcceptanceSchema,
+  repositorySharingRuleMemberReadmissionSchema,
   repositorySharingRuleMemberContextResultSchema,
   repositorySharingRuleMemberRemovalResultSchema,
   repositorySharingRuleMutationSettlementSchema,
   type SelectionSharingAttempt,
   type SelectionSharingSourceState,
-  type SharedMemoryCandidatePreview
+  type SharedMemoryCandidatePreview,
+  type SharingRuleSourceIdentity
 } from "@koed/shared";
 import type {
   createSelectionSharingJournal,
@@ -28,7 +30,13 @@ type Journal = Pick<
   | "deferSource"
   | "recordDetailScope"
   | "recordContentPolicyScope"
->;
+> &
+  Partial<
+    Pick<
+      ReturnType<typeof createSelectionSharingJournal>,
+      "resolveExistingSource"
+    >
+  >;
 type PreparedAdmission = {
   candidate: SharedMemoryCandidatePreview;
   previewId: string;
@@ -37,6 +45,9 @@ type PreparedAdmission = {
 };
 export interface SelectionSharingDeliveryTransport {
   deploymentProtocolId: string;
+  resolvePortableSource?(
+    identity: SharingRuleSourceIdentity
+  ): Promise<string | null>;
   inspect(logicalMemoryId: string): Promise<unknown>;
   prepareAdmission(logicalMemoryId: string): Promise<PreparedAdmission>;
   send(attempt: SelectionSharingAttempt): Promise<Record<string, unknown>>;
@@ -87,9 +98,21 @@ export const deliverSelectionSharingSources = async (options: {
                 transport.deploymentProtocolId
               )
             : null;
+        const portable =
+          !native && lease.goal.desired === "present"
+            ? await options.journal.resolveExistingSource?.(lease)
+            : null;
         const logicalMemoryId =
-          native?.logicalMemoryId ?? lease.data.remote?.logicalMemoryId;
-        if (!logicalMemoryId || (lease.goal.desired === "present" && !native))
+          lease.goal.desired === "present"
+            ? (native?.logicalMemoryId ??
+              (portable
+                ? await transport.resolvePortableSource?.(portable)
+                : null))
+            : lease.data.remote?.logicalMemoryId;
+        if (
+          !logicalMemoryId ||
+          (lease.goal.desired === "present" && !native && !portable)
+        )
           throw new Error(
             "Source identity or current eligibility is unavailable"
           );
@@ -147,8 +170,23 @@ export const deliverSelectionSharingSources = async (options: {
           membershipVersion: entry.member?.version ?? null,
           authorityVersion: state.authorityVersion,
           publisherFence: state.publisherFence,
-          pendingShareId: entry.member?.pendingShare?.id ?? null
+          pendingShareId:
+            entry.member?.state === "unresolved"
+              ? (entry.member.pendingShare?.id ?? null)
+              : null
         };
+        if (
+          state.state === "active" &&
+          lease.goal.desired === "present" &&
+          entry.workspaceExcluded &&
+          entry.member?.state !== "present" &&
+          entry.member?.state !== "revoked"
+        ) {
+          // Retain the existing delivery goal so explicit restoration can be
+          // observed by its publisher without new scope approval or a queue.
+          await options.journal.deferSource(lease, 60);
+          continue;
+        }
         if (
           state.state === "stopped" ||
           entry.member?.state === "revoked" ||
@@ -186,7 +224,8 @@ export const deliverSelectionSharingSources = async (options: {
           publisherFence: state.publisherFence
         };
         let kind: SelectionSharingAttempt["kind"],
-          body: SelectionSharingAttempt["body"];
+          body: SelectionSharingAttempt["body"],
+          sourceWorkMode: SelectionSharingAttempt["sourceWorkMode"];
         if (lease.goal.desired === "removed") {
           kind = "remove";
           body = context;
@@ -198,6 +237,50 @@ export const deliverSelectionSharingSources = async (options: {
             folderContextVersion: lease.goal.source.contextVersion.folder,
             selectorBindingHash: state.selectorBindingHash
           };
+        } else if (!native) {
+          if (
+            !portable ||
+            (entry.member?.state !== "removed" &&
+              !(
+                entry.member?.state === "unresolved" &&
+                typeof entry.member.pendingShare?.requiresReadmission ===
+                  "boolean" &&
+                (entry.member.pendingShare?.requiresReadmission === true ||
+                  entry.member.pendingShare?.state === "needs_attention" ||
+                  entry.member.pendingShare?.state === "failed" ||
+                  (entry.member.pendingShare?.state === "preparing" &&
+                    (entry.member.sourceContextHash !==
+                      lease.goal.contextHash ||
+                      entry.member.gitContextVersion !==
+                        lease.goal.source.contextVersion.git ||
+                      entry.member.folderContextVersion !==
+                        lease.goal.source.contextVersion.folder)))
+              )) ||
+            (!entry.grant && entry.member?.state !== "unresolved") ||
+            state.state !== "active"
+          )
+            throw new Error(
+              "Existing source admission is unavailable for this receiving checkpoint"
+            );
+          kind = "admit";
+          sourceWorkMode = "retained";
+          body = repositorySharingRuleMemberReadmissionSchema.parse({
+            mutationId,
+            consentId: randomUUID(),
+            logicalMemoryId,
+            membership: {
+              selectionSnapshotVersion: context.selectionSnapshotVersion,
+              sourceContextHash: context.sourceContextHash,
+              expectedAuthorityVersion: context.expectedAuthorityVersion,
+              expectedMembershipVersion: context.expectedMembershipVersion,
+              publisherFence: context.publisherFence,
+              sourceIdentity: portable,
+              selectorBindingHash: state.selectorBindingHash,
+              expectedGrantVersion: entry.grant?.version ?? null,
+              gitContextVersion: lease.goal.source.contextVersion.git,
+              folderContextVersion: lease.goal.source.contextVersion.folder
+            }
+          });
         } else {
           if (state.state !== "active")
             throw new Error("Paused rules cannot admit a source");
@@ -232,6 +315,18 @@ export const deliverSelectionSharingSources = async (options: {
             },
             previewRevision: prepared.previewRevision,
             membership: {
+              ...(lease.goal.source.portable
+                ? {
+                    sourceIdentity: {
+                      originatingDeploymentId:
+                        lease.goal.source.portable.originatingDeploymentId,
+                      originatingDeviceId:
+                        lease.goal.source.portable.originatingDeviceId,
+                      logicalSessionId:
+                        lease.goal.source.portable.logicalSessionId
+                    }
+                  }
+                : {}),
               selectionSnapshotVersion: context.selectionSnapshotVersion,
               sourceContextHash: context.sourceContextHash,
               expectedAuthorityVersion: context.expectedAuthorityVersion,
@@ -252,6 +347,7 @@ export const deliverSelectionSharingSources = async (options: {
           mutationId,
           goalHash: lease.goalHash,
           ...request,
+          ...(sourceWorkMode ? { sourceWorkMode } : {}),
           requestHash: crossIdentitySyncDigest(request)
         });
       }
@@ -276,7 +372,10 @@ export const deliverSelectionSharingSources = async (options: {
         if (settlement.state === "canceled") {
           await options.journal.cancelAttempt(lease, {
             mutationId: attempt.mutationId,
-            requestHash: attempt.requestHash
+            requestHash: attempt.requestHash,
+            ...(attempt.sourceWorkMode === "retained"
+              ? { retrySeconds: 30 }
+              : {})
           });
           continue;
         }
@@ -299,15 +398,23 @@ export const deliverSelectionSharingSources = async (options: {
           receipt.publisherFence !== membership.publisherFence
         )
           throw new Error("Admission receipt does not match its request");
-        const body = createRepositorySharingRuleMemberSchema.parse(
-          attempt.body
-        );
-        await transport.queueSource({
-          pendingShareId: receipt.pendingShareId,
-          mutationId: attempt.mutationId,
-          source: body.source,
-          sourceRevision: receipt.sourceRevision
-        });
+        if (attempt.sourceWorkMode === "retained") {
+          const body = repositorySharingRuleMemberReadmissionSchema.parse(
+            attempt.body
+          );
+          if (body.logicalMemoryId !== attempt.logicalMemoryId)
+            throw new Error("Retained admission source changed");
+        } else {
+          const body = createRepositorySharingRuleMemberSchema.parse(
+            attempt.body
+          );
+          await transport.queueSource({
+            pendingShareId: receipt.pendingShareId,
+            mutationId: attempt.mutationId,
+            source: body.source,
+            sourceRevision: receipt.sourceRevision
+          });
+        }
         remote = {
           logicalMemoryId: attempt.logicalMemoryId,
           membershipId: receipt.membershipId,
@@ -343,7 +450,10 @@ export const deliverSelectionSharingSources = async (options: {
       }
       await options.journal.acknowledgeSource(lease, {
         mutationId: attempt.mutationId,
-        remote
+        remote,
+        ...(attempt.sourceWorkMode === "retained"
+          ? { observePending: true }
+          : {})
       });
       acknowledged++;
     } catch {

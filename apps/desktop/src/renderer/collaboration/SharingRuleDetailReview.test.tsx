@@ -41,7 +41,7 @@ const review: Review = {
   disclosureIncrease: true,
   teamName: "Team",
   workspaceName: "Engineering",
-  expiresAt: "2026-10-21T12:05:00Z",
+  expiresAt: new Date(Date.now() + 60_000).toISOString(),
   reviewHash: "f".repeat(64)
 };
 let root: Root | undefined;

@@ -1,7 +1,10 @@
 import type {
   ConversationSharingRuleControlIntent,
+  ConversationSharingRuleCreationIntent,
+  SnapshotConversionScope,
   RepositorySharingRuleCreationIntent,
-  RepositorySharingRuleControlIntent
+  RepositorySharingRuleControlIntent,
+  SharingRulePublisherTakeoverIntent
 } from "./team-sharing-review-contract.js";
 import {
   highRiskActionGrantCanonicalHash,
@@ -12,9 +15,63 @@ import type { SharedMemoryFidelityCeiling } from "./shared-memory-fidelity.js";
 import type { TeamRepositorySnapshotReview } from "./team-repository-snapshot.js";
 import type { SharingRuleContentPolicyIntent } from "./sharing-rule-content-policy-contract.js";
 import type { SharingRuleDetailIntent } from "./sharing-rule-detail-contract.js";
+import type {
+  WorkspaceConversationExclusionIntent,
+  WorkspaceConversationRestorationIntent
+} from "./workspace-conversation-exclusion-contract.js";
 
 export const SHARED_MEMORY_AUTHORITY_ACTION =
   "workspace.memory.share_owned" as const;
+
+export const sharedMemoryPublisherTakeoverActionGrantBinding = (
+  input: SharingRulePublisherTakeoverIntent & { referenceId: string }
+): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.publisher_takeover.${input.review.teamWorkspaceId}`,
+    teamId: input.review.teamId,
+    targetId: input.review.ruleId,
+    method: "POST",
+    path: `/v1/shared-memory/sharing-rules/${input.review.ruleId}/publisher`,
+    body: {
+      mutationId: input.mutationId,
+      review: input.review,
+      authority: authorityBody(input.referenceId)
+    }
+  });
+
+export const sharedMemoryWorkspaceExclusionActionGrantBinding = (
+  input: WorkspaceConversationExclusionIntent & { referenceId: string }
+): SharedMemoryActionGrantBinding => {
+  const { referenceId, mutationId, scope } = input;
+  return withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.workspace_exclude.${scope.teamWorkspaceId}`,
+    teamId: scope.teamId,
+    targetId: scope.logicalMemoryId,
+    method: "POST",
+    path: "/v1/shared-memory/workspace-exclusions",
+    body: { mutationId, scope, authority: authorityBody(referenceId) }
+  });
+};
+
+export const sharedMemoryWorkspaceRestorationActionGrantBinding = (
+  input: WorkspaceConversationRestorationIntent & { referenceId: string }
+): SharedMemoryActionGrantBinding =>
+  withHashes({
+    operationFamily: "share_grant_management",
+    action: `shared_memory.workspace_restore.${input.scope.teamWorkspaceId}`,
+    teamId: input.scope.teamId,
+    targetId: input.scope.logicalMemoryId,
+    method: "POST",
+    path: "/v1/shared-memory/workspace-exclusions/restore",
+    body: {
+      mutationId: input.mutationId,
+      scope: input.scope,
+      restoration: input.restoration,
+      authority: authorityBody(input.referenceId)
+    }
+  });
 
 export type SharedMemoryRepresentation =
   | SharedMemoryFidelityCeiling
@@ -178,6 +235,7 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
   activationRepresentation: SharedMemoryRepresentation;
   mutationId: string;
   logicalGrantId: string;
+  expectedGrantVersion?: number | null;
   consentId: string;
   logicalMemoryId: string;
   teamId: string;
@@ -190,7 +248,11 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
   includeCuratedMemory: boolean;
   expiresAt?: string | null;
 }): SharedMemoryActionGrantBinding => {
-  const normalizedInput = { ...input, expiresAt: input.expiresAt ?? null };
+  const normalizedInput = {
+    ...input,
+    expectedGrantVersion: input.expectedGrantVersion ?? null,
+    expiresAt: input.expiresAt ?? null
+  };
   return withHashes({
     operationFamily: "share_grant_management",
     action: `shared_memory.pending_share.${shareIntentScope(normalizedInput)}`,
@@ -204,6 +266,7 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
       activationRepresentation: input.activationRepresentation,
       mutationId: input.mutationId,
       logicalGrantId: input.logicalGrantId,
+      expectedGrantVersion: input.expectedGrantVersion ?? null,
       consentId: input.consentId,
       logicalMemoryId: input.logicalMemoryId,
       teamId: input.teamId,
@@ -224,6 +287,10 @@ export const sharedMemoryPendingShareActionGrantBinding = (input: {
 
 export const sharedMemoryConversationRuleCreationActionGrantBinding = (
   input: Parameters<typeof sharedMemoryPendingShareActionGrantBinding>[0] & {
+    snapshotConversion?: SnapshotConversionScope;
+    sourceIdentity?: NonNullable<
+      ConversationSharingRuleCreationIntent["sourceIdentity"]
+    >;
     ruleId: string;
     expectedGrantVersion: number | null;
     effectivePrivacyPolicyHash: string;
@@ -239,6 +306,10 @@ export const sharedMemoryConversationRuleCreationActionGrantBinding = (
     path: "/v1/shared-memory/conversation-rules",
     body: {
       ...pending.body,
+      ...(input.snapshotConversion
+        ? { snapshotConversion: input.snapshotConversion }
+        : {}),
+      ...(input.sourceIdentity ? { sourceIdentity: input.sourceIdentity } : {}),
       ruleId: input.ruleId,
       expectedGrantVersion: input.expectedGrantVersion,
       effectivePrivacyPolicyHash: input.effectivePrivacyPolicyHash

@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim AS runtime-base
 
 WORKDIR /app
 
@@ -17,11 +17,23 @@ RUN apt-get update \
   && corepack enable \
   && corepack prepare pnpm@11.1.2 --activate
 
+FROM runtime-base AS build
+
+# node-pty can require compilation when the target has no matching prebuild.
+# Keep its compiler toolchain out of the service image.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY . .
 
 RUN pnpm install --frozen-lockfile \
   && pnpm source-runtime:prepare \
   && pnpm --filter @koed-labs/server build
+
+FROM runtime-base
+
+COPY --from=build /app /app
 
 ENV KOED_HOME=/data/koed
 ENV KOED_DEVICE_PROOF_DIR=/data/koed-device-proof/device-proof

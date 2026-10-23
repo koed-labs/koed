@@ -318,6 +318,7 @@ const buildServer = async (overrides?: {
     getConversationSharingRuleCreationReview: vi.fn(async () => null),
     getRepositorySharingRuleCreationReview: vi.fn(async () => null),
     getRepositorySharingRuleControlReview: vi.fn(async () => null),
+    getSharingRulePublisherTakeoverReview: vi.fn(async () => null),
     getConversationSharingRuleControlReview: vi.fn(async () => null),
     getSharedMemoryRevokeReview: vi.fn(async (_actor, input) => ({
       source: {
@@ -438,12 +439,14 @@ const buildServer = async (overrides?: {
 };
 
 describe("high-risk action grant routes", () => {
-  it("disables alpha content-policy approvals for existing native and browser requests", async () => {
+  it("accepts content-policy decisions through native and fresh browser approval boundaries", async () => {
     const fixture = await buildServer({
+      deviceOperationFamilies: ["share_grant_management"],
       repository: {
         getActionGrant: vi.fn(async () => ({
           ...binding,
           action: "shared_memory.rule_content_policy",
+          operationFamily: "share_grant_management",
           approvalTier: "native_review" as const
         })),
         getBrowserActivation: vi.fn(async () => ({
@@ -465,12 +468,12 @@ describe("high-risk action grant routes", () => {
         headers: { cookie: "cm_session=alice-session" },
         payload: { decision: "approve" }
       });
-      expect(native.statusCode).toBe(403);
-      expect(browser.statusCode).toBe(403);
+      expect(native.statusCode).toBe(200);
+      expect(browser.statusCode).toBe(200);
       expect(
         fixture.repository.decideNativeActionReview
-      ).not.toHaveBeenCalled();
-      expect(fixture.repository.decideBrowserActivation).not.toHaveBeenCalled();
+      ).toHaveBeenCalledOnce();
+      expect(fixture.repository.decideBrowserActivation).toHaveBeenCalledOnce();
     } finally {
       await fixture.app.close();
     }

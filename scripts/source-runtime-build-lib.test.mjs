@@ -144,6 +144,50 @@ test("builds once and skips a current runtime", async () => {
   assert.equal(builds, 1);
 });
 
+test("removes deleted-source outputs before rebuilding the runtime closure", async () => {
+  const { root, spec } = createFixture();
+  await prepareSourceRuntime(
+    root,
+    options(spec, { runBuild: () => writeOutputs(root) })
+  );
+  write(
+    root,
+    "apps/service/dist/removed-route.js",
+    "export const old = true;\n"
+  );
+  write(root, "packages/shared/dist/removed-contract.js", "export {};\n");
+  write(root, "packages/shared/tsconfig.tsbuildinfo", "old build state\n");
+  write(root, "apps/service/src/index.ts", "export const value = 2;\n");
+  await prepareSourceRuntime(
+    root,
+    options(spec, {
+      runBuild: () => {
+        assert.equal(
+          existsSync(resolve(root, "apps/service/dist/removed-route.js")),
+          false
+        );
+        assert.equal(
+          existsSync(resolve(root, "packages/shared/dist/removed-contract.js")),
+          false
+        );
+        assert.equal(
+          existsSync(resolve(root, "packages/shared/tsconfig.tsbuildinfo")),
+          false
+        );
+        assert.equal(
+          existsSync(resolve(root, "packages/shared/src/index.ts")),
+          true
+        );
+        writeOutputs(root);
+      }
+    })
+  );
+  assert.equal(
+    (await checkSourceRuntime(root, options(spec))).state,
+    "current"
+  );
+});
+
 test("keeps the dirty marker after a failed build and source revert", async () => {
   const { root, spec } = createFixture();
   await prepareSourceRuntime(

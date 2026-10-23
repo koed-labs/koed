@@ -1,13 +1,21 @@
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
+import { readConsumerCursor } from "./personal-selection-consumer-state.js";
 import {
-  readConsumerCursor,
-  resolveConsumerSelection
-} from "./personal-selection-consumer-state.js";
-import { personalSourceSelectionSql } from "./personal-selection-sql.js";
+  resolveNativeSharingSource,
+  resolveNativeConversationSharingSource,
+  resolvePublisherTakeoverSource,
+  resolveSharingSelectionTarget,
+  readPublisherTakeoverSourceBindings,
+  resolveReplicaSharingSource
+} from "./selection-sharing-source-availability.js";
 import {
   canonicalJsonStringify,
-  crossIdentitySyncDeterministicUuid,
+  sharingRulePublisherTakeoverLocalIntentSchema,
+  repositorySharingRuleMemberInventorySchema,
+  sharingRuleSourceIdentityHash,
+  sharingRulePublisherTakeoverAppliedScopeSchema,
+  transferredSelectionSharingScopeSchema,
   crossIdentitySyncDigest,
   decryptEnvelopeToUtf8,
   personalSelectionConsumerPageSchema,
@@ -354,6 +362,135 @@ export const seedSelectionSharingProgress = async (
   );
 };
 
+/** Transfer acknowledgment creates a receiving history atomically. Superseded
+ * local leases/attempts cannot reuse the former publisher's cursor or work. */
+export const seedTransferredSelectionSharingProgress = async (
+  client: pg.PoolClient,
+  provider: EnvelopeEncryptionProvider,
+  input: {
+    enrollmentId: string;
+    creationDeliveryId: string;
+    identity: SelectionSharingIdentity;
+    remoteDeviceId: string;
+    intent: ReturnType<
+      typeof sharingRulePublisherTakeoverLocalIntentSchema.parse
+    >;
+    scope: ReturnType<
+      typeof sharingRulePublisherTakeoverAppliedScopeSchema.parse
+    >;
+  }
+) => {
+  const intent = sharingRulePublisherTakeoverLocalIntentSchema.parse(
+      input.intent
+    ),
+    scope = sharingRulePublisherTakeoverAppliedScopeSchema.parse(input.scope);
+  if (
+    scope.result.mutationId !== intent.mutationId ||
+    input.remoteDeviceId !== scope.result.publisherCredentialId ||
+    crossIdentitySyncDigest(scope.review) !==
+      crossIdentitySyncDigest(intent.review)
+  )
+    throw conflict();
+  if (!scope.review.selectionScope) return;
+  if (!intent.target) throw conflict();
+  const approved = await client.query(
+    `select delivery.id from collaboration_sharing_rule_deliveries delivery join collaboration_shared_memory_enrollments enrollment on enrollment.id=delivery.enrollment_id
+     where delivery.id=$1 and delivery.enrollment_id=$2 and delivery.rule_id=$3 and delivery.operation_kind='publisher_takeover' and delivery.state='acknowledged'
+       and enrollment.revoked_at is null and enrollment.backend_id=$4 and enrollment.local_owner_user_id=$5 and enrollment.upstream_user_id=$6 and enrollment.remote_device_id=$7 for share of enrollment`,
+    [
+      input.creationDeliveryId,
+      input.enrollmentId,
+      intent.ruleId,
+      input.identity.backendId,
+      input.identity.localOwnerUserId,
+      input.identity.upstreamUserId,
+      input.remoteDeviceId
+    ]
+  );
+  if (!approved.rowCount) throw conflict();
+  const existing = (
+    await client.query<Row>(
+      `select * from collaboration_sharing_selection_progress where enrollment_id=$1 and rule_id=$2 for update`,
+      [input.enrollmentId, intent.ruleId]
+    )
+  ).rows[0];
+  const previous = existing
+    ? await decode(provider, input.identity, progressTable, existing, (value) =>
+        selectionSharingProgressSchema.parse(value)
+      )
+    : null;
+  if (
+    previous &&
+    "publisherTakeover" in previous.intent &&
+    previous.intent.publisherTakeover.result.authorityVersion >=
+      scope.result.authorityVersion
+  )
+    return;
+  const id = existing ? String(existing.id) : randomUUID();
+  const data = selectionSharingProgressSchema.parse({
+    version: 1,
+    identity: input.identity,
+    remoteDeviceId: input.remoteDeviceId,
+    intent: transferredSelectionSharingScopeSchema.parse({
+      ...scope.review.selectionScope,
+      review: { target: intent.target },
+      publisherTakeover: scope
+    }),
+    ...(previous?.detailAmendment &&
+    previous.detailAmendment.result.authorityVersion >
+      scope.result.authorityVersion
+      ? { detailAmendment: previous.detailAmendment }
+      : {}),
+    ...(previous?.contentPolicyAmendment &&
+    previous.contentPolicyAmendment.result.authorityVersion >
+      scope.result.authorityVersion
+      ? { contentPolicyAmendment: previous.contentPolicyAmendment }
+      : {}),
+    currentGeneration: null,
+    changeCursor: null,
+    proposal: null
+  });
+  const encrypted = await encode(
+    provider,
+    input.identity,
+    progressTable,
+    id,
+    data
+  );
+  if (existing) {
+    await client.query(
+      "delete from collaboration_sharing_selection_pages where progress_id=$1",
+      [id]
+    );
+    await client.query(
+      "delete from collaboration_sharing_selection_sources where progress_id=$1",
+      [id]
+    );
+    await client.query(
+      `update collaboration_sharing_selection_progress set creation_delivery_id=$2,state='active',delivery_epoch=delivery_epoch+1,lease_version=lease_version+1,
+      current_generation=null,proposal_generation=null,locked_at=null,available_at=now(),source_work_at=now(),attempt_count=0,protected_dto=$3::jsonb,protected_dto_hash=$4,updated_at=now() where id=$1`,
+      [
+        id,
+        input.creationDeliveryId,
+        JSON.stringify(encrypted.envelope),
+        encrypted.hash
+      ]
+    );
+  } else
+    await client.query(
+      `insert into collaboration_sharing_selection_progress(id,enrollment_id,rule_id,creation_delivery_id,protected_dto,protected_dto_hash)
+      values($1,$2,$3,$4,$5::jsonb,$6)`,
+      [
+        id,
+        input.enrollmentId,
+        intent.ruleId,
+        input.creationDeliveryId,
+        JSON.stringify(encrypted.envelope),
+        encrypted.hash
+      ]
+    );
+};
+
 export const createSelectionSharingJournal = (
   pool: pg.Pool,
   provider: EnvelopeEncryptionProvider
@@ -576,7 +713,14 @@ export const createSelectionSharingJournal = (
         };
     if (payload.sourceKey !== sourceKey) throw conflict();
     if (row?.proposed_generation === proposal.generation) {
-      if (row.proposed_goal_hash !== hash) throw conflict();
+      if (row.proposed_goal_hash !== hash) {
+        if (proposal.inventory)
+          throw Object.assign(
+            new Error("Personal evidence changed during inventory staging"),
+            { code: "selection_enumeration_stale" }
+          );
+        throw conflict();
+      }
       return;
     }
     let currentGeneration = payload.currentGeneration,
@@ -626,6 +770,21 @@ export const createSelectionSharingJournal = (
     );
   };
   return {
+    async readPublisherTakeoverSourceBindings(
+      input: Parameters<typeof readPublisherTakeoverSourceBindings>[1]
+    ) {
+      return transaction(pool, (client) =>
+        readPublisherTakeoverSourceBindings(client, input)
+      );
+    },
+    async resolveSharingSelectionTarget(input: {
+      ownerUserId: string;
+      target: SelectionSharingProgress["intent"]["review"]["target"];
+    }) {
+      return transaction(pool, (client) =>
+        resolveSharingSelectionTarget(client, input.ownerUserId, input.target)
+      );
+    },
     async recordContentPolicyScope(input: {
       identity: SelectionSharingIdentity;
       remoteDeviceId: string;
@@ -752,7 +911,178 @@ export const createSelectionSharingJournal = (
         proposal.pageCount++;
         proposal.nextCursor = page.nextCursor;
         proposal.changeCursor = page.changeCursor;
-        if (page.nextCursor === null) proposal.phase = "present";
+        if (page.nextCursor === null) {
+          if ("publisherTakeover" in data.intent) {
+            proposal.phase = "inventory";
+            proposal.inventory = {
+              afterMembershipId: null,
+              page: null,
+              afterBindingId: null,
+              unmatchedMembershipIds: [],
+              pendingMemberCount: 0,
+              scope: null
+            };
+          } else proposal.phase = "present";
+        }
+        await save(client, lease, data, true);
+      });
+    },
+    async installInventoryPage(
+      lease: SelectionSharingProgressLease,
+      raw: unknown
+    ) {
+      const page = repositorySharingRuleMemberInventorySchema.parse(raw);
+      return transaction(pool, async (client) => {
+        const { data } = await load(client, lease),
+          proposal = data.proposal,
+          inventory = proposal?.inventory;
+        if (
+          proposal?.phase !== "inventory" ||
+          !inventory ||
+          inventory.page ||
+          page.ruleId !== data.intent.ruleId ||
+          page.teamId !== data.intent.teamId ||
+          page.teamWorkspaceId !== data.intent.teamWorkspaceId ||
+          page.selectorBindingHash !==
+            crossIdentitySyncDigest(data.intent.selector) ||
+          page.entries.some(
+            (entry, index) =>
+              entry.membershipId <=
+              (index
+                ? page.entries[index - 1]!.membershipId
+                : (inventory.afterMembershipId ?? ""))
+          ) ||
+          (page.nextAfterMembershipId !== null &&
+            (page.entries.length !== 100 ||
+              page.nextAfterMembershipId !== page.entries.at(-1)!.membershipId))
+        )
+          throw conflict();
+        const scope = {
+          authorityVersion: page.authorityVersion,
+          publisherFence: page.publisherFence
+        };
+        if (
+          inventory.scope &&
+          crossIdentitySyncDigest(inventory.scope) !==
+            crossIdentitySyncDigest(scope)
+        )
+          throw Object.assign(new Error("Publisher inventory scope changed"), {
+            code: "selection_enumeration_stale"
+          });
+        inventory.scope = scope;
+        inventory.page = page;
+        inventory.afterBindingId = null;
+        inventory.unmatchedMembershipIds = page.entries.map(
+          (entry) => entry.membershipId
+        );
+        if (!page.entries.length) proposal.phase = "present";
+        await save(client, lease, data, true);
+      });
+    },
+    async stageInventoryBindings(
+      lease: SelectionSharingProgressLease,
+      input: {
+        nextAfterBindingId: string | null;
+        dispositions: Array<{
+          membershipId: string;
+          source: SelectionSharingGoal["source"];
+          goal: SelectionSharingGoal | null;
+        }>;
+      }
+    ) {
+      if (input.dispositions.length > 100) throw conflict();
+      return transaction(pool, async (client) => {
+        const { data } = await load(client, lease),
+          proposal = data.proposal,
+          inventory = proposal?.inventory,
+          page = inventory?.page;
+        if (
+          proposal?.phase !== "inventory" ||
+          !inventory ||
+          !page ||
+          inventory.afterBindingId !==
+            lease.data.proposal?.inventory?.afterBindingId ||
+          (input.nextAfterBindingId !== null &&
+            input.nextAfterBindingId <= (inventory.afterBindingId ?? ""))
+        )
+          throw conflict();
+        for (const item of input.dispositions) {
+          const member = page.entries.find(
+              (entry) => entry.membershipId === item.membershipId
+            ),
+            portable = item.source.portable;
+          if (
+            !member ||
+            !portable ||
+            portable.ownerUserId !== lease.identity.localOwnerUserId ||
+            item.source.identityState !== "verified" ||
+            !inventory.unmatchedMembershipIds.includes(member.membershipId) ||
+            member.portableSourceHash !==
+              sharingRuleSourceIdentityHash(lease.identity.upstreamUserId, {
+                originatingDeploymentId: portable.originatingDeploymentId,
+                originatingDeviceId: portable.originatingDeviceId,
+                logicalSessionId: portable.logicalSessionId
+              })
+          )
+            throw conflict();
+          inventory.unmatchedMembershipIds =
+            inventory.unmatchedMembershipIds.filter(
+              (id) => id !== member.membershipId
+            );
+          if (!item.goal) continue;
+          if (
+            selectionSharingSourceKey(item.goal.source) !==
+              selectionSharingSourceKey(item.source) ||
+            item.goal.desired === "present"
+          )
+            throw conflict();
+          await stage(client, lease, data, item.goal);
+          const row = (
+            await client.query<Row>(
+              `select * from collaboration_sharing_selection_sources where progress_id=$1 and source_key=$2 for update`,
+              [lease.progressId, selectionSharingSourceKey(item.source)]
+            )
+          ).rows[0]!;
+          const payload = await readSource(lease.identity, row);
+          if (
+            payload.remote &&
+            payload.remote.logicalMemoryId !== member.logicalMemoryId
+          )
+            throw conflict();
+          if (!payload.remote) {
+            payload.remote = {
+              logicalMemoryId: member.logicalMemoryId,
+              membershipId: member.membershipId,
+              membershipVersion: member.membershipVersion,
+              authorityVersion: page.authorityVersion,
+              publisherFence: page.publisherFence,
+              pendingShareId: null
+            };
+            const encrypted = await encode(
+              provider,
+              lease.identity,
+              sourcesTable,
+              String(row.id),
+              payload,
+              lease.progressId
+            );
+            await client.query(
+              `update collaboration_sharing_selection_sources set protected_dto=$2::jsonb,protected_dto_hash=$3 where id=$1`,
+              [row.id, JSON.stringify(encrypted.envelope), encrypted.hash]
+            );
+          }
+          if (item.goal.desired === "unresolved")
+            inventory.pendingMemberCount++;
+        }
+        inventory.afterBindingId = input.nextAfterBindingId;
+        if (input.nextAfterBindingId === null) {
+          inventory.pendingMemberCount +=
+            inventory.unmatchedMembershipIds.length;
+          inventory.afterMembershipId = page.nextAfterMembershipId;
+          inventory.page = null;
+          inventory.unmatchedMembershipIds = [];
+          if (page.nextAfterMembershipId === null) proposal.phase = "present";
+        }
         await save(client, lease, data, true);
       });
     },
@@ -912,6 +1242,8 @@ export const createSelectionSharingJournal = (
         );
         if (missing.rowCount) throw conflict();
         data.currentGeneration = proposal.generation;
+        if (proposal.inventory)
+          data.pendingMemberCount = proposal.inventory.pendingMemberCount;
         data.changeCursor = proposal.changeCursor;
         data.proposal = null;
         await save(client, lease, data, true);
@@ -930,6 +1262,10 @@ export const createSelectionSharingJournal = (
             [lease.progressId, data.proposal.generation]
           );
         data.proposal = null;
+        // A rejected cursor cannot be the starting point of the next scan.
+        // Keep the installed generation and exact source attempts until a
+        // complete replacement baseline is ready to commit.
+        data.changeCursor = null;
         await save(client, lease, data, true);
       });
     },
@@ -1034,8 +1370,15 @@ export const createSelectionSharingJournal = (
               and (source.attempt_mutation_id is not null or source.done_delivery_epoch is distinct from $3::int or source.done_goal_hash is distinct from
                 case when source.proposed_generation=$2 then source.proposed_goal_hash else source.current_goal_hash end)
               and (source.attempt_mutation_id is not null or case when source.proposed_generation=$2 then source.proposed_goal_hash else source.current_goal_hash end is not null)
+              and (not $4::boolean or source.attempt_mutation_id is not null)
             order by source.available_at,source.id limit 1 for update of source skip locked`,
-            [root.id, root.current_generation, root.delivery_epoch]
+            [
+              root.id,
+              root.current_generation,
+              root.delivery_epoch,
+              "publisherTakeover" in progress.intent &&
+                progress.proposal !== null
+            ]
           );
           const row = rows.rows[0];
           if (!row) continue;
@@ -1069,6 +1412,22 @@ export const createSelectionSharingJournal = (
         return work;
       });
     },
+    async resolvePublisherTakeoverSource(
+      input: Parameters<typeof resolvePublisherTakeoverSource>[1]
+    ) {
+      return transaction(pool, (client) =>
+        resolvePublisherTakeoverSource(client, input)
+      );
+    },
+    async resolveNativeConversationSource(input: {
+      ownerUserId: string;
+      sessionId: string;
+      deploymentProtocolId: string;
+    }) {
+      return transaction(pool, (client) =>
+        resolveNativeConversationSharingSource(client, input)
+      );
+    },
     async resolveNativeSource(
       lease: SelectionSharingSourceLease,
       deploymentProtocolId: string
@@ -1077,49 +1436,23 @@ export const createSelectionSharingJournal = (
         const { goal, progress, goalHash } = await loadSource(client, lease);
         if (goal.desired !== "present" || goalHash !== lease.goalHash)
           throw conflict();
-        const resolved = await resolveConsumerSelection(
-          client,
-          { userId: lease.identity.localOwnerUserId },
-          {
-            version: 1,
-            ownerUserId: lease.identity.localOwnerUserId,
-            target: progress.intent.review.target
-          }
-        );
-        const source = goal.source;
-        const native = await client.query(
-          `select 1 from sessions s where s.id=$1 and s.logical_session_id=$2 and s.owner_user_id=$3
-          and s.visibility='personal' and s.invalidated_at is null and s.personal_deleted_at is null
-          and s.repository_assignment_version=$4 and (s.folder_assignment->>'revision')::integer=$7 and ${personalSourceSelectionSql("s", "$5")}
-          and pds_session_recall_ready(s.id) and sync_session_recall_ready(s.id)
-          and not exists(select 1 from pds_logical_replicas where local_session_id=s.id)
-          and not exists(select 1 from local_captured_session_logical_memories binding join memory_replicas replica on replica.logical_memory_id=binding.logical_memory_id
-            where binding.local_session_id=s.id and replica.replica_role='target')
-          and not exists(select 1 from personal_source_bindings binding where binding.owner_user_id=s.owner_user_id and binding.local_session_id=s.id
-            and (binding.availability<>'available' or binding.local_logical_session_id<>s.logical_session_id or binding.originating_deployment_id<>$6))`,
-          [
-            source.localSessionId,
-            source.localLogicalSessionId,
-            lease.identity.localOwnerUserId,
-            source.contextVersion.git,
-            resolved.selection,
-            deploymentProtocolId,
-            source.contextVersion.folder
-          ]
-        );
-        if (!native.rowCount) return null;
-        // The existing capture-sync identity formula applies only to a proven
-        // native Session. A receiving replica cannot become a new source origin.
-        return {
-          logicalMemoryId: crossIdentitySyncDeterministicUuid({
-            protocol: "koed.captured-session-sync/v2",
-            sourceDeploymentId: deploymentProtocolId,
-            sourceUserId: lease.identity.localOwnerUserId,
-            originSessionId: source.localSessionId,
-            identity: "logical-memory"
-          }),
-          sessionId: source.localSessionId
-        };
+        return resolveNativeSharingSource(client, {
+          ownerUserId: lease.identity.localOwnerUserId,
+          goal,
+          target: progress.intent.review.target,
+          deploymentProtocolId
+        });
+      });
+    },
+    async resolveExistingSource(lease: SelectionSharingSourceLease) {
+      return transaction(pool, async (client) => {
+        const { goal, progress, goalHash } = await loadSource(client, lease);
+        if (goalHash !== lease.goalHash) throw conflict();
+        return resolveReplicaSharingSource(client, {
+          ownerUserId: lease.identity.localOwnerUserId,
+          goal,
+          target: progress.intent.review.target
+        });
       });
     },
     async persistAttempt(
@@ -1139,7 +1472,7 @@ export const createSelectionSharingJournal = (
       )
         throw conflict();
       return transaction(pool, async (client) => {
-        const { data, goalHash, deliveryEpoch } = await loadSource(
+        const { data, goalHash, deliveryEpoch, progress } = await loadSource(
           client,
           lease
         );
@@ -1151,6 +1484,8 @@ export const createSelectionSharingJournal = (
             throw conflict();
           return data.attempt;
         }
+        if ("publisherTakeover" in progress.intent && progress.proposal)
+          throw conflict();
         if (
           goalHash !== lease.goalHash ||
           attempt.goalHash !== goalHash ||
@@ -1165,7 +1500,7 @@ export const createSelectionSharingJournal = (
     },
     async cancelAttempt(
       lease: SelectionSharingSourceLease,
-      input: { mutationId: string; requestHash: string }
+      input: { mutationId: string; requestHash: string; retrySeconds?: number }
     ) {
       return transaction(pool, async (client) => {
         const { data } = await loadSource(client, lease);
@@ -1179,8 +1514,12 @@ export const createSelectionSharingJournal = (
         // Cancellation confirms non-acceptance, not delivery of any goal.
         await saveSource(client, lease, data);
         await client.query(
-          "update collaboration_sharing_selection_sources set locked_at=null,available_at=now()+interval '1 second' where id=$1 and lease_version=$2",
-          [lease.sourceId, lease.leaseVersion]
+          "update collaboration_sharing_selection_sources set locked_at=null,available_at=now()+make_interval(secs=>$3) where id=$1 and lease_version=$2",
+          [
+            lease.sourceId,
+            lease.leaseVersion,
+            Math.max(1, Math.min(300, input.retrySeconds ?? 1))
+          ]
         );
       });
     },
@@ -1189,6 +1528,7 @@ export const createSelectionSharingJournal = (
       input: {
         mutationId: string | null;
         remote: SelectionSharingSourceState["remote"];
+        observePending?: boolean;
       }
     ) {
       return transaction(pool, async (client) => {
@@ -1199,6 +1539,13 @@ export const createSelectionSharingJournal = (
         const remote = selectionSharingSourceStateSchema.shape.remote.parse(
           input.remote
         );
+        if (
+          input.observePending === true &&
+          (input.mutationId === null ||
+            data.attempt?.sourceWorkMode !== "retained" ||
+            !remote?.pendingShareId)
+        )
+          throw conflict();
         let doneHash: string, doneEpoch: number;
         if (input.mutationId !== null) {
           const attempt = data.attempt;
@@ -1227,6 +1574,19 @@ export const createSelectionSharingJournal = (
         // goal remains dirty and is delivered after this ambiguous write settles.
         data.remote = remote;
         await saveSource(client, lease, data, doneHash, doneEpoch);
+        // Retained admission has no local upload worker. Keep its exact goal
+        // eligible for bounded inspection until Team initializes the member.
+        if (
+          input.observePending === true &&
+          remote?.pendingShareId &&
+          doneHash === goalHash &&
+          doneEpoch === deliveryEpoch &&
+          lease.goal.desired === "present"
+        )
+          await client.query(
+            "update collaboration_sharing_selection_sources set done_goal_hash=null,done_delivery_epoch=null,available_at=now()+interval '30 seconds' where id=$1 and lease_version=$2",
+            [lease.sourceId, lease.leaseVersion]
+          );
       });
     },
     async deferSource(lease: SelectionSharingSourceLease, seconds = 30) {

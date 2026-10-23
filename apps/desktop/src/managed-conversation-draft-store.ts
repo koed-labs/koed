@@ -228,7 +228,7 @@ const asApplicationManagedStore = (rootPath: string): PdsDesktopSecretStore => {
  * through Electron storage. New installs without a usable backend use the
  * shared application-managed format instead.
  */
-export const createManagedConversationDraftStore = (input: {
+const initializeManagedConversationDraftStore = (input: {
   userDataPath: string;
 }): PdsDesktopSecretStore | null => {
   const path = resolve(input.userDataPath, "managed-conversation-drafts.json");
@@ -241,4 +241,45 @@ export const createManagedConversationDraftStore = (input: {
   }
   if (existsSync(path)) return null;
   return asApplicationManagedStore(input.userDataPath);
+};
+
+/** Platform storage may wait for an OS prompt. Do not access it at startup. */
+export const createManagedConversationDraftStore = (input: {
+  userDataPath: string;
+}): PdsDesktopSecretStore => {
+  let store: PdsDesktopSecretStore | null | undefined;
+  const resolveStore = (): PdsDesktopSecretStore => {
+    if (store === undefined) {
+      store = initializeManagedConversationDraftStore(input);
+    }
+    if (!store)
+      throw new Error("Managed conversation draft storage is unavailable.");
+    return store;
+  };
+  return {
+    get: async (reference) => {
+      if (!referencePattern.test(reference)) return null;
+      if (
+        store === undefined &&
+        !existsSync(
+          resolve(input.userDataPath, "managed-conversation-drafts.json")
+        )
+      )
+        return null;
+      return resolveStore().get(reference);
+    },
+    put: async (reference, value) => resolveStore().put(reference, value),
+    delete: async (reference) => {
+      if (!referencePattern.test(reference))
+        throw new Error("Managed conversation draft reference is invalid.");
+      if (
+        store === undefined &&
+        !existsSync(
+          resolve(input.userDataPath, "managed-conversation-drafts.json")
+        )
+      )
+        return;
+      return resolveStore().delete(reference);
+    }
+  };
 };

@@ -80,7 +80,11 @@ In a source checkout, the Desktop `prestart` script runs
 `pnpm source-runtime:prepare` before Electron starts. This command calculates a
 SHA-256 fingerprint for the API, Worker, MCP Server, Embedding Service, Privacy
 Filter Service, and their workspace dependencies. It builds these packages only
-when their inputs or required outputs changed.
+when their inputs or required outputs changed. Before a rebuild, it removes
+the previous runtime packages' compiled output and TypeScript build state so
+deleted source modules cannot remain in an artifact. Workspace builds run
+one at a time to limit peak memory use. Desktop packaging uses the same
+preparation step before staging its service runtime.
 
 The source-runtime state is under
 `node_modules/.cache/koed/source-runtime-build.json`. A failed or interrupted
@@ -108,6 +112,14 @@ it resumes the managed local `koed-server`. Platform secret-provider
 initialization runs after the window exists and before the runtime resumes. A
 blocked or interactive operating-system credential provider therefore cannot
 leave the User with no application window.
+Managed Conversation draft storage selects its existing encryption provider
+only when a draft is read or changed. A provider failure rejects that operation
+without switching to a weaker store.
+
+During external-service setup, Desktop starts its managed local API before
+it checks model readiness. That API validates the configured external services.
+Desktop does not install or start those Operator-managed dependencies. Failed
+startup or model readiness prevents setup from completing.
 
 A packaged User can enable **Launch Koed at startup** in General settings. A
 login launch takes the background path: Desktop creates its macOS menu-bar or
@@ -1233,3 +1245,11 @@ networking, least-privilege credentials, encrypted storage, and restricted
 administrator access.
 
 Only `/health` and `/ready` are intended for unauthenticated infrastructure probes. They return coarse status and should not be used as operator diagnostics. `/v1/capabilities` is also unauthenticated, but it is a client discovery contract rather than a health check: clients can use it to detect the positive capabilities registered by the current backend, and should treat missing capabilities as unavailable. `status --json` and `doctor --json` use readiness gates for Postgres reachability/version, migrations, pgvector, work queue backend, Embedding Service model/dimensions, and registered upstream capability-cache state before reporting healthy; doctor output gives repair actions such as running migrations, enabling pgvector, fixing dependency URLs, refreshing upstream capabilities, or correcting model/runtime mismatch. If startup times out, the supervisor lists the required blocking checks by component and state. Use those names with `/ready` for coarse dependency readiness and `koed status --json` for detailed remediation; non-blocking AI Client diagnostics are omitted from the timeout reason. Registered upstream backends are local edge metadata only: capability caches and route-policy state live under `KOED_HOME/config/upstream-backends.json`, while reusable upstream/device credentials must stay out of ordinary config. Detailed status endpoints such as `/health/details`, `/self-host/diagnostics`, and the authenticated view of `/self-host/status` should remain behind normal API authentication. Koed Desktop packaging/signing remains tracked separately from this local runtime path.
+
+### Desktop collaboration startup recovery
+
+Once the local API and database are healthy, Desktop retries a retryable initial
+collaboration load failure using its existing bounded startup recovery. A stale
+saved verification result or optional setup check does not suppress that retry.
+Setup status still controls onboarding. Permission denials remain nonretryable;
+normal backend authorization and enrollment checks apply to every request.

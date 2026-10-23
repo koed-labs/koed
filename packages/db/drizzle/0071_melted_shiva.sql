@@ -1,0 +1,3 @@
+ALTER TABLE "team_memory_sharing_rule_members" ADD COLUMN "portable_source_hash" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "team_memory_rule_members_portable_source_unique" ON "team_memory_sharing_rule_members" USING btree ("rule_id","portable_source_hash") WHERE "team_memory_sharing_rule_members"."portable_source_hash" is not null;--> statement-breakpoint
+ALTER TABLE "team_memory_sharing_rule_members" ADD CONSTRAINT "team_memory_rule_members_portable_source_check" CHECK ("team_memory_sharing_rule_members"."portable_source_hash" is null or "team_memory_sharing_rule_members"."portable_source_hash" ~ '^[a-f0-9]{64}$');

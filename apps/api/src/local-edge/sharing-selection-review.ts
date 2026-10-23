@@ -50,6 +50,7 @@ export const validateCompletedGitAnchorRuleCreationIntent = (
     ownerUserId: string;
     upstreamUserId: string;
     cursorSecret: string;
+    resolvedTarget?: GitAnchorSharingReviewInput["target"];
   }
 ) => {
   const { completionToken, ...reviewIntent } = input.review;
@@ -61,7 +62,9 @@ export const validateCompletedGitAnchorRuleCreationIntent = (
       cursor: completionToken
     })
   );
-  const selector = sharingSelectionDescriptor(input.review.target);
+  const selector = sharingSelectionDescriptor(
+    deps.resolvedTarget ?? input.review.target
+  );
   if (
     !parsed.success ||
     parsed.data.backendId !== deps.backendId ||

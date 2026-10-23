@@ -41,6 +41,57 @@ const observation: CodexTranscriptObservation = {
 };
 
 describe("codex-transcript-v1 adapter", () => {
+  it.each([false, true])(
+    "gives records without provider ids stable identities across segment replay (response preference %s)",
+    (preferStableResponseItems) => {
+      const records = [
+        record,
+        record,
+        {
+          timestamp: "2026-07-01T12:00:01.000Z",
+          type: "event_msg",
+          payload: { type: "task_complete" }
+        }
+      ];
+      const lines = records.map((item) => `${JSON.stringify(item)}\n`);
+      const build = (bytes: string, offset: number, line: number) => {
+        const parsed = parseTranscriptJournalBytes({
+          bytes: Buffer.from(bytes),
+          absoluteStartOffset: offset,
+          lineIndexOffset: line
+        });
+        return buildCodexTranscriptConversationItems({
+          records: parsed.records,
+          sourceSessionId: "stable-source-session",
+          sourceTransport: "transcript",
+          threadKind: "conversation",
+          preferStableResponseItems
+        });
+      };
+      const all = build(lines.join(""), 0, 0);
+      const replay = build(
+        lines.slice(1).join(""),
+        Buffer.byteLength(lines[0]!),
+        1
+      );
+      expect(all).toHaveLength(3);
+      expect(
+        all.every((item) => item.externalItemId === item.idempotencyKey)
+      ).toBe(true);
+      expect(new Set(all.map((item) => item.externalItemId)).size).toBe(3);
+      expect(replay.map((item) => item.externalItemId)).toEqual(
+        all.slice(1).map((item) => item.externalItemId)
+      );
+      const native = adaptCodexTranscriptV1({
+        observations: [{ ...observation, externalItemId: "provider-item-1" }],
+        sourceSessionId: "stable-source-session",
+        sourceTransport: "transcript",
+        threadKind: "conversation"
+      });
+      expect(native[0]?.externalItemId).toBe("provider-item-1");
+    }
+  );
+
   it("parses an appended journal segment from its durable source cursor", () => {
     const first = `${JSON.stringify(record)}\n`;
     const second = `${JSON.stringify({

@@ -1,3 +1,5 @@
+import { workspaceSourceIsNotExcludedSql } from "./shared-memory-publication-authority-sql.js";
+import { requireWorkspaceSourceNotExcluded } from "./workspace-conversation-exclusion.js";
 import type pg from "pg";
 import { isPrivacyMaterializationSourceAdapter } from "@koed/shared";
 import { recordAuditEventWithClient } from "./audit-repository.js";
@@ -388,6 +390,7 @@ const authorizedAccessWhereSql = `
   where source_grant.share_grant_id = $1
     and source_grant.lifecycle = 'active' and source_grant.revoked_at is null
     and share_grant.lifecycle = 'active' and share_grant.revoked_at is null
+    and ${workspaceSourceIsNotExcludedSql({ ownerUserId: "share_grant.owner_user_id", logicalMemoryId: "share_grant.logical_memory_id", teamWorkspaceId: "share_grant.team_workspace_id" })}
     and share_grant.personal_deleted_at is null
     and artifact.lifecycle = 'finalized'
 `;
@@ -479,6 +482,7 @@ export const createTeamConversationSourceRepository = (
         where share_grant.id=$1 and share_grant.owner_user_id=$2
           and source_binding.source_kind='captured_session'
           and share_grant.lifecycle='active' and share_grant.revoked_at is null
+    and ${workspaceSourceIsNotExcludedSql({ ownerUserId: "share_grant.owner_user_id", logicalMemoryId: "share_grant.logical_memory_id", teamWorkspaceId: "share_grant.team_workspace_id" })}
           and share_grant.personal_deleted_at is null
           and team.lifecycle='active'
           and workspace.lifecycle='active' and workspace.archived_at is null
@@ -561,6 +565,7 @@ export const createTeamConversationSourceRepository = (
             and share_grant.team_id = $3
             and share_grant.lifecycle = 'active'
             and share_grant.revoked_at is null
+    and ${workspaceSourceIsNotExcludedSql({ ownerUserId: "share_grant.owner_user_id", logicalMemoryId: "share_grant.logical_memory_id", teamWorkspaceId: "share_grant.team_workspace_id" })}
             and share_grant.personal_deleted_at is null
           for update of share_grant`,
         [input.shareGrantId, actor.userId, input.teamId]
@@ -569,6 +574,12 @@ export const createTeamConversationSourceRepository = (
       if (!parentRow || !parentRow.local_session_id) {
         throw new TeamConversationSourceAuthorizationError();
       }
+      await requireWorkspaceSourceNotExcluded(
+        client,
+        actor.userId,
+        String(parentRow.logical_memory_id),
+        String(parentRow.team_workspace_id)
+      );
       const artifactResult = await client.query<Row>(
         `select candidate.* from conversation_source_artifacts candidate
           where candidate.owner_user_id = $1 and candidate.session_id = $2

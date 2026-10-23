@@ -1,5 +1,10 @@
 import { sharingRuleContentPolicyReviewSchema } from "./sharing-rule-content-policy-contract.js";
+import { sharingRulePublisherSchema } from "./sharing-rule-publisher-contract.js";
 export { canonicalJsonDigest } from "./canonical-json-digest.js";
+export {
+  noPrivacyLabelsPolicy,
+  privacyLabels
+} from "./privacy-filter-contract.js";
 import { privacyLabelPolicySchema } from "./privacy-filter-contract.js";
 import { sharingRuleDetailReviewSchema } from "./sharing-rule-detail-contract.js";
 import {
@@ -13,20 +18,39 @@ import {
   repositorySharingRuleCreationLocalIntentSchema,
   repositorySharingRuleCreationReviewRequestSchema,
   repositorySharingRuleCreationReviewSchema,
+  sharingRulePublisherTakeoverLocalReviewSchema,
+  sharingSelectionTargetSchema,
   sharingRuleDeliverySchema
 } from "./team-sharing-review-contract.js";
 export {
   sharingSelectionDescriptor,
+  conversationSharingRuleCreationIntentSchema,
   sharingRuleDeliverySchema,
   conversationSharingRuleCreationReviewSchema
 } from "./team-sharing-review-contract.js";
 export type {
+  SharingRulePublisherTakeoverLocalReview,
   SharingRuleDelivery,
   ConversationSharingRuleControlIntent,
   ConversationSharingRuleCreationReview,
   ConversationSharingRuleCreationReviewInput
 } from "./team-sharing-review-contract.js";
 import { z } from "zod";
+import {
+  workspaceConversationRestorationReviewSchema,
+  workspaceConversationRestorationIntentSchema,
+  workspaceConversationExclusionSchema,
+  workspaceConversationExclusionReviewSchema,
+  workspaceConversationExclusionReviewInputSchema,
+  workspaceConversationExclusionIntentSchema
+} from "./workspace-conversation-exclusion-contract.js";
+export type {
+  WorkspaceConversationRestorationReview,
+  WorkspaceConversationRestorationIntent,
+  WorkspaceConversationExclusionReviewInput,
+  WorkspaceConversationExclusionReview,
+  WorkspaceConversationExclusionIntent
+} from "./workspace-conversation-exclusion-contract.js";
 import {
   teamRepositorySnapshotSchema,
   teamRepositorySnapshotReviewSchema
@@ -1686,6 +1710,15 @@ const repositoryRuleControlInputShape = repositorySharingRuleControlIntentSchema
   .omit({ teamWorkspaceId: true })
   .extend({ workspaceId: z.uuid() }).shape;
 
+const publisherTakeoverInputShape = {
+  ...sharingRulePublisherTakeoverLocalReviewSchema.shape,
+  operationKind: z.literal("publisher_takeover"),
+  mutationId: z.uuid(),
+  ruleId: z.uuid(),
+  teamId: z.uuid(),
+  workspaceId: z.uuid()
+};
+
 const ruleDetailInputShape = {
   operationKind: z.literal("detail"),
   mutationId: z.uuid(),
@@ -1824,6 +1857,7 @@ export const collaborationActionGrantIntentSchema = z
       activationRepresentation: sharedMemoryRepresentationSchema,
       mutationId: z.uuid(),
       logicalGrantId: z.uuid(),
+      expectedGrantVersion: positiveVersionSchema.nullable().default(null),
       consentId: z.uuid(),
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
@@ -1854,6 +1888,10 @@ export const collaborationActionGrantIntentSchema = z
       "collaboration.control_sharing_rule",
       sharingRuleControlInputShape
     ),
+    actionGrantIntent(
+      "collaboration.take_over_publisher",
+      publisherTakeoverInputShape
+    ),
     actionGrantIntent("collaboration.amend_rule_detail", ruleDetailInputShape),
     actionGrantIntent(
       "collaboration.amend_rule_content_policy",
@@ -1875,6 +1913,14 @@ export const collaborationActionGrantIntentSchema = z
         .max(120)
         .regex(/^[A-Za-z0-9_.:-]+$/)
     }),
+    actionGrantIntent(
+      "collaboration.restore_conversation_to_workspace",
+      workspaceConversationRestorationIntentSchema.shape
+    ),
+    actionGrantIntent(
+      "collaboration.exclude_conversation_from_workspace",
+      workspaceConversationExclusionIntentSchema.shape
+    ),
     actionGrantIntent("collaboration.share_conversation_source", {
       mutationId: z.uuid(),
       teamId: z.uuid(),
@@ -2487,6 +2533,7 @@ export const ownedSharingReasonSchema = z
         ]),
         authorityVersion: positiveVersionSchema,
         publisherFence: positiveVersionSchema,
+        publisher: sharingRulePublisherSchema.nullable().optional(),
         state: z.enum(["active", "paused", "stopped"]),
         catchUpState: z.enum(["idle", "queued", "needs_attention"]),
         failureCode: z
@@ -2568,7 +2615,8 @@ export const ownedShareSummarySchema = z
       .nullable(),
     lastReadyRevision: nonNegativeSequenceSchema.nullable(),
     lastSuccessfulUpdateAt: collaborationTimestampSchema.nullable(),
-    sharingReasons: z.array(ownedSharingReasonSchema)
+    sharingReasons: z.array(ownedSharingReasonSchema),
+    workspaceExclusion: workspaceConversationExclusionSchema.nullable()
   })
   .strict();
 
@@ -2840,7 +2888,7 @@ export const collaborationRendererCommandSchema = z
       pendingShareId: z.uuid(),
       mutationId: z.uuid(),
       expectedOperationVersion: positiveVersionSchema,
-      action: z.enum(["retry", "pause", "resume", "revoke"])
+      action: z.enum(["retry", "pause", "resume", "revoke", "stop_direct"])
     }),
     command("collaboration.share_conversation_source", {
       mutationId: z.uuid(),
@@ -2904,6 +2952,7 @@ export const collaborationRendererCommandSchema = z
       activationRepresentation: sharedMemoryRepresentationSchema,
       mutationId: z.uuid(),
       logicalGrantId: z.uuid(),
+      expectedGrantVersion: positiveVersionSchema.nullable().default(null),
       consentId: z.uuid(),
       logicalMemoryId: z.uuid(),
       teamId: z.uuid(),
@@ -2949,6 +2998,19 @@ export const collaborationRendererCommandSchema = z
       ...sharingRuleControlInputShape,
       actionGrant: collaborationActionGrantReferenceSchema
     }),
+    command("collaboration.take_over_publisher", {
+      ...publisherTakeoverInputShape,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command("collaboration.review_publisher_takeover", {
+      ruleId: z.uuid(),
+      teamId: z.uuid(),
+      workspaceId: z.uuid(),
+      expectedAuthorityVersion: positiveVersionSchema,
+      publisherFence: positiveVersionSchema,
+      localSessionId: z.uuid(),
+      target: sharingSelectionTargetSchema.optional()
+    }),
     command("collaboration.review_rule_detail", {
       ruleId: z.uuid(),
       teamId: z.uuid(),
@@ -2974,10 +3036,10 @@ export const collaborationRendererCommandSchema = z
       ...repositoryRuleControlInputShape,
       actionGrant: collaborationActionGrantReferenceSchema
     }),
-    command(
-      "collaboration.list_repository_rules",
-      ownedRepositorySharingRulesInputSchema.shape
-    ),
+    command("collaboration.list_repository_rules", {
+      ...ownedRepositorySharingRulesInputSchema.shape,
+      target: sharingSelectionTargetSchema.optional()
+    }),
     command("collaboration.list_sharing_rule_deliveries", {
       shareGrantId: z.uuid().optional(),
       mutationId: z.uuid().optional()
@@ -2993,6 +3055,22 @@ export const collaborationRendererCommandSchema = z
         .min(1)
         .max(120)
         .regex(/^[A-Za-z0-9_.:-]+$/),
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command(
+      "collaboration.review_workspace_restoration",
+      workspaceConversationExclusionReviewInputSchema.shape
+    ),
+    command("collaboration.restore_conversation_to_workspace", {
+      ...workspaceConversationRestorationIntentSchema.shape,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
+    command(
+      "collaboration.review_workspace_exclusion",
+      workspaceConversationExclusionReviewInputSchema.shape
+    ),
+    command("collaboration.exclude_conversation_from_workspace", {
+      ...workspaceConversationExclusionIntentSchema.shape,
       actionGrant: collaborationActionGrantReferenceSchema
     }),
     command("collaboration.change_shared_memory_fidelity", {
@@ -3201,6 +3279,8 @@ const commandNameSchema = z.enum([
   "collaboration.create_conversation_rule",
   "collaboration.control_sharing_rule",
   "collaboration.control_repository_rule",
+  "collaboration.take_over_publisher",
+  "collaboration.review_publisher_takeover",
   "collaboration.review_rule_detail",
   "collaboration.amend_rule_detail",
   "collaboration.review_rule_content_policy",
@@ -3208,6 +3288,10 @@ const commandNameSchema = z.enum([
   "collaboration.list_repository_rules",
   "collaboration.list_sharing_rule_deliveries",
   "collaboration.revoke_shared_memory",
+  "collaboration.review_workspace_restoration",
+  "collaboration.restore_conversation_to_workspace",
+  "collaboration.review_workspace_exclusion",
+  "collaboration.exclude_conversation_from_workspace",
   "collaboration.change_shared_memory_fidelity",
   "collaboration.review_shared_project_snapshot",
   "collaboration.update_shared_project_snapshot",
@@ -3437,6 +3521,14 @@ export const collaborationCommandResultSchema = z.union([
     z.object({ delivery: sharingRuleDeliverySchema }).strict()
   ),
   successResult(
+    "collaboration.take_over_publisher",
+    z.object({ delivery: sharingRuleDeliverySchema }).strict()
+  ),
+  successResult(
+    "collaboration.review_publisher_takeover",
+    z.object({ review: sharingRulePublisherTakeoverLocalReviewSchema }).strict()
+  ),
+  successResult(
     "collaboration.review_rule_detail",
     z.object({ review: sharingRuleDetailReviewSchema }).strict()
   ),
@@ -3467,6 +3559,22 @@ export const collaborationCommandResultSchema = z.union([
   successResult(
     "collaboration.revoke_shared_memory",
     z.object({ grant: ownedSharedMemoryGrantSchema }).strict()
+  ),
+  successResult(
+    "collaboration.review_workspace_restoration",
+    z.object({ review: workspaceConversationRestorationReviewSchema }).strict()
+  ),
+  successResult(
+    "collaboration.restore_conversation_to_workspace",
+    z.object({ delivery: sharingRuleDeliverySchema }).strict()
+  ),
+  successResult(
+    "collaboration.review_workspace_exclusion",
+    z.object({ review: workspaceConversationExclusionReviewSchema }).strict()
+  ),
+  successResult(
+    "collaboration.exclude_conversation_from_workspace",
+    z.object({ delivery: sharingRuleDeliverySchema }).strict()
   ),
   successResult(
     "collaboration.change_shared_memory_fidelity",
