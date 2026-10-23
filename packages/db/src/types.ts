@@ -2094,7 +2094,9 @@ export interface MemorySourceRepository
     TeamConversationSourceRepository,
     Pick<
       WorkspaceProjectRepository,
-      "getLifecycleReview" | "getSourceDeleteReview"
+      | "getLifecycleReview"
+      | "getSourceDeleteReview"
+      | "getContributionRemovalReview"
     >,
     WorkflowTokenUsageRepository {
   health(): Promise<boolean>;

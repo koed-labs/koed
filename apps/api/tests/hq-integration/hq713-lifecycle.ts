@@ -433,41 +433,43 @@ export async function runHq713ChatDeleteFreeze(
     postDeleteAdvance,
     retainedEvidence
   });
-  const revoked = await fixture.alice.teamBrowser.request<{
-    grant: { id: string; lifecycle: string };
-  }>("POST", `/v1/shared-memory/share-grants/${source.grantId}/revoke`, {
-    body: {
-      mutationId: randomUUID(),
-      teamId: fixture.ids.teamId,
-      teamWorkspaceId: fixture.ids.workspaceId,
-      expectedGrantVersion: frozen.grant_version,
-      reasonCode: "owner_revoked",
-      authority: {
-        action: "workspace.memory.share_owned",
-        source: "browser_session"
-      }
-    },
-    expectedStatus: 200
-  });
-  assert.equal(revoked.body.grant.id, source.grantId);
-  assert.equal(revoked.body.grant.lifecycle, "revoked");
-  const revokedRead = await fixture.bob.team.request(
+  const refused = await fixture.alice.teamBrowser.request(
+    "POST",
+    `/v1/shared-memory/share-grants/${source.grantId}/revoke`,
+    {
+      body: {
+        mutationId: randomUUID(),
+        teamId: fixture.ids.teamId,
+        teamWorkspaceId: fixture.ids.workspaceId,
+        expectedGrantVersion: frozen.grant_version,
+        reasonCode: "owner_revoked",
+        authority: {
+          action: "workspace.memory.share_owned",
+          source: "browser_session"
+        }
+      },
+      expectedStatus: 403
+    }
+  );
+  assert.match(JSON.stringify(refused.body), /stays with it.*Make it private/);
+  const retainedRead = await fixture.bob.team.request(
     "GET",
     `/v1/shared-memory/teams/${fixture.ids.teamId}/workspaces/${fixture.ids.workspaceId}/share-grants/${source.grantId}?representation=lcm_leaves`
   );
-  assert.ok([403, 404].includes(revokedRead.status));
-  const revokedAnswer = await answerTeam(
+  assert.equal(retainedRead.status, 200);
+  const retainedAnswer = await answerTeam(
     fixture,
     fixture.bob,
     source.summaryText,
     "scoped_leaf_search"
   );
-  assert.equal(teamEvidenceForGrant(revokedAnswer, source.grantId).length, 0);
+  assert.ok(teamEvidenceForGrant(retainedAnswer, source.grantId).length > 0);
   fixture.results.record("N11.revocation", {
     grantId: source.grantId,
     frozenHash: frozen.freeze_manifest_hash,
-    revokedReadStatus: revokedRead.status,
-    revokedRecallDenied: true
+    authorRevokeStatus: refused.status,
+    retainedReadStatus: retainedRead.status,
+    retainedRecall: true
   });
 }
 

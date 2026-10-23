@@ -823,6 +823,26 @@ const workspaceProjectRouteIdentityContracts: RouteIdentityContract[] = [
     teamDeploymentModes
   ),
   route(
+    "GET",
+    "/v1/workspace-projects/{projectId}/contributions",
+    "session_or_device_credential",
+    "projects",
+    "Read exact authorized Project contributions and current Team attribution.",
+    "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/workspace-projects/{projectId}/contributions/{shareGrantId}/remove",
+    "device_credential",
+    "projects",
+    "Remove one exact Project contribution with current owner and Native Action Grant authority.",
+    "request_time_action_grant",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
     "POST",
     "/v1/workspace-projects/{projectId}/leave",
     "device_credential",

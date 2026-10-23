@@ -12,6 +12,25 @@ export type CuratedMemoryPage = {
   assertions: CuratedAssertion[];
   nextCursor: MemoryCursor | null;
 };
+export const teamContributionSchema = z
+  .object({
+    shareGrantId: id,
+    title: z.string(),
+    contributorDisplayName: z.string().nullable(),
+    groupName: z.string(),
+    noLongerInGroup: z.boolean(),
+    summaries: z.array(
+      z
+        .object({
+          text: z.string(),
+          title: z.string(),
+          occurredAt: z.string()
+        })
+        .strict()
+    )
+  })
+  .strict();
+export type TeamContribution = z.infer<typeof teamContributionSchema>;
 const kind = z.enum(["decision", "fact", "learning", "preference"]).nullable();
 const author = z
   .object({ kind: z.string(), ref: z.string() })
@@ -53,6 +72,9 @@ export const curatedAssertionSchema = z
 export type CuratedAssertion = z.infer<typeof curatedAssertionSchema>;
 
 export const curatedMemoryRequestSchema = z.discriminatedUnion("operation", [
+  z
+    .object({ operation: z.literal("teamContributions"), projectId: id })
+    .strict(),
   hqOnboardingPreferenceRequestSchema
     .extend({ operation: z.literal("onboardingPreference") })
     .strict(),
@@ -86,6 +108,13 @@ export const curatedMemoryRequestSchema = z.discriminatedUnion("operation", [
 ]);
 export type CuratedMemoryRequest = z.infer<typeof curatedMemoryRequestSchema>;
 export const curatedMemoryResultSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("teamContributions"),
+      projectId: id,
+      contributions: z.array(teamContributionSchema)
+    })
+    .strict(),
   z
     .object({
       operation: z.literal("onboardingPreference"),
@@ -133,6 +162,7 @@ export const curatedMemoryResultSchema = z.discriminatedUnion("operation", [
 ]);
 export type CuratedMemoryResult = z.infer<typeof curatedMemoryResultSchema>;
 export interface CuratedMemoryDesktopApi {
+  teamContributions?(projectId: string): Promise<TeamContribution[]>;
   proposeOnboardingPreference?(input: {
     role: "software" | "studying" | "other";
     noteId: string;

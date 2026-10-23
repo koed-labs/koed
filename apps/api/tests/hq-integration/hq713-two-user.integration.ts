@@ -50,6 +50,7 @@ import {
 import { runHq713FuturePolicy } from "./hq713-future-policy.js";
 import { runHq713ShareOrigin } from "./hq713-share-origin.js";
 import { runHq713AiClientUsageBoundary } from "./hq713-ai-client-usage.js";
+import { runHq726Contributions } from "./hq726-contributions.js";
 
 const required = [
   "I13-I14-step1-step2-share-join",
@@ -102,7 +103,15 @@ const required = [
   "I713.first-share-access-loss-before-confirm",
   "I713.first-share-access-loss-after-confirm",
   "I713.future-empty-policy",
-  "I724.2.data.N17.separate-backends"
+  "I724.2.data.N17.separate-backends",
+  "I720.1",
+  "I720.2.chat",
+  "I720.2.transcript",
+  "I720.2.note",
+  "I720.3",
+  "I720.4",
+  "I720.5",
+  "I720.6"
 ];
 const results = new Map<string, Record<string, unknown>>();
 const collect = (fixture: Hq713Fixture) => {
@@ -152,6 +161,9 @@ afterAll(async () => {
 });
 
 describe("HQ-713 real two-user Team backend", () => {
+  it("keeps Project contributions through departure and owner-reviewed removal", async () => {
+    await withRecordedFixture(runHq726Contributions);
+  }, 180_000);
   it("links a real accepted invitation across separate Personal and Team databases", async () => {
     await withRecordedFixture(runHq713ShareOrigin);
   }, 180_000);

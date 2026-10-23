@@ -23,6 +23,34 @@ const openApiSecuritySchemes = openApiDocument.components
   .securitySchemes as Record<string, Record<string, unknown>>;
 
 describe("route identity contract", () => {
+  it("inventories sharing metadata and exact reviewed Project contribution boundaries", () => {
+    expect(routeIdentityFor("GET", "/v1/me/sharing")).toMatchObject({
+      identity: "session_or_device_credential",
+      domain: "team_memory"
+    });
+    expect(routeIdentityFor("GET", "/v1/local-edge/sharing")).toMatchObject({
+      identity: "desktop_local_credential",
+      teamAuthority: "none"
+    });
+    expect(
+      routeIdentityFor(
+        "GET",
+        "/v1/workspace-projects/{projectId}/contributions"
+      )
+    ).toMatchObject({
+      identity: "session_or_device_credential",
+      teamAuthority: "request_time_team_workspace"
+    });
+    expect(
+      routeIdentityFor(
+        "POST",
+        "/v1/workspace-projects/{projectId}/contributions/{shareGrantId}/remove"
+      )
+    ).toMatchObject({
+      identity: "device_credential",
+      teamAuthority: "request_time_action_grant"
+    });
+  });
   it("inventories the joined member Personal Project link authority", () => {
     expect(
       routeIdentityFor(

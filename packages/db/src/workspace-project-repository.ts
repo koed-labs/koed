@@ -2618,6 +2618,101 @@ export const createWorkspaceProjectRepository = (
       };
     },
 
+    async getContributionRemovalReview(
+      actorUserId: string,
+      projectId: string,
+      shareGrantId: string
+    ) {
+      const review = await this.getLifecycleReview(actorUserId, projectId);
+      if (
+        !review ||
+        review.ownerUserId !== actorUserId ||
+        review.actorAccess !== "write" ||
+        review.actorWorkspaceAccess !== "write"
+      )
+        return null;
+      const grant = await one(
+        pool,
+        `select grant_row.grant_version,grant_row.lifecycle,
+                grant_row.owner_user_id,grant_row.team_id,grant_row.team_workspace_id,
+                binding.workspace_project_source_id
+           from workspace_project_share_grant_bindings binding
+           join team_memory_share_grants grant_row
+             on grant_row.id=binding.share_grant_id
+          where binding.workspace_project_id=$1 and binding.share_grant_id=$2
+            and grant_row.team_id=$3 and grant_row.team_workspace_id=$4`,
+        [
+          projectId,
+          shareGrantId,
+          review.project.teamId,
+          review.project.workspaceId
+        ]
+      );
+      if (!grant) return null;
+      return {
+        project: review.project,
+        shareGrantId,
+        grantVersion: Number(grant.grant_version),
+        lifecycle: String(grant.lifecycle),
+        contributorUserId: String(grant.owner_user_id),
+        sourceId: nullableText(grant.workspace_project_source_id)
+      };
+    },
+
+    async getProjectContributionAttributions(
+      actorUserId: string,
+      projectId: string,
+      shareGrantIds: string[]
+    ) {
+      if (shareGrantIds.length > 100)
+        throw new TypeError("Too many Share Grants");
+      const project = await currentMember(pool, actorUserId, projectId);
+      if (!shareGrantIds.length) return [];
+      const result = await pool.query<{
+        share_grant_id: string;
+        source_kind: string;
+        contributor_user_id: string;
+        contributor_display_name: string | null;
+        membership_status: string | null;
+        membership_disabled_at: Date | null;
+        group_name: string;
+      }>(
+        `select binding.share_grant_id,source.source_kind,
+                grant_row.owner_user_id as contributor_user_id,
+                contributor.display_name as contributor_display_name,
+                membership.status as membership_status,
+                membership.disabled_at as membership_disabled_at,
+                team.name as group_name
+           from workspace_project_share_grant_bindings binding
+           join team_memory_share_grants grant_row
+             on grant_row.id=binding.share_grant_id
+           join logical_memory_source_revision_bindings source
+             on source.source_revision_id=grant_row.source_revision_id
+           join workspace_projects project
+             on project.id=binding.workspace_project_id
+           join teams team on team.id=project.team_id
+           left join users contributor on contributor.id=grant_row.owner_user_id
+           left join team_memberships membership
+             on membership.team_id=project.team_id
+            and membership.user_id=grant_row.owner_user_id
+          where binding.workspace_project_id=$1
+            and binding.share_grant_id=any($2::uuid[])
+            and grant_row.team_id=$3 and grant_row.team_workspace_id=$4`,
+        [projectId, shareGrantIds, project.team_id, project.workspace_id]
+      );
+      return result.rows.map((row) => ({
+        shareGrantId: row.share_grant_id,
+        sourceKind: row.source_kind,
+        contributorUserId: row.contributor_user_id,
+        contributorDisplayName: row.contributor_display_name,
+        groupName: row.group_name,
+        noLongerInGroup:
+          row.membership_status !== null &&
+          (row.membership_status !== "enabled" ||
+            row.membership_disabled_at !== null)
+      }));
+    },
+
     async leave(
       actorUserId: string,
       projectId: string,

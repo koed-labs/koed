@@ -487,6 +487,11 @@ const createFixture = () => {
   });
 
   const repository: SharedMemoryRepository = {
+    async removeProjectContribution() {
+      throw new Error(
+        "Project owner removal is outside this share-route fixture"
+      );
+    },
     async withdrawCuratedAssertionCopies() {
       throw new Error("Curated withdrawal is not configured in this fixture");
     },
@@ -3182,6 +3187,34 @@ describe("Shared Memory HTTP routes", () => {
     expect(
       jsonBody<{ shareGrants: unknown[] }>(revokedIndex).shareGrants
     ).toEqual([]);
+    await app.close();
+  });
+
+  it("returns the Project contribution refusal while transcript access remains separate", async () => {
+    const fixture = createFixture();
+    fixture.repository.revokeShareGrant = async () => {
+      throw new SharedMemoryAuthorizationError(
+        "This was shared with Atlas and stays with it. Make it private to stop future updates."
+      );
+    };
+    const app = await buildTestServer(fixture);
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/shared-memory/share-grants/${fixture.ids.grant}/revoke`,
+      headers: sessionHeaders(fixture.ids.alice),
+      payload: {
+        mutationId: randomUUID(),
+        teamId: fixture.ids.teamA,
+        teamWorkspaceId: fixture.ids.workspaceA,
+        expectedGrantVersion: 1,
+        reasonCode: "owner_revoked",
+        authority: authority()
+      }
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.body).toContain(
+      "This was shared with Atlas and stays with it. Make it private to stop future updates."
+    );
     await app.close();
   });
 

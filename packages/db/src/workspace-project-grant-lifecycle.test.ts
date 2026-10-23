@@ -56,6 +56,12 @@ describe.skipIf(!testUrl)("Workspace Project grant-bearing lifecycle", () => {
   const provider = createLocalTestKeyEnvelopeEncryptionProvider(
     randomBytes(32).toString("base64")
   );
+  const sharedMemoryRepository = () =>
+    createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: () => provider,
+      resolveOwnerPrivateReplicaEncryptionProvider: () => provider,
+      resolvePersonalEncryptionProvider: () => provider
+    });
 
   beforeAll(async () => {
     admin = new pg.Pool({ connectionString: testUrl });
@@ -1291,6 +1297,245 @@ describe.skipIf(!testUrl)("Workspace Project grant-bearing lifecycle", () => {
     }
   });
 
+  it("keeps chat and Note Project grants against author revoke and atomically removes one by current Project owner", async () => {
+    const projects = createWorkspaceProjectRepository(pool);
+    const shared = sharedMemoryRepository();
+    const chat = await seedGrant(bob, "captured_session");
+    const note = await seedGrant(bob, "personal_note");
+    const untouched = await seedGrant(bob, "captured_session");
+    await publishContinuousSource({
+      grantId: chat.id,
+      owner: bob,
+      sessionId: chat.sourceSessionId
+    });
+    const transcript = createTeamConversationSourceRepository(pool);
+    expect(
+      (
+        await transcript.getTeamConversationSourceManifest(
+          { userId: alice },
+          { shareGrantId: chat.id, afterSegmentIndex: -1, limit: 10 }
+        )
+      )?.segments
+    ).toHaveLength(1);
+    await projects.bindShareGrant(bob, project.id, chat.id, 1);
+    await projects.bindShareGrant(bob, project.id, note.id, 1);
+    await projects.bindShareGrant(bob, project.id, untouched.id, 1);
+    const authorRevoke = (shareGrantId: string) =>
+      shared.revokeShareGrant(
+        { userId: bob },
+        {
+          mutationId: randomUUID(),
+          shareGrantId,
+          expectedGrantVersion: 1,
+          reasonCode: "author_revoked",
+          authority: {
+            action: SHARED_MEMORY_AUTHORITY,
+            source: "browser_session",
+            referenceId: randomUUID()
+          }
+        }
+      );
+    await expect(authorRevoke(chat.id)).rejects.toThrow(
+      /stays with it.*Make it private/
+    );
+    await expect(authorRevoke(note.id)).rejects.toThrow(
+      /stays with it.*Make it private/
+    );
+    const initial = await projects.lifecycle(alice, project.id);
+    const input = {
+      projectId: project.id,
+      shareGrantId: chat.id,
+      mutationId: randomUUID(),
+      expectedProjectVersion: initial.version,
+      expectedGrantVersion: 1
+    };
+    await expect(
+      shared.removeProjectContribution({ userId: bob }, input)
+    ).rejects.toThrow(/owner authority unavailable/);
+    await expect(
+      shared.removeProjectContribution({ userId: carol }, input)
+    ).rejects.toThrow(/owner authority unavailable/);
+    await expect(
+      shared.removeProjectContribution(
+        { userId: alice },
+        {
+          ...input,
+          expectedProjectVersion: input.expectedProjectVersion + 1
+        }
+      )
+    ).rejects.toThrow(/Project version changed/);
+    await expect(
+      shared.removeProjectContribution(
+        { userId: alice },
+        {
+          ...input,
+          expectedGrantVersion: 2
+        }
+      )
+    ).rejects.toThrow(/Share Grant version changed/);
+    expect((await grantState(chat.id)).grant_version).toBe(1);
+    const permissionChange = await pool.connect();
+    try {
+      await permissionChange.query("begin");
+      await permissionChange.query(
+        `update team_memberships set status='disabled',disabled_at=now()
+          where id=$1`,
+        [members[alice]!.id]
+      );
+      const racedRemoval = shared.removeProjectContribution(
+        { userId: alice },
+        input
+      );
+      await permissionChange.query("commit");
+      await expect(racedRemoval).rejects.toThrow(/owner authority unavailable/);
+    } finally {
+      await permissionChange.query("rollback").catch(() => undefined);
+      permissionChange.release();
+      await pool.query(
+        `update team_memberships set status='enabled',disabled_at=null
+          where id=$1`,
+        [members[alice]!.id]
+      );
+      await pool.query(
+        `update workspace_project_members set access='write',disabled_at=null
+          where workspace_project_id=$1 and team_member_id=$2`,
+        [project.id, members[alice]!.id]
+      );
+      await pool.query(
+        `update team_workspace_access_grants
+            set access='write',disabled_at=null,can_share_owned_memory=true
+          where team_workspace_id=$1 and user_id=$2`,
+        [workspaceId, alice]
+      );
+    }
+    expect((await grantState(chat.id)).grant_version).toBe(1);
+    await pool.query(
+      `create function hq726_abort_contribution_audit() returns trigger
+       language plpgsql as $$begin
+         raise exception 'HQ726 injected audit failure';
+       end;$$`
+    );
+    await pool.query(
+      `create trigger hq726_abort_contribution_audit before insert on audit_events
+       for each row when (new.action='workspace_project.contribution_remove')
+       execute function hq726_abort_contribution_audit()`
+    );
+    try {
+      await expect(
+        shared.removeProjectContribution({ userId: alice }, input)
+      ).rejects.toThrow(/HQ726 injected audit failure/);
+    } finally {
+      await pool.query(
+        `drop trigger hq726_abort_contribution_audit on audit_events`
+      );
+      await pool.query(`drop function hq726_abort_contribution_audit()`);
+    }
+    expect((await grantState(chat.id)).grant_version).toBe(1);
+    expect((await projects.lifecycle(alice, project.id)).version).toBe(
+      input.expectedProjectVersion
+    );
+    const removed = await shared.removeProjectContribution(
+      { userId: alice },
+      input
+    );
+    expect(removed.lifecycle).toBe("revoked");
+    expect(
+      await transcript.getTeamConversationSourceManifest(
+        { userId: alice },
+        { shareGrantId: chat.id, afterSegmentIndex: -1, limit: 10 }
+      )
+    ).toBeNull();
+    expect((await grantState(note.id)).grant_version).toBe(1);
+    expect((await grantState(untouched.id)).grant_version).toBe(1);
+    await expect(authorRevoke(note.id)).rejects.toThrow(
+      /stays with it.*Make it private/
+    );
+    const audit = await pool.query<{ count: number }>(
+      `select count(*)::int as count from audit_events
+        where action='workspace_project.contribution_remove' and target_id=$1`,
+      [chat.id]
+    );
+    expect(audit.rows[0]?.count).toBe(1);
+    await expect(
+      shared.removeProjectContribution({ userId: alice }, input)
+    ).rejects.toThrow(/Project version changed/);
+  }, 120_000);
+
+  it("reviews and revokes an existing transcript capability without opening remote source creation", async () => {
+    const grant = await seedGrant(bob, "captured_session");
+    await publishContinuousSource({
+      grantId: grant.id,
+      owner: bob,
+      sessionId: grant.sourceSessionId
+    });
+    await createWorkspaceProjectRepository(pool).bindShareGrant(
+      bob,
+      project.id,
+      grant.id,
+      1
+    );
+    const source = createTeamConversationSourceRepository(pool);
+    expect(
+      await source.getTeamConversationSourceGrantReview(
+        { userId: bob },
+        { shareGrantId: grant.id, teamId, expectedVersion: 1 }
+      )
+    ).toBeNull();
+    expect(
+      await source.getTeamConversationSourceRevokeReview(
+        { userId: bob },
+        { shareGrantId: grant.id, teamId, expectedVersion: 1 }
+      )
+    ).toMatchObject({
+      shareGrantId: grant.id,
+      currentVersion: 1,
+      currentLifecycle: "active"
+    });
+    for (const [actor, reviewedTeam, version, reviewedGrant] of [
+      [alice, teamId, 1, grant.id],
+      [bob, randomUUID(), 1, grant.id],
+      [bob, teamId, 0, grant.id],
+      [bob, teamId, 1, randomUUID()]
+    ] as const) {
+      expect(
+        await source.getTeamConversationSourceRevokeReview(
+          { userId: actor },
+          {
+            shareGrantId: reviewedGrant,
+            teamId: reviewedTeam,
+            expectedVersion: version
+          }
+        )
+      ).toBeNull();
+    }
+    expect(
+      (
+        await source.getTeamConversationSourceManifest(
+          { userId: alice },
+          { shareGrantId: grant.id, afterSegmentIndex: -1, limit: 10 }
+        )
+      )?.segments
+    ).toHaveLength(1);
+    const revoked = await source.revokeTeamConversationSourceGrant(
+      { userId: bob },
+      {
+        mutationId: randomUUID(),
+        shareGrantId: grant.id,
+        teamId,
+        expectedVersion: 1,
+        reasonCode: "owner_revoked"
+      }
+    );
+    expect(revoked).toMatchObject({ lifecycle: "revoked", version: 2 });
+    expect(
+      await source.getTeamConversationSourceManifest(
+        { userId: alice },
+        { shareGrantId: grant.id, afterSegmentIndex: -1, limit: 10 }
+      )
+    ).toBeNull();
+    expect((await grantState(grant.id)).grant_version).toBe(1);
+  }, 120_000);
+
   it("freezes only the bound member grant in a verified self-leave", async () => {
     const bound = await seedGrant(bob, "personal_note");
     const independent = await seedGrant(bob, "captured_session");
@@ -1334,6 +1579,22 @@ describe.skipIf(!testUrl)("Workspace Project grant-bearing lifecycle", () => {
     expect((await grantState(bound.id)).freeze_manifest_hash).toMatch(
       /^[0-9a-f]{64}$/
     );
+    await expect(
+      sharedMemoryRepository().revokeShareGrant(
+        { userId: bob },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: bound.id,
+          expectedGrantVersion: (await grantState(bound.id)).grant_version,
+          reasonCode: "author_revoked",
+          authority: {
+            action: SHARED_MEMORY_AUTHORITY,
+            source: "browser_session",
+            referenceId: randomUUID()
+          }
+        }
+      )
+    ).rejects.toThrow(/stays with it.*Make it private/);
     expect((await grantState(independent.id)).frozen_at).toBeNull();
     expect((await repository.lifecycle(bob, project.id)).active).toBe(false);
     const access = await pool.query<{ access: string }>(
@@ -1359,6 +1620,7 @@ describe.skipIf(!testUrl)("Workspace Project grant-bearing lifecycle", () => {
     const repository = createWorkspaceProjectRepository(pool);
     const bound = await seedGrant(alice, "personal_note");
     const otherNote = await seedGrant(alice, "personal_note");
+    const separateContribution = await seedGrant(alice, "personal_note");
     const revision = await pool.query<{ id: string }>(
       `select id from personal_note_revisions
       where note_id=$1 and owner_user_id=$2 order by revision desc limit 1`,
@@ -1382,6 +1644,34 @@ describe.skipIf(!testUrl)("Workspace Project grant-bearing lifecycle", () => {
       shareGrantId: bound.id,
       workspaceProjectSourceId: source.id
     });
+    await repository.bindShareGrant(
+      alice,
+      project.id,
+      separateContribution.id,
+      1
+    );
+    await seedSummary(
+      bound,
+      "Uploaded Note contribution remains after metadata deletion"
+    );
+    const authorRevokeNote = async () =>
+      sharedMemoryRepository().revokeShareGrant(
+        { userId: alice },
+        {
+          mutationId: randomUUID(),
+          shareGrantId: bound.id,
+          expectedGrantVersion: (await grantState(bound.id)).grant_version,
+          reasonCode: "author_revoked",
+          authority: {
+            action: SHARED_MEMORY_AUTHORITY,
+            source: "browser_session",
+            referenceId: randomUUID()
+          }
+        }
+      );
+    await expect(authorRevokeNote()).rejects.toThrow(
+      /stays with it.*Make it private/
+    );
     const review = await repository.getSourceDeleteReview(
       alice,
       project.id,
@@ -1441,6 +1731,21 @@ describe.skipIf(!testUrl)("Workspace Project grant-bearing lifecycle", () => {
     expect((await grantState(bound.id)).freeze_manifest_hash).toMatch(
       /^[0-9a-f]{64}$/
     );
+    const retainedClient = await pool.connect();
+    try {
+      const retained = await readSharedMemoryGrantAuthorityWithClient(
+        retainedClient,
+        { userId: carol },
+        { shareGrantId: bound.id, representation: "lcm_rollups" },
+        false
+      );
+      expect(retained?.representation.sourceRevision).toBe(1);
+    } finally {
+      retainedClient.release();
+    }
+    await expect(authorRevokeNote()).rejects.toThrow(
+      /stays with it.*Make it private/
+    );
     expect((await grantState(otherNote.id)).frozen_at).toBeNull();
     expect(
       (
@@ -1464,6 +1769,28 @@ describe.skipIf(!testUrl)("Workspace Project grant-bearing lifecycle", () => {
     ).toContain(source.id);
     expect((await grantState(bound.id)).frozen_at).not.toBeNull();
     expect((await grantState(otherNote.id)).frozen_at).toBeNull();
+    const removeReview = await repository.getContributionRemovalReview(
+      alice,
+      project.id,
+      separateContribution.id
+    );
+    expect(removeReview).not.toBeNull();
+    await sharedMemoryRepository().removeProjectContribution(
+      { userId: alice },
+      {
+        mutationId: randomUUID(),
+        projectId: project.id,
+        shareGrantId: separateContribution.id,
+        expectedProjectVersion: removeReview!.project.version,
+        expectedGrantVersion: removeReview!.grantVersion
+      }
+    );
+    expect((await grantState(bound.id)).frozen_at).not.toBeNull();
+    const original = await pool.query<{ lifecycle: string }>(
+      `select lifecycle from team_memory_share_grants where id=$1`,
+      [bound.id]
+    );
+    expect(original.rows[0]?.lifecycle).not.toBe("revoked");
   }, 120_000);
 
   it("atomically freezes all bound grants on owner delete and leaves independent grants active", async () => {

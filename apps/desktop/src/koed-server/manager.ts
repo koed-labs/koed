@@ -19,6 +19,8 @@ import type {
   CuratedMemoryRequest,
   CuratedMemoryResult
 } from "../ipc/curated-memory-protocol.js";
+import { z } from "zod";
+import { teamContributionSchema } from "../ipc/curated-memory-protocol.js";
 import { createChatDeleteNativeClient } from "./chat-delete-native-client.js";
 import { createChatMoveNativeClient } from "./chat-move-native-client.js";
 import { createChatMovePlacementClient } from "./chat-move-placement-client.js";
@@ -4431,30 +4433,96 @@ export const createKoedServerManager = ({
     projectsAuthority
   );
 
-  const curatedMemory = createCuratedMemoryClient(async (path, init, bound) => {
-    const remote = await fetchBoundedJsonObject(
-      personalMemoryFetch,
-      new URL(path, bound.apiOrigin),
-      {
-        ...init,
-        redirect: "error",
-        headers: {
-          accept: "application/json",
-          ...init.headers,
-          authorization: bound.authorization
-        }
-      },
-      { timeoutMs: 30_000, maxBytes: 8_000_000 }
-    );
-    if (!remote.response.ok) {
-      await remote.response.body?.cancel().catch(() => undefined);
-      throw new PersonalMemoryBoundaryError(
-        remote.response.status === 404 ? "not_found" : "request_failed",
-        remote.response.status === 408 || remote.response.status >= 500
+  const personalCuratedMemory = createCuratedMemoryClient(
+    async (path, init, bound) => {
+      const remote = await fetchBoundedJsonObject(
+        personalMemoryFetch,
+        new URL(path, bound.apiOrigin),
+        {
+          ...init,
+          redirect: "error",
+          headers: {
+            accept: "application/json",
+            ...init.headers,
+            authorization: bound.authorization
+          }
+        },
+        { timeoutMs: 30_000, maxBytes: 8_000_000 }
       );
-    }
-    return remote.payload;
-  }, projectsAuthority);
+      if (!remote.response.ok) {
+        await remote.response.body?.cancel().catch(() => undefined);
+        throw new PersonalMemoryBoundaryError(
+          remote.response.status === 404 ? "not_found" : "request_failed",
+          remote.response.status === 408 || remote.response.status >= 500
+        );
+      }
+      return remote.payload;
+    },
+    projectsAuthority
+  );
+
+  const curatedMemory = async (
+    request: CuratedMemoryRequest
+  ): Promise<CuratedMemoryResult> => {
+    if (request.operation !== "teamContributions")
+      return personalCuratedMemory(request);
+    const bound = await projectsAuthority();
+    return sharedProjectIdentity.run(bound.key, async () => {
+      const link = await workspaceProjectPersonal.linkedProject(
+        request.projectId
+      );
+      if (link.ownerUserId !== bound.ownerId)
+        throw new Error("Project profile changed before Team memory read");
+      const contributions: ReturnType<typeof teamContributionSchema.parse>[] =
+        [];
+      let offset = 0;
+      for (let page = 0; page < 200; page += 1) {
+        const payload = z
+          .object({
+            contributions: teamContributionSchema.array(),
+            nextOffset: z.number().int().nonnegative().nullable()
+          })
+          .strict()
+          .parse(
+            await workspaceProjectTransport.sendTeam(
+              link.teamBackendId,
+              `/v1/workspace-projects/${link.workspaceProjectId}/contributions?offset=${offset}`
+            )
+          );
+        contributions.push(
+          ...teamContributionSchema.array().parse(payload.contributions)
+        );
+        if (payload.nextOffset === null) {
+          const currentLink = await workspaceProjectPersonal.linkedProject(
+            request.projectId
+          );
+          if (
+            currentLink.ownerUserId !== bound.ownerId ||
+            currentLink.teamBackendId !== link.teamBackendId ||
+            currentLink.workspaceProjectId !== link.workspaceProjectId
+          )
+            throw new Error(
+              "Project Team link changed during Team memory read"
+            );
+          if ((await projectsAuthority()).key !== bound.key)
+            throw new Error("Project profile changed during Team memory read");
+          return {
+            operation: "teamContributions",
+            projectId: request.projectId,
+            contributions
+          };
+        }
+        if (
+          typeof payload.nextOffset !== "number" ||
+          !Number.isInteger(payload.nextOffset) ||
+          payload.nextOffset <= offset
+        )
+          throw new Error("Team contribution page did not advance");
+        offset = payload.nextOffset;
+      }
+      throw new Error("Team contribution page limit reached");
+    });
+  };
 
   const projectHqConversation = createProjectHqConversationClient({
     authority: projectsAuthority,

@@ -9860,8 +9860,9 @@ describeDb("Shared Memory repository", () => {
       revoked_at: null
     });
 
-    // Make private withdraws this one Project-bound grant. A later explicit
-    // Native decision must create a new Pending Share, never revive it.
+    // Make private excludes future policy publication but does not revoke the
+    // already-published Project contribution. The Project owner removes that exact
+    // contribution separately; a later Native share needs a new Pending Share.
     const excluded = await policy.excludeSession(policyActor, {
       projectId,
       sessionId: available.sessionId,
@@ -9874,12 +9875,33 @@ describeDb("Shared Memory repository", () => {
     });
     if (!excluded.withdrawalTarget)
       throw new Error("Exact Project grant withdrawal target unavailable");
-    await repository.revokeShareGrant(actor(fixture.ownerUserId), {
+    await expect(
+      repository.readGrantRepresentation(actor(fixture.readerUserId), {
+        shareGrantId: issued.shareGrantId,
+        representation: "lcm_leaves"
+      })
+    ).resolves.not.toBeNull();
+    await expect(
+      repository.revokeShareGrant(actor(fixture.ownerUserId), {
+        mutationId: randomUUID(),
+        shareGrantId: excluded.withdrawalTarget.shareGrantId,
+        expectedGrantVersion: excluded.withdrawalTarget.grantVersion,
+        reasonCode: "owner_withdrawal",
+        authority: authority(fixture)
+      })
+    ).rejects.toThrow(/stays with it.*Make it private/);
+    const currentProject = await pool.query<{ version: number }>(
+      `select version from workspace_projects where id=$1`,
+      [projectId]
+    );
+    if (!currentProject.rows[0])
+      throw new Error("Current Project version unavailable");
+    await repository.removeProjectContribution(actor(fixture.ownerUserId), {
       mutationId: randomUUID(),
+      projectId,
       shareGrantId: excluded.withdrawalTarget.shareGrantId,
-      expectedGrantVersion: excluded.withdrawalTarget.grantVersion,
-      reasonCode: "owner_withdrawal",
-      authority: authority(fixture)
+      expectedProjectVersion: currentProject.rows[0].version,
+      expectedGrantVersion: excluded.withdrawalTarget.grantVersion
     });
     await expect(
       repository.readGrantRepresentation(actor(fixture.readerUserId), {

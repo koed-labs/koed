@@ -170,6 +170,21 @@ export const highRiskActionGrantIntentSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
+      action: z.literal("workspace_project.contribution_remove"),
+      teamId: uuidSchema,
+      projectId: uuidSchema,
+      shareGrantId: uuidSchema,
+      body: z
+        .object({
+          mutationId: uuidSchema,
+          expectedProjectVersion: z.number().int().positive(),
+          expectedGrantVersion: z.number().int().positive()
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("project_source.team_metadata.delete"),
       teamId: uuidSchema,
       projectId: uuidSchema,
@@ -1085,6 +1100,18 @@ export const resolveHighRiskActionGrantOperation = (input: {
     case "workspace_project.leave":
     case "workspace_project.member_remove":
     case "workspace_project.delete":
+    case "workspace_project.contribution_remove":
+      if (intent.action === "workspace_project.contribution_remove") {
+        return bindTeamAdminOperation({
+          operationFamily: "admin",
+          action: intent.action,
+          teamId: intent.teamId,
+          targetId: intent.projectId,
+          method: "POST",
+          path: `/v1/workspace-projects/${intent.projectId}/contributions/${intent.shareGrantId}/remove`,
+          body: intent.body
+        });
+      }
       return bindTeamAdminOperation({
         operationFamily: "admin",
         action: intent.action,

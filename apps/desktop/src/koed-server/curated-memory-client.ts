@@ -152,6 +152,8 @@ export const createCuratedMemoryClient =
         throw new Error("Memory mutation crossed owner.");
       return { operation: request.operation, assertion };
     }
+    if (request.operation === "teamContributions")
+      throw new Error("Team contributions require the linked Team backend.");
     if (request.scope === "project" && !request.projectId)
       throw new Error("Destination Project is required.");
     const payload = await send(

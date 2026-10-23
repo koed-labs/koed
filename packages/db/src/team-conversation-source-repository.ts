@@ -68,6 +68,10 @@ export interface TeamConversationSourceRepository {
     actor: ActorContext,
     input: { shareGrantId: string; teamId: string; expectedVersion: number }
   ): Promise<TeamConversationSourceGrantReviewRecord | null>;
+  getTeamConversationSourceRevokeReview(
+    actor: ActorContext,
+    input: { shareGrantId: string; teamId: string; expectedVersion: number }
+  ): Promise<TeamConversationSourceGrantReviewRecord | null>;
   putTeamConversationSourceGrant(
     actor: ActorContext,
     input: {
@@ -681,6 +685,68 @@ export const createTeamConversationSourceRepository = (
       : null;
   },
 
+  async getTeamConversationSourceRevokeReview(actor, input) {
+    // Withdrawal reviews the capability that already exists. It must not
+    // depend on the local captured-session/artifact prerequisites for creating
+    // a new higher-fidelity capability.
+    const result = await pool.query<Row>(
+      `select share_grant.id as share_grant_id,
+              share_grant.logical_memory_id,
+              coalesce(nullif(trim(artifact.redacted_source_label),''),
+                       'Captured Session') as source_title,
+              source_grant.team_id, team.name as team_name,
+              source_grant.team_workspace_id,
+              workspace.name as team_workspace_name,
+              source_grant.version as current_version,
+              source_grant.mode as current_mode,
+              source_grant.lifecycle as current_lifecycle
+         from team_conversation_source_grants source_grant
+         join team_memory_share_grants share_grant
+           on share_grant.id=source_grant.share_grant_id
+          and share_grant.owner_user_id=source_grant.owner_user_id
+          and share_grant.team_id=source_grant.team_id
+          and share_grant.team_workspace_id=source_grant.team_workspace_id
+         join users source_owner on source_owner.id=source_grant.owner_user_id
+          and source_owner.disabled_at is null and source_owner.deleted_at is null
+         join teams team on team.id=source_grant.team_id
+          and team.lifecycle='active'
+          and team.entitlement_status in ('active','grace')
+         join team_workspaces workspace
+           on workspace.id=source_grant.team_workspace_id
+          and workspace.team_id=source_grant.team_id
+          and workspace.lifecycle='active' and workspace.archived_at is null
+         left join conversation_source_artifacts artifact
+           on artifact.id=source_grant.artifact_id
+          and artifact.owner_user_id=source_grant.owner_user_id
+        where source_grant.share_grant_id=$1
+          and source_grant.owner_user_id=$2
+          and source_grant.team_id=$3
+          and source_grant.version=$4
+          and source_grant.lifecycle in ('active','frozen_empty')
+        limit 1`,
+      [input.shareGrantId, actor.userId, input.teamId, input.expectedVersion]
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          shareGrantId: stringValue(row.share_grant_id),
+          logicalMemoryId: stringValue(row.logical_memory_id),
+          sourceTitle: stringValue(row.source_title),
+          teamId: stringValue(row.team_id),
+          teamName: stringValue(row.team_name),
+          teamWorkspaceId: stringValue(row.team_workspace_id),
+          teamWorkspaceName: stringValue(row.team_workspace_name),
+          currentVersion: numberValue(row.current_version),
+          currentMode: stringValue(
+            row.current_mode
+          ) as TeamConversationSourceGrantMode,
+          currentLifecycle: stringValue(
+            row.current_lifecycle
+          ) as TeamConversationSourceGrantLifecycle
+        }
+      : null;
+  },
+
   async putTeamConversationSourceGrant(actor, input) {
     const client = await pool.connect();
     try {
@@ -921,18 +987,33 @@ export const createTeamConversationSourceRepository = (
       await client.query("begin");
       const result = await client.query<Row>(
         `update team_conversation_source_grants source_grant
-            set lifecycle = 'revoked', version = version + 1,
+            set lifecycle = 'revoked', version = source_grant.version + 1,
                 mutation_id = $3, revoked_at = now(),
                 revoked_by_user_id = $2, revocation_reason = $5,
                 updated_at = now()
-           from team_memory_share_grants share_grant
+           from team_memory_share_grants share_grant,
+                users source_owner,
+                teams team,
+                team_workspaces workspace
           where source_grant.share_grant_id = $1
             and source_grant.version = $4
             and source_grant.lifecycle in ('active','frozen_empty')
             and share_grant.id = source_grant.share_grant_id
             and share_grant.owner_user_id = $2
+            and source_grant.owner_user_id = $2
             and source_grant.team_id = $6
             and share_grant.team_id = $6
+            and share_grant.team_workspace_id = source_grant.team_workspace_id
+            and source_owner.id = $2
+            and source_owner.disabled_at is null
+            and source_owner.deleted_at is null
+            and team.id = $6
+            and team.lifecycle = 'active'
+            and team.entitlement_status in ('active','grace')
+            and workspace.id = source_grant.team_workspace_id
+            and workspace.team_id = $6
+            and workspace.lifecycle = 'active'
+            and workspace.archived_at is null
           returning source_grant.*`,
         [
           input.shareGrantId,
@@ -954,6 +1035,7 @@ export const createTeamConversationSourceRepository = (
               and source_grant.mutation_id = $3
               and source_grant.lifecycle = 'revoked'
               and share_grant.owner_user_id = $2
+            and source_grant.owner_user_id = $2
               and source_grant.team_id = $4
               and share_grant.team_id = $4`,
           [input.shareGrantId, actor.userId, input.mutationId, input.teamId]

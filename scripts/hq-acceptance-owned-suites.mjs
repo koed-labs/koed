@@ -32,108 +32,356 @@ const integration = (title, record) => ({
 });
 
 export const ownedAcceptanceSuites = [
-{
-  "id": "U722.1",
-  "clause": "Sharing metadata reflects current Project/Team visibility and effective removal/cancellation authority.",
-  "proof": [
-    {
-      "kind": "vitest",
-      "file": "apps/api/src/team/sharing-read.pg.test.ts",
-      "title": "uses Team membership authority, Project owner visibility and metadata-only output",
-      "titleMatch": "exact-leaf-unique-in-file"
-    },
-    {
-      "kind": "vitest",
-      "file": "apps/api/src/team/sharing-read.test.ts",
-      "title": "projects only metadata and current Project owner authority",
-      "titleMatch": "exact-leaf-unique-in-file"
-    }
-  ]
-},
-{
-  "id": "N722.16",
-  "clause": "Team sharing never includes Personal Conversation content/ids; Personal enrichment is current-owner bound.",
-  "proof": [
-    {
-      "kind": "vitest",
-      "file": "packages/shared/src/sharing-contract.test.ts",
-      "title": "rejects a Personal Conversation id at every Team origin nesting",
-      "titleMatch": "exact-leaf-unique-in-file"
-    },
-    {
-      "kind": "vitest",
-      "file": "apps/api/src/local-edge/sharing-routes.test.ts",
-      "title": "rejects a Team response containing a Personal Conversation origin",
-      "titleMatch": "exact-leaf-unique-in-file"
-    },
-    {
-      "kind": "vitest",
-      "file": "apps/api/src/local-edge/sharing-routes.test.ts",
-      "title": "redacts the inviter's Agent name from pending incoming invitations",
-      "titleMatch": "exact-leaf-unique-in-file"
-    },
-    {
-      "kind": "vitest",
-      "file": "apps/api/src/local-edge/sharing-routes.test.ts",
-      "title": "fails the whole read when the current Personal profile changes during an upstream await",
-      "titleMatch": "exact-leaf-unique-in-file"
-    }
-  ]
-},
-{
-  "id": "N722.27",
-  "clause": "A failed or unenrolled backend remains explicit beside available backends; live events queue a fresh read.",
-  "proof": [
-    {
-      "kind": "vitest",
-      "file": "apps/api/src/local-edge/sharing-routes.test.ts",
-      "title": "retains an unavailable backend next to available metadata and does not reuse another owner's last reach",
-      "titleMatch": "exact-leaf-unique-in-file"
-    },
-    {
-      "kind": "vitest",
-      "file": "apps/api/src/local-edge/sharing-routes.test.ts",
-      "title": "reports unenrolled and disabled-policy backends explicitly",
-      "titleMatch": "exact-leaf-unique-in-file"
-    },
-    {
-      "kind": "vitest",
-      "file": "apps/desktop/src/renderer/hq/sharing/sharing-store.test.ts",
-      "title": "queues one refresh for collaboration invalidations received during a read",
-      "titleMatch": "exact-leaf-unique-in-file"
-    }
-  ]
-},
-{
-  "id": "N722.33",
-  "clause": "Cancellation capability follows current Team owner/admin authority, distinct from Project ownership.",
-  "proof": [
-    {
-      "kind": "vitest",
-      "file": "apps/api/src/team/sharing-read.pg.test.ts",
-      "title": "uses Team membership authority, Project owner visibility and metadata-only output",
-      "titleMatch": "exact-leaf-unique-in-file"
-    },
-    {
-      "kind": "vitest",
-      "file": "apps/api/src/team/sharing-read.test.ts",
-      "title": "limits cancellation to current Team managers and owner invitations to owners",
-      "titleMatch": "exact-leaf-unique-in-file"
-    }
-  ]
-},
-{
-  "id": "U722.2",
-  "clause": "Typed read-only Desktop IPC rejects untrusted senders and stale Personal authority.",
-  "proof": [
-    {
-      "kind": "vitest",
-      "file": "apps/desktop/src/koed-server/manager-sharing.test.ts",
-      "title": "returns a strict empty-backend read for unchanged authority",
-      "titleMatch": "exact-leaf-unique-in-file"
-    }
-  ]
-},
+  {
+    id: "I720.1",
+    clause: "Project departure retains recall and the current Team byline.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.1"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq726-native.mjs",
+        reportPath: "scratch/hq-726/HQ726.native.json",
+        proofId: "I720.1.presentation"
+      }
+    ]
+  },
+  {
+    id: "I720.2",
+    clause:
+      "Project chat and Note author revocation is refused while transcript access can be separately revoked.",
+    proof: [
+      unit(
+        "apps/api/src/high-risk/shared-memory-action-definitions.test.ts",
+        "steps up source sharing and uses Native review for source revocation"
+      ),
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.2.chat"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.2.note"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.2.transcript"
+      }
+    ]
+  },
+  {
+    id: "I720.3",
+    clause:
+      "Native-reviewed current Project owner removes exactly one frozen contribution with one replayable audited receipt.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.3"
+      }
+    ]
+  },
+  {
+    id: "I720.4",
+    clause: "Independent non-Project grants remain author-revocable.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.4"
+      }
+    ]
+  },
+  {
+    id: "I720.5",
+    clause:
+      "Source metadata deletion hides/freezes its Note while retained content and other contributions stay independent.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.5"
+      }
+    ]
+  },
+  {
+    id: "I720.6",
+    clause:
+      "Team departure retains others recall, updates attribution and denies the departed author.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.6"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq726-native.mjs",
+        reportPath: "scratch/hq-726/HQ726.native.json",
+        proofId: "I720.6.presentation"
+      }
+    ]
+  },
+  {
+    id: "N726.14",
+    clause:
+      "Only the current Project owner can remove exact contributions, with stale requests and author revokes failing closed.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "packages/db/src/workspace-project-grant-lifecycle.test.ts",
+        title:
+          "keeps chat and Note Project grants against author revoke and atomically removes one by current Project owner",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.3"
+      }
+    ]
+  },
+  {
+    id: "N726.15",
+    clause:
+      "Current Team departure denies author recall at the boundary while keeping published contributions.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.6"
+      }
+    ]
+  },
+  {
+    id: "N726.31",
+    clause:
+      "Note-only canonical event fallback never exposes captured transcripts; Source metadata removal preserves its contribution.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/api/src/team/workspace-project-contributions-routes.test.ts",
+        title:
+          "shows a validated Note event but never falls back to captured-chat raw events",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "keeps Project contributions through departure and owner-reviewed removal",
+        record: "I720.5"
+      }
+    ]
+  },
+  {
+    id: "U726.1",
+    clause:
+      "The HQ panel keeps Team contributions read-only and scopes Personal memory independently.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/memory/WhatKoedKnows.test.tsx",
+        title:
+          "labels a retained Team contribution only after current group membership ends",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq726-native.mjs",
+        reportPath: "scratch/hq-726/HQ726.native.json",
+        proofId: "Me.unscoped.isolation"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq726-native.mjs",
+        reportPath: "scratch/hq-726/HQ726.native.json",
+        proofId: "late.scope.response"
+      }
+    ]
+  },
+  {
+    id: "U722.1",
+    clause:
+      "Sharing metadata reflects current Project/Team visibility and effective removal/cancellation authority.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/api/src/team/sharing-read.pg.test.ts",
+        title:
+          "uses Team membership authority, Project owner visibility and metadata-only output",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/team/sharing-read.test.ts",
+        title: "projects only metadata and current Project owner authority",
+        titleMatch: "exact-leaf-unique-in-file"
+      }
+    ]
+  },
+  {
+    id: "N722.16",
+    clause:
+      "Team sharing never includes Personal Conversation content/ids; Personal enrichment is current-owner bound.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "packages/shared/src/local-edge-upstream-registry.test.ts",
+        title: "keeps legacy and malformed source owner bindings unbound",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "packages/koed-server/src/upstream-enrollment.test.ts",
+        title:
+          "authenticates replacement enrollment as an exact predecessor rotation",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "packages/koed-server/src/upstream-enrollment.test.ts",
+        title:
+          "recovers a replacement interrupted after successor commit without deleting it",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "packages/shared/src/sharing-contract.test.ts",
+        title:
+          "rejects a Personal Conversation id at every Team origin nesting",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/local-edge/sharing-routes.test.ts",
+        title:
+          "rejects a Team response containing a Personal Conversation origin",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/local-edge/sharing-routes.test.ts",
+        title:
+          "redacts the inviter's Agent name from pending incoming invitations",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/local-edge/sharing-routes.test.ts",
+        title:
+          "fails the whole read when the current Personal profile changes during an upstream await",
+        titleMatch: "exact-leaf-unique-in-file"
+      }
+    ]
+  },
+  {
+    id: "N722.27",
+    clause:
+      "A failed or unenrolled backend remains explicit beside available backends; live events queue a fresh read.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/api/src/local-edge/sharing-routes.test.ts",
+        title:
+          "retains an unavailable backend next to available metadata and does not reuse another owner's last reach",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/local-edge/sharing-routes.test.ts",
+        title: "reports unenrolled and disabled-policy backends explicitly",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/sharing-store.test.ts",
+        title:
+          "queues one refresh for collaboration invalidations received during a read",
+        titleMatch: "exact-leaf-unique-in-file"
+      }
+    ]
+  },
+  {
+    id: "N722.33",
+    clause:
+      "Cancellation capability follows current Team owner/admin authority, distinct from Project ownership.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/api/src/team/sharing-read.pg.test.ts",
+        title:
+          "uses Team membership authority, Project owner visibility and metadata-only output",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/team/sharing-read.test.ts",
+        title:
+          "limits cancellation to current Team managers and owner invitations to owners",
+        titleMatch: "exact-leaf-unique-in-file"
+      }
+    ]
+  },
+  {
+    id: "U722.2",
+    clause:
+      "Typed read-only Desktop IPC rejects untrusted senders and stale Personal authority.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/ipc/commands.test.ts",
+        title: "accepts only trusted, read-only Sharing IPC requests",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/koed-server/manager-sharing.test.ts",
+        title: "discards a pending read when the Personal origin changes",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/koed-server/manager-sharing.test.ts",
+        title: "discards a pending read when the Personal owner changes",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/koed-server/manager-sharing.test.ts",
+        title: "discards a pending read when the Personal credential changes",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/koed-server/manager-sharing.test.ts",
+        title: "returns a strict empty-backend read for unchanged authority",
+        titleMatch: "exact-leaf-unique-in-file"
+      }
+    ]
+  },
   {
     id: "U521.1",
     clause:
@@ -207,6 +455,10 @@ export const ownedAcceptanceSuites = [
     clause:
       "N34: Distinct reported buckets, restrictions and Claude overage remain conservative.",
     proof: [
+      unit(
+        "apps/desktop/src/renderer/hq/usage/HqUsageTable.test.tsx",
+        "keeps a selected model's five-hour Codex bucket beside the default window only"
+      ),
       unit(
         "apps/desktop/src/renderer/hq/usage/hq-usage-model.test.ts",
         "keeps Codex windows and model buckets distinct"
@@ -598,6 +850,10 @@ export const ownedAcceptanceSuites = [
     proof: [
       unit(
         "packages/db/tests/shared-memory-repository.test.ts",
+        "publishes an exact Project policy summary to a teammate but blocks a private source before activation"
+      ),
+      unit(
+        "packages/db/tests/shared-memory-repository.test.ts",
         "linearizes an in-flight legacy row writer with a whole-transaction freeze retry"
       ),
       unit(
@@ -633,8 +889,16 @@ export const ownedAcceptanceSuites = [
   {
     id: "N11.I",
     clause:
-      "Real-backend freeze pins published material and leaves independent grant publication valid while denial states stay enforced.",
+      "Real-backend freeze retains Project contributions against author revoke; independent grant revoke, suppression and expiry still deny.",
     proof: [
+      integration(
+        "keeps Project contributions through departure and owner-reviewed removal",
+        "I720.4"
+      ),
+      integration(
+        "keeps Project contributions through departure and owner-reviewed removal",
+        "I720.3"
+      ),
       integration(main, "N11.post-freeze"),
       integration(main, "N11.in-flight-freeze"),
       integration(main, "N11.independent-grant"),

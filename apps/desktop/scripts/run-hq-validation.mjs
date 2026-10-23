@@ -636,6 +636,38 @@ try {
     }
   }
   if (process.exitCode === undefined || process.exitCode === 0) {
+    const reportPath = resolve(scratchDir, "hq-726", "HQ726.native.json");
+    await rm(reportPath, { force: true });
+    const profile = await mkdtemp(
+      resolve(scratchDir, "hq726-electron-profile-")
+    );
+    try {
+      const result = spawnSync(
+        electronPath,
+        ["scripts/validate-hq726-native.mjs"],
+        {
+          cwd: desktopDir,
+          env: { ...process.env, KOED_HQ726_USER_DATA_DIR: profile },
+          stdio: "inherit",
+          timeout: 60_000
+        }
+      );
+      if (result.error) throw result.error;
+      process.exitCode = result.status ?? 1;
+      if (process.exitCode === 0) {
+        const report = JSON.parse(await readFile(reportPath, "utf8"));
+        assert.deepEqual(
+          { id: report.id, owner: report.owner, status: report.status },
+          { id: "HQ726.native", owner: "HQ-726", status: "pass" }
+        );
+        assert.ok(report.assertions.includes("Me.unscoped.isolation"));
+        assert.ok(report.assertions.includes("late.scope.response"));
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+  if (process.exitCode === undefined || process.exitCode === 0) {
     const reportPath = resolve(scratchDir, "hq-521", "HQ521.native.json");
     await rm(reportPath, { force: true });
     const profile = await mkdtemp(

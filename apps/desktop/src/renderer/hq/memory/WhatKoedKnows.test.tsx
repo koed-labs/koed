@@ -298,6 +298,166 @@ describe("What Koed knows identity and ownership", () => {
       node.querySelector('[aria-label="Move Legacy note to"]')
     ).not.toBeNull();
   });
+  it("labels a retained Team contribution only after current group membership ends", async () => {
+    const sharedProject = {
+      ...project,
+      workspaceProjectId: secondProjectId
+    } as Project;
+    let noLongerInGroup = false;
+    const memoryApi = {
+      ...api(async () => page([])),
+      teamContributions: vi.fn(async () => [
+        {
+          shareGrantId: secondProjectId,
+          title: "Atlas summary",
+          contributorDisplayName: "Bob",
+          groupName: "Design Team",
+          noLongerInGroup,
+          summaries: [
+            {
+              text: "Retained decision",
+              title: "Atlas summary",
+              occurredAt: "2026-10-20T08:00:00.000Z"
+            }
+          ]
+        }
+      ])
+    } satisfies CuratedMemoryDesktopApi;
+    await render(memoryApi, { project: sharedProject });
+    expect(node.textContent).toContain("Shared by Bob");
+    expect(node.textContent).not.toContain("no longer in Design Team");
+    noLongerInGroup = true;
+    await render(memoryApi, {
+      project: sharedProject,
+      profileKey: "profile-b"
+    });
+    expect(node.textContent).toContain(
+      "Shared by Bob (no longer in Design Team)"
+    );
+    expect(
+      node.querySelector('[aria-label="Forget: Retained decision"]')
+    ).toBeNull();
+    const teamReads = memoryApi.teamContributions.mock.calls.length;
+    await act(async () =>
+      (node.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement).click()
+    );
+    expect(node.textContent).not.toContain("Retained decision");
+    await act(async () =>
+      (node.querySelectorAll('[role="tab"]')[2] as HTMLButtonElement).click()
+    );
+    expect(memoryApi.teamContributions).toHaveBeenCalledTimes(teamReads);
+  });
+  it("clears retained Team content when a reopened Project read loses access", async () => {
+    const sharedProject = {
+      ...project,
+      workspaceProjectId: secondProjectId
+    } as Project;
+    const memoryApi = {
+      ...api(async () => page([])),
+      teamContributions: vi
+        .fn<NonNullable<CuratedMemoryDesktopApi["teamContributions"]>>()
+        .mockResolvedValueOnce([
+          {
+            shareGrantId: secondProjectId,
+            title: "Atlas summary",
+            contributorDisplayName: "Bob",
+            groupName: "Design Team",
+            noLongerInGroup: false,
+            summaries: [
+              {
+                text: "Formerly authorized Team summary",
+                title: "Atlas summary",
+                occurredAt: "2026-10-20T08:00:00.000Z"
+              }
+            ]
+          }
+        ])
+        .mockRejectedValueOnce(new Error("Project access denied"))
+    } satisfies CuratedMemoryDesktopApi;
+    await render(memoryApi, { project: sharedProject });
+    expect(node.textContent).toContain("Formerly authorized Team summary");
+    await render(memoryApi, { project: sharedProject, open: false });
+    await render(memoryApi, { project: sharedProject });
+    expect(memoryApi.teamContributions).toHaveBeenCalledTimes(2);
+    expect(node.textContent).not.toContain("Formerly authorized Team summary");
+    expect(node.querySelector('[aria-label="Team contributions"]')).toBeNull();
+    expect(node.querySelector('[role="alert"]')?.textContent).toContain(
+      "Project access denied"
+    );
+    await act(async () =>
+      (node.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement).click()
+    );
+    await act(async () =>
+      (node.querySelectorAll('[role="tab"]')[2] as HTMLButtonElement).click()
+    );
+    expect(memoryApi.teamContributions).toHaveBeenCalledTimes(2);
+  });
+  it("isolates Team rows and late reads when a Project link changes backend or Workspace Project", async () => {
+    type TeamItems = Awaited<
+      ReturnType<NonNullable<CuratedMemoryDesktopApi["teamContributions"]>>
+    >;
+    const oldRead = deferred<TeamItems>();
+    const newWorkspaceRead = deferred<TeamItems>();
+    const contribution = (text: string): TeamItems => [
+      {
+        shareGrantId: secondProjectId,
+        title: "Atlas summary",
+        contributorDisplayName: "Bob",
+        groupName: "Design Team",
+        noLongerInGroup: false,
+        summaries: [
+          {
+            text,
+            title: "Atlas summary",
+            occurredAt: "2026-10-20T08:00:00.000Z"
+          }
+        ]
+      }
+    ];
+    const memoryApi = {
+      ...api(async () => page([])),
+      teamContributions: vi
+        .fn<NonNullable<CuratedMemoryDesktopApi["teamContributions"]>>()
+        .mockImplementationOnce(() => oldRead.promise)
+        .mockResolvedValueOnce(contribution("New backend summary"))
+        .mockImplementationOnce(() => newWorkspaceRead.promise)
+    } satisfies CuratedMemoryDesktopApi;
+    const originalLink = {
+      ...project,
+      teamBackendId: "backend-one",
+      workspaceProjectId: secondProjectId
+    } as Project;
+    await render(memoryApi, { project: originalLink });
+    expect(memoryApi.teamContributions).toHaveBeenCalledTimes(1);
+    const newBackend = {
+      ...originalLink,
+      teamBackendId: "backend-two"
+    } as Project;
+    await render(memoryApi, { project: newBackend });
+    expect(memoryApi.teamContributions).toHaveBeenCalledTimes(2);
+    expect(node.textContent).toContain("New backend summary");
+    await act(async () => oldRead.resolve(contribution("Old backend summary")));
+    expect(node.textContent).not.toContain("Old backend summary");
+    expect(node.textContent).toContain("New backend summary");
+    const newWorkspace = {
+      ...newBackend,
+      workspaceProjectId: crypto.randomUUID()
+    } as Project;
+    await render(memoryApi, { project: newWorkspace });
+    expect(memoryApi.teamContributions).toHaveBeenCalledTimes(3);
+    expect(node.textContent).not.toContain("New backend summary");
+    await act(async () =>
+      newWorkspaceRead.resolve(contribution("New Workspace summary"))
+    );
+    expect(node.textContent).toContain("New Workspace summary");
+    await act(async () =>
+      (node.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement).click()
+    );
+    await act(async () =>
+      (node.querySelectorAll('[role="tab"]')[2] as HTMLButtonElement).click()
+    );
+    expect(memoryApi.teamContributions).toHaveBeenCalledTimes(3);
+  });
   it("loads older memory without duplicating rows or trusting a repeated cursor", async () => {
     const first = item("Newest decision");
     const older = item("Older decision", "project", {

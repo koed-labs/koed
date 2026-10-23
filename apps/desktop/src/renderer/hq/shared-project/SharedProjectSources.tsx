@@ -338,6 +338,12 @@ export function SharedProjectSources({
                         All sources
                       </button>
                     </div>
+                    {deleteSource && !readOnly ? (
+                      <p className="hq-project-sources__note">
+                        It leaves the Sources list. What it added stays in the
+                        Project.
+                      </p>
+                    ) : null}
                   </>
                 ) : (
                   <div className="hq-project-sources__rows">

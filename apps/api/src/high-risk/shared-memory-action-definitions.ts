@@ -57,6 +57,7 @@ type SharedMemoryActionRepository = Pick<
   | "inspectSourceAdmissionProvenance"
   | "getSharedMemoryFidelityChangeReview"
   | "getTeamConversationSourceGrantReview"
+  | "getTeamConversationSourceRevokeReview"
 >;
 
 interface SharedMemoryAdmissionInput {
@@ -748,7 +749,7 @@ const conversationSourceRevokeDefinition = {
       return null;
     }
     const review = requireReview(
-      await input.repository.getTeamConversationSourceGrantReview(
+      await input.repository.getTeamConversationSourceRevokeReview(
         { userId: input.userId },
         {
           shareGrantId: input.intent.shareGrantId,

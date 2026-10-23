@@ -13,7 +13,8 @@ import type {
   CuratedAssertion,
   CuratedMemoryDesktopApi,
   CuratedMemoryPage,
-  MemoryCursor
+  MemoryCursor,
+  TeamContribution
 } from "../../../ipc/curated-memory-protocol.js";
 import "./what-koed-knows.css";
 
@@ -56,6 +57,8 @@ export const who = (
       : assertion.authorKind === "user"
         ? "You"
         : "Koed";
+export const contributionByline = (contribution: TeamContribution) =>
+  `Shared by ${contribution.contributorDisplayName?.trim() || "a teammate"}${contribution.noLongerInGroup ? ` (no longer in ${contribution.groupName})` : ""}`;
 const askName = (assertion: CuratedAssertion) =>
   assertion.sharedBy?.trim() || "the owner";
 
@@ -108,6 +111,10 @@ export function WhatKoedKnows({
     token: string;
   } | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const [teamContributions, setTeamContributions] = useState<{
+    key: number;
+    items: TeamContribution[];
+  }>({ key: -1, items: [] });
   const actionRef = useRef<number | null>(null);
   const externalOpenRef = useRef<{ id: number; done: boolean } | null>(null);
   const [countState, setCountState] = useState<{
@@ -119,6 +126,8 @@ export function WhatKoedKnows({
     ownerId,
     profileKey,
     projectId: project.id,
+    teamBackendId: project.teamBackendId,
+    workspaceProjectId: project.workspaceProjectId,
     open,
     tab,
     key: 0
@@ -129,6 +138,8 @@ export function WhatKoedKnows({
     old.ownerId !== ownerId ||
     old.profileKey !== profileKey ||
     old.projectId !== project.id ||
+    old.teamBackendId !== project.teamBackendId ||
+    old.workspaceProjectId !== project.workspaceProjectId ||
     old.open !== open ||
     old.tab !== tab
   ) {
@@ -137,6 +148,8 @@ export function WhatKoedKnows({
       ownerId,
       profileKey,
       projectId: project.id,
+      teamBackendId: project.teamBackendId,
+      workspaceProjectId: project.workspaceProjectId,
       open,
       tab,
       key: old.key + 1
@@ -148,6 +161,8 @@ export function WhatKoedKnows({
     ownerId,
     profileKey,
     projectId: project.id,
+    teamBackendId: project.teamBackendId,
+    workspaceProjectId: project.workspaceProjectId,
     open,
     key: 0
   });
@@ -157,6 +172,8 @@ export function WhatKoedKnows({
     base.ownerId !== ownerId ||
     base.profileKey !== profileKey ||
     base.projectId !== project.id ||
+    base.teamBackendId !== project.teamBackendId ||
+    base.workspaceProjectId !== project.workspaceProjectId ||
     base.open !== open
   ) {
     baseRef.current = {
@@ -164,6 +181,8 @@ export function WhatKoedKnows({
       ownerId,
       profileKey,
       projectId: project.id,
+      teamBackendId: project.teamBackendId,
+      workspaceProjectId: project.workspaceProjectId,
       open,
       key: base.key + 1
     };
@@ -236,7 +255,13 @@ export function WhatKoedKnows({
     setTab("project");
     setDetail(null);
     setUndo(null);
-  }, [project.id, ownerId, profileKey]);
+  }, [
+    project.id,
+    project.teamBackendId,
+    project.workspaceProjectId,
+    ownerId,
+    profileKey
+  ]);
   useEffect(() => {
     if (!open) return;
     let active = true;
@@ -261,7 +286,59 @@ export function WhatKoedKnows({
     return () => {
       active = false;
     };
-  }, [api, open, tab, project.id, ownerId, profileKey, refresh, key]);
+  }, [
+    api,
+    open,
+    tab,
+    project.id,
+    project.teamBackendId,
+    project.workspaceProjectId,
+    ownerId,
+    profileKey,
+    refresh,
+    key
+  ]);
+  useEffect(() => {
+    if (
+      !open ||
+      tab !== "project" ||
+      !project.workspaceProjectId ||
+      !api.teamContributions
+    )
+      return;
+    let active = true;
+    setTeamContributions({ key, items: [] });
+    void api
+      .teamContributions(project.id)
+      .then((items) => {
+        if (active && identityRef.current.key === key)
+          setTeamContributions({ key, items });
+      })
+      .catch((cause) => {
+        if (active && identityRef.current.key === key) {
+          setTeamContributions({ key, items: [] });
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Team contributions could not be loaded."
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    api,
+    open,
+    tab,
+    project.id,
+    project.teamBackendId,
+    project.workspaceProjectId,
+    ownerId,
+    profileKey,
+    refresh,
+    key
+  ]);
   useEffect(() => {
     if (!open) return;
     let active = true;
@@ -291,7 +368,17 @@ export function WhatKoedKnows({
     return () => {
       active = false;
     };
-  }, [api, open, project.id, ownerId, profileKey, refresh, baseKey]);
+  }, [
+    api,
+    open,
+    project.id,
+    project.teamBackendId,
+    project.workspaceProjectId,
+    ownerId,
+    profileKey,
+    refresh,
+    baseKey
+  ]);
   useEffect(() => {
     if (!open) {
       setDetail(null);
@@ -592,9 +679,45 @@ export function WhatKoedKnows({
                 ) : null;
               })
             )}
-            {!busy && rows.length === 0 && !error && (
-              <p className="hq-knows__empty">Nothing here yet.</p>
-            )}
+            {!busy &&
+              rows.length === 0 &&
+              !error &&
+              !(
+                tab === "project" &&
+                teamContributions.key === key &&
+                teamContributions.items.length > 0
+              ) && <p className="hq-knows__empty">Nothing here yet.</p>}
+            {tab === "project" &&
+              teamContributions.key === key &&
+              teamContributions.items.length > 0 && (
+                <section
+                  className="hq-knows__group"
+                  aria-label="Team contributions"
+                >
+                  <h2>
+                    Shared with this Project{" "}
+                    <span>· {teamContributions.items.length}</span>
+                  </h2>
+                  <div className="hq-knows__list">
+                    {teamContributions.items.flatMap((contribution) =>
+                      contribution.summaries.map((summary, index) => (
+                        <div
+                          className="hq-knows__row"
+                          key={`${contribution.shareGrantId}:${index}`}
+                        >
+                          <div className="hq-knows__item">
+                            <strong>{summary.text}</strong>
+                            <small>
+                              {contributionByline(contribution)} ·{" "}
+                              {date(summary.occurredAt)} · {summary.title}
+                            </small>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </section>
+              )}
             {cursor && (
               <button
                 type="button"

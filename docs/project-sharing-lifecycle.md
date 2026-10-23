@@ -151,9 +151,23 @@ policy using the target Native-review
 version. Revocation disables future policy-based issuance only. Existing
 grants continue to advance under their own consent and lifecycle; policy
 revocation does not revoke, freeze, or change their advancement or published
-evidence. Freezing or revoking an existing grant to stop advancement or remove
-access remains a separate action. These enable, apply, and revoke actions are
-target behavior and are not implemented today.
+evidence. Freezing an existing Project-bound grant stops advancement while
+retaining its published knowledge. The source owner cannot revoke a Project
+contribution, whether its grant is active or frozen. The Workspace Project
+owner can remove one exact contribution through the Native-reviewed
+`workspace_project.contribution_remove` action; that revokes its grant,
+invalidates its representations and related source access, schedules purge,
+and records an audit event. Explicit grants outside a Workspace Project remain
+revocable by their source owner. Conversation Source Access can be revoked
+separately without withdrawing the retained summary.
+
+What Koed knows reads retained Project summaries and published Note Source
+content as read-only Team contributions. It never reads raw Conversation events
+for this panel. The "no longer in the group" attribution follows the author's
+current Team Membership; losing only a Project link does not add that label or
+remove the summary. If current Team membership is unknown, the label is not
+shown. The Team read rechecks the viewer's current Project and Workspace
+access and the exact Share Grant before returning contribution content.
 
 Project Sources are shared only through each uploader's own supported grants;
 the Project Share Policy does not grant another member's Conversations or
@@ -259,6 +273,8 @@ Deleting Team-side Project Source metadata is a Team action through
 `project_source.team_metadata.delete` with Step-up approval. Its Team-authority
 workflow freezes grants for the exact source revisions before deleting the
 metadata. It does not delete the uploader's Personal Note content or revisions;
+the Source leaves the list, while its last published knowledge remains in
+Project recall until the Workspace Project owner removes that contribution.
 only the source owner can trash or forget that Personal data through the local
 Note lifecycle. If local Note trash affects active Team grants, the source
 owner separately requests each required target `shared_memory.grant.freeze`
@@ -695,3 +711,5 @@ A prepared operation can only be continued by its original enrolled device,
 or canceled from a fresh owner browser session before a new review. Leaving
 has no Undo. A new invitation is required to return, and previous Project
 links or grant advancement are not restored by rejoining.
+
+Transcript access withdrawal reviews the exact existing source-access capability and its current owner and version. It does not require the local capture or artifact prerequisites used to create a new source-access grant. The withdrawal still requires its Native review; creating or reading transcript access keeps its existing checks.

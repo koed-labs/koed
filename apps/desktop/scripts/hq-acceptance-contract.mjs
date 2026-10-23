@@ -567,7 +567,7 @@ export const hqAcceptanceContract = [
     id: "N11.I",
     category: "negative",
     description:
-      "Freeze/publication race, another grant still advances, revocation/suppression/expiry still deny",
+      "Freeze retains Project summaries against author revoke; independent revoke, suppression and expiry still deny",
     owners: ["HQ-713 integration suite"],
     harness: "real-api"
   },
@@ -797,50 +797,124 @@ export const hqAcceptanceContract = [
       "Native Desktop preload delivers only typed completion metadata and unsubscribes",
     owners: ["HQ-520"],
     harness: "simulated-ipc"
+  },
+  {
+    id: "U722.1",
+    category: "unit",
+    description:
+      "Sharing metadata reflects current Project/Team visibility and effective removal/cancellation authority.",
+    owners: ["HQ-722"],
+    harness: "unit"
+  },
+  {
+    id: "N722.16",
+    category: "unit",
+    description:
+      "Team sharing never includes Personal Conversation content/ids; Personal enrichment is current-owner bound.",
+    owners: ["HQ-722"],
+    harness: "unit"
+  },
+  {
+    id: "N722.27",
+    category: "unit",
+    description:
+      "A failed or unenrolled backend remains explicit beside available backends; live events queue a fresh read.",
+    owners: ["HQ-722"],
+    harness: "unit"
+  },
+  {
+    id: "N722.33",
+    category: "unit",
+    description:
+      "Cancellation capability follows current Team owner/admin authority, distinct from Project ownership.",
+    owners: ["HQ-722"],
+    harness: "unit"
+  },
+  {
+    id: "U722.2",
+    category: "unit",
+    description:
+      "Typed read-only Desktop IPC rejects untrusted senders and stale Personal authority.",
+    owners: ["HQ-722"],
+    harness: "unit"
+  },
+  {
+    id: "I720.1",
+    category: "two-user",
+    description:
+      "Project departure retains recall and the current Team byline.",
+    owners: ["HQ-726"],
+    harness: "two-user"
+  },
+  {
+    id: "I720.2",
+    category: "two-user",
+    description:
+      "Project chat and Note author revocation is refused while transcript access can be separately revoked.",
+    owners: ["HQ-726"],
+    harness: "two-user"
+  },
+  {
+    id: "I720.3",
+    category: "two-user",
+    description:
+      "Native-reviewed current Project owner removes exactly one frozen contribution with one replayable audited receipt.",
+    owners: ["HQ-726"],
+    harness: "two-user"
+  },
+  {
+    id: "I720.4",
+    category: "two-user",
+    description: "Independent non-Project grants remain author-revocable.",
+    owners: ["HQ-726"],
+    harness: "two-user"
+  },
+  {
+    id: "I720.5",
+    category: "two-user",
+    description:
+      "Source metadata deletion hides/freezes its Note while retained content and other contributions stay independent.",
+    owners: ["HQ-726"],
+    harness: "two-user"
+  },
+  {
+    id: "I720.6",
+    category: "two-user",
+    description:
+      "Team departure retains others recall, updates attribution and denies the departed author.",
+    owners: ["HQ-726"],
+    harness: "two-user"
+  },
+  {
+    id: "N726.14",
+    category: "unit",
+    description:
+      "Only the current Project owner can remove exact contributions, with stale requests and author revokes failing closed.",
+    owners: ["HQ-726"],
+    harness: "unit"
+  },
+  {
+    id: "N726.15",
+    category: "unit",
+    description:
+      "Current Team departure denies author recall at the boundary while keeping published contributions.",
+    owners: ["HQ-726"],
+    harness: "unit"
+  },
+  {
+    id: "N726.31",
+    category: "unit",
+    description:
+      "Note-only canonical event fallback never exposes captured transcripts; Source metadata removal preserves its contribution.",
+    owners: ["HQ-726"],
+    harness: "unit"
+  },
+  {
+    id: "U726.1",
+    category: "unit",
+    description:
+      "The HQ panel keeps Team contributions read-only and scopes Personal memory independently.",
+    owners: ["HQ-726"],
+    harness: "unit"
   }
-{
-  "id": "U722.1",
-  "category": "unit",
-  "description": "Sharing metadata reflects current Project/Team visibility and effective removal/cancellation authority.",
-  "owners": [
-    "HQ-722"
-  ],
-  "harness": "unit"
-},
-{
-  "id": "N722.16",
-  "category": "unit",
-  "description": "Team sharing never includes Personal Conversation content/ids; Personal enrichment is current-owner bound.",
-  "owners": [
-    "HQ-722"
-  ],
-  "harness": "unit"
-},
-{
-  "id": "N722.27",
-  "category": "unit",
-  "description": "A failed or unenrolled backend remains explicit beside available backends; live events queue a fresh read.",
-  "owners": [
-    "HQ-722"
-  ],
-  "harness": "unit"
-},
-{
-  "id": "N722.33",
-  "category": "unit",
-  "description": "Cancellation capability follows current Team owner/admin authority, distinct from Project ownership.",
-  "owners": [
-    "HQ-722"
-  ],
-  "harness": "unit"
-},
-{
-  "id": "U722.2",
-  "category": "unit",
-  "description": "Typed read-only Desktop IPC rejects untrusted senders and stale Personal authority.",
-  "owners": [
-    "HQ-722"
-  ],
-  "harness": "unit"
-},
 ];

@@ -8,6 +8,10 @@ import type {
 import { App } from "./renderer/App.js";
 import { createHq521UsageFixture } from "./hq-usage-browser-fixture.js";
 import {
+  createHq726ContributionsFixture,
+  hq726WorkspaceProjectId
+} from "./hq-contributions-browser-fixture.js";
+import {
   COLLABORATION_DEFAULT_LIMITS,
   COLLABORATION_CONTRACT_VERSION,
   collaborationSnapshotSchema
@@ -57,6 +61,8 @@ const FIXTURE_ID = "hq-approved-map-fixture-v1";
 const hq521Capture =
   new URLSearchParams(window.location.search).get("hq521Capture") === "yes";
 const hq521Usage = hq521Capture ? createHq521UsageFixture() : null;
+const hq726Capture =
+  new URLSearchParams(window.location.search).get("hq726Capture") === "yes";
 const FIXTURE_TIME = "2026-10-19T09:00:00.000Z";
 const SIDEBAR_FIXTURE_TIME = "2026-10-19T12:00:00.000Z";
 const hq108Overflow =
@@ -373,7 +379,8 @@ const hq207Capture =
   new URLSearchParams(window.location.search).get("hq305Capture") === "yes" ||
   hq308Capture ||
   hq502Capture ||
-  hq503Capture;
+  hq503Capture ||
+  hq726Capture;
 const hq304Capture =
   new URLSearchParams(window.location.search).get("hq304Capture") === "yes";
 const hq305Capture =
@@ -476,6 +483,9 @@ const hq304MemoryApi: CuratedMemoryDesktopApi = {
     return { assertion: structuredClone(row), pending: false };
   }
 };
+const hq726Contributions = hq726Capture
+  ? createHq726ContributionsFixture(hq304MemoryApi)
+  : null;
 const hq305Ids = [
   "00000000-0000-4000-8000-000000003051",
   "00000000-0000-4000-8000-000000003052"
@@ -2012,6 +2022,7 @@ const installSettingsDesktop = () => {
     ...(hq504Capture ? { managedTextActions: hq504ManagedTextActions } : {}),
     ...(hq603Capture ? { scheduledJobs: hq603ScheduledJobs } : {}),
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
+    ...(hq726Contributions ? { curatedMemory: hq726Contributions.api } : {}),
     ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
     ...(hq521Usage ? { localAiClients: hq521Usage.api } : {}),
     ...(hq106Capture || hq702Capture
@@ -3565,6 +3576,13 @@ if (hq203Empty || hq204Capture || hq207Capture)
           teamWorkspaceId: "00000000-0000-4000-8000-000000007121",
           workspaceProjectId: "00000000-0000-4000-8000-000000007122"
         }
+      : {}),
+    ...(hq726Capture
+      ? {
+          teamBackendId: "fixture-team-backend",
+          teamWorkspaceId: "00000000-0000-4000-8000-000000007121",
+          workspaceProjectId: hq726WorkspaceProjectId
+        }
       : {})
   });
 let sidebarPersonalProjects: Project[] = structuredClone(
@@ -4359,6 +4377,22 @@ const sidebarProjectsApi = {
       : null,
   sharedMembers: async (workspaceProjectId: string, teamBackendId: string) => {
     if (
+      hq726Capture &&
+      workspaceProjectId === hq726WorkspaceProjectId &&
+      teamBackendId === hq712TeamBackendId
+    )
+      return {
+        projectId: hq726WorkspaceProjectId,
+        version: 1,
+        people: [
+          {
+            teamMemberId: "00000000-0000-4000-8000-000000007124",
+            displayName: "You",
+            access: "write" as const
+          }
+        ]
+      };
+    if (
       !hq701Linked ||
       workspaceProjectId !== hq712WorkspaceProjectId ||
       teamBackendId !== hq712TeamBackendId
@@ -4416,6 +4450,34 @@ const sidebarProjectsApi = {
     ];
   },
   sharedRefresh: async (workspaceProjectId: string, teamBackendId: string) => {
+    if (
+      hq726Capture &&
+      workspaceProjectId === hq726WorkspaceProjectId &&
+      teamBackendId === hq712TeamBackendId
+    ) {
+      const state = hq712State();
+      if (!state.project || !state.activity)
+        throw new Error(
+          "HQ-726 fixture requires a current Project and activity"
+        );
+      return {
+        ...state,
+        project: {
+          ...state.project,
+          id: hq726WorkspaceProjectId,
+          name: "New empty Project"
+        },
+        activity: {
+          days: state.activity.days.map((day) => ({ ...day, count: 0 })),
+          done: 0,
+          merged: 0
+        },
+        workItems: [],
+        sources: [],
+        readOnly: false,
+        notice: null
+      };
+    }
     if (
       !hq712Capture ||
       workspaceProjectId !== hq712WorkspaceProjectId ||
@@ -5632,6 +5694,14 @@ export function HqValidationApp() {
           >["control"];
         }
       ).__koedHq521Usage = hq521Usage.control;
+    if (hq726Contributions)
+      (
+        window as Window & {
+          __koedHq726Contributions?: ReturnType<
+            typeof createHq726ContributionsFixture
+          >["control"];
+        }
+      ).__koedHq726Contributions = hq726Contributions.control;
     if (hq701Capture)
       (
         window as Window & { __koedHq701Trace?: typeof hq701Trace }
@@ -5680,6 +5750,13 @@ export function HqValidationApp() {
           >["control"];
         }
       ).__koedHq521Usage;
+      delete (
+        window as Window & {
+          __koedHq726Contributions?: ReturnType<
+            typeof createHq726ContributionsFixture
+          >["control"];
+        }
+      ).__koedHq726Contributions;
       delete (window as Window & { __koedHq603Trace?: typeof hq603Trace })
         .__koedHq603Trace;
       delete (window as Window & { __koedHq306Trace?: typeof hq306Trace })

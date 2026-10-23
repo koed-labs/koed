@@ -98,6 +98,20 @@ const matrixCases: Array<{
   },
   {
     intent: {
+      action: "workspace_project.contribution_remove",
+      teamId: uuid(1),
+      projectId: uuid(2),
+      shareGrantId: uuid(3),
+      body: {
+        mutationId: uuid(4),
+        expectedProjectVersion: 2,
+        expectedGrantVersion: 3
+      }
+    },
+    expected: "native_review"
+  },
+  {
+    intent: {
       action: "project_source.team_metadata.delete",
       teamId: uuid(1),
       projectId: uuid(2),
@@ -477,6 +491,48 @@ const matrixCases: Array<{
 ];
 
 describe("action approval policy", () => {
+  it("requires an exact current owner review for contribution removal", async () => {
+    const intent = matrixCases.find(
+      ({ intent }) => intent.action === "workspace_project.contribution_remove"
+    )!.intent;
+    const review = {
+      project: {
+        id: uuid(2),
+        teamId: uuid(1),
+        name: "Atlas",
+        lifecycle: "active",
+        version: 2
+      },
+      grantVersion: 3,
+      lifecycle: "active",
+      contributorUserId: uuid(5),
+      sourceId: null
+    };
+    const getContributionRemovalReview = vi.fn(async () => review);
+    const input = {
+      repository: {
+        getContributionRemovalReview
+      } as unknown as HighRiskActionDefinitionRepository,
+      userId: uuid(6),
+      clientRequestId: uuid(7),
+      hashSecret: () => "a".repeat(64),
+      intent
+    };
+    const admitted = await admitHighRiskActionGrant(input);
+    expect(admitted?.policy.disposition).toBe("native_review");
+    expect(getContributionRemovalReview).toHaveBeenCalledWith(
+      uuid(6),
+      uuid(2),
+      uuid(3)
+    );
+    getContributionRemovalReview.mockResolvedValueOnce({
+      ...review,
+      grantVersion: 4
+    });
+    await expect(admitHighRiskActionGrant(input)).rejects.toMatchObject({
+      statusCode: 403
+    });
+  });
   it.each([
     ["shared_memory.project_share_policy.enable", "absent"],
     ["shared_memory.project_share_policy.revoke", "active"]

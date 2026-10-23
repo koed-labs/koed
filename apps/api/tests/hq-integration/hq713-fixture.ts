@@ -219,6 +219,17 @@ export interface Hq713Fixture {
     logicalMemoryId: string;
     projectBoundCuratedRejected: boolean;
   }>;
+  sharePersonalNote(
+    actor: Hq713Actor,
+    input: {
+      noteId: string;
+      noteRevision: number;
+      memoryEventId: string;
+      logicalMemoryId: string;
+      teamWorkspaceId: string;
+      noteText: string;
+    }
+  ): Promise<{ grantId: string; logicalMemoryId: string }>;
   shareCapturedSessionViaProjectPolicy(
     actor: Hq713Actor,
     input: {
@@ -2542,32 +2553,55 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
           sourceCursor
         };
       };
-    const shareCapturedSession: Hq713Fixture["shareCapturedSession"] = async (
-      actor,
-      input
+    const shareMemorySource = async (
+      actor: Hq713Actor,
+      input: Omit<
+        Parameters<Hq713Fixture["shareCapturedSession"]>[1],
+        "sessionId"
+      > & {
+        sessionId?: string;
+        noteSource?: {
+          noteId: string;
+          noteRevision: number;
+          memoryEventId: string;
+          logicalMemoryId: string;
+        };
+      }
     ) => {
-      const logicalMemoryId = crossIdentitySyncDeterministicUuid({
-        protocol: "koed.captured-session-sync/v1",
-        sourceDeploymentId: actor.deploymentId,
-        sourceUserId: actor.id,
-        originSessionId: input.sessionId,
-        identity: "logical-memory"
-      });
-      const source = {
-        kind: "captured_session",
-        sessionId: input.sessionId,
-        logicalMemoryId
-      };
-      await localCommand(actor, "collaboration.prepare_shared_memory_source", {
-        sessionId: input.sessionId,
-        consentedAt: new Date().toISOString()
-      });
+      const note = input.noteSource;
+      if (!note) assert.ok(input.sessionId);
+      const logicalMemoryId = note
+        ? note.logicalMemoryId
+        : crossIdentitySyncDeterministicUuid({
+            protocol: "koed.captured-session-sync/v1",
+            sourceDeploymentId: actor.deploymentId,
+            sourceUserId: actor.id,
+            originSessionId: input.sessionId!,
+            identity: "logical-memory"
+          });
+      const source = note
+        ? { kind: "personal_note" as const, ...note }
+        : {
+            kind: "captured_session" as const,
+            sessionId: input.sessionId!,
+            logicalMemoryId
+          };
+      const activationRepresentation = note ? "memory_events" : "lcm_leaves";
+      if (!note)
+        await localCommand(
+          actor,
+          "collaboration.prepare_shared_memory_source",
+          {
+            sessionId: input.sessionId!,
+            consentedAt: new Date().toISOString()
+          }
+        );
       const candidateResult = await localCommand(
         actor,
         "collaboration.preview_shared_memory_candidate",
         {
           source,
-          activationRepresentation: "lcm_leaves",
+          activationRepresentation,
           mode: "continuous",
           ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
           ...(input.includeCuratedMemory
@@ -2587,16 +2621,22 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         .candidate as Record<string, unknown>;
       assert.ok(candidate && typeof candidate === "object", "Source candidate");
       assert.equal(candidate.logicalMemoryId, logicalMemoryId);
-      assert.ok(
-        Number(candidate.itemCount) > 0,
-        "Conversation candidate needs a real LCM leaf"
-      );
-      const candidateItems = candidate.items as Array<{ summaryText?: string }>;
+      assert.ok(Number(candidate.itemCount) > 0, "Candidate needs a real item");
+      const candidateItems = candidate.items as Array<{
+        summaryText?: string;
+        sourceItems?: Array<{ sourceKind?: string; body?: string }>;
+      }>;
       assert.ok(
         candidateItems.some((item) =>
-          item.summaryText?.includes(input.summaryText)
+          note
+            ? item.sourceItems?.some(
+                (sourceItem) =>
+                  sourceItem.sourceKind === "user_message" &&
+                  sourceItem.body?.includes(input.summaryText)
+              )
+            : item.summaryText?.includes(input.summaryText)
         ),
-        "LCM candidate must contain the exact reviewed summary marker"
+        "Candidate must contain the exact reviewed content marker"
       );
       if (input.includeCuratedMemory) {
         assert.match(
@@ -2619,7 +2659,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
       const candidateBinding = {
         source,
         sourceCapabilities,
-        activationRepresentation: "lcm_leaves",
+        activationRepresentation,
         candidateHash: candidate.candidateHash,
         sourceRevision: candidate.sourceRevision,
         itemCount: candidate.itemCount,
@@ -2645,8 +2685,8 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         teamId: ids.teamId,
         workspaceId: input.teamWorkspaceId,
         sourceCapabilities,
-        activationRepresentation: "lcm_leaves",
-        maximumFidelity: "lcm_leaves",
+        activationRepresentation,
+        maximumFidelity: activationRepresentation,
         includeCuratedMemory: input.includeCuratedMemory,
         ...(input.includeCuratedMemory
           ? {
@@ -2678,7 +2718,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
           "Team preview must preserve the exact owner-local Curated commitment"
         );
       }
-      assert.equal(preview.maximumFidelity, "lcm_leaves");
+      assert.equal(preview.maximumFidelity, activationRepresentation);
       assert.deepEqual(preview.sourceCapabilities, sourceCapabilities);
       const localAuthority = createCollaborationSharedMemoryAuthorityStore(
         actor.name === "alice" ? aliceDb.pool : bobDb.pool,
@@ -2703,7 +2743,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
       const shareInput = {
         source,
         sourceCapabilities,
-        activationRepresentation: "lcm_leaves",
+        activationRepresentation,
         mutationId: input.mutationId ?? randomUUID(),
         logicalGrantId: randomUUID(),
         consentId: randomUUID(),
@@ -2714,7 +2754,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
           ? { workspaceProjectId: input.workspaceProjectId }
           : {}),
         mode: "continuous",
-        maximumFidelity: "lcm_leaves",
+        maximumFidelity: activationRepresentation,
         includeCuratedMemory: input.includeCuratedMemory,
         previewRevision: preview.previewRevision,
         previewHash: preview.previewHash,
@@ -2927,6 +2967,30 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         })}`
       );
     };
+    const shareCapturedSession: Hq713Fixture["shareCapturedSession"] = (
+      actor,
+      input
+    ) => shareMemorySource(actor, input);
+    const sharePersonalNote: Hq713Fixture["sharePersonalNote"] = async (
+      actor,
+      input
+    ) => {
+      const shared = await shareMemorySource(actor, {
+        noteSource: {
+          noteId: input.noteId,
+          noteRevision: input.noteRevision,
+          memoryEventId: input.memoryEventId,
+          logicalMemoryId: input.logicalMemoryId
+        },
+        teamWorkspaceId: input.teamWorkspaceId,
+        summaryText: input.noteText,
+        includeCuratedMemory: false
+      });
+      return {
+        grantId: shared.grantId,
+        logicalMemoryId: shared.logicalMemoryId
+      };
+    };
     const fixture: Hq713Fixture = {
       restartPersonal: async (actor) => {
         assert.ok(!closed, "Fixture must be live for an API restart");
@@ -3004,6 +3068,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
       seedCapturedSession,
       advanceCapturedSession,
       shareCapturedSession,
+      sharePersonalNote,
       shareCapturedSessionViaProjectPolicy: (actor, input) =>
         shareHq713CapturedSessionViaProjectPolicy(fixture, actor, input),
       makeChatPrivate: (actor, input) =>

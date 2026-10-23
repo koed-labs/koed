@@ -304,40 +304,38 @@ export async function prepareHq713PriorSummaryGrants(fixture: Hq713Fixture) {
   const revoked = await publishSummary(fixture, `${prefix}-revoked`);
   const frozenAfter = await freezeByChatDeletion(fixture, frozen);
   assert.equal(frozenAfter.source_revision, frozen.grant.source_revision);
-  const mutationId = randomUUID();
-  const reasonCode = "owner_revoked";
-  const approved = await fixture.approveActionGrant(fixture.bob, {
-    action: "shared_memory.revoke",
-    mutationId,
+  const projectVersion = await fixture.team.db.query<{ version: number }>(
+    `select version from workspace_projects where id=$1`,
+    [fixture.ids.workspaceProjectId]
+  );
+  const body = {
+    mutationId: randomUUID(),
+    expectedProjectVersion: projectVersion.rows[0]!.version,
+    expectedGrantVersion: revoked.grant.grant_version
+  };
+  const approved = await fixture.approveActionGrant(fixture.alice, {
+    action: "workspace_project.contribution_remove",
     teamId: fixture.ids.teamId,
-    teamWorkspaceId: fixture.ids.workspaceId,
+    projectId: fixture.ids.workspaceProjectId,
     shareGrantId: revoked.grantId,
-    expectedGrantVersion: revoked.grant.grant_version,
-    reasonCode
+    body
   });
   assert.equal(approved.status.approvalTier, "native_review");
   assert.ok(
     approved.status.review,
-    "Exact revocation review must be displayed"
+    "Exact owner removal review must be displayed"
   );
-  const revocation = await fixture.bob.team.request<{
+  const revocation = await fixture.alice.team.request<{
     grant: { id: string; lifecycle: string };
-  }>("POST", `/v1/shared-memory/share-grants/${revoked.grantId}/revoke`, {
-    body: {
-      mutationId,
-      teamId: fixture.ids.teamId,
-      teamWorkspaceId: fixture.ids.workspaceId,
-      expectedGrantVersion: revoked.grant.grant_version,
-      reasonCode,
-      authority: {
-        action: "workspace.memory.share_owned",
-        source: "device_action_grant",
-        referenceId: approved.clientRequestId
-      }
-    },
-    headers: { "x-koed-action-grant": approved.secret },
-    expectedStatus: 200
-  });
+  }>(
+    "POST",
+    `/v1/workspace-projects/${fixture.ids.workspaceProjectId}/contributions/${revoked.grantId}/remove`,
+    {
+      body,
+      headers: { "x-koed-action-grant": approved.secret },
+      expectedStatus: 200
+    }
+  );
   assert.equal(revocation.body.grant.id, revoked.grantId);
   assert.equal(revocation.body.grant.lifecycle, "revoked");
   const revokedAfter = await grantState(fixture, revoked.grantId);

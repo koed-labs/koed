@@ -1,9 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type {
   MemorySourceRepository,
+  SharedMemoryRepository,
   WorkspaceProjectRepository
 } from "@koed/db";
 import {
+  SharedMemoryAuthorizationError,
   WorkspaceProjectConflictError,
   WorkspaceProjectUnavailableError
 } from "@koed/db";
@@ -22,7 +24,9 @@ import {
   workspaceProjectRestoreRequestSchema,
   workspaceProjectRestoreResultSchema,
   workspaceProjectLifecycleReviewSchema,
-  workspaceProjectRestorableListSchema
+  workspaceProjectRestorableListSchema,
+  validateSharedMemoryCanonicalSourceItem,
+  SharedMemoryConflictError
 } from "@koed/shared";
 import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
@@ -40,6 +44,12 @@ const textActionEffectParams = z
 const memberParams = z
   .object({ projectId: z.uuid(), targetUserId: z.uuid() })
   .strict();
+const contributionParams = z
+  .object({
+    projectId: z.uuid(),
+    shareGrantId: z.uuid()
+  })
+  .strict();
 const teamParams = z.object({ teamId: z.uuid() }).strict();
 const shareTargetParams = z
   .object({ teamId: z.uuid(), workspaceId: z.uuid() })
@@ -51,7 +61,10 @@ export const registerWorkspaceProjectRoutes = (
     repository: WorkspaceProjectRepository | null;
     requireRepository(): Pick<
       MemorySourceRepository,
-      "executeActionGrant" | "getTeamLeaveReview"
+      | "executeActionGrant"
+      | "getTeamLeaveReview"
+      | "listWorkspaceGrants"
+      | "readGrantRepresentation"
     >;
     auth: ApiRouteContext["auth"];
     readRateLimit: ApiRouteContext["rateLimit"]["memoryRead"];
@@ -80,6 +93,10 @@ export const registerWorkspaceProjectRoutes = (
       };
     if (error instanceof WorkspaceProjectUnavailableError)
       return { statusCode: 403, message: error.message };
+    if (error instanceof SharedMemoryAuthorizationError)
+      return { statusCode: 403, message: error.message };
+    if (error instanceof SharedMemoryConflictError)
+      return { statusCode: 409, message: error.message };
     throw error;
   };
   const actionGrant = async (
@@ -89,10 +106,14 @@ export const registerWorkspaceProjectRoutes = (
       | "workspace_project.leave"
       | "workspace_project.member_remove"
       | "workspace_project.delete"
+      | "workspace_project.contribution_remove"
       | "project_source.team_metadata.delete",
     projectId: string,
     body: unknown,
-    run: (repo: WorkspaceProjectRepository) => Promise<unknown>
+    run: (
+      repo: WorkspaceProjectRepository,
+      sharedMemory: SharedMemoryRepository
+    ) => Promise<unknown>
   ) => {
     if (!actor.credential.operationFamilies.includes("action_grant"))
       throw Object.assign(new Error("Action Grant credential required"), {
@@ -133,9 +154,9 @@ export const registerWorkspaceProjectRoutes = (
         body
       }),
       approvedRequest: { method: "POST", path: requestPath, body },
-      execute: async ({ workspaceProject }) => ({
+      execute: async ({ workspaceProject, sharedMemory }) => ({
         statusCode: 200,
-        body: await run(workspaceProject)
+        body: await run(workspaceProject, sharedMemory)
       })
     });
     if (!result)
@@ -858,6 +879,164 @@ export const registerWorkspaceProjectRoutes = (
           projectId,
           sourceId
         );
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.post(
+    "/v1/workspace-projects/:projectId/contributions/:shareGrantId/remove",
+    { preHandler: input.writeRateLimit },
+    async (request, reply) => {
+      const actor = await input.auth.authenticateDeviceCredential(request);
+      const { projectId, shareGrantId } = contributionParams.parse(
+        request.params
+      );
+      const body = z
+        .object({
+          mutationId: z.uuid(),
+          expectedProjectVersion: z.number().int().positive(),
+          expectedGrantVersion: z.number().int().positive()
+        })
+        .strict()
+        .parse(request.body);
+      try {
+        return await actionGrant(
+          request,
+          actor,
+          "workspace_project.contribution_remove",
+          projectId,
+          body,
+          async (_projectRepository, sharedMemory) => ({
+            grant: await sharedMemory.removeProjectContribution(
+              { userId: actor.user.id },
+              { projectId, shareGrantId, ...body }
+            )
+          })
+        );
+      } catch (error) {
+        return reply.code(handle(error).statusCode).send(handle(error));
+      }
+    }
+  );
+  app.get(
+    "/v1/workspace-projects/:projectId/contributions",
+    { preHandler: input.readRateLimit },
+    async (request, reply) => {
+      const actor = await authenticate(request, false);
+      const { projectId } = projectParams.parse(request.params);
+      const { offset } = z
+        .object({
+          offset: z.coerce.number().int().min(0).max(10000).default(0)
+        })
+        .strict()
+        .parse(request.query);
+      try {
+        const review = await repository().getLifecycleReview(
+          actor.id,
+          projectId
+        );
+        if (!review)
+          throw new WorkspaceProjectUnavailableError(
+            "Current Project authority unavailable"
+          );
+        const page = await input.requireRepository().listWorkspaceGrants(
+          { userId: actor.id },
+          {
+            teamId: review.project.teamId,
+            teamWorkspaceId: review.project.workspaceId,
+            limit: 50,
+            offset
+          }
+        );
+        const attributions =
+          await repository().getProjectContributionAttributions(
+            actor.id,
+            projectId,
+            page.entries.map((entry) => entry.shareGrantId)
+          );
+        const byGrant = new Map(
+          attributions.map((entry) => [entry.shareGrantId, entry])
+        );
+        const contributions = [];
+        for (const entry of page.entries) {
+          const attribution = byGrant.get(entry.shareGrantId);
+          if (!attribution) continue;
+          const preferred: ("lcm_rollups" | "lcm_leaves" | "memory_events")[] =
+            entry.activeRepresentation === "lcm_rollups"
+              ? ["lcm_rollups", "lcm_leaves"]
+              : ["lcm_leaves", "lcm_rollups"];
+          if (attribution.sourceKind === "personal_note")
+            preferred.push("memory_events");
+          let result = null;
+          for (const representation of preferred) {
+            result = await input
+              .requireRepository()
+              .readGrantRepresentation(
+                { userId: actor.id },
+                { shareGrantId: entry.shareGrantId, representation }
+              );
+            if (result) break;
+          }
+          if (
+            !result ||
+            result.grant.teamId !== review.project.teamId ||
+            result.grant.teamWorkspaceId !== review.project.workspaceId
+          )
+            continue;
+          const summaries = result.items.flatMap((item) => {
+            const validated = validateSharedMemoryCanonicalSourceItem({
+              representation: result.representation.representation,
+              logicalMemoryId: result.grant.logicalMemoryId,
+              sourceRevision: result.representation.sourceRevision,
+              item
+            });
+            const noteContent =
+              attribution.sourceKind === "personal_note" &&
+              result.representation.representation === "memory_events" &&
+              validated.itemType === "user_message" &&
+              typeof validated.content.text === "string";
+            return ((validated.itemType === "lcm_leaf" ||
+              validated.itemType === "lcm_rollup") &&
+              typeof validated.content.summaryText === "string") ||
+              noteContent
+              ? [
+                  {
+                    text: noteContent
+                      ? (validated.content.text as string)
+                      : (validated.content.summaryText as string),
+                    title: noteContent
+                      ? "Note contribution"
+                      : typeof validated.content.title === "string"
+                        ? validated.content.title
+                        : "Project summary",
+                    occurredAt: validated.occurredAt ?? result.grant.createdAt
+                  }
+                ]
+              : [];
+          });
+          if (summaries.length)
+            contributions.push({
+              shareGrantId: entry.shareGrantId,
+              title: summaries[0]!.title,
+              contributorDisplayName: attribution.contributorDisplayName,
+              groupName: attribution.groupName,
+              noLongerInGroup: attribution.noLongerInGroup,
+              summaries
+            });
+        }
+        const current = await repository().getLifecycleReview(
+          actor.id,
+          projectId
+        );
+        if (!current || current.project.version !== review.project.version)
+          throw new WorkspaceProjectUnavailableError(
+            "Current Project authority changed"
+          );
+        return {
+          contributions,
+          nextOffset: page.hasMore ? offset + page.entries.length : null
+        };
       } catch (error) {
         return reply.code(handle(error).statusCode).send(handle(error));
       }

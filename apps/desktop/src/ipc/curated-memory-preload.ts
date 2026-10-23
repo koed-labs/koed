@@ -22,6 +22,18 @@ export const createCuratedMemoryPreloadApi = (
     return result;
   };
   return Object.freeze({
+    teamContributions: async (projectId: string) => {
+      const result = await command({
+        operation: "teamContributions",
+        projectId
+      });
+      if (
+        result.operation !== "teamContributions" ||
+        result.projectId !== projectId
+      )
+        throw new Error("Invalid Team contribution identity.");
+      return result.contributions;
+    },
     proposeOnboardingPreference: async (
       input: Parameters<
         NonNullable<CuratedMemoryDesktopApi["proposeOnboardingPreference"]>

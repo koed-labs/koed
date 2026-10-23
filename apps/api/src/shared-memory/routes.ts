@@ -115,6 +115,15 @@ const mapSharedMemoryError = (error: unknown): never => {
     error instanceof SharedMemoryAuthorizationError ||
     (error instanceof Error && error.name === "SharedMemoryAuthorizationError")
   ) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("This was shared with ") &&
+      error.message.endsWith(
+        " and stays with it. Make it private to stop future updates."
+      )
+    ) {
+      throw Object.assign(new Error(error.message), { statusCode: 403 });
+    }
     throw forbidden();
   }
   if (

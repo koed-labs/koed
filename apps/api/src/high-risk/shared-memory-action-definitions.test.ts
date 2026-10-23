@@ -138,6 +138,18 @@ const repository = (options?: { sourceOwnerPolicyWillReplace?: boolean }) => ({
     currentVersion: input.expectedVersion,
     currentMode: input.expectedVersion === 0 ? null : "continuous",
     currentLifecycle: input.expectedVersion === 0 ? null : "active"
+  })),
+  getTeamConversationSourceRevokeReview: vi.fn(async (_actor, input) => ({
+    shareGrantId: input.shareGrantId,
+    logicalMemoryId: ids.logicalMemory,
+    sourceTitle: source.title,
+    teamId: ids.team,
+    teamName: destination.team.name,
+    teamWorkspaceId: ids.workspace,
+    teamWorkspaceName: destination.workspace.name,
+    currentVersion: input.expectedVersion,
+    currentMode: "continuous" as const,
+    currentLifecycle: "active" as const
   }))
 });
 
@@ -726,7 +738,8 @@ describe("Shared Memory action definitions", () => {
       }),
       policy: { disposition: "step_up" }
     });
-    await expect(admit(revokeIntent)).resolves.toMatchObject({
+    const revokeRepository = repository();
+    await expect(admit(revokeIntent, revokeRepository)).resolves.toMatchObject({
       operation: sharedMemoryTranscriptRevokeActionGrantBinding({
         referenceId: ids.request,
         mutationId: ids.mutation,
@@ -737,6 +750,12 @@ describe("Shared Memory action definitions", () => {
       }),
       policy: { disposition: "native_review" }
     });
+    expect(
+      revokeRepository.getTeamConversationSourceRevokeReview
+    ).toHaveBeenCalledOnce();
+    expect(
+      revokeRepository.getTeamConversationSourceGrantReview
+    ).not.toHaveBeenCalled();
   });
 
   it("uses exact current fidelity for decrease, increase, and revoked reactivation", async () => {

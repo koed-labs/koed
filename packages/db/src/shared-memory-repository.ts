@@ -1426,6 +1426,16 @@ export interface SharedMemoryRepository {
       authority: SharedMemoryAuthorityContext;
     }
   ): Promise<SharedMemoryGrantRecord>;
+  removeProjectContribution(
+    actor: ActorContext,
+    input: {
+      mutationId: string;
+      projectId: string;
+      shareGrantId: string;
+      expectedProjectVersion: number;
+      expectedGrantVersion: number;
+    }
+  ): Promise<SharedMemoryGrantRecord>;
   freezeShareGrant(
     actor: ActorContext,
     input: {
@@ -16567,6 +16577,158 @@ export const createSharedMemoryRepository = (
         : withTransaction(pool, command);
     },
 
+    async removeProjectContribution(actor, input) {
+      assertUuid(input.mutationId, "mutationId");
+      return withTransaction(pool, async (client) => {
+        await lockShareGrantRetentionScopeWithClient(
+          client,
+          input.shareGrantId
+        );
+        const authority = await client.query<Row>(
+          `select project.id,project.version,project.team_id,project.workspace_id,
+                  member.id as actor_member_id
+             from workspace_projects project
+             join team_memberships member
+               on member.id=project.owner_team_member_id
+              and member.user_id=$2 and member.team_id=project.team_id
+              and member.status='enabled' and member.disabled_at is null
+             join workspace_project_members project_member
+               on project_member.workspace_project_id=project.id
+              and project_member.team_member_id=member.id
+              and project_member.access='write' and project_member.disabled_at is null
+             join team_workspace_access_grants workspace_access
+               on workspace_access.team_workspace_id=project.workspace_id
+              and workspace_access.team_id=project.team_id
+              and workspace_access.user_id=$2
+              and workspace_access.access='write' and workspace_access.disabled_at is null
+             join teams team on team.id=project.team_id and team.lifecycle='active'
+             join team_workspaces workspace
+               on workspace.id=project.workspace_id and workspace.lifecycle='active'
+            where project.id=$1 and project.lifecycle='active'
+            for update of project,member,project_member,workspace_access,team,workspace`,
+          [input.projectId, actor.userId]
+        );
+        const project = authority.rows[0];
+        if (!project)
+          throw new SharedMemoryAuthorizationError(
+            "Current Project owner authority unavailable"
+          );
+        if (numberValue(project.version) !== input.expectedProjectVersion)
+          throw new SharedMemoryConflictError(
+            "Workspace Project version changed"
+          );
+        const result = await client.query<Row>(
+          `select grant_row.*,source.source_kind,source.source_session_id,
+                  source.source_note_id,source.source_memory_event_id,
+                  binding.workspace_project_source_id
+             from workspace_project_share_grant_bindings binding
+             join team_memory_share_grants grant_row
+               on grant_row.id=binding.share_grant_id
+             join logical_memory_source_revision_bindings source
+               on source.source_revision_id=grant_row.source_revision_id
+            where binding.workspace_project_id=$1 and binding.share_grant_id=$2
+              and grant_row.team_id=$3 and grant_row.team_workspace_id=$4
+            for update of grant_row`,
+          [
+            input.projectId,
+            input.shareGrantId,
+            project.team_id,
+            project.workspace_id
+          ]
+        );
+        const grant = result.rows[0];
+        if (!grant)
+          throw new SharedMemoryAuthorizationError(
+            "Project contribution unavailable"
+          );
+        if (numberValue(grant.grant_version) !== input.expectedGrantVersion)
+          throw new SharedMemoryConflictError("Share Grant version changed");
+        if (grant.lifecycle === "revoked")
+          throw new SharedMemoryConflictError(
+            "Project contribution was already removed"
+          );
+        const revokedAt = (
+          await client.query<{ now: Date }>(
+            "select transaction_timestamp() as now"
+          )
+        ).rows[0]!.now;
+        const updated = await client.query<Row>(
+          `update team_memory_share_grants
+              set lifecycle='revoked',grant_version=grant_version+1,updated_at=now(),
+                  revocation_epoch=revocation_epoch+1,revoked_at=$3,
+                  revoked_by_user_id=$2,revocation_reason='project_owner_removed'
+            where id=$1 returning *`,
+          [input.shareGrantId, actor.userId, revokedAt]
+        );
+        await client.query(
+          `update team_memory_representations
+              set state='invalidated',invalidated_at=now(),updated_at=now(),
+                  record_version=record_version+1,invalidation_reason_code='share_revoked'
+            where share_grant_id=$1 and state in ('pending','available','stale')`,
+          [input.shareGrantId]
+        );
+        await client.query(
+          `delete from team_memory_semantic_items item
+            where item.share_grant_id=$1
+              and exists (select 1 from team_memory_representations representation
+                           where representation.id=item.representation_id
+                             and representation.frozen_snapshot=false)`,
+          [input.shareGrantId]
+        );
+        await cascadeParentShareRevocation(client, {
+          shareGrantId: input.shareGrantId,
+          actorUserId: actor.userId,
+          mutationId: input.mutationId,
+          revokedAt
+        });
+        const row = {
+          ...updated.rows[0]!,
+          ...sourceRefRow(requiredSourceRefFromRow(grant))
+        };
+        await scheduleShareGrantRevocationRetentionWithClient(client, {
+          shareGrantId: input.shareGrantId,
+          actorUserId: actor.userId,
+          mutationId: input.mutationId,
+          revocationEpoch: numberValue(row.revocation_epoch),
+          triggeredAt: revokedAt
+        });
+        await appendOutbox(client, {
+          mutationId: input.mutationId,
+          family: "access_revoked",
+          teamId: stringValue(row.team_id),
+          teamWorkspaceId: stringValue(row.team_workspace_id),
+          shareGrantId: input.shareGrantId,
+          logicalMemoryId: stringValue(row.logical_memory_id),
+          resourceType: "team_memory_share_grant",
+          resourceId: input.shareGrantId,
+          actorPrincipalId: actor.userId
+        });
+        await client.query(
+          `insert into audit_events
+             (actor_user_id,owner_user_id,visibility,action,target_table,target_id,metadata)
+           values ($1,null,null,'workspace_project.contribution_remove',
+                   'team_memory_share_grants',$2,$3::jsonb)`,
+          [
+            actor.userId,
+            input.shareGrantId,
+            JSON.stringify({
+              teamId: stringValue(grant.team_id),
+              contributorUserId: stringValue(grant.owner_user_id),
+              projectId: input.projectId,
+              mutationId: input.mutationId,
+              projectVersion: input.expectedProjectVersion,
+              grantVersion: input.expectedGrantVersion
+            })
+          ]
+        );
+        await client.query(
+          `update workspace_projects set version=version+1,updated_at=now() where id=$1`,
+          [input.projectId]
+        );
+        return mapGrant(row);
+      });
+    },
+
     async revokeShareGrant(actor, input) {
       assertUuid(input.mutationId, "mutationId");
       if (!requiredString(input.reasonCode) || input.reasonCode.length > 120)
@@ -16589,6 +16751,18 @@ export const createSharedMemoryRepository = (
         if (!grant || grant.owner_user_id !== actor.userId) {
           throw new SharedMemoryAuthorizationError(
             "Only the source owner may revoke this Share Grant"
+          );
+        }
+        const projectBinding = await client.query<{ name: string }>(
+          `select project.name
+             from workspace_project_share_grant_bindings binding
+             join workspace_projects project on project.id=binding.workspace_project_id
+            where binding.share_grant_id=$1`,
+          [input.shareGrantId]
+        );
+        if (projectBinding.rows[0]) {
+          throw new SharedMemoryAuthorizationError(
+            `This was shared with ${projectBinding.rows[0].name} and stays with it. Make it private to stop future updates.`
           );
         }
         if (grant.lifecycle === "revoked") {
