@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { performance } from "node:perf_hooks";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DeterministicPrivacyRuntime } from "./runtime.js";
 import {
   PrivacyProviderSwitchError,
@@ -23,7 +24,7 @@ class FakeRuntime implements LoadablePrivacyRuntime {
       failLoad?: boolean;
       parityMismatch?: boolean;
       parityMismatchText?: string;
-      calibrationDelayMs?: number;
+      onCalibration?: () => void;
       holdText?: string;
       failText?: string;
       holdUnload?: boolean;
@@ -50,9 +51,8 @@ class FakeRuntime implements LoadablePrivacyRuntime {
       });
     }
     if (text.startsWith("Synthetic project discussion")) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, this.options.calibrationDelayMs ?? 0)
-      );
+      if (this.options.onCalibration) this.options.onCalibration();
+      else await new Promise((resolve) => setTimeout(resolve, 0));
     }
     const deterministic = new DeterministicPrivacyRuntime();
     if (
@@ -95,6 +95,7 @@ const normalCuda = async () => ({
 });
 
 describe("Privacy Filter runtime manager", () => {
+  afterEach(() => vi.restoreAllMocks());
   it("reports completed startup stages in order before readiness", async () => {
     const progress = vi.fn();
     const manager = await PrivacyRuntimeManager.create({
@@ -314,12 +315,16 @@ describe("Privacy Filter runtime manager", () => {
   });
 
   it("auto selects CPU when measured accelerator benefit is insufficient", async () => {
+    let elapsed = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
     const manager = await PrivacyRuntimeManager.create({
       preference: "auto",
       candidateProviders: ["cuda", "cpu"],
       factory: (provider) =>
         new FakeRuntime(provider, {
-          calibrationDelayMs: provider === "cuda" ? 8 : 0
+          onCalibration: () => {
+            elapsed += provider === "cuda" ? 8 : 1;
+          }
         }),
       observeCuda: normalCuda,
       minimumAutoSpeedupRatio: 1.15
@@ -333,12 +338,16 @@ describe("Privacy Filter runtime manager", () => {
   });
 
   it("auto switches an explicitly active accelerator back to CPU when it is slower", async () => {
+    let elapsed = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
     const manager = await PrivacyRuntimeManager.create({
       preference: "cpu",
       candidateProviders: ["cuda", "cpu"],
       factory: (provider) =>
         new FakeRuntime(provider, {
-          calibrationDelayMs: provider === "cuda" ? 8 : 0
+          onCalibration: () => {
+            elapsed += provider === "cuda" ? 8 : 1;
+          }
         }),
       observeCuda: normalCuda,
       minimumAutoSpeedupRatio: 1.15
