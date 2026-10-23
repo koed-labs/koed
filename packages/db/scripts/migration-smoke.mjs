@@ -77,8 +77,8 @@ const expectedPrivacyManifestTag = "0036_gifted_leader";
 const expectedRemoteMcpOAuthTag = "0043_remote_mcp_oauth";
 const expectedTeamAuthorityTag = "0044_memory_answer_team_authority";
 const expectedBaseMigrationTag = "0055_youthful_wong";
-const expectedLatestMigrationTag = "0085_fresh_steel_serpent";
-const expectedLatestMigrationIndex = 85;
+const expectedLatestMigrationTag = "0086_hesitant_plazm";
+const expectedLatestMigrationIndex = 86;
 const preMultiComponentSourceIndex = 29;
 const expectedBaseMigrationIndex = 55;
 const expectedPre0020Fingerprint =
@@ -1054,7 +1054,28 @@ const assertLatestSchema = async (pool) => {
       ["issuance_membership_status", "USER-DEFINED", "YES"],
       ["issuance_disabled_reason", "text", "YES"],
       ["inviter_agent_display_name", "text", "YES"],
+      ["actor_kind", "text", "YES"],
+      ["access_mode", "text", "YES"],
+      ["resulting_access_grant_version", "integer", "YES"],
       ["declined_at", "timestamp with time zone", "YES"]
+    ],
+    team_workspace_access_grants: [
+      ["actor_kind", "text", "YES"],
+      ["access_mode", "text", "YES"]
+    ],
+    share_origins: [
+      ["id", "uuid", "NO"],
+      ["owner_user_id", "uuid", "NO"],
+      ["team_backend_id", "text", "NO"],
+      ["target_kind", "text", "NO"],
+      ["invite_id", "uuid", "YES"],
+      ["team_workspace_id", "uuid", "YES"],
+      ["team_user_id", "uuid", "YES"],
+      ["access_grant_version", "integer", "YES"],
+      ["source_invite_id", "uuid", "YES"],
+      ["origin_kind", "text", "NO"],
+      ["conversation_id", "uuid", "YES"],
+      ["created_at", "timestamp with time zone", "NO"]
     ],
     team_memberships: [["leave_generation", "integer", "YES"]],
     personal_workspace_project_copyback_stages: [
@@ -1176,6 +1197,15 @@ const assertLatestSchema = async (pool) => {
     ["team_invites", "team_invites_recipient_generation_check", "c"],
     ["team_invites", "team_invites_issuance_membership_check", "c"],
     ["team_invites", "team_invites_lifecycle_shape_check", "c"],
+    ["team_invites", "team_invites_origin_actor_check", "c"],
+    ["team_invites", "team_invites_resulting_access_version_check", "c"],
+    [
+      "team_workspace_access_grants",
+      "team_workspace_access_grants_origin_actor_check",
+      "c"
+    ],
+    ["share_origins", "share_origins_target_shape_check", "c"],
+    ["share_origins", "share_origins_origin_shape_check", "c"],
     ["team_memberships", "team_memberships_leave_generation_check", "c"],
     [
       "team_invites",

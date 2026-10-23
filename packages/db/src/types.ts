@@ -445,6 +445,9 @@ export interface TeamInviteRecord {
   issuanceMembershipStatus: TeamMembershipStatus | null;
   issuanceDisabledReason: string | null;
   inviterAgentDisplayName: string | null;
+  actorKind: "person" | "agent_on_behalf" | null;
+  accessMode: "ask_first" | "full_access" | null;
+  resultingAccessGrantVersion: number | null;
   version: number;
   lifecycle: TeamInviteLifecycle;
   createdByUserId: string | null;
@@ -2302,6 +2305,8 @@ export interface MemorySourceRepository
       defaultWorkspaceAccess: Exclude<TeamWorkspaceAccessLevel, "disabled">;
       email: string;
       inviterAgentDisplayName?: string | null;
+      actorKind?: "person" | "agent_on_behalf" | null;
+      accessMode?: "ask_first" | "full_access" | null;
       role: TeamRole;
       backendOriginHash: string;
       tokenHash: string;
@@ -2474,6 +2479,8 @@ export interface MemorySourceRepository
       userId: string;
       access: TeamWorkspaceAccessLevel;
       expectedVersion: number | null;
+      actorKind?: "person" | "agent_on_behalf" | null;
+      accessMode?: "ask_first" | "full_access" | null;
     }
   ): Promise<TeamWorkspaceAccessRecord | null>;
   archiveTeamWorkspace(

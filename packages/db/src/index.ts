@@ -5,6 +5,11 @@ export {
 } from "./flashcard-deck-repository.js";
 export { createAuditRepository } from "./audit-repository.js";
 export {
+  createPersonalShareOriginRepository,
+  type PersonalShareOriginRepository,
+  type ShareOriginSource
+} from "./personal-share-origin-repository.js";
+export {
   createWorkspaceProjectRepository,
   workspaceProjectCopyManifestHash,
   WorkspaceProjectConflictError,

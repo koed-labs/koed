@@ -18,6 +18,10 @@ import {
 } from "./captured-session-repository.js";
 import type { ActorContext } from "./types.js";
 import { createManagedTextActionRepository } from "./managed-text-action-repository.js";
+import {
+  createPersonalShareOriginRepository,
+  type PersonalShareOriginRepository
+} from "./personal-share-origin-repository.js";
 
 const THREAD_NAME_MARKER = "[koed encrypted collaboration name]";
 const THREAD_TOPIC_MARKER = "[koed encrypted collaboration topic]";
@@ -370,6 +374,7 @@ export type CreateCollaborationThreadInput =
     };
 
 export interface CollaborationRepository {
+  shareOrigins?: PersonalShareOriginRepository;
   resolveInvitationAgentDisplayName(
     actor: ActorContext,
     input: {
@@ -381,7 +386,11 @@ export interface CollaborationRepository {
       teamBackendId: string;
       email: string;
     }
-  ): Promise<string | null>;
+  ): Promise<{
+    agentDisplayName: string;
+    accessMode: "ask_first" | "full_access";
+    conversationId: string;
+  } | null>;
   isProjectThreadId(threadId: string): Promise<boolean>;
   getOrCreateProjectThread(
     actor: ActorContext,
@@ -4971,6 +4980,7 @@ export const createCollaborationRepository = (
     teamEnvelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   }
 ): CollaborationRepository & CollaborationRealtimeMaterializationRepository => {
+  const shareOrigins = createPersonalShareOriginRepository(pool);
   const textActions = options.envelopeEncryptionProvider
     ? createManagedTextActionRepository(
         pool,
@@ -5003,6 +5013,7 @@ export const createCollaborationRepository = (
     return requireProvider(result.rows[0]?.scope);
   };
   return {
+    shareOrigins,
     async resolveInvitationAgentDisplayName(actor, input) {
       if (!textActions) return null;
       const action = await textActions.reconcileManagedTextAction(actor, {
@@ -5024,8 +5035,9 @@ export const createCollaborationRepository = (
       const agents = await pool.query<{
         id: string;
         name: string;
+        permission_mode: string;
       }>(
-        `select agent.id,agent.name from agents agent
+        `select agent.id,agent.name,execution.permission_mode from agents agent
           join managed_conversation_executions execution
             on execution.owner_user_id=agent.owner_user_id
            and execution.ai_client_instance_id=agent.ai_client_instance_id
@@ -5042,8 +5054,17 @@ export const createCollaborationRepository = (
       const agent = agents.rows[0];
       return agent &&
         agent.id === action.snapshot.agentId &&
-        agent.name === action.snapshot.agentName
-        ? agent.name
+        agent.name === action.snapshot.agentName &&
+        (agent.permission_mode === "supervised" ||
+          agent.permission_mode === "full_access")
+        ? {
+            agentDisplayName: agent.name,
+            accessMode:
+              agent.permission_mode === "full_access"
+                ? ("full_access" as const)
+                : ("ask_first" as const),
+            conversationId: action.logicalSessionId
+          }
         : null;
     },
     async isProjectThreadId(threadId) {

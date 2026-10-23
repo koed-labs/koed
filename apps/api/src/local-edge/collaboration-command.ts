@@ -3832,6 +3832,10 @@ export const registerCollaborationCommandRoute = (
                 family === "managed_execution"
             )
           ),
+          resolveInvitationAgentOrigin: (invite) =>
+            options
+              .requireCollaborationRepository()
+              .resolveInvitationAgentDisplayName({ userId: user.id }, invite),
           resolveSharedMemoryPreviewTarget:
             options.sharedMemoryControl &&
             input.command.command === "collaboration.request_action_grant"
@@ -3994,6 +3998,60 @@ export const registerCollaborationCommandRoute = (
               options
                 .requireCollaborationRepository()
                 .resolveInvitationAgentDisplayName({ userId: user.id }, invite),
+            recordInvitationShareOrigin:
+              options.requireCollaborationRepository().shareOrigins
+                ? async (origin) => {
+                    const repository =
+                      options.requireCollaborationRepository().shareOrigins;
+                    if (!repository)
+                      throw new Error(
+                        "Personal Share Origin repository unavailable"
+                      );
+                    await repository.recordInvitation({
+                      ownerUserId: user.id,
+                      teamBackendId: origin.teamBackendId,
+                      inviteId: origin.inviteId,
+                      source:
+                        origin.originKind === "conversation"
+                          ? {
+                              originKind: "conversation",
+                              conversationId: origin.conversationId!
+                            }
+                          : { originKind: "share_window" }
+                    });
+                  }
+                : undefined,
+            linkAcceptedInvitationShareOrigin:
+              options.requireCollaborationRepository().shareOrigins
+                ? async (accepted) => {
+                    const repository =
+                      options.requireCollaborationRepository().shareOrigins;
+                    if (!repository)
+                      throw new Error(
+                        "Personal Share Origin repository unavailable"
+                      );
+                    await repository.linkAcceptedInvitation({
+                      ownerUserId: user.id,
+                      ...accepted
+                    });
+                  }
+                : undefined,
+            recordWorkspaceAccessShareOrigin:
+              options.requireCollaborationRepository().shareOrigins
+                ? async (grant) => {
+                    const repository =
+                      options.requireCollaborationRepository().shareOrigins;
+                    if (!repository)
+                      throw new Error(
+                        "Personal Share Origin repository unavailable"
+                      );
+                    await repository.recordWorkspaceAccess({
+                      ownerUserId: user.id,
+                      ...grant,
+                      source: { originKind: "share_window" }
+                    });
+                  }
+                : undefined,
             getPersonalProjectForTeamCreation:
               options.getPersonalProjectForTeamCreation
                 ? (projectId) =>

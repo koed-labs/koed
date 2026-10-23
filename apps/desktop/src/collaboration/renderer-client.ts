@@ -3835,12 +3835,10 @@ export const createCollaborationRendererClient = (
     },
     async createInvitation(input) {
       const commandRequestId = crypto.randomUUID();
-      const grantInput = { ...input };
-      delete (grantInput as Partial<typeof input>).managedTextAction;
       const actionGrant = await waitForActionGrant({
         intent: "collaboration.create_invitation",
         commandRequestId,
-        ...grantInput
+        ...input
       });
       const result = await runApprovedAction(
         collaborationRendererCommandSchema.parse({

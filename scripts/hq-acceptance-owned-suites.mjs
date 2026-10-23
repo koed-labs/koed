@@ -74,6 +74,25 @@ export const ownedAcceptanceSuites = [
     ]
   },
   {
+    id: "I724.2.data",
+    clause:
+      "Personal-only Share Origin links an accepted invitation to the backend-qualified Workspace Access key and grant version; re-grants preserve history and Team responses omit Conversation ids.",
+    proof: [
+      unit(
+        "packages/db/src/personal-share-origin-repository.pg.test.ts",
+        "keeps the chat local through invitation acceptance, later re-grant, and backend collision"
+      ),
+      unit(
+        "apps/api/src/team/lifecycle-routes.test.ts",
+        "serves accepted invitation grant version without the Personal Conversation id"
+      ),
+      integration(
+        "links a real accepted invitation across separate Personal and Team databases",
+        "I724.2.data.N17.separate-backends"
+      )
+    ]
+  },
+  {
     id: "I20.3",
     clause:
       "Team leave copies owned Project work back without removing retained shared evidence.",

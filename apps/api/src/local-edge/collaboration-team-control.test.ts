@@ -1,4 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 import {
   COLLABORATION_CONTRACT_VERSION,
@@ -11,6 +13,11 @@ import {
 } from "@koed/shared";
 import { describe, expect, it, vi } from "vitest";
 
+import {
+  createCollaborationActionGrantControl,
+  type CollaborationActionGrantControlContext
+} from "./collaboration-action-grant-control.js";
+import { createCollaborationActionGrantLifecycle } from "./collaboration-action-grant-lifecycle.js";
 import {
   createCollaborationTeamControlCursorCodec,
   dispatchCollaborationTeamControlCommand,
@@ -746,6 +753,210 @@ describe("Team and Workspace creation", () => {
 });
 
 describe("invitation control", () => {
+  it.each(["person", "ask_first", "full_access"] as const)(
+    "resolves a Native-reviewed %s invitation against the exact local command body",
+    async (origin) => {
+      const koedHome = mkdtempSync(`${tmpdir()}/koed-invite-grant-`);
+      try {
+        const commandRequestId = randomUUID();
+        const managedTextAction = {
+          executionId: randomUUID(),
+          actionId: randomUUID(),
+          revision: 2,
+          projectId: randomUUID()
+        };
+        const workspaceProjectId = randomUUID();
+        const originResolver = vi.fn(async () => ({
+          agentDisplayName: "Chief of Staff",
+          accessMode:
+            origin === "full_access"
+              ? ("full_access" as const)
+              : ("ask_first" as const),
+          conversationId: randomUUID()
+        }));
+        const inviteInput = {
+          teamId: ids.team,
+          email: "member@example.test",
+          role: "member" as const,
+          defaultWorkspaceId: ids.workspace,
+          defaultWorkspaceAccess: "write" as const,
+          ttlHours: 24,
+          ...(origin === "person"
+            ? {}
+            : {
+                workspaceProjectId,
+                expectedWorkspaceProjectVersion: 3,
+                inviterAgentDisplayName: "Chief of Staff",
+                managedTextAction
+              })
+        };
+        const intent = {
+          intent: "collaboration.create_invitation" as const,
+          commandRequestId,
+          ...inviteInput
+        };
+        const actionGrantId = randomUUID();
+        const expiresAt = "2026-07-17T03:05:00.000Z";
+        const remoteFetch = vi
+          .fn()
+          .mockResolvedValueOnce(
+            jsonResponse({
+              status: {
+                version: 1,
+                actionGrant: { id: actionGrantId },
+                selector: randomUUID(),
+                approvalTier: "native_review",
+                review: {
+                  version: 1,
+                  title: "Create invitation?",
+                  description: "Review the invitation.",
+                  consequence: "An invitation will be created.",
+                  confirmLabel: "Create invitation",
+                  details: []
+                },
+                state: "review_required",
+                activationPath: null,
+                expiresAt
+              }
+            })
+          )
+          .mockResolvedValueOnce(
+            jsonResponse({
+              status: {
+                version: 1,
+                actionGrant: { id: actionGrantId },
+                selector: randomUUID(),
+                approvalTier: "native_review",
+                review: {
+                  version: 1,
+                  title: "Create invitation?",
+                  description: "Review the invitation.",
+                  consequence: "An invitation will be created.",
+                  confirmLabel: "Create invitation",
+                  details: []
+                },
+                state: "approved",
+                activationPath: null,
+                expiresAt
+              }
+            })
+          );
+        const lifecycle = createCollaborationActionGrantLifecycle({
+          koedHome,
+          now: () => new Date("2026-07-17T03:00:00.000Z")
+        });
+        const control = createCollaborationActionGrantControl({
+          koedHome,
+          actionGrantLifecycle: lifecycle,
+          fetch: remoteFetch as typeof fetch,
+          now: () => new Date("2026-07-17T03:00:00.000Z"),
+          randomUuid: () => actionGrantId
+        });
+        const grantContext: CollaborationActionGrantControlContext = {
+          backend: backend(),
+          principalUserId: ids.principal,
+          upstreamDeviceCredentialId: ids.deviceCredential,
+          upstreamDeviceAuthorization: deviceAuthorization,
+          operationFamilies: new Set(["action_grant"]),
+          resolveInvitationAgentOrigin: originResolver
+        };
+        const request = parsedCommand({
+          command: "collaboration.request_action_grant",
+          input: { intent }
+        });
+        if (origin !== "person") {
+          const spoofed = parsedCommand({
+            command: "collaboration.request_action_grant",
+            input: {
+              intent: {
+                ...intent,
+                accessMode:
+                  origin === "full_access" ? "ask_first" : "full_access"
+              }
+            }
+          });
+          expect(await control.dispatch(spoofed, grantContext)).toMatchObject({
+            ok: false,
+            error: { code: "permission_denied" }
+          });
+          expect(remoteFetch).not.toHaveBeenCalled();
+        }
+        const requested = await control.dispatch(request, grantContext);
+        expect(requested).toMatchObject({
+          ok: true,
+          data: { status: { state: "review_required" } }
+        });
+        const reviewedBody = (
+          JSON.parse(String(remoteFetch.mock.calls[0]?.[1]?.body)) as {
+            intent: { body: Record<string, unknown> };
+          }
+        ).intent.body;
+        expect(reviewedBody).toMatchObject(
+          origin === "person"
+            ? { actorKind: "person" }
+            : { actorKind: "agent_on_behalf", accessMode: origin }
+        );
+        expect(JSON.stringify(reviewedBody)).not.toContain("conversationId");
+        const awaited = await control.dispatch(
+          parsedCommand({
+            command: "collaboration.await_action_grant",
+            input: { actionGrant: { id: actionGrantId } }
+          }),
+          grantContext
+        );
+        expect(awaited).toMatchObject({
+          ok: true,
+          data: { status: { state: "approved" } }
+        });
+        const inviteCommand = parsedCommand({
+          command: "collaboration.create_invitation",
+          requestId: commandRequestId,
+          input: { ...inviteInput, actionGrant: { id: actionGrantId } }
+        });
+        const bindings: CollaborationTeamControlActionBinding[] = [];
+        const fixture = context({
+          resolveInvitationAgentDisplayName: originResolver,
+          resolveActionGrantSecret: async (binding) => {
+            bindings.push(binding);
+            return lifecycle.resolve({
+              referenceId: binding.reference.id,
+              backendId: binding.backendId,
+              deploymentBaseUrl: grantContext.backend.baseUrl,
+              deviceCredentialId: binding.deviceCredentialId,
+              principalUserId: binding.principalUserId,
+              operationFamily: binding.operationFamily,
+              action: binding.action,
+              teamId: binding.teamId,
+              targetId: binding.targetId,
+              method: binding.method,
+              path: binding.path,
+              body: binding.body,
+              idempotencyKey: commandRequestId
+            });
+          },
+          response: {
+            invite: invitationRecord(),
+            inviteToken: `kti_${"t".repeat(43)}`
+          }
+        });
+        expect(
+          handled(
+            await dispatchCollaborationTeamControlCommand(
+              inviteCommand,
+              fixture
+            )
+          ).ok
+        ).toBe(true);
+        expect(bindings[0]?.body).toEqual(reviewedBody);
+        expect(fixture.fetch).toHaveBeenCalledOnce();
+        if (origin === "person") expect(originResolver).not.toHaveBeenCalled();
+        else expect(originResolver).toHaveBeenCalledTimes(3);
+      } finally {
+        rmSync(koedHome, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("returns a backend-bound one-time URL without exposing the raw token field", async () => {
     const token = `kti_${"t".repeat(43)}`;
     const command = parsedCommand({
@@ -824,7 +1035,11 @@ describe("invitation control", () => {
     );
     expect(untrusted.fetch).not.toHaveBeenCalled();
     const mismatched = context({
-      resolveInvitationAgentDisplayName: async () => "Other Agent"
+      resolveInvitationAgentDisplayName: async () => ({
+        agentDisplayName: "Other Agent",
+        accessMode: "ask_first",
+        conversationId: randomUUID()
+      })
     });
     expectError(
       await dispatchCollaborationTeamControlCommand(command, mismatched),
@@ -832,6 +1047,8 @@ describe("invitation control", () => {
     );
     expect(mismatched.fetch).not.toHaveBeenCalled();
     const bindings: CollaborationTeamControlActionBinding[] = [];
+    const conversationId = randomUUID();
+    const recordInvitationShareOrigin = vi.fn(async () => undefined);
     const trusted = context({
       resolveInvitationAgentDisplayName: async (input) => {
         expect(input).toMatchObject({
@@ -839,8 +1056,13 @@ describe("invitation control", () => {
           email: "member@example.test",
           teamBackendId: "team-vps"
         });
-        return "Chief of Staff";
+        return {
+          agentDisplayName: "Chief of Staff",
+          accessMode: "full_access",
+          conversationId
+        };
       },
+      recordInvitationShareOrigin,
       resolveActionGrantSecret: async (binding) => {
         bindings.push(binding);
         return grantSecret;
@@ -855,7 +1077,16 @@ describe("invitation control", () => {
         .ok
     ).toBe(true);
     expect(bindings[0]?.body).toMatchObject({
-      inviterAgentDisplayName: "Chief of Staff"
+      inviterAgentDisplayName: "Chief of Staff",
+      actorKind: "agent_on_behalf",
+      accessMode: "full_access"
+    });
+    expect(JSON.stringify(bindings[0]?.body)).not.toContain(conversationId);
+    expect(recordInvitationShareOrigin).toHaveBeenCalledWith({
+      teamBackendId: "team-vps",
+      inviteId: ids.invitation,
+      originKind: "conversation",
+      conversationId
     });
   });
 
@@ -1002,6 +1233,47 @@ describe("invitation control", () => {
     expect(String(firstUrl)).toContain("includeRevoked=false&limit=1");
     expect(String(firstUrl)).not.toContain("cursor=");
     expect(String(secondUrl)).toContain("cursor=remote-page-2");
+  });
+
+  it("links accepted invitation origin using the resulting composite grant version", async () => {
+    const linkAcceptedInvitationShareOrigin = vi.fn(async () => undefined);
+    const acceptedUserId = randomUUID();
+    const fixture = context({
+      linkAcceptedInvitationShareOrigin,
+      response: {
+        invites: [
+          invitationRecord({
+            lifecycle: "accepted",
+            acceptedAt: iso,
+            acceptedByUserId: acceptedUserId,
+            resultingAccessGrantVersion: 4
+          })
+        ],
+        nextCursor: null
+      }
+    });
+    const result = handled(
+      await dispatchCollaborationTeamControlCommand(
+        parsedCommand({
+          command: "collaboration.list_invitations",
+          input: {
+            teamId: ids.team,
+            includeRevoked: false,
+            cursor: null,
+            limit: 10
+          }
+        }),
+        fixture
+      )
+    );
+    expect(result.ok).toBe(true);
+    expect(linkAcceptedInvitationShareOrigin).toHaveBeenCalledWith({
+      teamBackendId: "team-vps",
+      inviteId: ids.invitation,
+      teamWorkspaceId: ids.workspace,
+      teamUserId: acceptedUserId,
+      accessGrantVersion: 4
+    });
   });
 
   it("rejects tampered and cross-Team cursor replay before a remote request", async () => {

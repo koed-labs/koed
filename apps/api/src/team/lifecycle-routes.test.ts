@@ -8,10 +8,13 @@ import type {
 } from "@koed/db";
 import {
   createTeamAccessRepository,
+  createPersonalShareOriginRepository,
   runDbMigrations,
   TeamActionGrantRequiredError
 } from "@koed/db";
 import {
+  COLLABORATION_CONTRACT_VERSION,
+  collaborationRendererCommandSchema,
   sharedMemoryGrantScopedPrincipalId,
   sharedMemoryGrantScopedSourceId
 } from "@koed/shared";
@@ -30,6 +33,7 @@ import {
   teamAdminScopeHash
 } from "./routes.js";
 import { remoteInvitationSchema } from "../local-edge/collaboration-team-control.js";
+import { dispatchCollaborationTeamControlCommand } from "../local-edge/collaboration-team-control.js";
 
 const user: UserRecord = {
   id: randomUUID(),
@@ -141,6 +145,7 @@ const deviceAuth = (): DeviceCredentialAuthContext => ({
 });
 
 const createFixture = async (input?: {
+  authenticatedUser?: UserRecord;
   sessionCreatedAt?: Date;
   deploymentProfile?: ApiRouteContext["config"]["deploymentProfile"];
   workosAuthKitEnabled?: boolean;
@@ -284,7 +289,9 @@ const createFixture = async (input?: {
         } as never)
     ) as unknown as MemorySourceRepository["executeActionGrant"];
   }
+  const actingUser = input?.authenticatedUser ?? user;
   const auth = deviceAuth();
+  auth.user = actingUser;
   auth.credential.operationFamilies = input?.deviceOperationFamilies ?? [
     "action_grant",
     "team_workspace_read"
@@ -304,7 +311,7 @@ const createFixture = async (input?: {
     requireRepository: () => repository,
     auth: {
       hashSecret: (value: string) => value,
-      authenticateSession: vi.fn(async () => user),
+      authenticateSession: vi.fn(async () => actingUser),
       authenticateSessionContext: vi.fn(async (request: FastifyRequest) => {
         if (/^Koed-Device(?:\s|$)/i.test(request.headers.authorization ?? "")) {
           throw Object.assign(new Error("Session cookie required"), {
@@ -315,7 +322,7 @@ const createFixture = async (input?: {
           sessionId: randomUUID(),
           createdAt: input?.sessionCreatedAt ?? new Date(),
           expiresAt: new Date(Date.now() + 60_000),
-          user
+          user: actingUser
         };
       }),
       authenticateDeviceCredential: vi.fn(async (request: FastifyRequest) => {
@@ -347,7 +354,7 @@ const createFixture = async (input?: {
               );
             }
           }
-          return user;
+          return actingUser;
         }
       )
     },
@@ -519,6 +526,192 @@ describe("Team lifecycle routes", () => {
       } finally {
         await pool?.end();
         await admin.query(`drop database if exists ${quoted} with (force)`);
+        await admin.end();
+      }
+    },
+    120_000
+  );
+
+  it.skipIf(!process.env.KOED_HQ721_TEST_DATABASE_URL)(
+    "serves accepted invitation grant version without the Personal Conversation id",
+    async () => {
+      const testUrl = process.env.KOED_HQ721_TEST_DATABASE_URL!;
+      const admin = new pg.Pool({ connectionString: testUrl });
+      const database = `hq721_api_${randomUUID().replaceAll("-", "")}`;
+      let pool: pg.Pool | null = null;
+      try {
+        await admin.query(`create database "${database}"`);
+        const url = new URL(testUrl);
+        url.pathname = `/${database}`;
+        pool = new pg.Pool({ connectionString: url.toString() });
+        await runDbMigrations(pool);
+        const recipient = randomUUID();
+        await pool.query("insert into users(id,email) values($1,$2),($3,$4)", [
+          user.id,
+          user.email,
+          recipient,
+          `${recipient}@example.test`
+        ]);
+        await pool.query(
+          "insert into teams(id,name) values($1,'Origin Team')",
+          [teamId]
+        );
+        await pool.query(
+          "insert into team_memberships(team_id,user_id,role,leave_generation) values($1,$2,'owner',0)",
+          [teamId, user.id]
+        );
+        await pool.query(
+          "insert into team_workspaces(id,team_id,name) values($1,$2,'Origin Workspace')",
+          [workspaceId, teamId]
+        );
+        await pool.query(
+          "insert into team_workspace_access_grants(team_workspace_id,team_id,user_id,access,can_share_owned_memory,granted_by_user_id) values($1,$2,$3,'write',true,$3)",
+          [workspaceId, teamId, user.id]
+        );
+        const real = createTeamAccessRepository(pool);
+        const personal = createPersonalShareOriginRepository(pool);
+        const conversationId = randomUUID();
+        const creationFixture = await createFixture({
+          repository: { createTeamInvite: real.createTeamInvite.bind(real) }
+        });
+        const creation = await creationFixture.app.inject({
+          method: "POST",
+          url: `/v1/teams/${teamId}/invites`,
+          headers: {
+            authorization: "Koed-Device device-key:secret",
+            "x-koed-action-grant": "hrg_invite_create"
+          },
+          payload: {
+            defaultTeamWorkspaceId: workspaceId,
+            defaultWorkspaceAccess: "write",
+            email: `${recipient}@example.test`,
+            role: "member",
+            ttlHours: 24,
+            actorKind: "agent_on_behalf",
+            accessMode: "full_access",
+            inviterAgentDisplayName: "Cooper"
+          }
+        });
+        await creationFixture.app.close();
+        expect(creation.statusCode).toBe(200);
+        const inviteToken = creation.json().inviteToken as string;
+        const invitation = creation.json().invite as { id: string };
+        await personal.recordInvitation({
+          ownerUserId: user.id,
+          teamBackendId: "team-vps",
+          inviteId: invitation!.id,
+          source: { originKind: "conversation", conversationId }
+        });
+        const recipientFixture = await createFixture({
+          authenticatedUser: {
+            id: recipient,
+            email: `${recipient}@example.test`,
+            displayName: "Carol",
+            passwordHash: null
+          },
+          repository: {
+            getPendingTeamInviteByTokenHash:
+              real.getPendingTeamInviteByTokenHash.bind(real),
+            acceptTeamInvite: real.acceptTeamInvite.bind(real)
+          }
+        });
+        const acceptance = await recipientFixture.app.inject({
+          method: "POST",
+          url: "/v1/team-invites/accept",
+          payload: { inviteToken }
+        });
+        await recipientFixture.app.close();
+        expect(acceptance.statusCode).toBe(200);
+        const acceptedVersion =
+          acceptance.json().invite.resultingAccessGrantVersion;
+        expect(acceptedVersion).toBe(1);
+        const fixture = await createFixture({
+          repository: { listTeamInvites: real.listTeamInvites.bind(real) }
+        });
+        const response = await fixture.app.inject({
+          method: "GET",
+          url: `/v1/teams/${teamId}/invites?includeRevoked=true`,
+          headers: { authorization: "Koed-Device device-key:secret" }
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.invites).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: invitation!.id,
+              lifecycle: "accepted",
+              acceptedByUserId: recipient,
+              resultingAccessGrantVersion: acceptedVersion
+            })
+          ])
+        );
+        expect(JSON.stringify(body)).not.toContain(conversationId);
+        expect(JSON.stringify(body)).not.toContain("Cooper");
+        expect(JSON.stringify(body)).not.toContain("agent_on_behalf");
+        const dispatch = await dispatchCollaborationTeamControlCommand(
+          collaborationRendererCommandSchema.parse({
+            contractVersion: COLLABORATION_CONTRACT_VERSION,
+            requestId: randomUUID(),
+            command: "collaboration.list_invitations",
+            input: {
+              teamId,
+              includeRevoked: false,
+              cursor: null,
+              limit: 20
+            }
+          }),
+          {
+            backend: {
+              id: "team-vps",
+              baseUrl: "https://team.example.test/koed",
+              routePolicy: { teamWorkspaceRead: "enabled", admin: "enabled" }
+            },
+            principalUserId: user.id,
+            upstreamDeviceCredentialId: randomUUID(),
+            upstreamDeviceAuthorization: "Koed-Device device-key:secret",
+            operationFamilies: new Set(["team_workspace_read"]),
+            fetch: (async (url: string | URL | Request) => {
+              const parsed = new URL(
+                url instanceof Request ? url.url : String(url)
+              );
+              const upstream = await fixture.app.inject({
+                method: "GET",
+                url: `${parsed.pathname.replace(/^\/koed/, "")}${parsed.search}`,
+                headers: { authorization: "Koed-Device device-key:secret" }
+              });
+              return new Response(upstream.body, {
+                status: upstream.statusCode,
+                headers: { "content-type": "application/json" }
+              });
+            }) as typeof fetch,
+            teamCreationRequestIdempotency: true,
+            loadSnapshot: async () => {
+              throw new Error("Unexpected snapshot request");
+            },
+            cursorCodec: {
+              encode: async () => "unused",
+              decode: async () => null
+            },
+            linkAcceptedInvitationShareOrigin: async (acceptedOrigin) => {
+              await personal.linkAcceptedInvitation({
+                ownerUserId: user.id,
+                ...acceptedOrigin
+              });
+            }
+          }
+        );
+        expect(dispatch.status).toBe("handled");
+        if (dispatch.status === "handled" && !dispatch.result.ok)
+          throw new Error(`Local edge failed: ${dispatch.result.error.code}`);
+        await fixture.app.close();
+        const linked = await pool.query<{ conversation_id: string }>(
+          "select conversation_id from share_origins where owner_user_id=$1 and team_backend_id=$2 and target_kind='workspace_access' and team_workspace_id=$3 and team_user_id=$4 and access_grant_version=$5",
+          [user.id, "team-vps", workspaceId, recipient, acceptedVersion]
+        );
+        expect(linked.rows[0]?.conversation_id).toBe(conversationId);
+      } finally {
+        await pool?.end();
+        await admin.query(`drop database if exists "${database}" with (force)`);
         await admin.end();
       }
     },
@@ -1579,6 +1772,37 @@ describe("Team lifecycle routes", () => {
       userId: user.id,
       teamId
     });
+    expect(createTeamInvite).not.toHaveBeenCalled();
+  });
+
+  it("rejects Conversation ids in Team invite requests and browser Agent spoofing", async () => {
+    const createTeamInvite = vi.fn();
+    const fixture = await createFixture({ repository: { createTeamInvite } });
+    const base = {
+      email: "invitee@example.test",
+      role: "member",
+      defaultTeamWorkspaceId: workspaceId,
+      defaultWorkspaceAccess: "write",
+      ttlHours: 24
+    };
+    const withConversation = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/teams/${teamId}/invites`,
+      payload: { ...base, conversationId: randomUUID() }
+    });
+    const spoofedAgent = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/teams/${teamId}/invites`,
+      payload: {
+        ...base,
+        actorKind: "agent_on_behalf",
+        accessMode: "full_access",
+        inviterAgentDisplayName: "Cooper"
+      }
+    });
+    await fixture.app.close();
+    expect(withConversation.statusCode).toBe(400);
+    expect(spoofedAgent.statusCode).toBe(403);
     expect(createTeamInvite).not.toHaveBeenCalled();
   });
 

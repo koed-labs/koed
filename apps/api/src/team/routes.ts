@@ -1102,12 +1102,32 @@ export const registerTeamRoutes = (
     async (request, reply) => {
       rejectApiToken(request);
       const { teamId } = teamIdParamsSchema.parse(request.params);
-      const input = createTeamInviteSchema.parse(request.body);
+      const parsedInput = createTeamInviteSchema.safeParse(request.body);
+      if (!parsedInput.success)
+        throw badRequest("Invalid team invitation request");
+      const input = parsedInput.data;
       const actor = await authenticateAdminActor(request);
-      if (input.inviterAgentDisplayName && actor.kind !== "device") {
+      if (
+        (input.inviterAgentDisplayName ||
+          input.actorKind === "agent_on_behalf" ||
+          input.accessMode) &&
+        actor.kind !== "device"
+      ) {
         throw forbidden(
           "Inviter Agent metadata requires the trusted enrolled Desktop edge"
         );
+      }
+      if (
+        (input.actorKind === "agent_on_behalf") !==
+        Boolean(input.accessMode)
+      ) {
+        throw badRequest("Agent Share Origin requires an access mode");
+      }
+      if (
+        Boolean(input.inviterAgentDisplayName) !==
+        (input.actorKind === "agent_on_behalf")
+      ) {
+        throw badRequest("Agent Share Origin requires a verified Agent name");
       }
       return (
         await runHighRiskTeamWrite(
@@ -1143,6 +1163,8 @@ export const registerTeamRoutes = (
                 defaultWorkspaceAccess: input.defaultWorkspaceAccess,
                 email: input.email,
                 inviterAgentDisplayName: input.inviterAgentDisplayName,
+                actorKind: input.actorKind ?? "person",
+                accessMode: input.accessMode ?? null,
                 role: input.role,
                 backendOriginHash: backendOriginHash(
                   deployment.protocolDeploymentId
@@ -1698,6 +1720,20 @@ export const registerTeamRoutes = (
       );
       if (!current) throw forbidden("Team Workspace access cannot be changed");
       const actor = await authenticateAdminActor(request);
+      if (
+        (input.actorKind === "agent_on_behalf" || input.accessMode) &&
+        actor.kind !== "device"
+      ) {
+        throw forbidden(
+          "Agent Share Origin requires the trusted enrolled Desktop edge"
+        );
+      }
+      if (
+        (input.actorKind === "agent_on_behalf") !==
+        Boolean(input.accessMode)
+      ) {
+        throw badRequest("Agent Share Origin requires an access mode");
+      }
       return (
         await runVersioned(() =>
           runHighRiskTeamWrite(
@@ -1712,7 +1748,11 @@ export const registerTeamRoutes = (
             async (repo) => {
               const access = await repo.setTeamWorkspaceAccess(
                 { userId: actor.user.id },
-                { teamWorkspaceId, ...input }
+                {
+                  teamWorkspaceId,
+                  ...input,
+                  actorKind: input.actorKind ?? "person"
+                }
               );
               return access ? { statusCode: 200, body: { access } } : null;
             }

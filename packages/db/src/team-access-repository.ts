@@ -331,6 +331,9 @@ const mapInviteRecord = (row: {
   issuanceMembershipStatus: TeamMembershipStatus | null;
   issuanceDisabledReason: string | null;
   inviterAgentDisplayName: string | null;
+  actorKind: string | null;
+  accessMode: string | null;
+  resultingAccessGrantVersion: number | null;
   version: number;
   lifecycle: TeamInviteLifecycle;
   createdByUserId: string | null;
@@ -360,6 +363,9 @@ const mapInviteRecord = (row: {
     issuanceMembershipStatus: row.issuanceMembershipStatus,
     issuanceDisabledReason: row.issuanceDisabledReason,
     inviterAgentDisplayName: row.inviterAgentDisplayName,
+    actorKind: row.actorKind as TeamInviteRecord["actorKind"],
+    accessMode: row.accessMode as TeamInviteRecord["accessMode"],
+    resultingAccessGrantVersion: row.resultingAccessGrantVersion,
     version: row.version,
     lifecycle: row.lifecycle,
     createdByUserId: row.createdByUserId,
@@ -1463,7 +1469,8 @@ export const createTeamAccessRepository = (
           access: "write",
           canShareOwnedMemory: true,
           version: 1,
-          grantedByUserId: actor.userId
+          grantedByUserId: actor.userId,
+          actorKind: "person"
         });
 
         const threadRows = await tx
@@ -3315,7 +3322,8 @@ export const createTeamAccessRepository = (
           access: "write",
           canShareOwnedMemory: true,
           version: 1,
-          grantedByUserId: actor.userId
+          grantedByUserId: actor.userId,
+          actorKind: "person"
         });
 
         const threadRows = await tx
@@ -3841,6 +3849,8 @@ export const createTeamAccessRepository = (
         defaultWorkspaceAccess: "read" | "write";
         email: string;
         inviterAgentDisplayName?: string | null;
+        actorKind?: "person" | "agent_on_behalf" | null;
+        accessMode?: "ask_first" | "full_access" | null;
         role: TeamRole;
         backendOriginHash: string;
         tokenHash: string;
@@ -3955,6 +3965,8 @@ export const createTeamAccessRepository = (
             backendOriginHash: input.backendOriginHash,
             role: input.role,
             inviterAgentDisplayName: input.inviterAgentDisplayName ?? null,
+            actorKind: input.actorKind ?? "person",
+            accessMode: input.accessMode ?? null,
             recipientUserId,
             recipientLeaveGeneration: recipientUserId
               ? (recipientMembership?.leaveGeneration ?? 0)
@@ -5065,6 +5077,8 @@ export const createTeamAccessRepository = (
                   canShareOwnedMemory:
                     inviteRow.defaultWorkspaceAccess === "write",
                   grantedByUserId: inviteRow.createdByUserId,
+                  actorKind: inviteRow.actorKind,
+                  accessMode: inviteRow.accessMode,
                   disabledAt: null,
                   disabledReason: null,
                   version: sql`${teamWorkspaceAccessGrants.version} + 1`,
@@ -5094,7 +5108,9 @@ export const createTeamAccessRepository = (
                   canShareOwnedMemory:
                     inviteRow.defaultWorkspaceAccess === "write",
                   version: 1,
-                  grantedByUserId: inviteRow.createdByUserId
+                  grantedByUserId: inviteRow.createdByUserId,
+                  actorKind: inviteRow.actorKind,
+                  accessMode: inviteRow.accessMode
                 })
                 .onConflictDoNothing()
                 .returning();
@@ -5109,6 +5125,7 @@ export const createTeamAccessRepository = (
               lifecycle: "accepted",
               acceptedAt: sql`now()`,
               acceptedByUserId: user.id,
+              resultingAccessGrantVersion: accessGrant.version,
               version: sql`${teamInvites.version} + 1`
             })
             .where(
@@ -5614,6 +5631,8 @@ export const createTeamAccessRepository = (
         access: TeamWorkspaceAccessLevel;
         canShareOwnedMemory?: boolean;
         expectedVersion: number | null;
+        actorKind?: "person" | "agent_on_behalf" | null;
+        accessMode?: "ask_first" | "full_access" | null;
       }
     ): Promise<TeamWorkspaceAccessRecord | null> {
       const accessContext = await getTeamWorkspaceAccess(
@@ -5742,6 +5761,8 @@ export const createTeamAccessRepository = (
                 access: input.access,
                 canShareOwnedMemory,
                 grantedByUserId: actor.userId,
+                actorKind: input.actorKind ?? "person",
+                accessMode: input.accessMode ?? null,
                 disabledAt: input.access === "disabled" ? sql`now()` : null,
                 disabledReason:
                   input.access === "disabled"
@@ -5771,6 +5792,8 @@ export const createTeamAccessRepository = (
                 canShareOwnedMemory,
                 version: 1,
                 grantedByUserId: actor.userId,
+                actorKind: input.actorKind ?? "person",
+                accessMode: input.accessMode ?? null,
                 disabledAt: input.access === "disabled" ? sql`now()` : null,
                 disabledReason:
                   input.access === "disabled"

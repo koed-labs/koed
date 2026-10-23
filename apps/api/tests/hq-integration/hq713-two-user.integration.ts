@@ -48,6 +48,7 @@ import {
 } from "./hq713-first-share-lifecycle.js";
 
 import { runHq713FuturePolicy } from "./hq713-future-policy.js";
+import { runHq713ShareOrigin } from "./hq713-share-origin.js";
 
 const required = [
   "I13-I14-step1-step2-share-join",
@@ -97,7 +98,8 @@ const required = [
   "I713.first-share-delete-after-confirm",
   "I713.first-share-access-loss-before-confirm",
   "I713.first-share-access-loss-after-confirm",
-  "I713.future-empty-policy"
+  "I713.future-empty-policy",
+  "I724.2.data.N17.separate-backends"
 ];
 const results = new Map<string, Record<string, unknown>>();
 const collect = (fixture: Hq713Fixture) => {
@@ -147,6 +149,10 @@ afterAll(async () => {
 });
 
 describe("HQ-713 real two-user Team backend", () => {
+  it("links a real accepted invitation across separate Personal and Team databases", async () => {
+    await withRecordedFixture(runHq713ShareOrigin);
+  }, 180_000);
+
   it("shares the first future chat after an empty policy review", async () => {
     await withRecordedFixture(runHq713FuturePolicy);
   }, 180_000);

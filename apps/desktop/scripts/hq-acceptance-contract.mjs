@@ -195,6 +195,14 @@ export const hqAcceptanceContract = [
     harness: "real-api"
   },
   {
+    id: "I724.2.data",
+    category: "positive",
+    description:
+      "Accepted invitation links its backend-qualified Personal Conversation origin to the resulting Workspace Access composite and version; later grants and backend collisions retain earlier attribution, while Team never stores the Conversation id. This data contract excludes Sharing UI and access removal.",
+    owners: ["HQ-721"],
+    harness: "real-api"
+  },
+  {
     id: "S15.1",
     category: "positive",
     description:

@@ -68,6 +68,19 @@ export interface CollaborationActionGrantControlContext {
   operationFamilies: ReadonlySet<
     "action_grant" | "share_grant_management" | "managed_execution"
   >;
+  resolveInvitationAgentOrigin?: (input: {
+    executionId: string;
+    actionId: string;
+    revision: number;
+    projectId: string;
+    workspaceProjectId: string;
+    teamBackendId: string;
+    email: string;
+  }) => Promise<{
+    agentDisplayName: string;
+    accessMode: "ask_first" | "full_access";
+    conversationId: string;
+  } | null>;
   resolveSharedMemoryPreviewTarget?: (input: {
     source: SharedMemorySourceRef;
     sourceCapabilities: Array<
@@ -409,6 +422,37 @@ export const createCollaborationActionGrantControl = (
       ambiguousResponseWindowMs: options.ambiguousResponseWindowMs
     });
 
+  const bindInvitationOrigin = async (
+    intent: CollaborationActionGrantIntent,
+    context: CollaborationActionGrantControlContext
+  ): Promise<CollaborationActionGrantIntent> => {
+    if (intent.intent !== "collaboration.create_invitation") return intent;
+    if (!intent.managedTextAction) {
+      if (intent.inviterAgentDisplayName || intent.accessMode)
+        throw new ControlFailure("permission_denied");
+      return intent;
+    }
+    if (
+      !intent.inviterAgentDisplayName ||
+      !intent.workspaceProjectId ||
+      !context.resolveInvitationAgentOrigin
+    )
+      throw new ControlFailure("permission_denied");
+    const origin = await context.resolveInvitationAgentOrigin({
+      ...intent.managedTextAction,
+      workspaceProjectId: intent.workspaceProjectId,
+      teamBackendId: context.backend.id,
+      email: intent.email
+    });
+    if (
+      !origin ||
+      origin.agentDisplayName !== intent.inviterAgentDisplayName ||
+      (intent.accessMode && intent.accessMode !== origin.accessMode)
+    )
+      throw new ControlFailure("permission_denied");
+    return { ...intent, accessMode: origin.accessMode };
+  };
+
   const dispatch = async (
     commandInput: unknown,
     context: CollaborationActionGrantControlContext
@@ -418,9 +462,10 @@ export const createCollaborationActionGrantControl = (
     try {
       switch (command.command) {
         case "collaboration.request_action_grant": {
-          const intent = collaborationActionGrantIntentSchema.parse(
+          const parsedIntent = collaborationActionGrantIntentSchema.parse(
             command.input.intent
           );
+          const intent = await bindInvitationOrigin(parsedIntent, context);
           const previewTarget =
             intent.intent === "collaboration.preview_shared_memory"
               ? await context.resolveSharedMemoryPreviewTarget?.({
@@ -770,14 +815,20 @@ export const createCollaborationActionGrantControl = (
     }
   };
 
-  const resolveSecret = (input: {
+  const resolveSecret = async (input: {
     reference: CollaborationActionGrantReference;
     intent: CollaborationActionGrantIntent;
     context: CollaborationActionGrantControlContext;
   }): Promise<string | null> => {
+    let intent: CollaborationActionGrantIntent;
+    try {
+      intent = await bindInvitationOrigin(input.intent, input.context);
+    } catch {
+      return null;
+    }
     const candidateSourceIdentity =
-      input.intent.intent === "collaboration.preview_shared_memory" &&
-      input.intent.candidate &&
+      intent.intent === "collaboration.preview_shared_memory" &&
+      intent.candidate &&
       input.context.localOwnerUserId
         ? (options.resolveCandidateSourceIdentity?.(
             input.context.localOwnerUserId
@@ -785,7 +836,7 @@ export const createCollaborationActionGrantControl = (
         : undefined;
     const operation = collaborationActionGrantOperationForIntent(
       input.context.backend,
-      input.intent,
+      intent,
       input.reference.id,
       undefined,
       candidateSourceIdentity
@@ -799,28 +850,26 @@ export const createCollaborationActionGrantControl = (
         credentialOperationFamilyForGrant(operation.operationFamily)
       )
     ) {
-      return Promise.resolve(null);
+      return null;
     }
-    return Promise.resolve(
-      lifecycle.resolve({
-        referenceId: input.reference.id,
-        backendId: input.context.backend.id,
-        deploymentBaseUrl: input.context.backend.baseUrl,
-        deviceCredentialId,
-        ...(input.context.localOwnerUserId
-          ? { localOwnerUserId: input.context.localOwnerUserId }
-          : {}),
-        principalUserId: input.context.principalUserId,
-        operationFamily: operation.operationFamily,
-        action: operation.action,
-        teamId: operation.teamId,
-        targetId: operation.targetId,
-        method: operation.method,
-        path: operation.path,
-        body: operation.body,
-        idempotencyKey: operation.idempotencyKey
-      })
-    );
+    return lifecycle.resolve({
+      referenceId: input.reference.id,
+      backendId: input.context.backend.id,
+      deploymentBaseUrl: input.context.backend.baseUrl,
+      deviceCredentialId,
+      ...(input.context.localOwnerUserId
+        ? { localOwnerUserId: input.context.localOwnerUserId }
+        : {}),
+      principalUserId: input.context.principalUserId,
+      operationFamily: operation.operationFamily,
+      action: operation.action,
+      teamId: operation.teamId,
+      targetId: operation.targetId,
+      method: operation.method,
+      path: operation.path,
+      body: operation.body,
+      idempotencyKey: operation.idempotencyKey
+    });
   };
 
   return {

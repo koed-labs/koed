@@ -786,8 +786,12 @@ export const highRiskActionGrantIntentFromCollaborationIntent = (
             : {}),
           defaultWorkspaceAccess: intent.defaultWorkspaceAccess,
           ...(intent.inviterAgentDisplayName
-            ? { inviterAgentDisplayName: intent.inviterAgentDisplayName }
-            : {}),
+            ? {
+                inviterAgentDisplayName: intent.inviterAgentDisplayName,
+                actorKind: "agent_on_behalf",
+                accessMode: intent.accessMode
+              }
+            : { actorKind: "person" }),
           ttlHours: intent.ttlHours
         }
       };

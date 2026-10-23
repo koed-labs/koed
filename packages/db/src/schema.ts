@@ -2437,6 +2437,8 @@ export const teamWorkspaceAccessGrants = pgTable(
     grantedByUserId: uuid("granted_by_user_id").references(() => users.id, {
       onDelete: "set null"
     }),
+    actorKind: text("actor_kind"),
+    accessMode: text("access_mode"),
     disabledAt: timestamp("disabled_at", { withTimezone: true }),
     disabledReason: text("disabled_reason"),
     createdAt: now(),
@@ -2465,6 +2467,10 @@ export const teamWorkspaceAccessGrants = pgTable(
     check(
       "team_workspace_access_grants_share_owned_check",
       sql`not ${table.canShareOwnedMemory} or ${table.access} = 'write'`
+    ),
+    check(
+      "team_workspace_access_grants_origin_actor_check",
+      sql`coalesce((${table.actorKind} is null and ${table.accessMode} is null) or (${table.actorKind} = 'person' and ${table.accessMode} is null) or (${table.actorKind} = 'agent_on_behalf' and ${table.accessMode} in ('ask_first', 'full_access')), false)`
     )
   ]
 );
@@ -2498,6 +2504,9 @@ export const teamInvites = pgTable(
     ),
     issuanceDisabledReason: text("issuance_disabled_reason"),
     inviterAgentDisplayName: text("inviter_agent_display_name"),
+    actorKind: text("actor_kind"),
+    accessMode: text("access_mode"),
+    resultingAccessGrantVersion: integer("resulting_access_grant_version"),
     version: integer("version").notNull().default(1),
     lifecycle: inviteLifecycle("lifecycle").notNull().default("pending"),
     tokenHash: text("token_hash").notNull().unique(),
@@ -2533,6 +2542,10 @@ export const teamInvites = pgTable(
       sql`length(${table.tokenHash}) >= 32`
     ),
     check("team_invites_version_check", sql`${table.version} > 0`),
+    check(
+      "team_invites_resulting_access_version_check",
+      sql`${table.resultingAccessGrantVersion} is null or (${table.lifecycle} = 'accepted' and ${table.resultingAccessGrantVersion} > 0)`
+    ),
     check(
       "team_invites_binding_check",
       sql`${table.defaultTeamWorkspaceId} is not null
@@ -2579,6 +2592,63 @@ export const teamInvites = pgTable(
     check(
       "team_invites_issuance_membership_check",
       sql`(${table.issuanceMembershipVersion} is null and ${table.issuanceMembershipStatus} is null and ${table.issuanceDisabledReason} is null) or (${table.issuanceMembershipVersion} is not null and ${table.issuanceMembershipVersion} > 0 and ${table.issuanceMembershipStatus} is not null and ${table.issuanceMembershipStatus} = 'disabled' and ${table.issuanceDisabledReason} is not null)`
+    ),
+    check(
+      "team_invites_origin_actor_check",
+      sql`coalesce((${table.actorKind} is null and ${table.accessMode} is null) or (${table.actorKind} = 'person' and ${table.accessMode} is null) or (${table.actorKind} = 'agent_on_behalf' and ${table.accessMode} in ('ask_first', 'full_access')), false)`
+    )
+  ]
+);
+
+// Owner-local source Conversation provenance. Team backends see only actorKind
+// and accessMode; the Conversation id never enters a Team request or DTO.
+export const shareOrigins = pgTable(
+  "share_origins",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    teamBackendId: text("team_backend_id").notNull(),
+    targetKind: text("target_kind").notNull(),
+    inviteId: uuid("invite_id"),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    teamUserId: uuid("team_user_id"),
+    accessGrantVersion: integer("access_grant_version"),
+    sourceInviteId: uuid("source_invite_id"),
+    originKind: text("origin_kind").notNull(),
+    conversationId: uuid("conversation_id"),
+    createdAt: now()
+  },
+  (table) => [
+    check(
+      "share_origins_backend_check",
+      sql`length(trim(${table.teamBackendId})) > 0`
+    ),
+    check(
+      "share_origins_target_shape_check",
+      sql`(${table.targetKind} = 'invitation' and ${table.inviteId} is not null and ${table.teamWorkspaceId} is null and ${table.teamUserId} is null and ${table.accessGrantVersion} is null and ${table.sourceInviteId} is null) or (${table.targetKind} = 'workspace_access' and ${table.inviteId} is null and ${table.teamWorkspaceId} is not null and ${table.teamUserId} is not null and ${table.accessGrantVersion} is not null and ${table.accessGrantVersion} > 0)`
+    ),
+    check(
+      "share_origins_origin_shape_check",
+      sql`(${table.originKind} = 'conversation' and ${table.conversationId} is not null) or (${table.originKind} in ('share_window', 'not_recorded') and ${table.conversationId} is null)`
+    ),
+    uniqueIndex("share_origins_invitation_target_unique")
+      .on(table.ownerUserId, table.teamBackendId, table.inviteId)
+      .where(sql`${table.targetKind} = 'invitation'`),
+    uniqueIndex("share_origins_access_target_version_unique")
+      .on(
+        table.ownerUserId,
+        table.teamBackendId,
+        table.teamWorkspaceId,
+        table.teamUserId,
+        table.accessGrantVersion
+      )
+      .where(sql`${table.targetKind} = 'workspace_access'`),
+    index("share_origins_source_invite_idx").on(
+      table.ownerUserId,
+      table.teamBackendId,
+      table.sourceInviteId
     )
   ]
 );

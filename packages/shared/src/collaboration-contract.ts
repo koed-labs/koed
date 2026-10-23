@@ -1868,6 +1868,16 @@ export const collaborationActionGrantIntentSchema = z
       expectedWorkspaceProjectVersion: positiveVersionSchema.optional(),
       defaultWorkspaceAccess: z.enum(["read", "write"]),
       inviterAgentDisplayName: collaborationDisplayNameSchema.optional(),
+      accessMode: z.enum(["ask_first", "full_access"]).optional(),
+      managedTextAction: z
+        .object({
+          executionId: z.uuid(),
+          actionId: z.uuid(),
+          revision: positiveVersionSchema,
+          projectId: z.uuid()
+        })
+        .strict()
+        .optional(),
       ttlHours: z
         .number()
         .int()

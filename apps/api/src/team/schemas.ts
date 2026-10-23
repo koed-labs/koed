@@ -128,7 +128,9 @@ export const setTeamWorkspaceAccessSchema = z
     userId: z.string().uuid(),
     access: teamWorkspaceAccessSchema,
     canShareOwnedMemory: z.boolean().optional(),
-    expectedVersion: z.number().int().positive().nullable()
+    expectedVersion: z.number().int().positive().nullable(),
+    actorKind: z.enum(["person", "agent_on_behalf"]).optional(),
+    accessMode: z.enum(["ask_first", "full_access"]).optional()
   })
   .strict();
 
@@ -155,6 +157,8 @@ export const createTeamInviteSchema = z
     defaultWorkspaceAccess: z.enum(["read", "write"]).default("write"),
     email: z.string().trim().email(),
     inviterAgentDisplayName: z.string().trim().min(1).max(120).optional(),
+    actorKind: z.enum(["person", "agent_on_behalf"]).optional(),
+    accessMode: z.enum(["ask_first", "full_access"]).optional(),
     role: teamRoleSchema,
     ttlHours: z.coerce
       .number()

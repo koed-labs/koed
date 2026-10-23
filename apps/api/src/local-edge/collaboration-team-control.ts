@@ -162,7 +162,30 @@ export interface CollaborationTeamControlContext {
     workspaceProjectId: string;
     teamBackendId: string;
     email: string;
-  }): Promise<string | null>;
+  }): Promise<{
+    agentDisplayName: string;
+    accessMode: "ask_first" | "full_access";
+    conversationId: string;
+  } | null>;
+  recordInvitationShareOrigin?(input: {
+    teamBackendId: string;
+    inviteId: string;
+    originKind: "conversation" | "share_window";
+    conversationId: string | null;
+  }): Promise<void>;
+  linkAcceptedInvitationShareOrigin?(input: {
+    teamBackendId: string;
+    inviteId: string;
+    teamWorkspaceId: string;
+    teamUserId: string;
+    accessGrantVersion: number;
+  }): Promise<void>;
+  recordWorkspaceAccessShareOrigin?(input: {
+    teamBackendId: string;
+    teamWorkspaceId: string;
+    teamUserId: string;
+    accessGrantVersion: number;
+  }): Promise<void>;
 }
 
 export type CollaborationTeamControlIntegrationRequirementCode =
@@ -219,7 +242,14 @@ export const remoteInvitationSchema = z
     expiresAt: timestampSchema,
     acceptedAt: timestampSchema.nullable(),
     declinedAt: timestampSchema.nullable().optional(),
-    revokedAt: timestampSchema.nullable()
+    revokedAt: timestampSchema.nullable(),
+    acceptedByUserId: z.uuid().nullable().optional(),
+    resultingAccessGrantVersion: z
+      .number()
+      .int()
+      .positive()
+      .nullable()
+      .optional()
   })
   .passthrough()
   .superRefine((invitation, refinement) => {
@@ -971,7 +1001,7 @@ const dispatch = async (
       ) {
         return failure(command, safeError("permission_denied"));
       }
-      const agentDisplayName =
+      const agentOrigin =
         managedTextAction && command.input.workspaceProjectId
           ? await context.resolveInvitationAgentDisplayName!({
               ...managedTextAction,
@@ -982,8 +1012,9 @@ const dispatch = async (
           : null;
       if (
         managedTextAction &&
-        (!agentDisplayName ||
-          agentDisplayName !== command.input.inviterAgentDisplayName)
+        (!agentOrigin ||
+          agentOrigin.agentDisplayName !==
+            command.input.inviterAgentDisplayName)
       )
         return failure(command, safeError("permission_denied"));
       const body = {
@@ -999,9 +1030,13 @@ const dispatch = async (
           : {}),
         defaultWorkspaceAccess: command.input.defaultWorkspaceAccess,
         ttlHours: command.input.ttlHours,
-        ...(agentDisplayName
-          ? { inviterAgentDisplayName: agentDisplayName }
-          : {})
+        ...(agentOrigin
+          ? {
+              inviterAgentDisplayName: agentOrigin.agentDisplayName,
+              actorKind: "agent_on_behalf",
+              accessMode: agentOrigin.accessMode
+            }
+          : { actorKind: "person" })
       };
       const grant = await actionGrantSecret(command, context, {
         reference: command.input.actionGrant,
@@ -1035,6 +1070,14 @@ const dispatch = async (
         invitation.lifecycle !== "pending"
       ) {
         return failure(command, safeError("internal_error"));
+      }
+      if (context.recordInvitationShareOrigin) {
+        await context.recordInvitationShareOrigin({
+          teamBackendId: context.backend.id,
+          inviteId: invitation.id,
+          originKind: agentOrigin ? "conversation" : "share_window",
+          conversationId: agentOrigin?.conversationId ?? null
+        });
       }
       return success(command, {
         invitation,
@@ -1098,6 +1141,23 @@ const dispatch = async (
         )
       ) {
         return failure(command, safeError("internal_error"));
+      }
+      if (context.linkAcceptedInvitationShareOrigin) {
+        for (const accepted of payload.invites) {
+          if (
+            accepted.lifecycle === "accepted" &&
+            accepted.acceptedByUserId &&
+            accepted.resultingAccessGrantVersion
+          ) {
+            await context.linkAcceptedInvitationShareOrigin({
+              teamBackendId: context.backend.id,
+              inviteId: accepted.id,
+              teamWorkspaceId: accepted.defaultTeamWorkspaceId,
+              teamUserId: accepted.acceptedByUserId,
+              accessGrantVersion: accepted.resultingAccessGrantVersion
+            });
+          }
+        }
       }
       const nextCursor = payload.nextCursor
         ? await codec.encode({
@@ -1678,6 +1738,18 @@ const dispatch = async (
         access.version !== null &&
         (command.input.expectedVersion === null ||
           access.version > command.input.expectedVersion);
+      if (
+        matches &&
+        access.access !== "disabled" &&
+        context.recordWorkspaceAccessShareOrigin
+      ) {
+        await context.recordWorkspaceAccessShareOrigin({
+          teamBackendId: context.backend.id,
+          teamWorkspaceId: access.workspaceId,
+          teamUserId: access.userId,
+          accessGrantVersion: access.version!
+        });
+      }
       return matches
         ? success(command, { access })
         : failure(command, safeError("internal_error"));

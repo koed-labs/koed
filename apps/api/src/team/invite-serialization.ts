@@ -10,6 +10,9 @@ export const legacyTeamInvite = (invite: TeamInviteRecord) => {
     issuanceMembershipStatus,
     issuanceDisabledReason,
     inviterAgentDisplayName,
+    actorKind,
+    accessMode,
+    resultingAccessGrantVersion,
     declinedAt,
     ...legacy
   } = invite;
@@ -20,8 +23,14 @@ export const legacyTeamInvite = (invite: TeamInviteRecord) => {
   void issuanceMembershipStatus;
   void issuanceDisabledReason;
   void inviterAgentDisplayName;
+  void actorKind;
+  void accessMode;
   void declinedAt;
+  const withAcceptedVersion =
+    invite.lifecycle === "accepted" && resultingAccessGrantVersion
+      ? { ...legacy, resultingAccessGrantVersion }
+      : legacy;
   return invite.lifecycle === "declined"
-    ? { ...legacy, declinedAt: invite.declinedAt }
-    : legacy;
+    ? { ...withAcceptedVersion, declinedAt: invite.declinedAt }
+    : withAcceptedVersion;
 };

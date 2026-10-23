@@ -29,6 +29,9 @@ const internalBindings = {
   issuanceMembershipStatus: null,
   issuanceDisabledReason: null,
   inviterAgentDisplayName: null,
+  actorKind: null,
+  accessMode: null,
+  resultingAccessGrantVersion: null,
   declinedAt: null
 };
 describe("strict legacy invitation response", () => {

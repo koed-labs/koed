@@ -1221,6 +1221,16 @@ try {
 }
 
 if (process.exitCode === undefined || process.exitCode === 0) {
+  const origin = spawnSync(process.execPath, ["scripts/validate-hq721.mjs"], {
+    cwd: desktopDir,
+    env: process.env,
+    stdio: "inherit"
+  });
+  if (origin.error) throw origin.error;
+  process.exitCode = origin.status ?? 1;
+}
+
+if (process.exitCode === undefined || process.exitCode === 0) {
   const profile = await mkdtemp(resolve(scratchDir, "hq901-share-profile-"));
   try {
     const reportPath = resolve(scratchDir, "hq-901-early-share", "report.json");
