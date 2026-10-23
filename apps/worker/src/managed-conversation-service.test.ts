@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   ClaimedManagedConversationCommand,
@@ -48,9 +49,11 @@ import { probeManagedConversationProviderPrompt } from "./managed-conversation-p
 
 describe("managed ordinary agent-turn prompt isolation", () => {
   it("excludes a present Team message from the actual managed provider turn", async () => {
-    const root = await mkdtemp(
-      resolve(process.cwd(), "scratch", "hq-n1-provider-")
+    const scratchRoot = fileURLToPath(
+      new URL("../../../scratch/", import.meta.url)
     );
+    await mkdir(scratchRoot, { recursive: true });
+    const root = await mkdtemp(resolve(scratchRoot, "hq-n1-provider-"));
     try {
       const ownerUserId = randomUUID();
       const executionId = randomUUID();

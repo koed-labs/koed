@@ -57,6 +57,7 @@
     "dev": "tsx watch src/index.ts",
     "embeddings:backfill": "tsx src/backfill-embeddings.ts",
     "start": "node dist/index.js",
+    "pretest": "tsc -b tsconfig.json",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
