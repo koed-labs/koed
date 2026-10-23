@@ -2,6 +2,8 @@
 
 Status: Accepted.
 
+Amended by [ADR 0064](./0064-frozen-contributions-share-origin-and-sharing-page.md).
+
 Related decisions:
 
 - [0004 Team Memory Uses User-Owned Share Grants And Workspaces](./0004-team-memory-workspaces.md)
@@ -259,13 +261,15 @@ Share Grant and continue to follow ADR 0047's revocation, expiry, membership,
 Workspace Access, and Team-audience policy checks. Snapshot source access and
 unrelated grants are unchanged by the freeze.
 
-Marking a Conversation private is a local owner control. If it withdraws a
-Project-policy-created grant, the owner separately authorizes revocation
-through the existing `shared_memory.revoke` Native review. Revocation is
-different from freezing future advancement: it removes Team access under the
-existing revocation and retention rules. Sharing again requires a new explicit
-sharing action. Revocation, suppression, expiry, and current policy checks
-continue to govern frozen grants as well.
+Marking a Conversation private is a local owner control. If it affects a
+Project-policy-created grant, the owner separately authorizes a freeze through
+`shared_memory.grant.freeze` Native review. The last published representation
+remains available under current authorization; later revisions do not advance.
+Sharing again requires a new explicit sharing action. For active or frozen
+grants bound to a Workspace Project, the source owner cannot revoke the Share
+Grant; the Workspace Project owner may remove the contribution. Suppression,
+expiry, and current policy checks continue to govern frozen grants. Shares
+outside a Workspace Project keep their existing revocation lifecycle.
 
 Deleting a shared Project leaves its Workspace and grants in place. The
 Project Thread is archived and each affected grant is frozen as described
@@ -279,10 +283,10 @@ Native-review `shared_memory.grant.freeze` action for every affected old
 Project-policy grant. This action is not implemented yet. It pins the old grant
 at its current published closure.
 The old grant and already-published Team material remain under their existing
-authorization unless the owner separately revokes that exact grant. Sharing to
-a new shared destination requires a new explicit confirmation and exact source
-mapping. Moving back or restoring the old Project never resumes the frozen
-grant.
+authorization; for a Workspace Project contribution, only the Workspace
+Project owner may remove it. Sharing to a new shared destination requires a
+new explicit confirmation and exact source mapping. Moving back or restoring
+the old Project never resumes the frozen grant.
 
 Deleting a Personal Project is a local owner control and does not require Team
 enrollment or browser approval. If the Project has active Team grants, the

@@ -326,7 +326,19 @@ _Avoid_: Workspace, Project, Team, folder
 **Share Grant**:
 An access record that allows Team recall of a user-owned memory source within a
 Workspace.
+A Share Grant bound to a Workspace Project is a **Project contribution**: its
+author cannot revoke it, active or frozen; only the Workspace Project owner can
+remove it. Conversation Source Access to its source stays separately revocable.
+A frozen Share Grant keeps its last published representation in the Workspace.
 _Avoid_: Ownership transfer, copy, export
+
+**Share Origin**:
+Who created a Team invite or a Workspace Access grant (a person, or their Agent
+acting for them) and where it was created (the Share window or a named
+Conversation). The Conversation is known only to the sharer's Personal backend.
+An invitation keeps its origin when accepted into Workspace Access; later grants
+do not rewrite earlier attribution.
+_Avoid_: audit log (it is one field of it), source (taken by Project Source)
 
 **Pending Share**:
 An owner-authorized, durable sharing operation that is preparing a semantic
@@ -502,6 +514,11 @@ _Avoid_: task (durable tasks), job, Memory, Team Chat Message, Project Source
   **Team** in one **Workspace**; the first implemented source is a
   **Captured Session**
 - A **Share Grant** may allow summary-only recall or source-detail expansion
+- Making a Conversation private, leaving, being removed, or deleting a shared
+  Project freezes the affected Project-policy **Share Grants**: what was already
+  shared stays with the Project, and nothing new is shared
+- Every Team invite and Workspace Access grant has one **Share Origin**; an
+  older record may have no recorded origin
 - Removing a **User** from a **Team** or **Workspace** removes future access but
   does not delete retained **Team-shared Memory**
 - A **Share Grant** revocation, **Workspace Archive**, **Access Suspension**,

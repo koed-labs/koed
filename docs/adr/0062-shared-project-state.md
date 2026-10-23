@@ -6,6 +6,8 @@ Accepted design; Workspace Project state, exact grant binding and freeze,
 and Team/Project leave lifecycle paths are implemented. Deck/card and Project
 Thread surfaces remain follow-up work.
 
+Amended by [ADR 0064](./0064-frozen-contributions-share-origin-and-sharing-page.md).
+
 This ADR defines target behavior. HQ-715 implements the exact owner-reviewed
 Share Grant freeze, immutable published closure, and current Team lifecycle
 parent integration. HQ-202 implements local Personal Project routes and their
@@ -168,8 +170,10 @@ Freeze is per Share Grant. It pins the last actually published revision and
 its complete immutable authorized representation closure. It does not revoke
 the grant or change source-owner consent. Published evidence remains available
 only under current membership, Workspace Access, suppression, expiry,
-revocation, retention, and other authorization checks; later revisions are
-excluded. Freeze serializes with in-flight advancement on the Team Backend,
+retention, and other authorization checks. For Project contributions, the
+Workspace Project owner's removal governs published evidence in place of
+source-owner Share Grant revocation; other grants remain subject to revocation.
+Later revisions are excluded. Freeze serializes with in-flight advancement on the Team Backend,
 so no worker can publish past the committed boundary. If no revision was
 published, the freeze exposes no new bytes.
 
