@@ -86,8 +86,13 @@ contextBridge.exposeInMainWorld("koedDesktop", {
   projectHqConversation: createProjectHqConversationPreloadApi(
     (channel, value) => ipcRenderer.invoke(channel, value)
   ),
-  localAiClients: createLocalAiClientPreloadApi((channel, value) =>
-    ipcRenderer.invoke(channel, value)
+  localAiClients: createLocalAiClientPreloadApi(
+    (channel, value) => ipcRenderer.invoke(channel, value),
+    {
+      on: (channel, listener) => ipcRenderer.on(channel, listener),
+      removeListener: (channel, listener) =>
+        ipcRenderer.removeListener(channel, listener)
+    }
   ),
   managedProject: createManagedProjectPreloadApi(
     (channel, value) => ipcRenderer.invoke(channel, value),

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createLocalAiClientPreloadApi } from "./local-ai-client-preload.js";
-import { localAiClientCommandChannel } from "./local-ai-client-protocol.js";
+import {
+  localAiClientCommandChannel,
+  localAiClientUsageChangedChannel
+} from "./local-ai-client-protocol.js";
 
 const readModel = {
   instances: [],
@@ -85,9 +88,11 @@ describe("Local AI Client preload bridge", () => {
     });
     expect(Object.keys(api).sort()).toEqual([
       "list",
+      "onUsageChanged",
       "refresh",
       "reset",
-      "set"
+      "set",
+      "usage"
     ]);
     expect(Object.isFrozen(api)).toBe(true);
   });
@@ -125,5 +130,41 @@ describe("Local AI Client preload bridge", () => {
       flowKey: "mcp_memory_answer"
     });
     await expect(api.reset("manual_memory_answer" as never)).rejects.toThrow();
+  });
+
+  it("unsubscribes usage listeners and discards invalid event fields", () => {
+    let eventListener: ((_event: unknown, value: unknown) => void) | undefined;
+    const events = {
+      on: vi.fn(
+        (
+          _channel: string,
+          listener: (_event: unknown, value: unknown) => void
+        ) => {
+          eventListener = listener;
+        }
+      ),
+      removeListener: vi.fn()
+    };
+    const api = createLocalAiClientPreloadApi(vi.fn(), events);
+    const listener = vi.fn();
+    const unsubscribe = api.onUsageChanged(listener);
+    const valid = {
+      kind: "completion",
+      instanceId: "codex.default",
+      completionId: "one",
+      outcome: "checked",
+      observedAt: "2026-10-23T12:00:00.000Z"
+    };
+    eventListener?.({}, { ...valid, accountIdentityHash: "secret" });
+    expect(listener).not.toHaveBeenCalled();
+    eventListener?.({}, valid);
+    expect(listener).toHaveBeenCalledWith(valid);
+    eventListener?.({}, { kind: "invalidated" });
+    expect(listener).toHaveBeenCalledWith({ kind: "invalidated" });
+    unsubscribe();
+    expect(events.removeListener).toHaveBeenCalledWith(
+      localAiClientUsageChangedChannel,
+      eventListener
+    );
   });
 });

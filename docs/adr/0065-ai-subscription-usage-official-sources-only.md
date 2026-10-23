@@ -74,10 +74,12 @@ Installed-source checks on 23 Oct 2026:
 - Koed records usage only from the approved Codex and Claude sources above. It never calls undocumented
   endpoints, never reads another application's credentials, never scrapes web
   pages or other applications' local files.
-- **Codex:** `account/rateLimits/read` runs in a **separate background usage
-  probe** that reads the whole response (every bucket, `accountId` and the
-  restriction fields) with its own app-server client, lifetime and timeout,
-  after the capability snapshot is published, and after each Codex turn. The optional
+- **Codex:** `account/rateLimits/read` reads the whole response (every bucket,
+  `accountId` and the restriction fields). After the capability snapshot is
+  published, and for manual refresh, a **separate background usage probe**
+  owns its app-server client, lifetime and timeout. After each Codex turn, a
+  bounded optional read reuses that turn's still-open app-server client without
+  delaying turn completion or closing the shared session. The optional
   `account/rateLimits/updated` notification may trigger a refetch; its sparse
   fields alone must not imply recovery. The probe does not run inside
   `inspectCodexAppServer`: awaiting it there would delay the inspection,

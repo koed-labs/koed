@@ -697,5 +697,37 @@ export const hqAcceptanceContract = [
       "Bob's owned-Project leave copy-back is interrupted and resumed idempotently; last-owner leave is refused before copy-back, and after ownership transfer successful copy plus version/authority revalidation precede removal",
     owners: ["HQ-713 real API/Team Backend suite"],
     harness: "two-user"
+  },
+  {
+    id: "U520.1",
+    category: "unit",
+    description:
+      "Official Codex and Claude usage readers preserve every reported bucket and restriction conservatively",
+    owners: ["HQ-520"],
+    harness: "unit"
+  },
+  {
+    id: "U520.2",
+    category: "unit",
+    description:
+      "Runtime completion crosses a real Personal API stream into typed Desktop preload delivery",
+    owners: ["HQ-520"],
+    harness: "unit"
+  },
+  {
+    id: "I520.1",
+    category: "positive",
+    description:
+      "Two owners have isolated Personal usage while Team storage and reads contain none",
+    owners: ["HQ-520", "HQ-713 integration suite"],
+    harness: "real-api"
+  },
+  {
+    id: "S520.1",
+    category: "positive",
+    description:
+      "Native Desktop preload delivers only typed completion metadata and unsubscribes",
+    owners: ["HQ-520"],
+    harness: "simulated-ipc"
   }
 ];

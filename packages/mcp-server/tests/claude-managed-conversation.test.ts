@@ -982,3 +982,203 @@ describe("managed Claude home leases", () => {
     expect(fs.existsSync(managedHome)).toBe(false);
   });
 });
+
+describe("Claude usage telemetry isolation", () => {
+  const rateEvent = {
+    type: "rate_limit_event",
+    rate_limit_info: {
+      status: "allowed",
+      rateLimitType: "five_hour",
+      utilization: 0.25
+    }
+  } as unknown as SDKMessage;
+
+  it("bounds a pending account control read without failing a healthy turn", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) => {
+      const stream = queryFrom([
+        rateEvent,
+        successResult(options?.sessionId as string)
+      ]);
+      stream.accountInfo = vi.fn(
+        () =>
+          new Promise<Awaited<ReturnType<Query["accountInfo"]>>>(
+            () => undefined
+          )
+      );
+      return stream;
+    });
+    const received = vi.fn().mockResolvedValue(undefined);
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      onRateLimitEvent: received
+    });
+    const started = Date.now();
+    try {
+      await expect(session.prompt("Check")).resolves.toMatchObject({
+        text: "done"
+      });
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(received).toHaveBeenCalledWith(
+        expect.objectContaining({ rateLimitType: "five_hour" }),
+        null,
+        expect.any(String),
+        false
+      );
+    } finally {
+      await session.closeAndWait();
+    }
+  }, 5_000);
+
+  it("drains a pre-error rate event before returning the provider failure", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(() => {
+      async function* fail(): AsyncGenerator<SDKMessage, void> {
+        yield rateEvent;
+        throw new Error("provider failed");
+      }
+      const stream = fail() as Query;
+      stream.close = vi.fn();
+      stream.accountInfo = vi
+        .fn()
+        .mockResolvedValue({ email: "test@example.com" });
+      return stream;
+    });
+    const received = vi.fn().mockResolvedValue(undefined);
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      onRateLimitEvent: received
+    });
+    try {
+      await expect(session.prompt("Fail")).rejects.toThrow("provider failed");
+      expect(received).toHaveBeenCalledOnce();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("does not fail a healthy turn when usage delivery rejects", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) => {
+      const stream = queryFrom([
+        rateEvent,
+        successResult(options?.sessionId as string)
+      ]);
+      stream.accountInfo = vi
+        .fn()
+        .mockResolvedValue({ email: "test@example.com" });
+      return stream;
+    });
+    const received = vi
+      .fn()
+      .mockRejectedValue(new Error("telemetry unavailable"));
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      onRateLimitEvent: received
+    });
+    try {
+      await expect(session.prompt("Check")).resolves.toMatchObject({
+        text: "done"
+      });
+      expect(received).toHaveBeenCalledOnce();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("retains every rate event after the concurrent delivery bound is reached", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) => {
+      const stream = queryFrom([
+        ...Array.from({ length: 70 }, () => rateEvent),
+        successResult(options?.sessionId as string)
+      ]);
+      stream.accountInfo = vi
+        .fn()
+        .mockResolvedValue({ email: "test@example.com" });
+      return stream;
+    });
+    const received = vi.fn().mockResolvedValue(undefined);
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      onRateLimitEvent: received
+    });
+    try {
+      await expect(session.prompt("Check")).resolves.toMatchObject({
+        text: "done"
+      });
+      expect(received).toHaveBeenCalledTimes(70);
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("retains an event emitted before cancellation", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) => {
+      async function* pending(): AsyncGenerator<SDKMessage, void> {
+        yield rateEvent;
+        await new Promise<void>((_resolve, reject) =>
+          options?.abortController?.signal.addEventListener(
+            "abort",
+            () => reject(new Error("aborted")),
+            { once: true }
+          )
+        );
+      }
+      const stream = pending() as Query;
+      stream.close = vi.fn();
+      stream.accountInfo = vi
+        .fn()
+        .mockResolvedValue({ email: "test@example.com" });
+      return stream;
+    });
+    const received = vi.fn().mockResolvedValue(undefined);
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      onRateLimitEvent: received
+    });
+    const pending = session.prompt("Wait");
+    await vi.waitFor(() => expect(received).toHaveBeenCalledOnce());
+    session.cancel();
+    try {
+      await expect(pending).rejects.toBeInstanceOf(
+        ClaudeManagedConversationCancelledError
+      );
+      expect(received).toHaveBeenCalledOnce();
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+
+  it("discards attribution when the SDK account changes during the turn", async () => {
+    const { config } = fixture();
+    sdk.query.mockImplementation(({ options }: { options?: Options }) => {
+      const stream = queryFrom([
+        rateEvent,
+        successResult(options?.sessionId as string)
+      ]);
+      stream.accountInfo = vi
+        .fn()
+        .mockResolvedValueOnce({ email: "old@example.com" })
+        .mockResolvedValue({ email: "new@example.com" });
+      return stream;
+    });
+    const received = vi.fn().mockResolvedValue(undefined);
+    const session = new ClaudeManagedConversationSession({
+      ...config,
+      onRateLimitEvent: received
+    });
+    try {
+      await session.prompt("Check");
+      expect(received).toHaveBeenCalledWith(
+        expect.any(Object),
+        null,
+        expect.any(String),
+        true
+      );
+    } finally {
+      await session.closeAndWait();
+    }
+  });
+});

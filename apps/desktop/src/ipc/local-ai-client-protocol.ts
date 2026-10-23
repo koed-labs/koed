@@ -2,6 +2,24 @@ import { z } from "zod";
 import { supportedAiClientDriverIds } from "@koed/shared/ai-client-contract";
 
 export const localAiClientCommandChannel = "koed:local-ai-client:command";
+export const localAiClientUsageChangedChannel =
+  "koed:local-ai-client:usage-changed";
+export const localAiClientUsageChangedSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("completion"),
+      instanceId: z.string().min(1).max(128),
+      completionId: z.string().min(1).max(128),
+      outcome: z.enum(["checked", "failed", "unsupported"]),
+      observedAt: z.string().datetime()
+    })
+    .strict(),
+  z.object({ kind: z.literal("catch_up") }).strict(),
+  z.object({ kind: z.literal("invalidated") }).strict()
+]);
+export type LocalAiClientUsageChanged = z.infer<
+  typeof localAiClientUsageChangedSchema
+>;
 
 export const localAiClientFlowKeys = [
   "conversations",
@@ -28,9 +46,19 @@ export type LocalAiClientAssignment = z.infer<
   typeof localAiClientAssignmentSchema
 >;
 
-export const localAiClientCommandSchema = z.discriminatedUnion("operation", [
+export const localAiClientCommandSchema = z.union([
   z.object({ operation: z.literal("list") }).strict(),
   z.object({ operation: z.literal("refresh") }).strict(),
+  z
+    .object({ operation: z.literal("usage"), action: z.literal("read") })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("usage"),
+      action: z.literal("refresh"),
+      instanceId: z.string().min(1).max(128)
+    })
+    .strict(),
   z
     .object({
       operation: z.literal("set"),
@@ -144,10 +172,32 @@ export type LocalAiClientReadModel = z.infer<
 
 export const localAiClientResponseSchema = z
   .object({
-    operation: z.enum(["list", "refresh", "set", "reset"]),
+    operation: z.enum(["list", "refresh", "set", "reset", "usage"]),
     readModel: localAiClientReadModelSchema,
     refreshed: z.boolean().optional(),
-    refreshError: z.string().nullable().optional()
+    refreshError: z.string().nullable().optional(),
+    usage: z
+      .array(
+        z
+          .object({
+            instanceId: z.string().min(1).max(128),
+            source: z.enum(["codex_app_server", "claude_agent_sdk"]),
+            bucketId: z.string().min(1),
+            bucketName: z.string().nullable(),
+            window: z.string().min(1),
+            windowDurationMins: z.number().nullable(),
+            usedPercent: z.number().nullable(),
+            status: z.enum(["ok", "near_limit", "limited", "unknown"]),
+            resetsAt: z.string().nullable(),
+            planType: z.string().nullable(),
+            details: z.record(z.string(), z.unknown()),
+            observedAt: z.string()
+          })
+          .strict()
+      )
+      .optional(),
+    usageOutcome: z.enum(["checked", "failed", "unsupported"]).optional(),
+    usageObservedAt: z.string().optional()
   })
   .strict();
 export type LocalAiClientResponse = z.infer<typeof localAiClientResponseSchema>;

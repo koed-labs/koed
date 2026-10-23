@@ -35,6 +35,7 @@ import {
   personalDevicePairingLinkChannel,
   personalMemoryEventChannel
 } from "./ipc/protocol.js";
+import { localAiClientUsageChangedChannel } from "./ipc/local-ai-client-protocol.js";
 import {
   createKoedEnvironment,
   createKoedServerManager,
@@ -368,6 +369,14 @@ const createWindow = async () => {
       }
     }, personalMemoryController.signal)
     .catch(() => undefined);
+  if (desktopFeatureFlagsFromEnvironment(process.env).hqEnabled) {
+    void server
+      .subscribeAiClientUsage((change) => {
+        if (!window.isDestroyed())
+          window.webContents.send(localAiClientUsageChangedChannel, change);
+      }, personalMemoryController.signal)
+      .catch(() => undefined);
+  }
 };
 
 const showDesktopWindow = createDesktopWindowActivator({

@@ -819,6 +819,22 @@ export class CodexAppServerClient {
     return asRecord(response.result);
   }
 
+  async readRateLimits(): Promise<Record<string, unknown>> {
+    const response = await this.request("account/rateLimits/read", null);
+    return asRecord(response.result);
+  }
+
+  async readUsageEvidence(): Promise<{
+    before: Record<string, unknown>;
+    limits: Record<string, unknown>;
+    after: Record<string, unknown>;
+  }> {
+    const before = await this.readAccount();
+    const limits = await this.readRateLimits();
+    const after = await this.readAccount();
+    return { before, limits, after };
+  }
+
   async listSkills(cwd: string): Promise<unknown> {
     const response = await this.request("skills/list", {
       cwds: [cwd],
@@ -2324,6 +2340,82 @@ export const inspectCodexAppServer = async (
             : requiresOpenaiAuth === true
               ? "unauthenticated"
               : "unknown"
+    };
+  } finally {
+    clearTimeout(timeout);
+    client.close();
+    removeIsolatedCodexHome(isolatedHome);
+  }
+};
+
+export type CodexUsageProbeResult =
+  | {
+      outcome: "checked";
+      before: Record<string, unknown>;
+      after: Record<string, unknown>;
+      limits: Record<string, unknown>;
+    }
+  | { outcome: "failed" | "unsupported" };
+
+export const readCodexUsageEvidence = async (
+  client: CodexAppServerClient,
+  timeoutMs = 5000
+): Promise<CodexUsageProbeResult> => {
+  if (client.isClosed() || client.activeTurn()) return { outcome: "failed" };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const evidence = await Promise.race([
+      client.readUsageEvidence(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Codex usage read timed out")),
+          timeoutMs
+        );
+      })
+    ]);
+    return client.isClosed()
+      ? { outcome: "failed" }
+      : { outcome: "checked", ...evidence };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      outcome: /method not found|unknown method|unsupported/i.test(message)
+        ? "unsupported"
+        : "failed"
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+/** Optional, independent usage probe. It cannot hold up capability inspection. */
+export const probeCodexAppServerUsage = async (
+  input: {
+    appServerBinary: string;
+    model: string;
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+  },
+  timeoutMs = 5000
+): Promise<CodexUsageProbeResult> => {
+  const isolatedHome = createIsolatedCodexHome(input.env, input.model);
+  const client = new CodexAppServerClient(
+    input.appServerBinary,
+    input.cwd,
+    { ...input.env, CODEX_HOME: isolatedHome },
+    undefined,
+    { requestTimeoutMs: timeoutMs }
+  );
+  const timeout = setTimeout(() => client.close(), timeoutMs);
+  try {
+    await client.initialize("koed-usage-probe");
+    return await readCodexUsageEvidence(client, timeoutMs);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      outcome: /method not found|unknown method|unsupported/i.test(message)
+        ? "unsupported"
+        : "failed"
     };
   } finally {
     clearTimeout(timeout);

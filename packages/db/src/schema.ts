@@ -15530,6 +15530,93 @@ export const aiClientCapabilitySnapshots = pgTable(
   ]
 );
 
+export const aiClientUsageSnapshots = pgTable(
+  "ai_client_usage_snapshots",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").notNull(),
+    instanceId: text("instance_id").notNull(),
+    accountIdentityHash: text("account_identity_hash").notNull(),
+    source: text("source").notNull(),
+    bucketId: text("bucket_id").notNull(),
+    bucketName: text("bucket_name"),
+    window: text("window").notNull(),
+    windowDurationMins: integer("window_duration_mins"),
+    usedPercent: doublePrecision("used_percent"),
+    status: text("status").notNull(),
+    resetsAt: timestamp("resets_at", { withTimezone: true }),
+    planType: text("plan_type"),
+    details: jsonb("details")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.ownerUserId, table.instanceId],
+      foreignColumns: [
+        aiClientInstances.ownerUserId,
+        aiClientInstances.instanceId
+      ],
+      name: "ai_client_usage_snapshots_instance_fk"
+    }).onDelete("cascade"),
+    index("ai_client_usage_snapshots_latest_idx").on(
+      table.ownerUserId,
+      table.instanceId,
+      table.accountIdentityHash,
+      table.bucketId,
+      table.window,
+      table.observedAt.desc()
+    ),
+    index("ai_client_usage_snapshots_retention_idx").on(table.observedAt),
+    check(
+      "ai_client_usage_snapshots_identity_check",
+      sql`${table.accountIdentityHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "ai_client_usage_snapshots_status_check",
+      sql`${table.status} in ('ok', 'near_limit', 'limited', 'unknown')`
+    ),
+    check(
+      "ai_client_usage_snapshots_source_check",
+      sql`${table.source} in ('codex_app_server', 'claude_agent_sdk')`
+    ),
+    check(
+      "ai_client_usage_snapshots_percent_check",
+      sql`${table.usedPercent} is null or ${table.usedPercent} between 0 and 100`
+    )
+  ]
+);
+
+export const aiClientUsageAccounts = pgTable(
+  "ai_client_usage_accounts",
+  {
+    ownerUserId: uuid("owner_user_id").notNull(),
+    instanceId: text("instance_id").notNull(),
+    accountIdentityHash: text("account_identity_hash"),
+    profileScopeHash: text("profile_scope_hash").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerUserId, table.instanceId] }),
+    foreignKey({
+      columns: [table.ownerUserId, table.instanceId],
+      foreignColumns: [
+        aiClientInstances.ownerUserId,
+        aiClientInstances.instanceId
+      ],
+      name: "ai_client_usage_accounts_instance_fk"
+    }).onDelete("cascade"),
+    check(
+      "ai_client_usage_accounts_identity_check",
+      sql`${table.accountIdentityHash} is null or ${table.accountIdentityHash} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
 export const localMemoryAgentSettings = pgTable(
   "local_memory_agent_settings",
   {

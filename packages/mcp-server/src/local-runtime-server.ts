@@ -31,6 +31,8 @@ import {
   startAiClientCapabilityPublisher,
   type AiClientCapabilityPublisherHandle
 } from "./ai-client-capability-publisher.js";
+import { publishCodexUsage } from "./ai-client-usage-publisher.js";
+import { resolveConfiguredLocalAiClientInstance } from "./ai-client-instance-registry.js";
 import { startCuratedMemoryReviewService } from "./curated-memory-review-service.js";
 import { resolveCuratedMemoryReviewConfig } from "./curated-memory-review-worker.js";
 import {
@@ -743,6 +745,34 @@ export const startLocalAiRuntime = async ({
                   error: `Capability refresh failed for ${failed.length} AI Client instance${failed.length === 1 ? "" : "s"}`
                 }
               : {})
+          });
+          return;
+        }
+        if (
+          request.method === "POST" &&
+          requestUrl.pathname === "/v1/usage/refresh"
+        ) {
+          const instanceId = requestUrl.searchParams.get("instanceId");
+          if (!instanceId) {
+            json(response, 400, { error: "AI Client instance is required" });
+            return;
+          }
+          let outcome: "checked" | "failed" | "unsupported";
+          try {
+            const instance = resolveConfiguredLocalAiClientInstance({
+              driverId: "codex",
+              instanceId,
+              env: environment
+            });
+            outcome = await publishCodexUsage(apiClient, instance, environment);
+          } catch {
+            outcome = "failed";
+          }
+          json(response, 200, {
+            protocolVersion: LOCAL_AI_RUNTIME_PROTOCOL_VERSION,
+            instanceId,
+            outcome,
+            observedAt: new Date().toISOString()
           });
           return;
         }

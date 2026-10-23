@@ -64,7 +64,10 @@ export interface AuthHelpers {
     options?: { fresh?: boolean }
   ): Promise<DeviceCredentialAuthContext | null>;
   setSessionCookie(reply: FastifyReply, secret: string): void;
-  authenticate(request: FastifyRequest): Promise<{
+  authenticate(
+    request: FastifyRequest,
+    options?: { fresh?: boolean }
+  ): Promise<{
     id: string;
     email: string;
     displayName: string | null;
@@ -233,9 +236,12 @@ export const createAuthHelpers = (
     return user;
   };
 
-  const resolveApiTokenUser = (request: FastifyRequest) => {
+  const resolveApiTokenUser = (
+    request: FastifyRequest,
+    options: { fresh?: boolean } = {}
+  ) => {
     const cached = apiTokenUsers.get(request);
-    if (cached) {
+    if (cached && !options.fresh) {
       return cached;
     }
     const bearer = readAuthorizationCredential(request, "Bearer");
@@ -278,9 +284,12 @@ export const createAuthHelpers = (
     return lookup;
   };
 
-  const authenticate = async (request: FastifyRequest) => {
+  const authenticate = async (
+    request: FastifyRequest,
+    options: { fresh?: boolean } = {}
+  ) => {
     const repo = requireRepository();
-    const apiTokenUser = await resolveApiTokenUser(request);
+    const apiTokenUser = await resolveApiTokenUser(request, options);
     if (apiTokenUser) {
       recordAuthContext(request, "api_token", apiTokenUser.id);
       return apiTokenUser;
@@ -288,6 +297,9 @@ export const createAuthHelpers = (
 
     const delegatedUser = await resolveDelegatedUser(request);
     if (delegatedUser) return delegatedUser;
+    if (options.fresh && readAuthorizationCredential(request, "Bearer")) {
+      throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
+    }
 
     const sessionSecret = request.cookies[sessionCookieName];
     if (sessionSecret) {

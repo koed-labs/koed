@@ -49,6 +49,7 @@ import {
 
 import { runHq713FuturePolicy } from "./hq713-future-policy.js";
 import { runHq713ShareOrigin } from "./hq713-share-origin.js";
+import { runHq713AiClientUsageBoundary } from "./hq713-ai-client-usage.js";
 
 const required = [
   "I13-I14-step1-step2-share-join",
@@ -70,6 +71,7 @@ const required = [
   "I713.14",
   "I713.chat-delete-freeze",
   "N2",
+  "N21",
   "N5",
   "N6",
   "N8",
@@ -207,6 +209,7 @@ describe("HQ-713 real two-user Team backend", () => {
       await runHq713MemoryStep3(fixture, shared);
       const leased = await createHq713LeasedExecution(fixture);
       await runHq713RuntimeSelectorControl(fixture, leased);
+      await runHq713AiClientUsageBoundary(fixture);
       const managed = await runHq713ManagedCitationControl(
         fixture,
         shared,

@@ -148,6 +148,56 @@ export const aiClientCapabilitySnapshotSchema = z
     { message: "expires_at must be later than observed_at" }
   );
 
+export const aiClientUsageAccountSchema = z
+  .object({
+    account_identity_hash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+    profile_scope_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    observed_at: z.iso.datetime({ offset: true })
+  })
+  .strict();
+
+const aiClientUsageDetailsSchema = z
+  .record(z.string().max(80), z.unknown())
+  .refine((value) => JSON.stringify(value).length <= 16_384);
+
+export const aiClientUsageSnapshotsSchema = z
+  .object({
+    account_identity_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    profile_scope_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    observed_at: z.iso.datetime({ offset: true }),
+    readings: z
+      .array(
+        z
+          .object({
+            source: z.enum(["codex_app_server", "claude_agent_sdk"]),
+            bucketId: z.string().min(1).max(128),
+            bucketName: z.string().max(256).nullable(),
+            window: z.string().min(1).max(96),
+            windowDurationMins: z.number().int().nonnegative().nullable(),
+            usedPercent: z.number().finite().min(0).max(100).nullable(),
+            status: z.enum(["ok", "near_limit", "limited", "unknown"]),
+            resetsAt: z.iso.datetime({ offset: true }).nullable(),
+            planType: z.string().max(128).nullable(),
+            details: aiClientUsageDetailsSchema,
+            observedAt: z.iso.datetime({ offset: true })
+          })
+          .strict()
+      )
+      .max(128)
+  })
+  .strict();
+
+export const aiClientUsageCompletionSchema = z
+  .object({
+    outcome: z.enum(["failed", "unsupported"]),
+    profile_scope_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    observed_at: z.iso.datetime({ offset: true })
+  })
+  .strict();
+
 export const localMemoryAgentFlowKeySchema = z.enum([
   "conversations",
   "mcp_memory_answer",

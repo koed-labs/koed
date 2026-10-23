@@ -16,6 +16,7 @@ import {
   type LocalAiClientInstanceConfiguration
 } from "./ai-client-instance-registry.js";
 import type { MemoryApiClient } from "./index.js";
+import { publishCodexUsage } from "./ai-client-usage-publisher.js";
 
 const positiveInteger = (
   value: string | undefined,
@@ -192,6 +193,15 @@ export const publishAiClientCapabilities = async (
         );
       }
       await publishDiscovery(apiClient, instance, discovery, now, ttlMs);
+      if (
+        instance.driverId === "codex" &&
+        discovery.authenticationState === "authenticated"
+      ) {
+        // This owns a separate client and never extends capability inspection latency.
+        void publishCodexUsage(apiClient, instance, environment).catch(
+          () => undefined
+        );
+      }
       return {
         instanceId: instance.instanceId,
         driverId: instance.driverId,

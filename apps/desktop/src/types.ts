@@ -12,7 +12,8 @@ import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-p
 import type { ProjectHqConversationDesktopApi } from "./ipc/project-hq-conversation-protocol.js";
 import type {
   LocalAiClientFlowKey,
-  LocalAiClientResponse
+  LocalAiClientResponse,
+  LocalAiClientUsageChanged
 } from "./ipc/local-ai-client-protocol.js";
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
@@ -185,6 +186,10 @@ export interface DesktopApi {
   localAiClients?: {
     list: () => Promise<LocalAiClientResponse>;
     refresh: () => Promise<LocalAiClientResponse>;
+    usage?: (instanceId?: string) => Promise<LocalAiClientResponse>;
+    onUsageChanged?: (
+      listener: (change: LocalAiClientUsageChanged) => void
+    ) => () => void;
     set: (
       flowKey: LocalAiClientFlowKey,
       assignment: {

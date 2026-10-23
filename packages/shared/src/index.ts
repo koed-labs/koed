@@ -282,6 +282,14 @@ export {
   aiClientModelLabel,
   sanitizeAiClientDiagnostics
 } from "./ai-client-contract.js";
+export type {
+  AiClientUsageCompletion,
+  AiClientUsageCompletionOutcome,
+  AiClientUsageReading,
+  AiClientUsageSnapshot,
+  AiClientUsageSource,
+  AiClientUsageStatus
+} from "./ai-client-usage-contract.js";
 export {
   MANAGED_CONVERSATION_FILE_MAX_READ_BYTES,
   MANAGED_CONVERSATION_FILE_MAX_SEARCH_MATCHES,

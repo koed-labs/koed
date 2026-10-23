@@ -27,6 +27,50 @@ const integration = (title, record) => ({
 
 export const ownedAcceptanceSuites = [
   {
+    id: "U520.1",
+    clause:
+      "Official provider usage remains separate by bucket/window and unknown evidence never looks fine.",
+    proof: [
+      unit(
+        "packages/mcp-server/tests/ai-client-usage-readers.test.ts",
+        "keeps every Codex bucket and window distinct with restrictions"
+      ),
+      unit(
+        "packages/mcp-server/tests/ai-client-usage-readers.test.ts",
+        "stores unknown Codex fields conservatively"
+      ),
+      unit(
+        "packages/mcp-server/tests/ai-client-usage-readers.test.ts",
+        "retains Claude model-specific and overage fields even without utilization"
+      )
+    ]
+  },
+  {
+    id: "U520.2",
+    clause:
+      "A runtime completion traverses real Personal SSE and the typed Desktop preload boundary.",
+    proof: [
+      unit(
+        "apps/api/src/server.test.ts",
+        "delivers a runtime completion through Personal SSE and typed Desktop preload"
+      ),
+      unit(
+        "packages/mcp-server/tests/codex-managed-conversation.test.ts",
+        "reads post-turn account and limits through the still-open turn client"
+      ),
+      unit(
+        "apps/worker/src/optional-codex-usage.test.ts",
+        "preserves provider completion when the configured instance disappears"
+      )
+    ]
+  },
+  {
+    id: "I520.1",
+    clause:
+      "Personal usage is isolated between owners and absent from Team storage and reads.",
+    proof: [integration(main, "N21")]
+  },
+  {
     id: "U21.1",
     clause:
       "The same due_on is relative to each viewer's time zone without moving its stored calendar date.",

@@ -1,9 +1,11 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { auditEventValues } from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
 import {
   aiClientCapabilitySnapshots,
   aiClientInstances,
+  aiClientUsageAccounts,
+  aiClientUsageSnapshots,
   auditEvents,
   capturePolicies,
   localMemoryAgentSettings,
@@ -14,6 +16,7 @@ import type {
   AiClientCapabilitySnapshotDiagnosticRecord,
   AiClientCapabilitySnapshotRecord,
   AiClientInstanceRecord,
+  AiClientUsageSnapshotRecord,
   CapturePolicyRecord,
   CapturePolicyTarget,
   CaptureState,
@@ -156,6 +159,17 @@ const mapAiClientCapabilitySnapshotRecord = (row: {
   createdAt: timestampIso(row.createdAt)
 });
 
+const mapAiClientUsageSnapshotRecord = (
+  row: typeof aiClientUsageSnapshots.$inferSelect
+): AiClientUsageSnapshotRecord => ({
+  ...row,
+  source: row.source as AiClientUsageSnapshotRecord["source"],
+  status: row.status as AiClientUsageSnapshotRecord["status"],
+  resetsAt: row.resetsAt ? timestampIso(row.resetsAt) : null,
+  observedAt: timestampIso(row.observedAt),
+  createdAt: timestampIso(row.createdAt)
+});
+
 const capturePolicyAuditMetadata = (policy: CapturePolicyRecord) => ({
   targetType: policy.targetType,
   projectId: policy.projectId,
@@ -169,6 +183,247 @@ const capturePolicyAuditMetadata = (policy: CapturePolicyRecord) => ({
 });
 
 export const createSettingsRepository = (db: KoedDb) => ({
+  async invalidateAiClientUsageAccounts(actor: ActorContext): Promise<void> {
+    await db
+      .update(aiClientUsageAccounts)
+      .set({
+        accountIdentityHash: null,
+        observedAt: new Date(),
+        updatedAt: sql`now()`
+      })
+      .where(eq(aiClientUsageAccounts.ownerUserId, actor.userId));
+  },
+  async setAiClientUsageAccount(
+    actor: ActorContext,
+    input: {
+      instanceId: string;
+      accountIdentityHash: string | null;
+      profileScopeHash: string;
+      observedAt: string;
+    }
+  ): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const observedAt = new Date(input.observedAt);
+      const [inserted] = await tx
+        .insert(aiClientUsageAccounts)
+        .values({
+          ownerUserId: actor.userId,
+          instanceId: input.instanceId,
+          accountIdentityHash: input.accountIdentityHash,
+          profileScopeHash: input.profileScopeHash,
+          observedAt
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (inserted) return true;
+      const [current] = await tx
+        .select()
+        .from(aiClientUsageAccounts)
+        .where(
+          and(
+            eq(aiClientUsageAccounts.ownerUserId, actor.userId),
+            eq(aiClientUsageAccounts.instanceId, input.instanceId)
+          )
+        )
+        .for("update");
+      if (!current || current.observedAt.getTime() > observedAt.getTime())
+        return false;
+      if (
+        current.accountIdentityHash === input.accountIdentityHash &&
+        current.profileScopeHash === input.profileScopeHash
+      )
+        return true;
+      if (
+        current.observedAt.getTime() === observedAt.getTime() &&
+        input.accountIdentityHash !== null
+      )
+        return false;
+      await tx
+        .update(aiClientUsageAccounts)
+        .set({
+          accountIdentityHash: input.accountIdentityHash,
+          profileScopeHash: input.profileScopeHash,
+          observedAt,
+          updatedAt: sql`now()`
+        })
+        .where(
+          and(
+            eq(aiClientUsageAccounts.ownerUserId, actor.userId),
+            eq(aiClientUsageAccounts.instanceId, input.instanceId)
+          )
+        );
+      return true;
+    });
+  },
+
+  async recordAiClientUsageSnapshots(
+    actor: ActorContext,
+    input: {
+      instanceId: string;
+      accountIdentityHash: string;
+      profileScopeHash: string;
+      observedAt: string;
+      readings: Array<
+        Omit<
+          AiClientUsageSnapshotRecord,
+          | "id"
+          | "ownerUserId"
+          | "instanceId"
+          | "accountIdentityHash"
+          | "createdAt"
+        >
+      >;
+    }
+  ): Promise<AiClientUsageSnapshotRecord[]> {
+    return db.transaction(async (tx) => {
+      const [account] = await tx
+        .select()
+        .from(aiClientUsageAccounts)
+        .where(
+          and(
+            eq(aiClientUsageAccounts.ownerUserId, actor.userId),
+            eq(aiClientUsageAccounts.instanceId, input.instanceId)
+          )
+        )
+        .for("update");
+      if (
+        !account ||
+        account.accountIdentityHash !== input.accountIdentityHash ||
+        account.profileScopeHash !== input.profileScopeHash ||
+        account.observedAt.getTime() > new Date(input.observedAt).getTime()
+      )
+        return [];
+      const rows: AiClientUsageSnapshotRecord[] = [];
+      for (const reading of input.readings) {
+        const [latest] = await tx
+          .select({ observedAt: aiClientUsageSnapshots.observedAt })
+          .from(aiClientUsageSnapshots)
+          .where(
+            and(
+              eq(aiClientUsageSnapshots.ownerUserId, actor.userId),
+              eq(aiClientUsageSnapshots.instanceId, input.instanceId),
+              eq(
+                aiClientUsageSnapshots.accountIdentityHash,
+                input.accountIdentityHash
+              ),
+              eq(aiClientUsageSnapshots.bucketId, reading.bucketId),
+              eq(aiClientUsageSnapshots.window, reading.window)
+            )
+          )
+          .orderBy(desc(aiClientUsageSnapshots.observedAt))
+          .limit(1);
+        if (
+          latest &&
+          latest.observedAt.getTime() >= new Date(reading.observedAt).getTime()
+        )
+          continue;
+        const [row] = await tx
+          .insert(aiClientUsageSnapshots)
+          .values({
+            ownerUserId: actor.userId,
+            instanceId: input.instanceId,
+            accountIdentityHash: input.accountIdentityHash,
+            source: reading.source,
+            bucketId: reading.bucketId,
+            bucketName: reading.bucketName,
+            window: reading.window,
+            windowDurationMins: reading.windowDurationMins,
+            usedPercent: reading.usedPercent,
+            status: reading.status,
+            resetsAt: reading.resetsAt ? new Date(reading.resetsAt) : null,
+            planType: reading.planType,
+            details: reading.details,
+            observedAt: new Date(reading.observedAt)
+          })
+          .returning();
+        if (row) rows.push(mapAiClientUsageSnapshotRecord(row));
+      }
+      await tx
+        .delete(aiClientUsageSnapshots)
+        .where(
+          and(
+            eq(aiClientUsageSnapshots.ownerUserId, actor.userId),
+            sql`${aiClientUsageSnapshots.observedAt} < now() - interval '30 days'`
+          )
+        );
+      return rows;
+    });
+  },
+
+  async listCurrentAiClientUsageSnapshots(
+    actor: ActorContext,
+    profileScopeHash: string
+  ): Promise<AiClientUsageSnapshotRecord[]> {
+    const rows = await db
+      .select({ snapshot: aiClientUsageSnapshots })
+      .from(aiClientUsageSnapshots)
+      .innerJoin(
+        aiClientUsageAccounts,
+        and(
+          eq(
+            aiClientUsageAccounts.ownerUserId,
+            aiClientUsageSnapshots.ownerUserId
+          ),
+          eq(
+            aiClientUsageAccounts.instanceId,
+            aiClientUsageSnapshots.instanceId
+          ),
+          eq(
+            aiClientUsageAccounts.accountIdentityHash,
+            aiClientUsageSnapshots.accountIdentityHash
+          ),
+          eq(aiClientUsageAccounts.profileScopeHash, profileScopeHash),
+          gte(
+            aiClientUsageSnapshots.observedAt,
+            aiClientUsageAccounts.observedAt
+          )
+        )
+      )
+      .where(
+        and(
+          eq(aiClientUsageSnapshots.ownerUserId, actor.userId),
+          sql`${aiClientUsageSnapshots.observedAt} >= now() - interval '30 days'`
+        )
+      )
+      .orderBy(desc(aiClientUsageSnapshots.observedAt));
+    const seen = new Set<string>();
+    return rows.flatMap(({ snapshot }) => {
+      const key = JSON.stringify([
+        snapshot.instanceId,
+        snapshot.bucketId,
+        snapshot.window
+      ]);
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [mapAiClientUsageSnapshotRecord(snapshot)];
+    });
+  },
+
+  async listAiClientUsageAccountBindings(actor: ActorContext): Promise<
+    Array<{
+      instanceId: string;
+      accountIdentityHash: string | null;
+      profileScopeHash: string;
+      observedAt: string;
+    }>
+  > {
+    return db
+      .select({
+        instanceId: aiClientUsageAccounts.instanceId,
+        accountIdentityHash: aiClientUsageAccounts.accountIdentityHash,
+        profileScopeHash: aiClientUsageAccounts.profileScopeHash,
+        observedAt: aiClientUsageAccounts.observedAt
+      })
+      .from(aiClientUsageAccounts)
+      .where(eq(aiClientUsageAccounts.ownerUserId, actor.userId))
+      .orderBy(asc(aiClientUsageAccounts.instanceId))
+      .then((rows) =>
+        rows.map((row) => ({
+          ...row,
+          observedAt: row.observedAt.toISOString()
+        }))
+      );
+  },
   async listAiClientInstances(
     actor: ActorContext
   ): Promise<AiClientInstanceRecord[]> {

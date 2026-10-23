@@ -49,6 +49,8 @@ export const registerApiTokenRoutes = (
       actorUserId: user.id,
       actorType: "user"
     });
+    if (deleted && context.config.runtimeMode === "local-personal")
+      await repo.invalidateAiClientUsageAccounts({ userId: user.id });
 
     return reply.status(deleted ? 200 : 404).send({ ok: deleted });
   });

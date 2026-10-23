@@ -2813,6 +2813,48 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/memory/ai-client-instances/usage",
+    "session_or_api_token",
+    "local_synthesis",
+    "Read Personal AI Client usage snapshots."
+  ),
+  route(
+    "GET",
+    "/v1/memory/ai-client-instances/usage/authority",
+    "session_or_api_token",
+    "local_synthesis",
+    "Read Personal AI Client usage authority generation."
+  ),
+  route(
+    "GET",
+    "/v1/memory/ai-client-instances/usage/events",
+    "session_or_api_token",
+    "local_synthesis",
+    "Subscribe to Personal AI Client usage completions."
+  ),
+  route(
+    "PUT",
+    "/v1/memory/ai-client-instances/{instanceId}/usage/account",
+    "session_or_api_token",
+    "local_synthesis",
+    "Bind a local AI Client usage account."
+  ),
+  route(
+    "POST",
+    "/v1/memory/ai-client-instances/{instanceId}/usage/snapshots",
+    "session_or_api_token",
+    "local_synthesis",
+    "Record Personal AI Client usage snapshots."
+  ),
+  route(
+    "POST",
+    "/v1/memory/ai-client-instances/{instanceId}/usage/completions",
+    "session_or_api_token",
+    "local_synthesis",
+    "Publish a local AI Client usage probe completion."
+  ),
+  route(
+    "GET",
     "/v1/memory/local-agent-settings",
     "session_or_api_token",
     "local_synthesis",

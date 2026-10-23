@@ -9,12 +9,14 @@ import {
   CodexAppServerClient,
   CodexAppServerCapacityError,
   codexAppServerRawEventByteLength,
+  readCodexUsageEvidence,
   resolveCodexHome,
   type CodexAppServerExit,
   type CodexAppServerRawEvent,
   type CodexAppServerRunConfig,
   type CodexAppServerRunResult,
-  type CodexAppServerThreadInfo
+  type CodexAppServerThreadInfo,
+  type CodexUsageProbeResult
 } from "./codex-app-server-runner.js";
 import {
   assertCodexConversationProtocolCompatibility,
@@ -829,6 +831,14 @@ export class CodexManagedConversationSession {
       () => undefined
     );
     return operation;
+  }
+
+  /** Read optional usage evidence through this turn's still-open app-server. */
+  async readUsageEvidence(timeoutMs = 5_000): Promise<CodexUsageProbeResult> {
+    const client = this.client;
+    return client
+      ? readCodexUsageEvidence(client, timeoutMs)
+      : { outcome: "failed" };
   }
 
   async listCommands(): Promise<ManagedConversationCommand[]> {

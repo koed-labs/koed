@@ -1805,6 +1805,25 @@ export interface AiClientCapabilitySnapshotDiagnosticRecord extends AiClientCapa
   stale: boolean;
 }
 
+export interface AiClientUsageSnapshotRecord {
+  id: string;
+  ownerUserId: string;
+  instanceId: string;
+  accountIdentityHash: string;
+  source: "codex_app_server" | "claude_agent_sdk";
+  bucketId: string;
+  bucketName: string | null;
+  window: string;
+  windowDurationMins: number | null;
+  usedPercent: number | null;
+  status: "ok" | "near_limit" | "limited" | "unknown";
+  resetsAt: string | null;
+  planType: string | null;
+  details: Record<string, unknown>;
+  observedAt: string;
+  createdAt: string;
+}
+
 export interface CuratedMemoryTopicRecord {
   id: string;
   ownerUserId: string;
@@ -2680,6 +2699,47 @@ export interface MemorySourceRepository
   listCurrentAiClientCapabilitySnapshots(
     actor: ActorContext
   ): Promise<AiClientCapabilitySnapshotRecord[]>;
+  recordAiClientUsageSnapshots(
+    actor: ActorContext,
+    input: {
+      instanceId: string;
+      accountIdentityHash: string;
+      profileScopeHash: string;
+      observedAt: string;
+      readings: Array<
+        Omit<
+          AiClientUsageSnapshotRecord,
+          | "id"
+          | "ownerUserId"
+          | "instanceId"
+          | "accountIdentityHash"
+          | "createdAt"
+        >
+      >;
+    }
+  ): Promise<AiClientUsageSnapshotRecord[]>;
+  setAiClientUsageAccount(
+    actor: ActorContext,
+    input: {
+      instanceId: string;
+      accountIdentityHash: string | null;
+      profileScopeHash: string;
+      observedAt: string;
+    }
+  ): Promise<boolean>;
+  invalidateAiClientUsageAccounts(actor: ActorContext): Promise<void>;
+  listCurrentAiClientUsageSnapshots(
+    actor: ActorContext,
+    profileScopeHash: string
+  ): Promise<AiClientUsageSnapshotRecord[]>;
+  listAiClientUsageAccountBindings(actor: ActorContext): Promise<
+    Array<{
+      instanceId: string;
+      accountIdentityHash: string | null;
+      profileScopeHash: string;
+      observedAt: string;
+    }>
+  >;
   upsertLocalMemoryAgentSetting(
     actor: ActorContext,
     input: {

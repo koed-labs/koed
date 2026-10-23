@@ -103,6 +103,11 @@ const rules: ReadonlyArray<{
     path: /^\/v1\/memory\/ai-client-instances\/[^/]+\/capability-snapshots$/,
     scope: "koed:local-execution"
   },
+  {
+    methods: ["PUT", "POST"],
+    path: /^\/v1\/memory\/ai-client-instances\/[^/]+\/usage\/(account|snapshots|completions)$/,
+    scope: "koed:local-execution"
+  },
   { methods: ["GET"], path: /^\/v1\/team-context$/, scope: "koed:team:read" },
   {
     methods: ["GET"],

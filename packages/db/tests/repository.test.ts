@@ -26089,6 +26089,200 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({ rows: [{ count: 1 }] });
   });
 
+  it("keeps usage per account, bucket and window and rejects late old-account readings", async () => {
+    const alice = await repo.createUser({
+      email: `usage-alice-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `usage-bob-${randomUUID()}@example.com`
+    });
+    const actor = { userId: alice.id };
+    await repo.upsertAiClientInstance(actor, {
+      instanceId: "codex.work",
+      driverId: "codex",
+      displayName: "Codex"
+    });
+    const first = "a".repeat(64);
+    const second = "b".repeat(64);
+    const profileScopeHash = "c".repeat(64);
+    const base = Date.now() - 60_000;
+    const at = (offset: number) => new Date(base + offset).toISOString();
+    expect(
+      await repo.setAiClientUsageAccount(actor, {
+        instanceId: "codex.work",
+        accountIdentityHash: first,
+        profileScopeHash,
+        observedAt: at(0)
+      })
+    ).toBe(true);
+    const reading = (
+      bucketId: string,
+      window: string,
+      usedPercent: number,
+      offset: number
+    ) => ({
+      source: "codex_app_server" as const,
+      bucketId,
+      bucketName: bucketId,
+      window,
+      windowDurationMins: window === "primary" ? 300 : 10_080,
+      usedPercent,
+      status: "ok" as const,
+      resetsAt: null,
+      planType: "plus",
+      details: { ordinaryUsageAllowed: true },
+      observedAt: at(offset)
+    });
+    await repo.recordAiClientUsageSnapshots(actor, {
+      instanceId: "codex.work",
+      accountIdentityHash: first,
+      profileScopeHash,
+      observedAt: at(0),
+      readings: [
+        reading("codex", "primary", 12.5, 100),
+        reading("codex", "secondary", 96, 100),
+        reading("model-x", "primary", 3, 100)
+      ]
+    });
+    expect(
+      await repo.recordAiClientUsageSnapshots(actor, {
+        instanceId: "codex.work",
+        accountIdentityHash: first,
+        profileScopeHash,
+        observedAt: at(0),
+        readings: [reading("codex", "primary", 99, 50)]
+      })
+    ).toEqual([]);
+    expect(
+      (
+        await repo.listCurrentAiClientUsageSnapshots(actor, profileScopeHash)
+      ).map((row) => [row.bucketId, row.window, row.usedPercent])
+    ).toEqual(
+      expect.arrayContaining([
+        ["codex", "primary", 12.5],
+        ["codex", "secondary", 96],
+        ["model-x", "primary", 3]
+      ])
+    );
+    expect(
+      await repo.setAiClientUsageAccount(actor, {
+        instanceId: "codex.work",
+        accountIdentityHash: first,
+        profileScopeHash,
+        observedAt: at(200)
+      })
+    ).toBe(true);
+    await repo.recordAiClientUsageSnapshots(actor, {
+      instanceId: "codex.work",
+      accountIdentityHash: first,
+      profileScopeHash,
+      observedAt: at(200),
+      readings: [reading("codex", "primary", 15, 200)]
+    });
+    expect(
+      (
+        await repo.listCurrentAiClientUsageSnapshots(actor, profileScopeHash)
+      ).map((row) => [row.bucketId, row.window, row.usedPercent])
+    ).toEqual(
+      expect.arrayContaining([
+        ["codex", "primary", 15],
+        ["codex", "secondary", 96],
+        ["model-x", "primary", 3]
+      ])
+    );
+    expect(
+      await repo.listCurrentAiClientUsageSnapshots(
+        { userId: bob.id },
+        profileScopeHash
+      )
+    ).toEqual([]);
+    await repo.setAiClientUsageAccount(actor, {
+      instanceId: "codex.work",
+      accountIdentityHash: second,
+      profileScopeHash,
+      observedAt: at(500)
+    });
+    expect(
+      await repo.listCurrentAiClientUsageSnapshots(actor, profileScopeHash)
+    ).toEqual([]);
+    expect(
+      await repo.setAiClientUsageAccount(actor, {
+        instanceId: "codex.work",
+        accountIdentityHash: first,
+        profileScopeHash,
+        observedAt: at(0)
+      })
+    ).toBe(false);
+    expect(
+      await repo.recordAiClientUsageSnapshots(actor, {
+        instanceId: "codex.work",
+        accountIdentityHash: first,
+        profileScopeHash,
+        observedAt: at(0),
+        readings: [reading("codex", "primary", 1, 1000)]
+      })
+    ).toEqual([]);
+    await repo.recordAiClientUsageSnapshots(actor, {
+      instanceId: "codex.work",
+      accountIdentityHash: second,
+      profileScopeHash,
+      observedAt: at(500),
+      readings: [reading("codex", "primary", 20, 600)]
+    });
+    expect(
+      (
+        await repo.listCurrentAiClientUsageSnapshots(actor, profileScopeHash)
+      ).map((row) => row.usedPercent)
+    ).toEqual([20]);
+    await repo.setAiClientUsageAccount(actor, {
+      instanceId: "codex.work",
+      accountIdentityHash: first,
+      profileScopeHash,
+      observedAt: at(700)
+    });
+    expect(
+      await repo.listCurrentAiClientUsageSnapshots(actor, profileScopeHash)
+    ).toEqual([]);
+    await repo.recordAiClientUsageSnapshots(actor, {
+      instanceId: "codex.work",
+      accountIdentityHash: first,
+      profileScopeHash,
+      observedAt: at(700),
+      readings: [reading("codex", "primary", 25, 700)]
+    });
+    const nextProfileScopeHash = "d".repeat(64);
+    expect(
+      await repo.listCurrentAiClientUsageSnapshots(actor, nextProfileScopeHash)
+    ).toEqual([]);
+    expect(
+      await repo.setAiClientUsageAccount(actor, {
+        instanceId: "codex.work",
+        accountIdentityHash: first,
+        profileScopeHash: nextProfileScopeHash,
+        observedAt: at(900)
+      })
+    ).toBe(true);
+    expect(
+      await repo.listCurrentAiClientUsageSnapshots(actor, profileScopeHash)
+    ).toEqual([]);
+    expect(
+      await repo.listCurrentAiClientUsageSnapshots(actor, nextProfileScopeHash)
+    ).toEqual([]);
+    expect(
+      await repo.recordAiClientUsageSnapshots(actor, {
+        instanceId: "codex.work",
+        accountIdentityHash: first,
+        profileScopeHash,
+        observedAt: at(700),
+        readings: [reading("codex", "primary", 30, 950)]
+      })
+    ).toEqual([]);
+    await repo.invalidateAiClientUsageAccounts(actor);
+    expect(
+      await repo.listCurrentAiClientUsageSnapshots(actor, nextProfileScopeHash)
+    ).toEqual([]);
+  });
+
   it("resolves capture policy precedence, pause inheritance, and deletion", async () => {
     const alice = await repo.createUser({
       email: `alice-capture-policy-${randomUUID()}@example.com`

@@ -314,6 +314,16 @@ reader.on("line", (line) => {
     send({ id: message.id, result: { thread: { id: forkedThreadId, sessionId: "session-tree-fork-1", forkedFromId: message.params.threadId, path: childTranscriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1" } } });
     return;
   }
+  if (message.method === "account/read") {
+    lifecycle("account/read");
+    send({ id: message.id, result: { account: { type: "chatgpt", email: "fixture@example.com" } } });
+    return;
+  }
+  if (message.method === "account/rateLimits/read") {
+    lifecycle("account/rateLimits/read");
+    send({ id: message.id, result: { ordinaryUsageAllowed: true, rateLimits: { limitId: "codex", primary: { usedPercent: 12 } } } });
+    return;
+  }
   if (message.method === "turn/start") {
     if (activeTurn) process.exit(9);
     const index = turnIndex++;
@@ -1421,6 +1431,43 @@ describe("Codex managed conversation coordinator", () => {
       ).toHaveLength(2);
     } finally {
       session.close();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reads post-turn account and limits through the still-open turn client", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-usage-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    const lifecyclePath = path.join(directory, "lifecycle.log");
+    const launchCounterPath = path.join(directory, "launches.txt");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const session = new CodexManagedConversationSession(
+      configFor(
+        new FakeMemoryClient(),
+        writeManagedFakeAppServer(directory, transcriptPath, {
+          lifecyclePath,
+          launchCounterPath
+        }),
+        directory
+      )
+    );
+    try {
+      await session.runTurn("Check usage", 2_000);
+      const probe = await session.readUsageEvidence();
+      expect(probe).toMatchObject({
+        outcome: "checked",
+        before: { account: { email: "fixture@example.com" } },
+        limits: { rateLimits: { primary: { usedPercent: 12 } } },
+        after: { account: { email: "fixture@example.com" } }
+      });
+      expect(fs.readFileSync(launchCounterPath, "utf8")).toBe("1");
+      expect(
+        fs.readFileSync(lifecyclePath, "utf8").trim().split("\n").slice(-3)
+      ).toEqual(["account/read", "account/rateLimits/read", "account/read"]);
+    } finally {
+      await session.closeAndWait();
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });

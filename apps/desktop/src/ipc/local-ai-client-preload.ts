@@ -2,8 +2,11 @@ import {
   localAiClientCommandSchema,
   parseLocalAiClientResponse,
   localAiClientCommandChannel,
+  localAiClientUsageChangedChannel,
+  localAiClientUsageChangedSchema,
   type LocalAiClientCommand,
-  type LocalAiClientResponse
+  type LocalAiClientResponse,
+  type LocalAiClientUsageChanged
 } from "./local-ai-client-protocol.js";
 
 type LocalAiClientInvoke = (
@@ -22,7 +25,17 @@ const correlated = <Operation extends LocalAiClientCommand["operation"]>(
 };
 
 export const createLocalAiClientPreloadApi = (
-  invoke: (channel: string, value: unknown) => Promise<unknown>
+  invoke: (channel: string, value: unknown) => Promise<unknown>,
+  events?: {
+    on(
+      channel: string,
+      listener: (_event: unknown, value: unknown) => void
+    ): void;
+    removeListener(
+      channel: string,
+      listener: (_event: unknown, value: unknown) => void
+    ): void;
+  }
 ) => {
   const invokeCommand: LocalAiClientInvoke = async (command) =>
     correlated(
@@ -34,6 +47,24 @@ export const createLocalAiClientPreloadApi = (
       invokeCommand({ operation: "list" }),
     refresh: async (): Promise<LocalAiClientResponse> =>
       invokeCommand({ operation: "refresh" }),
+    usage: async (instanceId?: string): Promise<LocalAiClientResponse> =>
+      invokeCommand(
+        instanceId
+          ? { operation: "usage", action: "refresh", instanceId }
+          : { operation: "usage", action: "read" }
+      ),
+    onUsageChanged: (
+      listener: (change: LocalAiClientUsageChanged) => void
+    ): (() => void) => {
+      if (!events) return () => undefined;
+      const wrapped = (_event: unknown, value: unknown) => {
+        const parsed = localAiClientUsageChangedSchema.safeParse(value);
+        if (parsed.success) listener(parsed.data);
+      };
+      events.on(localAiClientUsageChangedChannel, wrapped);
+      return () =>
+        events.removeListener(localAiClientUsageChangedChannel, wrapped);
+    },
     set: async (
       flowKey: Extract<LocalAiClientCommand, { operation: "set" }>["flowKey"],
       assignment: Extract<

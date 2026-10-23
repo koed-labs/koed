@@ -183,6 +183,8 @@ export const registerAuthRoutes = (
         hashSecret(sessionSecret),
         new Date(Date.now() + sessionTtlMs)
       );
+      if (config.runtimeMode === "local-personal")
+        await repo.invalidateAiClientUsageAccounts({ userId: user.id });
       setSessionCookie(reply, sessionSecret);
       reply.header("cache-control", "no-store");
       return { user: publicUser(user) };
@@ -301,6 +303,8 @@ export const registerAuthRoutes = (
         hashSecret(sessionSecret),
         new Date(Date.now() + sessionTtlMs)
       );
+      if (config.runtimeMode === "local-personal")
+        await repo.invalidateAiClientUsageAccounts({ userId: result.user.id });
       setSessionCookie(reply, sessionSecret);
       reply.header("cache-control", "no-store");
       reply.clearCookie(workosStateCookieName, {
@@ -317,10 +321,15 @@ export const registerAuthRoutes = (
 
   app.post("/auth/logout", async (request, reply) => {
     const repo = requireRepository();
+    const user =
+      config.runtimeMode === "local-personal"
+        ? await authenticateSession(request).catch(() => null)
+        : null;
     const sessionSecret = request.cookies[sessionCookieName];
     if (sessionSecret) {
       await repo.revokeSession(hashSecret(sessionSecret));
     }
+    if (user) await repo.invalidateAiClientUsageAccounts({ userId: user.id });
 
     reply.clearCookie(sessionCookieName, { path: "/" });
     reply.header("cache-control", "no-store");

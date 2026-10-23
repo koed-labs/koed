@@ -155,7 +155,8 @@ import {
   localAiClientCommandSchema,
   localAiClientResponseSchema,
   type LocalAiClientCommand,
-  type LocalAiClientResponse
+  type LocalAiClientResponse,
+  type LocalAiClientUsageChanged
 } from "../ipc/local-ai-client-protocol.js";
 import {
   parseManagedConversationResult,
@@ -195,6 +196,8 @@ import {
 } from "../ipc/protected-json-fd.js";
 import { readLocalAiClientReadModel } from "./local-ai-client-read-model.js";
 import { refreshLocalAiRuntime } from "./local-ai-client-refresh.js";
+import { refreshLocalAiClientUsage } from "./local-ai-client-usage-refresh.js";
+import { subscribeLocalAiClientUsage } from "./local-ai-client-usage-stream.js";
 import {
   PERSONAL_DEVICE_PAIRING_PROGRESS_VERSION,
   type PersonalDevicePairingProgress
@@ -361,6 +364,10 @@ export interface KoedServerManager {
   discoverProject: (cwd: string) => Promise<unknown>;
   subscribePersonalMemory: (
     listener: (change: PersonalDesktopChange) => void,
+    signal: AbortSignal
+  ) => Promise<void>;
+  subscribeAiClientUsage: (
+    listener: (change: LocalAiClientUsageChanged) => void,
     signal: AbortSignal
   ) => Promise<void>;
   resume: () => Promise<unknown>;
@@ -5405,6 +5412,102 @@ export const createKoedServerManager = ({
 
   const localAiClients: LocalAiClientDesktopHandler = async (value) => {
     const request = localAiClientCommandSchema.parse(value);
+    if (request.operation === "usage") {
+      const profileScopeHash = createHash("sha256")
+        .update(resolve(resolveKoedHome(environment)))
+        .digest("hex");
+      const access = await personalMemoryAccess();
+      const credential = readDesktopLocalCredentialAuthorization(
+        resolveKoedHome(environment)
+      );
+      if (!credential) throw new PersonalMemoryBoundaryError("not_ready", true);
+      const authorityKey = `${resolveKoedHome(environment)}\u0000${access.apiOrigin}\u0000${access.apiToken}\u0000${credential.ownerUserId}\u0000${credential.credentialKeyId}`;
+      let usageOutcome: "checked" | "failed" | "unsupported" | undefined;
+      let usageObservedAt: string | undefined;
+      if (request.action === "refresh") {
+        const model = await localAiClientReadModel();
+        const instance = model.instances.find(
+          (item) => item.instanceId === request.instanceId
+        );
+        if (!instance || !instance.enabled || instance.driverId !== "codex") {
+          usageOutcome = "unsupported";
+        } else {
+          try {
+            const refresh = await refreshLocalAiClientUsage({
+              fetch: personalMemoryFetch,
+              koedHome: resolveKoedHome(environment),
+              instanceId: request.instanceId
+            });
+            usageOutcome = refresh.outcome;
+            usageObservedAt = refresh.observedAt;
+          } catch {
+            usageOutcome = "failed";
+          }
+        }
+      }
+      const payload = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL("/v1/memory/ai-client-instances/usage", apiOrigin),
+          init: {
+            method: "GET",
+            headers: { "x-koed-ai-client-profile-scope": profileScopeHash }
+          }
+        }),
+        512 * 1024
+      );
+      const currentAccess = await personalMemoryAccess();
+      const currentCredential = readDesktopLocalCredentialAuthorization(
+        resolveKoedHome(environment)
+      );
+      const currentKey = currentCredential
+        ? `${resolveKoedHome(environment)}\u0000${currentAccess.apiOrigin}\u0000${currentAccess.apiToken}\u0000${currentCredential.ownerUserId}\u0000${currentCredential.credentialKeyId}`
+        : null;
+      if (authorityKey !== currentKey)
+        throw new PersonalMemoryBoundaryError("not_ready", true);
+      const snapshots = Array.isArray(payload.snapshots)
+        ? payload.snapshots
+        : [];
+      const readModel = await localAiClientReadModel();
+      const latest = await authenticatedPersonalMemoryRequest(
+        ({ apiOrigin }) => ({
+          url: new URL("/v1/memory/ai-client-instances/usage", apiOrigin),
+          init: {
+            method: "GET",
+            headers: { "x-koed-ai-client-profile-scope": profileScopeHash }
+          }
+        }),
+        512 * 1024
+      );
+      if (payload.authorityGeneration !== latest.authorityGeneration) {
+        throw new PersonalMemoryBoundaryError("not_ready", true);
+      }
+      if (authorityKey !== (await localAiClientUsageAuthority())) {
+        throw new PersonalMemoryBoundaryError("not_ready", true);
+      }
+      return localAiClientResponseSchema.parse({
+        operation: "usage",
+        readModel,
+        usage: snapshots.map((raw) => {
+          const row = objectValue(raw) ?? {};
+          return {
+            instanceId: row.instanceId,
+            source: row.source,
+            bucketId: row.bucketId,
+            bucketName: row.bucketName,
+            window: row.window,
+            windowDurationMins: row.windowDurationMins,
+            usedPercent: row.usedPercent,
+            status: row.status,
+            resetsAt: row.resetsAt,
+            planType: row.planType,
+            details: row.details,
+            observedAt: row.observedAt
+          };
+        }),
+        ...(usageOutcome ? { usageOutcome } : {}),
+        ...(usageObservedAt ? { usageObservedAt } : {})
+      });
+    }
     let refreshed = false;
     let refreshError: string | null = null;
     if (request.operation === "refresh") {
@@ -5720,6 +5823,74 @@ export const createKoedServerManager = ({
       await waitForAbortOrDelay(signal, 1_500);
     }
   };
+
+  const localAiClientUsageAuthority = async () => {
+    const access = await personalMemoryAccess();
+    const credential = readDesktopLocalCredentialAuthorization(
+      resolveKoedHome(environment)
+    );
+    if (!credential) throw new PersonalMemoryBoundaryError("not_ready", true);
+    return `${resolveKoedHome(environment)}\u0000${access.apiOrigin}\u0000${access.apiToken}\u0000${credential.ownerUserId}\u0000${credential.credentialKeyId}`;
+  };
+  const subscribeAiClientUsage = async (
+    listener: (change: LocalAiClientUsageChanged) => void,
+    signal: AbortSignal
+  ): Promise<void> =>
+    subscribeLocalAiClientUsage({
+      fetch: personalMemoryFetch,
+      signal,
+      onChange: listener,
+      localAuthority: localAiClientUsageAuthority,
+      authority: async () => {
+        const profileScopeHash = createHash("sha256")
+          .update(resolve(resolveKoedHome(environment)))
+          .digest("hex");
+        const access = await personalMemoryAccess();
+        const credential = readDesktopLocalCredentialAuthorization(
+          resolveKoedHome(environment)
+        );
+        if (!credential)
+          throw new PersonalMemoryBoundaryError("not_ready", true);
+        const localKey = `${resolveKoedHome(environment)}\u0000${access.apiOrigin}\u0000${access.apiToken}\u0000${credential.ownerUserId}\u0000${credential.credentialKeyId}`;
+        const usageAuthority = await authenticatedPersonalMemoryRequest(
+          ({ apiOrigin }) => ({
+            url: new URL(
+              "/v1/memory/ai-client-instances/usage/authority",
+              apiOrigin
+            ),
+            init: {
+              method: "GET",
+              headers: { "x-koed-ai-client-profile-scope": profileScopeHash }
+            }
+          }),
+          16 * 1024
+        );
+        if (
+          typeof usageAuthority.authorityGeneration !== "string" ||
+          !/^[0-9a-f]{64}$/.test(usageAuthority.authorityGeneration)
+        ) {
+          throw new PersonalMemoryBoundaryError("invalid_response", false);
+        }
+        if (
+          !Array.isArray(usageAuthority.allowedInstanceIds) ||
+          !usageAuthority.allowedInstanceIds.every(
+            (id) => typeof id === "string"
+          )
+        ) {
+          throw new PersonalMemoryBoundaryError("invalid_response", false);
+        }
+        return {
+          key: `${localKey}\u0000${usageAuthority.authorityGeneration}`,
+          localKey,
+          apiOrigin: access.apiOrigin,
+          authorization: `Bearer ${access.apiToken}`,
+          profileScopeHash,
+          allowedInstances: new Set(
+            usageAuthority.allowedInstanceIds as string[]
+          )
+        };
+      }
+    });
 
   const requestDaemonStart = async () => {
     const current = await runJson(
@@ -6412,6 +6583,7 @@ export const createKoedServerManager = ({
   return {
     personalMemory,
     localAiClients,
+    subscribeAiClientUsage,
     hardwareAcceleration: {
       get: hardwareAccelerationState,
       set: setHardwareAcceleration

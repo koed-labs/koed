@@ -8,6 +8,7 @@ import {
 } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +20,10 @@ import type {
 } from "@koed/core";
 import releaseManifest from "@koed/koed/package.json" with { type: "json" };
 import { ConversationPresentationVersionConflictError } from "@koed/db";
+import { MemoryApiClient } from "@koed/mcp-server";
+import { createLocalAiClientPreloadApi } from "../../desktop/src/ipc/local-ai-client-preload.js";
+import { localAiClientUsageChangedChannel } from "../../desktop/src/ipc/local-ai-client-protocol.js";
+import { subscribeLocalAiClientUsage } from "../../desktop/src/koed-server/local-ai-client-usage-stream.js";
 import pdsFixture from "../../../packages/shared/test-fixtures/personal-device-sync-v1.json" with { type: "json" };
 import type {
   ActorContext,
@@ -26,6 +31,7 @@ import type {
   AiClientCapabilitySnapshotDiagnosticRecord,
   AiClientCapabilitySnapshotRecord,
   AiClientInstanceRecord,
+  AiClientUsageSnapshotRecord,
   AuditEventRecord,
   ApiTokenRecord,
   AcceptedTeamInviteRecord,
@@ -807,6 +813,15 @@ const createFakeRepository = () => {
     string,
     AiClientCapabilitySnapshotRecord
   >();
+  const aiClientUsageAccounts = new Map<
+    string,
+    {
+      accountIdentityHash: string | null;
+      profileScopeHash: string;
+      observedAt: string;
+    }
+  >();
+  const aiClientUsageSnapshots: AiClientUsageSnapshotRecord[] = [];
   const pushTeamAudit = (input: {
     actorUserId: string;
     action: string;
@@ -4286,6 +4301,110 @@ const createFakeRepository = () => {
       return [...aiClientInstances.values()]
         .filter((instance) => instance.ownerUserId === actor.userId)
         .sort((left, right) => left.instanceId.localeCompare(right.instanceId));
+    },
+    async listAiClientUsageAccountBindings(actor) {
+      return [...aiClientUsageAccounts.entries()]
+        .filter(([key]) => key.startsWith(`${actor.userId}:`))
+        .map(([key, value]) => ({
+          instanceId: key.slice(actor.userId.length + 1),
+          accountIdentityHash: value.accountIdentityHash,
+          profileScopeHash: value.profileScopeHash,
+          observedAt: value.observedAt
+        }))
+        .sort((a, b) => a.instanceId.localeCompare(b.instanceId));
+    },
+    async invalidateAiClientUsageAccounts(actor) {
+      const now = new Date().toISOString();
+      for (const [key, value] of aiClientUsageAccounts) {
+        if (key.startsWith(`${actor.userId}:`))
+          aiClientUsageAccounts.set(key, {
+            accountIdentityHash: null,
+            profileScopeHash: value.profileScopeHash,
+            observedAt: now
+          });
+      }
+    },
+    async setAiClientUsageAccount(actor, input) {
+      const key = `${actor.userId}:${input.instanceId}`;
+      const current = aiClientUsageAccounts.get(key);
+      if (current && current.observedAt > input.observedAt) return false;
+      if (
+        current &&
+        current.accountIdentityHash === input.accountIdentityHash &&
+        current.profileScopeHash === input.profileScopeHash
+      )
+        return true;
+      if (
+        current &&
+        current.observedAt === input.observedAt &&
+        current.accountIdentityHash !== input.accountIdentityHash &&
+        input.accountIdentityHash !== null
+      )
+        return false;
+      aiClientUsageAccounts.set(key, {
+        accountIdentityHash: input.accountIdentityHash,
+        profileScopeHash: input.profileScopeHash,
+        observedAt: input.observedAt
+      });
+      return true;
+    },
+    async recordAiClientUsageSnapshots(actor, input) {
+      const account = aiClientUsageAccounts.get(
+        `${actor.userId}:${input.instanceId}`
+      );
+      if (
+        !account ||
+        account.accountIdentityHash !== input.accountIdentityHash ||
+        account.profileScopeHash !== input.profileScopeHash ||
+        account.observedAt > input.observedAt
+      )
+        return [];
+      const rows: AiClientUsageSnapshotRecord[] = [];
+      for (const reading of input.readings) {
+        const latest = aiClientUsageSnapshots
+          .filter(
+            (row) =>
+              row.ownerUserId === actor.userId &&
+              row.instanceId === input.instanceId &&
+              row.accountIdentityHash === input.accountIdentityHash &&
+              row.bucketId === reading.bucketId &&
+              row.window === reading.window
+          )
+          .sort((a, b) => b.observedAt.localeCompare(a.observedAt))[0];
+        if (latest && latest.observedAt >= reading.observedAt) continue;
+        const row: AiClientUsageSnapshotRecord = {
+          ...reading,
+          id: randomUUID(),
+          ownerUserId: actor.userId,
+          instanceId: input.instanceId,
+          accountIdentityHash: input.accountIdentityHash,
+          createdAt: new Date().toISOString()
+        };
+        aiClientUsageSnapshots.push(row);
+        rows.push(row);
+      }
+      return rows;
+    },
+    async listCurrentAiClientUsageSnapshots(actor, profileScopeHash) {
+      const seen = new Set<string>();
+      return aiClientUsageSnapshots
+        .filter(
+          (row) =>
+            row.ownerUserId === actor.userId &&
+            aiClientUsageAccounts.get(`${actor.userId}:${row.instanceId}`)
+              ?.accountIdentityHash === row.accountIdentityHash &&
+            aiClientUsageAccounts.get(`${actor.userId}:${row.instanceId}`)
+              ?.profileScopeHash === profileScopeHash &&
+            (aiClientUsageAccounts.get(`${actor.userId}:${row.instanceId}`)
+              ?.observedAt ?? "") <= row.observedAt
+        )
+        .sort((a, b) => b.observedAt.localeCompare(a.observedAt))
+        .flatMap((row) => {
+          const key = `${row.instanceId}:${row.bucketId}:${row.window}`;
+          if (seen.has(key)) return [];
+          seen.add(key);
+          return [row];
+        });
     },
     async upsertAiClientInstance(actor, input) {
       const key = `${actor.userId}:${input.instanceId}`;
@@ -18474,4 +18593,544 @@ describe("account and access flows", () => {
       else process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
     }
   });
+});
+
+describe("AI Client usage authority", () => {
+  it("isolates owners and discards an old account's delayed snapshot", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const owner = await registerApiClientForTest(
+      app,
+      "usage-owner@example.com"
+    );
+    const other = await registerApiClientForTest(
+      app,
+      "usage-other@example.com"
+    );
+    const url = "/v1/memory/ai-client-instances/codex.private";
+    const profileScopeHash = "c".repeat(64);
+    const ownerHeaders = {
+      authorization: owner.authorization,
+      "x-koed-ai-client-profile-scope": profileScopeHash
+    };
+    const otherHeaders = {
+      authorization: other.authorization,
+      "x-koed-ai-client-profile-scope": profileScopeHash
+    };
+    const created = await app.inject({
+      method: "PUT",
+      url,
+      headers: ownerHeaders,
+      payload: {
+        driver_id: "codex",
+        display_name: "Private Codex",
+        enabled: true
+      }
+    });
+    expect(created.statusCode).toBe(200);
+    const first = "a".repeat(64);
+    const second = "b".repeat(64);
+    const t1 = "2026-10-23T12:00:00.000Z";
+    const t2 = "2026-10-23T12:01:00.000Z";
+    const bind = (account_identity_hash: string, observed_at: string) =>
+      app.inject({
+        method: "PUT",
+        url: `${url}/usage/account`,
+        headers: ownerHeaders,
+        payload: {
+          account_identity_hash,
+          profile_scope_hash: profileScopeHash,
+          observed_at
+        }
+      });
+    const write = (account_identity_hash: string, observed_at: string) =>
+      app.inject({
+        method: "POST",
+        url: `${url}/usage/snapshots`,
+        headers: ownerHeaders,
+        payload: {
+          account_identity_hash,
+          profile_scope_hash: profileScopeHash,
+          observed_at,
+          readings: [
+            {
+              source: "codex_app_server",
+              bucketId: "codex",
+              bucketName: "Codex",
+              window: "primary",
+              windowDurationMins: 300,
+              usedPercent: 50,
+              status: "ok",
+              resetsAt: null,
+              planType: "plus",
+              details: {},
+              observedAt: observed_at
+            }
+          ]
+        }
+      });
+    const usageResponse = (response: { body: string }) =>
+      jsonBody<{ snapshots: unknown[]; authorityGeneration: string }>(response);
+    expect((await bind(first, t1)).json()).toMatchObject({ accepted: true });
+    expect(usageResponse(await write(first, t1)).snapshots).toHaveLength(1);
+    const before = usageResponse(
+      await app.inject({
+        method: "GET",
+        url: "/v1/memory/ai-client-instances/usage",
+        headers: ownerHeaders
+      })
+    );
+    expect(before.snapshots).toHaveLength(1);
+    expect(JSON.stringify(before)).not.toContain(first);
+    expect(
+      usageResponse(
+        await app.inject({
+          method: "GET",
+          url: "/v1/memory/ai-client-instances/usage",
+          headers: otherHeaders
+        })
+      ).snapshots
+    ).toEqual([]);
+    expect(
+      (
+        await app.inject({
+          method: "PUT",
+          url: `${url}/usage/account`,
+          headers: otherHeaders,
+          payload: {
+            account_identity_hash: first,
+            profile_scope_hash: profileScopeHash,
+            observed_at: t1
+          }
+        })
+      ).statusCode
+    ).toBe(409);
+    expect((await bind(second, t2)).json()).toMatchObject({ accepted: true });
+    expect(usageResponse(await write(first, t1)).snapshots).toEqual([]);
+    const after = usageResponse(
+      await app.inject({
+        method: "GET",
+        url: "/v1/memory/ai-client-instances/usage",
+        headers: ownerHeaders
+      })
+    );
+    expect(after.snapshots).toEqual([]);
+    expect(after.authorityGeneration).not.toBe(before.authorityGeneration);
+    expect(
+      (await bind(first, "2026-10-23T12:02:00.000Z")).json()
+    ).toMatchObject({ accepted: true });
+    const returned = usageResponse(
+      await app.inject({
+        method: "GET",
+        url: "/v1/memory/ai-client-instances/usage",
+        headers: ownerHeaders
+      })
+    );
+    expect(returned.authorityGeneration).not.toBe(before.authorityGeneration);
+    expect(returned.snapshots).toEqual([]);
+    await app.close();
+  });
+});
+
+describe("AI Client usage stream lifecycle", () => {
+  it("delivers a runtime completion through Personal SSE and typed Desktop preload", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const owner = await registerApiClientForTest(
+      app,
+      "usage-linked-owner@example.com"
+    );
+    const instanceId = "codex.private";
+    const profileScopeHash = "c".repeat(64);
+    const authorization = owner.authorization;
+    const created = await app.inject({
+      method: "PUT",
+      url: `/v1/memory/ai-client-instances/${instanceId}`,
+      headers: { authorization },
+      payload: {
+        driver_id: "codex",
+        display_name: "Private Codex",
+        enabled: true
+      }
+    });
+    expect(created.statusCode).toBe(200);
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+    const runtime = new MemoryApiClient({
+      apiUrl: origin,
+      authorizationProvider: async () => authorization
+    });
+    const events = new EventEmitter();
+    const preload = createLocalAiClientPreloadApi(async () => ({}), events);
+    const delivered: Array<{ kind: string; completionId?: string }> = [];
+    const unsubscribe = preload.onUsageChanged((change) =>
+      delivered.push(change)
+    );
+    const controller = new AbortController();
+    let localKey = "owner/profile-1";
+    let rejectedAuthority = 0;
+    const stream = subscribeLocalAiClientUsage({
+      fetch,
+      signal: controller.signal,
+      localAuthority: async () => localKey,
+      authority: async () => {
+        if (localKey === "signed-out") {
+          rejectedAuthority++;
+          throw new Error("Personal authority is gone");
+        }
+        const response = await fetch(
+          `${origin}/v1/memory/ai-client-instances/usage/authority`,
+          {
+            headers: {
+              authorization,
+              "x-koed-ai-client-profile-scope": profileScopeHash
+            }
+          }
+        );
+        expect(response.status).toBe(200);
+        const body = jsonBody<{
+          authorityGeneration: string;
+          allowedInstanceIds: string[];
+        }>({ body: await response.text() });
+        return {
+          key: `${localKey}/${body.authorityGeneration}`,
+          localKey,
+          apiOrigin: origin,
+          authorization,
+          profileScopeHash,
+          allowedInstances: new Set(body.allowedInstanceIds)
+        };
+      },
+      onChange: (change) => {
+        events.emit(localAiClientUsageChangedChannel, null, change);
+      }
+    });
+    try {
+      await vi.waitFor(() =>
+        expect(
+          delivered.filter((change) => change.kind === "catch_up")
+        ).toHaveLength(1)
+      );
+      const t1 = "2026-10-23T12:00:00.000Z";
+      const t2 = "2026-10-23T12:01:00.000Z";
+      const unbound = await app.inject({
+        method: "POST",
+        url: `/v1/memory/ai-client-instances/${instanceId}/usage/completions`,
+        headers: { authorization },
+        payload: {
+          outcome: "unsupported",
+          profile_scope_hash: profileScopeHash,
+          observed_at: t1
+        }
+      });
+      expect(jsonBody<{ completion: null }>(unbound).completion).toBeNull();
+      expect(
+        await runtime.bindAiClientUsageAccount(instanceId, {
+          account_identity_hash: "a".repeat(64),
+          profile_scope_hash: profileScopeHash,
+          observed_at: t1
+        })
+      ).toMatchObject({ accepted: true });
+      await vi.waitFor(
+        () =>
+          expect(
+            delivered.filter((change) => change.kind === "catch_up").length
+          ).toBeGreaterThan(1),
+        { timeout: 5_000 }
+      );
+      await runtime.recordAiClientUsageSnapshots(instanceId, {
+        account_identity_hash: "a".repeat(64),
+        profile_scope_hash: profileScopeHash,
+        observed_at: t1,
+        readings: [
+          {
+            source: "codex_app_server",
+            bucketId: "codex",
+            bucketName: "Codex",
+            window: "primary",
+            windowDurationMins: 300,
+            usedPercent: 12,
+            status: "ok",
+            resetsAt: null,
+            planType: "plus",
+            details: {},
+            observedAt: t1
+          }
+        ]
+      });
+      await vi.waitFor(() =>
+        expect(
+          delivered.filter((change) => change.kind === "completion")
+        ).toHaveLength(1)
+      );
+      expect(delivered.at(-1)).toMatchObject({
+        instanceId,
+        outcome: "checked"
+      });
+      expect(JSON.stringify(delivered)).not.toContain("account_identity_hash");
+      expect(
+        await runtime.bindAiClientUsageAccount(instanceId, {
+          account_identity_hash: "b".repeat(64),
+          profile_scope_hash: profileScopeHash,
+          observed_at: t2
+        })
+      ).toMatchObject({ accepted: true });
+      await vi.waitFor(
+        () =>
+          expect(
+            delivered.filter((change) => change.kind === "catch_up").length
+          ).toBeGreaterThan(2),
+        { timeout: 5_000 }
+      );
+      const late = await app.inject({
+        method: "POST",
+        url: `/v1/memory/ai-client-instances/${instanceId}/usage/completions`,
+        headers: { authorization },
+        payload: {
+          outcome: "failed",
+          profile_scope_hash: profileScopeHash,
+          observed_at: t1
+        }
+      });
+      expect(jsonBody<{ completion: null }>(late).completion).toBeNull();
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 75));
+      expect(
+        delivered.filter((change) => change.kind === "completion")
+      ).toHaveLength(1);
+      localKey = "signed-out";
+      await vi.waitFor(() => expect(rejectedAuthority).toBeGreaterThan(0), {
+        timeout: 5_000
+      });
+      expect(delivered.some((change) => change.kind === "invalidated")).toBe(
+        true
+      );
+      const beforeAuthorityLoss = delivered.length;
+      await runtime.publishAiClientUsageCompletion(instanceId, {
+        outcome: "failed",
+        profile_scope_hash: profileScopeHash,
+        observed_at: t2
+      });
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 75));
+      expect(delivered).toHaveLength(beforeAuthorityLoss);
+      localKey = "owner/profile-1";
+      await vi.waitFor(
+        () =>
+          expect(
+            delivered.filter((change) => change.kind === "catch_up").length
+          ).toBeGreaterThan(3),
+        { timeout: 5_000 }
+      );
+      const beforeUnsubscribe = delivered.length;
+      unsubscribe();
+      await runtime.publishAiClientUsageCompletion(instanceId, {
+        outcome: "unsupported",
+        profile_scope_hash: profileScopeHash,
+        observed_at: t2
+      });
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 75));
+      expect(delivered).toHaveLength(beforeUnsubscribe);
+    } finally {
+      unsubscribe();
+      controller.abort();
+      await stream;
+      runtime.closeBackgroundRequests();
+      await app.close();
+    }
+  }, 15_000);
+
+  it("closes an idle subscriber on account change and frees its listener slot", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const owner = await registerApiClientForTest(
+      app,
+      "usage-stream-owner@example.com"
+    );
+    await app.inject({
+      method: "PUT",
+      url: "/v1/memory/ai-client-instances/codex.private",
+      headers: { authorization: owner.authorization },
+      payload: {
+        driver_id: "codex",
+        display_name: "Private Codex",
+        enabled: true
+      }
+    });
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+    const controller = new AbortController();
+    const profileScopeHash = "c".repeat(64);
+    try {
+      const response = await fetch(
+        `${origin}/v1/memory/ai-client-instances/usage/events`,
+        {
+          headers: {
+            authorization: owner.authorization,
+            "x-koed-ai-client-profile-scope": profileScopeHash
+          },
+          signal: controller.signal
+        }
+      );
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+        ": connected"
+      );
+      const bind = await app.inject({
+        method: "PUT",
+        url: "/v1/memory/ai-client-instances/codex.private/usage/account",
+        headers: { authorization: owner.authorization },
+        payload: {
+          account_identity_hash: "a".repeat(64),
+          profile_scope_hash: profileScopeHash,
+          observed_at: "2026-10-23T12:00:00.000Z"
+        }
+      });
+      expect(bind.statusCode).toBe(200);
+      expect((await reader.read()).done).toBe(true);
+      const next = await fetch(
+        `${origin}/v1/memory/ai-client-instances/usage/events`,
+        {
+          headers: {
+            authorization: owner.authorization,
+            "x-koed-ai-client-profile-scope": profileScopeHash
+          },
+          signal: controller.signal
+        }
+      );
+      expect(next.status).toBe(200);
+      await next.body?.cancel();
+    } finally {
+      controller.abort();
+      await app.close();
+    }
+  }, 10_000);
+});
+
+describe("AI Client usage profile scope", () => {
+  it("keeps a second profile empty on the same owner, backend and instance", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const owner = await registerApiClientForTest(
+      app,
+      "usage-profile-owner@example.com"
+    );
+    const instance = "/v1/memory/ai-client-instances/codex.private";
+    const authorization = owner.authorization;
+    const firstProfile = "c".repeat(64);
+    const secondProfile = "d".repeat(64);
+    await app.inject({
+      method: "PUT",
+      url: instance,
+      headers: { authorization },
+      payload: {
+        driver_id: "codex",
+        display_name: "Private Codex",
+        enabled: true
+      }
+    });
+    const observedAt = "2026-10-23T12:00:00.000Z";
+    const account = "a".repeat(64);
+    expect(
+      (
+        await app.inject({
+          method: "PUT",
+          url: `${instance}/usage/account`,
+          headers: { authorization },
+          payload: {
+            account_identity_hash: account,
+            profile_scope_hash: firstProfile,
+            observed_at: observedAt
+          }
+        })
+      ).statusCode
+    ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `${instance}/usage/snapshots`,
+          headers: { authorization },
+          payload: {
+            account_identity_hash: account,
+            profile_scope_hash: firstProfile,
+            observed_at: observedAt,
+            readings: [
+              {
+                source: "codex_app_server",
+                bucketId: "codex",
+                bucketName: "Codex",
+                window: "primary",
+                windowDurationMins: 300,
+                usedPercent: 42,
+                status: "ok",
+                resetsAt: null,
+                planType: "plus",
+                details: {},
+                observedAt
+              }
+            ]
+          }
+        })
+      ).statusCode
+    ).toBe(200);
+    const read = (scope: string) =>
+      app.inject({
+        method: "GET",
+        url: "/v1/memory/ai-client-instances/usage",
+        headers: { authorization, "x-koed-ai-client-profile-scope": scope }
+      });
+    expect(
+      jsonBody<{ snapshots: unknown[] }>(await read(firstProfile)).snapshots
+    ).toHaveLength(1);
+    expect(
+      jsonBody<{ snapshots: unknown[] }>(await read(secondProfile)).snapshots
+    ).toEqual([]);
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+    const controller = new AbortController();
+    try {
+      const response = await fetch(
+        `${origin}/v1/memory/ai-client-instances/usage/events`,
+        {
+          headers: {
+            authorization,
+            "x-koed-ai-client-profile-scope": secondProfile
+          },
+          signal: controller.signal
+        }
+      );
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      await reader.read(); // connected
+      const pending = reader.read();
+      await app.inject({
+        method: "POST",
+        url: `${instance}/usage/snapshots`,
+        headers: { authorization },
+        payload: {
+          account_identity_hash: account,
+          profile_scope_hash: firstProfile,
+          observed_at: "2026-10-23T12:00:01.000Z",
+          readings: [
+            {
+              source: "codex_app_server",
+              bucketId: "codex",
+              bucketName: "Codex",
+              window: "primary",
+              windowDurationMins: 300,
+              usedPercent: 43,
+              status: "ok",
+              resetsAt: null,
+              planType: "plus",
+              details: {},
+              observedAt: "2026-10-23T12:00:01.000Z"
+            }
+          ]
+        }
+      });
+      expect(
+        await Promise.race([
+          pending.then(() => "event"),
+          new Promise((resolve) => setTimeout(() => resolve("quiet"), 200))
+        ])
+      ).toBe("quiet");
+      await reader.cancel();
+    } finally {
+      controller.abort();
+      await app.close();
+    }
+  }, 10_000);
 });

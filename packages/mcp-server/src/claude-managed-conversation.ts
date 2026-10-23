@@ -9,6 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { managedKoedMcpServer } from "./managed-koed-mcp.js";
+import { claudeAccountIdentity } from "./ai-client-usage-readers.js";
 
 import {
   forkSession as forkClaudeSession,
@@ -142,6 +143,12 @@ export interface ClaudeManagedConversationConfig {
   maxTurns?: number;
   canUseTool?: Options["canUseTool"];
   onTextDelta?: (delta: string, turnId: string) => void;
+  onRateLimitEvent?: (
+    rateLimitInfo: unknown,
+    accountInfo: unknown,
+    bindingObservedAt: string,
+    accountChanged: boolean
+  ) => Promise<void>;
   onKoedToolCompleted?: (input: {
     providerTurnId: string;
     toolCallId: string;
@@ -1141,6 +1148,7 @@ export class ClaudeManagedConversationSession {
     this.assertOpen();
     const abortController = new AbortController();
     const shouldResume = this.resumed || this.submittedQuery;
+    const usageBindingObservedAt = new Date().toISOString();
     let stream: Query;
     try {
       const koedMcp = managedKoedMcpServer(
@@ -1222,8 +1230,72 @@ export class ClaudeManagedConversationSession {
       { toolName: string; arguments: unknown }
     >();
     let result: SDKResultMessage | undefined;
+    const boundedTelemetry = async <T>(
+      task: Promise<T>,
+      timeoutMs: number
+    ): Promise<T | null> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          task.catch(() => null),
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), timeoutMs);
+          })
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+    // Capture execution identity before consuming provider messages. A later
+    // account change must not relabel this turn's earlier rate events.
+    const usageAccountInfo = boundedTelemetry(
+      Promise.resolve().then(() => stream.accountInfo()),
+      1_500
+    );
+    const usageDeliveries = new Set<Promise<void>>();
     try {
       for await (const message of stream) {
+        if (message.type === "rate_limit_event") {
+          if (this.config.onRateLimitEvent) {
+            // Bound concurrent telemetry without silently dropping later events.
+            if (usageDeliveries.size >= 64) await Promise.race(usageDeliveries);
+            const delivered = usageAccountInfo
+              .then(async (accountInfo) => {
+                const startIdentity = claudeAccountIdentity(accountInfo);
+                const currentAccountInfo = startIdentity
+                  ? await boundedTelemetry(
+                      Promise.resolve().then(() => stream.accountInfo()),
+                      1_500
+                    )
+                  : null;
+                const attributedAccount =
+                  startIdentity &&
+                  startIdentity === claudeAccountIdentity(currentAccountInfo)
+                    ? accountInfo
+                    : null;
+                const currentIdentity =
+                  claudeAccountIdentity(currentAccountInfo);
+                await boundedTelemetry(
+                  this.config.onRateLimitEvent!(
+                    message.rate_limit_info,
+                    attributedAccount,
+                    usageBindingObservedAt,
+                    Boolean(
+                      startIdentity &&
+                      currentIdentity &&
+                      startIdentity !== currentIdentity
+                    )
+                  ),
+                  2_000
+                );
+              })
+              .catch(() => undefined);
+            usageDeliveries.add(delivered);
+            void delivered.finally(() => {
+              usageDeliveries.delete(delivered);
+            });
+          }
+        }
         if (message.type === "assistant") {
           const blocks = (message.message as { content?: unknown }).content;
           if (Array.isArray(blocks))
@@ -1312,6 +1384,8 @@ export class ClaudeManagedConversationSession {
       }
       throw error;
     } finally {
+      // Drain observations already emitted by the SDK even on cancellation or failure.
+      await boundedTelemetry(Promise.allSettled([...usageDeliveries]), 2_500);
       if (this.activeQuery === stream) {
         this.activeQuery = null;
         this.activeAbortController = null;

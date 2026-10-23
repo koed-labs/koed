@@ -405,5 +405,17 @@ export const lateProofs = [
       )
     ],
     gaps: []
+  },
+  {
+    id: "S520.1",
+    clauses: [
+      proof(
+        "typed Native usage completion, private-field rejection and unsubscribe",
+        "validate-hq520.mjs",
+        "hq-520/HQ520.native.json",
+        "S520.1"
+      )
+    ],
+    gaps: []
   }
 ];

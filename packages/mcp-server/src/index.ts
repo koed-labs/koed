@@ -43,6 +43,16 @@ export {
   publishAiClientCapabilities,
   startAiClientCapabilityPublisher
 } from "./ai-client-capability-publisher.js";
+export { publishCodexUsage } from "./ai-client-usage-publisher.js";
+export {
+  aiClientProfileScopeHash,
+  claudeAccountIdentity,
+  claudeUsageReading,
+  codexAccountIdentity,
+  codexUsageReadings,
+  usageReadingPayload,
+  hashAiClientAccountIdentity
+} from "./ai-client-usage-readers.js";
 export type {
   AiClientCapabilityPublication,
   AiClientCapabilityPublisherHandle
@@ -1077,6 +1087,52 @@ export class MemoryApiClient {
     return this.request(
       "POST",
       `/v1/memory/ai-client-instances/${encodeURIComponent(instanceId)}/capability-snapshots`,
+      input
+    );
+  }
+
+  async bindAiClientUsageAccount(
+    instanceId: string,
+    input: {
+      account_identity_hash: string | null;
+      profile_scope_hash: string;
+      observed_at: string;
+    }
+  ): Promise<{ accepted: boolean }> {
+    return this.request(
+      "PUT",
+      `/v1/memory/ai-client-instances/${encodeURIComponent(instanceId)}/usage/account`,
+      input
+    );
+  }
+
+  async recordAiClientUsageSnapshots(
+    instanceId: string,
+    input: {
+      account_identity_hash: string;
+      profile_scope_hash: string;
+      observed_at: string;
+      readings: Array<Record<string, unknown>>;
+    }
+  ): Promise<{ snapshots: Array<Record<string, unknown>> }> {
+    return this.request(
+      "POST",
+      `/v1/memory/ai-client-instances/${encodeURIComponent(instanceId)}/usage/snapshots`,
+      input
+    );
+  }
+
+  async publishAiClientUsageCompletion(
+    instanceId: string,
+    input: {
+      outcome: "failed" | "unsupported";
+      profile_scope_hash: string;
+      observed_at: string;
+    }
+  ): Promise<void> {
+    await this.request(
+      "POST",
+      `/v1/memory/ai-client-instances/${encodeURIComponent(instanceId)}/usage/completions`,
       input
     );
   }

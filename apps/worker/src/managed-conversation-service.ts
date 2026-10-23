@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { assertManagedConversationTurnSettings } from "./managed-conversation-settings.js";
+import { scheduleOptionalCodexUsage } from "./optional-codex-usage.js";
 import {
   managedConversationSettingsKey,
   parseManagedConversationSettings
@@ -30,6 +31,9 @@ import {
   checkClaudeCodeAvailability,
   checkPiAvailability,
   claudeAgentSdkTokenUsage,
+  claudeAccountIdentity,
+  claudeUsageReading,
+  usageReadingPayload,
   ClaudeManagedConversationSession,
   CodexManagedConversationIdentityError,
   CodexManagedConversationSession,
@@ -39,6 +43,9 @@ import {
   forkClaudeTranscript,
   MemoryApiClient,
   MemoryApiError,
+  hashAiClientAccountIdentity,
+  aiClientProfileScopeHash,
+  publishCodexUsage,
   prepareManagedClaudeHome,
   processClaudeTranscriptSignal,
   retainManagedClaudeHome,
@@ -1986,7 +1993,7 @@ export const createManagedConversationService = (options: {
     if (permission.driverId !== "codex") {
       throw new Error("ManagedConversationCodexPermissionMappingError");
     }
-    return (
+    const managedCodexSession: CodexManagedConversationSession = (
       options.codexSessionFactory ??
       ((sessionOptions) => new CodexManagedConversationSession(sessionOptions))
     )({
@@ -2145,6 +2152,26 @@ export const createManagedConversationService = (options: {
               .map(flushCompletedTransientOutput)
           );
           signalRuntimeWake();
+          scheduleOptionalCodexUsage({
+            resolveInstance: () =>
+              resolveConfiguredLocalAiClientInstance({
+                driverId: "codex",
+                instanceId: execution.aiClientInstanceId,
+                env: process.env
+              }),
+            publish: (instance) =>
+              publishCodexUsage(
+                memoryClient,
+                instance,
+                runtimeEnvironment,
+                () => managedCodexSession.readUsageEvidence()
+              ),
+            onError: (error) =>
+              options.logger.warn(
+                { error_name: errorCode(error) },
+                "Codex usage probe failed"
+              )
+          });
         }
       },
       ...(override?.resume
@@ -2165,6 +2192,7 @@ export const createManagedConversationService = (options: {
               }
             : {})
     });
+    return managedCodexSession;
   };
 
   const createClaudeSession = (
@@ -2213,10 +2241,95 @@ export const createManagedConversationService = (options: {
     if (!exactHome) {
       throw new Error("ManagedConversationClaudeSessionStoreMissingError");
     }
+    let usageTurnBinding: {
+      observedAt: string;
+      accountIdentityHash: string | null;
+      accepted: boolean;
+    } | null = null;
     return new ClaudeManagedConversationSession({
       cwd: override?.projectPath ?? binding.projectPath,
       model: execution.model,
       onKoedToolCompleted: (tool) => completedKoedTool(execution, tool),
+      onRateLimitEvent: async (
+        rateLimitInfo,
+        accountInfo,
+        bindingObservedAt,
+        accountChanged
+      ) => {
+        const observedAt = new Date().toISOString();
+        const profileScopeHash = aiClientProfileScopeHash(options.koedHome);
+        const accountIdentityHash = hashAiClientAccountIdentity(
+          {
+            ownerId: execution.ownerUserId,
+            backendId: options.apiUrl,
+            profileId: options.koedHome,
+            instanceId: execution.aiClientInstanceId,
+            provider: "claude"
+          },
+          claudeAccountIdentity(accountInfo)
+        );
+        try {
+          if (accountChanged) {
+            await memoryClient.bindAiClientUsageAccount(
+              execution.aiClientInstanceId,
+              {
+                account_identity_hash: null,
+                profile_scope_hash: profileScopeHash,
+                observed_at: bindingObservedAt
+              }
+            );
+            usageTurnBinding = {
+              observedAt: bindingObservedAt,
+              accountIdentityHash: null,
+              accepted: false
+            };
+            return;
+          }
+          if (!accountIdentityHash) return;
+          if (usageTurnBinding?.observedAt !== bindingObservedAt) {
+            const { accepted } = await memoryClient.bindAiClientUsageAccount(
+              execution.aiClientInstanceId,
+              {
+                account_identity_hash: accountIdentityHash,
+                profile_scope_hash: profileScopeHash,
+                observed_at: bindingObservedAt
+              }
+            );
+            usageTurnBinding = {
+              observedAt: bindingObservedAt,
+              accountIdentityHash,
+              accepted
+            };
+          }
+          if (
+            !usageTurnBinding.accepted ||
+            !accountIdentityHash ||
+            usageTurnBinding.accountIdentityHash !== accountIdentityHash
+          )
+            return;
+          const reading = usageReadingPayload(
+            claudeUsageReading(rateLimitInfo, {
+              instanceId: execution.aiClientInstanceId,
+              accountIdentityHash,
+              observedAt
+            })
+          );
+          await memoryClient.recordAiClientUsageSnapshots(
+            execution.aiClientInstanceId,
+            {
+              account_identity_hash: accountIdentityHash,
+              profile_scope_hash: profileScopeHash,
+              observed_at: observedAt,
+              readings: [reading]
+            }
+          );
+        } catch (error) {
+          options.logger.warn(
+            { error_name: errorCode(error) },
+            "Claude usage event could not be recorded"
+          );
+        }
+      },
       ...(execution.reasoningEffort
         ? { reasoningEffort: execution.reasoningEffort }
         : {}),
