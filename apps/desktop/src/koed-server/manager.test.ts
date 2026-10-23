@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import type { DesktopSetupSnapshot } from "../types.js";
 import {
   PDS_PEER_ENDPOINT_RUNTIME_FILE,
   RemoteRequestTimeoutError,
@@ -138,6 +139,81 @@ describe("Koed server desktop manager", () => {
       );
       pending.splice(0).forEach((complete) => complete(true));
       await expect(retry).resolves.toMatchObject({ api: { state: "healthy" } });
+    }
+  );
+
+  it.each([true, false])(
+    "schedules complete setup inspection after runtime only in HQ (HQ enabled: %s)",
+    async (hqEnabled) => {
+      const calls: string[][] = [];
+      let finishRuntime: (() => void) | undefined;
+      const manager = createKoedServerManager({
+        repoRoot: "/repo",
+        cliPath: "/repo/cli.js",
+        environment: {
+          KOED_DESKTOP_HQ_ENABLED: String(hqEnabled),
+          KOED_TEAM_COLLABORATION_ENABLED: "true"
+        },
+        createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+        existsSync: () => true,
+        execFile: (_command, args, _options, callback) => {
+          calls.push(args);
+          if (args[0] === "runtime" && args[1] === "status") {
+            finishRuntime = () =>
+              callback(
+                null,
+                JSON.stringify({ ok: true, state: "installed" }),
+                ""
+              );
+            return;
+          }
+          const payload =
+            args[0] === "package"
+              ? { ok: true, state: "installed" }
+              : args[0] === "models" && args.includes("privacy")
+                ? {
+                    ok: true,
+                    state: "installed",
+                    message: "Privacy model assets verified.",
+                    modelPath: "/models/privacy"
+                  }
+                : args[0] === "models"
+                  ? {
+                      state: "installed",
+                      message: "Embedding model checksum verified.",
+                      modelPath: "/models/embedding.gguf"
+                    }
+                  : healthyLocalServiceStatus();
+          callback(null, JSON.stringify(payload), "");
+        },
+        spawn: () => childProcess() as never,
+        openExternal: async () => undefined
+      });
+
+      const inspection = manager.handlers.setup_inspect!();
+      const concurrentInspection = manager.handlers.setup_inspect!();
+      await waitFor(() => finishRuntime !== undefined);
+      if (hqEnabled) {
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.slice(0, 2)).toEqual(["runtime", "status"]);
+      } else {
+        expect(calls.some((args) => args[0] === "package")).toBe(true);
+        expect(calls.some((args) => args[0] === "models")).toBe(true);
+        expect(calls.some((args) => args[0] === "status")).toBe(true);
+      }
+      finishRuntime!();
+      const result = (await inspection) as DesktopSetupSnapshot;
+      const concurrentResult =
+        (await concurrentInspection) as DesktopSetupSnapshot;
+      expect(result).toMatchObject({ state: "complete" });
+      expect(concurrentResult).toMatchObject({ state: "complete" });
+      expect(result.stages).toHaveLength(6);
+      expect(result.stages.every((stage) => stage.state === "complete")).toBe(
+        true
+      );
+      expect(calls.some((args) => args[0] === "package")).toBe(true);
+      expect(calls.some((args) => args[0] === "models")).toBe(true);
+      expect(calls.some((args) => args[0] === "status")).toBe(true);
     }
   );
 

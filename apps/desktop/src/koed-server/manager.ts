@@ -5926,14 +5926,30 @@ export const createKoedServerManager = ({
   let setupInspection: Promise<
     Record<DesktopSetupStageId, DesktopSetupCheck>
   > | null = null;
-  const inspectSetupStages = () => {
-    if (setupInspection) return setupInspection;
-    setupInspection = Promise.all([
+  const readSetupStatuses = async (): Promise<
+    [unknown, unknown, unknown, unknown]
+  > => {
+    if (!desktopFeatureFlagsFromEnvironment(environment).hqEnabled) {
+      return Promise.all([
+        runPackageStatusJson(),
+        runRuntimeStatusJson(),
+        runModelJson(),
+        statusWithEnrollmentReconciliation()
+      ]);
+    }
+    // Native runtime status is the most expensive cold read on constrained
+    // packaged hosts. Complete it before starting the other HQ setup checks.
+    const runtimeStatus = await runRuntimeStatusJson();
+    const [packageStatus, modelStatus, statusValue] = await Promise.all([
       runPackageStatusJson(),
-      runRuntimeStatusJson(),
       runModelJson(),
       statusWithEnrollmentReconciliation()
-    ])
+    ]);
+    return [packageStatus, runtimeStatus, modelStatus, statusValue];
+  };
+  const inspectSetupStages = () => {
+    if (setupInspection) return setupInspection;
+    setupInspection = readSetupStatuses()
       .then(
         ([packageStatus, runtimeStatus, modelStatus, statusValue]): Record<
           DesktopSetupStageId,
