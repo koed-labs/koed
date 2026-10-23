@@ -123,6 +123,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw,size=4g
           --health-cmd "pg_isready -U koed -d koed"
           --health-interval 5s
           --health-timeout 3s

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { runDbMigrations } from "./migrate.js";
 import { createAgentsRepository } from "./agents-repository.js";
 import {
@@ -80,10 +80,25 @@ describe.skipIf(!testUrl)("Scheduled Job durable Personal API", () => {
     );
   }, 120_000);
   afterAll(async () => {
-    await pool?.end();
-    if (admin && database) {
-      await admin.query(`drop database ${quote(database)} with (force)`);
-      await admin.end();
+    try {
+      await pool?.end();
+      if (admin && database) {
+        // pg.Pool.end() removes its clients before their backend processes
+        // necessarily exit. Do not force-kill those closing connections.
+        await vi.waitFor(
+          async () => {
+            const active = await admin.query<{ count: string }>(
+              "select count(*)::text as count from pg_stat_activity where datname=$1",
+              [database]
+            );
+            expect(active.rows[0]!.count).toBe("0");
+          },
+          { timeout: 1_000, interval: 10 }
+        );
+        await admin.query(`drop database ${quote(database)}`);
+      }
+    } finally {
+      await admin?.end();
     }
   });
   const body = () => ({

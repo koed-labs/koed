@@ -310,7 +310,7 @@ const isolatedSmokeApiPort = (koedHome) =>
       )
   );
 
-const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
+export const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
   const env = {
     ...process.env,
     ...extraEnv,
@@ -318,6 +318,10 @@ const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
     KOED_HOME: koedHome,
     CODEX_HOME: resolve(koedHome, "codex"),
     CODEX_CONFIG_PATH: resolve(koedHome, "codex", "config.toml"),
+    CLAUDE_CONFIG_DIR: resolve(koedHome, "claude"),
+    CLAUDE_SETTINGS_PATH: resolve(koedHome, "claude", "settings.json"),
+    PI_CODING_AGENT_DIR: resolve(koedHome, "pi"),
+    PI_CODING_AGENT_SESSION_DIR: resolve(koedHome, "pi", "sessions"),
     MEMORY_CODEX_APP_SERVER_BINARY: process.execPath,
     KOED_PACKAGED_DESKTOP: "1",
     KOED_PACKAGED_RESOURCES_PATH: layout.resourcesPath,

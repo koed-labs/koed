@@ -1,6 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { verifyPackagedSetupAfterReadiness } from "../apps/desktop/scripts/smoke-packaged-desktop-app.mjs";
+import {
+  createSmokeEnv,
+  verifyPackagedSetupAfterReadiness
+} from "../apps/desktop/scripts/smoke-packaged-desktop-app.mjs";
+import { resolve } from "node:path";
+
+test("packaged smoke confines every supported AI Client home and Pi session override to its owned fixture", () => {
+  const home = resolve("/fixture/smoke");
+  const env = createSmokeEnv({ resourcesPath: "/fixture/resources" }, home, {
+    CODEX_HOME: "/host/codex",
+    CLAUDE_CONFIG_DIR: "/host/claude",
+    CLAUDE_SETTINGS_PATH: "/host/claude-settings.json",
+    PI_CODING_AGENT_DIR: "/host/pi",
+    PI_CODING_AGENT_SESSION_DIR: "/host/pi-sessions"
+  });
+  assert.equal(env.CODEX_HOME, resolve(home, "codex"));
+  assert.equal(env.CLAUDE_CONFIG_DIR, resolve(home, "claude"));
+  assert.equal(
+    env.CLAUDE_SETTINGS_PATH,
+    resolve(home, "claude", "settings.json")
+  );
+  assert.equal(env.PI_CODING_AGENT_DIR, resolve(home, "pi"));
+  assert.equal(
+    env.PI_CODING_AGENT_SESSION_DIR,
+    resolve(home, "pi", "sessions")
+  );
+});
 
 const healthyStatus = () =>
   Object.fromEntries(

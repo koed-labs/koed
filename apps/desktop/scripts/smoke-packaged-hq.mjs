@@ -14,6 +14,41 @@ import {
 
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
 
+export const waitForPackagedHqSurface = async ({
+  readState,
+  continueSetup,
+  expectedSurface = "hq",
+  delayImpl = delay
+}) => {
+  let state;
+  let continuedSetup = false;
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    state = await readState();
+    if (
+      state?.hqEnabled === true &&
+      (expectedSurface === "setup"
+        ? state.hqSetup && !state.setup
+        : state.shell && !state.hqSetup)
+    )
+      break;
+    if (
+      expectedSurface === "hq" &&
+      state?.hqEnabled === true &&
+      state.hqSetup &&
+      state.setupState === "complete" &&
+      !continuedSetup
+    ) {
+      await continueSetup();
+      continuedSetup = true;
+      // Continue performs a new Native inspection and status refresh. Give
+      // that distinct phase the same bounded wait as initial inspection.
+      attempt = -1;
+    }
+    await delayImpl(100);
+  }
+  return state;
+};
+
 export const smokePackagedHqDefault = async ({
   executable,
   env,
@@ -93,10 +128,10 @@ export const smokePackagedHqDefault = async ({
       console.error(`[packaged-hq] ${surface} screenshot: ${screenshotPath}`);
       return screenshotPath;
     };
-    let state;
-    let continuedSetup = false;
-    for (let attempt = 0; attempt < 300; attempt += 1) {
-      state = await evaluate(`(() => ({
+    const state = await waitForPackagedHqSurface({
+      expectedSurface,
+      readState: () =>
+        evaluate(`(() => ({
         url: location.href,
         hqEnabled: window.koedDesktop?.featureFlags?.hqEnabled,
         shell: Boolean(document.querySelector('[data-hq-shell]')),
@@ -106,31 +141,15 @@ export const smokePackagedHqDefault = async ({
         route: document.querySelector('[data-hq-route]')?.getAttribute('data-hq-route') ?? null,
         setup: Boolean(document.querySelector('.koed-setup-card')),
         body: document.body?.innerText?.slice(0, 500) ?? ''
-      }))()`);
-      if (
-        state?.hqEnabled === true &&
-        (expectedSurface === "setup"
-          ? state.hqSetup && !state.setup
-          : state.shell && !state.hqSetup)
-      )
-        break;
-      if (
-        expectedSurface === "hq" &&
-        state?.hqEnabled === true &&
-        state.hqSetup &&
-        state.setupState === "complete" &&
-        !continuedSetup
-      ) {
-        await trustedClick({
+      }))()`),
+      continueSetup: () =>
+        trustedClick({
           cdp,
           evaluate,
           locator:
             "[...document.querySelectorAll('[data-hq-setup] button')].find((candidate) => candidate.textContent?.trim() === 'Continue to Koed' && !candidate.disabled)"
-        });
-        continuedSetup = true;
-      }
-      await delay(100);
-    }
+        })
+    });
     if (
       !state?.url?.startsWith("koed://app/") ||
       state.url.includes("browser-validation") ||
