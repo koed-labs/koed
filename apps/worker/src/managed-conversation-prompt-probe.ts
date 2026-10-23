@@ -1,5 +1,7 @@
 /** Test-only driver for the real managed command-to-provider prompt boundary. */
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type {
   ClaimedManagedConversationCommand,
   ManagedConversationExecutionCheckpointRecord,
@@ -25,6 +27,24 @@ export async function probeManagedConversationProviderPrompt(input: {
   const captured: string[] = [];
   const failures: string[] = [];
   let teamMessageReads = 0;
+  // The real owner resolver needs an installed instance. The probe intercepts
+  // provider dispatch, so use a known executable without relying on host Codex.
+  const registryPath = resolve(input.koedHome, "ai-client-instances.json");
+  await writeFile(
+    registryPath,
+    JSON.stringify({
+      version: 1,
+      instances: [
+        {
+          instanceId: input.command.execution.aiClientInstanceId,
+          driverId: "codex",
+          displayName: "Prompt probe Codex",
+          executablePath: process.execPath,
+          configHome: input.koedHome
+        }
+      ]
+    })
+  );
   const repository = {
     // Team Chat is human collaboration data. If command execution ever grows
     // a Team read, this probe must fail at the owning repository boundary.
@@ -58,39 +78,47 @@ export async function probeManagedConversationProviderPrompt(input: {
     setManagedConversationExecutionState: () =>
       Promise.resolve(input.command.execution)
   } as unknown as MemorySourceRepository;
-  const service = createManagedConversationService({
-    repository,
-    apiUrl: "http://127.0.0.1:1",
-    apiToken: "test-only-prompt-probe",
-    localOwnerUserId: input.command.ownerUserId,
-    appServerBinary: "test-only-prompt-probe",
-    deviceId: input.command.execution.runnerDeviceId ?? randomUUID(),
-    deploymentId: input.command.execution.runnerDeploymentId ?? randomUUID(),
-    koedHome: input.koedHome,
-    envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
-    executionCheckoutDriver: {
-      verify: () => Promise.resolve(input.binding)
-    } as unknown as GitExecutionCheckoutDriver,
-    codexSessionFactory: () =>
-      ({
-        runTurn: (prompt: string) => {
-          captured.push(prompt);
-          return Promise.reject(
-            Object.assign(new Error(probeStop), { name: probeStop })
-          );
-        },
-        closeAndWait: () => Promise.resolve(undefined)
-      }) as unknown as CodexManagedConversationSession,
-    logger: {
-      info: () => undefined,
-      warn: () => undefined,
-      error: () => undefined
-    } as never
-  });
+  const previousRegistry = process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY;
+  process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY = registryPath;
   try {
-    await service.processOnce();
+    const service = createManagedConversationService({
+      repository,
+      apiUrl: "http://127.0.0.1:1",
+      apiToken: "test-only-prompt-probe",
+      localOwnerUserId: input.command.ownerUserId,
+      appServerBinary: "test-only-prompt-probe",
+      deviceId: input.command.execution.runnerDeviceId ?? randomUUID(),
+      deploymentId: input.command.execution.runnerDeploymentId ?? randomUUID(),
+      koedHome: input.koedHome,
+      envelopeEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      executionCheckoutDriver: {
+        verify: () => Promise.resolve(input.binding)
+      } as unknown as GitExecutionCheckoutDriver,
+      codexSessionFactory: () =>
+        ({
+          runTurn: (prompt: string) => {
+            captured.push(prompt);
+            return Promise.reject(
+              Object.assign(new Error(probeStop), { name: probeStop })
+            );
+          },
+          closeAndWait: () => Promise.resolve(undefined)
+        }) as unknown as CodexManagedConversationSession,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      } as never
+    });
+    try {
+      await service.processOnce();
+    } finally {
+      await service.stop();
+    }
   } finally {
-    await service.stop();
+    if (previousRegistry === undefined)
+      delete process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY;
+    else process.env.KOED_AI_CLIENT_INSTANCE_REGISTRY = previousRegistry;
   }
   if (captured.length !== 1)
     throw new Error(
