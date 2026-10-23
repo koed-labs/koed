@@ -1,3 +1,4 @@
+import { personalSharingToolMetadata } from "../src/personal-sharing-tool-metadata.js";
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import { createPersonalSelectionConsumerRepository } from "../src/personal-selection-consumer-repository.js";
@@ -40,6 +41,304 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
         email: `consumer-${randomUUID()}@example.test`
       })
     ).id
+  });
+  it("recovers encrypted Pi tool metadata only for the eligible owner without rewriting captured history", async () => {
+    vi.stubEnv("KOED_DEPLOYMENT_PROFILE", "koed_managed_cloud");
+    vi.stubEnv("KOED_MANAGED_CLOUD_RELEASE_STAGE", "paid");
+    try {
+      const repo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: encryption
+      });
+      const actor = await user(),
+        other = await user();
+      const session = await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID()
+      });
+      const [item] = await repo.createConversationItems(actor, {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "pi",
+            sourceAdapterVersion: "pi-session-v1",
+            sourceTransport: "transcript",
+            sourceRecordType: "message",
+            sourceEventType: "tool_result",
+            rawJson: {
+              type: "pi_session_record",
+              sourceRecord: {
+                type: "message",
+                message: {
+                  role: "toolResult",
+                  toolName: "read",
+                  toolCallId: "call-1"
+                }
+              }
+            },
+            rawText: "synthetic result",
+            sourceHash: randomUUID(),
+            idempotencyKey: randomUUID(),
+            metadata: { actor: "tool" }
+          }
+        ]
+      });
+      await pool.query(
+        "update conversation_items set projection_status='projected' where id=$1",
+        [item!.id]
+      );
+      const metadata = {
+        semanticItemManifest: [{ sourceIds: [item!.id], toolName: null }]
+      };
+      const event = await repo.createMemoryEvent(actor, {
+        sessionId: session.id,
+        projectId: "fixture",
+        visibility: "personal",
+        actor: "tool",
+        eventType: "captured",
+        rawEventType: "tool_result",
+        content: "synthetic result",
+        metadata,
+        idempotencyKey: randomUUID()
+      });
+      await pool.query(
+        "insert into memory_event_sources(memory_event_id,conversation_item_id,source_order) values($1,$2,0)",
+        [event.id, item!.id]
+      );
+      const stored = async () =>
+        (
+          await pool.query<{
+            raw_json: unknown;
+            metadata: unknown;
+            source_hash: string;
+          }>(
+            "select raw_json,metadata,source_hash from conversation_items where id=$1",
+            [item!.id]
+          )
+        ).rows;
+      const before = await stored();
+      expect(JSON.stringify(before)).not.toContain('"toolName":"read"');
+      const inputs = [{ id: event.id, metadata }];
+      const own = await personalSharingToolMetadata(
+        pool,
+        encryption,
+        actor,
+        inputs
+      );
+      expect(own.get(event.id)).toMatchObject({
+        semanticItemManifest: [{ toolName: "read", toolCallId: "call-1" }]
+      });
+      expect(
+        (
+          await personalSharingToolMetadata(pool, encryption, other, inputs)
+        ).get(event.id)
+      ).toEqual(metadata);
+      expect(await stored()).toEqual(before);
+      await pool.query(
+        "update conversation_items set memory_excluded_at=now(),memory_exclusion_reason='source_policy' where id=$1",
+        [item!.id]
+      );
+      expect(
+        (
+          await personalSharingToolMetadata(pool, encryption, actor, inputs)
+        ).get(event.id)
+      ).toEqual(metadata);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(["repository", "project"] as const)(
+    "keeps a continuous %s sharing review fresh during capture but fences scope changes",
+    async (kind) => {
+      const repo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: encryption
+      });
+      const review = createPersonalSelectionConsumerRepository(pool, {
+        scopeToSharingReview: true
+      });
+      const actor = await user();
+      const git: PersonalGitContext = {
+        kind: "portable_repository",
+        key: `gr_${randomUUID()}`,
+        root: null,
+        branch: null,
+        reason: "origin",
+        checkoutId: null,
+        originatingDeviceId: "review-device",
+        selectedRemote: "origin",
+        anchorDisplay: "example.test/review"
+      };
+      const selected = await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID(),
+        repositoryIdentity: git
+      });
+      const project = await repo.createNamedPersonalProject(actor, {
+        name: "Selected Project"
+      });
+      await repo.addPersonalProjectSession(actor, project.projectId, {
+        sessionId: selected.id,
+        expectedVersion: project.version
+      });
+      const target =
+        kind === "repository"
+          ? { kind, repository: git }
+          : {
+              kind,
+              project: {
+                ownerUserId: actor.userId,
+                projectId: project.projectId
+              }
+            };
+      const baseline = () =>
+        review.startPersonalSelectionEnumeration(actor, { target });
+      const page = await baseline();
+      expect(page.entries.map((entry) => entry.source.localSessionId)).toEqual([
+        selected.id
+      ]);
+      const global = await repo.startPersonalSelectionEnumeration(actor, {
+        target
+      });
+      await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID()
+      });
+      await repo.createNamedPersonalProject(actor, {
+        name: "Unrelated Project"
+      });
+      await repo.createMemoryEvent(actor, {
+        sessionId: selected.id,
+        projectId: "fixture",
+        visibility: "personal",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_message",
+        content: "A later turn covered by continuous consent.",
+        idempotencyKey: randomUUID()
+      });
+      expect(
+        await review.reconcilePersonalSelectionChanges(actor, {
+          cursor: page.changeCursor!
+        })
+      ).toMatchObject({ reconciliationRequired: false });
+      // Publisher baselines retain their stronger, owner-wide visibility fence.
+      expect(
+        await repo.reconcilePersonalSelectionChanges(actor, {
+          cursor: global.changeCursor!
+        })
+      ).toMatchObject({ reconciliationRequired: true });
+      await pool.query(
+        "update sessions set repository_assignment_version=repository_assignment_version+1 where id=$1",
+        [selected.id]
+      );
+      expect(
+        await review.reconcilePersonalSelectionChanges(actor, {
+          cursor: page.changeCursor!
+        })
+      ).toMatchObject({ reconciliationRequired: true });
+      const slow = await pool.connect();
+      try {
+        await slow.query("begin");
+        await slow.query(
+          "insert into personal_selection_changes(owner_user_id,kind,local_session_id) values($1,'source',$2)",
+          [actor.userId, selected.id]
+        );
+        await pool.query(
+          "insert into personal_selection_changes(owner_user_id,kind,local_session_id) values($1,'source',$2)",
+          [actor.userId, selected.id]
+        );
+        const beforeLateCommit = await baseline();
+        await slow.query("commit");
+        expect(
+          await review.reconcilePersonalSelectionChanges(actor, {
+            cursor: beforeLateCommit.changeCursor!
+          })
+        ).toMatchObject({ reconciliationRequired: false });
+      } finally {
+        await slow.query("rollback");
+        slow.release();
+      }
+      const beforeAddition = await baseline();
+      const added = await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID(),
+        repositoryIdentity: git
+      });
+      if (kind === "project") {
+        const current = await repo.getPersonalMembershipSyncState(
+          actor,
+          project.projectId
+        );
+        await repo.addPersonalProjectSession(actor, project.projectId, {
+          sessionId: added.id,
+          expectedVersion: current.project.version
+        });
+      }
+      expect(
+        await review.reconcilePersonalSelectionChanges(actor, {
+          cursor: beforeAddition.changeCursor!
+        })
+      ).toMatchObject({ reconciliationRequired: true });
+      const beforeRemoval = await baseline();
+      await pool.query(
+        "update sessions set personal_deleted_at=now() where id=$1",
+        [selected.id]
+      );
+      expect(
+        await review.reconcilePersonalSelectionChanges(actor, {
+          cursor: beforeRemoval.changeCursor!
+        })
+      ).toMatchObject({ reconciliationRequired: true });
+      await expect(
+        review.reconcilePersonalSelectionChanges(await user(), {
+          cursor: page.changeCursor!
+        })
+      ).rejects.toMatchObject({ statusCode: 404 });
+    }
+  );
+  it("continues sharing review pages through unrelated capture and rejects changed selected context", async () => {
+    const repo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: encryption
+    });
+    const review = createPersonalSelectionConsumerRepository(pool, {
+      scopeToSharingReview: true
+    });
+    const actor = await user();
+    const git: PersonalGitContext = {
+      kind: "portable_repository",
+      key: `gr_${randomUUID()}`,
+      root: null,
+      branch: null,
+      reason: "origin",
+      checkoutId: null,
+      originatingDeviceId: "paged-review",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/paged-review"
+    };
+    for (let i = 0; i < 101; i++)
+      await repo.createCapturedSession(actor, {
+        externalSessionId: randomUUID(),
+        repositoryIdentity: git
+      });
+    const first = await review.startPersonalSelectionEnumeration(actor, {
+      target: { kind: "repository", repository: git }
+    });
+    expect(first.entries).toHaveLength(100);
+    expect(first.nextCursor).not.toBeNull();
+    await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID()
+    });
+    const last = await review.continuePersonalSelectionEnumeration(actor, {
+      cursor: first.nextCursor!
+    });
+    expect(last.entries).toHaveLength(1);
+    expect(last.snapshotVersion).toBe(first.snapshotVersion);
+    expect(last.changeCursor).not.toBeNull();
+    await pool.query(
+      "update sessions set repository_assignment_version=repository_assignment_version+1 where id=$1",
+      [first.entries[0]!.source.localSessionId]
+    );
+    await expect(
+      review.continuePersonalSelectionEnumeration(actor, {
+        cursor: first.nextCursor!
+      })
+    ).rejects.toMatchObject({ code: "selection_enumeration_stale" });
   });
   it("requires conclusive owner-bound evidence before removing a known Git Anchor member", async () => {
     const repo = createMemorySourceRepository(pool, {

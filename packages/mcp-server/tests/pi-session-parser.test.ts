@@ -84,6 +84,15 @@ describe("Pi session parser", () => {
       "tool_result",
       "bash_execution"
     ]);
+    expect(result.items[3]?.metadata).toMatchObject({
+      toolName: "read",
+      toolCallId: "c1"
+    });
+    expect(result.items[4]?.metadata).toMatchObject({
+      toolName: "read",
+      toolCallId: "c1"
+    });
+    expect(result.items[5]?.metadata).toMatchObject({ toolName: "bash" });
     expect(result.items[1]?.rawText).toBe("hello");
     expect(result.items[2]?.metadata.modelIdentity).toBe(
       "anthropic/claude-opus-4-6"

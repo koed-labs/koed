@@ -1,3 +1,4 @@
+import { personalSharingToolMetadata } from "./personal-sharing-tool-metadata.js";
 import { personalOwnerIdSchema } from "@koed/shared";
 import { createPersonalSelectionConsumerRepository } from "./personal-selection-consumer-repository.js";
 import { createPersonalMembershipReviewRepository } from "./personal-membership-review-repository.js";
@@ -7854,10 +7855,19 @@ export const createMemorySourceRepository = (
             : row;
         })
       );
+      const sharingMetadata =
+        input.canonicalCapturedSessionEventsOnly && input.includeContent
+          ? await personalSharingToolMetadata(
+              pool,
+              options.envelopeEncryptionProvider,
+              actor,
+              hydratedRows
+            )
+          : new Map<string, Record<string, unknown>>();
       return hydratedRows.map((row) =>
         mapLcmGraphEvent({
           ...row,
-          metadata: row.metadata,
+          metadata: sharingMetadata.get(row.id) ?? row.metadata,
           includeContent: input.includeContent ?? false,
           includeRaw: input.includeRaw ?? false
         })

@@ -1,3 +1,4 @@
+import { resolvePiToolProvenance } from "@koed/shared";
 import { sharingRulePublisherSql } from "./sharing-rule-publisher.js";
 import { readSharingRulePublisher } from "./sharing-rule-publisher.js";
 import { readPublisherTakeoverReview } from "./sharing-rule-publisher-takeover.js";
@@ -5948,6 +5949,15 @@ export const createSharedMemoryRepository = (
           "unsupported_protocol_item"
         );
       }
+      const piBlock =
+        input.contributor.sourceKind === "pi" &&
+        input.contributor.sourceEventType === "tool_call" &&
+        isPlainObject(input.contributor.rawJson) &&
+        input.contributor.rawJson.type === "pi_session_record" &&
+        isPlainObject(input.contributor.rawJson.contentBlock) &&
+        input.contributor.rawJson.contentBlock.type === "toolCall"
+          ? input.contributor.rawJson.contentBlock
+          : null;
       return strictAuthoritativeSourceItem({
         representation: "memory_events",
         logicalMemoryId: input.logicalMemoryId,
@@ -5958,9 +5968,17 @@ export const createSharedMemoryRepository = (
         content: {
           toolName: input.contributor.toolName,
           toolCallId: input.contributor.toolCallId,
-          payload: isPlainObject(input.contributor.rawJson)
-            ? input.contributor.rawJson
-            : { text: textContent }
+          // A Pi record can retain sibling message/thinking blocks. Share only
+          // this verified tool block, never the native record wrapper. Keep call
+          // arguments structured so instruction-key/schema checks still apply.
+          payload:
+            input.contributor.sourceKind === "pi"
+              ? piBlock
+                ? { arguments: piBlock.arguments ?? {} }
+                : { text: textContent }
+              : isPlainObject(input.contributor.rawJson)
+                ? input.contributor.rawJson
+                : { text: textContent }
         }
       });
     }
@@ -6603,6 +6621,15 @@ export const createSharedMemoryRepository = (
           entry.offsetEnd <= eventContent.length
             ? eventContent.slice(entry.offsetStart, entry.offsetEnd)
             : "";
+        // The original event/contributor hashes were verified above. Recover
+        // missing normalized Pi identity only from those verified source bytes.
+        const toolProvenance = resolvePiToolProvenance({
+          sourceKind: stringValue(primary.source_kind),
+          sourceEventType: nullableString(primary.source_event_type),
+          rawJson: hydrated.rawJson,
+          toolName: entry.toolName,
+          toolCallId: entry.toolCallId
+        });
         const contributor = buildCapturedSessionSyncContributor({
           originItemId: primaryId,
           actor: entry.actor,
@@ -6611,8 +6638,7 @@ export const createSharedMemoryRepository = (
             slicedContent.trim().length > 0
               ? slicedContent
               : (hydrated.rawText ?? ""),
-          toolName: entry.toolName,
-          toolCallId: entry.toolCallId,
+          ...toolProvenance,
           sourceEventTime:
             entry.sourceEventTime ?? nullableIso(primary.event_time),
           sourceSequence:
@@ -13919,11 +13945,11 @@ export const createSharedMemoryRepository = (
             and publisher.operation_families @> ARRAY['share_grant_management','sync']::text[]) publisher_available
           from team_memory_sharing_rules rule join users owner on owner.id=rule.owner_user_id and owner.disabled_at is null and owner.deleted_at is null
           join teams t on t.id=rule.team_id join team_workspaces w on w.id=rule.team_workspace_id and w.team_id=t.id
-          where rule.owner_user_id=$1 and rule.selector_kind in ('repository','folder','project') and rule.selector_binding_hash=$2 and ($3::uuid is null or rule.id>$3)
+          where rule.owner_user_id=$1 and rule.selector_kind in ('repository','folder','project') and ($2::text is null or rule.selector_binding_hash=$2) and ($3::uuid is null or rule.id>$3)
           order by rule.id limit $4`,
           [
             actor.userId,
-            crossIdentitySyncDigest(input.selector),
+            input.selector ? crossIdentitySyncDigest(input.selector) : null,
             input.afterRuleId,
             input.limit + 1
           ]
@@ -24260,6 +24286,8 @@ export const createSharedMemoryRepository = (
                   and artifact.include_curated_memory=c.include_curated_memory
                   and artifact.invalidated_at is null
                 where representation.share_grant_id=owned.grant_id
+                  and representation.representation=c.activation_representation
+                  and preview.representation=c.activation_representation
                   and representation.state in ('available','stale') and representation.invalidated_at is null
                   and c.state in ('active','paused') and c.revoked_at is null
                   and (c.expires_at is null or c.expires_at>now())

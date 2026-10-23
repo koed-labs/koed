@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { canonicalConversationItemKey } from "@koed/shared";
+import {
+  canonicalConversationItemKey,
+  readPiToolProvenance
+} from "@koed/shared";
 import type { RawConversationItemRequest } from "./conversation-source-types.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -178,6 +181,13 @@ export const parsePiSessionJournalBytes = (input: {
           : { sourceRecordReference: entryId }),
         contentBlock: rawBlock
       };
+      const toolProvenance = readPiToolProvenance({
+        sourceKind: "pi",
+        sourceEventType: transcriptType,
+        // Every block is normalized from the complete record, even when its
+        // retained transport form refers to another block of the same record.
+        rawJson: { ...rawJson, sourceRecord: entry }
+      });
       const parentId =
         typeof entry.parentId === "string" ? entry.parentId : undefined;
       const provider =
@@ -222,6 +232,14 @@ export const parsePiSessionJournalBytes = (input: {
         projectionVersion: "pi-session-v1",
         metadata: {
           actor,
+          ...(toolProvenance
+            ? {
+                toolName: toolProvenance.toolName,
+                ...(toolProvenance.toolCallId
+                  ? { toolCallId: toolProvenance.toolCallId }
+                  : {})
+              }
+            : {}),
           transcriptType,
           transcriptItemDiscriminator: stableItemId,
           sourceRuntime: "pi",

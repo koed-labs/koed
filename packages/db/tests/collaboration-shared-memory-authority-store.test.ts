@@ -2817,12 +2817,26 @@ describeDb("Collaboration Shared Memory authority store", () => {
     }
     let journal = createSelectionSharingJournal(pool, provider);
     let reconciliation = createSelectionSharingReconciliation(pool, provider);
-    const baseline = async (rules: number) => {
-      for (let phase = 0; phase < 4; phase++)
+    const capture = () =>
+      personal.createMemoryEvent(owner, {
+        sessionId: sessions[1]!.id,
+        projectId: "outage-fixture",
+        visibility: "personal",
+        actor: "user",
+        sourceRuntime: "codex",
+        eventType: "captured",
+        rawEventType: "user_message",
+        content: "Capture continues during multi-phase catch-up",
+        idempotencyKey: randomUUID()
+      });
+    const baseline = async (rules: number, phases = 4) => {
+      for (let phase = 0; phase < phases; phase++) {
+        await capture();
         expect(await reconciliation.reconcile(owner.userId, 10)).toEqual({
           advanced: rules,
           failures: []
         });
+      }
     };
     await baseline(2);
     const delivered: Array<{
@@ -2862,6 +2876,26 @@ describeDb("Collaboration Shared Memory authority store", () => {
       }
       throw new Error("Selection journal did not converge within its bound");
     };
+    await drain();
+    expect(delivered).toHaveLength(4);
+    // Content remains a normal wake-up after installation, rather than being
+    // swallowed by the stable membership fence.
+    await capture();
+    expect(await reconciliation.reconcile(owner.userId, 10)).toEqual({
+      advanced: 2,
+      failures: []
+    });
+    expect(
+      (
+        await pool.query<{
+          proposal_generation: string | null;
+          current_generation: string | null;
+        }>(
+          "select proposal_generation,current_generation from collaboration_sharing_selection_progress"
+        )
+      ).rows.every((row) => row.proposal_generation && row.current_generation)
+    ).toBe(true);
+    await baseline(2, 3);
     await drain();
     expect(delivered).toHaveLength(4);
     const stop = {
@@ -2986,6 +3020,33 @@ describeDb("Collaboration Shared Memory authority store", () => {
         })
       )?.control
     ).toEqual(stopped);
+    await baseline(1, 3);
+    // The removed source is outside the selected scope. If its evidence becomes
+    // unavailable after staging, it must not install a removal from stale proof.
+    const beforeRemoval = (
+      await pool.query(
+        "select rule_id,current_generation from collaboration_sharing_selection_progress order by rule_id"
+      )
+    ).rows;
+    await pool.query("update sessions set invalidated_at=now() where id=$1", [
+      sessions[0]!.id
+    ]);
+    const rejectedRemoval = await reconciliation.reconcile(owner.userId, 10);
+    expect(rejectedRemoval.advanced).toBe(0);
+    expect(rejectedRemoval.failures.map((failure) => failure.code)).toEqual([
+      "selection_enumeration_stale"
+    ]);
+    expect(
+      (
+        await pool.query(
+          "select rule_id,current_generation from collaboration_sharing_selection_progress order by rule_id"
+        )
+      ).rows
+    ).toEqual(beforeRemoval);
+    expect(await journal.claimSources(owner.userId)).toEqual([]);
+    await pool.query("update sessions set invalidated_at=null where id=$1", [
+      sessions[0]!.id
+    ]);
     await baseline(1);
     await drain();
     const resumed = delivered.slice(4);
@@ -3041,7 +3102,7 @@ describeDb("Collaboration Shared Memory authority store", () => {
           [sessions[1]!.id]
         )
       ).rows[0]?.count
-    ).toBe(2);
+    ).toBe(17);
   });
 
   it.each(["active", "paused", "fresh"] as const)(

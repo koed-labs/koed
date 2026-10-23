@@ -13,6 +13,7 @@ import {
   createEmbeddingCapacityRepository,
   createMemorySourceRepository,
   createPersonalDeviceSyncRepository,
+  createPersonalSelectionConsumerRepository,
   createPrivacyClassificationRepository,
   createRealtimeTransportTicketRepository,
   createRemoteMcpOAuthRepository,
@@ -1102,6 +1103,15 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     !options.collaborationSharedMemoryAuthorityStore
       ? createSelectionSharingReconciliation(pool, envelopeEncryptionProvider)
       : null;
+  const selectionReviewRepository =
+    repository && pool && !options.repository
+      ? {
+          ...createPersonalSelectionConsumerRepository(pool, {
+            scopeToSharingReview: true
+          }),
+          listLcmGraphThreads: repository.listLcmGraphThreads
+        }
+      : (repository ?? undefined);
   const collaborationSharedMemoryControl =
     options.collaborationSharedMemoryControl ??
     (sharedMemoryAuthorityRepository
@@ -1127,7 +1137,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
                   readInventory
                 )
             : undefined,
-          selectionReviewRepository: repository ?? undefined,
+          selectionReviewRepository,
           requestRuleDelivery: () => requestRuleDelivery?.(),
           requestPendingShareSourceWork: () =>
             requestPendingShareSourceWork?.(),

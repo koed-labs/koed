@@ -1,3 +1,8 @@
+export {
+  readPiToolProvenance,
+  resolvePiToolProvenance,
+  type PiToolProvenance
+} from "./pi-tool-provenance.js";
 import { createHash } from "node:crypto";
 
 export {

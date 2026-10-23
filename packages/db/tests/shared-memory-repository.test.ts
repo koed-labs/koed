@@ -233,6 +233,7 @@ interface SourceRevisionOptions {
   assistantKind?: string;
   assistantText?: string;
   assistantToolName?: string | null;
+  assistantSourceKind?: string;
   assistantRawJson?: unknown;
   assistantRawText?: string;
   assistantMemoryExcludedAt?: string | null;
@@ -1453,7 +1454,7 @@ describeDb("Shared Memory repository", () => {
       toolCallId: null,
       sourceEventTime: assistantOccurredAt,
       sourceSequence: revision * 10 + 1,
-      sourceKind: "codex",
+      sourceKind: options?.assistantSourceKind ?? "codex",
       sourceAdapterVersion: "1",
       sourceTransport: "test",
       sourceRecordType: "message",
@@ -3128,6 +3129,58 @@ describeDb("Shared Memory repository", () => {
       [grant.shareGrantId]
     );
     expect(durable.rows).toEqual([{ id: reasonId }]);
+  });
+
+  it("keeps the owner preview at approved activation detail when a lower cumulative layer publishes later", async () => {
+    const fixture = await createWorkspaceFixture();
+    const grant = await createGrant(fixture, {
+      representation: "memory_events",
+      label: "owner-preview-cumulative"
+    });
+    const rich = await materializeWithPreview(fixture, grant);
+    const lower = await repository.createAuthoritativeSourcePreview(
+      actor(fixture.ownerUserId),
+      {
+        ...capturedSourceBinding(grant, "memory_events", allRepresentations),
+        logicalMemoryId: grant.logicalMemoryId,
+        remoteReplicaId: grant.remoteReplicaId,
+        teamId: fixture.teamId,
+        teamWorkspaceId: fixture.teamWorkspaceId,
+        mode: "continuous",
+        ...fidelityConsent(allRepresentations),
+        representation: "lcm_leaves",
+        authority: authority(fixture)
+      }
+    );
+    await prepareSanitizedSemanticPreview(fixture.ownerUserId, lower);
+    await repository.materializeGrantRepresentation(
+      actor(fixture.ownerUserId),
+      {
+        mutationId: randomUUID(),
+        shareGrantId: grant.shareGrantId,
+        consentId: grant.consentId,
+        expectedGrantVersion: grant.grantVersion,
+        preview: lower
+      }
+    );
+    const target = { kind: "grant" as const, id: grant.shareGrantId };
+    expect(
+      (await repository.getOwnerShare(actor(fixture.ownerUserId), target))
+        ?.summary.authorizedPreview
+    ).toMatchObject({ previewId: rich.preview.previewId });
+    expect(
+      await repository.readOwnerSharePreview(actor(fixture.ownerUserId), target)
+    ).toMatchObject({
+      representation: "memory_events",
+      activationRepresentation: "memory_events",
+      previewId: rich.preview.previewId
+    });
+    expect(
+      await repository.readOwnerSharePreview(
+        actor(fixture.readerUserId),
+        target
+      )
+    ).toBeNull();
   });
 
   it("materializes and reads every cumulative layer authorized by a memory-events ceiling", async () => {
@@ -7462,6 +7515,100 @@ describeDb("Shared Memory repository", () => {
     ]);
   });
 
+  it("recovers native Pi tool provenance after canonical integrity verification", async () => {
+    const fixture = await createWorkspaceFixture();
+    const source = await createSource(fixture, 1, "pi-provenance", {
+      assistantSourceKind: "pi",
+      assistantActor: "tool",
+      assistantKind: "tool_result",
+      assistantRawJson: {
+        type: "pi_session_record",
+        sourceRecord: {
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolName: "read",
+            toolCallId: "call-1",
+            content: [{ type: "text", text: "synthetic result" }]
+          }
+        }
+      }
+    });
+    await putOwnerPolicy(fixture, source);
+    const preview = await createPersistedPreview(
+      fixture,
+      source,
+      "memory_events"
+    );
+    expect(preview.items).toMatchObject([
+      { itemType: "user_message" },
+      {
+        itemType: "tool_result",
+        content: { toolName: "read", toolCallId: "call-1" }
+      }
+    ]);
+    await pool.query(
+      `update conversation_items set source_event_type = 'tampered_tool_result' where id = $1`,
+      [source.seededEvents[0]!.contributorIds[1]]
+    );
+    await expect(
+      createPersistedPreview(fixture, source, "memory_events")
+    ).rejects.toThrow(
+      "Memory Event sync revision hash does not match active mapping"
+    );
+  });
+
+  it("limits Pi tool publication to the verified semantic block and excludes retained sibling reasoning", async () => {
+    const fixture = await createWorkspaceFixture();
+    const block = {
+      type: "toolCall",
+      id: "call-1",
+      name: "read",
+      arguments: { path: "synthetic" }
+    };
+    const source = await createSource(fixture, 1, "pi-block-boundary", {
+      assistantSourceKind: "pi",
+      assistantActor: "tool",
+      assistantKind: "tool_call",
+      assistantText: 'Tool call: read\n\nInput: {"path":"synthetic"}',
+      assistantRawJson: {
+        type: "pi_session_record",
+        contentBlock: block,
+        sourceRecord: {
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "HIDDEN_SIBLING_REASONING" },
+              { type: "text", text: "UNSELECTED_SIBLING_TEXT" },
+              block
+            ]
+          }
+        }
+      }
+    });
+    await putOwnerPolicy(fixture, source);
+    const preview = await createPersistedPreview(
+      fixture,
+      source,
+      "memory_events"
+    );
+    expect(preview.items[1]).toMatchObject({
+      itemType: "tool_call",
+      content: {
+        toolName: "read",
+        toolCallId: "call-1",
+        payload: { arguments: { path: "synthetic" } }
+      }
+    });
+    expect(JSON.stringify(preview.items)).not.toContain(
+      "HIDDEN_SIBLING_REASONING"
+    );
+    expect(JSON.stringify(preview.items)).not.toContain(
+      "UNSELECTED_SIBLING_TEXT"
+    );
+  });
+
   it("excludes independently classified source items after verifying the canonical revision", async () => {
     const cases: Array<{
       label: string;
@@ -7488,6 +7635,24 @@ describeDb("Shared Memory repository", () => {
           assistantActor: "tool",
           assistantKind: "tool_result",
           assistantText: "unclassified tool output"
+        }
+      },
+      {
+        label: "pi-instruction-argument",
+        options: {
+          assistantSourceKind: "pi",
+          assistantActor: "tool",
+          assistantKind: "tool_call",
+          assistantRawJson: {
+            type: "pi_session_record",
+            sourceRecord: { type: "message", message: { role: "assistant" } },
+            contentBlock: {
+              type: "toolCall",
+              name: "read",
+              id: "call-1",
+              arguments: { system_instruction: "prohibited instruction" }
+            }
+          }
         }
       },
       {
@@ -16629,6 +16794,7 @@ describeDb("Shared Memory repository", () => {
   );
 
   it.each([
+    "owner_rules",
     "repository",
     "portable_source",
     "publisher_transfer",
@@ -16678,7 +16844,8 @@ describeDb("Shared Memory repository", () => {
               scenario === "publisher_readmission_pending_policy" ||
               scenario === "revoked_repository" ||
               scenario === "revoked_during_admission" ||
-              scenario === "preview_revision"
+              scenario === "preview_revision" ||
+              scenario === "owner_rules"
             ? "repository"
             : scenario;
       const fixture = await createWorkspaceFixture();
@@ -16946,6 +17113,48 @@ describeDb("Shared Memory repository", () => {
         state: "active",
         authorityVersion: 1
       });
+      if (scenario === "owner_rules") {
+        const secondId = randomUUID();
+        await createRule(secondId, {
+          kind: "project",
+          key: hash("owner-wide-other-selection")
+        });
+        const first = await repository.listOwnedRepositorySharingRules(owner, {
+          afterRuleId: null,
+          limit: 1
+        });
+        expect(first.rules).toHaveLength(1);
+        expect(first.nextCursor).toBe(first.rules[0]!.ruleId);
+        const next = await repository.listOwnedRepositorySharingRules(owner, {
+          afterRuleId: first.nextCursor,
+          limit: 100
+        });
+        expect(next.nextCursor).toBeNull();
+        expect(
+          [...first.rules, ...next.rules].map((rule) => rule.ruleId).sort()
+        ).toEqual([ruleId, secondId].sort());
+        expect(
+          await repository.listOwnedRepositorySharingRules(reader, {
+            afterRuleId: null,
+            limit: 100
+          })
+        ).toEqual({ rules: [], nextCursor: null });
+        const scoped = await repository.listOwnedRepositorySharingRules(owner, {
+          selector: ruleReview!.scope.selector,
+          afterRuleId: null,
+          limit: 100
+        });
+        expect(scoped.rules.map((rule) => rule.ruleId)).toEqual([ruleId]);
+        expect(
+          (
+            await pool.query(
+              "select 1 from team_memory_sharing_rule_members where rule_id=any($1::uuid[])",
+              [[ruleId, secondId]]
+            )
+          ).rows
+        ).toEqual([]);
+        return;
+      }
       const inspect = (source: SourceFixture, targetRuleId = ruleId) =>
         repository.inspectRepositorySharingRuleMembers(owner, {
           ruleId: targetRuleId,

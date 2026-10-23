@@ -4116,8 +4116,9 @@ const dispatchResolved = async (
       let selector = input.selector;
       if (target) {
         if (
+          !selector ||
           crossIdentitySyncDigest(shared.sharingSelectionDescriptor(target)) !==
-          crossIdentitySyncDigest(selector)
+            crossIdentitySyncDigest(selector)
         )
           throw new ControlFailure("invalid_input");
         const normalized = await readRuleSelectionTarget(
@@ -4137,6 +4138,7 @@ const dispatchResolved = async (
         response.page
       );
       if (
+        selector &&
         page.rules.some(
           (rule) =>
             crossIdentitySyncDigest(rule.selector) !==

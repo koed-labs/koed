@@ -548,7 +548,7 @@ export type RepositorySharingRuleControlReview = z.infer<
 >;
 export const ownedRepositorySharingRulesInputSchema = z
   .object({
-    selector: sharingSelectionSelectorSchema,
+    selector: sharingSelectionSelectorSchema.optional(),
     afterRuleId: z.uuid().nullable(),
     limit: z.number().int().min(1).max(100)
   })

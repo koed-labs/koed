@@ -6,6 +6,19 @@ is ready for the separate release qualification and release decision below. The 
 [validation record](team-continuous-sharing-validation.md) retain the exact scope
 and evidence.
 
+Manual testing subsequently exposed a local sharing-review freshness defect
+under background capture/import, followed by invisible standalone selection rules
+in Shares and initial catch-up starvation. Their source corrections and focused
+checks are recorded in the validation record. The artifact identities below
+refer to the preceding accepted package; reassemble and verify artifacts before
+including these corrections in a distributed candidate. Pi tool provenance and
+exact-detail owner-preview selection are also corrected. All four original failed
+publications recover through normal owner retry with unchanged candidate, consent
+and canonical source bindings; authenticated owner previews and grant reads pass.
+The local source-runtime and manual Team image build successfully. The packaged
+artifacts below still precede these corrections and require reassembly and
+qualification before distribution.
+
 ## Artifacts
 
 | Component                 | Current identity or qualification                                                                           |

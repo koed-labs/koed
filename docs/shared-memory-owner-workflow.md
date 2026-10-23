@@ -52,8 +52,9 @@ verified grant. Companion discussion requests and responses use the existing
 grant-scoped Team source ID. A raw owner source ID or a different grant,
 Workspace or Team cannot satisfy that response check.
 
-The owner source preview follows the latest published revision under that
-entry's current consent. Its preview must match the same owner, source,
+The owner source preview follows the latest published revision at the approved
+activation detail under that entry's current consent. A later cumulative LCM
+publication cannot replace a Memory Events review. Its preview must match the same owner, source,
 destination, activation representation, and approved detail. An unpublished
 revision cannot replace it. Fixed snapshots retain their approved revision;
 separate sharing reasons do not lend each other preview authority. Workspace
@@ -73,6 +74,20 @@ been projected into local authority storage. In that case, the local control
 loads the grant through the existing scoped owner-detail read before checking
 its identity, destination, expected version, and approved revocation binding.
 A different Workspace still fails before any revocation request is sent.
+
+Pi capture retains native tool names and call IDs in Conversation Item metadata.
+For captured Pi records that lack normalized tool metadata, sharing reads can
+recover it from the retained native source record. The local preview reads only
+current owner-scoped, eligible Personal sources. The Team Backend verifies the
+original canonical contributor and Memory Event hashes before deriving that
+identity. Recovery does not rewrite captured history or sync revision hashes.
+Pi tool payloads contain only the selected call arguments or semantic result
+text, never the native record wrapper or its sibling message and reasoning
+blocks. Call arguments retain structured validation, and cached native wrappers
+are rejected.
+A conflicting normalized identity fails closed; an unknown tool identity is
+excluded rather than replaced with a generic tool name. The final exact
+candidate manifest, consent, device, policy, and Privacy checks still apply.
 
 Authoritative source previews use a repeatable-read transaction. When the
 preview owns that transaction, serialization conflicts (40001) and deadlocks
@@ -817,12 +832,35 @@ encryption. The original decision time is retained so delayed execution cannot
 stand in for approval of a later source-owner policy restriction. A repeated
 creation returns its original receipt and cannot change the rule's intent.
 
+Personal → Shares lists the owner's Project, Git Anchor and Folder rules even
+when they have no admitted Conversations. The owner-wide list is authenticated
+and paginated; selector-filtered reads keep their exact selector check. Rule
+controls use the existing reviewed operation path. Rule acceptance and published
+Conversation access are separate states. Selected Memory detail must be ready
+and pass Privacy processing before an individual Conversation share appears.
+
 Creation establishes the rule authority only. Each source still requires
 verified membership, its own reason and consent, and the existing Pending Share
 and Privacy processing before publication.
 
 The local native commands review the completed Personal handoff before approval
 and queue approved creation in the existing encrypted sharing-rule journal.
+For Git Anchor, Folder and Project sharing review, the local snapshot version
+identifies the bounded selected membership, context and portable identity, plus
+Project version and inclusion reasons. Capture updates do not invalidate explicit
+continuous consent, which includes later eligible content. Preview revisions and
+item counts remain observations; they are not a fixed snapshot authorization.
+Selected membership additions/removals, identity/context changes and selected
+Project changes still require a fresh review. Owner, expiry and destination-policy
+checks remain mandatory. Current metadata is read in a repeatable-read transaction;
+allocated journal IDs are not treated as commit watermarks. The review limits remain 5,000 sources
+and 10,000 reason entries. Publisher enumeration uses a separate metadata digest
+computed in the database without those review page limits, so later capture can
+continue during catch-up. Its ordinary transaction-visible change journal still
+schedules content updates. Complete-baseline installation rechecks the selected
+scope and every staged removal against one repeatable-read snapshot. Missing or
+unavailable evidence cannot authorize removal. Generic Personal consumers keep
+their owner-wide visibility fence.
 The full Personal target stays local; the Team request carries only the minimal
 selector descriptor. The delivery worker verifies the exact Team rule receipt.
 An approved queued request can recover that receipt after its observation

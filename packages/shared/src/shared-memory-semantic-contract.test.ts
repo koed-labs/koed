@@ -56,6 +56,40 @@ const semanticFixture = (): SharedMemoryCanonicalSourceItemDto[] => {
 };
 
 describe("Shared Memory canonical semantic contract", () => {
+  it("rejects native Pi wrappers so cached tool artifacts cannot disclose sibling reasoning", () => {
+    const logicalMemoryId = randomUUID();
+    expect(() =>
+      validateSharedMemoryCanonicalSourceItem({
+        representation: "memory_events",
+        logicalMemoryId,
+        sourceRevision: 1,
+        item: {
+          itemType: "tool_call",
+          schemaVersion: 1,
+          sourceId: randomUUID(),
+          sourceLogicalMemoryId: logicalMemoryId,
+          sourceRevision: 1,
+          content: {
+            toolName: "read",
+            toolCallId: "call-1",
+            payload: {
+              type: "pi_session_record",
+              sourceRecord: {
+                type: "message",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "thinking", thinking: "private reasoning" }]
+                }
+              }
+            }
+          }
+        }
+      })
+    ).toThrow(
+      expect.objectContaining({ reasonCode: "unsupported_protocol_item" })
+    );
+  });
+
   it("classifies Project labels and branches while preserving the exact repository fingerprint", () => {
     const authoritative = semanticFixture();
     authoritative[0]!.repositorySnapshot = {

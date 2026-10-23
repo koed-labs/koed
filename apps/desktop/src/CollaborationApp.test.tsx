@@ -1521,10 +1521,12 @@ describe("CollaborationApp", () => {
         .find((button) => button.textContent?.trim() === "Projects")
         ?.click()
     );
-    await vi.waitFor(() =>
-      expect(
-        container.querySelector('[data-project-id="unassigned"]')
-      ).not.toBeNull()
+    await vi.waitFor(
+      () =>
+        expect(
+          container.querySelector('[data-project-id="unassigned"]')
+        ).not.toBeNull(),
+      { timeout: 5_000 }
     );
     await act(async () =>
       container
@@ -2460,6 +2462,56 @@ describe("CollaborationApp", () => {
       )
     );
     expect(client.shareMemory).not.toHaveBeenCalled();
+  });
+
+  it("shows an active Project rule in Shares before any Conversation is published", async () => {
+    const client = createClient(baseSnapshot());
+    vi.mocked(client.listRepositoryRules).mockResolvedValue({
+      rules: [
+        {
+          ruleId: uuid(940),
+          selector: { kind: "project", key: "c".repeat(64) },
+          team: { id: ids.team, name: "Atlas Research" },
+          workspace: { id: ids.workspace, name: "Launch Plans" },
+          state: "active",
+          maximumFidelity: "lcm_rollups",
+          includeCuratedMemory: false,
+          authorityVersion: 1,
+          publisherFence: 1,
+          publisherAvailable: true
+        }
+      ],
+      nextCursor: null
+    });
+    await act(async () =>
+      root.render(
+        <PersonalMemoryView
+          client={client}
+          initialSection="shares"
+          markdownAdapters={{ openExternal: vi.fn(), writeClipboard: vi.fn() }}
+          onShare={vi.fn()}
+          snapshot={baseSnapshot()}
+        />
+      )
+    );
+    await vi.waitFor(() =>
+      expect(client.listRepositoryRules).toHaveBeenCalledWith({
+        afterRuleId: null,
+        limit: 50
+      })
+    );
+    const rules = document.body.querySelector(
+      '[aria-label="Continuous sharing rules"]'
+    );
+    expect(rules?.textContent).toContain("Atlas Research · Launch Plans");
+    expect(rules?.textContent).toContain("Project");
+    expect(rules?.textContent).toContain("Active");
+    expect(rules?.textContent).toContain(
+      "Existing and future eligible Conversations"
+    );
+    expect(rules?.textContent).toContain("Pause updates");
+    expect(document.body.textContent).toContain("No Conversation shares yet");
+    expect(document.body.textContent).not.toContain("No shares yet");
   });
 
   it("opens owner-wide Shares from the active Personal Memory route", async () => {

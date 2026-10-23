@@ -31,7 +31,7 @@ export function RepositorySharingRules({
   creation
 }: {
   client: RepositorySharingRulesClient;
-  selector: Parameters<
+  selector?: Parameters<
     RepositorySharingRulesClient["listRepositoryRules"]
   >[0]["selector"];
   target?: Parameters<
@@ -55,7 +55,7 @@ export function RepositorySharingRules({
       setError("");
       try {
         const page = await client.listRepositoryRules({
-          selector,
+          ...(selector ? { selector } : {}),
           ...(selectionTarget ? { target: selectionTarget } : {}),
           afterRuleId: after,
           limit: 50
@@ -112,6 +112,7 @@ export function RepositorySharingRules({
       crossIdentitySyncDigest(creation.intent.review.target) ===
         crossIdentitySyncDigest(selectionTarget);
     if (
+      selector &&
       !sameLocalTarget &&
       (createdSelector.kind !== selector.kind ||
         createdSelector.key !== selector.key ||
@@ -217,15 +218,17 @@ export function RepositorySharingRules({
   };
   return (
     <section
-      aria-label={`${selector.kind === "folder" ? "Folder" : selector.kind === "project" ? "Project" : "Git Anchor"} sharing rules`}
+      className="collab-selection-sharing-rules"
+      aria-label={
+        selector
+          ? `${selector.kind === "folder" ? "Folder" : selector.kind === "project" ? "Project" : "Git Anchor"} sharing rules`
+          : "Continuous sharing rules"
+      }
     >
       <h3>
-        Sharing rules for this{" "}
-        {selector.kind === "folder"
-          ? "Folder"
-          : selector.kind === "project"
-            ? "Project"
-            : "Git Anchor"}
+        {selector
+          ? `Sharing rules for this ${selector.kind === "folder" ? "Folder" : selector.kind === "project" ? "Project" : "Git Anchor"}`
+          : "Continuous sharing rules"}
       </h3>
       {error ? (
         <p role="alert" className="collab-form-error">
@@ -246,6 +249,15 @@ export function RepositorySharingRules({
         const disabled = busy !== null || pending;
         return (
           <article key={rule.ruleId}>
+            {!selector ? (
+              <p>
+                {rule.selector.kind === "folder"
+                  ? "Folder"
+                  : rule.selector.kind === "project"
+                    ? "Project"
+                    : "Git Anchor"}
+              </p>
+            ) : null}
             <strong>
               {rule.team.name} · {rule.workspace.name}
             </strong>
@@ -265,8 +277,8 @@ export function RepositorySharingRules({
             </p>
             {rule.state === "active" ? (
               <p>
-                Existing and future eligible Conversations appear after Privacy
-                processing.
+                Existing and future eligible Conversations appear after their
+                selected Memory detail is ready and passes Privacy processing.
               </p>
             ) : rule.state === "paused" ? (
               <p>

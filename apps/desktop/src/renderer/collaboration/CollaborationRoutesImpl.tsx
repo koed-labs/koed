@@ -1,3 +1,4 @@
+import { RepositorySharingRules } from "./RepositorySharingRules.js";
 import { SnapshotConversionReview } from "./SnapshotConversionReview.js";
 import { SharingRuleContentPolicyReview } from "./SharingRuleContentPolicyReview.js";
 import { SharingRuleDetailReview } from "./SharingRuleDetailReview.js";
@@ -1515,7 +1516,7 @@ function OwnedSharesWorkspace({
         <aside className="collab-shares-pane" aria-label="Shares">
           <header>
             <h1 tabIndex={-1}>Shares</h1>
-            <span aria-label={`${ownedShares.length} Shares`}>
+            <span aria-label={`${ownedShares.length} Conversation shares`}>
               {ownedShares.length}
             </span>
           </header>
@@ -1536,8 +1537,16 @@ function OwnedSharesWorkspace({
             {shareAnnouncement}
           </span>
           <div className="collab-shares-scroll">
+            <RepositorySharingRules
+              key={`${snapshot.connection.backendId}:${snapshot.navigation.personalOwner.id}:${snapshot.navigation.teamPrincipal?.id ?? ""}`}
+              client={client}
+              creation={null}
+            />
             {ownedShares.length === 0 ? (
-              <StateView icon={<Library />} title="No shares yet" />
+              <StateView
+                icon={<Library />}
+                title="No Conversation shares yet"
+              />
             ) : visibleShares.length === 0 ? (
               <div className="collab-shares-empty" role="status">
                 No Shares match “{query}”.

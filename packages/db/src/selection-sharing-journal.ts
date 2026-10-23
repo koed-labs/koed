@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
+import { personalSelectionScopeVersion } from "./personal-selection-scope-version.js";
+import { evaluatePersonalSelectionMembersInTransaction } from "./personal-selection-member-evaluation.js";
 import { readConsumerCursor } from "./personal-selection-consumer-state.js";
 import {
   resolveNativeSharingSource,
@@ -124,11 +126,14 @@ const decode = async <T>(
 };
 const transaction = async <T>(
   pool: pg.Pool,
-  run: (client: pg.PoolClient) => Promise<T>
+  run: (client: pg.PoolClient) => Promise<T>,
+  repeatableRead = false
 ) => {
   const client = await pool.connect();
   try {
-    await client.query("begin");
+    await client.query(
+      repeatableRead ? "begin isolation level repeatable read" : "begin"
+    );
     const value = await run(client);
     await client.query("commit");
     return value;
@@ -493,7 +498,8 @@ export const seedTransferredSelectionSharingProgress = async (
 
 export const createSelectionSharingJournal = (
   pool: pg.Pool,
-  provider: EnvelopeEncryptionProvider
+  provider: EnvelopeEncryptionProvider,
+  options: { scopeToSharingMembership?: boolean } = {}
 ) => {
   const load = async (
     client: pg.PoolClient,
@@ -1199,59 +1205,128 @@ export const createSelectionSharingJournal = (
       });
     },
     async commit(lease: SelectionSharingProgressLease) {
-      return transaction(pool, async (client) => {
-        const { data } = await load(client, lease),
-          proposal = data.proposal;
-        if (
-          !proposal ||
-          proposal.phase !== "commit" ||
-          !proposal.changeCursor ||
-          proposal.planPage !== proposal.pageCount
-        )
-          throw conflict();
-        const checkpoint = await readConsumerCursor(
-          client,
-          { userId: lease.identity.localOwnerUserId },
-          proposal.changeCursor
-        );
-        if (
-          checkpoint.kind !== "checkpoint" ||
-          checkpoint.snapshot_version !== proposal.snapshotVersion ||
-          crossIdentitySyncDigest(checkpoint.selection.target) !==
-            crossIdentitySyncDigest(data.intent.review.target)
-        )
-          throw conflict();
-        const changed = await client.query(
-          `select 1 from personal_selection_changes where owner_user_id=$1
-          and not pg_visible_in_snapshot(transaction_id::xid8,$2::pg_snapshot) limit 1`,
-          [lease.identity.localOwnerUserId, checkpoint.from_snapshot]
-        );
-        if (changed.rowCount)
-          throw Object.assign(
-            new Error(
-              "Personal selection changed before baseline installation"
-            ),
-            { code: "selection_enumeration_stale" }
+      return transaction(
+        pool,
+        async (client) => {
+          const { data } = await load(client, lease),
+            proposal = data.proposal;
+          if (
+            !proposal ||
+            proposal.phase !== "commit" ||
+            !proposal.changeCursor ||
+            proposal.planPage !== proposal.pageCount
+          )
+            throw conflict();
+          const checkpoint = await readConsumerCursor(
+            client,
+            { userId: lease.identity.localOwnerUserId },
+            proposal.changeCursor
           );
-        // Never replace a complete baseline while a known committed source has
-        // no staged disposition. Unavailability must have an explicit retained goal.
-        const missing = await client.query(
-          `select 1 from collaboration_sharing_selection_sources where progress_id=$1 and proposed_generation is distinct from $2::uuid
+          if (
+            checkpoint.kind !== "checkpoint" ||
+            checkpoint.snapshot_version !== proposal.snapshotVersion ||
+            crossIdentitySyncDigest(checkpoint.selection.target) !==
+              crossIdentitySyncDigest(data.intent.review.target)
+          )
+            throw conflict();
+          const actor = { userId: lease.identity.localOwnerUserId };
+          const consumerOptions = { includeDeletedProjects: true, ...options };
+          const stale = () =>
+            Object.assign(
+              new Error(
+                "Personal selection changed before baseline installation"
+              ),
+              { code: "selection_enumeration_stale" }
+            );
+          if (options.scopeToSharingMembership) {
+            if (
+              (await personalSelectionScopeVersion(
+                client,
+                actor,
+                checkpoint.selection,
+                consumerOptions
+              )) !== checkpoint.snapshot_version
+            )
+              throw stale();
+            // A source absent from the current enumeration can change without
+            // changing its selected members. Revalidate every conclusive removal
+            // against the same snapshot as the final scope check. Unavailable
+            // evidence never becomes proof of removal.
+            let after: string | null = null;
+            for (;;) {
+              const rows: pg.QueryResult<Row> = await client.query<Row>(
+                `select * from collaboration_sharing_selection_sources where progress_id=$1
+               and proposed_generation=$2 and ($3::uuid is null or id>$3) order by id limit 100`,
+                [lease.progressId, proposal.generation, after]
+              );
+              const removals: SelectionSharingGoal[] = [];
+              for (const row of rows.rows) {
+                const goal = (await readSource(lease.identity, row)).proposed;
+                if (goal?.desired === "removed") removals.push(goal);
+              }
+              if (removals.length) {
+                const evaluation =
+                  await evaluatePersonalSelectionMembersInTransaction(
+                    client,
+                    actor,
+                    {
+                      cursor: proposal.changeCursor,
+                      sources: removals.map(({ source }) => ({
+                        localSessionId: source.localSessionId,
+                        localLogicalSessionId: source.localLogicalSessionId
+                      }))
+                    },
+                    consumerOptions
+                  );
+                for (const goal of removals) {
+                  const current = evaluation.entries.find(
+                    (entry) =>
+                      entry.localSessionId === goal.source.localSessionId &&
+                      entry.localLogicalSessionId ===
+                        goal.source.localLogicalSessionId
+                  );
+                  if (
+                    !current ||
+                    !["deleted", "not_matching"].includes(current.state) ||
+                    current.sourceContextHash !== goal.contextHash
+                  )
+                    throw stale();
+                }
+              }
+              if (rows.rows.length < 100) break;
+              after = String(rows.rows.at(-1)!.id);
+            }
+          } else if (
+            (
+              await client.query(
+                `select 1 from personal_selection_changes where owner_user_id=$1
+          and not pg_visible_in_snapshot(transaction_id::xid8,$2::pg_snapshot) limit 1`,
+                [actor.userId, checkpoint.from_snapshot]
+              )
+            ).rowCount
+          )
+            throw stale();
+          // Never replace a complete baseline while a known committed source has
+          // no staged disposition. Unavailability must have an explicit retained goal.
+          const missing = await client.query(
+            `select 1 from collaboration_sharing_selection_sources where progress_id=$1 and proposed_generation is distinct from $2::uuid
           and (current_generation is not null or proposed_generation=$3::uuid) limit 1`,
-          [lease.progressId, proposal.generation, data.currentGeneration]
-        );
-        if (missing.rowCount) throw conflict();
-        data.currentGeneration = proposal.generation;
-        if (proposal.inventory)
-          data.pendingMemberCount = proposal.inventory.pendingMemberCount;
-        data.changeCursor = proposal.changeCursor;
-        data.proposal = null;
-        await save(client, lease, data, true);
-        await client.query(
-          "delete from collaboration_sharing_selection_pages where progress_id=$1 and generation<>$2",
-          [lease.progressId, data.currentGeneration]
-        );
-      });
+            [lease.progressId, proposal.generation, data.currentGeneration]
+          );
+          if (missing.rowCount) throw conflict();
+          data.currentGeneration = proposal.generation;
+          if (proposal.inventory)
+            data.pendingMemberCount = proposal.inventory.pendingMemberCount;
+          data.changeCursor = proposal.changeCursor;
+          data.proposal = null;
+          await save(client, lease, data, true);
+          await client.query(
+            "delete from collaboration_sharing_selection_pages where progress_id=$1 and generation<>$2",
+            [lease.progressId, data.currentGeneration]
+          );
+        },
+        options.scopeToSharingMembership === true
+      );
     },
     async abandon(lease: SelectionSharingProgressLease) {
       return transaction(pool, async (client) => {

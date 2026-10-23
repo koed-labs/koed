@@ -1493,6 +1493,46 @@ describe("collaboration Shared Memory control", () => {
     );
     expect(remote).toHaveBeenCalledTimes(1);
   });
+  it("lists owner-wide selection rules without resolving a local target and preserves selector filtering", async () => {
+    const fixture = createFixture();
+    const page = { rules: [], nextCursor: null };
+    const remote = vi.fn<typeof fetch>().mockResolvedValue(json({ page }));
+    const readTarget = vi.fn();
+    const control = createCollaborationSharedMemoryControl({
+      ...fixture.options,
+      readSharingSelectionTarget: readTarget,
+      fetch: (url, init) =>
+        String(url).endsWith("/repository-rules/owned")
+          ? remote(url, init)
+          : fixture.options.fetch(url, init)
+    });
+    const input = { afterRuleId: null, limit: 50 };
+    expect(
+      await control.dispatch(
+        { ...commandBase("collaboration.list_repository_rules"), input },
+        context()
+      )
+    ).toMatchObject({ ok: true, data: { page } });
+    expect(JSON.parse(String(remote.mock.calls[0]![1]?.body))).toEqual(input);
+    expect(readTarget).not.toHaveBeenCalled();
+    expectFailure(
+      await control.dispatch(
+        {
+          ...commandBase("collaboration.list_repository_rules"),
+          input: {
+            ...input,
+            target: {
+              kind: "project",
+              project: { ownerUserId: ids.localOwner, projectId: uuidFor(980) }
+            }
+          }
+        },
+        context()
+      ),
+      "invalid_input"
+    );
+    expect(remote).toHaveBeenCalledTimes(1);
+  });
   it("reviews an owner selection while sending only destination policy reads to the Team backend", async () => {
     const target = {
       kind: "repository" as const,

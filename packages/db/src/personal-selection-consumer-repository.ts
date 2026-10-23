@@ -11,6 +11,7 @@ import type { ActorContext } from "./types.js";
 import { personalSourceSelectionSql } from "./personal-selection-sql.js";
 import { personalProjectMembershipReasonsSql } from "./personal-project-rule-repository.js";
 import { evaluatePersonalSelectionMembers } from "./personal-selection-member-evaluation.js";
+import { personalSelectionScopeVersion } from "./personal-selection-scope-version.js";
 import {
   selectionConsumerError,
   withSelectionConsumerTransaction,
@@ -28,12 +29,22 @@ const page = async (
   cursor: Omit<ConsumerCursor, "cursor_id">,
   options: SelectionConsumerOptions
 ) => {
-  const changed = await client.query(
-    `select 1 from personal_selection_changes where owner_user_id=$1
+  const changed =
+    options.scopeToSharingReview || options.scopeToSharingMembership
+      ? (await personalSelectionScopeVersion(
+          client,
+          actor,
+          cursor.selection,
+          options
+        )) !== cursor.snapshot_version
+      : (
+          await client.query(
+            `select 1 from personal_selection_changes where owner_user_id=$1
     and not pg_visible_in_snapshot(transaction_id::xid8,$2::pg_snapshot) limit 1`,
-    [actor.userId, cursor.from_snapshot]
-  );
-  if (changed.rows.length)
+            [actor.userId, cursor.from_snapshot]
+          )
+        ).rows.length > 0;
+  if (changed)
     throw selectionConsumerError(
       "selection_enumeration_stale",
       409,
@@ -134,7 +145,15 @@ export const createPersonalSelectionConsumerRepository = (
           owner_user_id: actor.userId,
           kind: "enumeration",
           selection,
-          snapshot_version: randomUUID(),
+          snapshot_version:
+            options.scopeToSharingReview || options.scopeToSharingMembership
+              ? await personalSelectionScopeVersion(
+                  client,
+                  actor,
+                  selection,
+                  options
+                )
+              : randomUUID(),
           from_snapshot: await currentConsumerSnapshot(client),
           to_snapshot: null,
           after_source: null,
@@ -173,6 +192,23 @@ export const createPersonalSelectionConsumerRepository = (
           400,
           "Finish the enumeration before collecting changes"
         );
+      if (options.scopeToSharingReview) {
+        return personalSelectionConsumerChangesSchema.parse({
+          version: 1,
+          selection: cursor.selection,
+          events: [],
+          nextCursor: null,
+          changeCursor: cursor.cursor_id,
+          reconciliationRequired:
+            (await personalSelectionScopeVersion(
+              client,
+              actor,
+              cursor.selection,
+              options
+            )) !== cursor.snapshot_version,
+          expiresAt: cursor.expires_at.toISOString()
+        });
+      }
       const toSnapshot =
         cursor.to_snapshot ?? (await currentConsumerSnapshot(client));
       // The ID is a page key within this fixed visibility window, never a

@@ -3799,3 +3799,230 @@ release publication or external deployment.
 The [candidate status record](team-continuous-sharing-release-candidate.md) is the
 operator handoff. The User's decision to omit a changeset remains in effect.
 No push, PR, merge, remote deployment or release publication was performed.
+
+## Manual-test sharing-review freshness correction, 23 October 2026
+
+The User's clean Team and ordinary Personal profile exposed a review starvation
+bug during background capture/import. The preview and approval handoff checked
+all owner journal changes, so an unrelated Conversation could invalidate a Git
+Anchor or Project review. Read-only reproduction returned the generic conflict
+without creating or approving a Share Grant.
+
+The local sharing-preview adapter now uses a bounded selection-state version.
+It covers selected identities, context, portable bindings, Project version and
+inclusion reasons. Unrelated capture and unrelated Project changes leave that
+version intact. Later turns within the selection are also allowed by explicit
+continuous consent. Selected membership additions/removals, context/identity and
+Project changes still invalidate it. Current metadata is read through the
+repeatable-read owner boundary rather than an allocated journal watermark.
+The existing owner/expiry/target and destination-policy checks are unchanged.
+At this first correction, publisher reconciliation and removal proofs kept their
+original global visibility fence. The subsequent catch-up correction below replaces
+that publisher fence. Fixed-snapshot review and publication checks are unchanged.
+No schema migration, approval bypass or publication authority was added.
+
+Both Git Anchor and Project cases first reproduced the erroneous conflict. The
+initial correction removed unrelated-change starvation, but live Git verification
+still encountered hundreds of selected-source journal changes from active capture.
+The completed correction therefore separates continuous source-content updates
+from changes to the approved selection scope. New regression cases cover later
+selected turns, unrelated capture, selected context changes, member addition and
+deletion, owner isolation, delayed content commits and paginated review. Existing
+generic consumer cases retain their original visibility and late-commit behavior.
+Eleven existing review-security cases pass. An intermediate test used a nonexistent
+title column for its synthetic edit; it was corrected to a normal Session update.
+
+The final nine-case isolated PostgreSQL suite passes in 10.11 seconds. Scoped
+lint, changed-test typechecking, formatting and whitespace checks pass. The normal
+serial source-runtime build and integrity preparation pass across ten packages.
+The local runtime was restored with its original bundled-local profile and ports,
+Team collaboration enabled and the local queue. No data reset, credential change
+or re-enrollment was needed.
+
+Live read-only verification on that runtime passes for the Project's four sources
+and Git Anchor's eight sources: both previews complete and both creation-review
+handoffs return success. No native approval, rule creation or publication was
+performed by this diagnostic. Background capture may continue during continuous
+review; a change to its selected scope or current destination still requires a
+new review. Reviews left open across the runtime update must be refreshed.
+
+Earlier candidate package identities refer to the accepted build preceding this
+correction. Reassemble and verify packaged artifacts before distributing it.
+The Team backend and its manual-test data were not replaced for this fix.
+
+## Manual-test Shares visibility and catch-up correction, 23 October 2026
+
+The User created an active Project rule against the clean manual-test Team, but
+Personal → Shares was empty. The owner panel listed accepted rule authority;
+Shares queried only per-Conversation Pending Shares and Share Grants. At the
+same time, local catch-up repeatedly abandoned its initial baseline during live
+capture: the rule had no Team members and no installed local generation after
+73 leases. No publication was inferred from successful rule creation.
+
+Shares now also reads the authenticated owner's paginated selection-rule list,
+including rules with zero members. The same selector-filtered endpoint remains
+available for Project, Git Anchor and Folder panels. No User ID is accepted as
+the listing authority. Existing reviewed pause, retry, stop, detail and Privacy
+policy controls are reused. The list is reset when the backend or principal
+changes. Individual Conversation shares remain separately visible.
+
+Publisher enumeration now compares current owner-scoped membership, source
+context, portable identities and Project reasons instead of rejecting every
+captured content change. Its digest is computed in PostgreSQL without imposing
+the review's source-count limit on future membership. Content changes remain in
+the ordinary transaction-visible change journal and trigger subsequent scans.
+Complete-baseline installation checks the selected scope and re-evaluates every
+staged conclusive removal in the same repeatable-read transaction. Missing,
+unavailable or changed evidence rejects the proposal and preserves the prior
+complete generation. Publication, consent, destination policy and owner/device
+checks remain mandatory. No schema change, data reset or new sharing approval
+was used for this correction.
+
+Focused verification passes: four isolated recovery/takeover cases, including
+capture between every catch-up phase, later content wake-up and rejection of a
+removal whose evidence becomes unavailable before installation; one isolated
+owner-list case covering zero-member rules, mixed selectors, pagination and
+cross-owner denial; 88 local-edge/review-security cases; and 19 focused screen
+cases including a rule with no Conversation shares. The wider 96-case screen
+run initially had two one-second asynchronous setup failures. The setup check
+passes on focused rerun; the Project load check passes with a bounded five-second
+wait. A large three-scenario publication run exceeded its harness deadline and
+is not counted as passing. Its disposable database was removed; the focused
+owner-list case replaces that run for this correction. Scoped lint passes.
+
+The ten-package source-runtime build and integrity preparation pass. The Desktop
+production typecheck, Electron/preload build and renderer build pass under the
+2 GB Node heap cap. The existing primary rule then installs a complete baseline
+for all four selected Conversations through normal catch-up, and all four reach
+Team admission. After restoration, all four Pending Shares fail closed with
+`candidate_manifest_changed`. This separate publication issue remains in TODO.md;
+no candidate validation was weakened or failed share manually marked complete.
+
+The corrected manual Team image is
+`sha256:239268ab308e29d2232d3ea2cd853d6f91586618eca6b5f6dcb8e2b7afaa8cb7`.
+Only its service container was replaced; database, queue, encryption and device
+volumes were retained. The rebuilt primary development app and native runtime
+were reopened. Live authenticated reads return the active Project rule in the
+owner-wide rule list and all four failed Conversation shares. Source metadata
+checks confirm their accepted identifiers are still actively mapped and their
+revision hashes match the production formula; source identifier ordering also
+matches. These observations do not prove that the canonical authoritative source
+manifest can be reproduced. The source-consistency failure remains open and
+must not be bypassed or described as a successful publication.
+
+### Publication failure diagnosis, 23 October 2026
+
+Read-only comparison of the accepted candidates with their decrypted retained
+source-artifact manifests identifies the missing canonical Memory Events:
+
+| Source revision | Accepted events | Canonical events | Missing accepted events |
+| --------------- | --------------- | ---------------- | ----------------------- |
+| 119             | 6               | 4                | 2                       |
+| 63              | 14              | 8                | 6                       |
+| 113             | 6               | 4                | 2                       |
+| 179             | 23              | 16               | 7                       |
+
+The accepted candidate hashes are intact, every canonical event maps through its
+active sync relationship, and no additional canonical events appear. Excluded
+sources are Pi tool calls/results. All 18 inspected tool source records retain
+the original name and call ID in encrypted raw source, while none retain a tool
+name in normalized Conversation Item metadata. The Pi parser constructs display
+text from tool names but omits tool provenance from its metadata. Projection
+therefore cannot carry those names into the semantic item manifest. The local
+candidate preview accepts those events and substitutes the generic name "tool";
+authoritative preparation rejects them as unsupported protocol items because a
+verified tool name is required. The final manifest comparison correctly fails
+closed.
+
+This diagnosis used existing owner-private encryption providers inside the local
+Team container and emitted counts, source record types, metadata keys and
+presence/integrity flags only. No source text, tool arguments, secrets or keys
+were printed. No publication was retried or manually altered. The implementation
+follow-up is in TODO.md: preserve verified Pi provenance, align preview eligibility
+and retain strict final validation. No runtime or configuration change was needed
+for this investigation, and no tests or rebuilds were run.
+
+### Pi tool provenance and preview correction, 23 October 2026
+
+Pi capture now preserves native tool names and call IDs. Current captured records
+that lack normalized identity recover it at read time from retained native Pi
+source. Local preview recovery is restricted to current eligible Personal sources
+owned by the caller. Authoritative preparation verifies the original canonical
+contributor and Memory Event hashes before deriving identity. Conflicting native
+and normalized identities fail closed. Unknown tool identities are excluded from
+the local preview rather than assigned a generic name.
+
+Pi tool publication includes only the selected call arguments or semantic result
+text. Call arguments remain structured, preserving schema and prohibited-key
+checks. Native record wrappers can contain sibling text and hidden reasoning;
+they are rejected from fresh or cached tool artifacts. The service was paused
+before any of the four operations made content available while this additional
+boundary was completed. Retained source bytes and sync revision hashes were not
+rewritten. Consent, publisher/device, owner, destination, Privacy and final exact
+candidate-manifest checks remain required.
+
+Focused verification passes: 12 shared provenance/semantic cases, five parser
+cases, 91 local-edge sharing and preview cases, four isolated authoritative-source
+cases, the exact candidate-mismatch rejection case, and an encrypted owner-boundary
+case. The latter proves owner decryption, cross-owner denial, source-exclusion
+denial and unchanged captured storage. Source cases cover retained sibling
+reasoning, structured instruction-key rejection, canonical-hash tampering and
+unknown tool exclusion. Scoped lint, formatting and the ten-package production
+source-runtime build pass. The Team image also builds successfully under the
+2 GB Node heap cap.
+
+The final manual Team image is
+`sha256:e674c00db537dc9a8e4db58eb14da11e8862227dd4f561d55a3d393eb0b6f752`.
+Only the service container was replaced. Database, queue, encryption, device and
+model-cache volumes were retained. Local source-runtime integrity preparation is
+`916ce76b7ddb27880a32cb880e66088602b9e03cb5f3e12194a818c6b2775041`;
+the image's Linux/Node 22 runtime fingerprint is
+`b1fdcf429b7053dcaabb77510fae12c66e2815eef78ddb5f88c11dab6448ddff`.
+Platform and Node-version inputs explain the distinct runtime fingerprints.
+The existing Desktop process remains open with secure credential storage enabled.
+No Keychain approval, new share approval, enrollment replacement or database reset
+was used for this correction.
+
+Authenticated local previews retain all 49 originally accepted events and all 18
+Pi tool names/call IDs. Read-only comparison of the final authoritative artifacts
+reproduces each original accepted manifest exactly: 23 events at revision 179,
+14 at revision 63, six at revision 113 and six at revision 119. The final artifacts
+contain selected `arguments` or `text` tool payloads and no native wrappers. The
+original 49 active canonical mappings and their revision hashes remain unchanged.
+The four original Pending Shares were retried through authenticated owner controls
+with their original source revisions, consent, destination and detail.
+
+The local CPU classifier exceeded the default 30-second request deadline while
+processing real captured content. The manual Team worker therefore uses the
+supported `PRIVACY_SERVICE_TIMEOUT_MS=120000` override. Timed-out in-flight
+classifier work was restarted normally. The classifier model, required Privacy
+categories, byte/field limits and result-validation checks are unchanged;
+this setting extends the processing deadline and grants no content access.
+
+All four original operations subsequently reach `activated` / `complete` with
+an available Memory Event representation and a durable reason-publication ledger.
+Their original operation IDs, candidate preview IDs/hashes, consent IDs, source
+revisions, destinations and detail remain unchanged. The original 49 canonical
+mapping hashes also match exactly. Eight unpublished private processing previews
+from the intermediate native-wrapper build were invalidated through the existing
+owner-scoped repository method. No captured source, consent or completed
+publication was changed by that cleanup.
+
+The final owner-detail check also exposed a cumulative-preview selection race:
+a later LCM publication could replace the Memory Events reference even though
+the consent's activation detail remained Memory Events. The local immutable
+preview cache correctly rejected that mismatch. Owner selection now requires
+both the published representation and source preview to match the consent's
+activation representation. The additional isolated regression publishes an LCM
+layer after Memory Events, retains the Memory Events owner preview, and continues
+to deny a different owner. Cache identity, content and permission checks remain
+strict.
+
+Final authenticated local reads pass for all four activated Pending Shares and
+their active Share Grants. Every owner preview returns Memory Events at the
+original approved revision, with eight, two, six and two verified Pi tool items
+for revisions 179, 113, 63 and 119 respectively. Both runtimes are restored healthy
+and the existing Desktop process remains open. No new approval or Keychain prompt
+was needed. The additional cumulative-preview regression brings focused
+verification to 115 passing cases. Packaged release-artifact reassembly and the
+previously documented external release qualifications remain separate.

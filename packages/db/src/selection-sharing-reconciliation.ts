@@ -21,9 +21,12 @@ export const createSelectionSharingReconciliation = (
   pool: pg.Pool,
   provider: EnvelopeEncryptionProvider
 ) => {
-  const journal = createSelectionSharingJournal(pool, provider);
+  const journal = createSelectionSharingJournal(pool, provider, {
+    scopeToSharingMembership: true
+  });
   const personal = createPersonalSelectionConsumerRepository(pool, {
-    includeDeletedProjects: true
+    includeDeletedProjects: true,
+    scopeToSharingMembership: true
   });
   const step = async (
     lease: SelectionSharingProgressLease,

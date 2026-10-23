@@ -124,6 +124,12 @@ export const currentConsumerSnapshot = async (client: pg.PoolClient) => {
 /** A portable Conversation resolves only through its exact verified local
  * binding. Native-only selection uses the actual owned Session ID directly. */
 export interface SelectionConsumerOptions {
+  /** Only the sharing-preview adapter uses a bounded selection-state version.
+   * Generic consumers retain their owner-wide transaction-visibility fence. */
+  scopeToSharingReview?: boolean;
+  /** Stable selection scope during multi-phase publication. Content changes
+   * still appear in the normal transaction-visible change journal. */
+  scopeToSharingMembership?: boolean;
   /** Sharing may observe a retained, conclusive Project tombstone as an empty
    * selection. Public Personal enumeration keeps its unavailable-target error. */
   includeDeletedProjects?: boolean;

@@ -322,6 +322,24 @@
   scrollbar-width: thin;
 }
 
+.collab-shares-scroll .collab-selection-sharing-rules {
+  border-bottom: 1px solid var(--collab-border);
+  margin: 8px 0 16px;
+  padding: 8px;
+}
+
+.collab-shares-scroll .collab-selection-sharing-rules article {
+  background: var(--collab-surface);
+  border: 1px solid var(--collab-border);
+  border-radius: 10px;
+  margin: 12px 0;
+  padding: 12px;
+}
+
+.collab-shares-scroll .collab-selection-sharing-rules button {
+  margin: 4px 4px 4px 0;
+}
+
 .collab-share-section > header {
   align-items: center;
   color: var(--collab-muted);

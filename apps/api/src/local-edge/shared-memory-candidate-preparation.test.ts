@@ -157,6 +157,77 @@ describe("createLocalSharedMemoryCandidatePreparation", () => {
     );
   });
 
+  it("uses verified tool identities and excludes unknown tool sources", async () => {
+    const candidateRepository = repository();
+    candidateRepository.listLcmGraphEvents.mockResolvedValue([
+      {
+        id: "known",
+        eventType: "tool_result",
+        actor: "tool",
+        content: "answer",
+        timestamp: "2026-08-14T10:00:00.000Z",
+        metadata: {
+          semanticItemManifest: [
+            {
+              sourceIds: ["native-item"],
+              actor: "tool",
+              kind: "tool_result",
+              offsetStart: 0,
+              offsetEnd: 6,
+              toolName: "read",
+              toolCallId: "call-1"
+            }
+          ]
+        }
+      },
+      ...[
+        {},
+        { toolName: " " },
+        { toolName: "x".repeat(241) },
+        {
+          semanticItemManifest: [
+            { actor: "tool", kind: "tool_result", offsetStart: 0, offsetEnd: 6 }
+          ]
+        }
+      ].map((metadata, index) => ({
+        id: `unknown-${index}`,
+        eventType: "tool_result",
+        actor: "tool",
+        content: "answer",
+        metadata,
+        timestamp: "2026-08-14T10:00:00.000Z"
+      }))
+    ]);
+    const preparation = createLocalSharedMemoryCandidatePreparation({
+      repository: candidateRepository as never,
+      resolveDeploymentId: () => "deployment-1",
+      requestLcmSummaryWork: vi.fn()
+    });
+    const preview = await preparation.loadCandidatePreview({
+      localOwnerUserId: "owner-1",
+      sessionId: "session-1",
+      representation: "memory_events",
+      mode: "continuous"
+    });
+    expect(preview).toMatchObject({
+      itemCount: 1,
+      excludedItemCount: 4,
+      items: [
+        {
+          id: "known",
+          sourceItems: [
+            {
+              id: "native-item",
+              toolName: "read",
+              toolCallId: "call-1",
+              body: "answer"
+            }
+          ]
+        }
+      ]
+    });
+  });
+
   it("wakes the existing summary service after explicit preview creates LCM work", async () => {
     const candidateRepository = repository();
     candidateRepository.createLcmNodes.mockResolvedValueOnce({

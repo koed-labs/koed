@@ -223,6 +223,14 @@ const validateToolContent = (content: unknown): Record<string, unknown> => {
   ) {
     throw new SharedMemorySourceItemRejectedError("invalid_item_schema");
   }
+  if (
+    isPlainObject(content.payload) &&
+    content.payload.type === "pi_session_record"
+  ) {
+    // Native Pi wrappers may include sibling messages and hidden reasoning.
+    // Only selected semantic tool content belongs in a shared tool payload.
+    throw new SharedMemorySourceItemRejectedError("unsupported_protocol_item");
+  }
   return {
     toolName: content.toolName,
     toolCallId: content.toolCallId,

@@ -209,27 +209,109 @@ export const createLocalSharedMemoryCandidatePreparation = (options: {
           excludedItemCount += 1;
           continue;
         }
+        const isTool =
+          sourceKind === "tool_call" || sourceKind === "tool_result";
+        const manifest = Array.isArray(event.metadata.semanticItemManifest)
+          ? event.metadata.semanticItemManifest
+          : null;
+        const sourceItems: Extract<
+          SharedMemorySourceItem,
+          { representation: "memory_events" }
+        >["sourceItems"] =
+          isTool && manifest
+            ? manifest.flatMap((value: unknown) => {
+                if (!value || typeof value !== "object" || Array.isArray(value))
+                  return [];
+                const entry = value as Record<string, unknown>;
+                if (
+                  typeof entry.toolName !== "string" ||
+                  !entry.toolName.trim() ||
+                  entry.toolName.length > 240
+                )
+                  return [];
+                if (
+                  entry.actor !== "tool" ||
+                  typeof entry.kind !== "string" ||
+                  /system|developer|instruction|prompt|reasoning|thought/i.test(
+                    entry.kind
+                  )
+                )
+                  return [];
+                const start = entry.offsetStart,
+                  end = entry.offsetEnd;
+                if (
+                  !Number.isSafeInteger(start) ||
+                  !Number.isSafeInteger(end) ||
+                  Number(start) < 0 ||
+                  Number(end) <= Number(start) ||
+                  Number(end) > (event.content?.length ?? 0)
+                )
+                  return [];
+                const text = event
+                  .content!.slice(Number(start), Number(end))
+                  .trim();
+                if (!text) return [];
+                return [
+                  {
+                    id:
+                      Array.isArray(entry.sourceIds) &&
+                      typeof entry.sourceIds[0] === "string"
+                        ? entry.sourceIds[0]
+                        : event.id,
+                    sourceKind:
+                      entry.kind === "tool_result" ||
+                      /result|output/.test(entry.kind)
+                        ? ("tool_result" as const)
+                        : ("tool_call" as const),
+                    occurredAt:
+                      typeof entry.sourceEventTime === "string"
+                        ? entry.sourceEventTime
+                        : event.timestamp,
+                    body: text,
+                    actorName: null,
+                    toolName: entry.toolName,
+                    toolCallId:
+                      typeof entry.toolCallId === "string"
+                        ? entry.toolCallId
+                        : null
+                  }
+                ];
+              })
+            : [
+                {
+                  id: event.id,
+                  sourceKind,
+                  occurredAt: event.timestamp,
+                  body,
+                  actorName: null,
+                  toolName:
+                    isTool &&
+                    typeof event.metadata.toolName === "string" &&
+                    event.metadata.toolName.trim() &&
+                    event.metadata.toolName.length <= 240
+                      ? event.metadata.toolName
+                      : null,
+                  toolCallId:
+                    isTool && typeof event.metadata.toolCallId === "string"
+                      ? event.metadata.toolCallId
+                      : null
+                }
+              ];
+        // Match authoritative tool eligibility. An unknown tool identity is an
+        // excluded source, never the invented tool name "tool".
+        if (
+          !sourceItems.length ||
+          (isTool && sourceItems.some((item) => !item.toolName))
+        ) {
+          excludedItemCount += 1;
+          continue;
+        }
         append({
           id: event.id,
           representation: input.representation,
           sequence: index + 1,
           occurredAt: event.timestamp,
-          sourceItems: [
-            {
-              id: event.id,
-              sourceKind,
-              occurredAt: event.timestamp,
-              body,
-              actorName: null,
-              toolName:
-                sourceKind === "tool_call" || sourceKind === "tool_result"
-                  ? typeof event.metadata.toolName === "string"
-                    ? event.metadata.toolName
-                    : "tool"
-                  : null,
-              toolCallId: null
-            }
-          ]
+          sourceItems
         });
       }
     } else if (input.representation === "curated_assertions") {
