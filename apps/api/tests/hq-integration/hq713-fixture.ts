@@ -210,6 +210,7 @@ export interface Hq713Fixture {
       projectBoundCuratedDenialProjectId?: string;
       teamWorkspaceId: string;
       summaryText: string;
+      mutationId?: string;
       includeCuratedMemory: boolean;
       expiresAt?: string | null;
     }
@@ -2256,6 +2257,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
               metadata: {
                 fixture: "hq713",
                 sourceItemIndex: index,
+                rawConversationItemIds: [sourceItemId],
                 semanticItemManifest: [
                   {
                     sourceIds: [sourceItemId],
@@ -2276,11 +2278,6 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         );
         const eventId = item.body.event.id;
         assert.ok(eventId);
-        await personalDb.query(
-          `insert into memory_event_sources(memory_event_id,conversation_item_id,source_order)
-           values($1,$2,0)`,
-          [eventId, sourceItemId]
-        );
         const summaryText = `${input.sessionLabel} summarized source ${index + 1}`;
         const node = await sourceRepository.createMemoryNode(
           { userId: actor.id },
@@ -2441,6 +2438,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
               content: laterText,
               metadata: {
                 fixture: "hq713",
+                rawConversationItemIds: [sourceItemId],
                 semanticItemManifest: [
                   {
                     sourceIds: [sourceItemId],
@@ -2460,11 +2458,6 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
           }
         );
         const eventId = event.body.event.id;
-        await personalDb.query(
-          `insert into memory_event_sources(memory_event_id,conversation_item_id,source_order)
-         values($1,$2,0)`,
-          [eventId, sourceItemId]
-        );
         const summaryText = `${input.sessionLabel} later summary ${index + 1}`;
         const sourceRepository = createMemorySourceRepository(personalDb, {
           envelopeEncryptionProvider: personalEncryptionProvider
@@ -2711,7 +2704,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         source,
         sourceCapabilities,
         activationRepresentation: "lcm_leaves",
-        mutationId: randomUUID(),
+        mutationId: input.mutationId ?? randomUUID(),
         logicalGrantId: randomUUID(),
         consentId: randomUUID(),
         logicalMemoryId,
@@ -2824,6 +2817,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
       );
       assert.equal(pending.logicalMemoryId, logicalMemoryId);
       const pendingId = String(pending.id);
+      let lastPendingState: Record<string, unknown> | null = null;
       for (let attempt = 0; attempt < 60; attempt++) {
         const row = await teamDb.pool.query<{
           state: string;
@@ -2834,6 +2828,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
           `select state,grant_id,stage,redacted_failure_code from pending_share_operations where id=$1`,
           [pendingId]
         );
+        lastPendingState = row.rows[0] ?? null;
         if (row.rows[0]?.state === "activated" && row.rows[0].grant_id) {
           const grantId = row.rows[0].grant_id;
           assert.ok(teamSemanticEmbeddingWorker);
@@ -2897,7 +2892,40 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         }
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
-      assert.fail(`Pending Share ${pendingId} did not activate`);
+      const semantic = await teamDb.pool.query<{
+        status: string;
+        attempt_count: number;
+        failure_code: string | null;
+        last_error_class: string | null;
+        due: boolean;
+        completed_chunk_count: number;
+      }>(
+        `select status,attempt_count,failure_code,last_error_class,
+                coalesce(next_attempt_at<=now(),true) as due,
+                completed_chunk_count
+           from shared_source_semantic_previews
+          where logical_memory_id=$1 order by created_at desc limit 5`,
+        [logicalMemoryId]
+      );
+      const outbox = await teamDb.pool.query<{
+        state: string;
+        due: boolean;
+      }>(
+        `select state,available_at<=now() as due from pending_share_outbox
+          where pending_share_id=$1`,
+        [pendingId]
+      );
+      assert.fail(
+        `Pending Share ${pendingId} did not activate: ${JSON.stringify({
+          state: lastPendingState,
+          semantic: semantic.rows,
+          outbox: outbox.rows,
+          workerErrors: workerErrors.slice(-5),
+          activationFailures: activationFailures.filter(
+            (failure) => failure.pendingShareId === pendingId
+          )
+        })}`
+      );
     };
     const fixture: Hq713Fixture = {
       restartPersonal: async (actor) => {

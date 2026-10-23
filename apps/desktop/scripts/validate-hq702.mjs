@@ -195,7 +195,7 @@ async function run() {
       const openChatMenu = `${chatRow}?.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))`;
       await js(openChatMenu);
       await waitFor(
-        "window.__koedHq702Trace?.chatStatusReads === 1 && document.querySelector('[aria-label=\"Chat summary sharing\"]')?.textContent.includes('Make private')",
+        "window.__koedHq702Trace?.chatStatusReads === 1 && document.querySelector('[aria-label=\"Chat summary sharing\"]')?.textContent.includes('Stop sharing future updates. The last shared summary stays in the Project.')",
         "exact chat sharing status"
       );
       assert.equal(
@@ -214,7 +214,7 @@ async function run() {
       );
       assert.equal(
         await js(
-          "document.querySelector('[aria-label=\"Chat summary sharing\"]')?.textContent.includes('This chat is private.')"
+          'document.querySelector(\'[aria-label="Chat summary sharing"]\')?.textContent.includes("Private: new messages aren\'t shared")'
         ),
         false
       );
@@ -236,7 +236,7 @@ async function run() {
         "Array.from(document.querySelectorAll('[aria-label=\"Chat summary sharing\"] button')).find(b => b.textContent === 'Make private')?.click()"
       );
       await waitFor(
-        "window.__koedHq702Trace?.makePrivateReviews === 2 && document.querySelector('[aria-label=\"Chat summary sharing\"]')?.textContent.includes('This chat is private.')",
+        'window.__koedHq702Trace?.makePrivateReviews === 2 && document.querySelector(\'[aria-label="Chat summary sharing"]\')?.textContent.includes("Private: new messages aren\'t shared")',
         "confirmed exact Make private"
       );
       assert.equal(

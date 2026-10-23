@@ -9396,6 +9396,170 @@ describeDb("Shared Memory repository", () => {
     expect(pendingIds).toHaveLength(3);
   });
 
+  it("wakes pending activation for either semantic publication order and defers stale derivatives", async () => {
+    const fixture = await createWorkspaceFixture();
+    const stage = async (label: string) => {
+      const source = await createSource(fixture, 1, label);
+      await putOwnerPolicy(fixture, source);
+      const candidate = await repository.createSharedMemoryCandidatePreview(
+        actor(fixture.ownerUserId),
+        {
+          ...capturedSourceBinding(source, "memory_events"),
+          logicalMemoryId: source.logicalMemoryId,
+          candidateHash: hash(`privacy-wakeup-${label}`),
+          sourceRevision: source.currentRevision,
+          itemCount: 1,
+          excludedItemCount: 0,
+          manifest: candidateManifest(source, "memory_events"),
+          byteCount: 128,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          ...fidelityConsent(allRepresentations),
+          mode: "continuous",
+          authority: authority(fixture)
+        }
+      );
+      if (!candidate) throw new Error("Privacy wakeup candidate unavailable");
+      const pending = await repository.createPendingShare(
+        actor(fixture.ownerUserId),
+        {
+          mutationId: randomUUID(),
+          logicalGrantId: randomUUID(),
+          consentId: randomUUID(),
+          ...capturedSourceBinding(source, "memory_events"),
+          logicalMemoryId: source.logicalMemoryId,
+          teamId: fixture.teamId,
+          teamWorkspaceId: fixture.teamWorkspaceId,
+          preview: candidate,
+          previewRevision: candidate.previewRevision,
+          mode: "continuous",
+          ...fidelityConsent(allRepresentations),
+          authority: { ...authority(fixture), referenceId: randomUUID() }
+        }
+      );
+      return pending.id;
+    };
+    const publish = async (pendingId: string) => {
+      const grant = await pool.query<{ grant_id: string }>(
+        "select grant_id from pending_share_operations where id=$1",
+        [pendingId]
+      );
+      const grantId = grant.rows[0]?.grant_id;
+      if (!grantId) throw new Error("Pending grant was not prepared");
+      const targets = await repository.listPendingSemanticPrivacyTargets({
+        shareGrantId: grantId,
+        limit: 10
+      });
+      expect(targets.length).toBeGreaterThan(0);
+      for (const target of targets) {
+        await prepareSanitizedSemanticPreview(target.ownerUserId, {
+          previewId: target.sourcePreviewId
+        });
+      }
+      return targets;
+    };
+    const outboxDue = async (pendingId: string) => {
+      const outbox = await pool.query<{ due: boolean }>(
+        `select state='pending' and available_at<=now() as due
+           from pending_share_outbox where pending_share_id=$1`,
+        [pendingId]
+      );
+      return outbox.rows[0]?.due;
+    };
+
+    const readyFirst = await stage("privacy-ready-before-transition");
+    let publishedDuringFailure = false;
+    await expect(
+      repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion,
+        reportActivationFailure: async (failure) => {
+          if (
+            failure.pendingShareId === readyFirst &&
+            failure.errorClass === "SharedMemorySemanticDerivativePendingError"
+          ) {
+            await publish(readyFirst);
+            publishedDuringFailure = true;
+          }
+        }
+      })
+    ).resolves.toMatchObject({ claimed: 1, waiting: 1, failed: 0 });
+    expect(publishedDuringFailure).toBe(true);
+    expect(await outboxDue(readyFirst)).toBe(true);
+    const readyRetryFailures: Array<{
+      failureStage: string;
+      errorClass: string;
+    }> = [];
+    const readyRetry = await repository.processPendingShares({
+      ensureCompanion: ensurePendingShareCompanion,
+      reportActivationFailure: async (failure) => {
+        readyRetryFailures.push({
+          failureStage: failure.failureStage,
+          errorClass: failure.errorClass
+        });
+      }
+    });
+    const readyState = await pool.query<{ state: string; stage: string }>(
+      "select state,stage from pending_share_operations where id=$1",
+      [readyFirst]
+    );
+    expect(
+      readyRetry,
+      JSON.stringify({ failures: readyRetryFailures, pending: readyState.rows })
+    ).toMatchObject({
+      claimed: 1,
+      activated: 1,
+      failed: 0
+    });
+
+    const transitionFirst = await stage("privacy-transition-before-ready");
+    await expect(
+      repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion
+      })
+    ).resolves.toMatchObject({
+      claimed: 1,
+      waiting: 1,
+      failed: 0
+    });
+    expect(await outboxDue(transitionFirst)).toBe(false);
+    await publish(transitionFirst);
+    expect(await outboxDue(transitionFirst)).toBe(true);
+    await expect(
+      repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion
+      })
+    ).resolves.toMatchObject({
+      claimed: 1,
+      activated: 1,
+      failed: 0
+    });
+
+    const stale = await stage("privacy-stale-before-transition");
+    let stalePublished = false;
+    await expect(
+      repository.processPendingShares({
+        ensureCompanion: ensurePendingShareCompanion,
+        reportActivationFailure: async (failure) => {
+          if (
+            failure.pendingShareId === stale &&
+            failure.errorClass === "SharedMemorySemanticDerivativePendingError"
+          ) {
+            const targets = await publish(stale);
+            await pool.query(
+              `update shared_source_semantic_previews
+                  set status='stale',stale_at=now(),updated_at=now()
+                where id=any($1::uuid[])`,
+              [targets.map((target) => target.id)]
+            );
+            stalePublished = true;
+          }
+        }
+      })
+    ).resolves.toMatchObject({ claimed: 1, waiting: 1, failed: 0 });
+    expect(stalePublished).toBe(true);
+    expect(await outboxDue(stale)).toBe(false);
+  });
+
   it("publishes an exact Project policy summary to a teammate but blocks a private source before activation", async () => {
     const fixture = await createWorkspaceFixture({
       teamAllowed: ["lcm_leaves", "lcm_rollups"],

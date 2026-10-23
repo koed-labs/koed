@@ -462,9 +462,11 @@ export const createProjectSharePolicyRepository = (
         state: string;
         grant_version: number | null;
         grant_lifecycle: string | null;
+        grant_frozen_at: Date | null;
       }>(
         `select pending.id,pending.grant_id,pending.state,
-                grant_row.grant_version,grant_row.lifecycle as grant_lifecycle
+                grant_row.grant_version,grant_row.lifecycle as grant_lifecycle,
+                grant_row.frozen_at as grant_frozen_at
            from pending_share_operations pending
            join captured_session_logical_memories source
              on source.logical_memory_id=pending.logical_memory_id
@@ -484,7 +486,11 @@ export const createProjectSharePolicyRepository = (
         ]
       );
       const row = pending.rows[0];
-      if (row?.state === "activated" && row.grant_lifecycle === "active")
+      if (
+        row?.state === "activated" &&
+        row.grant_lifecycle === "active" &&
+        !row.grant_frozen_at
+      )
         return {
           state: "activated" as const,
           shareGrantId: row.grant_id,
@@ -1254,8 +1260,9 @@ export const createProjectSharePolicyRepository = (
           grant_version: number;
           lifecycle: string;
           revoked_at: Date | null;
+          frozen_at: Date | null;
         }>(
-          `select grant_row.id,grant_row.grant_version,grant_row.lifecycle,grant_row.revoked_at
+          `select grant_row.id,grant_row.grant_version,grant_row.lifecycle,grant_row.revoked_at,grant_row.frozen_at
              from pending_share_operations pending
              join team_memory_share_grants grant_row on grant_row.id=pending.grant_id
             where pending.id=$1 and grant_row.owner_user_id=$2
@@ -1266,7 +1273,11 @@ export const createProjectSharePolicyRepository = (
           throw new ProjectSharePolicyConflictError(
             "Policy grant withdrawal state is unavailable"
           );
-        if (grant.rows[0].lifecycle !== "revoked" && !grant.rows[0].revoked_at)
+        if (
+          grant.rows[0].lifecycle === "active" &&
+          !grant.rows[0].revoked_at &&
+          !grant.rows[0].frozen_at
+        )
           withdrawalTarget = {
             shareGrantId: grant.rows[0].id,
             grantVersion: grant.rows[0].grant_version
@@ -1274,7 +1285,7 @@ export const createProjectSharePolicyRepository = (
       }
       // An explicit moved-in or Share-again Pending Share has its own Native
       // consent, but still belongs to this exact Project and Conversation.
-      // It must be withdrawn before owner-local privacy can be committed.
+      // Active, unfrozen grants must freeze before owner-local privacy commits.
       const explicit = await client.query<{
         id: string;
         grant_version: number;
@@ -1290,6 +1301,7 @@ export const createProjectSharePolicyRepository = (
             and source.source_session_id=$3
             and grant_row.owner_user_id=$4
             and grant_row.lifecycle='active' and grant_row.revoked_at is null
+            and grant_row.frozen_at is null
           order by grant_row.id for update of grant_row`,
         [
           input.projectId,

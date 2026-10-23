@@ -2692,7 +2692,7 @@ export const isAnchorAwareLcmSummary = (value: unknown): boolean =>
   structuredLcmSummarySchema.safeParse(value).success;
 
 const decryptAuthorizedMemoryEventPayload = async (
-  pool: pg.Pool,
+  pool: pg.Pool | pg.PoolClient,
   provider: EnvelopeEncryptionProvider | undefined,
   input: {
     ownerUserId: string | null;
@@ -3090,14 +3090,14 @@ const rawConversationItemIdsFromMetadata = (
 };
 
 const linkMemoryEventSources = async (
-  pool: pg.Pool,
+  client: pg.Pool | pg.PoolClient,
   memoryEventId: string,
   conversationItemIds: string[],
   sourceRole = DERIVED_SOURCE_ROLE,
   sourceOrderOffset = 0
 ): Promise<void> => {
   for (let index = 0; index < conversationItemIds.length; index += 1) {
-    await pool.query(
+    await client.query(
       `
         insert into memory_event_sources (
           memory_event_id,
@@ -3990,9 +3990,10 @@ export const createMemorySourceRepository = (
     Boolean(options.envelopeEncryptionProvider) ||
     Boolean(options.ownerPrivateReplicaEnvelopeEncryptionProvider);
   const resolveMemoryEventEncryptionProvider = async (
-    memoryEventId: string
+    memoryEventId: string,
+    queryable: pg.Pool | pg.PoolClient = pool
   ): Promise<EnvelopeEncryptionProvider> => {
-    const result = await pool.query<{ encryption_scope: string }>(
+    const result = await queryable.query<{ encryption_scope: string }>(
       `select encryption_scope
        from encrypted_field_payloads
        where source_table='memory_events'
@@ -10900,6 +10901,7 @@ export const createMemorySourceRepository = (
         seal_reason: string | null;
         payload: MemoryEventPayload;
         created_at: Date;
+        refreshed?: boolean;
       };
 
       const persistMemoryEventEncryptedPayload = async (
@@ -11005,9 +11007,9 @@ export const createMemorySourceRepository = (
           id, owner_user_id, visibility, event_type, session_id, turn_id,
           token_count, seal_reason, payload, created_at
       )
-      select * from refreshed
+      select refreshed.*, true as refreshed from refreshed
       union all
-      select * from inserted
+      select inserted.*, false as refreshed from inserted
     `;
       const upsertMemoryEventParams = [
         actor.userId,
@@ -11034,39 +11036,40 @@ export const createMemorySourceRepository = (
         tokenCounter
       ];
 
-      const upsertedRow = suppressPlaintextPayload
-        ? await (async (): Promise<MemoryEventRow | undefined> => {
-            const client = await pool.connect();
-            try {
-              await client.query("begin");
-              const result = await client.query<MemoryEventRow>(
-                upsertMemoryEventSql,
-                upsertMemoryEventParams
+      const upsertedRow = await (async (): Promise<
+        MemoryEventRow | undefined
+      > => {
+        const client = await pool.connect();
+        try {
+          await client.query("begin");
+          const result = await client.query<MemoryEventRow>(
+            upsertMemoryEventSql,
+            upsertMemoryEventParams
+          );
+          const row = result.rows[0];
+          if (row) {
+            await persistMemoryEventEncryptedPayload(row, payload, client);
+            if (row.refreshed) {
+              await client.query(
+                "delete from memory_event_sources where memory_event_id=$1 and source_role=$2",
+                [row.id, DERIVED_SOURCE_ROLE]
               );
-              const row = result.rows[0];
-              if (row) {
-                await persistMemoryEventEncryptedPayload(row, payload, client);
-              }
-              await client.query("commit");
-              return row;
-            } catch (error) {
-              await client.query("rollback");
-              throw error;
-            } finally {
-              client.release();
             }
-          })()
-        : await (async (): Promise<MemoryEventRow | undefined> => {
-            const result = await pool.query<MemoryEventRow>(
-              upsertMemoryEventSql,
-              upsertMemoryEventParams
+            await linkMemoryEventSources(
+              client,
+              row.id,
+              rawConversationItemIds
             );
-            const row = result.rows[0];
-            if (row) {
-              await persistMemoryEventEncryptedPayload(row, payload);
-            }
-            return row;
-          })();
+          }
+          await client.query("commit");
+          return row;
+        } catch (error) {
+          await client.query("rollback");
+          throw error;
+        } finally {
+          client.release();
+        }
+      })();
 
       const insertedRow = upsertedRow;
       if (insertedRow) {
@@ -11081,11 +11084,6 @@ export const createMemorySourceRepository = (
           ...insertedRow,
           payload
         };
-        await linkMemoryEventSources(
-          pool,
-          insertedRow.id,
-          rawConversationItemIds
-        );
         await applyProvisionalCapturedSessionTitle(pool, {
           ownerUserId,
           sessionId: insertedRow.session_id,
@@ -11097,8 +11095,11 @@ export const createMemorySourceRepository = (
       }
 
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        const duplicate = await pool.query<MemoryEventRow>(
-          `
+        const client = await pool.connect();
+        try {
+          await client.query("begin");
+          const duplicate = await client.query<MemoryEventRow>(
+            `
           select
             me.id, me.owner_user_id, me.visibility, me.event_type,
             me.session_id, me.turn_id, me.token_count, me.seal_reason,
@@ -11118,35 +11119,91 @@ export const createMemorySourceRepository = (
             end,
             me.created_at desc
           limit 1
-        `,
-          [actor.userId, input.idempotencyKey ?? null, input.sourceHash ?? null]
-        );
-        const duplicateRow = duplicate.rows[0];
-        if (duplicateRow) {
-          const duplicatePayload =
-            duplicateRow.payload.contentEncrypted === true
-              ? ((await decryptAuthorizedMemoryEventPayload(
-                  pool,
-                  await resolveMemoryEventEncryptionProvider(duplicateRow.id),
-                  {
-                    ownerUserId: duplicateRow.owner_user_id,
-                    memoryEventId: duplicateRow.id
+          for update of me
+          `,
+            [
+              actor.userId,
+              input.idempotencyKey ?? null,
+              input.sourceHash ?? null
+            ]
+          );
+          const duplicateRow = duplicate.rows[0];
+          if (duplicateRow) {
+            const duplicatePayload =
+              duplicateRow.payload.contentEncrypted === true
+                ? await decryptAuthorizedMemoryEventPayload(
+                    client,
+                    await resolveMemoryEventEncryptionProvider(
+                      duplicateRow.id,
+                      client
+                    ),
+                    {
+                      ownerUserId: duplicateRow.owner_user_id,
+                      memoryEventId: duplicateRow.id
+                    }
+                  )
+                : duplicateRow.payload;
+            if (!duplicatePayload) {
+              throw new Error("Encrypted Memory Event payload is unavailable");
+            }
+            const manifest = duplicatePayload.metadata?.semanticItemManifest;
+            let replaySourceIds = rawConversationItemIds;
+            if (manifest !== undefined) {
+              if (!Array.isArray(manifest)) {
+                throw new Error(
+                  "Memory Event semantic source manifest is invalid"
+                );
+              }
+              const currentSourceIds = new Set<string>();
+              for (const entry of manifest) {
+                if (
+                  !isRecord(entry) ||
+                  !Array.isArray(entry.sourceIds) ||
+                  entry.sourceIds.length === 0
+                ) {
+                  throw new Error(
+                    "Memory Event semantic source manifest is invalid"
+                  );
+                }
+                for (const sourceId of entry.sourceIds) {
+                  if (
+                    typeof sourceId !== "string" ||
+                    sourceId.length === 0 ||
+                    currentSourceIds.has(sourceId)
+                  ) {
+                    throw new Error(
+                      "Memory Event semantic source manifest is invalid"
+                    );
                   }
-                )) ?? payload)
-              : duplicateRow.payload;
-          await linkMemoryEventSources(
-            pool,
-            duplicateRow.id,
-            rawConversationItemIds
-          );
-          await persistMemoryEventEncryptedPayload(
-            duplicateRow,
-            duplicatePayload
-          );
-          return mapMemoryEvent({
-            ...duplicateRow,
-            payload: duplicatePayload
-          });
+                  currentSourceIds.add(sourceId);
+                }
+              }
+              replaySourceIds = rawConversationItemIds.filter((sourceId) =>
+                currentSourceIds.has(sourceId)
+              );
+            }
+            await linkMemoryEventSources(
+              client,
+              duplicateRow.id,
+              replaySourceIds
+            );
+            await persistMemoryEventEncryptedPayload(
+              duplicateRow,
+              duplicatePayload,
+              client
+            );
+            await client.query("commit");
+            return mapMemoryEvent({
+              ...duplicateRow,
+              payload: duplicatePayload
+            });
+          }
+          await client.query("commit");
+        } catch (error) {
+          await client.query("rollback");
+          throw error;
+        } finally {
+          client.release();
         }
         if (attempt < 2) {
           await new Promise((resolve) =>

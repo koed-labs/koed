@@ -3331,6 +3331,14 @@ export const collaborationRendererCommandSchema = z
         .regex(/^[A-Za-z0-9_.:-]+$/),
       actionGrant: collaborationActionGrantReferenceSchema
     }),
+    command("collaboration.freeze_shared_memory_grant", {
+      mutationId: z.uuid(),
+      teamId: z.uuid(),
+      workspaceId: z.uuid(),
+      shareGrantId: z.uuid(),
+      expectedGrantVersion: positiveVersionSchema,
+      actionGrant: collaborationActionGrantReferenceSchema
+    }),
     command("collaboration.change_shared_memory_fidelity", {
       source: sharedMemorySourceRefSchema,
       sourceCapabilities: sharedMemorySourceCapabilitiesSchema,
@@ -3577,6 +3585,7 @@ const commandNameSchema = z.enum([
   "collaboration.load_shared_memory_preview_page",
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
+  "collaboration.freeze_shared_memory_grant",
   "collaboration.change_shared_memory_fidelity",
   "collaboration.subscribe",
   "collaboration.subscribe_project_thread_v2",
@@ -3844,6 +3853,10 @@ export const collaborationCommandResultSchema = z.union([
   ),
   successResult(
     "collaboration.revoke_shared_memory",
+    z.object({ grant: ownedSharedMemoryGrantSchema }).strict()
+  ),
+  successResult(
+    "collaboration.freeze_shared_memory_grant",
     z.object({ grant: ownedSharedMemoryGrantSchema }).strict()
   ),
   successResult(

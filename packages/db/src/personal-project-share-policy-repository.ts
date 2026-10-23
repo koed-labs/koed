@@ -831,7 +831,9 @@ export const createPersonalProjectSharePolicyRepository = (
         !row ||
         row.logical_memory_id !== input.logicalMemoryId ||
         row.project_assignment_version !== input.mappingRevision ||
-        Number(row.latest_source_revision) !== input.sourceRevision ||
+        !Number.isSafeInteger(input.sourceRevision) ||
+        input.sourceRevision < 1 ||
+        Number(row.latest_source_revision) > input.sourceRevision ||
         !(await capturedSessionMayLeavePersonalBoundary(
           client,
           input.ownerUserId,
@@ -866,6 +868,50 @@ export const createPersonalProjectSharePolicyRepository = (
         throw new PersonalProjectSharePolicyConflictError(
           "Exact Conversation offer remains pending; reconcile it first"
         );
+      // A private Conversation can receive new Personal messages after the
+      // previous grant froze. Materialize only the exact reviewed local source
+      // frontier before binding the explicit share-again offer to it.
+      const cursor = await client.query<{ source_revision: string | null }>(
+        `select max(cursor)::text as source_revision
+           from sync_semantic_changes where session_id=$1`,
+        [input.sessionId]
+      );
+      const unprepared = await client.query(
+        `select 1 from memory_events event
+          where event.session_id=$1 and event.owner_user_id=$2
+            and event.event_type='captured'
+            and not exists (
+              select 1 from sync_semantic_changes change
+               where change.session_id=event.session_id
+                 and change.origin_event_id=event.id
+            ) limit 1`,
+        [input.sessionId, input.ownerUserId]
+      );
+      if (
+        Number(cursor.rows[0]?.source_revision ?? 0) !== input.sourceRevision ||
+        unprepared.rows[0]
+      )
+        throw new PersonalProjectSharePolicyConflictError(
+          "Exact Conversation source changed"
+        );
+      const prepared = await client.query<{ owner_principal_id: string }>(
+        `update logical_memories
+            set latest_source_revision=$3,updated_at=now()
+          where id=$1 and owner_user_id=$2 and source_kind='captured_session'
+            and latest_source_revision<=$3
+          returning owner_principal_id`,
+        [input.logicalMemoryId, input.ownerUserId, input.sourceRevision]
+      );
+      if (!prepared.rows[0])
+        throw new PersonalProjectSharePolicyConflictError(
+          "Exact Conversation source changed"
+        );
+      await ensureCapturedSessionSourceRevision(client, {
+        logicalMemoryId: input.logicalMemoryId,
+        ownerPrincipalId: prepared.rows[0].owner_principal_id,
+        sourceSessionId: input.sessionId,
+        sourceRevision: input.sourceRevision
+      });
       const inserted = await client.query<{
         id: string;
         mutation_id: string;

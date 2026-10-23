@@ -171,7 +171,9 @@ describe("HQ exact chat summary controls", () => {
     expect(container.textContent).toContain(
       "Project summary sharing was canceled."
     );
-    expect(container.textContent).not.toContain("This chat is private.");
+    expect(container.textContent).not.toContain(
+      "Private: new messages aren't shared"
+    );
     expect(
       container.querySelector('[aria-label="Chat summary private"]')
     ).toBeNull();
@@ -180,7 +182,9 @@ describe("HQ exact chat summary controls", () => {
     expect(status).toHaveBeenCalledTimes(2);
     await act(async () => action("Make private")!.click());
     expect(makePrivate).toHaveBeenCalledTimes(2);
-    expect(container.textContent).toContain("This chat is private.");
+    expect(container.textContent).toContain(
+      "Private: new messages aren't shared"
+    );
     expect(
       container.querySelector('[aria-label="Chat summary private"]')
     ).not.toBeNull();

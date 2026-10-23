@@ -308,7 +308,7 @@ export async function runHq713MemoryN2(
   return { ...captured, ...policy, summaryText: policyMarker };
 }
 
-/** Making a Conversation private withdraws its policy grant before recall returns. */
+/** Making a Conversation private retains its last summary and stops new updates. */
 export async function runHq713MemoryStep6(
   fixture: Hq713Fixture,
   shared: Hq713SharedSession
@@ -321,21 +321,139 @@ export async function runHq713MemoryStep6(
   const scoped = await fixture.bob.team.request(
     "GET",
     `${teamGrantPath(fixture, shared.grantId)}?representation=lcm_leaves`,
-    {}
+    { expectedStatus: 200 }
+  );
+  assert.ok(JSON.stringify(scoped.body).includes(shared.summaryText));
+  const frozenRead = record(
+    record(scoped.body, "frozen Team read").sharedMemory,
+    "frozen Team Shared Memory"
+  );
+  const frozenRepresentation = record(
+    frozenRead.representation,
+    "frozen Team representation"
+  );
+  const frozenItems = list(frozenRead.items, "frozen Team source items");
+  assert.ok(frozenItems.length > 0);
+  const answer = await answerTeam(fixture, fixture.bob, shared.summaryText);
+  assert.ok(
+    teamEvidenceForGrant(answer, shared.grantId).length > 0,
+    "Frozen grant must retain Bob's earlier recall"
+  );
+  const later = await fixture.advanceCapturedSession(fixture.alice, {
+    sessionId: shared.sessionId,
+    projectId: fixture.ids.alicePersonalProjectId,
+    sessionLabel: `hq713-private-${randomUUID()}`
+  });
+  const after = await fixture.bob.team.request(
+    "GET",
+    `${teamGrantPath(fixture, shared.grantId)}?representation=lcm_leaves`,
+    { expectedStatus: 200 }
+  );
+  const laterRead = record(
+    record(after.body, "later Team read").sharedMemory,
+    "later Team Shared Memory"
+  );
+  const laterRepresentation = record(
+    laterRead.representation,
+    "later Team representation"
+  );
+  assert.equal(laterRepresentation.id, frozenRepresentation.id);
+  assert.equal(
+    laterRepresentation.sourceRevision,
+    frozenRepresentation.sourceRevision
+  );
+  assert.equal(
+    laterRepresentation.recordVersion,
+    frozenRepresentation.recordVersion
+  );
+  assert.deepEqual(
+    list(laterRead.items, "later Team source items"),
+    frozenItems,
+    "The frozen grant's published source items must remain unchanged"
+  );
+  assert.ok(!JSON.stringify(laterRead.items).includes(later.laterSummaryText));
+  const laterAnswer = await answerTeam(
+    fixture,
+    fixture.bob,
+    later.laterSummaryText
+  );
+  const laterEvidence = teamEvidenceForGrant(laterAnswer, shared.grantId);
+  assert.ok(laterEvidence.length > 0);
+  assert.ok(
+    laterEvidence.some((item) =>
+      nonemptyString(item.summaryText, "frozen grant evidence body").includes(
+        shared.summaryText
+      )
+    )
   );
   assert.ok(
-    [403, 404].includes(scoped.status),
-    `Bob retained access to a private Conversation (${scoped.status})`
+    laterEvidence.every(
+      (item) =>
+        !nonemptyString(
+          item.summaryText,
+          "frozen grant evidence body"
+        ).includes(later.laterSummaryText)
+    ),
+    "Frozen old-grant evidence must not contain a later private message"
   );
-  const answer = await answerTeam(fixture, fixture.bob, shared.summaryText);
-  assert.equal(
-    teamEvidenceForGrant(answer, shared.grantId).length,
-    0,
-    "Revoked grant must leave Bob's recall"
+  const offer = await fixture.alice.personalEdge.request<{
+    offerId: string;
+    mutationId: string;
+  }>(
+    "POST",
+    `/v1/local-edge/projects/${fixture.ids.alicePersonalProjectId}/project-share-policy/explicit-offers`,
+    {
+      body: {
+        teamBackendId: fixture.teamBackendId,
+        workspaceProjectId: fixture.ids.workspaceProjectId,
+        sessionId: shared.sessionId,
+        reason: "share_again"
+      },
+      expectedStatus: 200
+    }
   );
+  const reshared = await fixture.shareCapturedSession(fixture.alice, {
+    sessionId: shared.sessionId,
+    workspaceProjectId: fixture.ids.workspaceProjectId,
+    teamWorkspaceId: fixture.ids.workspaceId,
+    summaryText: later.laterSummaryText,
+    mutationId: offer.body.mutationId,
+    includeCuratedMemory: false
+  });
+  const settled = await fixture.alice.personalEdge.request<{
+    state: string;
+    shareGrantId: string;
+  }>(
+    "POST",
+    `/v1/local-edge/projects/${fixture.ids.alicePersonalProjectId}/project-share-policy/explicit-offers/${offer.body.offerId}/settle`,
+    { body: { teamBackendId: fixture.teamBackendId }, expectedStatus: 200 }
+  );
+  assert.equal(settled.body.state, "activated");
+  assert.equal(settled.body.shareGrantId, reshared.grantId);
+  await fixture.makeChatPrivate(fixture.alice, {
+    sessionId: shared.sessionId,
+    grantId: reshared.grantId,
+    projectId: fixture.ids.alicePersonalProjectId
+  });
+  const grants = await fixture.team.db.query<{
+    id: string;
+    frozen_at: Date | null;
+  }>(
+    `select id,frozen_at from team_memory_share_grants
+      where id=any($1::uuid[]) order by id`,
+    [[shared.grantId, reshared.grantId]]
+  );
+  assert.equal(grants.rows.length, 2);
+  assert.ok(grants.rows.every((row) => row.frozen_at instanceof Date));
+  fixture.results.record("N26", {
+    originalGrantId: shared.grantId,
+    shareAgainGrantId: reshared.grantId,
+    bothFrozen: true
+  });
   fixture.results.record("I713.6", {
-    revokedReadStatus: scoped.status,
-    absentFromRecall: true
+    retainedReadStatus: scoped.status,
+    retainedInRecall: true,
+    laterExcluded: true
   });
 }
 

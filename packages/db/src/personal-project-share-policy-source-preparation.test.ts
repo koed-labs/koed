@@ -251,6 +251,79 @@ describe.skipIf(!testUrl)("first Project policy source preparation", () => {
     expect(sideEffects.rows[0]).toEqual({ relationships: "0", grants: "0" });
   }, 120_000);
 
+  it("prepares the exact newer private source cursor for a share-again offer", async () => {
+    const source = await seed();
+    const policy = createPersonalProjectSharePolicyRepository(pool);
+    const sync = createCrossIdentitySyncRepository(pool);
+    const firstCursor = await sync.prepareCapturedSessionSyncCandidateRevision(
+      { userId: ownerUserId },
+      source.sessionId
+    );
+    expect(firstCursor).toBeGreaterThan(0);
+    await policy.prepareInitialManifestSource({
+      ...scope,
+      sessionId: source.sessionId,
+      mappingRevision: 1,
+      logicalMemoryId: source.logicalMemoryId,
+      sourceRevision: firstCursor!,
+      sourceDeploymentProtocolId
+    });
+    await pool.query(
+      `update sessions set project_share_private_at=now() where id=$1`,
+      [source.sessionId]
+    );
+    await pool.query(
+      `insert into memory_events
+         (owner_user_id,visibility,event_type,capture_method,session_id,payload)
+       values($1,'personal','captured','api',$2,'{}'::jsonb)`,
+      [ownerUserId, source.sessionId]
+    );
+    const newerCursor = await sync.prepareCapturedSessionSyncCandidateRevision(
+      { userId: ownerUserId },
+      source.sessionId
+    );
+    expect(newerCursor).toBeGreaterThan(firstCursor!);
+    const offer = {
+      ...scope,
+      sessionId: source.sessionId,
+      teamPrincipalUserId: ownerUserId,
+      deviceCredentialId: futureDeviceCredentialId,
+      reason: "share_again" as const,
+      logicalMemoryId: source.logicalMemoryId,
+      mappingRevision: 1,
+      sourceRevision: newerCursor!,
+      candidateHash: "a".repeat(64)
+    };
+    await expect(
+      policy.prepareExplicitOffer({
+        ...offer,
+        sourceRevision: newerCursor! + 1
+      })
+    ).rejects.toBeInstanceOf(PersonalProjectSharePolicyConflictError);
+    const preparedOffer = await policy.prepareExplicitOffer(offer);
+    expect(typeof preparedOffer.offerId).toBe("string");
+    expect(typeof preparedOffer.mutationId).toBe("string");
+    const frontier = await pool.query<{
+      latest_source_revision: string;
+      source_cursor: string;
+    }>(
+      `select memory.latest_source_revision::text,
+              source.source_cursor::text
+         from logical_memories memory
+         join captured_session_source_revisions source
+           on source.logical_memory_id=memory.id
+          and source.source_cursor=memory.latest_source_revision
+        where memory.id=$1`,
+      [source.logicalMemoryId]
+    );
+    expect(frontier.rows).toEqual([
+      {
+        latest_source_revision: String(newerCursor),
+        source_cursor: String(newerCursor)
+      }
+    ]);
+  }, 120_000);
+
   it("finds the first future source before any logical-memory revision and fences private, moved, HQ, deleted, and revoked sources", async () => {
     const policy = createPersonalProjectSharePolicyRepository(pool);
     const prePolicy = await seed();

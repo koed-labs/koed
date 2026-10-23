@@ -1635,6 +1635,8 @@ export interface SharedMemoryRepository {
     input: {
       limit: number;
       history?: boolean;
+      /** Exact owner-grant detail may resolve an activated pending operation's grant. */
+      includeGrantShadowedByPending?: boolean;
       snapshotAt?: string;
       after?: {
         createdAt: string;
@@ -12567,6 +12569,106 @@ export const createSharedMemoryRepository = (
   ): Promise<"waiting" | "failed"> => {
     if (error instanceof SharedMemorySemanticDerivativePendingError) {
       await withTransaction(pool, async (client) => {
+        const pending = await client.query<Row>(
+          `select owner_user_id,team_id,team_workspace_id
+             from pending_share_operations
+            where id=$1 and state=$2 and operation_version=$3
+              and revoked_at is null`,
+          [
+            pendingShareId,
+            workerExpected?.state ?? "",
+            workerExpected?.operationVersion ?? -1
+          ]
+        );
+        if (!pending.rows[0]) return;
+        const activeClassifier = await loadActivePrivacyClassifier(
+          client,
+          true
+        );
+        const effectivePolicy = await resolveCurrentPrivacyPolicy(client, {
+          ownerUserId: stringValue(pending.rows[0].owner_user_id),
+          teamId: stringValue(pending.rows[0].team_id),
+          teamWorkspaceId: stringValue(pending.rows[0].team_workspace_id),
+          lockRows: true
+        });
+        // Hold the exact derivative row until the outbox is rescheduled. If
+        // publication is already in flight, this waits for its committed ready
+        // state; if it starts later, its wakeup sees privacy_filtering.
+        const derivatives = await client.query<{
+          status: string;
+          invalidated_at: Date | null;
+          stale_at: Date | null;
+        }>(
+          `select semantic.status,semantic.invalidated_at,semantic.stale_at
+                         from pending_share_operations pending
+                        join team_memory_share_grant_records grant_row
+                          on grant_row.id=pending.grant_id
+                         and grant_row.logical_memory_id=pending.logical_memory_id
+                         and grant_row.owner_user_id=pending.owner_user_id
+                         and grant_row.team_id=pending.team_id
+                         and grant_row.team_workspace_id=pending.team_workspace_id
+                         and grant_row.revoked_at is null
+                        join shared_source_preview_records preview
+                          on preview.logical_memory_id=pending.logical_memory_id
+                         and preview.owner_user_id=pending.owner_user_id
+                         and preview.owner_principal_id=grant_row.owner_principal_id
+                         and preview.team_id=pending.team_id
+                         and preview.team_workspace_id=pending.team_workspace_id
+                         and preview.remote_replica_id is not distinct from
+                           grant_row.remote_replica_id
+                         and preview.representation=coalesce(
+                           pending.replacement_representation,pending.representation)
+                         and preview.source_revision=coalesce(
+                           pending.replacement_source_revision,pending.source_revision)
+                         and preview.invalidated_at is null
+                        join shared_source_artifact_records artifact
+                          on artifact.id=preview.source_artifact_id
+                         and artifact.logical_memory_id=preview.logical_memory_id
+                         and artifact.owner_user_id=preview.owner_user_id
+                         and artifact.owner_principal_id=preview.owner_principal_id
+                         and artifact.team_id=preview.team_id
+                         and artifact.team_workspace_id=preview.team_workspace_id
+                         and artifact.remote_replica_id is not distinct from
+                           preview.remote_replica_id
+                         and artifact.representation=preview.representation
+                         and artifact.source_revision=preview.source_revision
+                         and artifact.source_hash=preview.source_hash
+                         and artifact.invalidated_at is null
+                        join shared_source_semantic_previews semantic
+                          on semantic.source_preview_id=preview.id
+                         and semantic.source_artifact_id=artifact.id
+                         and semantic.source_preview_revision=preview.preview_revision
+                         and semantic.source_preview_hash=preview.preview_hash
+                         and semantic.source_artifact_hash=artifact.artifact_hash
+                         and semantic.source_manifest_hash=artifact.manifest_hash
+                         and semantic.source_revision=preview.source_revision
+                         and semantic.source_hash=preview.source_hash
+                         and semantic.logical_memory_id=preview.logical_memory_id
+                         and semantic.owner_user_id=preview.owner_user_id
+                         and semantic.owner_principal_id=preview.owner_principal_id
+                         and semantic.team_id=preview.team_id
+                         and semantic.team_workspace_id=preview.team_workspace_id
+                         and semantic.representation=preview.representation
+                         and semantic.classifier_generation_id=$2
+                         and semantic.classifier_version=$3
+                         and semantic.classifier_hash=$4
+                         and semantic.effective_privacy_policy_hash=$5
+                       where pending.id=$1
+                       for share of semantic`,
+          [
+            pendingShareId,
+            activeClassifier.id,
+            activeClassifier.version,
+            activeClassifier.classifierHash,
+            effectivePolicy.effectivePolicyHash
+          ]
+        );
+        const derivativeReady = derivatives.rows.some(
+          (row) =>
+            row.status === "ready" &&
+            row.invalidated_at === null &&
+            row.stale_at === null
+        );
         const waiting = await client.query<Row>(
           `update pending_share_operations
                 set state='preparing',stage='privacy_filtering',
@@ -12583,10 +12685,10 @@ export const createSharedMemoryRepository = (
           ]
         );
         if (!waiting.rows[0]) return;
-        await client.query(
-          `update pending_share_outbox
+        const rescheduled = await client.query<{ ready: boolean }>(
+          `update pending_share_outbox outbox
                 set state='pending',locked_at=null,
-                    available_at=coalesce((
+                    available_at=case when $2::boolean then now() else coalesce((
                       select min(semantic.next_attempt_at)
                         from shared_source_semantic_previews semantic,
                              pending_share_operations pending
@@ -12597,10 +12699,16 @@ export const createSharedMemoryRepository = (
                          and semantic.team_workspace_id=pending.team_workspace_id
                          and semantic.status='pending'
                          and semantic.next_attempt_at is not null
-                    ),now()+interval '5 minutes'),updated_at=now()
-              where pending_share_id=$1`,
-          [pendingShareId]
+                    ),now()+interval '5 minutes') end,updated_at=now()
+              where outbox.pending_share_id=$1
+              returning outbox.available_at<=now() as ready`,
+          [pendingShareId, derivativeReady]
         );
+        if (rescheduled.rows[0]?.ready) {
+          await client.query(
+            "select pg_notify('koed_pending_share_activation','work')"
+          );
+        }
         await appendPendingShareOwnerEvent(client, {
           mutationId: crossIdentitySyncDeterministicUuid({
             kind: "pending_share_lifecycle",
@@ -19147,11 +19255,35 @@ export const createSharedMemoryRepository = (
           `update pending_share_outbox outbox
               set state='pending',available_at=now(),locked_at=null,updated_at=now()
              from pending_share_operations pending
+             join team_memory_share_grant_records grant_row
+               on grant_row.id=pending.grant_id
+              and grant_row.logical_memory_id=pending.logical_memory_id
+              and grant_row.owner_user_id=pending.owner_user_id
+              and grant_row.team_id=pending.team_id
+              and grant_row.team_workspace_id=pending.team_workspace_id
+              and grant_row.owner_principal_id=$7
+              and grant_row.remote_replica_id is not distinct from $8::uuid
+              and grant_row.revoked_at is null
             where pending.id=outbox.pending_share_id
-              and pending.grant_id=$1 and pending.owner_user_id=$2
+              and pending.owner_user_id=$1
+              and pending.logical_memory_id=$2
+              and pending.team_id=$3 and pending.team_workspace_id=$4
+              and coalesce(pending.replacement_representation,
+                pending.representation)=$5
+              and coalesce(pending.replacement_source_revision,
+                pending.source_revision)=$6
               and pending.state='preparing' and pending.stage='privacy_filtering'
               and pending.revoked_at is null`,
-          [target.shareGrantId, actor.userId]
+          [
+            actor.userId,
+            target.logicalMemoryId,
+            target.teamId,
+            target.teamWorkspaceId,
+            target.representation,
+            target.sourceRevision,
+            target.ownerPrincipalId,
+            nullableStringValue(loaded.row.remote_replica_id)
+          ]
         );
         await client.query(
           "select pg_notify('koed_pending_share_activation','work')"
@@ -22164,10 +22296,10 @@ export const createSharedMemoryRepository = (
                  ) source on true
                 where g.owner_user_id=$1
                   and g.created_at<=$4
-                  and not exists (
+                  and ($8::boolean or not exists (
                     select 1 from pending_share_operation_records p
                      where p.grant_id=g.id
-                  )
+                  ))
                   and (($2::boolean and
                         g.lifecycle in ('revoked','tombstoned','purge_pending','purged'))
                     or (not $2::boolean and
@@ -22231,7 +22363,8 @@ export const createSharedMemoryRepository = (
             snapshotAt,
             afterCreatedAt,
             input.after?.recordKind ?? null,
-            input.after?.id ?? null
+            input.after?.id ?? null,
+            input.includeGrantShadowedByPending === true
           ]
         );
         const pageRows = result.rows.slice(0, input.limit);
@@ -22346,6 +22479,7 @@ export const createSharedMemoryRepository = (
           const page = await repository.listOwnerShares(actor, {
             limit: MAX_WORKSPACE_INDEX_LIMIT,
             history,
+            includeGrantShadowedByPending: input.kind === "grant",
             snapshotAt,
             after
           });

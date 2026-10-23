@@ -697,7 +697,7 @@ export const createWorkspaceProjectPersonalClient = (
         z.object({ state: z.literal("private") }).strict(),
         z
           .object({
-            state: z.literal("withdrawal_required"),
+            state: z.literal("freeze_required"),
             withdrawalTarget: z
               .object({
                 shareGrantId: z.uuid(),

@@ -10359,6 +10359,387 @@ describeDb("memory repository visibility", () => {
     );
   });
 
+  it("publishes Memory Events and semantic links atomically without accepting a forged manifest", async () => {
+    const envelopeEncryptionProvider =
+      createLocalTestKeyEnvelopeEncryptionProvider(
+        randomBytes(32).toString("base64")
+      );
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `sync-contributor-race-${randomUUID()}@example.com`
+    });
+    const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: randomUUID()
+    });
+    const remoteDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
+      protocolDeploymentId: randomUUID(),
+      profile: "team_self_hosted",
+      baseUrl: "https://team.example.com",
+      upstreamBackendId: "team"
+    });
+    const remoteUser = await encryptedRepo.upsertExternalSyncUserIdentity({
+      deploymentIdentityId: remoteDeployment.id,
+      externalSubjectId: `remote-contributor-${randomUUID()}`
+    });
+    await encryptedRepo.linkExternalSyncUser(
+      { userId: owner.id },
+      {
+        externalUserIdentityId: remoteUser.id,
+        proofKind: "device_enrollment",
+        proofReference: `contributor-${randomUUID()}`
+      }
+    );
+    const session = await encryptedRepo.createCapturedSession(
+      { userId: owner.id },
+      {
+        projectId: "sync-contributor-project",
+        externalSessionId: `sync-contributor-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "transcript"
+      }
+    );
+    const relationshipId = randomUUID();
+    await encryptedRepo.createSourceSyncRelationship(
+      { userId: owner.id },
+      {
+        relationshipId,
+        logicalMemoryId: (await encryptedRepo.getCapturedSessionSummary(
+          { userId: owner.id },
+          session.id
+        ))!.logicalMemoryId!,
+        localReplicaId: randomUUID(),
+        remoteReplicaId: randomUUID(),
+        sessionId: session.id,
+        localDeploymentIdentityId: localDeployment.id,
+        remoteDeploymentIdentityId: remoteDeployment.id,
+        remoteUserIdentityId: remoteUser.id,
+        idempotencyKey: `sync-contributor-${randomUUID()}`,
+        creationRequestHash: randomBytes(32).toString("hex"),
+        policyManifest: { sourceBoundary: "captured_session" },
+        consentManifest: { consented: true }
+      }
+    );
+    await encryptedRepo.activateSourceSyncRelationship({
+      relationshipId,
+      localUserId: owner.id
+    });
+    const [item] = await encryptedRepo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            rawJson: { content: "A linked contributor" },
+            rawText: "A linked contributor",
+            sourceHash: `contributor-${randomUUID()}`,
+            idempotencyKey: `contributor-${randomUUID()}`
+          }
+        ]
+      }
+    );
+    expect(item?.id).toEqual(expect.any(String));
+    let reachCommit!: () => void;
+    let releaseCommit!: () => void;
+    const commitReached = new Promise<void>((resolve) => {
+      reachCommit = resolve;
+    });
+    const commitGate = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const gatedPool = new Proxy(pool, {
+      get(target, property) {
+        if (property === "connect")
+          return async () => {
+            const client = await target.connect();
+            return new Proxy(client, {
+              get(connection, clientProperty) {
+                if (clientProperty === "query")
+                  return async (sql: string, values?: unknown[]) => {
+                    if (sql === "commit") {
+                      reachCommit();
+                      await commitGate;
+                    }
+                    return connection.query(sql, values);
+                  };
+                if (clientProperty === "release")
+                  return connection.release.bind(connection);
+                return Reflect.get(connection, clientProperty) as unknown;
+              }
+            });
+          };
+        if (property === "query") return target.query.bind(target);
+        return Reflect.get(target, property) as unknown;
+      }
+    });
+    const gatedRepo = createMemorySourceRepository(gatedPool, {
+      envelopeEncryptionProvider
+    });
+    const created = gatedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "user",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: "A linked contributor",
+        projectId: "sync-contributor-project",
+        sessionId: session.id,
+        idempotencyKey: `event-${randomUUID()}`,
+        metadata: {
+          rawConversationItemIds: [item!.id],
+          semanticItemManifest: [{ sourceIds: [item!.id] }]
+        }
+      }
+    );
+    try {
+      await Promise.race([
+        commitReached,
+        created.then(() => {
+          throw new Error("Memory Event committed before reaching commit gate");
+        })
+      ]);
+      const beforeCommit = await encryptedRepo.readCapturedSessionSyncDelta({
+        relationshipId
+      });
+      expect(beforeCommit?.changes).toEqual([]);
+    } finally {
+      releaseCommit();
+    }
+    const event = await created;
+    const links = await pool.query<{
+      conversation_item_id: string;
+      source_role: string;
+    }>(
+      "select conversation_item_id,source_role from memory_event_sources where memory_event_id=$1",
+      [event.id]
+    );
+    expect(links.rows).toEqual([
+      { conversation_item_id: item!.id, source_role: "derived_from" }
+    ]);
+    const [supporting] = await encryptedRepo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            rawJson: { content: "Separate IDE context" },
+            rawText: "Separate IDE context",
+            sourceHash: `supporting-${randomUUID()}`,
+            idempotencyKey: `supporting-${randomUUID()}`,
+            metadata: { sourceRole: "supporting_context" }
+          }
+        ]
+      }
+    );
+    await pool.query(
+      "insert into memory_event_sources(memory_event_id,conversation_item_id,source_order,source_role) values($1,$2,1,'supporting_context')",
+      [event.id, supporting!.id]
+    );
+    const delta = await encryptedRepo.readCapturedSessionSyncDelta({
+      relationshipId
+    });
+    expect(delta?.changes).toHaveLength(1);
+    expect(
+      delta?.changes[0]?.event?.contributors.map(
+        (source) => source.originItemId
+      )
+    ).toEqual([item!.id]);
+
+    await pool.query(
+      "update memory_event_sources set source_role='derived_from' where memory_event_id=$1 and conversation_item_id=$2",
+      [event.id, supporting!.id]
+    );
+    await expect(
+      encryptedRepo.readCapturedSessionSyncDelta({ relationshipId })
+    ).rejects.toBeInstanceOf(SyncStateConflictError);
+    await pool.query(
+      "update memory_event_sources set source_role='supporting_context' where memory_event_id=$1 and conversation_item_id=$2",
+      [event.id, supporting!.id]
+    );
+
+    const projectionKey = `projection:sync-replay-${randomUUID()}`;
+    const oldSourceHash = `projection-source-${randomUUID()}`;
+    const projected = await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "user",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: "Old projected content",
+        projectId: "sync-contributor-project",
+        sessionId: session.id,
+        idempotencyKey: projectionKey,
+        sourceHash: oldSourceHash,
+        metadata: {
+          rawConversationItemIds: [item!.id],
+          semanticItemManifest: [{ sourceIds: [item!.id] }]
+        }
+      }
+    );
+    let duplicateLocked!: () => void;
+    let releaseDuplicate!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      duplicateLocked = resolve;
+    });
+    const replayGate = new Promise<void>((resolve) => {
+      releaseDuplicate = resolve;
+    });
+    const replayPool = new Proxy(pool, {
+      get(target, property) {
+        if (property === "connect")
+          return async () => {
+            const client = await target.connect();
+            return new Proxy(client, {
+              get(connection, clientProperty) {
+                if (clientProperty === "query")
+                  return async (sql: string, values?: unknown[]) => {
+                    const result = await connection.query(sql, values);
+                    if (sql.includes("for update of me")) {
+                      duplicateLocked();
+                      await replayGate;
+                    }
+                    return result;
+                  };
+                if (clientProperty === "release")
+                  return connection.release.bind(connection);
+                return Reflect.get(connection, clientProperty) as unknown;
+              }
+            });
+          };
+        if (property === "query") return target.query.bind(target);
+        return Reflect.get(target, property) as unknown;
+      }
+    });
+    const replayRepo = createMemorySourceRepository(replayPool, {
+      envelopeEncryptionProvider
+    });
+    const replay = replayRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "user",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: "Stale replay input",
+        projectId: "sync-contributor-project",
+        sessionId: session.id,
+        idempotencyKey: `replay-${randomUUID()}`,
+        sourceHash: oldSourceHash,
+        metadata: { rawConversationItemIds: [item!.id] }
+      }
+    );
+    let refresh: ReturnType<typeof encryptedRepo.createMemoryEvent> | undefined;
+    try {
+      await Promise.race([
+        locked,
+        replay.then(() => {
+          throw new Error("Duplicate replay finished before row-lock gate");
+        })
+      ]);
+      refresh = encryptedRepo.createMemoryEvent(
+        { userId: owner.id },
+        {
+          eventType: "captured",
+          actor: "user",
+          rawEventType: "user_message",
+          visibility: "personal",
+          content: "Fresh projected content",
+          projectId: "sync-contributor-project",
+          sessionId: session.id,
+          idempotencyKey: projectionKey,
+          sourceHash: oldSourceHash,
+          metadata: {
+            rawConversationItemIds: [supporting!.id],
+            semanticItemManifest: [{ sourceIds: [supporting!.id] }]
+          }
+        }
+      );
+      await expect(
+        pool.query(
+          "select id from memory_events where id=$1 for update nowait",
+          [projected.id]
+        )
+      ).rejects.toMatchObject({ code: "55P03" });
+    } finally {
+      releaseDuplicate();
+    }
+    expect((await replay).id).toBe(projected.id);
+    const refreshed = await refresh;
+    expect(refreshed?.id).toBe(projected.id);
+    const staleReplay = await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "user",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: "Stale replay after refresh",
+        projectId: "sync-contributor-project",
+        sessionId: session.id,
+        idempotencyKey: `stale-replay-${randomUUID()}`,
+        sourceHash: oldSourceHash,
+        metadata: { rawConversationItemIds: [item!.id] }
+      }
+    );
+    expect(staleReplay.id).toBe(projected.id);
+    const finalEvent = await pool.query<{ content: string }>(
+      "select payload->>'content' as content from memory_events where id=$1",
+      [projected.id]
+    );
+    expect(finalEvent.rows[0]?.content).toBe("Fresh projected content");
+    const finalLinks = await pool.query<{ conversation_item_id: string }>(
+      "select conversation_item_id from memory_event_sources where memory_event_id=$1 and source_role='derived_from'",
+      [projected.id]
+    );
+    expect(finalLinks.rows).toEqual([{ conversation_item_id: supporting!.id }]);
+    const finalEncrypted = await createEncryptedPayloadRepository(
+      pool
+    ).decryptAuthorizedEncryptedField(
+      { userId: owner.id },
+      envelopeEncryptionProvider,
+      {
+        sourceTable: "memory_events",
+        sourceId: projected.id,
+        sourceColumn: "payload"
+      }
+    );
+    expect((finalEncrypted?.plaintext as { content?: string })?.content).toBe(
+      "Fresh projected content"
+    );
+
+    await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        eventType: "captured",
+        actor: "user",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: "Forged contributor",
+        projectId: "sync-contributor-project",
+        sessionId: session.id,
+        idempotencyKey: `forged-event-${randomUUID()}`,
+        metadata: { semanticItemManifest: [{ sourceIds: [randomUUID()] }] }
+      }
+    );
+    await expect(
+      encryptedRepo.readCapturedSessionSyncDelta({ relationshipId })
+    ).rejects.toBeInstanceOf(SyncStateConflictError);
+  });
+
   it("prepares and acknowledges exact-session LCM representations through source sync", async () => {
     const encryptedRepo = createMemorySourceRepository(pool, {
       envelopeEncryptionProvider: createLocalTestKeyEnvelopeEncryptionProvider(

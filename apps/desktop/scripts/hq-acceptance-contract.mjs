@@ -630,8 +630,20 @@ export const hqAcceptanceContract = [
   {
     id: "I713.06",
     category: "two-user",
-    description: "Alice makes a chat private; its summary leaves Bob's recall",
+    description:
+      "Alice makes a chat private; its earlier summary stays in Bob's recall and later messages are not shared",
     owners: ["HQ-713 real API/Team Backend suite"],
+    harness: "two-user"
+  },
+  {
+    id: "N26",
+    category: "two-user",
+    description:
+      "Make private settles after one freeze, share again creates the next exact freeze target, and multiple historical frozen grants remain settled",
+    owners: [
+      "HQ-720 Project share policy freeze suite",
+      "HQ-713 real API/Team Backend suite"
+    ],
     harness: "two-user"
   },
   {

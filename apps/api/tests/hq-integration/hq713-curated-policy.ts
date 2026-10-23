@@ -304,12 +304,44 @@ export async function prepareHq713PriorSummaryGrants(fixture: Hq713Fixture) {
   const revoked = await publishSummary(fixture, `${prefix}-revoked`);
   const frozenAfter = await freezeByChatDeletion(fixture, frozen);
   assert.equal(frozenAfter.source_revision, frozen.grant.source_revision);
-  await fixture.makeChatPrivate(fixture.bob, {
-    sessionId: revoked.sessionId,
-    grantId: revoked.grantId,
-    projectId: fixture.ids.bobPersonalProjectId
+  const mutationId = randomUUID();
+  const reasonCode = "owner_revoked";
+  const approved = await fixture.approveActionGrant(fixture.bob, {
+    action: "shared_memory.revoke",
+    mutationId,
+    teamId: fixture.ids.teamId,
+    teamWorkspaceId: fixture.ids.workspaceId,
+    shareGrantId: revoked.grantId,
+    expectedGrantVersion: revoked.grant.grant_version,
+    reasonCode
   });
+  assert.equal(approved.status.approvalTier, "native_review");
+  assert.ok(
+    approved.status.review,
+    "Exact revocation review must be displayed"
+  );
+  const revocation = await fixture.bob.team.request<{
+    grant: { id: string; lifecycle: string };
+  }>("POST", `/v1/shared-memory/share-grants/${revoked.grantId}/revoke`, {
+    body: {
+      mutationId,
+      teamId: fixture.ids.teamId,
+      teamWorkspaceId: fixture.ids.workspaceId,
+      expectedGrantVersion: revoked.grant.grant_version,
+      reasonCode,
+      authority: {
+        action: "workspace.memory.share_owned",
+        source: "device_action_grant",
+        referenceId: approved.clientRequestId
+      }
+    },
+    headers: { "x-koed-action-grant": approved.secret },
+    expectedStatus: 200
+  });
+  assert.equal(revocation.body.grant.id, revoked.grantId);
+  assert.equal(revocation.body.grant.lifecycle, "revoked");
   const revokedAfter = await grantState(fixture, revoked.grantId);
+  assert.equal(revokedAfter.frozen_at, null);
   assert.ok(revokedAfter.revoked_at instanceof Date);
   const postRevocation = await grantRead(
     fixture,

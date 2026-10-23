@@ -340,15 +340,16 @@ Scheduled Jobs.
 ### Make a Conversation private
 
 The Conversation owner can mark it private while keeping it in their Project.
-This is a local owner-controlled change. If it withdraws an existing
-Project-policy Share Grant, the owner separately authorizes its revocation
-through the existing `shared_memory.revoke` Native review and waits for that
-Team operation; an unrelated grant for the same source follows its own
-lifecycle. Revocation removes Team visibility under existing revocation and
-retention rules; it is distinct from freezing future advancement. Making a
-Conversation private does not require Team enrollment when there is no grant,
-and does not stop Agent work or change Scheduled Jobs. Sharing again requires a
-new explicit share action and the normal confirmation.
+This is a local owner-controlled change. If an active Project-policy Share
+Grant exists, the owner separately authorizes its freeze through the existing
+`shared_memory.grant.freeze` Native review and waits for that Team operation.
+The last published summary remains in Team recall under current authorization;
+later messages do not advance that grant. Frozen and revoked grants already
+satisfy the private transition, including when several historical frozen
+grants exist. An unrelated grant for the same source follows its own lifecycle.
+Making a Conversation private does not require Team enrollment when there is no
+grant, and does not stop Agent work or change Scheduled Jobs. Sharing again
+requires a new explicit share action and the normal confirmation.
 
 ### Delete a shared Project
 

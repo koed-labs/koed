@@ -128,6 +128,7 @@ export interface CollaborationRemoteSharedMemoryGrant {
   createdAt: string;
   updatedAt: string;
   revokedAt: string | null;
+  frozenAt?: string | null;
   companionScope: {
     scope: "team";
     kind: "shared_session_discussion";
@@ -945,6 +946,7 @@ const mapGrant = (
   createdAt: grant.createdAt,
   updatedAt: grant.updatedAt,
   revokedAt: grant.revokedAt,
+  ...(grant.frozenAt === undefined ? {} : { frozenAt: grant.frozenAt }),
   companionThreadId
 });
 

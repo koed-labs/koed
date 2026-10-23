@@ -58,6 +58,7 @@ const required = [
   "HQ713-step4-work-item-CAS",
   "HQ713-step5-private-agent-boundary",
   "I713.6",
+  "N26",
   "HQ713-step7-Team-offline",
   "I713.8",
   "I713.9",

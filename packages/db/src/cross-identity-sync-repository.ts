@@ -964,7 +964,8 @@ export const createCrossIdentitySyncRepository = (
     sourceTable: "memory_events" | "conversation_items" | "memory_nodes",
     sourceId: string,
     sourceColumn: string,
-    fallback: unknown
+    fallback: unknown,
+    queryable: pg.Pool | pg.PoolClient = pool
   ): Promise<unknown> => {
     if (
       !options.envelopeEncryptionProvider &&
@@ -972,7 +973,7 @@ export const createCrossIdentitySyncRepository = (
     ) {
       return fallback;
     }
-    const result = await pool.query<{
+    const result = await queryable.query<{
       encryption_scope: string;
       envelope_version: number;
       provider_mode: string;
@@ -1027,13 +1028,15 @@ export const createCrossIdentitySyncRepository = (
   const readSessionSummarySnapshot = async (input: {
     actor: ActorContext;
     sessionId: string;
+    queryable?: pg.Pool | pg.PoolClient;
   }): Promise<{
     completeLeaves: boolean;
     completeRollups: boolean;
     nodes: CapturedSessionSyncSummaryNodeV1[];
     revisionHash: string;
   }> => {
-    const nodeResult = await pool.query<Row>(
+    const queryable = input.queryable ?? pool;
+    const nodeResult = await queryable.query<Row>(
       `select *
          from memory_nodes
         where owner_user_id=$1
@@ -1053,7 +1056,7 @@ export const createCrossIdentitySyncRepository = (
         revisionHash: crossIdentitySyncDigest([])
       };
     }
-    const sourceResult = await pool.query<Row>(
+    const sourceResult = await queryable.query<Row>(
       `select source.memory_node_id,source.memory_event_id,source.source_order,
               event.session_id,
               latest_change.operation as sync_operation,
@@ -1072,7 +1075,7 @@ export const createCrossIdentitySyncRepository = (
         order by source.memory_node_id,source.source_order`,
       [nodeIds, input.sessionId]
     );
-    const childResult = await pool.query<Row>(
+    const childResult = await queryable.query<Row>(
       `select parent_memory_node_id,child_memory_node_id,child_order
          from memory_node_children
         where parent_memory_node_id=any($1::uuid[])
@@ -1189,14 +1192,16 @@ export const createCrossIdentitySyncRepository = (
         "memory_nodes",
         originNodeId,
         "summary_text",
-        row.summary_text
+        row.summary_text,
+        queryable
       );
       const structuredValue = await hydrateField(
         input.actor,
         "memory_nodes",
         originNodeId,
         "summary_structured_json",
-        row.summary_structured_json
+        row.summary_structured_json,
+        queryable
       );
       if (
         typeof summaryTextValue !== "string" ||
@@ -2422,18 +2427,23 @@ export const createCrossIdentitySyncRepository = (
         ))
       )
         return null;
-      const sessionResult = await pool.query(
-        "select * from sessions where id=$1",
-        [sessionId]
-      );
-      const session = sessionResult.rows[0] as Row;
-      const limit = Math.min(
-        Math.max(input.limit ?? CAPTURED_SESSION_SYNC_MAX_CHANGES, 1),
-        CAPTURED_SESSION_SYNC_MAX_CHANGES
-      );
-      const changesResult = await pool.query(
-        `
-          select latest.cursor, latest.origin_event_id, latest.operation, event.*
+      const snapshot = await pool.connect();
+      try {
+        await snapshot.query("begin isolation level repeatable read read only");
+        const sessionResult = await snapshot.query(
+          "select * from sessions where id=$1",
+          [sessionId]
+        );
+        const session = sessionResult.rows[0] as Row;
+        const limit = Math.min(
+          Math.max(input.limit ?? CAPTURED_SESSION_SYNC_MAX_CHANGES, 1),
+          CAPTURED_SESSION_SYNC_MAX_CHANGES
+        );
+        const changesResult = await snapshot.query(
+          `
+          select latest.cursor, latest.origin_event_id, latest.operation,
+                 event.*, coalesce(sources.contributors, '[]'::jsonb)
+                   as sync_contributors
           from (
             select distinct on (change.origin_event_id)
               change.cursor,
@@ -2446,249 +2456,301 @@ export const createCrossIdentitySyncRepository = (
             order by change.origin_event_id, change.cursor desc
           ) latest
           left join memory_events event on event.id = latest.memory_event_id
+          left join lateral (
+            select jsonb_agg(to_jsonb(ci) order by mes.source_order,
+                             ci.source_sequence nulls last, ci.id)
+                   as contributors
+              from memory_event_sources mes
+              join conversation_items ci on ci.id=mes.conversation_item_id
+             where mes.memory_event_id=event.id
+               and mes.source_role='derived_from'
+          ) sources on true
           order by latest.cursor asc
           limit $3
         `,
-        [sessionId, relationship.sourceCursor, limit]
-      );
-      const actor = { userId: relationship.localUserId };
-      const changes: CapturedSessionSyncChangeV1[] = [];
-      for (const changeRow of changesResult.rows as Row[]) {
-        const cursor = numberValue(changeRow.cursor);
-        const deleted =
-          changeRow.operation === "delete" ||
-          changeRow.invalidated_at ||
-          changeRow.personal_deleted_at ||
-          !changeRow.id;
-        if (deleted) {
-          changes.push({
-            cursor,
-            operation: "delete",
-            originEventId: String(changeRow.origin_event_id),
-            revisionHash: crossIdentitySyncDigest({
-              originEventId: changeRow.origin_event_id,
+          [sessionId, relationship.sourceCursor, limit]
+        );
+        const actor = { userId: relationship.localUserId };
+        const changes: CapturedSessionSyncChangeV1[] = [];
+        for (const changeRow of changesResult.rows as Row[]) {
+          const cursor = numberValue(changeRow.cursor);
+          const deleted =
+            changeRow.operation === "delete" ||
+            changeRow.invalidated_at ||
+            changeRow.personal_deleted_at ||
+            !changeRow.id;
+          if (deleted) {
+            changes.push({
               cursor,
-              deleted: true
-            }),
-            event: null
-          });
-          continue;
-        }
-        const hydratedEventPayload = await hydrateField(
-          actor,
-          "memory_events",
-          String(changeRow.id),
-          "payload",
-          changeRow.payload
-        );
-        const payload = objectValue(hydratedEventPayload);
-        const contributorResult = await pool.query(
-          "select ci.* from memory_event_sources mes join conversation_items ci on ci.id=mes.conversation_item_id where mes.memory_event_id=$1 order by mes.source_order,ci.source_sequence nulls last,ci.id",
-          [changeRow.id]
-        );
-        if (
-          contributorResult.rowCount !== null &&
-          contributorResult.rowCount >
+              operation: "delete",
+              originEventId: String(changeRow.origin_event_id),
+              revisionHash: crossIdentitySyncDigest({
+                originEventId: changeRow.origin_event_id,
+                cursor,
+                deleted: true
+              }),
+              event: null
+            });
+            continue;
+          }
+          if (
+            changeRow.owner_user_id !== relationship.localUserId ||
+            changeRow.session_id !== sessionId ||
+            changeRow.visibility !== "personal"
+          ) {
+            throw new SyncStateConflictError(
+              "Memory Event crosses its Captured Session boundary"
+            );
+          }
+          const hydratedEventPayload = await hydrateField(
+            actor,
+            "memory_events",
+            String(changeRow.id),
+            "payload",
+            changeRow.payload,
+            snapshot
+          );
+          const payload = objectValue(hydratedEventPayload);
+          const eventMetadata = canonicalSyncJsonObject(
+            objectValue(payload.metadata),
+            "memory event metadata"
+          );
+          const contributorRows = changeRow.sync_contributors;
+          if (!Array.isArray(contributorRows)) {
+            throw new SyncStateConflictError(
+              "Memory Event contributor snapshot is malformed"
+            );
+          }
+          if (
+            contributorRows.length >
             CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT
-        ) {
-          throw new Error("Memory Event contributor limit exceeded");
-        }
-        const contributors: CapturedSessionSyncContributorV1[] = [];
-        for (const contributor of contributorResult.rows as Row[]) {
-          const hydratedRawText = await hydrateField(
-            actor,
-            "conversation_items",
-            String(contributor.id),
-            "raw_text",
-            contributor.raw_text
-          );
-          const hydratedRawJson = await hydrateField(
-            actor,
-            "conversation_items",
-            String(contributor.id),
-            "raw_json",
-            contributor.raw_json
-          );
-          const hydratedMetadata = canonicalSyncJsonObject(
-            await hydrateField(
+          ) {
+            throw new Error("Memory Event contributor limit exceeded");
+          }
+          const contributors: CapturedSessionSyncContributorV1[] = [];
+          for (const contributor of contributorRows as Row[]) {
+            if (
+              contributor.owner_user_id !== relationship.localUserId ||
+              contributor.session_id !== sessionId ||
+              contributor.visibility !== "personal" ||
+              contributor.personal_deleted_at !== null
+            ) {
+              throw new SyncStateConflictError(
+                "Memory Event contributor crosses its Captured Session boundary"
+              );
+            }
+            const hydratedRawText = await hydrateField(
               actor,
               "conversation_items",
               String(contributor.id),
-              "metadata",
-              contributor.metadata
-            ),
-            "conversation item metadata"
-          );
-          const hydratedTransportChunkText = await hydrateField(
-            actor,
-            "conversation_items",
-            String(contributor.id),
-            "transport_chunk_text",
-            contributor.transport_chunk_text
-          );
-          const content =
-            typeof hydratedRawText === "string" && hydratedRawText
-              ? hydratedRawText
-              : capturedSessionSyncContentFromUnknown(hydratedRawJson);
-          const actorValue =
-            hydratedMetadata.actor ?? contributor.source_event_type;
-          if (
-            classifyApprovalActivity({
+              "raw_text",
+              contributor.raw_text,
+              snapshot
+            );
+            const hydratedRawJson = await hydrateField(
+              actor,
+              "conversation_items",
+              String(contributor.id),
+              "raw_json",
+              contributor.raw_json,
+              snapshot
+            );
+            const hydratedMetadata = canonicalSyncJsonObject(
+              await hydrateField(
+                actor,
+                "conversation_items",
+                String(contributor.id),
+                "metadata",
+                contributor.metadata,
+                snapshot
+              ),
+              "conversation item metadata"
+            );
+            const hydratedTransportChunkText = await hydrateField(
+              actor,
+              "conversation_items",
+              String(contributor.id),
+              "transport_chunk_text",
+              contributor.transport_chunk_text,
+              snapshot
+            );
+            const content =
+              typeof hydratedRawText === "string" && hydratedRawText
+                ? hydratedRawText
+                : capturedSessionSyncContentFromUnknown(hydratedRawJson);
+            const actorValue =
+              hydratedMetadata.actor ?? contributor.source_event_type;
+            if (
+              classifyApprovalActivity({
+                metadata: hydratedMetadata,
+                actor: actorValue,
+                content
+              })
+            ) {
+              throw new SyncStateConflictError(
+                "Approval Activity is excluded from semantic synchronization"
+              );
+            }
+            const kindValue =
+              contributor.source_event_type ?? contributor.source_record_type;
+            let rawText: string | null;
+            if (hydratedRawText === null) {
+              rawText = null;
+            } else if (typeof hydratedRawText === "string") {
+              rawText = hydratedRawText;
+            } else {
+              throw new SyncStateConflictError(
+                "Conversation item raw text must be a string"
+              );
+            }
+            const canonical = buildCapturedSessionSyncContributor({
+              originItemId: String(contributor.id),
+              actor: typeof actorValue === "string" ? actorValue : "unknown",
+              kind: typeof kindValue === "string" ? kindValue : "unknown",
+              content,
+              toolName:
+                typeof objectValue(contributor.metadata).toolName === "string"
+                  ? String(objectValue(contributor.metadata).toolName)
+                  : null,
+              toolCallId:
+                typeof objectValue(contributor.metadata).toolCallId === "string"
+                  ? String(objectValue(contributor.metadata).toolCallId)
+                  : null,
+              sourceEventTime: iso(contributor.event_time),
+              sourceSequence:
+                contributor.source_sequence === null
+                  ? null
+                  : numberValue(contributor.source_sequence),
+              sourceKind: String(contributor.source_kind),
+              sourceAdapterVersion: String(contributor.source_adapter_version),
+              sourceTransport: String(contributor.source_transport),
+              sourceRecordType: String(contributor.source_record_type),
+              sourceEventType: optionalString(contributor.source_event_type),
+              rawJson: hydratedRawJson,
+              rawText,
               metadata: hydratedMetadata,
-              actor: actorValue,
-              content
-            })
+              logicalSourceId: optionalString(contributor.logical_source_id),
+              transportChunkIndex: numberValue(
+                contributor.transport_chunk_index
+              ),
+              transportChunkCount: numberValue(
+                contributor.transport_chunk_count
+              ),
+              transportChunkText: optionalString(hydratedTransportChunkText),
+              transportChunkEncoding: optionalString(
+                contributor.transport_chunk_encoding
+              ),
+              projectionStatus: String(
+                contributor.projection_status
+              ) as CapturedSessionSyncContributorV1["projectionStatus"],
+              projectionVersion: optionalString(contributor.projection_version),
+              projectionPolicyRevision:
+                contributor.projection_policy_revision === null
+                  ? null
+                  : numberValue(contributor.projection_policy_revision),
+              memoryExcludedAt: iso(contributor.memory_excluded_at),
+              memoryExclusionReason: optionalString(
+                contributor.memory_exclusion_reason
+              )
+            });
+            contributors.push(canonical);
+          }
+          if (
+            !capturedSessionSyncManifestMatchesContributors(
+              eventMetadata,
+              contributors
+            )
           ) {
             throw new SyncStateConflictError(
-              "Approval Activity is excluded from semantic synchronization"
+              "Memory Event contributor snapshot is not stable"
             );
           }
-          const kindValue =
-            contributor.source_event_type ?? contributor.source_record_type;
-          let rawText: string | null;
-          if (hydratedRawText === null) {
-            rawText = null;
-          } else if (typeof hydratedRawText === "string") {
-            rawText = hydratedRawText;
-          } else {
-            throw new SyncStateConflictError(
-              "Conversation item raw text must be a string"
-            );
-          }
-          const canonical = buildCapturedSessionSyncContributor({
-            originItemId: String(contributor.id),
-            actor: typeof actorValue === "string" ? actorValue : "unknown",
-            kind: typeof kindValue === "string" ? kindValue : "unknown",
-            content,
-            toolName:
-              typeof objectValue(contributor.metadata).toolName === "string"
-                ? String(objectValue(contributor.metadata).toolName)
-                : null,
-            toolCallId:
-              typeof objectValue(contributor.metadata).toolCallId === "string"
-                ? String(objectValue(contributor.metadata).toolCallId)
-                : null,
-            sourceEventTime: iso(contributor.event_time),
-            sourceSequence:
-              contributor.source_sequence === null
-                ? null
-                : numberValue(contributor.source_sequence),
-            sourceKind: String(contributor.source_kind),
-            sourceAdapterVersion: String(contributor.source_adapter_version),
-            sourceTransport: String(contributor.source_transport),
-            sourceRecordType: String(contributor.source_record_type),
-            sourceEventType: optionalString(contributor.source_event_type),
-            rawJson: hydratedRawJson,
-            rawText,
-            metadata: hydratedMetadata,
-            logicalSourceId: optionalString(contributor.logical_source_id),
-            transportChunkIndex: numberValue(contributor.transport_chunk_index),
-            transportChunkCount: numberValue(contributor.transport_chunk_count),
-            transportChunkText: optionalString(hydratedTransportChunkText),
-            transportChunkEncoding: optionalString(
-              contributor.transport_chunk_encoding
+          const event = buildCapturedSessionSyncEvent({
+            originEventId: String(changeRow.id),
+            eventType: String(changeRow.event_type),
+            actor: typeof payload.actor === "string" ? payload.actor : "system",
+            content: typeof payload.content === "string" ? payload.content : "",
+            metadata: eventMetadata,
+            includeInEmbedding: Boolean(changeRow.include_in_embedding),
+            includeInLcm: Boolean(changeRow.include_in_lcm),
+            projectionPolicyKey: optionalString(
+              changeRow.projection_policy_key
             ),
-            projectionStatus: String(
-              contributor.projection_status
-            ) as CapturedSessionSyncContributorV1["projectionStatus"],
-            projectionVersion: optionalString(contributor.projection_version),
             projectionPolicyRevision:
-              contributor.projection_policy_revision === null
+              changeRow.projection_policy_revision === null
                 ? null
-                : numberValue(contributor.projection_policy_revision),
-            memoryExcludedAt: iso(contributor.memory_excluded_at),
-            memoryExclusionReason: optionalString(
-              contributor.memory_exclusion_reason
-            )
-          });
-          contributors.push(canonical);
-        }
-        const eventMetadata = canonicalSyncJsonObject(
-          objectValue(payload.metadata),
-          "memory event metadata"
-        );
-        if (
-          !capturedSessionSyncManifestMatchesContributors(
-            eventMetadata,
+                : numberValue(changeRow.projection_policy_revision),
+            tokenCount:
+              changeRow.token_count === null
+                ? null
+                : numberValue(changeRow.token_count),
+            sealReason: optionalString(changeRow.seal_reason),
+            capturedAt: iso(changeRow.captured_at)!,
+            sourceEventTime: iso(changeRow.source_event_time),
+            sourceSequence:
+              changeRow.source_sequence === null
+                ? null
+                : numberValue(changeRow.source_sequence),
             contributors
-          )
-        ) {
-          throw new SyncStateConflictError(
-            "Memory Event contributor snapshot is not stable"
-          );
+          });
+          changes.push({
+            cursor,
+            operation: "upsert",
+            originEventId: event.originEventId,
+            revisionHash: event.revisionHash,
+            event
+          });
         }
-        const event = buildCapturedSessionSyncEvent({
-          originEventId: String(changeRow.id),
-          eventType: String(changeRow.event_type),
-          actor: typeof payload.actor === "string" ? payload.actor : "system",
-          content: typeof payload.content === "string" ? payload.content : "",
-          metadata: eventMetadata,
-          includeInEmbedding: Boolean(changeRow.include_in_embedding),
-          includeInLcm: Boolean(changeRow.include_in_lcm),
-          projectionPolicyKey: optionalString(changeRow.projection_policy_key),
-          projectionPolicyRevision:
-            changeRow.projection_policy_revision === null
-              ? null
-              : numberValue(changeRow.projection_policy_revision),
-          tokenCount:
-            changeRow.token_count === null
-              ? null
-              : numberValue(changeRow.token_count),
-          sealReason: optionalString(changeRow.seal_reason),
-          capturedAt: iso(changeRow.captured_at)!,
-          sourceEventTime: iso(changeRow.source_event_time),
-          sourceSequence:
-            changeRow.source_sequence === null
-              ? null
-              : numberValue(changeRow.source_sequence),
-          contributors
+        const toCursor = changes.length
+          ? Math.max(...changes.map((change) => change.cursor))
+          : relationship.sourceCursor;
+        const summarySnapshot = await readSessionSummarySnapshot({
+          actor,
+          sessionId,
+          queryable: snapshot
         });
-        changes.push({
-          cursor,
-          operation: "upsert",
-          originEventId: event.originEventId,
-          revisionHash: event.revisionHash,
-          event
-        });
+        const summarySnapshotChanged =
+          summarySnapshot.revisionHash !==
+          relationship.sourceSummaryRevisionHash;
+        const summarySnapshotIncluded =
+          summarySnapshotChanged &&
+          (summarySnapshot.completeLeaves ||
+            (relationship.sourceSummaryRevisionHash !== null &&
+              summarySnapshot.nodes.length === 0));
+        const summaryNodes = summarySnapshotIncluded
+          ? summarySnapshot.nodes
+          : [];
+        const result = {
+          relationship,
+          session: {
+            originSessionId: sessionId,
+            externalSessionId: optionalString(session.external_session_id),
+            sourceRuntime: String(session.source_runtime),
+            captureMethod: String(session.capture_method),
+            capturedAt: iso(session.captured_at)!,
+            title:
+              typeof objectValue(session.metadata).threadName === "string"
+                ? String(objectValue(session.metadata).threadName)
+                : null,
+            sourceAdapterVersion: optionalString(session.source_adapter_version)
+          },
+          changes,
+          summaryNodes,
+          summarySnapshotIncluded,
+          summaryRevisionHash: summarySnapshotIncluded
+            ? summarySnapshot.revisionHash
+            : crossIdentitySyncDigest([]),
+          fromCursor: relationship.sourceCursor,
+          toCursor
+        };
+        await snapshot.query("commit");
+        return result;
+      } catch (error) {
+        await snapshot.query("rollback");
+        throw error;
+      } finally {
+        snapshot.release();
       }
-      const toCursor = changes.length
-        ? Math.max(...changes.map((change) => change.cursor))
-        : relationship.sourceCursor;
-      const summarySnapshot = await readSessionSummarySnapshot({
-        actor,
-        sessionId
-      });
-      const summarySnapshotChanged =
-        summarySnapshot.revisionHash !== relationship.sourceSummaryRevisionHash;
-      const summarySnapshotIncluded =
-        summarySnapshotChanged &&
-        (summarySnapshot.completeLeaves ||
-          (relationship.sourceSummaryRevisionHash !== null &&
-            summarySnapshot.nodes.length === 0));
-      const summaryNodes = summarySnapshotIncluded ? summarySnapshot.nodes : [];
-      return {
-        relationship,
-        session: {
-          originSessionId: sessionId,
-          externalSessionId: optionalString(session.external_session_id),
-          sourceRuntime: String(session.source_runtime),
-          captureMethod: String(session.capture_method),
-          capturedAt: iso(session.captured_at)!,
-          title:
-            typeof objectValue(session.metadata).threadName === "string"
-              ? String(objectValue(session.metadata).threadName)
-              : null,
-          sourceAdapterVersion: optionalString(session.source_adapter_version)
-        },
-        changes,
-        summaryNodes,
-        summarySnapshotIncluded,
-        summaryRevisionHash: summarySnapshotIncluded
-          ? summarySnapshot.revisionHash
-          : crossIdentitySyncDigest([]),
-        fromCursor: relationship.sourceCursor,
-        toCursor
-      };
     },
     async getSharedMemoryLcmSyncState(input) {
       const relationshipResult = await pool.query<Row>(

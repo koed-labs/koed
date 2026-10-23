@@ -2013,7 +2013,7 @@ export const registerWorkspaceProjectCoordinationRoutes = (
       if (ack.withdrawalRequired && !ack.withdrawalTarget)
         denied("Exact Conversation withdrawal target unavailable", 409);
       if (withdrawalTarget)
-        return { state: "withdrawal_required" as const, withdrawalTarget };
+        return { state: "freeze_required" as const, withdrawalTarget };
       await projectSharePolicyRepository!.markPrivate({
         ownerUserId: authority.actor.id,
         projectId,

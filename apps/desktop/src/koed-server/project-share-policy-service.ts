@@ -640,25 +640,24 @@ export const createProjectSharePolicyService = (input: {
         current.policy.teamId !== initial.policy.teamId ||
         current.policy.workspaceId !== initial.policy.workspaceId
       )
-        throw new Error("Project summary sharing withdrawal authority changed");
+        throw new Error("Project summary sharing freeze authority changed");
       const fresh = await invoke();
       if (
-        fresh.state !== "withdrawal_required" ||
+        fresh.state !== "freeze_required" ||
         fresh.withdrawalTarget.shareGrantId !== target.shareGrantId ||
         fresh.withdrawalTarget.grantVersion !== target.grantVersion
       )
-        throw new Error("Project summary sharing withdrawal target changed");
+        throw new Error("Project summary sharing freeze target changed");
     };
     const mutationId = randomUUID();
     const intent = {
-      intent: "collaboration.revoke_shared_memory" as const,
+      intent: "collaboration.freeze_shared_memory_grant" as const,
       commandRequestId: randomUUID(),
       mutationId,
       teamId: initial.policy.teamId,
       workspaceId: initial.policy.workspaceId,
       shareGrantId: target.shareGrantId,
-      expectedGrantVersion: target.grantVersion,
-      reasonCode: "project_policy_make_private"
+      expectedGrantVersion: target.grantVersion
     };
     const grantId = await reviewProjectPolicyGrant(intent, revalidate);
     await revalidate();
@@ -668,14 +667,13 @@ export const createProjectSharePolicyService = (input: {
     const command = collaborationRendererCommandSchema.parse({
       contractVersion: COLLABORATION_CONTRACT_VERSION,
       requestId: intent.commandRequestId,
-      command: "collaboration.revoke_shared_memory",
+      command: "collaboration.freeze_shared_memory_grant",
       input: {
         mutationId,
         teamId: intent.teamId,
         workspaceId: intent.workspaceId,
         shareGrantId: target.shareGrantId,
         expectedGrantVersion: target.grantVersion,
-        reasonCode: intent.reasonCode,
         actionGrant: { id: grantId }
       }
     });
@@ -685,18 +683,17 @@ export const createProjectSharePolicyService = (input: {
     if (
       context.signal.aborted ||
       !result.ok ||
-      result.command !== "collaboration.revoke_shared_memory" ||
+      result.command !== "collaboration.freeze_shared_memory_grant" ||
       result.data.grant.id !== target.shareGrantId ||
-      result.data.grant.lifecycle !== "revoked" ||
+      result.data.grant.lifecycle !== "active" ||
+      !result.data.grant.frozenAt ||
       result.data.grant.grantVersion <= target.grantVersion
     )
-      throw new Error(
-        "Project summary sharing withdrawal was not acknowledged"
-      );
+      throw new Error("Project summary sharing freeze was not acknowledged");
     const completed = await invoke();
     if (completed.state !== "private")
       throw new Error(
-        "Project summary sharing withdrawal still requires attention"
+        "Project summary sharing freeze still requires attention"
       );
     return completed;
   };

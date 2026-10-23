@@ -746,6 +746,10 @@ export const collaborationCommandRegistry = {
     scope: "team",
     desktopOperationFamily: write
   },
+  "collaboration.freeze_shared_memory_grant": {
+    scope: "team",
+    desktopOperationFamily: write
+  },
   "collaboration.change_shared_memory_fidelity": {
     scope: "team",
     desktopOperationFamily: write

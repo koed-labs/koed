@@ -22,6 +22,7 @@ import {
   sharedMemoryPreviewActionGrantBinding,
   sharedMemoryPreviewSchema,
   sharedMemoryRevokeActionGrantBinding,
+  sharedMemoryFreezeActionGrantBinding,
   sharedMemoryPendingShareActionGrantBinding,
   sharedMemoryTranscriptAccessActionGrantBinding,
   sharedMemoryTranscriptRevokeActionGrantBinding,
@@ -76,6 +77,7 @@ const sharedMemoryControlCommandNames = [
   "collaboration.load_shared_memory_preview_page",
   "collaboration.share_memory",
   "collaboration.revoke_shared_memory",
+  "collaboration.freeze_shared_memory_grant",
   "collaboration.change_shared_memory_fidelity"
 ] as const;
 
@@ -1773,6 +1775,7 @@ const remoteGrantMatchesPersisted = (
     grant.createdAt === remote.createdAt &&
     grant.updatedAt === remote.updatedAt &&
     grant.revokedAt === remote.revokedAt &&
+    (grant.frozenAt ?? null) === (remote.frozenAt ?? null) &&
     remote.companionScope.teamId === grant.teamId &&
     remote.companionScope.teamWorkspaceId === grant.workspaceId &&
     remote.companionScope.logicalMemoryId === grant.logicalMemoryId &&
@@ -2861,6 +2864,120 @@ const dispatchRevoke = async (
   return result;
 };
 
+const dispatchFreeze = async (
+  options: CollaborationSharedMemoryControlOptions,
+  authority: ResolvedAuthority,
+  command: Extract<
+    CollaborationSharedMemoryControlCommand,
+    { command: "collaboration.freeze_shared_memory_grant" }
+  >
+): Promise<CollaborationCommandResult> => {
+  const identity = authorityIdentity(authority);
+  const local = await options.authorityStore.readAuthoritativeGrant({
+    ...identity,
+    shareGrantId: command.input.shareGrantId
+  });
+  let prior: CollaborationPersistedSharedMemoryGrant;
+  if (local) {
+    prior = await requirePersistedGrant(
+      options.authorityStore,
+      identity,
+      command.input.shareGrantId,
+      command.input.teamId,
+      command.input.workspaceId
+    );
+  } else {
+    // Project-policy issuance can activate on Team before the owner's local
+    // collaboration projection has ever read this grant. Resolve the exact
+    // owner-visible grant from Team, then persist that authorized snapshot.
+    const payload = await remoteRequest(options, authority, {
+      method: "GET",
+      path: `/v1/shared-memory/owned-shares/grant/${encodeURIComponent(command.input.shareGrantId)}`
+    });
+    const detail = remoteOwnedShareDetailSchema.safeParse(payload);
+    if (!detail.success || detail.data.share.kind !== "grant")
+      throw new ControlFailure("not_available");
+    const entry = detail.data.share;
+    if (
+      entry.grant.id !== command.input.shareGrantId ||
+      entry.grant.ownerUserId !== identity.upstreamUserId ||
+      entry.grant.teamId !== command.input.teamId ||
+      entry.grant.teamWorkspaceId !== command.input.workspaceId ||
+      entry.summary.workspaceContentAccess !== "available" ||
+      !entry.summary.companionThreadId
+    )
+      throw new ControlFailure("permission_denied");
+    if (
+      entry.grant.grantVersion !== command.input.expectedGrantVersion ||
+      entry.grant.lifecycle !== "active" ||
+      entry.grant.frozenAt
+    )
+      throw new ControlFailure("conflict");
+    prior = await persistGrant(
+      options.authorityStore,
+      identity,
+      remoteOwnedGrantWithCompanion(entry.grant),
+      null,
+      {
+        companionThreadId: entry.summary.companionThreadId,
+        sharedSessionId: entry.grant.id
+      },
+      "authoritative_snapshot"
+    );
+  }
+  if (
+    prior.grant.grantVersion !== command.input.expectedGrantVersion ||
+    prior.grant.lifecycle !== "active" ||
+    prior.grant.frozenAt
+  )
+    throw new ControlFailure("conflict");
+  const binding = sharedMemoryFreezeActionGrantBinding({
+    referenceId: command.input.actionGrant.id,
+    mutationId: command.input.mutationId,
+    teamId: command.input.teamId,
+    teamWorkspaceId: command.input.workspaceId,
+    shareGrantId: command.input.shareGrantId,
+    expectedGrantVersion: command.input.expectedGrantVersion
+  });
+  const payload = await remoteRequest(options, authority, {
+    method: binding.method,
+    path: binding.path,
+    body: binding.body,
+    idempotencyKey: command.input.mutationId,
+    actionGrant: resolveProtectedActionGrant(
+      options,
+      authority,
+      command,
+      binding
+    )
+  });
+  const remote = readRemoteGrant(payload);
+  if (
+    remote.id !== prior.grant.id ||
+    remote.logicalMemoryId !== prior.grant.logicalMemoryId ||
+    remote.teamId !== command.input.teamId ||
+    remote.teamWorkspaceId !== command.input.workspaceId ||
+    remote.lifecycle !== "active" ||
+    !remote.frozenAt ||
+    remote.grantVersion !== command.input.expectedGrantVersion + 1
+  )
+    throw new ControlFailure("permission_denied");
+  const persisted = await persistGrant(
+    options.authorityStore,
+    identity,
+    remote,
+    prior,
+    {
+      companionThreadId: prior.grant.companionThreadId,
+      sharedSessionId: remote.id
+    },
+    "authoritative_snapshot"
+  );
+  const result = success(command, { grant: ownerSafeGrant(persisted.grant) });
+  if (!result) throw new ControlFailure("internal_error");
+  return result;
+};
+
 const dispatchListOwnedGrants = async (
   options: CollaborationSharedMemoryControlOptions,
   authority: ResolvedAuthority,
@@ -3733,6 +3850,8 @@ const dispatchResolved = async (
       return dispatchShare(options, authority, command);
     case "collaboration.revoke_shared_memory":
       return dispatchRevoke(options, authority, command);
+    case "collaboration.freeze_shared_memory_grant":
+      return dispatchFreeze(options, authority, command);
     case "collaboration.change_shared_memory_fidelity":
       return dispatchChangeFidelity(options, authority, command);
   }

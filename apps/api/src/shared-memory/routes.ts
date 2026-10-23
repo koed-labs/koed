@@ -1560,7 +1560,7 @@ export const registerSharedMemoryRoutes = (
               return null;
             return {
               statusCode: 200,
-              body: { grant: ownedShareGrantDto(grant) }
+              body: { grant: ownerGrantDto(grant) }
             };
           }
         )

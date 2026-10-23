@@ -17,6 +17,7 @@ import {
   ProjectSharePolicyConflictError,
   type ProjectShareManifestEntry
 } from "./project-share-policy-repository.js";
+import { createSharedMemoryRepository } from "./shared-memory-repository.js";
 
 const testUrl = process.env.KOED_HQ702_TEST_DATABASE_URL;
 const hash = (value: string) =>
@@ -273,6 +274,235 @@ describe.skipIf(!testUrl)("Project policy issue integration", () => {
     });
     return { repository, prepared, enabled };
   };
+
+  // The share activation itself is covered by Shared Memory suites. These
+  // rows seed its acknowledged result so exclusion uses real PostgreSQL joins
+  // and row locks, including the partial unique index for active grants.
+  const seedActivatedGrant = async (input: {
+    pendingShareId: string;
+    projectId: string;
+    policyGrant?: boolean;
+    frozen?: boolean;
+  }) => {
+    const grantId = randomUUID();
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("set local session_replication_role=replica");
+      await client.query(
+        `insert into team_memory_share_grants
+         (id,logical_grant_id,logical_memory_id,source_revision_id,
+          owner_user_id,owner_principal_id,team_id,team_workspace_id,consent_id,
+          source_owner_policy_id,source_owner_policy_version,team_policy_id,
+          team_policy_version,workspace_policy_id,workspace_policy_version,
+          source_capabilities,activation_representation,mode,maximum_fidelity,
+          include_curated_memory,fidelity_policy_revision,content_policy_version,
+          classifier_version,source_revision,creator_authority,grant_version,
+          frozen_at,freeze_mutation_id,freeze_manifest_hash,freeze_representation_count)
+         select $1,$2,p.logical_memory_id,p.source_revision_id,p.owner_user_id,
+                source.owner_principal_id,p.team_id,p.team_workspace_id,p.consent_id,
+                $3,1,$4,1,$5,1,p.source_capabilities,p.activation_representation,
+                p.mode,p.maximum_fidelity,p.include_curated_memory,1,1,1,
+                p.source_revision,'device_action_grant',
+                case when $6::boolean then 2 else 1 end,
+                case when $6::boolean then now() else null end,
+                case when $6::boolean then $7::uuid else null end,
+                case when $6::boolean then $8::text else null end,
+                case when $6::boolean then 0 else null end
+           from pending_share_operations p
+           join logical_memories source on source.id=p.logical_memory_id
+          where p.id=$9`,
+        [
+          grantId,
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          input.frozen ?? false,
+          randomUUID(),
+          hash("frozen grant"),
+          input.pendingShareId
+        ]
+      );
+      await client.query(
+        `insert into workspace_project_share_grant_bindings
+         (workspace_project_id,share_grant_id,source_owner_team_member_id)
+         values($1,$2,$3)`,
+        [input.projectId, grantId, memberId]
+      );
+      if (input.policyGrant) {
+        await client.query(
+          `update pending_share_operations
+              set grant_id=$2,state='activated',activated_at=now()
+            where id=$1`,
+          [input.pendingShareId, grantId]
+        );
+        await client.query(
+          `update workspace_project_share_policy_issues
+              set activated_at=now() where pending_share_id=$1`,
+          [input.pendingShareId]
+        );
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return grantId;
+  };
+
+  const freezeSeededGrant = async (grantId: string) => {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("set local session_replication_role=replica");
+      await client.query(
+        `update team_memory_share_grants
+          set frozen_at=now(),freeze_mutation_id=$2,
+              freeze_manifest_hash=$3,freeze_representation_count=0,
+              grant_version=grant_version+1
+        where id=$1 and frozen_at is null`,
+        [grantId, randomUUID(), hash(`freeze:${grantId}`)]
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+
+  it("requires freeze only for a live original policy grant and settles after its freeze", async () => {
+    const projectId = await createProject();
+    const source = await createSource("Original policy freeze");
+    const { repository, prepared } = await enable(projectId, [source.entry]);
+    const staged = await repository.stageInitialBundle(actor, {
+      projectId,
+      expectedPolicyVersion: 1,
+      personalProjectBindingHash: prepared.personalProjectBindingHash,
+      sessionId: source.entry.sessionId,
+      mappingRevision: 1,
+      candidate: source.candidate
+    });
+    if (staged.state !== "staged")
+      throw new Error("Expected staged policy grant");
+    const grantId = await seedActivatedGrant({
+      pendingShareId: staged.pendingShareId,
+      projectId,
+      policyGrant: true
+    });
+    const unavailableEncryption = (): never => {
+      throw new Error("Owned-share metadata must not decrypt source content");
+    };
+    const shares = createSharedMemoryRepository(pool, {
+      resolveTeamEncryptionProvider: unavailableEncryption,
+      resolveOwnerPrivateReplicaEncryptionProvider: unavailableEncryption,
+      resolvePersonalEncryptionProvider: unavailableEncryption
+    });
+    const listed = await shares.listOwnerShares(
+      { userId: teamUserId },
+      { limit: 100 }
+    );
+    expect(
+      listed.entries.filter((entry) =>
+        entry.kind === "grant"
+          ? entry.grant.id === grantId
+          : entry.pendingShare.grantId === grantId
+      )
+    ).toHaveLength(1);
+    const detail = await shares.getOwnerShare(
+      { userId: teamUserId },
+      { kind: "grant", id: grantId }
+    );
+    expect(detail?.kind).toBe("grant");
+    if (detail?.kind === "grant") {
+      expect(detail.grant.id).toBe(grantId);
+      expect(detail.summary.workspaceContentAccess).toBe("available");
+    }
+    expect(
+      await shares.getOwnerShare(
+        { userId: randomUUID() },
+        { kind: "grant", id: grantId }
+      )
+    ).toBeNull();
+    expect(
+      await repository.excludeSession(actor, {
+        projectId,
+        sessionId: source.entry.sessionId,
+        expectedPolicyVersion: 1
+      })
+    ).toMatchObject({
+      withdrawalRequired: true,
+      withdrawalTarget: { shareGrantId: grantId, grantVersion: 1 }
+    });
+    await freezeSeededGrant(grantId);
+    expect(
+      await repository.excludeSession(actor, {
+        projectId,
+        sessionId: source.entry.sessionId,
+        expectedPolicyVersion: 1
+      })
+    ).toMatchObject({ withdrawalRequired: false, withdrawalTarget: null });
+  });
+
+  it("settles multiple historical frozen grants and freezes a share-again grant once", async () => {
+    const projectId = await createProject();
+    const source = await createSource("Repeated share and private");
+    const { repository, prepared } = await enable(projectId, [source.entry]);
+    const staged = await repository.stageInitialBundle(actor, {
+      projectId,
+      expectedPolicyVersion: 1,
+      personalProjectBindingHash: prepared.personalProjectBindingHash,
+      sessionId: source.entry.sessionId,
+      mappingRevision: 1,
+      candidate: source.candidate
+    });
+    if (staged.state !== "staged")
+      throw new Error("Expected staged policy grant");
+    await seedActivatedGrant({
+      pendingShareId: staged.pendingShareId,
+      projectId,
+      policyGrant: true,
+      frozen: true
+    });
+    await seedActivatedGrant({
+      pendingShareId: staged.pendingShareId,
+      projectId,
+      frozen: true
+    });
+    expect(
+      await repository.excludeSession(actor, {
+        projectId,
+        sessionId: source.entry.sessionId,
+        expectedPolicyVersion: 1
+      })
+    ).toMatchObject({ withdrawalRequired: false, withdrawalTarget: null });
+    const shareAgainId = await seedActivatedGrant({
+      pendingShareId: staged.pendingShareId,
+      projectId
+    });
+    expect(
+      await repository.excludeSession(actor, {
+        projectId,
+        sessionId: source.entry.sessionId,
+        expectedPolicyVersion: 1
+      })
+    ).toMatchObject({
+      withdrawalRequired: true,
+      withdrawalTarget: { shareGrantId: shareAgainId, grantVersion: 1 }
+    });
+    await freezeSeededGrant(shareAgainId);
+    expect(
+      await repository.excludeSession(actor, {
+        projectId,
+        sessionId: source.entry.sessionId,
+        expectedPolicyVersion: 1
+      })
+    ).toMatchObject({ withdrawalRequired: false, withdrawalTarget: null });
+  });
 
   it("stages exactly one initial Pending Share from the reviewed source", async () => {
     const projectId = await createProject();

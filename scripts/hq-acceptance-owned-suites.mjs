@@ -505,8 +505,29 @@ export const ownedAcceptanceSuites = [
   },
   {
     id: "I713.06",
-    clause: "Making Alice chat private removes its summary from Bob's recall.",
+    clause:
+      "Making Alice chat private keeps its earlier summary in Bob's recall and excludes later messages.",
     proof: [integration(main, "I713.6")]
+  },
+  {
+    id: "N26",
+    clause:
+      "Make private converges after one freeze, share again needs its own freeze, and historical frozen grants cause no conflict.",
+    proof: [
+      unit(
+        "packages/db/src/project-share-policy-integration.test.ts",
+        "requires freeze only for a live original policy grant and settles after its freeze"
+      ),
+      unit(
+        "packages/db/src/project-share-policy-integration.test.ts",
+        "settles multiple historical frozen grants and freezes a share-again grant once"
+      ),
+      unit(
+        "packages/db/tests/shared-memory-repository.test.ts",
+        "wakes pending activation for either semantic publication order and defers stale derivatives"
+      ),
+      integration(main, "N26")
+    ]
   },
   {
     id: "I713.07",

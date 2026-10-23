@@ -204,6 +204,14 @@ The V1 Captured Session package contains:
   - total byte count.
   - content hashes for deduplication.
 
+The source commits a canonical Memory Event, its encrypted payload, and its
+`derived_from` links together. After the short live-authority check, the sync
+reader uses a consistent read-only snapshot for events, semantic contributors,
+encrypted payloads, and summaries. `supporting_context` links remain context
+provenance and do not become semantic contributors. The semantic manifest must
+still match its contributors exactly; malformed, missing, or extra semantic
+links fail closed without advancing the source cursor.
+
 Applying a Captured Session package must persist the stable logical-memory
 root, its immutable generic source revision, and the Captured Session's typed
 revision binding in the same transaction that advances the relationship

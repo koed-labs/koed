@@ -1688,6 +1688,11 @@ describe("Shared Memory HTTP routes", () => {
     expect(
       jsonBody<{ grant: { grantVersion: number } }>(accepted).grant.grantVersion
     ).toBe(2);
+    expect(
+      jsonBody<{ grant: { companionScope: { shareGrantId: string } } }>(
+        accepted
+      ).grant.companionScope.shareGrantId
+    ).toBe(fixture.ids.grant);
     expect(fixture.repositoryCalls).toBe(1);
     await app.close();
   });

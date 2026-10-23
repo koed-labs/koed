@@ -800,7 +800,7 @@ export function HqSidebar({
             <span
               aria-label="Chat summary private"
               className="hq-sidebar__private-badge"
-              title="Private: this chat's summary is not shared"
+              title="Private: new messages aren't shared"
             >
               <LockKeyhole aria-hidden="true" size={13} />
             </span>
@@ -891,7 +891,7 @@ export function HqSidebar({
                   <p role="status">Reviewing this chat’s summary sharing…</p>
                 ) : shownShare.status === "private" ? (
                   <>
-                    <p role="status">This chat is private.</p>
+                    <p role="status">Private: new messages aren't shared</p>
                     {onShareChatAgain ? (
                       <button
                         role="menuitem"
@@ -928,15 +928,21 @@ export function HqSidebar({
                     ) : null}
                   </>
                 ) : (
-                  <button
-                    role="menuitem"
-                    type="button"
-                    onClick={() =>
-                      makeChatPrivate(personalProjectId, thread.sessionId!)
-                    }
-                  >
-                    Make private
-                  </button>
+                  <>
+                    <p>
+                      Stop sharing future updates. The last shared summary stays
+                      in the Project.
+                    </p>
+                    <button
+                      role="menuitem"
+                      type="button"
+                      onClick={() =>
+                        makeChatPrivate(personalProjectId, thread.sessionId!)
+                      }
+                    >
+                      Make private
+                    </button>
+                  </>
                 )}
                 {shownShare?.error ? (
                   <button

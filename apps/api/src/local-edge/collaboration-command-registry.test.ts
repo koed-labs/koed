@@ -202,6 +202,7 @@ const expectedRegistry: Record<CollaborationCommandName, ExpectedDescriptor> = {
   },
   "collaboration.share_memory": { scope: "team", desktop: write },
   "collaboration.revoke_shared_memory": { scope: "team", desktop: write },
+  "collaboration.freeze_shared_memory_grant": { scope: "team", desktop: write },
   "collaboration.change_shared_memory_fidelity": {
     scope: "team",
     desktop: write

@@ -191,6 +191,7 @@ const grantResponse = (
     consentId?: string;
     sourceRevision?: number;
     updatedAt?: string;
+    frozenAt?: string | null;
   } = {}
 ) => ({
   source: capturedSource,
@@ -213,6 +214,7 @@ const grantResponse = (
   createdAt: iso,
   updatedAt: input.updatedAt ?? iso,
   revokedAt: input.lifecycle === "revoked" ? iso : null,
+  ...(input.frozenAt === undefined ? {} : { frozenAt: input.frozenAt }),
   companionScope: {
     scope: "team" as const,
     kind: "shared_session_discussion" as const,
@@ -323,6 +325,7 @@ const collaborationGrant = (
     consentId?: string;
     sourceRevision?: number;
     updatedAt?: string;
+    frozenAt?: string | null;
   } = {}
 ): CollaborationPersistedSharedMemoryGrant => ({
   backendId: "team-backend",
@@ -349,6 +352,7 @@ const collaborationGrant = (
     createdAt: iso,
     updatedAt: input.updatedAt ?? iso,
     revokedAt: input.lifecycle === "revoked" ? iso : null,
+    ...(input.frozenAt === undefined ? {} : { frozenAt: input.frozenAt }),
     companionThreadId: ids.companion
   }
 });
@@ -612,9 +616,24 @@ const createFixture = (
         includeCuratedMemory: remote.includeCuratedMemory,
         consentId: remote.consentId,
         sourceRevision: remote.sourceRevision,
-        updatedAt: remote.updatedAt
+        updatedAt: remote.updatedAt,
+        frozenAt: remote.frozenAt
       });
-      persisted.grant.companionThreadId = input.companion.companionThreadId;
+      persisted.grant = {
+        ...persisted.grant,
+        source: remote.source,
+        sourceCapabilities: remote.sourceCapabilities,
+        activationRepresentation: remote.activationRepresentation,
+        mode: remote.mode,
+        id: remote.id,
+        logicalGrantId: remote.logicalGrantId,
+        logicalMemoryId: remote.logicalMemoryId,
+        ownerUserId: remote.ownerUserId,
+        teamId: remote.teamId,
+        workspaceId: remote.teamWorkspaceId,
+        fidelityPolicyRevision: remote.fidelityPolicyRevision,
+        companionThreadId: input.companion.companionThreadId
+      };
       grants.set(remote.id, persisted);
       return persisted;
     },
@@ -1019,6 +1038,10 @@ const createFixture = (
       } else if (url.pathname.endsWith("/revoke")) {
         response = {
           grant: grantResponse({ lifecycle: "revoked", grantVersion: 2 })
+        };
+      } else if (url.pathname.endsWith("/freeze")) {
+        response = {
+          grant: grantResponse({ grantVersion: 2, frozenAt: iso })
         };
       } else if (url.pathname.endsWith("/fidelity")) {
         response = {
@@ -3014,6 +3037,136 @@ describe("collaboration Shared Memory control", () => {
       source: capturedSource,
       sourceRevision: 4
     });
+  });
+
+  it("freezes an exact active grant with its reviewed action grant and keeps it active", async () => {
+    const fixture = createFixture();
+    const frozen = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.freeze_shared_memory_grant"),
+        input: {
+          mutationId: randomUUID(),
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          shareGrantId: ids.grant,
+          expectedGrantVersion: 1,
+          actionGrant: { id: ids.actionGrant }
+        }
+      },
+      context()
+    );
+    expect(frozen).toMatchObject({
+      ok: true,
+      data: { grant: { lifecycle: "active", grantVersion: 2, frozenAt: iso } }
+    });
+    expect(
+      fixture.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname ===
+            `/v1/shared-memory/share-grants/${ids.grant}/freeze`
+      )
+    ).toBe(true);
+    expect(fixture.grantPersistenceModes).toEqual(["authoritative_snapshot"]);
+  });
+
+  it("hydrates an owned Project-policy grant absent from the local projection before Native freeze", async () => {
+    const ownedGrant = {
+      kind: "grant",
+      grant: { ...grantResponse(), frozenAt: null },
+      sourceAccess: null,
+      summary: {
+        source: capturedSource,
+        sourceSessionId: ids.localSession,
+        companionThreadId: ids.companion,
+        sourceTitle: "Policy summary",
+        teamName: "Atlas Research",
+        workspaceName: "Launch Plans",
+        workspaceContentAccess: "available",
+        mode: "continuous",
+        authorizedPreview: null,
+        lastReadyRevision: 4,
+        lastSuccessfulUpdateAt: iso
+      }
+    };
+    const fixture = createFixture({ remoteOwnedShares: [ownedGrant] });
+    fixture.grants.delete(ids.grant);
+    const frozen = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.freeze_shared_memory_grant"),
+        input: {
+          mutationId: randomUUID(),
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          shareGrantId: ids.grant,
+          expectedGrantVersion: 1,
+          actionGrant: { id: ids.actionGrant }
+        }
+      },
+      context()
+    );
+    expect(frozen).toMatchObject({
+      ok: true,
+      data: { grant: { id: ids.grant, lifecycle: "active", frozenAt: iso } }
+    });
+    expect(fixture.requests.map((request) => request.pathname)).toContain(
+      `/v1/shared-memory/owned-shares/grant/${ids.grant}`
+    );
+    expect(fixture.grantPersistenceModes).toEqual([
+      "authoritative_snapshot",
+      "authoritative_snapshot"
+    ]);
+  });
+
+  it("rejects a different owner while hydrating a grant before freeze", async () => {
+    const fixture = createFixture({
+      remoteOwnedShares: [
+        {
+          kind: "grant",
+          grant: {
+            ...grantResponse(),
+            ownerUserId: uuidFor(999),
+            frozenAt: null
+          },
+          sourceAccess: null,
+          summary: {
+            source: capturedSource,
+            sourceSessionId: ids.localSession,
+            companionThreadId: ids.companion,
+            sourceTitle: "Foreign summary",
+            teamName: "Atlas Research",
+            workspaceName: "Launch Plans",
+            workspaceContentAccess: "available",
+            mode: "continuous",
+            authorizedPreview: null,
+            lastReadyRevision: 4,
+            lastSuccessfulUpdateAt: iso
+          }
+        }
+      ]
+    });
+    fixture.grants.delete(ids.grant);
+    const result = await fixture.control.dispatch(
+      {
+        ...commandBase("collaboration.freeze_shared_memory_grant"),
+        input: {
+          mutationId: randomUUID(),
+          teamId: ids.team,
+          workspaceId: ids.workspace,
+          shareGrantId: ids.grant,
+          expectedGrantVersion: 1,
+          actionGrant: { id: ids.actionGrant }
+        }
+      },
+      context()
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "permission_denied" }
+    });
+    expect(
+      fixture.requests.some((request) => request.pathname.endsWith("/freeze"))
+    ).toBe(false);
   });
 
   it("advances a Personal Note grant only to its exact newer source revision", async () => {

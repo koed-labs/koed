@@ -846,7 +846,8 @@ const registry = [
   {
     id: "I713.06",
     category: "two-user",
-    description: "Alice makes a chat private; its summary leaves Bob's recall",
+    description:
+      "Alice makes a chat private; its last shared summary stays in Bob's recall and later messages are excluded",
     owners: ["HQ-713 real API/Team Backend suite"],
     status: "skip",
     reason: integrationSkipReason
@@ -1127,7 +1128,8 @@ const runValidation = async () => {
     window = new BrowserWindow({
       show: false,
       width: 1280,
-      height: 800
+      height: 800,
+      webPreferences: { backgroundThrottling: false }
     });
     window.webContents.on("console-message", (_event, details) => {
       if (details.level === "error") rendererErrors.push(details.message);
@@ -1702,6 +1704,7 @@ const runValidation = async () => {
             }))()`);
             if (
               drawer.dialog &&
+              drawer.focus === "Close project navigation" &&
               Math.abs(drawer.sidebarLeft) <= 1 &&
               Math.abs(drawer.sidebarWidth - drawer.expectedSidebarWidth) <= 1
             ) {

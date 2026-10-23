@@ -1366,6 +1366,36 @@ describeDb("Collaboration Shared Memory authority store", () => {
     ).resolves.toBeNull();
   });
 
+  it("preserves Team freeze metadata when an owner grant has no local consent", async () => {
+    const fixture = await createFixture();
+    await bindFixture(fixture);
+    const initial = grantFor(fixture, randomUUID(), { frozenAt: null });
+    const first = await store.persistAuthoritativeGrant({
+      identity: fixture.identity,
+      grant: initial,
+      prior: null,
+      mode: "authoritative_snapshot",
+      companion: companionFor(fixture)
+    });
+    expect(first).toMatchObject({ grant: { grantVersion: 1, frozenAt: null } });
+
+    const frozenAt = "2026-07-17T09:08:00.000Z";
+    const second = await store.persistAuthoritativeGrant({
+      identity: fixture.identity,
+      grant: { ...initial, grantVersion: 2, frozenAt, updatedAt: frozenAt },
+      prior: first,
+      mode: "authoritative_snapshot",
+      companion: companionFor(fixture)
+    });
+    expect(second).toMatchObject({ grant: { grantVersion: 2, frozenAt } });
+    await expect(
+      store.readAuthoritativeGrant({
+        ...fixture.identity,
+        shareGrantId: initial.id
+      })
+    ).resolves.toMatchObject({ grant: { grantVersion: 2, frozenAt } });
+  });
+
   it("persists a strict revocation after snapshot reconciliation without local consent history", async () => {
     const fixture = await createFixture();
     await bindFixture(fixture);

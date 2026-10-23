@@ -163,7 +163,7 @@ export async function seedHq713CuratedAssertion(
   return { assertionId };
 }
 
-/** The owner-side private operation and exact Team withdrawal are both HTTP. */
+/** The owner-side private operation and exact Team freeze are both HTTP. */
 export async function makeHq713CapturedChatPrivate(
   fixture: Hq713Fixture,
   actor: Hq713Actor,
@@ -181,36 +181,82 @@ export async function makeHq713CapturedChatPrivate(
   }>("POST", path, { body, expectedStatus: 200 });
   assert.equal(
     requested.body.state,
-    "withdrawal_required",
-    "Making a shared Conversation private must require Team withdrawal"
+    "freeze_required",
+    "Making a shared Conversation private must require Team freeze"
   );
   const target = requested.body.withdrawalTarget;
-  assert.ok(target, "Team must identify exact grant withdrawal target");
+  assert.ok(target, "Team must identify exact grant freeze target");
   assert.equal(target.shareGrantId, input.grantId);
-  const revoked = await actor.teamBrowser.request<{
-    grant: { id: string; lifecycle: string };
-  }>("POST", `/v1/shared-memory/share-grants/${input.grantId}/revoke`, {
-    body: {
-      mutationId: randomUUID(),
+  const mutationId = randomUUID();
+  const commandRequestId = randomUUID();
+  const intent = {
+    intent: "collaboration.freeze_shared_memory_grant",
+    commandRequestId,
+    mutationId,
+    teamId: fixture.ids.teamId,
+    workspaceId: fixture.ids.workspaceId,
+    shareGrantId: input.grantId,
+    expectedGrantVersion: target.grantVersion
+  };
+  const { reference } = await fixture.localActionGrant(actor, intent);
+  const frozen = await fixture.localCommand(
+    actor,
+    "collaboration.freeze_shared_memory_grant",
+    {
+      mutationId,
       teamId: fixture.ids.teamId,
-      teamWorkspaceId: fixture.ids.workspaceId,
+      workspaceId: fixture.ids.workspaceId,
+      shareGrantId: input.grantId,
       expectedGrantVersion: target.grantVersion,
-      reasonCode: "made_private",
-      authority: {
-        action: "workspace.memory.share_owned",
-        source: "browser_session"
-      }
+      actionGrant: reference
     },
-    expectedStatus: 200
-  });
-  assert.equal(revoked.body.grant.id, input.grantId);
-  assert.equal(revoked.body.grant.lifecycle, "revoked");
+    { requestId: commandRequestId }
+  );
+  assert.equal(frozen.ok, true);
+  const grant = (
+    frozen.data as {
+      grant: { id: string; lifecycle: string; frozenAt: string | null };
+    }
+  ).grant;
+  assert.equal(grant.id, input.grantId);
+  assert.equal(grant.lifecycle, "active");
+  assert.ok(grant.frozenAt);
+  const personalDb = fixture.personalDb(actor);
+  const triggerName = `hq720_private_retry_${randomUUID().replaceAll("-", "")}`;
+  await personalDb.query(
+    `create function ${triggerName}() returns trigger language plpgsql as $$
+       begin raise exception 'Intentional private completion failure'; end $$`
+  );
+  await personalDb.query(
+    `create trigger ${triggerName} before update on sessions
+       for each row when (old.project_share_private_pending_at is not null
+         and new.project_share_private_pending_at is null)
+       execute function ${triggerName}()`
+  );
+  try {
+    await actor.personalEdge.request("POST", path, {
+      body,
+      expectedStatus: 500
+    });
+  } finally {
+    await personalDb.query(`drop trigger ${triggerName} on sessions`);
+    await personalDb.query(`drop function ${triggerName}()`);
+  }
   const completed = await actor.personalEdge.request<{ state: string }>(
     "POST",
     path,
     { body, expectedStatus: 200 }
   );
   assert.equal(completed.body.state, "private");
+  const after = await fixture.team.db.query<{
+    grant_version: number;
+    frozen_at: Date | null;
+  }>(
+    `select grant_version,frozen_at from team_memory_share_grants where id=$1`,
+    [input.grantId]
+  );
+  assert.equal(after.rows[0]?.grant_version, target.grantVersion + 1);
+  assert.ok(after.rows[0]?.frozen_at);
 }
 
 /** Alice's real owner command must deny Bob's captured Session. */

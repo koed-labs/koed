@@ -1395,6 +1395,16 @@ if (process.exitCode === undefined || process.exitCode === 0) {
 }
 
 if (process.exitCode === undefined || process.exitCode === 0) {
+  const result = spawnSync(process.execPath, ["scripts/validate-hq720.mjs"], {
+    cwd: desktopDir,
+    env: process.env,
+    stdio: "inherit"
+  });
+  if (result.error) throw result.error;
+  process.exitCode = result.status ?? 1;
+}
+
+if (process.exitCode === undefined || process.exitCode === 0) {
   const report = compileBrowserParity(repoRoot, chainStartedAt);
   const path = resolve(scratchDir, "hq-901", "simulated-parity.json");
   await mkdir(dirname(path), { recursive: true });
