@@ -474,10 +474,33 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
     "HQ-713 may only run under NODE_ENV=test"
   );
   const admin = new pg.Pool({ connectionString: databaseUrl, max: 2 });
+  const fixtureStartedAt = Date.now();
+  const syncErrorOrigins = new Map<
+    string,
+    {
+      errorClass: string;
+      operation: string;
+      originFrames: string[];
+      recordedAt: number;
+    }
+  >();
+  const normalizedOriginFrames = (error: Error): string[] =>
+    (error.stack?.split("\n").slice(1) ?? [])
+      .flatMap((frame) => {
+        const match = frame.match(
+          /(?:^|[\\/])((?:apps|packages)[\\/][\w.\\/-]+\.(?:ts|js)):(\d+):\d+/
+        );
+        return match ? [`${match[1]!.replaceAll("\\", "/")}:${match[2]}`] : [];
+      })
+      .slice(0, 4);
   const workerErrors: Array<{
     component: string;
     event: string;
     errorClass: string;
+    attempt?: number;
+    elapsedMs?: number;
+    operation?: string;
+    originFrames?: string[];
   }> = [];
   const apiErrors: Array<{
     server: string;
@@ -493,11 +516,31 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
       details.event && typeof details.event === "object"
         ? (details.event as Record<string, unknown>)
         : {};
+    const eventName = typeof event.name === "string" ? event.name : "unknown";
+    const errorClass =
+      typeof details.errorClass === "string" ? details.errorClass : "unknown";
+    const origin = syncErrorOrigins.get(component);
+    const matchedOrigin =
+      eventName === "sync.outbox.failed" &&
+      origin?.errorClass === errorClass &&
+      Date.now() - origin.recordedAt < 10_000
+        ? origin
+        : null;
+    if (matchedOrigin) syncErrorOrigins.delete(component);
     workerErrors.push({
       component,
-      event: typeof event.name === "string" ? event.name : "unknown",
-      errorClass:
-        typeof details.errorClass === "string" ? details.errorClass : "unknown"
+      event: eventName,
+      errorClass,
+      ...(Number.isSafeInteger(details.attempt) && Number(details.attempt) >= 0
+        ? { attempt: Number(details.attempt) }
+        : {}),
+      elapsedMs: Date.now() - fixtureStartedAt,
+      ...(matchedOrigin
+        ? {
+            operation: matchedOrigin.operation,
+            originFrames: matchedOrigin.originFrames
+          }
+        : {})
     });
   };
   const createDriverServer = (
@@ -1257,6 +1300,44 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
             environment
           })
       });
+      // The production logger emits only an error class. Observe repository
+      // boundaries in this fixture so a worker failure identifies its source
+      // line without recording the error message or synchronized content.
+      for (const operation of [
+        "claimSyncQueueEntry",
+        "renewSyncQueueLease",
+        "readCapturedSessionSyncDelta",
+        "getSyncTransportContext",
+        "getSyncPackageBySequence",
+        "deleteIncompleteSourceSyncPackage",
+        "createSyncPackageUploadSession",
+        "recordSyncPackageChunk",
+        "getSyncPackageForService",
+        "refreshSourceSyncHeartbeat",
+        "completeSyncQueueEntry",
+        "markSourceSyncUploadCommitted",
+        "markSourceSyncProcessing",
+        "deferSyncQueueEntry",
+        "acknowledgeSourceSyncPackage"
+      ] as const) {
+        const original = repository[operation];
+        Object.defineProperty(repository, operation, {
+          value: async (...args: unknown[]) => {
+            try {
+              return await Reflect.apply(original, repository, args);
+            } catch (error) {
+              if (error instanceof Error)
+                syncErrorOrigins.set(`${suffix}-sync`, {
+                  errorClass: error.name.slice(0, 120),
+                  operation,
+                  originFrames: normalizedOriginFrames(error),
+                  recordedAt: Date.now()
+                });
+              throw error;
+            }
+          }
+        });
+      }
       // Observe the real publication method without changing its result or
       // authority. Keep only an error class and source location, never content.
       const advanceContinuous =
@@ -1332,6 +1413,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
           }
         }
       });
+      syncErrorOrigins.delete(`${suffix}-sync`);
       await service.processOnce();
       let running = true;
       let timer: NodeJS.Timeout | null = null;
@@ -1340,6 +1422,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         if (!running) return;
         timer = setTimeout(() => {
           timer = null;
+          syncErrorOrigins.delete(`${suffix}-sync`);
           active = service
             .processOnce()
             .then(() => undefined)
