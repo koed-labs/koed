@@ -404,6 +404,12 @@ _Avoid_: Hard delete, access suspension, share revocation
 A human account authenticated inside a Koed deployment.
 _Avoid_: Account, customer, operator
 
+**Usage Snapshot**:
+What an AI Client's provider reported through an official source about a
+subscription's usage limit at one moment: its window, share used when reported,
+status, reset time when reported, and source. It belongs only to the owning User.
+_Avoid_: Quota estimate, usage meter, credits
+
 **Workspace**:
 A stable shared ID for memories within a Team.
 _Avoid_: Project, repository, filepath, branch, cwd
