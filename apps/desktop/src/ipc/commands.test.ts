@@ -13,6 +13,10 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 import { invokeChannel, registerDesktopCommandHandlers } from "./commands.js";
 import {
+  managedTextActionChannel,
+  type ManagedTextActionRequest
+} from "./managed-text-action-protocol.js";
+import {
   defaultHqLayoutPreferences,
   hqLayoutPreferencesGetChannel,
   hqLayoutPreferencesSetChannel,
@@ -121,6 +125,13 @@ describe("desktop IPC command registry", () => {
     const managedProject = vi.fn<ManagedProjectDesktopHandler>(async () => {
       throw new Error("Unexpected managed Project request.");
     });
+    const managedTextActions = vi.fn(
+      async (request: ManagedTextActionRequest) => ({
+        operation: "list" as const,
+        executionId: request.executionId,
+        actions: []
+      })
+    );
     const setupInspect = vi.fn(async () => ({ state: "ready" }));
     const setupRun = vi.fn(async (_args, context) => {
       context.emitSetupProgress({ state: "running" });
@@ -246,6 +257,7 @@ describe("desktop IPC command registry", () => {
         personalMemory,
         managedConversation: managedConversation as never,
         managedProject: managedProject as never,
+        managedTextActions,
         managedPreview: {
           attach: vi.fn(),
           setBounds: vi.fn(),
@@ -274,6 +286,7 @@ describe("desktop IPC command registry", () => {
       collaboration,
       managedConversation,
       managedProject,
+      managedTextActions,
       personalMemory,
       setupInspect,
       setupRun,
@@ -294,6 +307,33 @@ describe("desktop IPC command registry", () => {
       checkHandlers
     };
   };
+
+  it("opens guarded HQ text actions by default and honors the explicit rollback flag", async () => {
+    const previousFlag = process.env.KOED_DESKTOP_HQ_ENABLED;
+    const request = { operation: "list", executionId: requestId } as const;
+    try {
+      delete process.env.KOED_DESKTOP_HQ_ENABLED;
+      const { registered, managedTextActions } = register();
+      const invoke = registered.get(managedTextActionChannel)!;
+
+      await expect(invoke(renderer(), request)).resolves.toEqual({
+        operation: "list",
+        executionId: requestId,
+        actions: []
+      });
+      expect(managedTextActions).toHaveBeenCalledExactlyOnceWith(request);
+
+      process.env.KOED_DESKTOP_HQ_ENABLED = "false";
+      await expect(invoke(renderer(), request)).rejects.toThrow(
+        "Koed text actions are unavailable."
+      );
+      expect(managedTextActions).toHaveBeenCalledOnce();
+    } finally {
+      if (previousFlag === undefined)
+        delete process.env.KOED_DESKTOP_HQ_ENABLED;
+      else process.env.KOED_DESKTOP_HQ_ENABLED = previousFlag;
+    }
+  });
 
   it("opens Project selection without accepting renderer filesystem authority", async () => {
     const { registered, selectProjectDirectory } = register();

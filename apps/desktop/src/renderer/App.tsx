@@ -86,6 +86,7 @@ import {
 import { PreferencesView } from "./views/preferences/index.js";
 import { DevicesModal } from "./devices/DevicesModal.js";
 import { HqApplication } from "./hq/HqApplication.js";
+import { HqSetup } from "./hq/setup/HqSetup.js";
 import { HqSettings } from "./hq/settings/HqSettings.js";
 import "./app.css";
 
@@ -1127,21 +1128,25 @@ export function App({
     });
 
   if (route.kind === "onboarding") {
+    const onSetupComplete = async () => {
+      await completeOnboarding();
+      navigate({
+        authority: {
+          backendId: null,
+          principalId: snapshot?.navigation.personalOwner.id ?? "local-personal"
+        },
+        route: askAvailable
+          ? { kind: "personal-memory-ask" }
+          : { kind: "personal-memory-projects" }
+      });
+    };
+    if (hqEnabled)
+      return (
+        <HqSetup onComplete={onSetupComplete} statusStore={activeStatusStore} />
+      );
     return (
       <SetupChecklist
-        onComplete={async () => {
-          await completeOnboarding();
-          navigate({
-            authority: {
-              backendId: null,
-              principalId:
-                snapshot?.navigation.personalOwner.id ?? "local-personal"
-            },
-            route: askAvailable
-              ? { kind: "personal-memory-ask" }
-              : { kind: "personal-memory-projects" }
-          });
-        }}
+        onComplete={onSetupComplete}
         statusStore={activeStatusStore}
       />
     );
@@ -1160,6 +1165,10 @@ export function App({
     (desktopStatus.status?.state === "not_configured" ||
       desktopStatus.status === null)
   ) {
+    if (hqEnabled)
+      return (
+        <HqSetup onComplete={() => undefined} statusStore={activeStatusStore} />
+      );
     return (
       <SetupChecklist
         onComplete={() => undefined}

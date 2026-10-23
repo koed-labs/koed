@@ -26,6 +26,7 @@ import {
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
+import { smokePackagedHqDefault } from "./smoke-packaged-hq.mjs";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const sourceCheckoutRoot = resolve(desktopRoot, "..", "..");
@@ -931,6 +932,27 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
 
   phaseStarted = beginPhase("required model verification or install");
   const requiredModelStatuses = {};
+  const modelStatusDiagnosticPath = resolve(
+    options.diagnosticsDir ?? resolve(sourceCheckoutRoot, "scratch", "hq-902"),
+    `packaged-model-statuses-${randomUUID()}.json`
+  );
+  const writeModelStatusDiagnostics = () => {
+    mkdirSync(resolve(modelStatusDiagnosticPath, ".."), {
+      recursive: true,
+      mode: 0o700
+    });
+    writeFileSync(
+      modelStatusDiagnosticPath,
+      `${JSON.stringify(requiredModelStatuses, null, 2)}\n`,
+      { mode: 0o600 }
+    );
+  };
+  console.error(
+    `[packaged-smoke] required model status diagnostics: ${modelStatusDiagnosticPath}`
+  );
+  const modelStatusInstalled = (kind, status) =>
+    status?.state === "installed" &&
+    (kind === "privacy" ? status.ok === true : status.ok !== false);
   for (const kind of ["embedding", "privacy"]) {
     const modelStatus = runPackagedCommand(layout, koedHome, [
       "models",
@@ -953,7 +975,8 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       modelStatusJson
     );
     requiredModelStatuses[kind] = modelStatusJson;
-    if (modelStatusJson.state !== "installed") {
+    writeModelStatusDiagnostics();
+    if (!modelStatusInstalled(kind, modelStatusJson)) {
       const modelInstall = runPackagedCommand(layout, koedHome, [
         "models",
         "install",
@@ -979,6 +1002,31 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
           `models install --kind ${kind} --json was not ok: ${JSON.stringify(modelInstallJson, null, 2)}`
         );
       }
+      const installedStatus = runPackagedCommand(layout, koedHome, [
+        "models",
+        "status",
+        "--kind",
+        kind,
+        "--json"
+      ]);
+      if (installedStatus.status !== 0)
+        throw new Error(
+          `models status --kind ${kind} --json after install failed with ${installedStatus.status}: ${installedStatus.stderr || installedStatus.stdout}`
+        );
+      const installedStatusJson = parseJsonOutput(
+        `models status --kind ${kind} --json after install`,
+        installedStatus.stdout
+      );
+      assertNoSourceCheckoutResolution(
+        `models status --kind ${kind} --json after install`,
+        installedStatusJson
+      );
+      requiredModelStatuses[kind] = installedStatusJson;
+      writeModelStatusDiagnostics();
+      if (!modelStatusInstalled(kind, installedStatusJson))
+        throw new Error(
+          `Required ${kind} model remained unverified after install. Status diagnostics: ${modelStatusDiagnosticPath}`
+        );
     }
   }
   finishPhase(timings, "required model verification or install", phaseStarted);
@@ -1098,6 +1146,23 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   const reconnectJson = verifiedSetup.reconnectStatus;
   finishPhase(timings, "packaged core and Codex setup", phaseStarted);
 
+  const packagedHqDefault = await measurePhase(
+    timings,
+    "production HQ default",
+    async () =>
+      smokePackagedHqDefault({
+        executable: layout.executable,
+        env: createSmokeEnv(layout, koedHome),
+        koedHome,
+        screenshotDir: resolve(
+          sourceCheckoutRoot,
+          "scratch",
+          "hq-902",
+          "screenshots"
+        )
+      })
+  );
+
   phaseStarted = beginPhase("daemon stop, restart, and health");
   const stop = runPackagedCommand(layout, koedHome, ["stop", "--json"]);
   if (stop.status !== 0) {
@@ -1166,6 +1231,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     doctor: doctorJson,
     firstStatus,
     reconnectStatus: reconnectJson,
+    packagedHqDefault,
     stop: stopJson,
     restart: restartJson,
     reopenedStatus,
@@ -1249,6 +1315,23 @@ const run = async () => {
       "collaboration broker",
       async () => smokePackagedCollaborationBroker(layout, koedHome)
     );
+    const packagedHqSetup = await measurePhase(
+      timings,
+      "production HQ first-run setup",
+      async () =>
+        smokePackagedHqDefault({
+          executable: layout.executable,
+          env: createSmokeEnv(layout, koedHome),
+          koedHome,
+          expectedSurface: "setup",
+          screenshotDir: resolve(
+            sourceCheckoutRoot,
+            "scratch",
+            "hq-902",
+            "screenshots"
+          )
+        })
+    );
     const rendererFaults = await measurePhase(
       timings,
       "renderer fault checks",
@@ -1258,7 +1341,8 @@ const run = async () => {
           env: createSmokeEnv(layout, koedHome, {
             ELECTRON_RUN_AS_NODE: undefined
           }),
-          koedHome
+          koedHome,
+          hqMode: true
         })
     );
     const result = await smokeHealthyDaemon(layout, koedHome, {
@@ -1281,7 +1365,9 @@ const run = async () => {
             appPath: layout.appPath,
             timings,
             collaborationBroker,
+            packagedHqSetup,
             rendererFaults,
+            packagedHqDefault: result.packagedHqDefault,
             runtime: { ok: result.install.ok, state: result.install.state },
             privacyRuntime: result.privacyRuntime,
             status: {

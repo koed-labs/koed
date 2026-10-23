@@ -3,13 +3,15 @@ import { desktopFeatureFlagsFromEnvironment } from "./desktop-feature-flags.js";
 
 describe("Desktop feature flags", () => {
   it.each([
-    [{}, false],
+    [{}, true],
+    [{ KOED_DESKTOP_HQ_ENABLED: undefined }, true],
     [{ KOED_DESKTOP_HQ_ENABLED: "false" }, false],
+    [{ KOED_DESKTOP_HQ_ENABLED: "" }, false],
     [{ KOED_DESKTOP_HQ_ENABLED: "1" }, false],
     [{ KOED_DESKTOP_HQ_ENABLED: " true " }, false],
     [{ KOED_DESKTOP_HQ_ENABLED: "true" }, true]
   ] as const)(
-    "enables the HQ shell only for the exact true environment value",
+    "enables the HQ shell when unset or exactly true",
     (environment, expected) => {
       expect(desktopFeatureFlagsFromEnvironment(environment).hqEnabled).toBe(
         expected
@@ -24,6 +26,13 @@ describe("Desktop feature flags", () => {
         KOED_TEAM_COLLABORATION_ENABLED: "false"
       })
     ).toEqual({ hqEnabled: true, teamCollaborationEnabled: false });
+  });
+
+  it("keeps Team collaboration disabled when HQ is enabled by default", () => {
+    expect(desktopFeatureFlagsFromEnvironment({})).toEqual({
+      hqEnabled: true,
+      teamCollaborationEnabled: false
+    });
   });
 
   it.each([

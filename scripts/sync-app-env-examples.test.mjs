@@ -180,7 +180,7 @@ test("sync output is deterministic", () => {
     fs.writeFileSync(
       path.join(root, `apps/${app}/.env.example`),
       app === "desktop"
-        ? "# @root KOED_DESKTOP_HQ_ENABLED=false\nKOED_DESKTOP_HQ_ENABLED=false\n"
+        ? "# @root KOED_DESKTOP_HQ_ENABLED=true\nKOED_DESKTOP_HQ_ENABLED=true\n"
         : "PORT=3300\n# @root omit\nLOCAL_ONLY=1\n"
     );
   }
@@ -193,7 +193,7 @@ test("sync output is deterministic", () => {
   const first = syncRootEnvExample(root).next;
   assert.match(
     first,
-    /# Desktop \(launch environment only; \.env is not loaded\) app\nKOED_DESKTOP_HQ_ENABLED=false/
+    /# Desktop \(launch environment only; \.env is not loaded\) app\nKOED_DESKTOP_HQ_ENABLED=true/
   );
   fs.writeFileSync(path.join(root, ".env.example"), first);
   const second = syncRootEnvExample(root).next;

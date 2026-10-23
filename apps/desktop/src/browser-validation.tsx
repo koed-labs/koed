@@ -26,13 +26,20 @@ import { VirtualizedTimeline } from "@koed/memory-ui";
 import { Profiler, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 
-import { createCollaborationRendererClient } from "./collaboration/renderer-client.js";
+import {
+  createCollaborationRendererClient,
+  type CollaborationRendererClient
+} from "./collaboration/renderer-client.js";
 import type {
   ManagedConversationDesktopApi,
   ManagedConversationIdentity
 } from "./ipc/managed-conversation-protocol.js";
 import { App } from "./renderer/App.js";
 import { HqValidationApp } from "./hq-browser-validation.js";
+import {
+  initialHqOnboarding,
+  writeHqOnboarding
+} from "./renderer/hq/onboarding/onboarding-preference.js";
 import "./renderer/index.css";
 
 const uuid = (suffix: number) =>
@@ -2912,6 +2919,18 @@ type StatefulBrowserControls = ReturnType<
 >["controls"];
 
 const CollaborationInteractionsValidationApp = () => {
+  const packagedHqFaults =
+    new URLSearchParams(window.location.search).get("packagedHqFaults") ===
+    "yes";
+  if (packagedHqFaults) {
+    // This isolated packaged fixture represents an owner who has completed
+    // HQ onboarding, so it can exercise the real HQ navigation and controls.
+    writeHqOnboarding(
+      interactionIds.alicePersonal,
+      `up_browser_team|${timestamp}|`,
+      { ...initialHqOnboarding, completed: true }
+    );
+  }
   const fixture = useMemo(() => {
     const actor =
       new URLSearchParams(window.location.search).get("actor") === "bob"
@@ -2919,12 +2938,13 @@ const CollaborationInteractionsValidationApp = () => {
         : "alice";
     return createStatefulCollaborationBridge(actor);
   }, []);
+  const nativeReviewApproval = useMemo(() => ({ approved: true }), []);
   const client = useMemo(
     () =>
       createCollaborationRendererClient(fixture.bridge, {
-        confirmNativeReview: () => true
+        confirmNativeReview: () => nativeReviewApproval.approved
       }),
-    [fixture]
+    [fixture, nativeReviewApproval]
   );
   const personalApi = useMemo(() => {
     const actor =
@@ -2939,16 +2959,24 @@ const CollaborationInteractionsValidationApp = () => {
   useEffect(() => {
     const browserWindow = window as Window & {
       __koedCollaborationInteractions?: StatefulBrowserControls;
+      __koedPackagedHqClient?: CollaborationRendererClient;
+      __koedPackagedHqNativeReview?: typeof nativeReviewApproval;
     };
     browserWindow.__koedCollaborationInteractions = fixture.controls;
+    if (packagedHqFaults) browserWindow.__koedPackagedHqClient = client;
+    if (packagedHqFaults)
+      browserWindow.__koedPackagedHqNativeReview = nativeReviewApproval;
     document.documentElement.dataset.browserValidationReady = "true";
     return () => {
       delete browserWindow.__koedCollaborationInteractions;
+      delete browserWindow.__koedPackagedHqClient;
+      delete browserWindow.__koedPackagedHqNativeReview;
       client.dispose();
     };
-  }, [client, fixture]);
+  }, [client, fixture, nativeReviewApproval, packagedHqFaults]);
   return (
     <App
+      hqEnabled={packagedHqFaults}
       collaborationClient={client}
       initialCollaborationSelection={{
         kind: "shared_session",

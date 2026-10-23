@@ -1,6 +1,8 @@
 import { hostname } from "node:os";
+import { desktopFeatureFlagsFromEnvironment } from "../ipc/desktop-feature-flags.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createChatLifecycleClient } from "./chat-lifecycle-client.js";
+import { requiredModelStatusInstalled } from "./required-model-status.js";
 import { createWorkspaceProjectDesktopService } from "./workspace-project-service.js";
 import { createWorkspaceProjectTransport } from "./workspace-project-transport.js";
 import { createProjectSharePolicyService } from "./project-share-policy-service.js";
@@ -1969,8 +1971,8 @@ export const createKoedServerManager = ({
     const models = Object.fromEntries(
       results.map(({ kind, value }) => [kind, value])
     );
-    const installed = results.every(
-      ({ value }) => resultOk(value) && resultState(value) === "installed"
+    const installed = results.every(({ kind, value }) =>
+      requiredModelStatusInstalled(kind, value)
     );
     return {
       ok: installed,
@@ -4428,7 +4430,7 @@ export const createKoedServerManager = ({
   const projectHqConversation = createProjectHqConversationClient({
     authority: projectsAuthority,
     teamCredential: (backendId) => {
-      if (environment.KOED_DESKTOP_HQ_ENABLED !== "true")
+      if (!desktopFeatureFlagsFromEnvironment(environment).hqEnabled)
         throw new Error("Project HQ Team catch-up is unavailable.");
       return workspaceProjectTransport.teamCredential(
         backendId,

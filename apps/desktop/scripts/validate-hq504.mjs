@@ -60,10 +60,20 @@ const run = async () => {
         }
       );
       const js = (source) => window.webContents.executeJavaScript(source);
+      const focusFixture = async () => {
+        window.show();
+        app.focus({ steal: true });
+        window.focus();
+        await waitFor(
+          js,
+          "document.visibilityState === 'visible' && document.hasFocus()"
+        );
+      };
       await waitFor(
         js,
         "document.documentElement.dataset.hqFixtureReady === 'true'"
       );
+      await focusFixture();
       await js(`document.documentElement.classList.remove('light','dark');
       document.documentElement.classList.add('${theme}')`);
       step = "project";
@@ -83,6 +93,7 @@ const run = async () => {
       if (!button || button.disabled) return false; button.click(); return true; })()`
       );
       step = "cards";
+      await focusFixture();
       await waitFor(
         js,
         `document.querySelectorAll('.hq-text-action').length===3`

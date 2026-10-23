@@ -1,9 +1,11 @@
 # Koed Desktop
 
-Koed Desktop presents Personal Memory, Personal chat, Team collaboration, and
-Team-shared Memory in one application without merging their authority or
-lifecycle. This document describes the User-facing model, supported workflows,
-recovery behavior, accessibility contract, and tested performance boundaries.
+Koed Desktop presents Personal Memory, Personal Conversations, Team
+collaboration, and Team-shared Memory without merging their authority or
+lifecycle. HQ is the default interface. The previous interface remains
+available through an explicit launch flag while its views await removal in a
+follow-up. This page describes HQ first, then identifies the retained
+previous-interface reference and shared runtime boundaries.
 
 Team collaboration is visible only when the Operator starts Desktop with
 `KOED_TEAM_COLLABORATION_ENABLED=true`. When the switch is false or absent,
@@ -12,17 +14,25 @@ commands, sharing, connection settings, and cached Team routes from navigation
 history. Retained Team data remains stored behind its existing authority and
 lifecycle boundaries; disabling the UI does not delete it.
 
-The experimental HQ is a resizable layout frame. It is off by default and
-appears only when `KOED_DESKTOP_HQ_ENABLED` is exactly `true`, after
-onboarding and local setup. With this flag enabled, the window can be narrowed
-to 320 pixels so the mobile context sheet is reachable; when it is off, the
-existing 960-pixel minimum remains. This flag selects the Desktop shell; it
-does not change Team authorization or collaboration settings. Desktop reads the flag
-from its inherited process environment; it does not automatically load the
-repository-root or Desktop `.env` files. To enable the shell from the
-repository root, run
-`KOED_DESKTOP_HQ_ENABLED=true pnpm desktop:start`. The `.env.example` files
-catalogue setup values and do not configure Desktop's launch environment.
+## Current HQ interface
+
+HQ is the default Desktop interface after onboarding and local setup. Its
+resizable window can narrow to 320 pixels so the mobile context sheet is
+reachable. To return to the previous Desktop interface, launch with
+`KOED_DESKTOP_HQ_ENABLED=false pnpm desktop:start`; that interface retains its
+960-pixel minimum window width. An unset flag or the exact value `true` enables
+HQ. Other explicit values, including an empty value, disable it. The flag
+selects the Desktop interface and does not change Team authorization or
+collaboration settings. Desktop reads it from its inherited process
+environment; it does not automatically load the repository-root or Desktop
+`.env` files. The `.env.example` files catalogue setup values and do not
+configure Desktop's launch environment.
+
+On first run, HQ presents its own local setup screen. It inspects the existing
+trusted setup stages and asks for explicit confirmation before preparing the
+local runtime and services. After verification, **Continue to Koed** checks
+the stages again and proceeds to HQ role and Agent onboarding. The previous
+interface's setup presentation is used only when the HQ flag is disabled.
 
 HQ stores its resizable pane widths and context-pane visibility in the native
 Electron `userData/hq-layout-preferences.json` file. Drag a divider or focus it
@@ -43,10 +53,20 @@ opener. A Project load error offers Retry while retaining any rows already
 loaded. HQ owns its entrypoint, destination state, and **Search and commands**
 presentation. Search selects HQ Projects and Conversations and provides working
 **Toggle sidebar** and **Toggle context panel** commands. It cannot open legacy
-Desktop screens. Project and Conversation selection currently updates
-the HQ title and selected identity, with empty content until their dedicated
-surfaces are implemented. The context pane remains an empty HQ scaffold. New
-chat, New Project, and Now stay disabled until their owning flows are available.
+Desktop screens. **Now** opens the home view, where a User can start a
+Conversation and review current Project activity. Selecting a Project opens
+its Project view; selecting a Conversation opens its timeline. **New Project**
+opens the Project creation flow when the local Projects service is ready.
+
+The Project view combines the owner's private HQ Conversation with Project
+activity, Sources, and work. The Now home brings together a new Conversation
+composer, current Project activity, and Scheduled Jobs. Sharing a linked
+Project's captured Conversation summaries remains an exact, separately
+reviewed owner action. For the detailed behavior and authority boundaries, see
+[Project HQ view](project-hq-view.md),
+[Project Work Items](project-work-items.md),
+[Project summary sharing on Desktop](project-share-policy-desktop.md), and
+[Scheduled Jobs runtime](scheduled-jobs-runtime.md).
 
 HQ Settings opens as a modal above the workspace, preserving its selection
 and scroll position. It uses its own presentation for General, Agents, Teams,
@@ -68,6 +88,8 @@ For service and authorization details, see
 [Team Collaboration Architecture](team-collaboration.md). For runtime setup and
 operation, see [Running Koed](running-koed.md).
 
+## Desktop operation in both interfaces
+
 Koed Desktop provides a menu-bar indicator on macOS and a system-tray indicator
 on Linux and Windows for its managed local services. Activating the Koed mark
 opens or focuses the Desktop window. The indicator's context menu shows the
@@ -88,7 +110,15 @@ indicator action opens the window normally. Linux support targets desktop
 environments that implement XDG autostart. The setting reports macOS approval
 requirements and changes made later through operating-system settings.
 
-## Information Model
+## Previous interface reference
+
+The sections below document the retained interface selected by
+`KOED_DESKTOP_HQ_ENABLED=false`. Their left-rail navigation, controls,
+screenshots, and layout measurements describe that interface. They are not
+instructions for the default HQ interface. The views remain available for
+rollback; removing them is a separate follow-up.
+
+### Information Model
 
 The left rail changes the current principal:
 
@@ -113,9 +143,9 @@ Captured Sessions and Shared Memory are stored Memory, not chat:
 - The companion discussion beside a shared source is Team chat. It does not
   become part of the shared source or appear as an ordinary channel.
 
-![Personal Captured Session](assets/desktop-ui/personal-memory.png)
+![Previous-interface Personal Captured Session](assets/desktop-ui/personal-memory.png)
 
-## Rich Content And Agent Activity
+### Rich Content And Agent Activity
 
 Personal Captured Session Memory Events and Team Chat messages use the same
 secure GFM presentation. It supports headings, nested ordered and unordered
@@ -165,11 +195,11 @@ Desktop reports per-file additions and deletions, keeps file headers visible,
 and permits one file body to be expanded at a time. Unsupported patches keep a
 bounded, explained raw-text fallback so no captured content is silently lost.
 
-![Personal source changes](assets/desktop-ui/personal-formatting-diffs.png)
+![Previous-interface Personal source changes](assets/desktop-ui/personal-formatting-diffs.png)
 
-## Core Workflows
+### Core Workflows
 
-### Start Or Resume A Managed Conversation
+#### Start Or Resume A Managed Conversation
 
 From a Project, **New** opens a compact launch form populated from the local
 edge's current AI Client capability snapshot. The User chooses the AI Client
@@ -184,7 +214,7 @@ composer restores an encrypted device-local draft, saves edits without putting
 them in renderer storage or Memory, and clears the draft only after the command
 is accepted.
 
-### Connect A Personal Device
+#### Connect A Personal Device
 
 On a joining Electron installation, open **Devices → Connect to an existing
 device** and copy the request link. On the existing Authority-hosting Electron
@@ -202,7 +232,7 @@ or recovery-code step. If every enrolled installation is lost and no optional
 recovery kit was exported, the group cannot be recovered. Older invitation
 redemption remains supported for compatibility, but is not the primary flow.
 
-### Find And Share A Prior Decision
+#### Find And Share A Prior Decision
 
 1. Select Personal, then open a Project and Captured Session.
 2. Review the stored Memory Events and any invalidation labels.
@@ -222,7 +252,7 @@ Workspace exists. Desktop derives the initial `not_started` source identity
 from the stable Captured Session id instead of waiting for a separate
 collaboration snapshot refresh.
 
-### Use Team Chat
+#### Use Team Chat
 
 Select a Team, then a Team-scoped direct message or Workspace channel. The
 composer scope line states the audience. Sends use a durable client idempotency
@@ -238,7 +268,7 @@ Outgoing messages use aggregate receipt icons. One grey tick means sent, two
 grey ticks mean delivered to every original recipient, and two green ticks mean
 read by every original recipient. Recipient-level activity is not exposed.
 
-### Review Shared Memory Together
+#### Review Shared Memory Together
 
 A Shared Memory route shows the authorized source and companion discussion in
 parallel. At narrow widths it becomes accessible **Source** and
@@ -264,9 +294,9 @@ Only an authorized source-owner flow can change representation or revoke the
 Share Grant. Higher-fidelity cached content is purged immediately when the
 grant, Workspace access, Team membership, backend, or remote identity changes.
 
-![Shared Memory with companion discussion](assets/desktop-ui/shared-memory.png)
+![Previous-interface Shared Memory with companion discussion](assets/desktop-ui/shared-memory.png)
 
-### Recover From Failure
+#### Recover From Failure
 
 Personal remains usable when Team connectivity fails. Team routes show
 reconnecting or unavailable state and never render stale protected content as
@@ -289,7 +319,7 @@ Disconnecting or changing the Team Backend clears Team drafts, outbox state,
 history, recents, selections, Inspector content, cursors, and protected labels.
 It does not clear Personal content.
 
-## Action Grants
+### Action Grants
 
 Protected Desktop operations use a backend-selected tier and one exact Action
 Grant. The renderer cannot select or downgrade the tier:
@@ -312,7 +342,7 @@ canceled, denied, expired, and failed. Completion is shown only after the
 authoritative mutation and resulting snapshot both succeed. Approval URLs and
 reusable credentials never enter renderer state.
 
-## Accessibility
+### Accessibility
 
 Desktop supports keyboard-only navigation and keeps familiar controls in the
 tab order. Team discs use a roving tab stop. Dialogs trap focus and restore it
@@ -329,9 +359,9 @@ The supported layout has been checked at 960px minimum width, 200% zoom, long
 labels, light and dark themes, and narrow Shared Memory layouts. Normal and
 muted text meet WCAG AA contrast against their tested surfaces.
 
-![Narrow Shared Memory discussion](assets/desktop-ui/shared-memory-narrow.png)
+![Previous-interface narrow Shared Memory discussion](assets/desktop-ui/shared-memory-narrow.png)
 
-## Performance Boundaries
+### Performance Boundaries
 
 The Desktop validation fixture enforces these budgets:
 
@@ -369,29 +399,31 @@ Renderer restart, replay, backpressure, authorization loss, stale events, and
 unknown revocation subscriptions are fail-closed. A revoked or unrecognized
 authority purges Team state before another snapshot can render.
 
-The Personal area also provides the protected Ask and Notes workspaces. See
-[Personal Ask and Notes](personal-ask-and-notes.md) for the durable workflow,
-Local AI Runtime boundary, Recents behavior, and Notes presentation.
+The retained previous interface also provides protected Ask and Notes
+workspaces. See [Personal Ask and Notes](personal-ask-and-notes.md) for their
+workflow, Local AI Runtime boundary, Recents behavior, and presentation.
 
-![Team channel in dark theme](assets/desktop-ui/team-channel-dark.png)
+![Previous-interface Team channel in dark theme](assets/desktop-ui/team-channel-dark.png)
 
 ## Validation
 
-The deterministic Desktop browser fixture and packaged renderer smoke cover
-scope comprehension, long content, responsive behavior, themes,
-accessibility, secure Markdown, Action Grant states, durable send failures,
-reconnect/replay/backpressure, authorization loss, and protected-state purge.
+The retained previous-interface browser fixture covers scope comprehension,
+long content, responsive behavior, themes, accessibility, secure Markdown,
+Action Grant states, durable send failures, reconnect/replay/backpressure,
+authorization loss, and protected-state purge. Packaged Desktop smoke launches
+the production entry with the HQ flag unset, checks first-run setup and the HQ
+shell, and exercises HQ renderer fault redaction and replay.
 The Team SaaS synthetic fixture covers backend authorization and Shared Memory
 truth. See [Collaboration Launch Validation](collaboration-launch-validation.md)
 for the broader launch workflow.
 
-The retirement parity fixture also covers nested and oversized
+The previous-interface retirement parity fixture also covers nested and oversized
 Markdown, every tool category, grouped activity, multi-file and malformed
 patches, keyboard focus, light and dark themes, 200% zoom, reduced motion,
 forced colors, and the 10,000-event performance budgets. Desktop owns this
 rendering path and has no dependency on the retired browser app.
 
-The opt-in HQ navigation follows the v50 tonal layout with the approved DM Sans
+HQ navigation follows the v50 tonal layout with the approved DM Sans
 and Lucide overrides. Its 56px header and resize handles stay borderless at
 rest. Project rows use folder state: first activation selects and opens the
 Project, while activating the selected Project again folds its Conversations.
@@ -402,9 +434,5 @@ layout files without the compact field retain their widths and visibility.
 Phones use a 280px drawer with a left-side opener.
 
 Search and commands includes HQ navigation plus working sidebar and context
-panel toggles. The legacy Preferences command is adapted to Settings only when
-the HQ Settings action is connected. Unsupported legacy destinations and future
-creation flows are not advertised as working commands. An optional account
-footer accepts the current user's display name, initials, and status; it opens
-Settings only when its callback is connected. Settings overlays the current HQ
-selection rather than replacing it.
+panel toggles. Settings overlays the current HQ selection rather than
+replacing it. The account footer shows the current User and opens Settings.

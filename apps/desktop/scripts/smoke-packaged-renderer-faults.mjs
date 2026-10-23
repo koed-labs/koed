@@ -81,13 +81,13 @@ export const waitForRendererTarget = async ({
 const appendOutputTail = (current, chunk) =>
   `${current}${String(chunk)}`.slice(-32_768);
 
-const redactLaunchOutput = (value) =>
+export const redactLaunchOutput = (value) =>
   value
     .replace(/\bBearer\s+\S+/giu, "Bearer [REDACTED]")
     .replace(/\b(?:cmt|cms)_[A-Za-z0-9_-]+/gu, "[REDACTED_CREDENTIAL]")
     .replace(/\b(KOED_[A-Z0-9_]*(?:KEY|SECRET|TOKEN))=\S+/gu, "$1=[REDACTED]");
 
-const connect = (url) =>
+export const connect = (url) =>
   new Promise((resolveConnect, reject) => {
     const socket = new WebSocket(url);
     const pending = new Map();
@@ -217,10 +217,308 @@ export const trustedClick = async ({ cdp, evaluate, locator }) => {
   });
 };
 
+const smokeHqFixture = async ({ cdp, evaluate }) => {
+  const ready = `document.documentElement.dataset.browserValidationReady === "true" && Boolean(window.__koedCollaborationInteractions) && Boolean(window.__koedPackagedHqClient?.current()?.navigation?.teams?.length) && Boolean(document.querySelector('[data-hq-shell]'))`;
+  await waitFor(evaluate, ready, "HQ fault fixture");
+  await waitFor(
+    evaluate,
+    `Boolean(document.querySelector('.hq-sidebar')) && Boolean(document.querySelector('button.hq-account'))`,
+    "HQ sidebar and account navigation",
+    `(() => ({
+      shell: Boolean(document.querySelector('[data-hq-shell]')),
+      onboarding: Boolean(document.querySelector('.hq-onboarding')),
+      sidebar: Boolean(document.querySelector('.hq-sidebar')),
+      account: Boolean(document.querySelector('button.hq-account')),
+      body: document.body.innerText.slice(0, 1000)
+    }))()`
+  );
+  await evaluate(`document.querySelector('button.hq-account').click()`);
+  await waitFor(
+    evaluate,
+    `Boolean(document.querySelector('.hq-settings'))`,
+    "HQ Settings navigation"
+  );
+  await evaluate(
+    `document.querySelector('.hq-settings [aria-label="Close Settings"]').click()`
+  );
+  await waitFor(
+    evaluate,
+    `!document.querySelector('.hq-settings')`,
+    "HQ Settings return"
+  );
+  const shares = await evaluate(
+    `window.__koedPackagedHqClient.listOwnedShares({cursor:null})`
+  );
+  if (!Array.isArray(shares?.shares) || shares.shares.length < 2)
+    throw new Error(
+      `HQ packaged owner-wide share read failed: ${JSON.stringify(shares)}`
+    );
+  const ownerShareControls = await evaluate(`(async () => {
+    const client = window.__koedPackagedHqClient;
+    const initial = await client.listOwnedShares({cursor:null});
+    const pending = initial.shares.find((item)=>item.kind==='pending' && item.pendingShare.mode==='continuous');
+    const active = initial.shares.find((item)=>item.kind==='grant' && item.grant.lifecycle==='active');
+    if (!pending || !active) throw new Error('Owner-wide pending and active Shares are required');
+    const paused = await client.controlPendingShare({pendingShareId:pending.pendingShare.id,expectedOperationVersion:pending.pendingShare.operationVersion,action:'pause'});
+    const pausedRead = await client.listOwnedShares({cursor:null});
+    const resume = await client.controlPendingShare({pendingShareId:pending.pendingShare.id,expectedOperationVersion:paused.operationVersion,action:'resume'});
+    const resumedRead = await client.listOwnedShares({cursor:null});
+    const grant = active.grant;
+    const revoke = () => client.revokeSharedMemory({mutationId:crypto.randomUUID(),teamId:grant.teamId,workspaceId:grant.workspaceId,shareGrantId:grant.id,expectedGrantVersion:grant.grantVersion,reasonCode:'owner_revoked'});
+    window.__koedPackagedHqNativeReview.approved = false;
+    const commandsBeforeCancel = window.__koedCollaborationInteractions.commands().filter((item)=>item.command==='collaboration.revoke_shared_memory').length;
+    const canceled = await revoke().then(()=>false,()=>true);
+    const commandsAfterCancel = window.__koedCollaborationInteractions.commands().filter((item)=>item.command==='collaboration.revoke_shared_memory').length;
+    const afterCancel = await client.listOwnedShares({cursor:null});
+    window.__koedPackagedHqNativeReview.approved = true;
+    const revoked = await revoke();
+    const afterRevoke = await client.listOwnedShares({cursor:null});
+    return {
+      paused:paused.sourceUpdateState,
+      pausedRead:pausedRead.shares.find((item)=>item.kind==='pending' && item.pendingShare.id===pending.pendingShare.id)?.pendingShare.sourceUpdateState,
+      resumed:resume.sourceUpdateState,
+      resumedRead:resumedRead.shares.find((item)=>item.kind==='pending' && item.pendingShare.id===pending.pendingShare.id)?.pendingShare.sourceUpdateState,
+      canceled,commandsBeforeCancel,commandsAfterCancel,
+      activeAfterCancel:afterCancel.shares.some((item)=>item.kind==='grant' && item.grant.id===grant.id && item.grant.lifecycle==='active'),
+      revoked:revoked.lifecycle,
+      revokedInOwnerRead:!afterRevoke.shares.some((item)=>item.kind==='grant' && item.grant.id===grant.id && item.grant.lifecycle==='active'),
+      revokeCommands:window.__koedCollaborationInteractions.commands().filter((item)=>item.command==='collaboration.revoke_shared_memory').length
+    };
+  })()`);
+  if (
+    ownerShareControls.paused !== "paused" ||
+    ownerShareControls.pausedRead !== "paused" ||
+    ownerShareControls.resumed !== "active" ||
+    ownerShareControls.resumedRead !== "active" ||
+    !ownerShareControls.canceled ||
+    ownerShareControls.commandsBeforeCancel !==
+      ownerShareControls.commandsAfterCancel ||
+    !ownerShareControls.activeAfterCancel ||
+    ownerShareControls.revoked !== "revoked" ||
+    !ownerShareControls.revokedInOwnerRead ||
+    ownerShareControls.revokeCommands !==
+      ownerShareControls.commandsAfterCancel + 1
+  )
+    throw new Error(
+      `HQ owner Share controls failed: ${JSON.stringify(ownerShareControls)}`
+    );
+
+  const selectChannel = `(() => {
+    const team = window.__koedPackagedHqClient.current().navigation.teams[0];
+    const workspace = team.workspaces[0];
+    const channel = workspace.channels[0];
+    if (!channel) throw new Error('HQ packaged channel fixture missing');
+    return window.__koedPackagedHqClient.select({kind:'workspace_channel',teamId:team.id,workspaceId:workspace.id,threadId:channel.id});
+  })()`;
+  await evaluate(selectChannel);
+  const replayBody = "Packaged HQ renderer replay sentinel";
+  await evaluate(
+    `window.__koedCollaborationInteractions.suspendAcknowledgements()`
+  );
+  await evaluate(
+    `window.__koedCollaborationInteractions.emitMessage('channel', ${JSON.stringify(replayBody)}, 'bob')`
+  );
+  await waitFor(
+    evaluate,
+    `window.__koedCollaborationInteractions.commands().some((item) => item.command === 'collaboration.acknowledge_delivery')`,
+    "HQ acknowledgement before renderer restart"
+  );
+  await cdp.call("Page.reload", { ignoreCache: true });
+  await waitFor(evaluate, ready, "HQ fixture after renderer restart");
+  await evaluate(selectChannel);
+  await evaluate(
+    `window.__koedCollaborationInteractions.emitMessage('channel', ${JSON.stringify(replayBody)}, 'bob')`
+  );
+  await waitFor(
+    evaluate,
+    `window.__koedCollaborationInteractions.commands().some((item) => item.command === 'collaboration.acknowledge_delivery')`,
+    "HQ acknowledgement after renderer restart"
+  );
+  const replay = await evaluate(`(() => ({
+    matches: window.__koedPackagedHqClient.current().view?.messages?.items?.filter((item) => item.body === ${JSON.stringify(replayBody)}).length ?? 0,
+    acknowledgements: window.__koedCollaborationInteractions.commands().filter((item) => item.command === 'collaboration.acknowledge_delivery').length
+  }))()`);
+  if (replay.matches !== 1 || replay.acknowledgements < 1)
+    throw new Error(
+      `HQ replay was not applied exactly once: ${JSON.stringify(replay)}`
+    );
+
+  const accessibleText = `(() => {
+    const attributes = ['aria-label','aria-description','title','alt','placeholder'];
+    return [document.body.innerText,...[...document.querySelectorAll('body *')].flatMap((node)=>attributes.map((name)=>node.getAttribute(name)??''))].join('\\n');
+  })()`;
+  const consoleText = () =>
+    cdp.notifications
+      .filter(
+        (item) =>
+          item.method === "Runtime.consoleAPICalled" ||
+          item.method === "Runtime.exceptionThrown"
+      )
+      .map((item) => JSON.stringify(item.params))
+      .join("\n");
+  const failAndAssertRedacted = async ({ family, sentinels, expression }) => {
+    const outcome = await evaluate(expression);
+    if (
+      outcome?.name !== "CollaborationClientError" ||
+      outcome?.message !== "Collaboration is temporarily unavailable."
+    )
+      throw new Error(
+        `${family} did not return the production safe failure: ${JSON.stringify(outcome)}`
+      );
+    const exposed = `${await evaluate(accessibleText)}\n${consoleText()}\n${JSON.stringify(outcome)}`;
+    for (const sentinel of sentinels)
+      if (exposed.includes(sentinel))
+        throw new Error(
+          `HQ packaged ${family} leaked private failure sentinel: ${sentinel}`
+        );
+  };
+  cdp.notifications.length = 0;
+  const apiSentinels = [
+    "api-secret-7H2K",
+    "API_STACK_FRAME_X91",
+    "api_internal_01842",
+    "https://api.private.invalid/v1/team",
+    "set KOED_API_TOKEN=do-not-render"
+  ];
+  await failAndAssertRedacted({
+    family: "API",
+    sentinels: apiSentinels,
+    expression: `(() => {
+      window.__koedCollaborationInteractions.failNextApiRequest(${JSON.stringify(apiSentinels.join(" | "))});
+      const team = window.__koedPackagedHqClient.current().navigation.teams[0];
+      const thread = team.workspaces[0].channels[0];
+      return window.__koedPackagedHqClient.sendMessage({thread:{scope:'team',teamId:team.id,threadId:thread.id},clientMessageId:crypto.randomUUID(),body:'Packaged HQ failure probe'}).then(()=>({name:'success'})).catch((error)=>({name:error.name,message:error.message}));
+    })()`
+  });
+  const brokerSentinels = [
+    "broker-secret-4P8M",
+    "BROKER_STACK_FRAME_B72",
+    "broker_internal_77291",
+    "wss://broker.private.invalid/socket",
+    "run koed broker --unsafe-debug"
+  ];
+  await failAndAssertRedacted({
+    family: "broker",
+    sentinels: brokerSentinels,
+    expression: `(() => {
+      window.__koedCollaborationInteractions.failNextBrokerRequest(${JSON.stringify(brokerSentinels.join(" | "))});
+      const team = window.__koedPackagedHqClient.current().navigation.teams[0];
+      return window.__koedPackagedHqClient.select({kind:'team_people',teamId:team.id}).then(()=>({name:'success'})).catch((error)=>({name:error.name,message:error.message}));
+    })()`
+  });
+  const enrollmentSentinels = [
+    "enrollment-secret-2Q6V",
+    "ENROLL_STACK_FRAME_E33",
+    "device_internal_99012",
+    "https://enroll.private.invalid/device",
+    "set KOED_ENROLLMENT_KEY=do-not-render"
+  ];
+  await failAndAssertRedacted({
+    family: "enrollment",
+    sentinels: enrollmentSentinels,
+    expression: `(() => {
+      window.__koedCollaborationInteractions.failNextEnrollment(${JSON.stringify(enrollmentSentinels.join(" | "))});
+      return window.__koedPackagedHqClient.connectRemote({remoteUrl:'https://team.example.test'}).then(()=>({name:'success'})).catch((error)=>({name:error.name,message:error.message}));
+    })()`
+  });
+  await evaluate(`document.querySelector('button.hq-account').click()`);
+  await waitFor(
+    evaluate,
+    `Boolean(document.querySelector('.hq-settings'))`,
+    "HQ Settings before Team enrollment"
+  );
+  await evaluate(`(() => {
+    const teams = [...document.querySelectorAll('.hq-settings nav button')].find((item)=>item.textContent?.trim()==='Teams');
+    if (!teams) throw new Error('HQ Teams settings navigation unavailable');
+    teams.click();
+  })()`);
+  await waitFor(
+    evaluate,
+    `Boolean(document.querySelector('.hq-settings #hq-team-url'))`,
+    "HQ Team Connection form"
+  );
+  await evaluate(`(() => {
+    window.__koedCollaborationInteractions.failNextEnrollment(${JSON.stringify(enrollmentSentinels.join(" | "))});
+    const input = document.querySelector('.hq-settings #hq-team-url');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+    setter.call(input,'https://team.example.test');
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+  })()`);
+  await waitFor(
+    evaluate,
+    `document.querySelector('.hq-settings #hq-team-url')?.value === 'https://team.example.test'`,
+    "HQ Team Connection input"
+  );
+  await evaluate(
+    `document.querySelector('.hq-settings #hq-team-url').form.requestSubmit()`
+  );
+  await waitFor(
+    evaluate,
+    `[...document.querySelectorAll('.hq-settings [role="alert"]')].some((node)=>node.textContent?.includes('Collaboration is temporarily unavailable.'))`,
+    "HQ Team Connection safe error"
+  );
+  const enrollmentExposed = `${await evaluate(accessibleText)}\n${consoleText()}`;
+  for (const sentinel of enrollmentSentinels)
+    if (enrollmentExposed.includes(sentinel))
+      throw new Error(
+        `HQ Team Connection leaked private failure sentinel: ${sentinel}`
+      );
+  const realtimeSentinels = [
+    "realtime-secret-5N1R",
+    "REALTIME_STACK_FRAME_R44",
+    "delivery_internal_66103",
+    "wss://realtime.private.invalid/events",
+    "enable REALTIME_TRACE=private"
+  ];
+  await evaluate(
+    `window.__koedCollaborationInteractions.emitRealtimeFailure(${JSON.stringify(realtimeSentinels.join(" | "))})`
+  );
+  await waitFor(
+    evaluate,
+    `window.__koedPackagedHqClient.current()?.connection?.state === 'unavailable'`,
+    "HQ production client realtime unavailable state"
+  );
+  await waitFor(
+    evaluate,
+    `[...document.querySelectorAll('.hq-settings [role="status"]')].some((node)=>node.textContent?.trim()==='unavailable')`,
+    "HQ Team Connection unavailable state"
+  );
+  await cdp.call("Emulation.setEmulatedMedia", {
+    media: "screen",
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }]
+  });
+  await waitFor(
+    evaluate,
+    `matchMedia('(prefers-reduced-motion: reduce)').matches && Number.parseFloat(getComputedStyle(document.querySelector('.hq-settings__rail nav button')).transitionDuration) <= 0.001`,
+    "HQ Settings reduced motion"
+  );
+  const exposed = `${await evaluate(accessibleText)}\n${consoleText()}`;
+  for (const sentinel of realtimeSentinels)
+    if (exposed.includes(sentinel))
+      throw new Error(
+        `HQ packaged realtime leaked private failure sentinel: ${sentinel}`
+      );
+  return {
+    hqNavigation: true,
+    preferencesNavigation: true,
+    teamEnrollmentSafeUi: true,
+    realtimeUnavailableSafeUi: true,
+    hqSettingsReducedMotion: true,
+    ownerWideSharesRead: shares.shares.length,
+    ownerShareAuthorityControls: true,
+    ownerSharePresentation:
+      "HQ fixture validates client authority; HQ sharing UI is covered by the separate HQ validators",
+    crashAfterApplyBeforeAcknowledgement: true,
+    redeliveryAppliedOnceAfterRestart: true,
+    representativeFailuresRedacted: ["api", "broker", "enrollment", "realtime"]
+  };
+};
+
 export const smokePackagedRendererFaults = async ({
   executable,
   env,
-  koedHome
+  koedHome,
+  hqMode = false
 }) => {
   const userDataDir = mkdtempSync(resolve(tmpdir(), "koed-renderer-faults-"));
   const debuggingPort =
@@ -291,6 +589,12 @@ export const smokePackagedRendererFaults = async ({
       }
       return response.result.value;
     };
+    if (hqMode) {
+      await cdp.call("Page.navigate", {
+        url: "koed://app/browser-validation.html?view=collaboration-interactions&actor=alice&packagedHqFaults=yes"
+      });
+      return await smokeHqFixture({ cdp, evaluate });
+    }
     console.error("[packaged-renderer] setup surface started");
     await waitFor(
       evaluate,

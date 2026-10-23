@@ -12,6 +12,7 @@ import {
   type ManagedTextActionRequest,
   type ManagedTextActionResult
 } from "./managed-text-action-protocol.js";
+import { desktopFeatureFlagsFromEnvironment } from "./desktop-feature-flags.js";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
   deckCommandChannel,
@@ -628,7 +629,7 @@ export const registerDesktopCommandHandlers = (
     if (!trustedSender(event, options.allowedRendererOrigins))
       throw new Error("Untrusted Desktop IPC sender.");
     if (
-      process.env.KOED_DESKTOP_HQ_ENABLED !== "true" ||
+      !desktopFeatureFlagsFromEnvironment(process.env).hqEnabled ||
       !options.managedTextActions
     )
       throw new Error("Koed text actions are unavailable.");
@@ -783,7 +784,10 @@ export const registerDesktopCommandHandlers = (
   ipcMain.handle(agentsCommandChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins))
       throw new Error("Untrusted Desktop IPC sender.");
-    if (process.env.KOED_DESKTOP_HQ_ENABLED !== "true" || !options.agents)
+    if (
+      !desktopFeatureFlagsFromEnvironment(process.env).hqEnabled ||
+      !options.agents
+    )
       throw new Error("Agents are unavailable.");
     const request = agentsRequestSchema.parse(value);
     const result = agentsResultSchema.parse(await options.agents(request));
@@ -801,7 +805,7 @@ export const registerDesktopCommandHandlers = (
     if (!trustedSender(event, options.allowedRendererOrigins))
       throw new Error("Untrusted Desktop IPC sender.");
     if (
-      process.env.KOED_DESKTOP_HQ_ENABLED !== "true" ||
+      !desktopFeatureFlagsFromEnvironment(process.env).hqEnabled ||
       !options.scheduledJobs
     )
       throw new Error("Scheduled Jobs are unavailable.");
@@ -839,7 +843,7 @@ export const registerDesktopCommandHandlers = (
       if (!trustedSender(event, options.allowedRendererOrigins))
         throw new Error("Untrusted Desktop IPC sender.");
       if (
-        process.env.KOED_DESKTOP_HQ_ENABLED !== "true" ||
+        !desktopFeatureFlagsFromEnvironment(process.env).hqEnabled ||
         !options.projectHqConversation
       )
         throw new Error("Project HQ Conversation is unavailable.");

@@ -3748,7 +3748,26 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       existsSync: () => true,
       execFile: (_command, args, _options, callback) => {
         calls.push(args);
-        callback(null, JSON.stringify({ ok: true, state: "installed" }), "");
+        callback(
+          null,
+          JSON.stringify(
+            args.includes("privacy")
+              ? {
+                  ok: true,
+                  state: "installed",
+                  message:
+                    "Pinned Privacy Filter model assets are installed and verified.",
+                  modelPath: "/models/privacy"
+                }
+              : {
+                  state: "installed",
+                  message:
+                    "Embedding model is installed and checksum verified.",
+                  modelPath: "/models/embedding.gguf"
+                }
+          ),
+          ""
+        );
       },
       spawn: () => childProcess() as never,
       openExternal: async () => undefined
@@ -3822,7 +3841,22 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
                   mcpServer: { state: "healthy" },
                   lastVerification: { state: "healthy" }
                 }
-              : { ok: true, state: "installed" };
+              : args.includes("models") && args.includes("privacy")
+                ? {
+                    ok: true,
+                    state: "installed",
+                    message:
+                      "Pinned Privacy Filter model assets are installed and verified.",
+                    modelPath: "/models/privacy"
+                  }
+                : args.includes("models")
+                  ? {
+                      state: "installed",
+                      message:
+                        "Embedding model is installed and checksum verified.",
+                      modelPath: "/models/embedding.gguf"
+                    }
+                  : { ok: true, state: "installed" };
         callback(null, JSON.stringify(payload), "");
       },
       spawn: () => childProcess() as never,
