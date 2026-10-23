@@ -266,6 +266,7 @@ test("policy schedules independent jobs while the required gate joins every resu
   for (const name of [
     "static-checks",
     "tests",
+    "hq-integration",
     "build",
     "relevant-packaged-smoke"
   ]) {
@@ -275,6 +276,20 @@ test("policy schedules independent jobs while the required gate joins every resu
     jobs["relevant-packaged-smoke"].if,
     "needs.changes.outputs.run_app_smoke == 'true'"
   );
+  assert.equal(jobs["hq-integration"].if, undefined);
+  assert.equal(jobs["hq-integration"]["timeout-minutes"], 20);
+  assert.deepEqual(jobs["hq-integration"].services, jobs.tests.services);
+  assert.deepEqual(
+    jobs["hq-integration"].steps
+      .filter((step) => step.run)
+      .map((step) => step.run),
+    [
+      "pnpm install --frozen-lockfile",
+      "pnpm build",
+      "xvfb-run --auto-servernum pnpm test:hq-two-user",
+      "pnpm test:required-suites"
+    ]
+  );
   for (const name of [
     "release-candidate-validation",
     "native-runtime-linux-x64"
@@ -283,6 +298,7 @@ test("policy schedules independent jobs while the required gate joins every resu
       "changes",
       "static-checks",
       "tests",
+      "hq-integration",
       "build"
     ]);
   }
@@ -291,6 +307,7 @@ test("policy schedules independent jobs while the required gate joins every resu
     "changes",
     "static-checks",
     "tests",
+    "hq-integration",
     "build",
     "relevant-packaged-smoke",
     "release-candidate-validation",
@@ -299,6 +316,10 @@ test("policy schedules independent jobs while the required gate joins every resu
   assert.equal(
     jobs["ci-required"].steps.at(-1).run,
     "node .github/scripts/ci-required.mjs"
+  );
+  assert.equal(
+    jobs["ci-required"].steps.at(-1).env.HQ_INTEGRATION_RESULT,
+    "${{ needs.hq-integration.result }}"
   );
 });
 
@@ -475,6 +496,7 @@ test("stable required result accepts only policy-correct success and skips", () 
     changes: "success",
     static_checks: "success",
     tests: "success",
+    hq_integration: "success",
     build: "success",
     relevant_packaged_smoke: "skipped",
     release_candidate_validation: "skipped",
@@ -542,6 +564,34 @@ test("stable required result accepts only policy-correct success and skips", () 
     }).ok,
     true
   );
+  const missingHqResult = { ...baseResults };
+  delete missingHqResult.hq_integration;
+  assert.equal(
+    evaluateRequiredJobs({
+      policy: {
+        run_app_smoke: "false",
+        run_full_validation: "false",
+        run_linux_native: "false"
+      },
+      results: missingHqResult
+    }).ok,
+    false,
+    "hq_integration: missing"
+  );
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.equal(
+      evaluateRequiredJobs({
+        policy: {
+          run_app_smoke: "false",
+          run_full_validation: "false",
+          run_linux_native: "false"
+        },
+        results: { ...baseResults, hq_integration: result }
+      }).ok,
+      false,
+      `hq_integration: ${result}`
+    );
+  }
 });
 
 test("required aggregation rejects failures and cancellations in every selected job", () => {
@@ -554,6 +604,7 @@ test("required aggregation rejects failures and cancellations in every selected 
     changes: "success",
     static_checks: "success",
     tests: "success",
+    hq_integration: "success",
     build: "success",
     relevant_packaged_smoke: "success",
     release_candidate_validation: "success",
