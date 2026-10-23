@@ -1019,6 +1019,23 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
     return origin;
   };
   let closed = false;
+  const waitForDisconnectedBackends = async (database: string) => {
+    const deadline = Date.now() + 1_000;
+    while (true) {
+      const active = await admin.query<{ count: number }>(
+        "select count(*)::int as count from pg_stat_activity where datname=$1",
+        [database]
+      );
+      const count = active.rows[0]?.count;
+      assert.equal(typeof count, "number");
+      if (count === 0) return;
+      if (Date.now() >= deadline)
+        throw new Error(
+          `Fixture database ${database} retained ${count} backend connection(s) after pool shutdown.`
+        );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
   const close = async () => {
     if (closed) return;
     closed = true;
@@ -1030,16 +1047,17 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
       await new Promise<void>((resolve, reject) =>
         privacyService!.close((error) => (error ? reject(error) : resolve()))
       );
-    for (const db of databases.reverse()) {
-      await db.pool.end();
-      await admin.query(
-        `drop database if exists ${quoteIdentifier(db.name)} with (force)`
-      );
-    }
-    await admin.end();
     await new Promise<void>((resolve, reject) =>
       embeddingService.close((error) => (error ? reject(error) : resolve()))
     );
+    for (const db of databases.reverse()) {
+      await db.pool.end();
+      // Pool.end() can resolve before PostgreSQL retires its backend. A
+      // forced drop would interrupt that still-closing client with 57P01.
+      await waitForDisconnectedBackends(db.name);
+      await admin.query(`drop database if exists ${quoteIdentifier(db.name)}`);
+    }
+    await admin.end();
     if (previousEmbeddingServiceUrl === undefined)
       delete process.env.EMBEDDING_SERVICE_URL;
     else process.env.EMBEDDING_SERVICE_URL = previousEmbeddingServiceUrl;

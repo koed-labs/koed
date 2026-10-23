@@ -230,6 +230,14 @@ jobs:
       - name: Build workspace for native integration
         run: pnpm build
 
+      - name: Configure installed Electron sandbox helper
+        run: |
+          sandbox_helper=$(node -e 'const { createRequire } = require("node:module"); const { dirname, join, resolve } = require("node:path"); const desktopRequire = createRequire(resolve("apps/desktop/package.json")); process.stdout.write(join(dirname(desktopRequire("electron")), "chrome-sandbox"));')
+          test -f "$sandbox_helper"
+          sudo chown root:root "$sandbox_helper"
+          sudo chmod 4755 "$sandbox_helper"
+          test "$(stat -c '%u:%g:%a' "$sandbox_helper")" = "0:0:4755"
+
       - name: HQ two-user real-service integration
         env:
           KOED_HQ713_TEST_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed

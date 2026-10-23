@@ -279,6 +279,23 @@ test("policy schedules independent jobs while the required gate joins every resu
   assert.equal(jobs["hq-integration"].if, undefined);
   assert.equal(jobs["hq-integration"]["timeout-minutes"], 20);
   assert.deepEqual(jobs["hq-integration"].services, jobs.tests.services);
+  const sandboxStep = jobs["hq-integration"].steps.find(
+    (step) => step.name === "Configure installed Electron sandbox helper"
+  );
+  assert.ok(sandboxStep);
+  assert.match(
+    sandboxStep.run,
+    /createRequire\(resolve\("apps\/desktop\/package\.json"\)\)/
+  );
+  assert.match(
+    sandboxStep.run,
+    /join\(dirname\(desktopRequire\("electron"\)\), "chrome-sandbox"\)/
+  );
+  assert.match(sandboxStep.run, /test -f "\$sandbox_helper"/);
+  assert.match(sandboxStep.run, /sudo chown root:root "\$sandbox_helper"/);
+  assert.match(sandboxStep.run, /sudo chmod 4755 "\$sandbox_helper"/);
+  assert.match(sandboxStep.run, /test .*0:0:4755/);
+  assert.doesNotMatch(sandboxStep.run, /--no-sandbox|ELECTRON_DISABLE_SANDBOX/);
   assert.deepEqual(
     jobs["hq-integration"].steps
       .filter((step) => step.run)
@@ -286,6 +303,7 @@ test("policy schedules independent jobs while the required gate joins every resu
     [
       "pnpm install --frozen-lockfile",
       "pnpm build",
+      sandboxStep.run,
       "xvfb-run --auto-servernum pnpm test:hq-two-user",
       "pnpm test:required-suites"
     ]
