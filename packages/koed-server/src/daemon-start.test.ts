@@ -21,7 +21,15 @@ describe("standalone daemon entrypoint", () => {
       const result = startKoedServerDaemon({
         environment: { KOED_HOME: root },
         spawn: (command, args) => {
-          spawns.push({ command, args });
+          if (!Array.isArray(args)) throw new Error("Expected spawn arguments");
+          const argumentsList: unknown[] = args;
+          if (
+            !argumentsList.every(
+              (value): value is string => typeof value === "string"
+            )
+          )
+            throw new Error("Expected string spawn arguments");
+          spawns.push({ command, args: argumentsList });
           return { pid: 224, unref: () => undefined } as never;
         }
       });

@@ -98,7 +98,8 @@ const fixture = async (
     }
   };
 };
-const mergeTestCatalog = (catalog: ManifestPinCatalog) => {
+const mergeTestCatalog = (catalog: ManifestPinCatalog | null) => {
+  if (!catalog) throw new Error("fixture catalog missing");
   const current = testCatalog.current;
   if (!current || current.productVersion !== catalog.productVersion) {
     testCatalog.current = catalog;
