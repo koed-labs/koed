@@ -227,7 +227,7 @@ describe("Koed server desktop manager", () => {
                           ? {
                               required: ["base", "privacy"],
                               components: { privacy: "missing" },
-                              trustedSignerConfigured: true,
+                              requiredManifestPinsAvailable: true,
                               activeGeneration: null
                             }
                           : { state: "active", generationId: "b".repeat(64) }
@@ -388,7 +388,7 @@ describe("Koed server desktop manager", () => {
                     required: ["privacy"],
                     components: { privacy: "missing" },
                     activeGeneration: null,
-                    trustedSignerConfigured: statusCount < 2
+                    requiredManifestPinsAvailable: statusCount < 2
                   }
                 });
               if (holdStatus) releaseStatus = respond;
@@ -475,8 +475,7 @@ describe("Koed server desktop manager", () => {
       source: {
         kind: "remote",
         archiveUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}.tar.gz`,
-        manifestUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}.tar.gz.manifest.json`,
-        signatureUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}.tar.gz.signature.json`
+        manifestUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}.tar.gz.manifest.json`
       }
     });
     expect(progress).toHaveBeenCalledWith(
@@ -510,7 +509,7 @@ describe("Koed server desktop manager", () => {
       available: false,
       state: "unavailable",
       message:
-        "Production Privacy Filter signer trust is not configured in this Desktop release. Update to a release with approved signer trust roots; no component can be installed until then."
+        "Required component manifest pins are unavailable in this Desktop release for this runtime. Update to a compatible control plane; no component can be installed until then."
     });
     const inFlightStatus = manager.privacyInstall.getStatus();
     child.emit("exit", 1, null);

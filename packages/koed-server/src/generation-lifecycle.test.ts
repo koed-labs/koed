@@ -15,7 +15,6 @@ import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 const fixtureRuntime = vi.hoisted(() => ({
   value: undefined as RuntimeIdentity | undefined
 }));
-const fixtureKeys = vi.hoisted(() => ({ value: new Map<string, string>() }));
 const pointerFailure = vi.hoisted(() => ({
   path: undefined as string | undefined
 }));
@@ -25,9 +24,14 @@ vi.mock("./component-runtime-identity.js", () => ({
     return fixtureRuntime.value;
   }
 }));
-vi.mock("./component-trust-roots.js", () => ({
-  productionComponentTrustRoots: fixtureKeys.value
-}));
+vi.mock("./component-manifest-catalog-data.js", async () => {
+  const fixtures = await import("./component-test-fixtures.js");
+  return {
+    get productionComponentManifestCatalog() {
+      return fixtures.getFixtureManifestPinCatalog();
+    }
+  };
+});
 vi.mock("./generation-lifecycle-filesystem.js", async () => {
   const { renameSync } =
     await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -44,7 +48,8 @@ vi.mock("./generation-lifecycle-filesystem.js", async () => {
 
 import {
   goldenComponentArchive,
-  signedComponentFixture
+  resetFixtureManifestPinCatalog,
+  componentFixture
 } from "./component-test-fixtures.js";
 import {
   resolveDesktopRuntimeOwner,
@@ -88,27 +93,21 @@ const metadataFile = (
 };
 const stage = async (
   paths: ReturnType<typeof resolveKoedServerPaths>,
-  version: string
+  version: string,
+  target: ArtifactTarget = { platform: "linux", architecture: "x64" }
 ) => {
-  const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
-  const fixture = await signedComponentFixture({
+  const fixture = await componentFixture({
     productVersion: version,
     target
   });
   temporaryRoots.push(fixture.root);
   fixtureRuntime.value = fixture.input.runtime;
-  for (const [key, value] of fixture.input.trustedKeys)
-    fixtureKeys.value.set(key, value);
   const base = await stageComponent(
     paths,
     {
       kind: "offline",
       archivePath: fixture.input.archivePath,
-      manifestPath: metadataFile(paths, fixture.input.manifestBytes),
-      signaturePath: metadataFile(
-        paths,
-        Buffer.from(JSON.stringify(fixture.input.signature))
-      )
+      manifestPath: metadataFile(paths, fixture.input.manifestBytes)
     },
     {
       expectedComponent: "base",
@@ -119,12 +118,40 @@ const stage = async (
   );
   return stageGeneration(paths, { base, owner });
 };
+const stagePrivacy = async (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  version: string,
+  target: ArtifactTarget = { platform: "linux", architecture: "x64" }
+) => {
+  const fixture = await componentFixture({
+    component: "privacy",
+    productVersion: version,
+    target
+  });
+  temporaryRoots.push(fixture.root);
+  fixtureRuntime.value = fixture.input.runtime;
+  return stageComponent(
+    paths,
+    {
+      kind: "offline",
+      archivePath: fixture.input.archivePath,
+      manifestPath: metadataFile(paths, fixture.input.manifestBytes)
+    },
+    {
+      expectedComponent: "privacy",
+      expectedVersion: version,
+      target,
+      runtime: fixture.input.runtime
+    }
+  );
+};
 
 afterEach(() => {
   for (const path of temporaryRoots.splice(0))
     rmSync(path, { recursive: true, force: true });
   for (const path of temporaryMetadata.splice(0)) rmSync(path, { force: true });
   pointerFailure.path = undefined;
+  resetFixtureManifestPinCatalog();
   vi.restoreAllMocks();
 });
 
@@ -216,11 +243,11 @@ describe("generation lifecycle", () => {
     ).rejects.toThrow("owner mismatch");
   });
 
-  it("keeps active signed privacy generation when pinning unchanged Desktop bundle", async () => {
+  it("keeps active manifest-pinned privacy generation when pinning unchanged Desktop bundle", async () => {
     const paths = pathsForTest();
     const productVersion = "0.8.1";
     const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
-    const fixture = await signedComponentFixture(
+    const fixture = await componentFixture(
       {
         component: "privacy",
         productVersion,
@@ -231,9 +258,6 @@ describe("generation lifecycle", () => {
     );
     temporaryRoots.push(fixture.root);
     fixtureRuntime.value = fixture.input.runtime;
-    fixtureKeys.value.clear();
-    for (const [key, value] of fixture.input.trustedKeys)
-      fixtureKeys.value.set(key, value);
     const resourcesPath = resolve(paths.koedHome, "resources");
     const runtimeRoot = resolve(resourcesPath, "koed-runtime");
     mkdirSync(runtimeRoot, { recursive: true });
@@ -253,11 +277,7 @@ describe("generation lifecycle", () => {
       {
         kind: "offline",
         archivePath: fixture.input.archivePath,
-        manifestPath: metadataFile(paths, fixture.input.manifestBytes),
-        signaturePath: metadataFile(
-          paths,
-          Buffer.from(JSON.stringify(fixture.input.signature))
-        )
+        manifestPath: metadataFile(paths, fixture.input.manifestBytes)
       },
       {
         expectedComponent: "privacy",
@@ -294,7 +314,7 @@ describe("generation lifecycle", () => {
     const pin = await pinDesktopBundleGenerationForStart(paths, capability);
     expect(pin.generation.id).toBe(generation.id);
     expect(pin.generation.base.kind).toBe("desktop-bundle");
-    expect(pin.generation.privacy?.kind).toBe("signed-component");
+    expect(pin.generation.privacy?.kind).toBe("manifest-pinned-component");
     await pin.release();
     writeFileSync(
       resolve(runtimeRoot, "desktop-bundle-manifest.json"),
@@ -316,10 +336,77 @@ describe("generation lifecycle", () => {
     await upgraded.release();
   });
 
+  it("switches between same-version base-only and privacy generations", async () => {
+    const paths = pathsForTest();
+    const baseOnly = await stage(paths, "0.9.0");
+    const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
+    const fixture = await componentFixture({
+      component: "privacy",
+      productVersion: "0.9.0",
+      target
+    });
+    temporaryRoots.push(fixture.root);
+    const privacy = await stageComponent(
+      paths,
+      {
+        kind: "offline",
+        archivePath: fixture.input.archivePath,
+        manifestPath: metadataFile(paths, fixture.input.manifestBytes)
+      },
+      {
+        expectedComponent: "privacy",
+        expectedVersion: "0.9.0",
+        target,
+        runtime: fixture.input.runtime
+      }
+    );
+    const withPrivacy = await stageGeneration(paths, {
+      base: baseOnly.base,
+      privacy,
+      owner
+    });
+    expect(withPrivacy.id).not.toBe(baseOnly.id);
+    await activateGeneration(paths, baseOnly.id, owner);
+    await activateGeneration(paths, withPrivacy.id, owner);
+    expect((await readCurrentGeneration(paths)).id).toBe(withPrivacy.id);
+    await activateGeneration(paths, baseOnly.id, owner);
+    expect((await readCurrentGeneration(paths)).id).toBe(baseOnly.id);
+  });
+
+  it("rejects an older catalog generation without changing current pointer or retaining locks", async () => {
+    const paths = pathsForTest();
+    const current = await stage(paths, "0.9.0");
+    await activateGeneration(paths, current.id, owner);
+    const pointerPath = resolve(paths.componentsDir, "current.json");
+    const pointer = readFileSync(pointerPath);
+    const candidate = await stage(paths, "0.9.1");
+    await expect(
+      activateGeneration(paths, candidate.id, owner)
+    ).rejects.toThrow("component manifest pin mismatch");
+    expect(readFileSync(pointerPath)).toEqual(pointer);
+    expect(existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))).toBe(
+      false
+    );
+  });
+
+  it("accepts a pinned SemVer prerelease generation", async () => {
+    const paths = pathsForTest();
+    const prerelease = await stage(paths, "1.0.0-alpha.1");
+    await activateGeneration(paths, prerelease.id, owner);
+    expect((await readCurrentGeneration(paths)).productVersion).toBe(
+      "1.0.0-alpha.1"
+    );
+  });
+
   it("pins selected generation for process lifetime and blocks activation/cleanup", async () => {
     const paths = pathsForTest();
     const current = await stage(paths, "0.9.0");
-    const next = await stage(paths, "0.9.1");
+    const privacy = await stagePrivacy(paths, "0.9.0");
+    const next = await stageGeneration(paths, {
+      base: current.base,
+      privacy,
+      owner
+    });
     await activateGeneration(paths, current.id, owner);
     let signalReached!: () => void;
     let releaseBarrier!: () => void;
@@ -572,11 +659,15 @@ describe("generation lifecycle", () => {
   it("retains active and newest verified generations without touching User state or models", async () => {
     const paths = pathsForTest();
     const active = await stage(paths, "0.9.0");
-    const obsolete = await stage(paths, "0.9.1");
-    const newest = await stage(paths, "0.9.2");
+    const privacy = await stagePrivacy(paths, "0.9.0");
+    const newest = await stageGeneration(paths, {
+      base: active.base,
+      privacy,
+      owner
+    });
     await activateGeneration(paths, active.id, owner);
     const removed = await cleanupGenerations(paths, 1, owner);
-    expect(removed).toContain(obsolete.id);
+    expect(removed).toEqual([]);
     expect(removed).not.toContain(active.id);
     expect(removed).not.toContain(newest.id);
     expect((await readCurrentGeneration(paths)).id).toBe(active.id);
@@ -585,7 +676,12 @@ describe("generation lifecycle", () => {
   it("preserves current pointer when atomic rename is interrupted", async () => {
     const paths = pathsForTest();
     const current = await stage(paths, "0.9.0");
-    const next = await stage(paths, "0.9.1");
+    const privacy = await stagePrivacy(paths, "0.9.0");
+    const next = await stageGeneration(paths, {
+      base: current.base,
+      privacy,
+      owner
+    });
     await activateGeneration(paths, current.id, owner);
     const pointer = resolve(paths.componentsDir, "current.json");
     const before = readFileSync(pointer, "utf8");

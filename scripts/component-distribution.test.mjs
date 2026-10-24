@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
@@ -8,7 +8,6 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import { buildComponentReleaseSet } from "./component-release-lib.mjs";
@@ -18,8 +17,14 @@ import { verifyComponent } from "../packages/koed-server/dist/component-verifica
 import { discoverActualRuntimeIdentity } from "../packages/koed-server/dist/component-runtime-identity.js";
 
 const fixture = () => {
-  const root = mkdtempSync(resolve(tmpdir(), "koed-distribution-contract-"));
+  const scratch = resolve(import.meta.dirname, "../scratch");
+  mkdirSync(scratch, { recursive: true });
+  const root = mkdtempSync(resolve(scratch, "koed-distribution-contract-"));
   const runtime = discoverActualRuntimeIdentity();
+  const target = {
+    platform: runtime.platform,
+    architecture: runtime.architecture
+  };
   const keys = generateKeyPairSync("ed25519");
   const publicKey = keys.publicKey.export({ type: "spki", format: "pem" });
   for (const component of ["base", "privacy"]) {
@@ -32,7 +37,7 @@ const fixture = () => {
     componentsRoot: resolve(root, "components"),
     outDir: resolve(root, "release"),
     version: "1.2.3",
-    target: { platform: runtime.platform, architecture: runtime.architecture },
+    target,
     runtimes: [
       {
         kind: "node",
@@ -51,6 +56,7 @@ const fixture = () => {
   return {
     root,
     runtime,
+    target,
     publicKey,
     record,
     manifest: resolve(root, "release", record.manifest),
@@ -62,7 +68,7 @@ const fixture = () => {
 for (const check of [
   "canonical bytes",
   "payload-relative archive",
-  "release and installer admission"
+  "release signature and pinned installer admission"
 ]) {
   test(`generated signed release satisfies ${check}`, async () => {
     const f = fixture();
@@ -97,13 +103,24 @@ for (const check of [
         );
         await verifyComponent({
           manifestBytes,
-          signature: JSON.parse(readFileSync(f.signature)),
           archivePath: f.archive,
           expectedComponent: "base",
           expectedVersion: "1.2.3",
-          target: manifest.target,
+          target: f.target,
           runtime: f.runtime,
-          trustedKeys: new Map([["test-only", f.publicKey]])
+          manifestCatalog: {
+            schemaVersion: 1,
+            productVersion: "1.2.3",
+            entries: [
+              {
+                component: "base",
+                target: f.target,
+                manifestSha256: createHash("sha256")
+                  .update(manifestBytes)
+                  .digest("hex")
+              }
+            ]
+          }
         });
       }
     } finally {

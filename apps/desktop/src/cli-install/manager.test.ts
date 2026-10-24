@@ -128,8 +128,7 @@ describe("desktop CLI install adapter", () => {
   it("retries failed offline installation without reselection and consumes selection only on success", async () => {
     const source = {
       archivePath: "/tmp/privacy.tar.gz",
-      manifestPath: "/tmp/privacy.manifest.json",
-      signaturePath: "/tmp/privacy.signature.json"
+      manifestPath: "/tmp/privacy.manifest.json"
     };
     let attempts = 0;
     const ready = {
@@ -163,8 +162,7 @@ describe("desktop CLI install adapter", () => {
   it("retains offline selection when installer returns failed status", async () => {
     const source = {
       archivePath: "/tmp/privacy.tar.gz",
-      manifestPath: "/tmp/privacy.json",
-      signaturePath: "/tmp/privacy.sig.json"
+      manifestPath: "/tmp/privacy.json"
     };
     let attempts = 0;
     const manager = create(fixture(), {
@@ -190,13 +188,11 @@ describe("desktop CLI install adapter", () => {
   it("revokes previous offline selection on cancellation or explicit new selection", async () => {
     const first = {
       archivePath: "/tmp/first.tar.gz",
-      manifestPath: "/tmp/first.json",
-      signaturePath: "/tmp/first.sig.json"
+      manifestPath: "/tmp/first.json"
     };
     const second = {
       archivePath: "/tmp/second.tar.gz",
-      manifestPath: "/tmp/second.json",
-      signaturePath: "/tmp/second.sig.json"
+      manifestPath: "/tmp/second.json"
     };
     let selection: typeof first | null = first;
     const ready = {
@@ -238,13 +234,11 @@ describe("desktop CLI install adapter", () => {
     async (operation) => {
       const oldSource = {
         archivePath: "/tmp/old.tar.gz",
-        manifestPath: "/tmp/old.json",
-        signaturePath: "/tmp/old.sig.json"
+        manifestPath: "/tmp/old.json"
       };
       const newSource = {
         archivePath: "/tmp/new.tar.gz",
-        manifestPath: "/tmp/new.json",
-        signaturePath: "/tmp/new.sig.json"
+        manifestPath: "/tmp/new.json"
       };
       let resolvePicker!: (source: typeof oldSource | null) => void;
       const pending = new Promise<typeof oldSource | null>((resolve) => {
@@ -392,8 +386,7 @@ describe("desktop CLI install adapter", () => {
       cancel: vi.fn(),
       selectOffline: vi.fn(async () => ({
         archivePath: "/tmp/privacy.tar.gz",
-        manifestPath: "/tmp/privacy.manifest.json",
-        signaturePath: "/tmp/privacy.signature.json"
+        manifestPath: "/tmp/privacy.manifest.json"
       }))
     };
     const manager = create(root, bridge);
@@ -406,8 +399,7 @@ describe("desktop CLI install adapter", () => {
     await expect(
       manager.installPrivacy(true, {
         archivePath: "/tmp/privacy.tar.gz",
-        manifestPath: "/tmp/privacy.manifest.json",
-        signaturePath: "/tmp/privacy.signature.json"
+        manifestPath: "/tmp/privacy.manifest.json"
       })
     ).resolves.toMatchObject({ state: "ready" });
     expect(installPrivacy).toHaveBeenCalledWith(
@@ -415,8 +407,7 @@ describe("desktop CLI install adapter", () => {
         consent: true,
         offlineSource: {
           archivePath: "/tmp/privacy.tar.gz",
-          manifestPath: "/tmp/privacy.manifest.json",
-          signaturePath: "/tmp/privacy.signature.json"
+          manifestPath: "/tmp/privacy.manifest.json"
         }
       })
     );

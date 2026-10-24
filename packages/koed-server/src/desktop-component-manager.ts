@@ -20,7 +20,14 @@ import {
   stageDesktopPrivacyGeneration
 } from "./component-store.js";
 import { activateGeneration } from "./generation-lifecycle.js";
-import { productionComponentTrustRoots } from "./component-trust-roots.js";
+import { productionComponentManifestCatalog } from "./component-manifest-catalog-data.js";
+import { validateManifestCatalog } from "./component-manifest-catalog.js";
+
+const manifestPinCatalogAvailable = (): boolean => {
+  if (productionComponentManifestCatalog === null) return false;
+  validateManifestCatalog(productionComponentManifestCatalog);
+  return true;
+};
 
 export type DesktopBundleManifest = DesktopRuntimeCapability["manifest"];
 export type DesktopBundleCapability = DesktopRuntimeCapability;
@@ -76,14 +83,9 @@ export const createDesktopPrivacyRpcHandler =
       message.action === "status" &&
       hasExactKeys(["type", "requestId", "action"])
     ) {
-      void input.manager.status().then(
-        (status) =>
-          respond({
-            ...status,
-            trustedSignerConfigured: productionComponentTrustRoots.size > 0
-          }),
-        fail
-      );
+      void input.manager
+        .status()
+        .then((status) => respond({ ...status }), fail);
       return true;
     }
     if (
@@ -201,25 +203,23 @@ export const createDesktopComponentManagerBridge = (input: {
     if (!isRecord(value)) throw new Error("Desktop privacy source is invalid");
     if (
       value.kind === "offline" &&
-      Object.keys(value).length === 4 &&
-      [value.archivePath, value.manifestPath, value.signaturePath].every(
+      Object.keys(value).length === 3 &&
+      [value.archivePath, value.manifestPath].every(
         (item) => typeof item === "string" && item.length > 0
       )
     )
       return value as ComponentSource;
     if (
       value.kind === "remote" &&
-      Object.keys(value).length === 4 &&
-      [value.archiveUrl, value.manifestUrl, value.signatureUrl].every(
-        (item) => {
-          if (typeof item !== "string") return false;
-          try {
-            return new URL(item).protocol === "https:";
-          } catch {
-            return false;
-          }
+      Object.keys(value).length === 3 &&
+      [value.archiveUrl, value.manifestUrl].every((item) => {
+        if (typeof item !== "string") return false;
+        try {
+          return new URL(item).protocol === "https:";
+        } catch {
+          return false;
         }
-      )
+      })
     )
       return value as ComponentSource;
     throw new Error("Desktop privacy source is invalid");
@@ -250,9 +250,9 @@ export const createDesktopComponentManagerBridge = (input: {
       const requestId = requireRequestId(input.requestId);
       if (operations.has(requestId))
         throw new Error("Desktop privacy request is already active");
-      if (productionComponentTrustRoots.size === 0)
+      if (!manifestPinCatalogAvailable())
         throw new Error(
-          "Production Privacy Filter signer trust is not configured in this Desktop release. Update to a release with approved signer trust roots; no component can be installed until then."
+          "Production component manifest pin catalog is unavailable in this Desktop release. Update to a catalog-bearing control plane; no component can be installed until then."
         );
       const source = parseSource(input.source);
       const version = input.version ?? context.controlPlaneVersion;
@@ -269,6 +269,10 @@ export const createDesktopComponentManagerBridge = (input: {
         if (!status.required.includes("privacy"))
           throw new Error(
             "privacy component is not required by current runtime configuration."
+          );
+        if (!status.requiredManifestPinsAvailable)
+          throw new Error(
+            "Required component manifest pins are unavailable for this Desktop runtime."
           );
         const privacy = await stageComponent(context.paths, source, {
           expectedComponent: "privacy",

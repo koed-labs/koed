@@ -31,8 +31,7 @@ const makeApi = () =>
     cancel: vi.fn(async () => undefined),
     selectOffline: vi.fn(async () => ({
       archivePath: "/tmp/privacy.tar.gz",
-      manifestPath: "/tmp/privacy.manifest.json",
-      signaturePath: "/tmp/privacy.signature.json"
+      manifestPath: "/tmp/privacy.manifest.json"
     })),
     launcher: vi.fn(async () => ({
       ownership: "absent" as const,
@@ -104,7 +103,7 @@ const button = (label: string) =>
 const click = async (element: HTMLElement) => act(async () => element.click());
 
 describe("Team onboarding Privacy installer", () => {
-  it("offers signed installation before services without automatic download or setup", async () => {
+  it("offers pinned installation before services without automatic download or setup", async () => {
     const api = makeApi();
     const run = await render(true, api);
     expect(container.textContent).toContain(
@@ -120,8 +119,7 @@ describe("Team onboarding Privacy installer", () => {
     await click(button("Install Privacy Filter"));
     expect(api.installPrivacy).toHaveBeenCalledWith(true, {
       archivePath: "/tmp/privacy.tar.gz",
-      manifestPath: "/tmp/privacy.manifest.json",
-      signaturePath: "/tmp/privacy.signature.json"
+      manifestPath: "/tmp/privacy.manifest.json"
     });
     expect(run).not.toHaveBeenCalled();
   });
@@ -138,7 +136,7 @@ describe("Team onboarding Privacy installer", () => {
   it("reports failed verification and allows explicit retry without starting services", async () => {
     const api = makeApi();
     api.installPrivacy.mockRejectedValueOnce(
-      new Error("Signature verification failed")
+      new Error("component manifest pin mismatch.")
     );
     const run = await render(true, api);
     await click(
@@ -146,7 +144,7 @@ describe("Team onboarding Privacy installer", () => {
     );
     await click(button("Install Privacy Filter"));
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "Signature verification failed"
+      "component manifest pin mismatch."
     );
     await click(button("Retry install"));
     expect(api.installPrivacy).toHaveBeenCalledTimes(2);

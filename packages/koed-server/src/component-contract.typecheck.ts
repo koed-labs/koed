@@ -2,34 +2,34 @@ import type {
   VerifiedComponent,
   VerifiedDesktopBase,
   VerifiedGeneration,
-  VerifiedSignedComponent
+  VerifiedManifestPinnedComponent
 } from "./component-contract.js";
 
-// Compile-only contract: Desktop bundles never satisfy signed installer inputs.
+// Compile-only contract: Desktop bundles never satisfy manifest-pinned inputs.
 function checkArtifactContract(
   artifact: VerifiedComponent,
   desktop: VerifiedDesktopBase,
-  signed: VerifiedSignedComponent,
+  pinned: VerifiedManifestPinnedComponent,
   generation: VerifiedGeneration
 ): void {
-  if (artifact.kind === "signed-component") {
-    const component: VerifiedSignedComponent = artifact;
+  if (artifact.kind === "manifest-pinned-component") {
+    const component: VerifiedManifestPinnedComponent = artifact;
     void component.manifest.archive;
     void component.manifest.runtimes;
   } else {
     const base: VerifiedDesktopBase = artifact;
-    // @ts-expect-error Desktop bundles have no signed archive.
+    // @ts-expect-error Desktop bundles have no pinned archive.
     void base.manifest.archive;
-    // @ts-expect-error Desktop bundles have no signed runtime compatibility.
+    // @ts-expect-error Desktop bundles have no pinned runtime compatibility.
     void base.manifest.runtimes;
   }
   generation.base = desktop;
-  generation.base = signed;
-  generation.privacy = signed;
-  // @ts-expect-error Privacy must be a verified signed component.
+  generation.base = pinned;
+  generation.privacy = pinned;
+  // @ts-expect-error Privacy must be a verified manifest-pinned component.
   generation.privacy = desktop;
-  // @ts-expect-error Desktop bundle cannot enter signed-component staging.
-  const component: VerifiedSignedComponent = desktop;
+  // @ts-expect-error Desktop bundle cannot enter manifest-pinned staging.
+  const component: VerifiedManifestPinnedComponent = desktop;
   void component;
 }
 void checkArtifactContract;

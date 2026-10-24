@@ -39,8 +39,8 @@ const parseCommand = (value: unknown): CliInstallCommand => {
           (!command.offlineSource ||
             typeof command.offlineSource !== "object" ||
             Array.isArray(command.offlineSource) ||
-            Object.keys(command.offlineSource).length !== 3 ||
-            !["archivePath", "manifestPath", "signaturePath"].every(
+            Object.keys(command.offlineSource).length !== 2 ||
+            !["archivePath", "manifestPath"].every(
               (key) =>
                 typeof (command.offlineSource as Record<string, unknown>)[
                   key

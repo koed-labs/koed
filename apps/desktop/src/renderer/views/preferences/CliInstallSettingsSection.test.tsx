@@ -39,8 +39,7 @@ const makeApi = () =>
     cancel: vi.fn(async () => undefined),
     selectOffline: vi.fn(async () => ({
       archivePath: "/tmp/privacy.tar.gz",
-      manifestPath: "/tmp/privacy.manifest.json",
-      signaturePath: "/tmp/privacy.signature.json"
+      manifestPath: "/tmp/privacy.manifest.json"
     })),
     launcher: vi.fn(async () => ({
       ownership: "absent" as const,
@@ -65,7 +64,7 @@ describe("CLI install preferences", () => {
     );
   });
 
-  it("selects and submits signed offline archive, manifest, and signature triplet", async () => {
+  it("selects and submits offline archive and manifest pair", async () => {
     const api = makeApi();
     const view = await render(api);
     await click(
@@ -82,8 +81,7 @@ describe("CLI install preferences", () => {
     );
     expect(api.installPrivacy).toHaveBeenCalledWith(true, {
       archivePath: "/tmp/privacy.tar.gz",
-      manifestPath: "/tmp/privacy.manifest.json",
-      signaturePath: "/tmp/privacy.signature.json"
+      manifestPath: "/tmp/privacy.manifest.json"
     });
   });
 

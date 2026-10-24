@@ -145,8 +145,15 @@ The initial CI artifact build is produced by:
 
 ```bash
 pnpm build
-pnpm koed-server:package -- --platform linux --arch x64 --json
+pnpm koed-server:package -- --catalogless-development --platform linux --arch x64 --json
 ```
+
+This explicit internal-testing mode embeds no component admission authority.
+Official release packaging instead requires the complete frozen-manifest catalog
+build input; see [component manifest catalogs](component-manifest-catalog.md).
+The trusted standalone control plane lives outside `koed-runtime/`, under
+`control-plane/`; `bin/koed` and supervisor re-execution retain that entrypoint.
+Its Base runtime copy remains catalog-less rather than authenticating itself.
 
 The script stages one private aggregate production deployment with a hoisted
 dependency graph. Deterministic service wrappers preserve the established
@@ -411,10 +418,13 @@ is removed. HTTPS transfers bound response headers to 30 seconds and reset a
 without an absolute transfer deadline. Caller cancellation and byte limits still
 apply throughout acquisition and publication.
 
-Component verification is not wired into package installation yet. Production
-component trust roots are intentionally empty, so component verification fails
-closed and official component promotion remains blocked pending explicit
-Operator approval of a production signing key. Runtime ranges intentionally use
+Component verification is wired into explicit component provisioning and cached
+runtime selection. The current build includes the approved
+`koed-components-2026-01` public key in `component-trust-roots.ts`; a missing trust
+root still fails closed. Repository configuration does not prove that the remote
+signer is authorized or publication approvals are enabled. The planned manifest-pin
+replacement and its release gates are recorded in
+[ADR 0057](adr/0057-versioned-component-manifest-pins.md). Runtime ranges intentionally use
 restricted numeric SemVer syntax: one to three decimal components with optional
 `>=`, `>`, `<=`, `<`, or `=` comparisons, whitespace-conjoined; exact runtime
 versions use two or three components. Leading zeroes, prerelease/build labels,
@@ -433,13 +443,16 @@ do not populate component trust roots.
 
 Downgrade and rollback rules:
 
-- Automatic downgrade is not allowed.
-- Installing an older `koed-server` over a newer active runtime requires an
-  explicit Operator confirmation and must first check DB migration compatibility.
-- Rollback can switch back to a previous package only if the current DB schema is
-  compatible with that package's migration set.
-- If DB migrations have advanced beyond the previous package, rollback should
-  fail with repair guidance rather than attempting reverse migrations.
+- Generation activation refuses version downgrades by comparing product versions,
+  without database migration metadata. This guard does not establish database
+  compatibility. A matching older control plane does not bypass the guard.
+- Same-version generation switching supports recovery between verified component
+  sets; it does not restore database state.
+- The separate legacy package-install path supports explicit `--allow-downgrade`
+  and checks migration timestamps when provided. That flag is not supported by
+  component generation activation and is not a general database-safety guarantee.
+- No unrestricted whole-release rollback or reverse migration is promised. A
+  general database compatibility framework remains separate work.
 
 ## Compatibility rules
 

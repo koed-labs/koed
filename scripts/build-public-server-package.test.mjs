@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
+import { requiredComponentIdentities } from "./component-manifest-catalog.mjs";
+
 const repoRoot = resolve(import.meta.dirname, "..");
 const node24 = process.execPath;
 
@@ -21,6 +23,22 @@ test("assembled public package has only koed bin and self-contained control plan
     mkdtempSync(resolve(tmpdir(), "koed public package "))
   );
   try {
+    const version = JSON.parse(
+      readFileSync(
+        resolve(repoRoot, "packages/koed-server/package.json"),
+        "utf8"
+      )
+    ).version;
+    const catalog = {
+      schemaVersion: 1,
+      productVersion: version,
+      entries: requiredComponentIdentities.map((identity) => ({
+        ...identity,
+        manifestSha256: "a".repeat(64)
+      }))
+    };
+    const catalogPath = resolve(scratch, "catalog.json");
+    writeFileSync(catalogPath, JSON.stringify(catalog));
     execFileSync(
       node24,
       [
@@ -28,13 +46,27 @@ test("assembled public package has only koed bin and self-contained control plan
         "--out-dir",
         scratch
       ],
-      { cwd: repoRoot, stdio: "pipe" }
+      {
+        cwd: repoRoot,
+        stdio: "pipe",
+        env: { ...process.env, KOED_COMPONENT_MANIFEST_CATALOG: catalogPath }
+      }
     );
     const packageDir = resolve(scratch, "package");
     const manifest = JSON.parse(
       readFileSync(resolve(packageDir, "package.json"), "utf8")
     );
     assert.equal(manifest.name, "@koed-labs/server");
+    const embedded = execFileSync(
+      node24,
+      [
+        "--input-type=module",
+        "-e",
+        `console.log(JSON.stringify((await import(${JSON.stringify(resolve(packageDir, "vendor/component-manifest-catalog.js"))})).productionComponentManifestCatalog))`
+      ],
+      { cwd: scratch, encoding: "utf8" }
+    );
+    assert.deepEqual(JSON.parse(embedded), catalog);
     assert.equal(manifest.private, false);
     assert.deepEqual(manifest.bin, { koed: "bin/koed.js" });
     assert.deepEqual(manifest.engines, { node: ">=24 <25" });
@@ -111,6 +143,7 @@ test("assembled public package has only koed bin and self-contained control plan
     for (const helper of [
       "vendor/cli.js",
       "vendor/privacy-service-bootstrap.js",
+      "vendor/component-manifest-catalog.js",
       "dist/component-trust-roots.js"
     ]) {
       assert.ok(

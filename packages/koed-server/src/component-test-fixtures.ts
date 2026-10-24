@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
-import type { ComponentManifest } from "./component-contract.js";
+import type {
+  ArtifactTarget,
+  ComponentId,
+  ComponentManifest
+} from "./component-contract.js";
+import type { ManifestPinCatalog } from "./component-manifest-catalog.js";
 import type { ComponentVerificationInput } from "./component-verification.js";
 import {
   componentManifestSigningBytes,
@@ -18,6 +23,31 @@ export const goldenComponentArchive = Buffer.from(
 
 const hash = (value: Buffer | string) =>
   createHash("sha256").update(value).digest("hex");
+let fixtureManifestPinCatalog: ManifestPinCatalog | null = null;
+export const getFixtureManifestPinCatalog = () => fixtureManifestPinCatalog;
+export const resetFixtureManifestPinCatalog = () => {
+  fixtureManifestPinCatalog = null;
+};
+const registerFixtureManifestPinCatalog = (catalog: ManifestPinCatalog) => {
+  if (
+    !fixtureManifestPinCatalog ||
+    fixtureManifestPinCatalog.productVersion !== catalog.productVersion
+  ) {
+    fixtureManifestPinCatalog = catalog;
+    return;
+  }
+  const entries = [...fixtureManifestPinCatalog.entries];
+  for (const entry of catalog.entries) {
+    const index = entries.findIndex(
+      (candidate) =>
+        candidate.component === entry.component &&
+        JSON.stringify(candidate.target) === JSON.stringify(entry.target)
+    );
+    if (index < 0) entries.push(entry);
+    else entries[index] = entry;
+  }
+  fixtureManifestPinCatalog = { ...catalog, entries };
+};
 const writeString = (
   buffer: Buffer,
   offset: number,
@@ -62,7 +92,14 @@ const tarFile = (path: string, content: Buffer, type = "0") => {
   ]);
 };
 
-function createSignedComponentFixture(
+export interface ComponentFixture {
+  input: ComponentVerificationInput;
+  historicalSignature: { keyId: string; signature: string; publicKey: string };
+  root: string;
+  dispose(): void;
+}
+
+function createComponentFixture(
   overrides: Partial<ComponentManifest> = {},
   archiveEntries: readonly { path: string; type?: string }[] = [
     { path: "entry.js" }
@@ -74,11 +111,7 @@ function createSignedComponentFixture(
   } = {},
   includeArchiveInventory = false,
   entryContents: Readonly<Record<string, Buffer | string>> = {}
-): {
-  input: ComponentVerificationInput;
-  root: string;
-  dispose(): void;
-} {
+): ComponentFixture {
   const directory = mkdtempSync(resolve(tmpdir(), "koed-component-fixture-"));
   const root = resolve(directory, "root");
   const payload = Buffer.from("export {}\n");
@@ -130,47 +163,67 @@ function createSignedComponentFixture(
   const archivePath = resolve(directory, manifest.archive.name);
   mkdirSync(dirname(archivePath), { recursive: true });
   writeFileSync(archivePath, archive);
+  const manifestBytes = canonicalComponentManifestBytes(manifest);
   const pair = generateKeyPairSync("ed25519");
   const keyId = hash(
     pair.publicKey.export({ type: "spki", format: "der" })
   ).slice(0, 32);
-  const manifestBytes = canonicalComponentManifestBytes(manifest);
   const signature = sign(
     null,
     componentManifestSigningBytes(manifestBytes),
     pair.privateKey
   ).toString("base64");
+  const expectedComponent: ComponentId = overrides.component ?? "base";
+  const expectedVersion = overrides.productVersion ?? "0.8.1";
+  const target: ArtifactTarget = overrides.target ?? {
+    platform: "linux",
+    architecture: "x64"
+  };
+  const manifestCatalog: ManifestPinCatalog = {
+    schemaVersion: 1,
+    productVersion: expectedVersion,
+    entries: [
+      {
+        component: expectedComponent,
+        target,
+        manifestSha256: hash(manifestBytes)
+      }
+    ]
+  };
+  registerFixtureManifestPinCatalog(manifestCatalog);
   const input: ComponentVerificationInput = {
     manifestBytes,
-    signature: { schemaVersion: 2, keyId, algorithm: "ed25519", signature },
+    manifestCatalog,
     archivePath,
-    expectedComponent: manifest.component,
-    expectedVersion: manifest.productVersion,
-    target: manifest.target,
+    expectedComponent,
+    expectedVersion,
+    target,
     runtime: {
       kind: "node",
       version: "24.13.1",
       nodeVersion: "24.13.1",
       modulesAbi: "137",
       napiVersion: 10,
-      platform: manifest.target.platform,
-      architecture: manifest.target.architecture,
-      ...(manifest.target.libc
-        ? { libcVersion: `${manifest.target.libc.minimumVersion}.0` }
-        : {})
-    },
-    trustedKeys: new Map([
-      [keyId, pair.publicKey.export({ type: "spki", format: "pem" }).toString()]
-    ])
+      platform: target.platform,
+      architecture: target.architecture,
+      ...(target.libc ? { libcVersion: `${target.libc.minimumVersion}.0` } : {})
+    }
   };
   return {
     input,
+    historicalSignature: {
+      keyId,
+      signature,
+      publicKey: pair.publicKey
+        .export({ type: "spki", format: "pem" })
+        .toString()
+    },
     root,
     dispose: () => rmSync(directory, { recursive: true, force: true })
   };
 }
 
-export const signedComponentFixture = (
+export const componentFixture = (
   overrides: Partial<ComponentManifest> = {},
   archiveEntries: readonly { path: string; type?: string }[] = [
     { path: "entry.js" }
@@ -182,13 +235,9 @@ export const signedComponentFixture = (
   } = {},
   includeArchiveInventory = false,
   entryContents: Readonly<Record<string, Buffer | string>> = {}
-): Promise<{
-  input: ComponentVerificationInput;
-  root: string;
-  dispose(): void;
-}> =>
+): Promise<ComponentFixture> =>
   Promise.resolve().then(() =>
-    createSignedComponentFixture(
+    createComponentFixture(
       overrides,
       archiveEntries,
       archiveOptions,

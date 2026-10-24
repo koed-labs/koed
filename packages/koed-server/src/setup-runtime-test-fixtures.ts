@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { KoedServerPaths } from "./paths.js";
-import { signedComponentFixture } from "./component-test-fixtures.js";
+import { componentFixture } from "./component-test-fixtures.js";
 import { stageComponent, stageGeneration } from "./component-store.js";
 import { activateGeneration } from "./generation-lifecycle.js";
 import { resolveKoedRuntimeOwner } from "./app-runtime.js";
@@ -36,11 +36,11 @@ const collectPiFiles = (directory: string, relative = ""): string[] =>
   });
 const runtimeFiles = [...baseRuntimeFiles, ...collectPiFiles(piPackageSource)];
 
-export async function stageSignedSetupRuntime(
+export async function stagePinnedSetupRuntime(
   paths: KoedServerPaths,
   productVersion: string,
-  trustFixture: (
-    fixture: Awaited<ReturnType<typeof signedComponentFixture>>
+  configureCatalog: (
+    fixture: Awaited<ReturnType<typeof componentFixture>>
   ) => void
 ) {
   mkdirSync(paths.componentsDir, { recursive: true, mode: 0o700 });
@@ -61,7 +61,7 @@ export async function stageSignedSetupRuntime(
       resolve(repoRoot, "prompts/codex-global-agent-guidance.md")
     )
   };
-  const fixture = await signedComponentFixture(
+  const fixture = await componentFixture(
     {
       productVersion,
       component: "base",
@@ -72,7 +72,7 @@ export async function stageSignedSetupRuntime(
     true,
     contents
   );
-  trustFixture(fixture);
+  configureCatalog(fixture);
   const writeMetadata = (name: string, content: Buffer) => {
     const path = resolve(paths.koedHome, name);
     writeFileSync(path, content, { mode: 0o600 });
@@ -86,10 +86,6 @@ export async function stageSignedSetupRuntime(
       manifestPath: writeMetadata(
         "fixture-manifest.json",
         fixture.input.manifestBytes
-      ),
-      signaturePath: writeMetadata(
-        "fixture-signature.json",
-        Buffer.from(JSON.stringify(fixture.input.signature))
       )
     },
     {

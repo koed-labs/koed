@@ -113,7 +113,13 @@ const main = async () => {
     componentsRoot,
     outDir: options.outDir,
     version: options.version,
-    target: { platform: options.platform, architecture: options.architecture },
+    target: {
+      platform: options.platform,
+      architecture: options.architecture,
+      ...(options.platform === "linux"
+        ? { libc: { family: "glibc", minimumVersion: "2.35" } }
+        : {})
+    },
     runtimes: componentRuntimeDeclarations({
       nodeModulesAbi: process.versions.modules,
       electronIdentity
