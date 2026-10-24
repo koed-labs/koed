@@ -54,7 +54,12 @@ import { runHq726Contributions } from "./hq726-contributions.js";
 
 import { runHq724Invitations, runHq724Sequential } from "./hq724-removals.js";
 
+import { runHq725SharingOverview } from "./hq725-sharing.js";
+
 const required = [
+  "I725.overview",
+  "I725.removal",
+  "N725.27.real",
   "I724.1",
   "I724.2",
   "I724.3",
@@ -217,6 +222,10 @@ describe("HQ-713 real two-user Team backend", () => {
     },
     180_000
   );
+
+  it("returns authenticated live Sharing data to the agent and retains unavailable backends", async () => {
+    await withRecordedFixture(runHq725SharingOverview);
+  }, 180_000);
 
   it("shares, recalls, revokes, and restores through listening production APIs", async () => {
     await withRecordedFixture(async (fixture) => {

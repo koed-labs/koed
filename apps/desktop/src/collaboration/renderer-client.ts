@@ -186,6 +186,11 @@ export interface CollaborationRendererClient {
     messageId: string;
   }): Promise<CollaborationReadState>;
   load(): Promise<CollaborationSnapshot>;
+  /** Read one enrolled Team for a review without changing the visible selection. */
+  readTeamForReview(input: {
+    backendId: string;
+    teamId: string;
+  }): Promise<CollaborationSnapshot>;
   current(): CollaborationSnapshot | null;
   currentRemoteUrl(): string | null;
   currentSelection(): CollaborationSelection;
@@ -3807,6 +3812,36 @@ export const createCollaborationRendererClient = (
       return result.data.readState;
     },
     load: loadSnapshot,
+    async readTeamForReview({ backendId, teamId }) {
+      const current = requireSnapshot();
+      const ownerId = current.navigation.personalOwner.id;
+      const selectedBackendId = current.connection.backendId;
+      const generation = clientRuntime.authorityGeneration();
+      const result = await command(
+        "collaboration.select",
+        {
+          selection: { kind: "team_people", teamId },
+          navigationIntent: "prewarm"
+        },
+        backendId
+      );
+      if (
+        !result.ok ||
+        result.command !== "collaboration.select" ||
+        result.data.snapshot.connection.backendId !== backendId ||
+        result.data.snapshot.navigation.personalOwner.id !== ownerId ||
+        result.data.snapshot.selection.kind !== "team_people" ||
+        result.data.snapshot.selection.teamId !== teamId ||
+        !result.data.snapshot.navigation.teams.some(
+          (team) => team.id === teamId
+        ) ||
+        !clientRuntime.authorityIsCurrent(generation) ||
+        requireSnapshot().navigation.personalOwner.id !== ownerId ||
+        requireSnapshot().connection.backendId !== selectedBackendId
+      )
+        throw new Error("Team review context changed. Refresh sharing.");
+      return result.data.snapshot;
+    },
     current: () => snapshot,
     currentRemoteUrl: () => clientRuntime.binding()?.remoteUrl ?? null,
     currentSelection: () =>

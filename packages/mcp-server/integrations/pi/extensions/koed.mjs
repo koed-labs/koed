@@ -231,6 +231,22 @@ const intakeParameters = Type.Object(
 );
 
 export default function koedExtension(pi) {
+  if (
+    process.env.KOED_MANAGED_TEXT_ACTIONS === "1" &&
+    launchRecallSelector &&
+    process.env.KOED_MANAGED_SHARING_HELPER_URL
+  ) {
+    pi.on("before_agent_start", async (event) => {
+      const { sharingHelpInstructions } = await import(
+        process.env.KOED_MANAGED_SHARING_HELPER_URL
+      );
+      return {
+        systemPrompt: event.systemPrompt.includes("Koed sharing help version")
+          ? event.systemPrompt
+          : `${event.systemPrompt}\n\n${sharingHelpInstructions}`
+      };
+    });
+  }
   let sessionController;
   const port = createRuntimeTaskPort(koedHome);
   const register = (name, label, description, parameters) =>
@@ -517,6 +533,59 @@ export default function koedExtension(pi) {
         projectId: uuid,
         email: Type.String({ format: "email", maxLength: 320 })
       },
+      sharing_remove: {
+        targets: Type.Array(
+          Type.Union([
+            Type.Object(
+              {
+                kind: Type.Literal("project_member"),
+                backendId: Type.String({ minLength: 1, maxLength: 160 }),
+                projectId: uuid,
+                personId: uuid
+              },
+              { additionalProperties: false }
+            ),
+            Type.Object(
+              {
+                kind: Type.Literal("project_invitation"),
+                backendId: Type.String({ minLength: 1, maxLength: 160 }),
+                projectId: uuid,
+                invitationId: uuid
+              },
+              { additionalProperties: false }
+            ),
+            Type.Object(
+              {
+                kind: Type.Literal("workspace_access"),
+                backendId: Type.String({ minLength: 1, maxLength: 160 }),
+                teamId: uuid,
+                workspaceId: uuid,
+                personId: uuid
+              },
+              { additionalProperties: false }
+            ),
+            Type.Object(
+              {
+                kind: Type.Literal("team_invitation"),
+                backendId: Type.String({ minLength: 1, maxLength: 160 }),
+                teamId: uuid,
+                invitationId: uuid
+              },
+              { additionalProperties: false }
+            ),
+            Type.Object(
+              {
+                kind: Type.Literal("team_member"),
+                backendId: Type.String({ minLength: 1, maxLength: 160 }),
+                teamId: uuid,
+                personId: uuid
+              },
+              { additionalProperties: false }
+            )
+          ]),
+          { minItems: 1, maxItems: 50 }
+        )
+      },
       koed_deck_make: {
         projectId: uuid,
         title: Type.String({ minLength: 1, maxLength: 500 }),
@@ -540,6 +609,7 @@ export default function koedExtension(pi) {
         )
       },
       koed_hq_open: { projectId: uuid },
+      koed_sharing_open: {},
       koed_settings_open: {
         section: Type.Optional(
           Type.Union(
@@ -571,6 +641,36 @@ export default function koedExtension(pi) {
               }
             ],
             details: { status: "requested" }
+          };
+        }
+      });
+    }
+    if (launchRecallSelector && process.env.KOED_MANAGED_SHARING_HELPER_URL) {
+      pi.registerTool({
+        name: "sharing_overview",
+        label: "Sharing overview",
+        description:
+          "Read current Sharing page data, optionally for a person or Project. Report unavailable Team backends as unknown, never empty.",
+        parameters: Type.Object(
+          {
+            person: Type.Optional(
+              Type.String({ minLength: 1, maxLength: 160 })
+            ),
+            projectId: Type.Optional(uuid),
+            backendId: Type.Optional(
+              Type.String({ minLength: 1, maxLength: 160 })
+            )
+          },
+          { additionalProperties: false }
+        ),
+        async execute(_toolCallId, input) {
+          const { readManagedSharingOverview } = await import(
+            process.env.KOED_MANAGED_SHARING_HELPER_URL
+          );
+          const overview = await readManagedSharingOverview(input, process.env);
+          return {
+            content: [{ type: "text", text: JSON.stringify(overview) }],
+            details: overview
           };
         }
       });

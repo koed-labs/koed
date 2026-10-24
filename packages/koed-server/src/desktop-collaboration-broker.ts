@@ -1966,14 +1966,18 @@ export const createDesktopCollaborationBroker = (
           snapshot?: CollaborationSnapshot;
         };
         if (resultData.snapshot) {
+          const prewarmSelection =
+            command.command === "collaboration.select" &&
+            command.input.navigationIntent === "prewarm";
           const projectedSnapshot = snapshotWithDurableSends(
-            resultData.snapshot
+            resultData.snapshot,
+            !prewarmSelection
           );
           result = collaborationCommandResultSchema.parse({
             ...result,
             data: { ...result.data, snapshot: projectedSnapshot }
           });
-          owner.snapshot = projectedSnapshot;
+          if (!prewarmSelection) owner.snapshot = projectedSnapshot;
         }
       }
       const shouldResumeInterruptedSends =

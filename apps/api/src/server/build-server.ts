@@ -84,6 +84,7 @@ import { registerProjectActivityRoutes } from "../projects/activity-routes.js";
 import { registerWorkspaceProjectRoutes } from "../team/workspace-project-routes.js";
 import { registerTeamSharingRoutes } from "../team/sharing-routes.js";
 import { registerSharingOverviewRoute } from "../local-edge/sharing-routes.js";
+import { createSharingRemovalAuthority } from "../local-edge/sharing-removal-authority.js";
 import { registerWorkspaceProjectLinkRoutes } from "../projects/workspace-project-link-routes.js";
 import { registerWorkspaceProjectCoordinationRoutes } from "../local-edge/workspace-project-coordination-routes.js";
 import { createProjectSourceCoordinator } from "../projects/delete-coordinator.js";
@@ -2579,7 +2580,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     auth: authHelpers,
     readRateLimit: rateLimitHandlers.memoryRead
   });
-  registerSharingOverviewRoute(app, routeContext, pool);
+  const sharingReader = registerSharingOverviewRoute(app, routeContext, pool);
+  const sharingRemoval = createSharingRemovalAuthority(
+    sharingReader.readForOwner,
+    sharingReader.readInvitationLifecycle
+  );
   registerWorkspaceProjectRoutes(app, {
     repository: workspaceProjectRepository,
     requireRepository,
@@ -2780,7 +2785,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
                   teamAuthority: textActionTeam.authority,
                   teamLeaveAuthority: textActionTeam.teamLeaveAuthority,
                   lifecycleReceipt: textActionTeam.lifecycleReceipt,
-                  teamReceipt: textActionTeam.receipt
+                  teamReceipt: textActionTeam.receipt,
+                  sharingRemovalAuthority: sharingRemoval.proposal,
+                  sharingRemovalReceipt: sharingRemoval.receipt
                 }
               : {}
           )

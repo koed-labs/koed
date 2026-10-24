@@ -150,6 +150,7 @@ const hq718Capture =
 const hq704Trace = { actions: [] as string[], deleted: false };
 const hq504Capture =
   new URLSearchParams(window.location.search).get("hq504Capture") === "yes" ||
+  new URLSearchParams(window.location.search).get("hq725Capture") === "yes" ||
   hq802DeckCapture ||
   hq704Capture ||
   hq714Capture;
@@ -164,6 +165,13 @@ const hq723Capture =
   new URLSearchParams(window.location.search).get("hq723Capture") === "yes";
 const hq724Capture =
   new URLSearchParams(window.location.search).get("hq724Capture") === "yes";
+const hq725Capture =
+  new URLSearchParams(window.location.search).get("hq725Capture") === "yes";
+const hq725FullAccess =
+  new URLSearchParams(window.location.search).get("hq725Mode") ===
+  "full_access";
+const hq725OpenSharing =
+  new URLSearchParams(window.location.search).get("hq725Mode") === "open";
 const hq724Trace = { reviewed: 0, sent: 0 };
 const hq705Capture =
   new URLSearchParams(window.location.search).get("hq705Capture") === "yes" ||
@@ -1744,11 +1752,70 @@ if (hq714Capture)
       agentName: "Chief of Staff"
     }
   });
+if (hq725Capture)
+  hq504Actions.splice(0, hq504Actions.length, {
+    ...hq504ActionBase,
+    id: "00000000-0000-4000-8000-000000007251",
+    effectKey: "00000000-0000-4000-8000-000000007251",
+    toolCallId: "fixture-sharing-remove",
+    name: hq725OpenSharing ? "koed_sharing_open" : "sharing_remove",
+    state: hq725FullAccess || hq725OpenSharing ? "ready" : "awaiting_review",
+    reviewKind: hq725FullAccess || hq725OpenSharing ? "none" : "ask_first",
+    arguments: hq725OpenSharing
+      ? {}
+      : {
+          targets: [
+            {
+              kind: "project_member",
+              backendId: "fixture-team-backend",
+              projectId: "00000000-0000-4000-8000-000000007122",
+              personId: "00000000-0000-4000-8000-000000000020"
+            }
+          ]
+        },
+    snapshot: hq725OpenSharing
+      ? {}
+      : {
+          targets: [
+            {
+              kind: "project_member",
+              backendId: "fixture-team-backend",
+              projectId: "00000000-0000-4000-8000-000000007122",
+              personId: "00000000-0000-4000-8000-000000000020",
+              expectedVersion: 1,
+              personName: "Sam"
+            }
+          ]
+        }
+  });
+const hq725Trace = {
+  reviews: 0,
+  claims: 0,
+  completions: 0,
+  mode: (hq725FullAccess ? "full_access" : "ask_first") as
+    | "ask_first"
+    | "full_access",
+  reset(mode: "ask_first" | "full_access") {
+    this.mode = mode;
+    this.reviews = 0;
+    this.claims = 0;
+    this.completions = 0;
+    if (hq725Capture) {
+      hq504Actions[0] = {
+        ...hq504Actions[0]!,
+        state: mode === "full_access" ? "ready" : "awaiting_review",
+        reviewKind: mode === "full_access" ? "none" : "ask_first",
+        revision: 1
+      };
+    }
+  }
+};
 const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
   list: async () =>
     structuredClone(
-      hq723Capture ||
+      (hq723Capture && !hq725Capture) ||
         (hq714Capture &&
+          !hq725Capture &&
           hq204Trace.nextPrompt !== "Invite ana@example.test to landing-site")
         ? []
         : hq504Actions
@@ -1762,6 +1829,7 @@ const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
     const index = hq504Actions.findIndex((row) => row.id === actionId);
     if (index < 0) throw new Error("Unknown fixture text action");
     if (hq704Capture) hq704Trace.actions.push(`text_${decision}`);
+    if (hq725Capture) hq725Trace.reviews++;
     hq504Actions[index] = {
       ...hq504Actions[index]!,
       state: decision === "decline" ? "declined" : "ready",
@@ -1770,6 +1838,14 @@ const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
     return structuredClone(hq504Actions[index]!);
   },
   claim: async (_executionId, actionId, revision) => {
+    if (hq725Capture && actionId === "00000000-0000-4000-8000-000000007251") {
+      const action = hq504Actions[0]!;
+      if (revision !== action.revision || action.state !== "ready")
+        throw new Error("Sharing removal action changed");
+      hq504Actions[0] = { ...action, state: "claimed", revision: revision + 1 };
+      hq725Trace.claims++;
+      return structuredClone(hq504Actions[0]!);
+    }
     if (hq714Capture && actionId === "00000000-0000-4000-8000-000000007141") {
       const action = hq504Actions[0]!;
       if (revision !== action.revision || action.state !== "ready")
@@ -1782,6 +1858,18 @@ const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
     throw new Error("Fixture never auto-claims");
   },
   complete: async (_executionId, actionId, revision) => {
+    if (hq725Capture && actionId === "00000000-0000-4000-8000-000000007251") {
+      const action = hq504Actions[0]!;
+      if (
+        revision !== action.revision ||
+        action.state !== "claimed" ||
+        (!hq725OpenSharing && hq724Trace.sent === 0)
+      )
+        throw new Error("Sharing removal receipt missing");
+      hq504Actions[0] = { ...action, state: "applied", revision: revision + 1 };
+      hq725Trace.completions++;
+      return structuredClone(hq504Actions[0]!);
+    }
     if (hq714Capture && actionId === "00000000-0000-4000-8000-000000007141") {
       const action = hq504Actions[0]!;
       if (
@@ -5793,6 +5881,10 @@ export function HqValidationApp() {
       (
         window as Window & { __koedHq724Trace?: typeof hq724Trace }
       ).__koedHq724Trace = hq724Trace;
+    if (hq725Capture)
+      (
+        window as Window & { __koedHq725Trace?: typeof hq725Trace }
+      ).__koedHq725Trace = hq725Trace;
     if (hq522Usage)
       (
         window as Window & {

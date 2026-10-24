@@ -4,6 +4,49 @@ import { deckCardContentSchema } from "./flashcard-deck-contract.js";
 
 const uuid = z.uuid();
 const name = z.string().trim().min(1).max(160);
+export const sharingRemoveTargetSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("project_member"),
+      backendId: z.string().min(1).max(160),
+      projectId: uuid,
+      personId: uuid
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("project_invitation"),
+      backendId: z.string().min(1).max(160),
+      projectId: uuid,
+      invitationId: uuid
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("workspace_access"),
+      backendId: z.string().min(1).max(160),
+      teamId: uuid,
+      workspaceId: uuid,
+      personId: uuid
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("team_invitation"),
+      backendId: z.string().min(1).max(160),
+      teamId: uuid,
+      invitationId: uuid
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("team_member"),
+      backendId: z.string().min(1).max(160),
+      teamId: uuid,
+      personId: uuid
+    })
+    .strict()
+]);
 
 // The AI Client selects an action; these arguments never authorize a write.
 // Koed resolves targets against the owning User's current records and the
@@ -47,6 +90,9 @@ export const koedTextActionInputSchemas = {
   koed_team_invite: z
     .object({ projectId: uuid, email: z.email().max(320) })
     .strict(),
+  sharing_remove: z
+    .object({ targets: z.array(sharingRemoveTargetSchema).min(1).max(50) })
+    .strict(),
   koed_job_create: z
     .object({
       title: name,
@@ -67,6 +113,7 @@ export const koedTextActionInputSchemas = {
     })
     .strict(),
   koed_hq_open: z.object({ projectId: uuid }).strict(),
+  koed_sharing_open: z.object({}).strict(),
   koed_settings_open: z
     .object({
       section: z

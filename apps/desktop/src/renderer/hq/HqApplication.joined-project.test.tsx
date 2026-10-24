@@ -1,5 +1,35 @@
 import { describe, expect, it, vi } from "vitest";
-import { refreshJoinedProjectRoute } from "./HqApplication.js";
+import {
+  refreshJoinedProjectRoute,
+  startOwnerSharingService
+} from "./HqApplication.js";
+import { SharingStore } from "./sharing/sharing-store.js";
+
+describe("owner-scoped Sharing service", () => {
+  it("keeps Sharing available for a Chief action on a conversation route and clears it on sign-out", async () => {
+    const read = vi.fn(async () => ({
+      backends: [
+        {
+          backendId: "team-a",
+          status: "unavailable" as const,
+          lastReachedAt: null,
+          reason: "unreachable" as const
+        }
+      ]
+    }));
+    const store = new SharingStore({ read });
+    const stop = startOwnerSharingService(store, "owner-a", "profile-a", true);
+    await store.refresh();
+    expect(store.current().overview?.backends[0]?.backendId).toBe("team-a");
+    expect(read).toHaveBeenCalled();
+    stop();
+    expect(store.current().overview).toBeNull();
+    startOwnerSharingService(store, null, null, false)();
+    expect(store.current().ownerId).toBeNull();
+    await store.refresh();
+    expect(store.current().overview).toBeNull();
+  });
+});
 
 const deferred = () => {
   let resolve!: () => void;

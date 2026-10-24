@@ -192,6 +192,126 @@ describe.skipIf(!testUrl)("HQ-504 exact managed text-action authority", () => {
     };
   };
 
+  it("binds sharing removal to the human turn and exact backend targets; Full access still reaches system review", async () => {
+    for (const mode of ["supervised", "full_access"] as const) {
+      const f = await fixture(mode);
+      let removed = false;
+      let canRemove = true;
+      let memberVersion = 2;
+      const actions = createManagedTextActionRepository(pool, provider, {
+        sharingRemovalAuthority: async ({ targets }) =>
+          canRemove && targets.every((item) => item.backendId === "team-a")
+            ? targets.map((item) => ({
+                ...item,
+                expectedVersion: memberVersion,
+                personName: "Sam"
+              }))
+            : null,
+        sharingRemovalReceipt: async ({ targets }) =>
+          removed && targets.length === 1 && targets[0]?.backendId === "team-a"
+      });
+      const args = {
+        targets: [
+          {
+            kind: "project_member",
+            backendId: "team-a",
+            projectId: randomUUID(),
+            personId: randomUUID()
+          }
+        ]
+      };
+      const propose = (toolCallId: string, argumentsValue: unknown) =>
+        actions.enqueueManagedTextAction(f.actor, {
+          executionId: f.executionId,
+          commandId: f.commandId,
+          leaseToken: f.leaseToken,
+          executionGeneration: 1,
+          providerTurnId: `sharing-${toolCallId}`,
+          toolCallId,
+          name: "sharing_remove",
+          arguments: argumentsValue as Record<string, unknown>
+        });
+      const unavailable = await propose("wrong-backend", {
+        targets: [{ ...args.targets[0], backendId: "team-b" }]
+      });
+      expect(unavailable?.state).toBe("unavailable");
+      const proposal = await propose("valid-target", args);
+      expect(proposal?.state).toBe(
+        mode === "supervised" ? "awaiting_review" : "ready"
+      );
+      expect(proposal?.reviewKind).toBe(
+        mode === "supervised" ? "ask_first" : "none"
+      );
+      const ready =
+        mode === "supervised"
+          ? await actions.decideManagedTextAction(f.actor, {
+              executionId: f.executionId,
+              actionId: proposal!.id,
+              expectedRevision: proposal!.revision,
+              decision: "approve"
+            })
+          : proposal;
+      if (mode === "full_access") {
+        await pool.query(
+          "update managed_conversation_executions set permission_mode='supervised' where id=$1",
+          [f.executionId]
+        );
+        expect(
+          await actions.claimManagedTextAction(f.actor, {
+            executionId: f.executionId,
+            actionId: ready!.id,
+            expectedRevision: ready!.revision
+          })
+        ).toBeNull();
+        await pool.query(
+          "update managed_conversation_executions set permission_mode='full_access' where id=$1",
+          [f.executionId]
+        );
+      }
+      memberVersion = 3;
+      expect(
+        await actions.claimManagedTextAction(f.actor, {
+          executionId: f.executionId,
+          actionId: ready!.id,
+          expectedRevision: ready!.revision
+        })
+      ).toBeNull();
+      memberVersion = 2;
+      canRemove = false;
+      expect(
+        await actions.claimManagedTextAction(f.actor, {
+          executionId: f.executionId,
+          actionId: ready!.id,
+          expectedRevision: ready!.revision
+        })
+      ).toBeNull();
+      canRemove = true;
+      const claimed = await actions.claimManagedTextAction(f.actor, {
+        executionId: f.executionId,
+        actionId: ready!.id,
+        expectedRevision: ready!.revision
+      });
+      expect(claimed?.state).toBe("claimed");
+      expect(
+        await actions.completeManagedTextAction(f.actor, {
+          executionId: f.executionId,
+          actionId: claimed!.id,
+          expectedRevision: claimed!.revision
+        })
+      ).toBeNull();
+      removed = true;
+      expect(
+        (
+          await actions.completeManagedTextAction(f.actor, {
+            executionId: f.executionId,
+            actionId: claimed!.id,
+            expectedRevision: claimed!.revision
+          })
+        )?.state
+      ).toBe("applied");
+    }
+  }, 120_000);
+
   it("creates a reviewed Personal Deck with an exact journal effect and rejects same-key adoption", async () => {
     const f = await fixture("supervised");
     await pool.query(

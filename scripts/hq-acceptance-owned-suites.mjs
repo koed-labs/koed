@@ -1602,5 +1602,197 @@ export const ownedAcceptanceSuites = [
         record: "I724.3"
       }
     ]
+  },
+  {
+    id: "S725.10.help",
+    proof: [
+      {
+        kind: "vitest",
+        file: "packages/shared/src/sharing-help.test.ts",
+        title:
+          "mirrors every P1–P5 promise verbatim in committed docs and Chief instructions with existing acceptance IDs",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq725-native.mjs",
+        reportPath: "scratch/hq-725/HQ725.native.json",
+        proofId: "S10.help.ui"
+      }
+    ]
+  },
+  {
+    id: "S725.10.chat",
+    proof: [
+      unit(
+        "packages/mcp-server/tests/pi-extension.test.ts",
+        "loads the copied Pi resource with only its declared peer and gets shared help from the managed runtime"
+      ),
+      {
+        kind: "vitest",
+        file: "packages/shared/src/sharing-help.test.ts",
+        title:
+          "injects the same source into Codex Claude and Pi instructions while the page uses its five points",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "packages/mcp-server/tests/pi-managed-conversation.test.ts",
+        title:
+          "observes Sharing data and proposal receipts before the Pi turn settles",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq725-native.mjs",
+        reportPath: "scratch/hq-725/HQ725.native.json",
+        proofId: "S10.ask.ui"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq725-native.mjs",
+        reportPath: "scratch/hq-725/HQ725.native.json",
+        proofId: "S11.open.ui"
+      }
+    ]
+  },
+  {
+    id: "S725.11.overview",
+    proof: [
+      {
+        kind: "vitest",
+        file: "packages/mcp-server/src/sharing-overview-tool.test.ts",
+        title:
+          "returns authenticated Sharing data rather than a text-action receipt without exposing credentials",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "packages/mcp-server/src/sharing-overview-tool.test.ts",
+        title:
+          "registers a read-only data tool only for managed clients and reports a failed read as an error",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "returns authenticated live Sharing data to the agent and retains unavailable backends",
+        record: "I725.overview"
+      }
+    ]
+  },
+  {
+    id: "S725.11.person",
+    proof: [
+      {
+        kind: "vitest",
+        file: "packages/mcp-server/src/sharing-overview-tool.test.ts",
+        title:
+          "filters live person and backend-qualified Project data while retaining every unavailable backend",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "returns authenticated live Sharing data to the agent and retains unavailable backends",
+        record: "I725.overview"
+      }
+    ]
+  },
+  {
+    id: "S725.11.removal",
+    proof: [
+      unit(
+        "apps/desktop/src/renderer/hq/HqApplication.joined-project.test.tsx",
+        "keeps Sharing available for a Chief action on a conversation route and clears it on sign-out"
+      ),
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "returns authenticated live Sharing data to the agent and retains unavailable backends",
+        record: "I725.removal"
+      },
+      unit(
+        "packages/koed-server/src/desktop-collaboration-broker.test.ts",
+        "returns a scoped Team B prewarm without replacing the foreground Team A owner cache"
+      ),
+      unit(
+        "apps/desktop/src/collaboration/renderer-client.test.ts",
+        "reads an enrolled inactive Team for review without changing the active backend"
+      ),
+      unit(
+        "apps/desktop/src/renderer/hq/sharing/sharing-text-removal.test.ts",
+        "reads and reviews exact Team B member while active Team A stays selected"
+      ),
+      {
+        kind: "vitest",
+        file: "packages/db/src/managed-text-action-repository.pg.test.ts",
+        title:
+          "binds sharing removal to the human turn and exact backend targets; Full access still reaches system review",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/local-edge/sharing-removal-authority.test.ts",
+        title:
+          "binds exact backend-qualified targets and refuses unavailable, self and duplicate targets",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/local-edge/sharing-removal-authority.test.ts",
+        title:
+          "confirms only after every selected exact target disappears from an available backend",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/local-edge/sharing-removal-authority.test.ts",
+        title:
+          "does not treat lost Team manager authority as a completed standalone removal",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq725-native.mjs",
+        reportPath: "scratch/hq-725/HQ725.native.json",
+        proofId: "S11.remove.ask.ui"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq725-native.mjs",
+        reportPath: "scratch/hq-725/HQ725.native.json",
+        proofId: "S11.remove.full.ui"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "reviews invitation cancellation and accepted-access removal with exact lost-reply recovery",
+        record: "I724.2"
+      }
+    ]
+  },
+  {
+    id: "N725.27",
+    proof: [
+      {
+        kind: "vitest",
+        file: "packages/mcp-server/src/sharing-overview-tool.test.ts",
+        title:
+          "filters live person and backend-qualified Project data while retaining every unavailable backend",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "returns authenticated live Sharing data to the agent and retains unavailable backends",
+        record: "N725.27.real"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq725-native.mjs",
+        reportPath: "scratch/hq-725/HQ725.native.json",
+        proofId: "N27.ui"
+      }
+    ]
   }
 ];

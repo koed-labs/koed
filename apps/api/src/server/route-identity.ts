@@ -1733,6 +1733,16 @@ export const routeIdentityContracts = [
   ),
   route(
     "GET",
+    "/v1/managed-conversations/{executionId}/sharing-overview",
+    "desktop_local_credential",
+    "projects",
+    "Read the current owner's Sharing overview under a leased managed AI Client command and current Personal profile.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
     "/v1/managed-conversations/{executionId}/recall-context",
     "desktop_local_credential",
     "personal_memory",

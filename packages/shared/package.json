@@ -134,6 +134,10 @@
     "./koed-text-action-contract": {
       "types": "./dist/koed-text-action-contract.d.ts",
       "import": "./dist/koed-text-action-contract.js"
+    },
+    "./sharing-help": {
+      "types": "./dist/sharing-help.d.ts",
+      "import": "./dist/sharing-help.js"
     }
   },
   "files": [

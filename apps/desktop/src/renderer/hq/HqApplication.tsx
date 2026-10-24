@@ -80,6 +80,7 @@ import { SharingStore } from "./sharing/sharing-store.js";
 import { HqSharing } from "./sharing/HqSharing.js";
 import { RemovalCoordinator } from "./sharing/removal-coordinator.js";
 import { projectSharingRemovalTarget } from "./sharing/sharing-removal-target.js";
+import { sharingTextRemovalTargets } from "./sharing/sharing-text-removal.js";
 import { reviewSharingInvitation } from "./sharing/sharing-invitation-review.js";
 import {
   sharingLeaveTarget,
@@ -114,6 +115,22 @@ export const refreshJoinedProjectRoute = async (input: {
   input.selectProject();
   return true;
 };
+
+/** Keep the owner-scoped read model ready for Chief actions on any HQ route. */
+export function startOwnerSharingService(
+  store: SharingStore,
+  ownerId: string | null,
+  profileKey: string | null,
+  enabled: boolean
+): () => void {
+  store.setOwner(ownerId, profileKey);
+  if (!enabled || !ownerId || !profileKey) {
+    store.stop();
+    return () => undefined;
+  }
+  store.start();
+  return () => store.stop();
+}
 
 export function HqApplication({
   personalMemoryStore,
@@ -221,20 +238,13 @@ export function HqApplication({
   }, [visibilityOwnerId, visibilityProfileKey, sharingEnabled]);
   useEffect(() => {
     if (!sharingStore) return;
-    sharingStore.setOwner(
+    return startOwnerSharingService(
+      sharingStore,
       visibilityOwnerId ?? null,
-      visibilityProfileKey ?? null
+      visibilityProfileKey ?? null,
+      Boolean(sharingEnabled)
     );
-    if (!sharingEnabled || !sharingOpen) return;
-    sharingStore.start();
-    return () => sharingStore.stop();
-  }, [
-    sharingStore,
-    visibilityOwnerId,
-    visibilityProfileKey,
-    sharingEnabled,
-    sharingOpen
-  ]);
+  }, [sharingStore, visibilityOwnerId, visibilityProfileKey, sharingEnabled]);
   const scheduledJobs = useScheduledJobs(
     window.koedDesktop?.scheduledJobs,
     visibilityOwnerId,
@@ -1990,6 +2000,48 @@ export function HqApplication({
         });
         return stillCurrent();
       }
+      case "sharing_remove": {
+        if (!visibilityClient || !sharingStore || !sharingEnabled) return false;
+        const targets = args.targets as Record<string, unknown>[];
+        const bound = action.snapshot.targets as Record<string, unknown>[];
+        if (
+          !Array.isArray(targets) ||
+          !Array.isArray(bound) ||
+          targets.length !== bound.length ||
+          targets.some((target, index) =>
+            Object.entries(target).some(
+              ([key, value]) => bound[index]?.[key] !== value
+            )
+          )
+        )
+          return false;
+        if (
+          ["reviewing", "pending", "sending"].includes(
+            removalCoordinator.current().phase
+          )
+        )
+          return false;
+        const removalTargets = await sharingTextRemovalTargets(
+          targets,
+          sharingStore,
+          visibilityClient
+        );
+        if (
+          !stillCurrent() ||
+          sharingStore.current().ownerId !== owner ||
+          sharingStore.current().profileKey !== profile
+        )
+          return false;
+        await removalCoordinator.start(removalTargets);
+        return (
+          stillCurrent() &&
+          removalCoordinator.current().results.length ===
+            removalTargets.length &&
+          removalCoordinator
+            .current()
+            .results.every((result) => result.state === "done")
+        );
+      }
       case "koed_deck_make": {
         const textActions = window.koedDesktop?.managedTextActions;
         if (!textActions?.applyDeckMake) return false;
@@ -2140,6 +2192,10 @@ export function HqApplication({
       }
       case "koed_hq_open":
         selectRoute({ kind: "project", projectId: String(args.projectId) });
+        return stillCurrent();
+      case "koed_sharing_open":
+        if (!sharingEnabled) return false;
+        openSharing();
         return stillCurrent();
       case "koed_settings_open":
         if (!renderSettings) return false;
@@ -3166,6 +3222,26 @@ export function HqApplication({
                 profileKey={visibilityProfileKey ?? null}
                 projectFilter={sharingProjectFilter}
                 onClearProjectFilter={() => setSharingProjectFilter(null)}
+                chiefName={chiefAgent?.name ?? "Chief of Staff"}
+                onAskChief={(draft) => {
+                  if (
+                    !visibilityOwnerId ||
+                    !visibilityProfileKey ||
+                    !chiefAgent?.aiClientInstanceId ||
+                    !managedConversations ||
+                    !managedConversationLifecycle
+                  )
+                    return;
+                  selectRoute({ kind: "home" });
+                  setUsageChatIntent({
+                    ownerId: visibilityOwnerId,
+                    profileKey: visibilityProfileKey,
+                    instanceId: chiefAgent.aiClientInstanceId,
+                    draft
+                  });
+                  setBlankIntent((value) => value + 1);
+                  setBlankOpen(true);
+                }}
                 onRequestAction={
                   visibilityClient
                     ? ({ row }) => {

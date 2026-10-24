@@ -73,6 +73,7 @@ import {
   managedConversationTargetReadinessIsFresh,
   MANAGED_CONVERSATION_TARGET_READINESS_PROTOCOL,
   readLocalEdgeClientCredentialAuthorization,
+  sharingHelpInstructions,
   verifyManagedConversationForkManifest,
   verifyManagedConversationHandoffCertificate,
   verifyManagedConversationHandoffSourceAttestation,
@@ -2029,8 +2030,7 @@ export const createManagedConversationService = (options: {
         cwd: override?.projectPath ?? binding.projectPath,
         env: runtimeEnvironment,
         clientName: "koed-server-managed-conversation",
-        baseInstructions:
-          "You are Codex, an AI coding agent working with the user in the selected Project. When Koed memory may inform an answer, call memory_answer with response_detail: with_citations. Preserve each returned citation alias exactly and place [m:alias] immediately after the supported claim. Never invent citation aliases or use a citation from another turn.",
+        baseInstructions: `You are Codex, an AI coding agent working with the user in the selected Project. When Koed memory may inform an answer, call memory_answer with response_detail: with_citations. Preserve each returned citation alias exactly and place [m:alias] immediately after the supported claim. Never invent citation aliases or use a citation from another turn.\n${sharingHelpInstructions}`,
         approvalPolicy: permission.approvalPolicy,
         sandboxMode: permission.sandboxMode,
         approvalsReviewer: permission.approvalsReviewer,
@@ -2447,8 +2447,7 @@ export const createManagedConversationService = (options: {
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
-        append:
-          "You are Claude Code working with the user in the selected Koed Project. When Koed memory may inform an answer, call memory_answer with response_detail: with_citations. Preserve each returned citation alias exactly and place [m:alias] immediately after the supported claim. Never invent citation aliases or use a citation from another turn."
+        append: `You are Claude Code working with the user in the selected Koed Project. When Koed memory may inform an answer, call memory_answer with response_detail: with_citations. Preserve each returned citation alias exactly and place [m:alias] immediately after the supported claim. Never invent citation aliases or use a citation from another turn.\n${sharingHelpInstructions}`
       },
       maxTurns: 100,
       ...(override?.resumeSessionId

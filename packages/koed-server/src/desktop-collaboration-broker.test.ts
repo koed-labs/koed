@@ -114,6 +114,185 @@ afterEach(() => {
 });
 
 describe("desktop collaboration broker", () => {
+  it("returns a scoped Team B prewarm without replacing the foreground Team A owner cache", async () => {
+    const koedHome = tempRoot();
+    const environment = {
+      KOED_HOME: koedHome,
+      KOED_REPO_ROOT: koedHome,
+      KOED_DESKTOP_COLLABORATION_BROKER_SESSION_TOKEN: sessionToken
+    };
+    const paths = resolveKoedServerPaths(environment);
+    registerUpstreamBackend(paths, {
+      id: "backend-a",
+      url: "http://localhost:3300",
+      profile: "team_self_hosted"
+    });
+    registerUpstreamBackend(paths, {
+      id: "backend-b",
+      url: "http://localhost:3400",
+      profile: "team_self_hosted"
+    });
+    setActiveUpstreamBackend(paths, "backend-a");
+    storeDesktopLocalCredential(koedHome, {
+      ownerUserId: snapshot.navigation.personalOwner.id,
+      operationFamilies: [
+        "personal_collaboration_read",
+        "personal_collaboration_write"
+      ]
+    });
+    const active = collaborationSnapshotSchema.parse({
+      ...snapshot,
+      connection: {
+        ...snapshot.connection,
+        state: "live",
+        backendId: "backend-a",
+        connectedAt: snapshot.generatedAt
+      }
+    });
+    const teamId = "00000000-0000-4000-8000-000000000004";
+    const principal = {
+      ...active.navigation.personalOwner,
+      id: "00000000-0000-4000-8000-000000000006"
+    };
+    const teamPerson = {
+      ...principal,
+      teamPresence: {
+        mode: "auto",
+        manualStatus: "available",
+        activityLevel: "active",
+        lastActivityAt: active.generatedAt,
+        nextTransitionAt: null,
+        preferenceVersion: 1
+      }
+    };
+    const scoped = collaborationSnapshotSchema.parse({
+      ...active,
+      connection: { ...active.connection, backendId: "backend-b" },
+      navigation: {
+        ...active.navigation,
+        personal: { memory: [], channels: [] },
+        teamPrincipal: principal,
+        teams: [
+          {
+            id: teamId,
+            name: "Team B",
+            role: "owner",
+            lifecycle: "active",
+            unreadCount: 0,
+            people: [teamPerson],
+            directMessages: [],
+            version: 1,
+            workspaces: []
+          }
+        ]
+      },
+      selection: { kind: "team_people", teamId },
+      view: { kind: "team_people", teamId, people: [teamPerson] }
+    });
+    const requests: string[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        command: {
+          requestId: string;
+          command: string;
+          backendId?: string;
+          input?: { navigationIntent?: string };
+        };
+      };
+      requests.push(
+        `${body.command.command}:${body.command.backendId ?? "active"}`
+      );
+      if (body.command.command === "collaboration.send_message")
+        return new Response(null, { status: 503 });
+      return Response.json({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: body.command.requestId,
+        command: body.command.command,
+        ok: true,
+        data: {
+          snapshot:
+            body.command.command === "collaboration.select" ? scoped : active
+        }
+      });
+    });
+    const sent: DesktopCollaborationBrokerChildMessage[] = [];
+    const broker = createDesktopCollaborationBroker({
+      environment,
+      paths,
+      fetch: fetchMock,
+      sleep: async () => undefined,
+      sendMessage: (message) => sent.push(message),
+      refreshUpstreamBackendCapabilities: async () => ({
+        ok: true,
+        state: "validated",
+        message: "validated"
+      })
+    });
+    const invoke = async (
+      suffix: string,
+      command: string,
+      input: object,
+      backendId?: string
+    ) =>
+      broker.handleMessage({
+        protocolVersion: DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION,
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        sessionToken,
+        type: "command",
+        ownerId: "renderer-1",
+        envelopeId: `00000000-0000-4000-8000-${suffix}`,
+        command: collaborationRendererCommandSchema.parse({
+          contractVersion: COLLABORATION_CONTRACT_VERSION,
+          requestId: `00000000-0000-4000-8001-${suffix}`,
+          command,
+          input,
+          ...(backendId ? { backendId } : {})
+        })
+      });
+    await invoke("000000000001", "collaboration.load", {});
+    await invoke(
+      "000000000002",
+      "collaboration.select",
+      {
+        selection: { kind: "team_people", teamId },
+        navigationIntent: "prewarm"
+      },
+      "backend-b"
+    );
+    expect(
+      sent.find(
+        (item) =>
+          item.type === "command_result" &&
+          item.result.command === "collaboration.select"
+      )
+    ).toMatchObject({
+      result: {
+        ok: true,
+        data: { snapshot: { connection: { backendId: "backend-b" } } }
+      }
+    });
+    expect(getActiveUpstreamBackend(paths)?.id).toBe("backend-a");
+    await invoke("000000000003", "collaboration.send_message", {
+      thread: {
+        scope: "personal",
+        threadId: snapshot.navigation.personal.channels[0]!.id
+      },
+      clientMessageId: "00000000-0000-4000-8000-000000000005",
+      body: "Still in A"
+    });
+    expect(
+      sent.find(
+        (item) =>
+          item.type === "command_result" &&
+          item.result.command === "collaboration.send_message"
+      )
+    ).toMatchObject({
+      result: { ok: true, data: { durableSend: { body: "Still in A" } } }
+    });
+    expect(requests).toContain("collaboration.select:backend-b");
+    expect(getActiveUpstreamBackend(paths)?.id).toBe("backend-a");
+    await broker.shutdown();
+  });
   it("keeps Personal sends local when a retained remote credential has no enabled route", async () => {
     const koedHome = tempRoot();
     const environment = {

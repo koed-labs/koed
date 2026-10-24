@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 export {
+  SHARING_HELP_VERSION,
+  sharingHelpPoints,
+  sharingHelpInstructions
+} from "./sharing-help.js";
+export {
   teamSharingReadSchema,
   personalSharingReadSchema,
   sharingOverviewSchema,
@@ -7,6 +12,10 @@ export {
   type PersonalSharingRead,
   type SharingOverview
 } from "./sharing-contract.js";
+export {
+  sharingAgentOverviewSchema,
+  type SharingAgentOverview
+} from "./sharing-agent-contract.js";
 export {
   workItemsFromDocParamsSchema,
   workItemsFromDocReadSchema,

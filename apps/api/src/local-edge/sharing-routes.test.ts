@@ -23,9 +23,12 @@ const setup = async (input: {
   disabled?: string | null;
   owner?: string;
   profileDrift?: boolean;
+  leaseDrift?: boolean;
+  generation?: number;
 }) => {
   let currentOwner = input.owner ?? ownerA;
   let currentCredentialKey = "key-a";
+  let currentLease = "a".repeat(32);
   const query = vi.fn(async (_sql: string, values: unknown[]) => {
     expect(values[0]).toBe(currentOwner);
     return { rows: [] };
@@ -33,6 +36,37 @@ const setup = async (input: {
   const fetcher = vi.fn(async (url: URL) => {
     const id = url.hostname.split(".")[0];
     if (id === input.down) throw new Error("offline");
+    if (url.pathname.endsWith("/v1/teams/navigation"))
+      return Response.json({
+        principal: { id: ownerA },
+        teams: [
+          {
+            team: { id: ownerA, name: "Koed team" },
+            membership: { role: "owner" }
+          }
+        ]
+      });
+    if (url.pathname.endsWith(`/v1/teams/${ownerA}/members/manage`))
+      return Response.json({
+        members: [
+          {
+            userId: ownerA,
+            displayName: "Owner",
+            email: "owner@example.test",
+            role: "owner",
+            status: "enabled",
+            version: 1
+          },
+          {
+            userId: ownerB,
+            displayName: "Mark",
+            email: "mark@example.test",
+            role: "member",
+            status: "enabled",
+            version: 2
+          }
+        ]
+      });
     if (url.pathname.endsWith("/v1/local-edge/device-credentials/status"))
       return Response.json({
         ok: true,
@@ -61,6 +95,7 @@ const setup = async (input: {
       });
     if (url.pathname.endsWith("/v1/me/sharing")) {
       if (input.profileDrift) currentCredentialKey = "changed-during-read";
+      if (input.leaseDrift) currentLease = "b".repeat(32);
       return Response.json(
         input.poisoned
           ? {
@@ -97,7 +132,24 @@ const setup = async (input: {
     rateLimit: { memoryRead: async () => undefined },
     auth: {},
     requireRepository: () => ({
-      getUser: async (id: string) => (id === currentOwner ? { id } : null)
+      getUser: async (id: string) => (id === currentOwner ? { id } : null),
+      getManagedConversationExecution: async () => ({
+        ownerUserId: currentOwner,
+        executionGeneration: input.generation ?? 3,
+        state: "running"
+      }),
+      getLatestManagedConversationCommandForExecution: async (
+        _actor: unknown,
+        executionId: string
+      ) => ({
+        id: ownerB,
+        ownerUserId: currentOwner,
+        executionId,
+        executionGeneration: input.generation ?? 3,
+        state: "dispatching",
+        leaseToken: currentLease,
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+      })
     }),
     localEdge: {
       upstreamBackendsPath: "/unused/registry",
@@ -128,7 +180,7 @@ const setup = async (input: {
         authorization,
         ownerUserId: currentOwner,
         credentialKeyId: currentCredentialKey,
-        operationFamilies: ["personal_collaboration_read"]
+        operationFamilies: ["personal_collaboration_read", "managed_execution"]
       }) as never,
     readTeamCredential: (_home, id) =>
       id === input.unenrolled
@@ -145,7 +197,25 @@ const setup = async (input: {
           upstreamBackend?.id === input.disabled
             ? "deny_fail_closed"
             : "live_upstream_proxy"
-      }) as never
+      }) as never,
+    verifyManagedCredential: (_home, token, scope) =>
+      token === authorization &&
+      scope.ownerUserId === currentOwner &&
+      scope.operationFamily === "managed_execution"
+        ? {
+            version: 1,
+            authorization,
+            reference: "test",
+            credentialKeyId: currentCredentialKey,
+            ownerUserId: currentOwner,
+            operationFamilies: [
+              "managed_execution",
+              "personal_collaboration_read"
+            ],
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }
+        : null
   });
   await app.ready();
   return {
@@ -252,6 +322,75 @@ describe("Personal Sharing aggregate", () => {
       expect(response.body).not.toContain("team-a");
     } finally {
       await fixture.app.close();
+    }
+  });
+});
+
+describe("managed Sharing overview", () => {
+  const executionId = "33333333-3333-4333-8333-333333333333";
+  const url = `/v1/managed-conversations/${executionId}/sharing-overview?executionGeneration=3`;
+  it("returns the same aggregate with an unavailable backend for a current leased owner command", async () => {
+    const fixture = await setup({ down: "team-b" });
+    try {
+      const response = await fixture.app.inject({
+        method: "GET",
+        url,
+        headers: { authorization }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(
+        response
+          .json()
+          .overview.backends.map((item: { status: string }) => item.status)
+      ).toEqual(["available", "unavailable"]);
+      expect(
+        response.json().teams.map((item: { status: string }) => item.status)
+      ).toEqual(["available", "unavailable"]);
+      expect(
+        response
+          .json()
+          .teams[0].teams[0].people.find(
+            (person: { name: string }) => person.name === "Mark"
+          ).canRemove
+      ).toBe(true);
+    } finally {
+      await fixture.app.close();
+    }
+  });
+  it("denies API Tokens and stale generations before reading Team data", async () => {
+    const fixture = await setup({});
+    try {
+      const token = await fixture.app.inject({
+        method: "GET",
+        url,
+        headers: { authorization: "Bearer owner-token" }
+      });
+      expect(token.statusCode).toBe(403);
+      const stale = await fixture.app.inject({
+        method: "GET",
+        url: url.replace("=3", "=2"),
+        headers: { authorization }
+      });
+      expect(stale.statusCode).toBe(409);
+      expect(fixture.fetcher).not.toHaveBeenCalled();
+    } finally {
+      await fixture.app.close();
+    }
+  });
+  it("fails closed when the lease or Personal profile changes while Team data loads", async () => {
+    for (const drift of [{ leaseDrift: true }, { profileDrift: true }]) {
+      const fixture = await setup({ backends: ["team-a"], ...drift });
+      try {
+        const response = await fixture.app.inject({
+          method: "GET",
+          url,
+          headers: { authorization }
+        });
+        expect(response.statusCode).toBe(409);
+        expect(response.body).not.toContain("team-a");
+      } finally {
+        await fixture.app.close();
+      }
     }
   });
 });

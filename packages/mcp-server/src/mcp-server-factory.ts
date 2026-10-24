@@ -36,6 +36,7 @@ import { registerFlashcardSourcesTool } from "./flashcard-sources-tool.js";
 import { registerReviewRequestMergeProposalTool } from "./review-request-merge-proposal-tool.js";
 import { registerMemoryActionTools } from "./memory-action-tools.js";
 import { registerKoedTextActionTools } from "./koed-text-action-tools.js";
+import { registerSharingOverviewTool } from "./sharing-overview-tool.js";
 import {
   managedRecallSelector,
   readManagedProjectRecallContext
@@ -653,6 +654,7 @@ export const createKoedMcpServer = async (
     registerReviewRequestMergeProposalTool(server);
   if (environment.KOED_MANAGED_TEXT_ACTIONS === "1")
     registerKoedTextActionTools(server);
+  registerSharingOverviewTool(server, environment);
 
   return server;
 };

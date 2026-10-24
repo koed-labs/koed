@@ -29,6 +29,8 @@ const descriptions: Record<KoedTextActionName, string> = {
     "Request to send an owned Work Item to an Agent. Koed verifies the item, Agent, Project and current runtime authority.",
   koed_team_invite:
     "Request an email invitation to one owned shared Project. Koed verifies the current Team and Project and opens exact Native invitation review before issuing it.",
+  sharing_remove:
+    "Request removal of exact backend-qualified Project members, Workspace Access or Team members, or cancellation of invitations. For 'everything with a person', include every current manageable target from sharing_overview; report unavailable backends and never claim they are empty. Koed uses each existing Step-up or Native review, sequentially, with five-second Undo. This call changes no access.",
   koed_job_create:
     "Request a Scheduled Job in this human-started Conversation. Give an exact title, instruction, calendar schedule, and IANA time zone. Koed verifies the owner, Agent, Conversation and Project before review.",
   koed_job_pause:
@@ -37,6 +39,8 @@ const descriptions: Record<KoedTextActionName, string> = {
     "Make flashcards for the current Project. Read authorized Project Sources and scoped memory in this AI Client first. Supply the exact requested scope, title, source description and generated question/answer cards. Respect exclusions such as material not on the exam. Optional card sourceRef is only a display label, never access authority. Koed reviews the exact content and creates the Deck idempotently.",
   koed_hq_open:
     "Request to open the named Project HQ in the User's Desktop. This only requests navigation.",
+  koed_sharing_open:
+    "Request to open the User's Sharing page in Koed Desktop. This only requests navigation.",
   koed_settings_open:
     "Request to open Koed settings in the User's Desktop. This only requests navigation.",
   koed_settings_set_theme:

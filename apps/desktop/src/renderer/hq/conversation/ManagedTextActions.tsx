@@ -17,10 +17,12 @@ const label: Record<KoedTextActionProjection["name"], string> = {
   koed_todo_add: "Add to-do",
   koed_todo_send: "Send to Agent",
   koed_team_invite: "Invite to Project",
+  sharing_remove: "Remove sharing access",
   koed_job_create: "Schedule Job",
   koed_job_pause: "Pause or resume Job",
   koed_deck_make: "Make flashcards",
   koed_hq_open: "Open Project HQ",
+  koed_sharing_open: "Open Sharing",
   koed_settings_open: "Open Settings",
   koed_settings_set_theme: "Change theme"
 };
@@ -36,6 +38,8 @@ const detail = (action: KoedTextActionProjection) => {
       return `Send ${String(action.snapshot.workItemTitle ?? "this to-do")} to ${String(action.snapshot.agentName ?? "your Agent")}`;
     case "koed_team_invite":
       return `Invite ${String(args.email)} to ${String(action.snapshot.projectName ?? "the shared Project")}. Native review will confirm the exact Team and access.`;
+    case "sharing_remove":
+      return `Review ${Array.isArray(action.arguments.targets) ? action.arguments.targets.length : 0} exact sharing ${Array.isArray(action.arguments.targets) && action.arguments.targets.length === 1 ? "target" : "targets"}. Each target gets its current Step-up or Native review, then a five-second Undo window.`;
     case "koed_job_create":
       return `${String(args.title ?? "Scheduled Job")} · ${String(action.snapshot.agentName ?? "Agent")}`;
     case "koed_job_pause":
@@ -56,6 +60,8 @@ const detail = (action: KoedTextActionProjection) => {
       return `${String(action.snapshot.chatTitle ?? "This chat")} · Its memory stays available. Review the exact chat before deletion.`;
     case "koed_hq_open":
       return String(action.snapshot.projectName ?? "Open Project HQ");
+    case "koed_sharing_open":
+      return "Open Sharing";
     case "koed_chat_move":
       return `${String(action.snapshot.chatTitle ?? "This chat")}: ${String(action.snapshot.sourceProjectName ?? "Chats")} → ${String(action.snapshot.projectName ?? "Chats")}`;
     case "koed_project_move_chats": {
@@ -85,6 +91,7 @@ const detail = (action: KoedTextActionProjection) => {
 const hasDurableServiceReceipt = (action: KoedTextActionProjection) =>
   [
     "koed_project_create",
+    "sharing_remove",
     "koed_todo_add",
     "koed_todo_send",
     "koed_job_create",
@@ -267,7 +274,13 @@ export function ManagedTextActions({
         rows.map((row) => (row.id === action.id ? claimResult : row))
       );
       const applied = await onApply(claimResult);
-      if (scope.current !== current) return;
+      if (scope.current !== current) {
+        // Opening Sharing unmounts this card. Its local navigation has already
+        // completed, so settle the exact claim even after that route change.
+        if (applied && action.name === "koed_sharing_open")
+          await api.complete(executionId, action.id, claimResult.revision);
+        return;
+      }
       if (!applied) {
         if (!hasDurableServiceReceipt(action)) {
           setError(
@@ -537,7 +550,7 @@ export function ManagedTextActions({
                 disabled={busyId !== null}
                 onClick={() => void decide(action, "approve")}
               >
-                Approve
+                {action.name === "sharing_remove" ? "Remove access" : "Approve"}
               </button>
               <button
                 className="hq-text-action__button"
@@ -545,7 +558,7 @@ export function ManagedTextActions({
                 disabled={busyId !== null}
                 onClick={() => void decide(action, "decline")}
               >
-                Not now
+                {action.name === "sharing_remove" ? "Keep it" : "Not now"}
               </button>
             </div>
           ) : null}

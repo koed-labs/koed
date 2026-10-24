@@ -472,6 +472,64 @@ describe("Pi managed RPC conversation", () => {
     );
     await f.session.closeAndWait();
   });
+  it("observes Sharing data and proposal receipts before the Pi turn settles", async () => {
+    const f = fixture();
+    const onKoedToolCompleted = vi.fn(async (_event: unknown) => {
+      void _event;
+    });
+    const session = new PiManagedConversationSession({
+      ...f.config,
+      onKoedToolCompleted
+    });
+    await session.start();
+    try {
+      const prompt = session.prompt("Review sharing");
+      for (const toolName of [
+        "sharing_overview",
+        "sharing_remove",
+        "koed_sharing_open"
+      ]) {
+        const details =
+          toolName === "sharing_overview"
+            ? { version: 1, overview: { backends: [] }, teams: [] }
+            : { status: "requested" };
+        f.emit({
+          type: "tool_execution_start",
+          toolCallId: toolName,
+          toolName: `mcp__koed__${toolName}`,
+          args: {}
+        });
+        f.emit({
+          type: "tool_execution_end",
+          toolCallId: toolName,
+          result: { details }
+        });
+      }
+      f.emit({ type: "agent_settled" });
+      await prompt;
+      expect(onKoedToolCompleted).toHaveBeenCalledTimes(3);
+      expect(onKoedToolCompleted.mock.calls[0]?.[0]).toMatchObject({
+        toolName: "sharing_overview",
+        result: {
+          structuredContent: {
+            version: 1,
+            overview: { backends: [] },
+            teams: []
+          },
+          isError: false
+        }
+      });
+      expect(onKoedToolCompleted.mock.calls[1]?.[0]).toMatchObject({
+        toolName: "sharing_remove",
+        result: { structuredContent: { status: "requested" }, isError: false }
+      });
+      expect(onKoedToolCompleted.mock.calls[2]?.[0]).toMatchObject({
+        toolName: "koed_sharing_open"
+      });
+    } finally {
+      await session.closeAndWait();
+    }
+  });
   it("captures native Pi memory and completion tool results before a turn settles", async () => {
     const f = fixture();
     const onKoedToolCompleted = vi.fn(async (_event: unknown) => {

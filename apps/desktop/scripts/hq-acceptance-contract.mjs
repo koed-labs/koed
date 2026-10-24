@@ -1116,5 +1116,53 @@ export const hqAcceptanceContract = [
       "Real sequential multi-member removal with one Undo and a forced second-target failure.",
     owners: ["HQ-724"],
     harness: "real-api"
+  },
+  {
+    id: "S725.10.help",
+    category: "positive",
+    description:
+      "The versioned five-point help is shared with the Chief, opens first visit and remembers Hide.",
+    owners: ["HQ-725"],
+    harness: "unit-and-real"
+  },
+  {
+    id: "S725.10.chat",
+    category: "positive",
+    description:
+      "Help buttons draft the matching question and the Chief can open Sharing from the same help content.",
+    owners: ["HQ-725"],
+    harness: "unit-and-real"
+  },
+  {
+    id: "S725.11.overview",
+    category: "positive",
+    description:
+      "Authenticated sharing_overview returns the page read model as data, with shared-by-Agent and incoming information.",
+    owners: ["HQ-725"],
+    harness: "unit-and-real"
+  },
+  {
+    id: "S725.11.person",
+    category: "positive",
+    description:
+      "The agent can narrow live Sharing data to a backend-qualified Project or person.",
+    owners: ["HQ-725"],
+    harness: "unit-and-real"
+  },
+  {
+    id: "S725.11.removal",
+    category: "positive",
+    description:
+      "Ask first and Full access requests use the same sequential reviewed removal and Undo services.",
+    owners: ["HQ-725"],
+    harness: "unit-and-real"
+  },
+  {
+    id: "N725.27",
+    category: "negative",
+    description:
+      "The agent retains explicit unavailable Team backends under every filter and never treats them as empty.",
+    owners: ["HQ-725"],
+    harness: "unit-and-real"
   }
 ];

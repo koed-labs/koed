@@ -292,7 +292,11 @@ export class PiManagedConversationSession {
             KOED_MANAGED_RECALL_EXECUTION_GENERATION:
               this.config.env.KOED_MANAGED_RECALL_EXECUTION_GENERATION,
             KOED_MANAGED_RECALL_API_URL:
-              this.config.env.KOED_MANAGED_RECALL_API_URL
+              this.config.env.KOED_MANAGED_RECALL_API_URL,
+            KOED_MANAGED_SHARING_HELPER_URL: new URL(
+              "./sharing-overview-tool.js",
+              import.meta.url
+            ).href
           }
         : {}),
       KOED_MANAGED_PERMISSION_MODE: this.config.permissionMode,
@@ -618,10 +622,13 @@ export class PiManagedConversationSession {
             "koed_todo_add",
             "koed_todo_send",
             "koed_team_invite",
+            "sharing_remove",
+            "sharing_overview",
             "koed_job_create",
             "koed_job_pause",
             "koed_deck_make",
             "koed_hq_open",
+            "koed_sharing_open",
             "koed_settings_open",
             "koed_settings_set_theme"
           ].includes(toolName)

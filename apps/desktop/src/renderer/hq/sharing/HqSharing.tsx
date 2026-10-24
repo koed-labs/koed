@@ -1,9 +1,17 @@
 import { useState, useSyncExternalStore } from "react";
 import {
+  sharingHelpPoints,
+  SHARING_HELP_VERSION
+} from "@koed/shared/sharing-help";
+import {
   AlertTriangle,
+  Brain,
   ChevronDown,
   Clock3,
   Folder,
+  LockKeyhole,
+  MessageCircle,
+  Shield,
   Search,
   Users,
   X
@@ -46,7 +54,9 @@ export function HqSharing({
   groups,
   onRequestGroupRemoval,
   onReviewInvitation,
-  onReviewLeave
+  onReviewLeave,
+  onAskChief,
+  chiefName = "Chief of Staff"
 }: {
   store: SharingStore;
   ownerId: string | null;
@@ -87,7 +97,17 @@ export function HqSharing({
     decision: "accept" | "decline"
   ) => void;
   onReviewLeave?: (projectId: string, backendId: string) => void;
+  onAskChief?: (prompt: string) => void;
+  chiefName?: string;
 }) {
+  const helpStorageKey = `koed-sharing-help-v${SHARING_HELP_VERSION}`;
+  const [helpOpen, setHelpOpen] = useState(() => {
+    try {
+      return localStorage.getItem(helpStorageKey) !== "hidden";
+    } catch {
+      return true;
+    }
+  });
   const snapshot = useSyncExternalStore(
     store.subscribe,
     store.current,
@@ -450,9 +470,17 @@ export function HqSharing({
           <p>Who sees your work, and how it got shared.</p>
           <button
             type="button"
-            onClick={() =>
-              document.getElementById("hq-sharing-help")?.scrollIntoView()
-            }
+            aria-expanded={helpOpen}
+            aria-controls="hq-sharing-help"
+            onClick={() => {
+              const next = !helpOpen;
+              setHelpOpen(next);
+              try {
+                localStorage.setItem(helpStorageKey, next ? "shown" : "hidden");
+              } catch {
+                /* Session-only preference. */
+              }
+            }}
           >
             How sharing works
           </button>
@@ -510,6 +538,65 @@ export function HqSharing({
           </span>
         ) : null}
       </div>
+      {helpOpen ? (
+        <section id="hq-sharing-help" className="hq-sharing__help">
+          <h2>How sharing works</h2>
+          <>
+            <ol>
+              {sharingHelpPoints.map((point, index) => (
+                <li key={point.id} data-help-promise={point.id}>
+                  <span aria-hidden="true" className="hq-sharing__help-icon">
+                    {
+                      [
+                        <Folder />,
+                        <LockKeyhole />,
+                        <Brain />,
+                        <Shield />,
+                        <AlertTriangle />
+                      ][index]
+                    }
+                  </span>
+                  <div>
+                    <strong>{point.title}</strong>
+                    <p>{point.text}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+            <div className="hq-sharing__help-footer">
+              <button
+                type="button"
+                disabled={!onAskChief}
+                onClick={() => onAskChief?.("What do you know about me?")}
+              >
+                <Brain size={16} aria-hidden="true" />
+                What do you know about me?
+              </button>
+              <button
+                type="button"
+                disabled={!onAskChief}
+                onClick={() => onAskChief?.("How does sharing work?")}
+              >
+                <MessageCircle size={16} aria-hidden="true" />
+                Ask {chiefName}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setHelpOpen(false);
+                  try {
+                    localStorage.setItem(helpStorageKey, "hidden");
+                  } catch {
+                    /* Session-only preference. */
+                  }
+                }}
+              >
+                Hide
+              </button>
+            </div>
+          </>
+        </section>
+      ) : null}
       {unavailable.map((backend) => (
         <p
           className="hq-sharing__unavailable"
@@ -540,7 +627,7 @@ export function HqSharing({
         </div>
       ) : null}
       {!projectFilter ? (
-        <section>
+        <section className="hq-sharing__recent">
           <h2>Recently shared</h2>
           {fresh.length ? (
             <div className="hq-sharing__list">
@@ -830,14 +917,6 @@ export function HqSharing({
           )}
         </section>
       ) : null}
-      <section id="hq-sharing-help">
-        <h2>How sharing works</h2>
-        <p>
-          Project access is granted through Team membership and Project
-          membership. Your HQ chat and Me-scoped memory are not shared by a
-          Project. Eligible Curated Memory needs a separate review.
-        </p>
-      </section>
     </main>
   );
 }

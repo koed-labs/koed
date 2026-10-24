@@ -98,6 +98,14 @@ export type ManagedTextActionTeamReceipt = (input: {
   arguments: Record<string, unknown>;
   snapshot: Record<string, unknown>;
 }) => Promise<{ confirmed: boolean; effectNonceHash: string | null }>;
+export type ManagedTextActionSharingRemovalReceipt = (input: {
+  ownerUserId: string;
+  targets: Record<string, unknown>[];
+}) => Promise<boolean>;
+export type ManagedTextActionSharingRemovalAuthority = (input: {
+  ownerUserId: string;
+  targets: Record<string, unknown>[];
+}) => Promise<Record<string, unknown>[] | null>;
 
 const canonicalTeamNonce = (value: string): Buffer | null => {
   if (!/^[A-Za-z0-9_-]{43}$/.test(value)) return null;
@@ -641,8 +649,16 @@ const targetSnapshot = async (
   args: Record<string, unknown>,
   teamProof: TeamProof | null = null,
   origin?: { logicalSessionId: string; executionId: string },
-  teamLeaveProof?: { teamBackendId: string; teamPrincipalUserId: string } | null
+  teamLeaveProof?: {
+    teamBackendId: string;
+    teamPrincipalUserId: string;
+  } | null,
+  sharingTargets?: Record<string, unknown>[] | null
 ): Promise<Record<string, unknown> | null> => {
+  if (name === "sharing_remove")
+    return origin && sharingTargets?.length
+      ? { targets: sharingTargets }
+      : null;
   type JobSessionRow = {
     id: string;
     project_id: string | null;
@@ -819,6 +835,7 @@ const targetSnapshot = async (
   }
   if (
     name === "koed_project_create" ||
+    name === "koed_sharing_open" ||
     name === "koed_settings_open" ||
     name === "koed_settings_set_theme"
   )
@@ -1079,6 +1096,8 @@ export const createManagedTextActionRepository = (
     teamLeaveAuthority?: ManagedTextActionTeamLeaveAuthority;
     lifecycleReceipt?: ManagedTextActionLifecycleReceipt;
     teamReceipt?: ManagedTextActionTeamReceipt;
+    sharingRemovalReceipt?: ManagedTextActionSharingRemovalReceipt;
+    sharingRemovalAuthority?: ManagedTextActionSharingRemovalAuthority;
   } = {}
 ): ManagedTextActionRepository => {
   const preflightTeam = async (
@@ -1158,6 +1177,15 @@ export const createManagedTextActionRepository = (
       const args = parseKoedTextActionArguments(input.name, input.arguments);
       const argsHash = digest({ name: input.name, arguments: args });
       let jobProject: string | null | undefined;
+      const sharingTargets =
+        input.name === "sharing_remove" && options.sharingRemovalAuthority
+          ? await options
+              .sharingRemovalAuthority({
+                ownerUserId: actor.userId,
+                targets: args.targets as Record<string, unknown>[]
+              })
+              .catch(() => null)
+          : null;
       if (input.name === "koed_job_create") {
         const origin = await pool.query<{ project_id: string | null }>(
           `select (case when session.project_override_at is not null then session.project_override_personal_project_id
@@ -1183,12 +1211,10 @@ export const createManagedTextActionRepository = (
         jobProject =
           job.rows.length === 1 ? job.rows[0]!.project_id : undefined;
       }
-      const teamProof = await preflightTeam(
-        actor.userId,
-        input.name,
-        args,
-        jobProject
-      );
+      const teamProof =
+        input.name === "sharing_remove"
+          ? null
+          : await preflightTeam(actor.userId, input.name, args, jobProject);
       const teamLeaveProof = await preflightTeamLeave(
         actor.userId,
         input.name,
@@ -1261,7 +1287,8 @@ export const createManagedTextActionRepository = (
             logicalSessionId: current.logical_session_id,
             executionId: input.executionId
           },
-          teamLeaveProof
+          teamLeaveProof,
+          sharingTargets
         );
         const id = randomUUID();
         const initial: Row = {
@@ -1294,7 +1321,11 @@ export const createManagedTextActionRepository = (
                 ? current.permission_mode === "full_access"
                   ? "none"
                   : "ask_first"
-                : "none",
+                : input.name === "sharing_remove"
+                  ? current.permission_mode === "full_access"
+                    ? "none"
+                    : "ask_first"
+                  : "none",
           created_at: new Date(),
           decided_at: null
         };
@@ -1550,14 +1581,28 @@ export const createManagedTextActionRepository = (
         preliminary,
         "snapshot"
       );
-      const teamProof = await preflightTeam(
-        actor.userId,
-        preliminary.action_name,
-        preliminaryArgs,
-        typeof preliminarySnapshot.projectId === "string"
-          ? preliminarySnapshot.projectId
-          : null
-      );
+      const sharingTargets =
+        preliminary.action_name === "sharing_remove" &&
+        Array.isArray(preliminaryArgs.targets) &&
+        options.sharingRemovalAuthority
+          ? await options
+              .sharingRemovalAuthority({
+                ownerUserId: actor.userId,
+                targets: preliminaryArgs.targets as Record<string, unknown>[]
+              })
+              .catch(() => null)
+          : null;
+      const teamProof =
+        preliminary.action_name === "sharing_remove"
+          ? null
+          : await preflightTeam(
+              actor.userId,
+              preliminary.action_name,
+              preliminaryArgs,
+              typeof preliminarySnapshot.projectId === "string"
+                ? preliminarySnapshot.projectId
+                : null
+            );
       const teamLeaveProof = await preflightTeamLeave(
         actor.userId,
         preliminary.action_name,
@@ -1616,6 +1661,7 @@ export const createManagedTextActionRepository = (
           row.review_kind === "none" &&
           [
             "koed_project_create",
+            "sharing_remove",
             "koed_deck_make",
             "koed_job_create",
             "koed_job_pause",
@@ -1639,7 +1685,8 @@ export const createManagedTextActionRepository = (
             logicalSessionId: row.logical_session_id,
             executionId: row.execution_id
           },
-          teamLeaveProof
+          teamLeaveProof,
+          sharingTargets
         );
         if (!fresh || digest(fresh) !== digest(pinned)) {
           await client.query("rollback");
@@ -1789,6 +1836,20 @@ export const createManagedTextActionRepository = (
                         preliminarySnapshot.expectedTeamVersion
                       )
                     })
+              })
+              .catch(() => false)
+          : false;
+      const sharingRemovalReceipt =
+        preliminary.action_name === "sharing_remove" &&
+        Array.isArray(preliminarySnapshot.targets) &&
+        preliminarySnapshot.targets.length > 0 &&
+        options.sharingRemovalReceipt
+          ? await options
+              .sharingRemovalReceipt({
+                ownerUserId: actor.userId,
+                targets: (
+                  await decrypt(encryptionProvider, preliminary, "arguments")
+                ).targets as Record<string, unknown>[]
               })
               .catch(() => false)
           : false;
@@ -2006,8 +2067,24 @@ export const createManagedTextActionRepository = (
               break;
             }
           }
+        } else if (row.action_name === "sharing_remove") {
+          proven =
+            Boolean(sharingRemovalReceipt) &&
+            digest(snapshot) === digest(preliminarySnapshot) &&
+            digest(args.targets) ===
+              digest(
+                (snapshot.targets as Record<string, unknown>[]).map(
+                  (target) => {
+                    const identity = { ...target };
+                    delete identity.expectedVersion;
+                    delete identity.personName;
+                    return identity;
+                  }
+                )
+              );
         } else if (
           row.action_name === "koed_hq_open" ||
+          row.action_name === "koed_sharing_open" ||
           row.action_name === "koed_chat_create" ||
           row.action_name === "koed_settings_open" ||
           row.action_name === "koed_settings_set_theme"

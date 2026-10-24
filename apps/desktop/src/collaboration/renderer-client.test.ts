@@ -833,6 +833,45 @@ const waitFor = async (check: () => void) => {
 };
 
 describe("collaboration renderer client", () => {
+  it("reads an enrolled inactive Team for review without changing the active backend", async () => {
+    const active = fixture({ backendId: "backend-a" });
+    const scoped = collaborationSnapshotSchema.parse({
+      ...fixture({ backendId: "backend-b" }),
+      selection: { kind: "team_people", teamId: ids.team },
+      view: {
+        kind: "team_people",
+        teamId: ids.team,
+        people: fixture().navigation.teams[0]!.people
+      }
+    });
+    const mock = createBridge(active);
+    const original = mock.command.getMockImplementation()!;
+    mock.command.mockImplementation(async (input) =>
+      input.command === "collaboration.select" &&
+      input.backendId === "backend-b"
+        ? success(input, scoped, new Map())
+        : original(input)
+    );
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    const read = await client.readTeamForReview({
+      backendId: "backend-b",
+      teamId: ids.team
+    });
+    expect(read.connection.backendId).toBe("backend-b");
+    expect(client.current()?.connection.backendId).toBe("backend-a");
+    expect(mock.command.mock.calls).toContainEqual([
+      expect.objectContaining({
+        command: "collaboration.select",
+        backendId: "backend-b",
+        input: {
+          selection: { kind: "team_people", teamId: ids.team },
+          navigationIntent: "prewarm"
+        }
+      })
+    ]);
+    client.dispose();
+  });
   it("does not revoke durable subscriptions when the renderer is disposed", async () => {
     const mock = createBridge();
     const client = createCollaborationRendererClient(mock.bridge);
