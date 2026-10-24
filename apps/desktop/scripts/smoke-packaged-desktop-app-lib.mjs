@@ -7,6 +7,7 @@ import {
   rmSync
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
@@ -26,6 +27,68 @@ export const withSmokeFailureDiagnostics = async (work, preserve) => {
     }
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}\n\n${diagnostics}`,
+      { cause: error }
+    );
+  }
+};
+
+const confirmedLocalDoctorRateLimit = (json) => {
+  const checks = json?.checks;
+  if (!Array.isArray(checks)) return false;
+  if (
+    checks.find((check) => check.id === "apiToken")?.details?.httpStatus !== 429
+  )
+    return false;
+  const stderr = checks.find((check) => check.id === "mcpServer")?.details
+    ?.stderr;
+  try {
+    return (
+      JSON.parse(stderr).error ===
+      "Local Koed API request limit reached. Retry later."
+    );
+  } catch {
+    return false;
+  }
+};
+
+const doctorFailure = (result) =>
+  `doctor --json failed with ${result.status}: ${result.stderr || result.stdout}`;
+
+export const runSmokeDoctor = async ({
+  run,
+  isAlive,
+  now = Date.now,
+  wait = delay,
+  timeoutMs = 180_000
+}) => {
+  const deadline = now() + timeoutMs;
+  const first = await run();
+  if (first.status === 0 && first.json.ok === true) return first;
+  if (!confirmedLocalDoctorRateLimit(first.json))
+    throw new Error(doctorFailure(first));
+  // Doctor omits Retry-After. Local control quota uses a fixed 60-second window.
+  const cooldownMs = 61_000;
+  const assertRetryAllowed = () => {
+    if (!isAlive() || now() >= deadline)
+      throw new Error(
+        `${doctorFailure(first)}; supervisor stopped or doctor retry deadline expired`
+      );
+  };
+  assertRetryAllowed();
+  if (now() + cooldownMs >= deadline)
+    throw new Error(
+      `${doctorFailure(first)}; insufficient doctor retry deadline`
+    );
+  await wait(cooldownMs);
+  assertRetryAllowed();
+  try {
+    const final = await run();
+    assertRetryAllowed();
+    if (final.status === 0 && final.json.ok === true) return final;
+    throw new Error(doctorFailure(final));
+  } catch (error) {
+    throw new Error(
+      `${doctorFailure(first)}; retry failed: ${error instanceof Error ? error.message : String(error)}`,
       { cause: error }
     );
   }
