@@ -310,6 +310,7 @@ const assertFrozenAfterLaterSource = async (
     laterSourceItemId: laterItem.id,
     laterText: advanced.laterText,
     laterSummaryText: advanced.laterSummaryText,
+    canonicalSourceRevision: advanced.sourceCursor,
     canonicalEventCount: canonical.rows[0]!.event_count,
     canonicalNodeCount: canonical.rows[0]!.node_count,
     laterSourceItemCount: afterItems.length,
@@ -715,16 +716,28 @@ export async function runHq713DeleteRestore(
     fixture.ids.alicePersonalProjectId
   );
   const independentDeadline = Date.now() + 15_000;
+  const expectedLaterRevision = postDeleteAdvance.canonicalSourceRevision;
+  assert.ok(
+    expectedLaterRevision !== null &&
+      Number.isSafeInteger(expectedLaterRevision) &&
+      expectedLaterRevision > 0,
+    "The later canonical source must have an exact sync revision"
+  );
   let independentAfter = await grantState(fixture, independent.grantId, false);
   while (
-    (independentAfter.source_revision ?? 0) <=
-      (independentBefore.source_revision ?? 0) &&
+    ((independentAfter.source_revision ?? 0) < expectedLaterRevision ||
+      (independentAfter.source_revision ?? 0) <=
+        (independentBefore.source_revision ?? 0)) &&
     Date.now() < independentDeadline
   ) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     independentAfter = await grantState(fixture, independent.grantId, false);
   }
   assert.equal(independentAfter.frozen_at, null);
+  assert.ok(
+    (independentAfter.source_revision ?? 0) >= expectedLaterRevision,
+    `Independent grant must publish the exact later revision: ${JSON.stringify({ expectedLaterRevision, observedRevision: independentAfter.source_revision })}`
+  );
   assert.ok(
     (independentAfter.source_revision ?? 0) >
       (independentBefore.source_revision ?? 0),
@@ -760,12 +773,26 @@ export async function runHq713DeleteRestore(
       break;
     await new Promise((resolve) => setTimeout(resolve, 250));
   } while (Date.now() < independentRecallDeadline);
-  assert.ok(
-    independentEvidence.some((item) =>
+  if (
+    !independentEvidence.some((item) =>
       String(item.summaryText).includes(postDeleteAdvance.laterSummaryText)
-    ),
-    "Independent grant must expose the later publication through Team recall"
-  );
+    )
+  ) {
+    const representations = await fixture.team.db.query(
+      `select representation,source_revision,state from team_memory_representations where share_grant_id=$1`,
+      [independent.grantId]
+    );
+    const embeddings = await fixture.team.db.query(
+      `select representation.source_revision,item.embedding_state,count(*)::int as count
+         from team_memory_semantic_items item
+         join team_memory_representations representation on representation.id=item.representation_id
+        where item.share_grant_id=$1 group by representation.source_revision,item.embedding_state`,
+      [independent.grantId]
+    );
+    assert.fail(
+      `Independent grant must expose the later publication through Team recall: ${JSON.stringify({ expectedLaterRevision, observedRevision: independentAfter.source_revision, representations: representations.rows, embeddings: embeddings.rows })}`
+    );
+  }
 
   const reconciled = await fixture.bob.personalEdge.request(
     "POST",
