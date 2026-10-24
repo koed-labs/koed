@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sharingHelpInstructions } from "@koed/shared";
+import { buildSync } from "esbuild";
 import { describe, expect, it } from "vitest";
 import { resolveInstalledKoedHome } from "../integrations/pi/koed-home.mjs";
 
@@ -40,6 +41,25 @@ describe("Koed Pi extension package", () => {
         join(peer, "index.mjs"),
         "export const Type = new Proxy({}, { get: () => () => ({}) });"
       );
+      // Native ESM bypasses Vitest's aliases. Compile the real helper into this
+      // isolated installation so a fresh checkout needs no prior dist build.
+      const helperPath = join(root, "sharing-overview-tool.mjs");
+      buildSync({
+        entryPoints: [
+          fileURLToPath(
+            new URL("../src/sharing-overview-tool.ts", import.meta.url)
+          )
+        ],
+        outfile: helperPath,
+        bundle: true,
+        platform: "node",
+        format: "esm",
+        alias: {
+          "@koed/shared": fileURLToPath(
+            new URL("../../shared/src/index.ts", import.meta.url)
+          )
+        }
+      });
       const program = `import assert from 'node:assert/strict';
         const {default:extension}=await import(${JSON.stringify(pathToFileURL(join(installed, "extensions/koed.mjs")).href)});
         const hooks=new Map();extension({on:(name,fn)=>hooks.set(name,fn),registerTool:()=>{}});
@@ -60,10 +80,7 @@ describe("Koed Pi extension package", () => {
               "11111111-1111-4111-8111-111111111111",
             KOED_MANAGED_RECALL_EXECUTION_GENERATION: "1",
             KOED_MANAGED_RECALL_API_URL: "http://127.0.0.1:7777",
-            KOED_MANAGED_SHARING_HELPER_URL: new URL(
-              "../dist/sharing-overview-tool.js",
-              import.meta.url
-            ).href
+            KOED_MANAGED_SHARING_HELPER_URL: pathToFileURL(helperPath).href
           }
         }
       );
