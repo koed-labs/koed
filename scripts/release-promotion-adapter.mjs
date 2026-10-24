@@ -10,8 +10,7 @@ import {
   openSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
-  writeFileSync
+  rmSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
