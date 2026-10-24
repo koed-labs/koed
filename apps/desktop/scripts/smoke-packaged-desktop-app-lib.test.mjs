@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import test from "node:test";
 import { tmpdir } from "node:os";
+import process from "node:process";
 import { resolve } from "node:path";
 import {
   removeSmokeHome,
@@ -19,6 +20,7 @@ import {
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import {
+  createSmokeEnv,
   assertNoSourceCheckoutResolution,
   assertFailClosedPrivacy,
   assertFailClosedTeamStart,
@@ -29,6 +31,28 @@ import {
 test("packaged smoke defaults health polling to five seconds", () => {
   assert.equal(parseArgs([]).pollIntervalMs, 5_000);
   assert.equal(parseArgs(["--poll-interval-ms", "2000"]).pollIntervalMs, 2_000);
+});
+
+test("packaged smoke reserves API budget for repeated readiness and doctor probes", () => {
+  assert.equal(
+    createSmokeEnv("/tmp/koed-smoke-home").KOED_API_RATE_LIMIT_MAX,
+    "1000"
+  );
+});
+
+test("packaged smoke strips untrusted resources path overrides", () => {
+  const original = process.env.KOED_PACKAGED_RESOURCES_PATH;
+  process.env.KOED_PACKAGED_RESOURCES_PATH = "/host/resources";
+  try {
+    const environment = createSmokeEnv("/tmp/koed-smoke-home", {
+      KOED_PACKAGED_RESOURCES_PATH: "/extra/resources"
+    });
+    assert.equal(environment.KOED_PACKAGED_DESKTOP, "1");
+    assert.equal(environment.KOED_PACKAGED_RESOURCES_PATH, undefined);
+  } finally {
+    if (original === undefined) delete process.env.KOED_PACKAGED_RESOURCES_PATH;
+    else process.env.KOED_PACKAGED_RESOURCES_PATH = original;
+  }
 });
 
 test("smoke home canonicalizes temporary paths before authenticated lifecycle selection", () => {
