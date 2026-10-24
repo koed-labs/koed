@@ -51,8 +51,11 @@ cross-process lifecycle locking or add Desktop ownership of a CLI-started runtim
 
 The native smoke harness keeps production rate limits unchanged. Its final doctor
 check allows one 61-second cooldown only when structured API diagnostics report
-HTTP 429 and MCP diagnostics confirm the local rate-limit source. Both attempts
-retain artifact-provenance checks; unknown/remote throttling, other failures, a
+HTTP 429 and MCP diagnostics confirm the local rate-limit source. Only known
+quota-dependent AI Client capability-unavailability diagnostics may accompany
+that failure; unrelated blocking checks reject recovery. Both doctor calls and
+the cooldown share a deadline. Both attempts retain artifact-provenance checks;
+unknown/remote throttling, other failures, a
 stopped supervisor, or a failed final doctor remain failures. This bounded harness
 recovery does not validate or fix runtime status-polling amplification.
 

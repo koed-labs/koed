@@ -112,6 +112,56 @@ test("smoke doctor rejects expired deadline or stopped supervisor before retry",
   assert.deepEqual(calls, ["doctor"]);
 });
 
+test("smoke doctor permits only known quota-dependent capability unavailability", async () => {
+  const first = local429();
+  first.json.checks.push({
+    id: "aiClientFlow:conversations",
+    state: "needs_attention",
+    message:
+      'AI Client instance "codex.default" is unavailable for conversations.'
+  });
+  const { options } = fixture([first, healthy]);
+  assert.equal(await smoke.runSmokeDoctor(options), healthy);
+  first.json.checks.at(-1).message = "Invalid flow configuration";
+  await assert.rejects(smoke.runSmokeDoctor(fixture([first, healthy]).options));
+});
+
+test("smoke doctor rejects unrelated failures mixed with local throttling", async () => {
+  const first = local429();
+  first.json.checks.push({
+    id: "database",
+    state: "needs_attention",
+    details: {}
+  });
+  const { options, calls } = fixture([first, healthy]);
+  await assert.rejects(smoke.runSmokeDoctor(options));
+  assert.deepEqual(calls, ["doctor"]);
+});
+
+test("smoke doctor bounds stalled calls and rejects late first success", async () => {
+  await assert.rejects(
+    smoke.runSmokeDoctor({
+      run: () => new Promise(() => {}),
+      isAlive: () => true,
+      timeoutMs: 10
+    }),
+    /deadline/
+  );
+  let clock = 0;
+  await assert.rejects(
+    smoke.runSmokeDoctor({
+      run: async () => {
+        clock = 11;
+        return healthy;
+      },
+      now: () => clock,
+      isAlive: () => true,
+      timeoutMs: 10
+    }),
+    /deadline/
+  );
+});
+
 test("smoke doctor never swallows provenance violations on retry", async () => {
   const { options, calls } = fixture([
     local429(),
