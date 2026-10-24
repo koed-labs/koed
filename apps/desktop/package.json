@@ -29,7 +29,8 @@
     "pretypecheck": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build && pnpm --filter @koed-labs/server build",
-    "test": "node --test scripts/desktop-artifact-report-lib.test.mjs scripts/prepare-macos-signing.test.mjs scripts/verify-macos-package.test.mjs scripts/sign-macos-runtime.test.mjs scripts/verify-packaged-component-catalog.test.mjs && vitest run --passWithNoTests",
+    "test:packaged-smoke": "node --test scripts/smoke-packaged-desktop-app-lib.test.mjs scripts/smoke-packaged-doctor.test.mjs scripts/packaged-desktop-lifecycle.test.mjs",
+    "test": "pnpm test:packaged-smoke && node --test scripts/desktop-artifact-report-lib.test.mjs scripts/prepare-macos-signing.test.mjs scripts/verify-macos-package.test.mjs scripts/sign-macos-runtime.test.mjs scripts/verify-packaged-component-catalog.test.mjs && vitest run --passWithNoTests",
     "test:browser": "pnpm build && electron scripts/validate-project-workspace.mjs && electron scripts/validate-collaboration-interactions.mjs && electron scripts/validate-managed-preview.mjs"
   },
   "dependencies": {
