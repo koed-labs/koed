@@ -30,6 +30,7 @@ export interface PrivacyRuntimeAdapter {
   readonly classifierHash: string;
   readonly provider: PrivacyRuntimeProvider;
   isReady(): boolean;
+  isAlive?(): boolean;
   classify(text: string): Promise<RawPrivacyClassification>;
   unload?(): Promise<void>;
   dispose?(): Promise<void>;

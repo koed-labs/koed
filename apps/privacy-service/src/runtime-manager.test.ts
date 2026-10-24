@@ -198,6 +198,34 @@ describe("Privacy Filter runtime manager", () => {
     await manager.dispose();
   });
 
+  it("does not report an idle-unloaded accelerator as ready after its worker exits", async () => {
+    let scheduled: (() => void) | undefined;
+    let alive = true;
+    const manager = await PrivacyRuntimeManager.create({
+      preference: "coreml",
+      candidateProviders: ["coreml", "cpu"],
+      factory: (provider) => {
+        const runtime = new FakeRuntime(provider) as FakeRuntime & {
+          isAlive?: () => boolean;
+        };
+        runtime.isAlive = () => alive;
+        return runtime;
+      },
+      acceleratorIdleUnloadSeconds: 300,
+      setTimeout: ((callback: () => void) => {
+        scheduled = callback;
+        return { unref: () => undefined };
+      }) as unknown as typeof globalThis.setTimeout,
+      clearTimeout: (() => undefined) as typeof globalThis.clearTimeout
+    });
+    scheduled?.();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(manager.isReady()).toBe(true);
+    alive = false;
+    expect(manager.isReady()).toBe(false);
+    await manager.dispose();
+  });
+
   it("keeps an accelerator resident when idle unloading is disabled", async () => {
     let scheduled = false;
     const manager = await PrivacyRuntimeManager.create({

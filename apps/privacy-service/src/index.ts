@@ -1,7 +1,8 @@
 import { createValidationCache } from "./validation-cache.js";
 import { resolveConfig } from "./config.js";
 import { PrivacyRuntimeManager } from "./runtime-manager.js";
-import { HuggingFacePrivacyRuntime } from "./runtime.js";
+import { NativePrivacyRuntime } from "./native-runtime.js";
+import { PRIVACY_CLASSIFIER_HASH } from "./provenance.js";
 import {
   createNodeHttpServer,
   createPrivacyService,
@@ -29,14 +30,13 @@ const runtime = await PrivacyRuntimeManager.create({
   validationCache: await createValidationCache(config.transformersCache),
   acceleratorIdleUnloadSeconds: config.gpuIdleUnloadSeconds,
   factory: (provider) =>
-    new HuggingFacePrivacyRuntime(
-      config.modelId,
-      config.modelRevision,
-      config.transformersCache,
-      undefined,
-      undefined,
-      provider
-    )
+    new NativePrivacyRuntime({
+      modelId: config.modelId,
+      modelRevision: config.modelRevision,
+      cacheDir: config.transformersCache,
+      provider,
+      classifierHash: PRIVACY_CLASSIFIER_HASH
+    })
 });
 const server = createNodeHttpServer(
   createPrivacyService(config, runtime),

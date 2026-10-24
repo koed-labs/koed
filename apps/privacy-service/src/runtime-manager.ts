@@ -320,7 +320,11 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
   }
 
   isReady(): boolean {
-    return this.active.runtime.isReady() || this.acceleratorIdleUnloaded;
+    return (
+      this.active.runtime.isReady() ||
+      (this.acceleratorIdleUnloaded &&
+        this.active.runtime.isAlive?.() !== false)
+    );
   }
 
   async classify(text: string): Promise<RawPrivacyClassification> {
