@@ -33,6 +33,13 @@ test("packaged smoke defaults health polling to five seconds", () => {
   assert.equal(parseArgs(["--poll-interval-ms", "2000"]).pollIntervalMs, 2_000);
 });
 
+test("packaged smoke reserves API budget for repeated readiness and doctor probes", () => {
+  assert.equal(
+    createSmokeEnv("/tmp/koed-smoke-home").KOED_API_RATE_LIMIT_MAX,
+    "1000"
+  );
+});
+
 test("packaged smoke strips untrusted resources path overrides", () => {
   const original = process.env.KOED_PACKAGED_RESOURCES_PATH;
   process.env.KOED_PACKAGED_RESOURCES_PATH = "/host/resources";
