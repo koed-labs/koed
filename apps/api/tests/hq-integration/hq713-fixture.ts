@@ -53,7 +53,6 @@ import {
   createSharedMemoryRepository
 } from "@koed/db";
 import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/core";
-import { upsertEncryptedFieldPayloadWithClient } from "../../../../packages/db/src/encrypted-payload-repository.js";
 import { buildServer } from "../../src/server/build-server.js";
 import { createPendingShareSchema } from "../../src/shared-memory/schemas.js";
 import { createCrossIdentitySyncService } from "../../../worker/src/cross-identity-sync-service.js";
@@ -2178,6 +2177,76 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
       );
       return { projectId: response.body.id };
     };
+    // A fixture supplies deterministic AI-client output, but must publish it
+    // through the production completion transaction and summary-sync outbox.
+    const publishFixtureLeaf = async (
+      actor: Hq713Actor,
+      input: {
+        sessionId: string;
+        eventId: string;
+        sourceText: string;
+        summaryText: string;
+        title: string;
+        lexicalAnchor: string;
+        sourceHash: string;
+      }
+    ) => {
+      const personalDb = actor.name === "alice" ? aliceDb.pool : bobDb.pool;
+      const repository = createMemorySourceRepository(personalDb, {
+        envelopeEncryptionProvider: personalEncryptionProvider
+      });
+      const node = await repository.createMemoryNode(
+        { userId: actor.id },
+        {
+          visibility: "personal",
+          summaryText: input.summaryText,
+          sourceHash: input.sourceHash,
+          lcmAlgorithmVersion: "depth0-source-items-v1"
+        }
+      );
+      // Keep summary_model null until all provenance is attached. The source
+      // reader must never see a supposedly complete leaf without its links.
+      const client = await personalDb.connect();
+      try {
+        await client.query("begin");
+        await client.query(
+          `update memory_nodes set session_id=$2,source_event_count=1,
+             source_token_estimate=$4 where id=$1 and owner_user_id=$3`,
+          [
+            node.id,
+            input.sessionId,
+            actor.id,
+            input.sourceText.split(/\s+/).length
+          ]
+        );
+        await client.query(
+          `insert into memory_node_sources(memory_node_id,memory_event_id,source_order)
+             values($1,$2,0)`,
+          [node.id, input.eventId]
+        );
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+      await repository.updateLcmNodeSummary({
+        nodeId: node.id,
+        summaryText: input.summaryText,
+        summaryModel: "hq713-deterministic-local-input",
+        summaryPromptVersion: "hq713-source-v1",
+        summaryTokenEstimate: input.summaryText.split(/\s+/).length,
+        summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+        summaryStructuredJson: {
+          schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+          title: input.title,
+          summary_text: input.summaryText,
+          lexical_anchors: [input.lexicalAnchor]
+        }
+      });
+      return node;
+    };
     const seedCapturedSession: Hq713Fixture["seedCapturedSession"] = async (
       actor,
       input
@@ -2229,9 +2298,6 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         input.prepareAssociationBeforeCreate ? createSession : undefined
       );
       const sourceItemIds: string[] = [];
-      const sourceRepository = createMemorySourceRepository(personalDb, {
-        envelopeEncryptionProvider: personalEncryptionProvider
-      });
       for (let index = 0; index < (input.sourceItemCount ?? 1); index++) {
         const content = `${input.sessionLabel} source ${index + 1}`;
         const raw = await actor.personalTokenClient.request<{
@@ -2304,63 +2370,17 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         const eventId = item.body.event.id;
         assert.ok(eventId);
         const summaryText = `${input.sessionLabel} summarized source ${index + 1}`;
-        const node = await sourceRepository.createMemoryNode(
-          { userId: actor.id },
-          {
-            visibility: "personal",
-            summaryText,
-            sourceHash: createHash("sha256")
-              .update(`${sessionId}:${index}:${summaryText}`)
-              .digest("hex"),
-            summaryModel: "hq713-deterministic-local-input",
-            summaryPromptVersion: "hq713-source-v1",
-            lcmAlgorithmVersion: "depth0-source-items-v1"
-          }
-        );
-        const structured = {
-          schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+        await publishFixtureLeaf(actor, {
+          sessionId,
+          eventId,
+          sourceText: content,
+          summaryText,
           title: `${input.sessionLabel} leaf ${index + 1}`,
-          summary_text: summaryText,
-          lexical_anchors: [input.sessionLabel]
-        };
-        await personalDb.query(
-          `update memory_nodes set session_id=$2,summary_structured_json=$3::jsonb,
-             summary_structured_schema_version=$4,source_event_count=1,
-             source_token_estimate=$6,summary_token_estimate=$7
-           where id=$1 and owner_user_id=$5`,
-          [
-            node.id,
-            sessionId,
-            JSON.stringify({
-              contentEncrypted: true,
-              encryptedSourceTable: "memory_nodes"
-            }),
-            LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
-            actor.id,
-            content.split(/\s+/).length,
-            summaryText.split(/\s+/).length
-          ]
-        );
-        await upsertEncryptedFieldPayloadWithClient(
-          personalDb,
-          { userId: actor.id },
-          personalEncryptionProvider,
-          {
-            sourceTable: "memory_nodes",
-            sourceId: node.id,
-            sourceColumn: "summary_structured_json",
-            plaintext: structured,
-            visibility: "personal",
-            rowFamily: "memory_node",
-            scope: { tenantId: actor.id, objectClass: "memory_node" },
-            aad: { nodeId: node.id }
-          }
-        );
-        await personalDb.query(
-          `insert into memory_node_sources(memory_node_id,memory_event_id,source_order)
-           values($1,$2,0)`,
-          [node.id, eventId]
-        );
+          lexicalAnchor: input.sessionLabel,
+          sourceHash: createHash("sha256")
+            .update(`${sessionId}:${index}:${summaryText}`)
+            .digest("hex")
+        });
       }
       const sourceRevision = await createCrossIdentitySyncRepository(
         personalDb
@@ -2484,66 +2504,17 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
         );
         const eventId = event.body.event.id;
         const summaryText = `${input.sessionLabel} later summary ${index + 1}`;
-        const sourceRepository = createMemorySourceRepository(personalDb, {
-          envelopeEncryptionProvider: personalEncryptionProvider
-        });
-        const node = await sourceRepository.createMemoryNode(
-          { userId: actor.id },
-          {
-            visibility: "personal",
-            summaryText,
-            sourceHash: createHash("sha256")
-              .update(`${input.sessionId}:${index}:${summaryText}`)
-              .digest("hex"),
-            summaryModel: "hq713-deterministic-local-input",
-            summaryPromptVersion: "hq713-source-v1",
-            lcmAlgorithmVersion: "depth0-source-items-v1"
-          }
-        );
-        const structured = {
-          schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+        const node = await publishFixtureLeaf(actor, {
+          sessionId: input.sessionId,
+          eventId,
+          sourceText: laterText,
+          summaryText,
           title: `${input.sessionLabel} later leaf ${index + 1}`,
-          summary_text: summaryText,
-          lexical_anchors: [input.sessionLabel]
-        };
-        await personalDb.query(
-          `update memory_nodes set session_id=$2,summary_structured_json=$3::jsonb,
-             summary_structured_schema_version=$4,source_event_count=1,
-             source_token_estimate=$6,summary_token_estimate=$7
-           where id=$1 and owner_user_id=$5`,
-          [
-            node.id,
-            input.sessionId,
-            JSON.stringify({
-              contentEncrypted: true,
-              encryptedSourceTable: "memory_nodes"
-            }),
-            LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
-            actor.id,
-            laterText.split(/\s+/).length,
-            summaryText.split(/\s+/).length
-          ]
-        );
-        await upsertEncryptedFieldPayloadWithClient(
-          personalDb,
-          { userId: actor.id },
-          personalEncryptionProvider,
-          {
-            sourceTable: "memory_nodes",
-            sourceId: node.id,
-            sourceColumn: "summary_structured_json",
-            plaintext: structured,
-            visibility: "personal",
-            rowFamily: "memory_node",
-            scope: { tenantId: actor.id, objectClass: "memory_node" },
-            aad: { nodeId: node.id }
-          }
-        );
-        await personalDb.query(
-          `insert into memory_node_sources(memory_node_id,memory_event_id,source_order)
-         values($1,$2,0)`,
-          [node.id, eventId]
-        );
+          lexicalAnchor: input.sessionLabel,
+          sourceHash: createHash("sha256")
+            .update(`${input.sessionId}:${index}:${summaryText}`)
+            .digest("hex")
+        });
         const canonicalSourceItemCount = await personalDb.query<{
           count: number;
         }>(
