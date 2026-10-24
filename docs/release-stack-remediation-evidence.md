@@ -7,9 +7,8 @@ external standalone control-plane boundary. This is **not** release-candidate
 acceptance or authorization to publish, promote, merge, retire infrastructure,
 or claim the stack is ready for re-review.
 
-Base commit before the uncommitted replacement work: `b2dac3cf3` (Task 1 activation
-wording and prerelease ordering corrections are committed locally). Remaining
-catalog, admission, packaging and workflow changes are local working-tree changes.
+Snapshot before authorized pushes. Base commit before the replacement work: `b2dac3cf3` (Task 1 activation
+wording and prerelease ordering corrections are committed locally). At this snapshot, catalog, admission, packaging and workflow changes were local working-tree changes.
 No push, cloud mutation, signing rehearsal or publication was performed.
 
 ## Implemented boundaries
@@ -48,7 +47,7 @@ Commands below assume supported Node 24 appears first on `PATH`.
 | `pnpm --filter @koed/desktop exec vitest run --passWithNoTests`           | 99 files, 964 tests passed                                        |
 | `pnpm --filter @koed/desktop exec tsc -p tsconfig.json --noEmit`          | Pass                                                              |
 | `pnpm --filter @koed/desktop exec tsc -p tsconfig.electron.json --noEmit` | Pass                                                              |
-| Fresh Server build followed by `node --test scripts/*.test.mjs`           | 379 passed, 1 skipped: live database fixture needs `DATABASE_URL` |
+| Fresh Server build followed by `node --test scripts/*.test.mjs`           | 381 passed, 1 skipped: live database fixture needs `DATABASE_URL` |
 | `pnpm test:required-suites`                                               | Blocked: `Required database suite needs DATABASE_URL.`            |
 | `git diff --check`                                                        | Pass                                                              |
 
@@ -59,8 +58,11 @@ wrong pins and corrupt archives, and excludes tampered stored payloads. This doe
 not prove native service startup, actual remote acquisition, a literal install on
 another machine, or signed Desktop acceptance.
 
-Two read-only follow-up reviews identified candidate-code execution, mutable
-catalog exports and decoy Desktop import checks. Regression tests cover those
+Read-only follow-up reviews identified candidate-code execution, mutable
+catalog exports and decoy Desktop import checks. Final review also caught the
+legacy candidate trust-root module import during promotion; static parsing now
+replaces that import. A promotion-level regression embeds a top-level throw in
+the candidate module and proves it is not executed. Regression tests cover those
 reported cases. Static inspection does not replace behavioral acceptance.
 
 ## Unresolved gates
@@ -75,8 +77,12 @@ reported cases. Static inspection does not replace behavioral acceptance.
   installations. Repository code is not evidence of live operational state.
 - KMS release-signing/rehearsal infrastructure remains until replacement acceptance
   is proven. Retirement needs separate operational approval; no key destruction.
-- Minor changeset recommendation awaits developer confirmation. Stack repair,
-  pushes, fresh CI, review-thread refresh and re-review packet remain pending.
+- Developer confirmed the minor changeset and authorized stack pushes. Core
+  changes landed as incremental commits on #421; #428 and #432 merge upward
+  without rewriting history. The changeset bumps the fixed product/Server group;
+  Desktop is an ignored internal package in Changesets configuration.
+- Fresh CI and re-review remain separate from the native/signed acceptance gates.
+  Prior platform results and green checks do not prove the replacement pin path.
 
 See [implementation plan](superpowers/plans/2026-10-23-release-stack-remediation.md)
 and [implementation backlog](../TODO.md). Historical signed-path acceptance is not

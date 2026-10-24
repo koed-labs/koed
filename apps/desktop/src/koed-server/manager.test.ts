@@ -183,7 +183,7 @@ const createLifecycleRaceSpawn = (requests: Record<string, unknown>[]) => {
                 required: ["privacy"],
                 components: { privacy: "missing" },
                 activeGeneration: null,
-                trustedSignerConfigured: true
+                requiredManifestPinsAvailable: true
               }
             })
           );

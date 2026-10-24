@@ -12,7 +12,13 @@
 
 ## Local execution checkpoint
 
-Local implementation was subsequently approved, with a pause before pushing.
+Developer subsequently confirmed the minor changeset and authorized stack pushes.
+Core fixes were ported to #421, signing integration merged into #428, and shared
+lifecycle adaptations merged into #432. History was preserved. Current PR checks
+are authoritative for pushed heads; platform acceptance and signer-retirement
+gates remain open.
+
+Earlier checkpoint: local implementation was subsequently approved, with a pause before pushing.
 The external standalone launcher extension was separately approved. Task 1 has
 two local commits; Tasks 2–4 have local implementation and test coverage, but
 actual candidate/platform acceptance items remain open. Task 5 is only partially
