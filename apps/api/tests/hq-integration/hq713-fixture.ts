@@ -767,6 +767,18 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
       if (data && typeof data === "object" && activationFailures.length < 30) {
         const fields = data as Record<string, unknown>;
         const event = fields.event as Record<string, unknown> | undefined;
+        if (
+          event?.name === "shared_memory_control_failed" &&
+          apiErrors.length < 30
+        ) {
+          apiErrors.push({
+            server: suffix,
+            path: "shared_memory_control",
+            errorName: String(event.error_class),
+            message: JSON.stringify(event),
+            stack: null
+          });
+        }
         if (event?.name === "pending_share.activation.failed") {
           const bounded = (key: string) =>
             typeof fields[key] === "string"
@@ -1748,7 +1760,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
               message: error.message,
               stack: error.stack?.split("\n").slice(0, 4)
             }))
-        )}; pendingShareRejections=${JSON.stringify(
+        )}; controlDiagnostics=${JSON.stringify(apiErrors.filter((error) => error.path === "shared_memory_control").slice(-5))}; pendingShareRejections=${JSON.stringify(
           apiErrors
             .filter(
               (error) =>

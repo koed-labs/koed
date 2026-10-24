@@ -458,6 +458,9 @@ const createFixture = (
     reportDiagnostic?: NonNullable<
       CollaborationSharedMemoryControlOptions["reportDiagnostic"]
     >;
+    reportControlFailure?: NonNullable<
+      CollaborationSharedMemoryControlOptions["reportControlFailure"]
+    >;
     readLocalEdgeClientCredential?: NonNullable<
       CollaborationSharedMemoryControlOptions["readLocalEdgeClientCredential"]
     >;
@@ -1122,6 +1125,7 @@ const createFixture = (
         sourceOwnerPrincipalId: ids.localOwner
       })),
     reportDiagnostic: overrides.reportDiagnostic,
+    reportControlFailure: overrides.reportControlFailure,
     requestPendingShareSourceWork: overrides.requestPendingShareSourceWork,
     requestContinuousNoteAdvancementWork:
       overrides.requestContinuousNoteAdvancementWork,
@@ -1238,6 +1242,52 @@ const loadInitialSource = async (
 };
 
 describe("collaboration Shared Memory control", () => {
+  it("reports only bounded source origins for internal failures and keeps the safe result", async () => {
+    const diagnostics = vi.fn();
+    const error = Object.assign(new Error("private memory and credential"), {
+      code: "23505"
+    });
+    error.stack =
+      "Error: private memory and credential\n    at work (/private/host/apps/api/src/local-edge/example.ts:42:8)\n    at caller (/private/host/packages/db/src/example.ts:17:3)\n    at private (/private/host/local-secret.ts:9:1)";
+    const fixture = createFixture({
+      reportControlFailure: diagnostics,
+      resolveUpstreamAuthorization: () => {
+        throw error;
+      }
+    });
+    const result = await fixture.control.dispatch(previewCommand(), context());
+    expectFailure(result, "internal_error");
+    expect(diagnostics).toHaveBeenCalledExactlyOnceWith({
+      operation: "collaboration.preview_shared_memory",
+      errorClass: "Error",
+      errorCode: "23505",
+      originFrames: [
+        "apps/api/src/local-edge/example.ts:42",
+        "packages/db/src/example.ts:17"
+      ]
+    });
+    const output = JSON.stringify([result, diagnostics.mock.calls]);
+    expect(output).not.toContain("private memory");
+    expect(output).not.toContain("credential");
+    expect(output).not.toContain("/private/host");
+    expect(output).not.toContain("local-secret");
+  });
+
+  it("does not let a failing diagnostic sink change an internal error result", async () => {
+    const fixture = createFixture({
+      reportControlFailure: () => {
+        throw new Error("sink unavailable");
+      },
+      resolveUpstreamAuthorization: () => {
+        throw new Error("private payload");
+      }
+    });
+    expectFailure(
+      await fixture.control.dispatch(previewCommand(), context()),
+      "internal_error"
+    );
+  });
+
   it("queues an exact continuous Personal Note revision through the scoped device path", async () => {
     const wake = vi.fn();
     const fixture = createFixture({

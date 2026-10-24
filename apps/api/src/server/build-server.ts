@@ -1516,6 +1516,19 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
                   };
                 }
               : undefined,
+          reportControlFailure: (diagnostic) =>
+            app.log.warn(
+              {
+                event: {
+                  name: "shared_memory_control_failed",
+                  operation: diagnostic.operation,
+                  error_class: diagnostic.errorClass,
+                  error_code: diagnostic.errorCode,
+                  origin_frames: diagnostic.originFrames
+                }
+              },
+              "Shared Memory command failed"
+            ),
           reportDiagnostic: (diagnostic) =>
             app.log.warn(
               {

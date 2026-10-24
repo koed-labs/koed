@@ -754,6 +754,12 @@ export interface CollaborationSharedMemoryControlOptions {
   readLocalEdgeClientCredential?: LocalEdgeCredentialReader;
   readUpstreamRegistry?: (path: string) => LocalEdgeUpstreamRegistry;
   actionGrantLifecycle?: Pick<CollaborationActionGrantLifecycle, "resolve">;
+  reportControlFailure?(diagnostic: {
+    operation: SharedMemoryControlCommandName;
+    errorClass: string;
+    errorCode: string | null;
+    originFrames: string[];
+  }): void;
   reportDiagnostic?(diagnostic: {
     code: "shared_memory_authority_projection_failed";
     operation: SharedMemoryControlCommandName;
@@ -4415,6 +4421,44 @@ export const createCollaborationSharedMemoryControl = (
       );
       return await dispatchResolved(options, authority, command);
     } catch (error) {
+      if (
+        !(error instanceof ControlFailure) ||
+        error.code === "internal_error"
+      ) {
+        try {
+          options.reportControlFailure?.({
+            operation: command.command,
+            errorClass:
+              error instanceof Error &&
+              /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(error.name)
+                ? error.name
+                : "Error",
+            errorCode:
+              error !== null &&
+              typeof error === "object" &&
+              "code" in error &&
+              typeof error.code === "string" &&
+              /^[0-9A-Z]{5}$/.test(error.code)
+                ? error.code
+                : null,
+            originFrames: (error instanceof Error
+              ? (error.stack?.split("\n").slice(1) ?? [])
+              : []
+            )
+              .flatMap((frame) => {
+                const match = frame.match(
+                  /(?:^|[\\/])((?:apps|packages)[\\/][\w.\\/-]+\.(?:ts|js)):(\d+):\d+/
+                );
+                return match
+                  ? [`${match[1]!.replaceAll("\\", "/")}:${match[2]}`]
+                  : [];
+              })
+              .slice(0, 4)
+          });
+        } catch {
+          // Diagnostic collection must not change the safe command result.
+        }
+      }
       if (error instanceof ControlFailure) {
         const result = failure(command, error.code);
         if (
