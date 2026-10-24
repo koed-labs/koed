@@ -14,7 +14,8 @@ const now = new Date("2026-10-23T10:00:00.000Z");
 const fixture = (
   role: "owner" | "admin" | "member",
   ownedByMe: boolean,
-  targetRole: "owner" | "member" = "member"
+  targetRole: "owner" | "member" = "member",
+  actorLinked = true
 ) => {
   const query = vi.fn(async (sql: string) => {
     if (
@@ -26,6 +27,18 @@ const fixture = (
       return { rows: [] };
     if (sql.includes("from team_memberships m join teams"))
       return { rows: [{ team_id: team, role, owner_count: 2 }] };
+    if (sql.includes("from workspace_project_sources s"))
+      return {
+        rows: [
+          {
+            id: project,
+            sources: 1,
+            to_dos: 2,
+            chat_summaries: 1,
+            shared_memory_items: 2
+          }
+        ]
+      };
     if (sql.includes("from workspace_projects p"))
       return {
         rows: [
@@ -41,7 +54,7 @@ const fixture = (
             actor_role: role,
             actor_member_id: actor,
             actor_workspace_access: "write",
-            actor_project_access: "write",
+            actor_project_access: actorLinked ? "write" : null,
             owned_by_me: ownedByMe,
             owner_count: 2
           }
@@ -111,6 +124,13 @@ describe("Team sharing read model", () => {
     expect(result.projects[0]?.members[0]?.origin.agentDisplayName).toBe(
       "Chief"
     );
+    expect(result.projects[0]?.contentCounts).toEqual({
+      sources: 1,
+      toDos: 2,
+      chatSummaries: 1,
+      sharedMemoryItems: 2
+    });
+    expect(result.projects[0]?.joinedByMe).toBe(true);
   });
   it("limits cancellation to current Team managers and owner invitations to owners", async () => {
     const admin = await readTeamSharing(
@@ -134,5 +154,10 @@ describe("Team sharing read model", () => {
       accessMode: null,
       agentDisplayName: null
     });
+    const managerWithoutLink = await readTeamSharing(
+      fixture("admin", false, "member", false),
+      actor
+    );
+    expect(managerWithoutLink.projects[0]?.joinedByMe).toBe(false);
   });
 });

@@ -30,6 +30,8 @@ export const teamSharingInviteSchema = z
     id,
     teamId: id,
     workspaceProjectId: id.nullable(),
+    teamName: z.string().optional(),
+    workspaceName: z.string().nullable().optional(),
     person,
     role: z.enum(["owner", "admin", "member"]),
     access,
@@ -46,6 +48,8 @@ export const teamSharingAccessSchema = z
     teamId: id,
     teamWorkspaceId: id,
     workspaceProjectId: id.nullable(),
+    teamName: z.string().optional(),
+    workspaceName: z.string().optional(),
     person,
     how: z.enum(["direct", "through_group"]),
     access,
@@ -66,6 +70,7 @@ export const teamSharingProjectSchema = z
     owner: person,
     group: z.object({ id, name: z.string() }).strict(),
     ownedByMe: z.boolean(),
+    joinedByMe: z.boolean().optional(),
     members: z.array(teamSharingAccessSchema),
     invitations: z.array(teamSharingInviteSchema),
     counts: z
@@ -73,7 +78,16 @@ export const teamSharingProjectSchema = z
         members: z.number().int().nonnegative(),
         invitations: z.number().int().nonnegative()
       })
+      .strict(),
+    contentCounts: z
+      .object({
+        sources: z.number().int().nonnegative(),
+        toDos: z.number().int().nonnegative(),
+        chatSummaries: z.number().int().nonnegative(),
+        sharedMemoryItems: z.number().int().nonnegative()
+      })
       .strict()
+      .optional()
   })
   .strict();
 

@@ -1068,5 +1068,153 @@ export const ownedAcceptanceSuites = [
     clause:
       "Owned leave resumes exact copy once and blocks last-owner until transfer and revalidation.",
     proof: [integration(ownedLeave, "I713.14"), integration(ownedLeave, "I25")]
+  },
+  {
+    id: "S723.1",
+    clause:
+      "Sharing entry point, page hierarchy, grouping and truthful statistics.",
+    proof: [
+      {
+        runner: "apps/desktop/scripts/validate-hq723-native.mjs",
+        reportPath: "scratch/hq-723/HQ723.native.json",
+        proofId: "S1"
+      }
+    ]
+  },
+  {
+    id: "S723.2",
+    clause:
+      "Recently shared displays real action names, new invitations and its empty state.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/sharing-view-model.test.ts",
+        title:
+          "S2 includes standalone Workspace access and invitations without duplicating Project rows",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq723-native.mjs",
+        reportPath: "scratch/hq-723/HQ723.native.json",
+        proofId: "S2.display"
+      }
+    ]
+  },
+  {
+    id: "S723.3",
+    clause:
+      "Share details show Team-visible counts and owner-local Share Origin links.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/api/src/team/sharing-read.hq713.pg.test.ts",
+        title:
+          "counts available and frozen Project summaries, deduplicates share-again, and excludes revoked or unavailable grants",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq723-native.mjs",
+        reportPath: "scratch/hq-723/HQ723.native.json",
+        proofId: "S3"
+      }
+    ]
+  },
+  {
+    id: "S723.7",
+    clause:
+      "Incoming invitations and Project leave use existing reviewed flows.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/sharing-leave-review.test.ts",
+        title: "opens only exact joined backend/project authority",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/sharing-leave-review.test.ts",
+        title: "N27 refuses stale owner or changed route before opening review",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/sharing-invitation-review.test.ts",
+        title:
+          "S7 accepts through the reviewed decision and local Project join",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/sharing-invitation-review.test.ts",
+        title: "S7 declines without joining",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq723-native.mjs",
+        reportPath: "scratch/hq-723/HQ723.native.json",
+        proofId: "S7"
+      }
+    ]
+  },
+  {
+    id: "S723.8",
+    clause:
+      "Six-card expansion and word-start filtering work across both sections.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/sharing-view-model.test.ts",
+        title: "S8 filters at word starts, so mar finds Mark but not Omar",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq723-native.mjs",
+        reportPath: "scratch/hq-723/HQ723.native.json",
+        proofId: "S8"
+      }
+    ]
+  },
+  {
+    id: "S723.9",
+    clause:
+      "Sidebar, Settings Teams, visibility Manage and share-sheet entry points open Sharing.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/HqSharing.test.tsx",
+        title:
+          "S9 Manage filter keeps an identical Project ID on another backend out",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq723-native.mjs",
+        reportPath: "scratch/hq-723/HQ723.native.json",
+        proofId: "S9"
+      }
+    ]
+  },
+  {
+    id: "N723.27",
+    clause: "Unavailable backends remain explicit and counts say at least.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/HqSharing.test.tsx",
+        title:
+          "N27 hides a prior owner's named member before the owner effect runs",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/sharing-invitation-review.test.ts",
+        title: "N27 stops after an owner switch before deciding",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq723-native.mjs",
+        reportPath: "scratch/hq-723/HQ723.native.json",
+        proofId: "N27"
+      }
+    ]
   }
 ];

@@ -76,6 +76,14 @@ import "./project/hq-project-context-tabs.css";
 import { HqProjectView } from "./project/HqProjectView.js";
 import { SharedProjectStore } from "./shared-project/shared-project-store.js";
 import { HqShareSheet } from "./share-project/HqShareSheet.js";
+import { SharingStore } from "./sharing/sharing-store.js";
+import { HqSharing } from "./sharing/HqSharing.js";
+import { reviewSharingInvitation } from "./sharing/sharing-invitation-review.js";
+import {
+  sharingLeaveTarget,
+  type SharingLeaveTarget
+} from "./sharing/sharing-leave-review.js";
+import type { SharingDesktopApi } from "../../ipc/sharing-protocol.js";
 import { nowConversationDestination, type NowNeed } from "./now/now-model.js";
 import { PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT } from "@koed/shared/personal-desktop";
 import {
@@ -128,7 +136,9 @@ export function HqApplication({
   localAiClients,
   projectTeamTabRequest,
   onProjectTeamUnreadChange,
-  catchUpEnabled = true
+  catchUpEnabled = true,
+  sharingApi,
+  teamCollaborationEnabled = true
 }: {
   personalMemoryStore: PersonalMemoryStore | null;
   personalMemoryReady: boolean;
@@ -169,7 +179,45 @@ export function HqApplication({
     lastReadSequence: number;
   }) => void;
   catchUpEnabled?: boolean;
+  sharingApi?: SharingDesktopApi;
+  teamCollaborationEnabled?: boolean;
 }) {
+  const sharingStore = useMemo(
+    () => (sharingApi ? new SharingStore(sharingApi) : null),
+    [sharingApi]
+  );
+  const sharingEnabled = teamCollaborationEnabled && Boolean(sharingStore);
+  const [sharingOpen, setSharingOpen] = useState(false);
+  const showingSharing = sharingOpen && sharingEnabled;
+  const [sharingProjectFilter, setSharingProjectFilter] = useState<{
+    id: string;
+    name: string;
+    backendId: string;
+  } | null>(null);
+  const [sharingActionError, setSharingActionError] = useState<string | null>(
+    null
+  );
+  useEffect(() => {
+    setSharingOpen(false);
+    setSharingProjectFilter(null);
+    setSharingActionError(null);
+  }, [visibilityOwnerId, visibilityProfileKey, sharingEnabled]);
+  useEffect(() => {
+    if (!sharingStore) return;
+    sharingStore.setOwner(
+      visibilityOwnerId ?? null,
+      visibilityProfileKey ?? null
+    );
+    if (!sharingEnabled || !sharingOpen) return;
+    sharingStore.start();
+    return () => sharingStore.stop();
+  }, [
+    sharingStore,
+    visibilityOwnerId,
+    visibilityProfileKey,
+    sharingEnabled,
+    sharingOpen
+  ]);
   const scheduledJobs = useScheduledJobs(
     window.koedDesktop?.scheduledJobs,
     visibilityOwnerId,
@@ -196,6 +244,12 @@ export function HqApplication({
   const [lifecycleProjectId, setLifecycleProjectId] = useState<string | null>(
     null
   );
+  const [sharingLifecycleTarget, setSharingLifecycleTarget] = useState<{
+    project: SharingLeaveTarget;
+    ownerId: string | null;
+    profileKey: string | null;
+    navigationEpoch: number;
+  } | null>(null);
   const [openDeckRequest, setOpenDeckRequest] = useState<{
     ownerId: string;
     profileKey: string;
@@ -207,6 +261,7 @@ export function HqApplication({
   useEffect(() => {
     setShareProjectId(null);
     setLifecycleProjectId(null);
+    setSharingLifecycleTarget(null);
     setRequestedLeaveTeamId(null);
     setProjectLeaveTextAction(null);
     setGroupLeaveTextAction(null);
@@ -869,6 +924,8 @@ export function HqApplication({
     resolveBlankProject
   ]);
   const selectRoute = (next: HqRoute) => {
+    setSharingOpen(false);
+    setSharingLifecycleTarget(null);
     setFocusDueItem(null);
     routeEpoch.current++;
     setCitationFocus(null);
@@ -888,6 +945,28 @@ export function HqApplication({
           ? undefined
           : citationProjectsRef.current.find(({ id }) => id === next.projectId)
     });
+  };
+  const openSharing = (personalProjectId?: string) => {
+    if (!sharingEnabled) return;
+    routeEpoch.current++;
+    chatIntentEpoch.current++;
+    const project = personalProjectId
+      ? personalProjects.find((item) => item.id === personalProjectId)
+      : null;
+    setSharingProjectFilter(
+      project?.workspaceProjectId && project.teamBackendId
+        ? {
+            id: project.workspaceProjectId,
+            name: project.name,
+            backendId: project.teamBackendId
+          }
+        : null
+    );
+    setShareProjectId(null);
+    setSettingsOpen(false);
+    setSharingActionError(null);
+    setSharingOpen(true);
+    sharingStore?.invalidate();
   };
   const joinAndOpenProject = async (projectId: string) => {
     const token = chatToken();
@@ -1607,8 +1686,9 @@ export function HqApplication({
     });
     return true;
   };
-  const title =
-    route.kind === "conversation"
+  const title = showingSharing
+    ? "Sharing"
+    : route.kind === "conversation"
       ? conversationThread?.name || "Conversation"
       : route.kind === "project"
         ? personalProjects.find(({ id }) => id === route.projectId)?.name ||
@@ -2821,7 +2901,7 @@ export function HqApplication({
       <HqShell
         actionsRef={shellActions}
         onRightColumnVisibilityChange={setRightColumnVisible}
-        contextAvailable={contextAvailable}
+        contextAvailable={contextAvailable && !showingSharing}
         contextContent={
           route.kind === "home" && nowMemoryOpen ? (
             <div className="hq-now-memory-host" ref={setNowMemoryHost} />
@@ -2843,6 +2923,7 @@ export function HqApplication({
             revealProject={revealProject}
             accountIdentity={accountIdentity}
             onOpenSettings={renderSettings ? () => openSettings() : undefined}
+            onOpenSharing={sharingEnabled ? () => openSharing() : undefined}
             groupsReady={
               projectsStore
                 ? firstClassLoaded
@@ -2995,7 +3076,8 @@ export function HqApplication({
                 : undefined
             }
             onOpenNow={() => selectRoute({ kind: "home" })}
-            nowActive={route.kind === "home" && !blankOpen}
+            nowActive={route.kind === "home" && !blankOpen && !showingSharing}
+            sharingActive={showingSharing}
             onSelectConversation={(projectId, sessionId) =>
               selectRoute({ kind: "conversation", projectId, sessionId })
             }
@@ -3043,7 +3125,7 @@ export function HqApplication({
         )}
       >
         <section
-          data-hq-route={route.kind}
+          data-hq-route={showingSharing ? "sharing" : route.kind}
           data-hq-project-id={
             route.kind === "project" ? route.projectId : project?.id
           }
@@ -3053,8 +3135,137 @@ export function HqApplication({
           aria-label={title}
           className="hq-destination"
         >
-          {(blankOpen || route.kind === "home") &&
-          managedConversationLifecycle ? (
+          {showingSharing && sharingStore ? (
+            <>
+              <HqSharing
+                store={sharingStore}
+                ownerId={visibilityOwnerId ?? null}
+                profileKey={visibilityProfileKey ?? null}
+                projectFilter={sharingProjectFilter}
+                onClearProjectFilter={() => setSharingProjectFilter(null)}
+                localConversations={
+                  new Map(
+                    projects.flatMap((item) =>
+                      item.threads.map(
+                        (thread) =>
+                          [sessionSelectionId(thread), thread.name] as const
+                      )
+                    )
+                  )
+                }
+                onOpenConversation={(id) => {
+                  const match = projects
+                    .flatMap((item) =>
+                      item.threads.map((thread) => ({
+                        projectId: item.id,
+                        sessionId: sessionSelectionId(thread)
+                      }))
+                    )
+                    .find((item) => item.sessionId === id);
+                  if (match) selectRoute({ kind: "conversation", ...match });
+                }}
+                onReviewLeave={(projectId, backendId) => {
+                  const token = chatToken();
+                  const navigationEpoch = routeEpoch.current;
+                  const current = () =>
+                    chatCurrent(token) &&
+                    routeEpoch.current === navigationEpoch &&
+                    showingSharing &&
+                    visibilityClient?.current()?.connection.backendId ===
+                      backendId;
+                  if (!current()) return;
+                  const local = personalProjects.find(
+                    (item) =>
+                      item.workspaceProjectId === projectId &&
+                      item.teamBackendId === backendId
+                  );
+                  if (local) {
+                    setSharingLifecycleTarget(null);
+                    setLifecycleProjectId(local.id);
+                    return;
+                  }
+                  const snapshot = sharingStore.current();
+                  const target = sharingLeaveTarget(
+                    snapshot.ownerId === token.ownerId &&
+                      snapshot.profileKey === token.profileKey
+                      ? snapshot.overview
+                      : null,
+                    projectId,
+                    backendId,
+                    current
+                  );
+                  if (target)
+                    setSharingLifecycleTarget({
+                      project: target,
+                      ownerId: token.ownerId ?? null,
+                      profileKey: token.profileKey ?? null,
+                      navigationEpoch
+                    });
+                  else if (current())
+                    setSharingActionError(
+                      "This Project’s current access could not be verified."
+                    );
+                }}
+                onReviewInvitation={
+                  visibilityClient && projectsApi?.sharedJoinProject
+                    ? (id, backendId, decision) => {
+                        const token = chatToken();
+                        const navigationEpoch = routeEpoch.current;
+                        void (async () => {
+                          const current = () =>
+                            chatCurrent(token) &&
+                            routeEpoch.current === navigationEpoch &&
+                            visibilityClient.current()?.connection.backendId ===
+                              backendId;
+                          if (
+                            visibilityClient.current()?.connection.backendId !==
+                            backendId
+                          )
+                            throw new Error(
+                              "Switch to this Team connection to review its invitation."
+                            );
+                          await reviewSharingInvitation({
+                            id,
+                            backendId,
+                            decision,
+                            listMyInvitations:
+                              visibilityClient.listMyInvitations,
+                            decideInvitation: visibilityClient.decideInvitation,
+                            sharedJoinProject: projectsApi.sharedJoinProject!,
+                            isCurrent: current,
+                            onJoined: async (projectId) => {
+                              await projectsStore?.refresh();
+                              if (!current()) return;
+                              await personalMemoryStore?.loadProjects({
+                                silent: true
+                              });
+                              if (!current()) return;
+                              selectRoute({ kind: "project", projectId });
+                            },
+                            onRefresh: sharingStore.invalidate
+                          });
+                        })().catch((cause) => {
+                          if (
+                            !chatCurrent(token) ||
+                            routeEpoch.current !== navigationEpoch
+                          )
+                            return;
+                          setSharingActionError(
+                            cause instanceof Error
+                              ? cause.message
+                              : String(cause)
+                          );
+                        });
+                      }
+                    : undefined
+                }
+              />
+              {sharingActionError ? (
+                <p role="alert">{sharingActionError}</p>
+              ) : null}
+            </>
+          ) : (blankOpen || route.kind === "home") &&
+            managedConversationLifecycle ? (
             <>
               {blankProjectError ? (
                 <div role="alert">
@@ -3296,6 +3507,7 @@ export function HqApplication({
               visibilityOwnerId={visibilityOwnerId}
               visibilityRevision={visibilityRevision}
               visibilityConnected={visibilityConnected ?? false}
+              onManageSharing={sharingEnabled ? openSharing : undefined}
               visibilityProject={(() => {
                 const linked = personalProjects.find(
                   (candidate) =>
@@ -3418,13 +3630,23 @@ export function HqApplication({
                   teamBackendId: project.teamBackendId,
                   name: project.name
                 }
-              : null;
+              : sharingLifecycleTarget &&
+                  showingSharing &&
+                  sharingLifecycleTarget.ownerId === visibilityOwnerId &&
+                  sharingLifecycleTarget.profileKey === visibilityProfileKey &&
+                  sharingLifecycleTarget.navigationEpoch ===
+                    routeEpoch.current &&
+                  visibilityClient.current()?.connection.backendId ===
+                    sharingLifecycleTarget.project.teamBackendId
+                ? sharingLifecycleTarget.project
+                : null;
           })()}
           client={visibilityClient}
           ownerId={visibilityOwnerId}
           profileKey={visibilityProfileKey}
           onClose={() => {
             setLifecycleProjectId(null);
+            setSharingLifecycleTarget(null);
             setProjectLeaveTextAction(null);
           }}
           onLeave={
@@ -3459,47 +3681,54 @@ export function HqApplication({
               : undefined
           }
           onOwnerDelete={
-            projectLeaveTextAction && visibilityClient
-              ? async (review) => {
-                  if (
-                    projectLeaveTextAction.snapshot.workspaceProjectId !==
-                      review.project.id ||
-                    projectLeaveTextAction.snapshot.teamId !==
-                      review.project.teamId ||
-                    projectLeaveTextAction.snapshot.teamProjectVersion !==
-                      review.project.version ||
-                    projectLeaveTextAction.snapshot.teamMemberVersion !==
-                      review.actorMemberVersion ||
-                    projectLeaveTextAction.snapshot.teamPrincipalUserId !==
-                      review.actorUserId ||
-                    visibilityClient.current()?.navigation.teamPrincipal?.id !==
-                      review.actorUserId ||
-                    review.actorTeamMemberId !==
-                      review.project.ownerTeamMemberId
-                  )
-                    throw new Error("Owner Project review changed.");
-                  await declineOwnerLeave(projectLeaveTextAction);
-                  if (
-                    projectsStore?.current()?.ownerId !==
-                      projectLeaveTextAction.ownerUserId ||
-                    projectsStore.current()?.profileKey !==
-                      visibilityProfileKey ||
-                    visibilityClient.current()?.connection.backendId !==
-                      projectLeaveTextAction.snapshot.teamBackendId ||
-                    visibilityClient.current()?.navigation.teamPrincipal?.id !==
-                      review.actorUserId
-                  )
-                    throw new Error("Owner profile changed after review.");
-                  await visibilityClient.deleteSharedProject({
-                    teamId: review.project.teamId,
-                    projectId: review.project.id,
-                    expectedProjectVersion: review.project.version
-                  });
+            sharingLifecycleTarget && showingSharing && !lifecycleProjectId
+              ? async () => {
+                  throw new Error(
+                    "Project ownership changed. Open a fresh review."
+                  );
                 }
-              : undefined
+              : projectLeaveTextAction && visibilityClient
+                ? async (review) => {
+                    if (
+                      projectLeaveTextAction.snapshot.workspaceProjectId !==
+                        review.project.id ||
+                      projectLeaveTextAction.snapshot.teamId !==
+                        review.project.teamId ||
+                      projectLeaveTextAction.snapshot.teamProjectVersion !==
+                        review.project.version ||
+                      projectLeaveTextAction.snapshot.teamMemberVersion !==
+                        review.actorMemberVersion ||
+                      projectLeaveTextAction.snapshot.teamPrincipalUserId !==
+                        review.actorUserId ||
+                      visibilityClient.current()?.navigation.teamPrincipal
+                        ?.id !== review.actorUserId ||
+                      review.actorTeamMemberId !==
+                        review.project.ownerTeamMemberId
+                    )
+                      throw new Error("Owner Project review changed.");
+                    await declineOwnerLeave(projectLeaveTextAction);
+                    if (
+                      projectsStore?.current()?.ownerId !==
+                        projectLeaveTextAction.ownerUserId ||
+                      projectsStore.current()?.profileKey !==
+                        visibilityProfileKey ||
+                      visibilityClient.current()?.connection.backendId !==
+                        projectLeaveTextAction.snapshot.teamBackendId ||
+                      visibilityClient.current()?.navigation.teamPrincipal
+                        ?.id !== review.actorUserId
+                    )
+                      throw new Error("Owner profile changed after review.");
+                    await visibilityClient.deleteSharedProject({
+                      teamId: review.project.teamId,
+                      projectId: review.project.id,
+                      expectedProjectVersion: review.project.version
+                    });
+                  }
+                : undefined
           }
           onFinished={() => {
             void projectsStore?.refresh();
+            sharingStore?.invalidate();
             setSharedRefreshSignal((value) => value + 1);
           }}
         />
@@ -3568,6 +3797,7 @@ export function HqApplication({
             setSharedRefreshSignal((value) => value + 1);
           }}
           onOpenSettings={renderSettings ? () => openSettings() : undefined}
+          onOpenSharing={sharingEnabled ? () => openSharing() : undefined}
         />
       ) : null}
       {settingsOpen && renderSettings
@@ -3583,7 +3813,12 @@ export function HqApplication({
             });
             return isValidElement<HqSettingsProps>(view) &&
               view.type === HqSettings
-              ? cloneElement(view, { initialSection: settingsSection })
+              ? cloneElement(view, {
+                  initialSection: settingsSection,
+                  onOpenSharing: sharingEnabled
+                    ? () => openSharing()
+                    : undefined
+                })
               : view;
           })()
         : null}

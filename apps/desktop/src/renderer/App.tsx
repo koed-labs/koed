@@ -1181,6 +1181,8 @@ export function App({
   if (hqEnabled) {
     return (
       <HqApplication
+        teamCollaborationEnabled={teamCollaborationEnabled}
+        sharingApi={window.koedDesktop?.sharing}
         personalMemoryStore={personalMemoryStore}
         personalMemoryApi={window.koedDesktop?.personalMemory}
         personalMemoryReady={personalMemoryReady}

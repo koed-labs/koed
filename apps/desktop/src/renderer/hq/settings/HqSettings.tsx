@@ -38,6 +38,7 @@ export type HqSettingsProps = {
   personalMemoryApi?: PersonalDesktopApi;
   personalMemoryAuthorityKey?: string;
   onChatRestored?: (sessionId: string, batchId: string | null) => void;
+  onOpenSharing?: () => void;
   acknowledgements?: readonly string[];
 };
 const sections: readonly HqSettingsSection[] = [
@@ -170,10 +171,22 @@ export function HqSettings(props: HqSettingsProps) {
           </>
         ) : null}
         {section === "teams" ? (
-          <Teams
-            client={props.collaborationClient}
-            snapshot={props.collaborationSnapshot}
-          />
+          <>
+            {props.onOpenSharing ? (
+              <HqSettingRow
+                title="Sharing"
+                description="See who can access your Projects and how they were shared."
+              >
+                <button type="button" onClick={props.onOpenSharing}>
+                  Open Sharing
+                </button>
+              </HqSettingRow>
+            ) : null}
+            <Teams
+              client={props.collaborationClient}
+              snapshot={props.collaborationSnapshot}
+            />
+          </>
         ) : null}
         {section === "services" ? (
           <HqSettingsServices statusStore={props.statusStore} />

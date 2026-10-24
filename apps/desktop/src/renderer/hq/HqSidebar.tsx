@@ -39,6 +39,7 @@ import {
   Trash2,
   X,
   UserRoundPlus,
+  Users,
   UsersRound
 } from "lucide-react";
 import {
@@ -179,7 +180,9 @@ export type HqSidebarProps = {
   ) => Promise<{ state: "pending" | "activated" | "canceled" }>;
   onNewConversation?: () => void;
   onOpenNow?: () => void;
+  onOpenSharing?: () => void;
   nowActive?: boolean;
+  sharingActive?: boolean;
   onOpenSearchAndCommands: () => void;
   onRetryProjects?: () => void;
   onOpenSettings?: () => void;
@@ -225,7 +228,9 @@ export function HqSidebar({
   onShareUnsharedChat,
   onNewConversation,
   onOpenNow,
+  onOpenSharing,
   nowActive = false,
+  sharingActive = false,
   onOpenSearchAndCommands,
   onRetryProjects,
   onSelectConversation,
@@ -1339,6 +1344,17 @@ export function HqSidebar({
             >
               <Activity aria-hidden="true" />
             </HqIconAction>
+            {onOpenSharing ? (
+              <HqIconAction
+                className="hq-sidebar__action hq-sidebar__action--sharing"
+                current={sharingActive}
+                label="Sharing"
+                onClick={onOpenSharing}
+                title="Open Sharing"
+              >
+                <Users aria-hidden="true" />
+              </HqIconAction>
+            ) : null}
           </div>
           <div
             className="hq-sidebar__scroll"

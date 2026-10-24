@@ -22,7 +22,8 @@ export function HqShareSheet({
   identityKey,
   onClose,
   onShared,
-  onOpenSettings
+  onOpenSettings,
+  onOpenSharing
 }: {
   open: boolean;
   project: Project | null;
@@ -32,6 +33,7 @@ export function HqShareSheet({
   onClose(): void;
   onShared(): void;
   onOpenSettings?(): void;
+  onOpenSharing?(): void;
 }) {
   const flow = useMemo(
     () => createShareProjectFlow(projectsApi, collaboration),
@@ -591,6 +593,19 @@ export function HqShareSheet({
           <p role="alert" className="hq-share-sheet__error">
             {error}
           </p>
+        ) : null}
+        {onOpenSharing ? (
+          <div className="hq-share-sheet__sharing-link">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenSharing();
+              }}
+            >
+              Everything you share
+            </button>
+          </div>
         ) : null}
       </DialogPopup>
     </Dialog>

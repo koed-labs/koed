@@ -527,7 +527,8 @@ function Composer({
   localAiClients,
   usageAuthorityKey,
   usageRefreshKey,
-  onSeeUsage
+  onSeeUsage,
+  onManageSharing
 }: {
   value: string;
   setValue: (value: string) => void;
@@ -558,6 +559,7 @@ function Composer({
   usageAuthorityKey?: string;
   usageRefreshKey?: string;
   onSeeUsage?: () => void;
+  onManageSharing?: () => void;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const [cursor, setCursor] = useState(value.length);
@@ -570,7 +572,7 @@ function Composer({
   }, [locked]);
   return (
     <div className="hq-composer-wrap">
-      <HqVisibilityLine visibility={visibility} />
+      <HqVisibilityLine visibility={visibility} onManage={onManageSharing} />
       {privateProjectHq && contextLabel ? (
         <div className="hq-project-conversation__context">
           About <strong>{contextLabel}</strong>
@@ -1137,6 +1139,7 @@ export function HqActiveConversation({
   localAiClients,
   usageAuthorityKey,
   onSeeUsage,
+  onManageSharing,
   privateProjectHq = false,
   privateProjectHqTeamName,
   privateProjectHqIdentity,
@@ -1178,6 +1181,7 @@ export function HqActiveConversation({
   localAiClients?: DesktopApi["localAiClients"];
   usageAuthorityKey?: string;
   onSeeUsage?: () => void;
+  onManageSharing?: (personalProjectId: string) => void;
   privateProjectHq?: boolean;
   privateProjectHqTeamName?: string | null;
   privateProjectHqIdentity?: ManagedConversationIdentity;
@@ -3034,6 +3038,11 @@ export function HqActiveConversation({
               : undefined
           }
           onSeeUsage={onSeeUsage}
+          onManageSharing={
+            !privateProjectHq && visibilityProject && onManageSharing
+              ? () => onManageSharing(visibilityProject.personalProjectId)
+              : undefined
+          }
           onSelectionChange={(value) => {
             if (!sendLocked && resumeStatus === "ready" && recoveryReady) {
               setSelection(value);

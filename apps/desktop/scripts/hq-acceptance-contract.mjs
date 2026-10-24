@@ -916,5 +916,61 @@ export const hqAcceptanceContract = [
       "The HQ panel keeps Team contributions read-only and scopes Personal memory independently.",
     owners: ["HQ-726"],
     harness: "unit"
+  },
+  {
+    id: "S723.1",
+    category: "browser",
+    description:
+      "Sharing entry point, page hierarchy, grouping and truthful statistics.",
+    owners: ["HQ-723"],
+    harness: "browser"
+  },
+  {
+    id: "S723.2",
+    category: "browser",
+    description:
+      "Recently shared displays real action names, new invitations and its empty state.",
+    owners: ["HQ-723"],
+    harness: "browser"
+  },
+  {
+    id: "S723.3",
+    category: "browser",
+    description:
+      "Share details show Team-visible counts and owner-local Share Origin links.",
+    owners: ["HQ-723"],
+    harness: "browser"
+  },
+  {
+    id: "S723.7",
+    category: "browser",
+    description:
+      "Incoming invitations and Project leave use existing reviewed flows.",
+    owners: ["HQ-723"],
+    harness: "browser"
+  },
+  {
+    id: "S723.8",
+    category: "browser",
+    description:
+      "Six-card expansion and word-start filtering work across both sections.",
+    owners: ["HQ-723"],
+    harness: "browser"
+  },
+  {
+    id: "S723.9",
+    category: "browser",
+    description:
+      "Sidebar, Settings Teams, visibility Manage and share-sheet entry points open Sharing.",
+    owners: ["HQ-723"],
+    harness: "browser"
+  },
+  {
+    id: "N723.27",
+    category: "browser",
+    description:
+      "Unavailable backends remain explicit and counts say at least.",
+    owners: ["HQ-723"],
+    harness: "browser"
   }
 ];

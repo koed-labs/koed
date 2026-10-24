@@ -72,6 +72,14 @@ describe.skipIf(!testUrl)("HQ-722 Team sharing read in Postgres", () => {
         "insert into workspace_project_members(workspace_project_id,team_member_id,access) values($1,$2,'write')",
         [project, memberIds.get(user)]
       );
+    await pool.query(
+      "insert into workspace_project_sources(workspace_project_id,uploader_team_member_id,name,kind,status) values($1,$2,'Brief','file','ready'),($1,$2,'Automation','skill','ready')",
+      [project, memberIds.get(projectOwner)]
+    );
+    await pool.query(
+      "insert into workspace_project_work_items(workspace_project_id,source_owner_team_member_id,kind,title,goal,status) values($1,$2,'todo','Review','Review','todo'),($1,$2,'todo','Done','Done','done')",
+      [project, memberIds.get(projectOwner)]
+    );
     for (const [id, role] of [
       [ownerInvite, "owner"],
       [memberInvite, "member"]
@@ -104,6 +112,15 @@ describe.skipIf(!testUrl)("HQ-722 Team sharing read in Postgres", () => {
     const byAdmin = await readTeamSharing(pool, teamAdmin);
     const byTeamOwner = await readTeamSharing(pool, teamOwner);
     expect(byProjectOwner.projects[0]?.ownedByMe).toBe(true);
+    expect(byProjectOwner.projects[0]?.joinedByMe).toBe(true);
+    expect(byAdmin.projects[0]?.joinedByMe).toBe(false);
+    expect(byTeamOwner.projects[0]?.joinedByMe).toBe(false);
+    expect(byProjectOwner.projects[0]?.contentCounts).toEqual({
+      sources: 1,
+      toDos: 1,
+      chatSummaries: 0,
+      sharedMemoryItems: 0
+    });
     expect(
       byProjectOwner.projects[0]?.members.find(
         (item) => item.person.id === member

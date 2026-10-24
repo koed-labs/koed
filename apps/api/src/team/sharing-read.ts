@@ -85,6 +85,75 @@ export const readTeamSharing = async (
       )
     ).rows;
     const visibleIds = projects.map((project) => project.id);
+    // Keep these metadata counts within the same grant/consent/policy boundary
+    // as Team recall; a retained grant alone is not evidence of visibility.
+    const policyCompatible = (
+      alias: "tp" | "wp",
+      scope: "team" | "workspace"
+    ) => {
+      const table =
+        scope === "team"
+          ? "team_representation_policies"
+          : "workspace_representation_policies";
+      const scopeMatch =
+        scope === "team"
+          ? `successor.team_id=${alias}.team_id`
+          : `successor.team_id=${alias}.team_id and successor.team_workspace_id=${alias}.team_workspace_id`;
+      return `(${alias}.superseded_at is null or (${alias}.include_curated_memory=false and exists (
+        select 1 from ${table} successor where successor.policy_id=${alias}.policy_id
+          and successor.version=${alias}.version+1 and ${scopeMatch}
+          and successor.maximum_fidelity=${alias}.maximum_fidelity
+          and successor.include_curated_memory=true and successor.superseded_at is null)))`;
+    };
+    const countAuthorityJoins = `
+      join source_owner_representation_consents consent on consent.id=g.consent_id
+        and consent.logical_memory_id=g.logical_memory_id and consent.team_id=g.team_id
+        and consent.team_workspace_id=g.team_workspace_id and consent.state='active'
+        and consent.revoked_at is null and (consent.expires_at is null or consent.expires_at>now())
+      join source_owner_representation_policies op on op.policy_id=g.source_owner_policy_id
+        and op.version=g.source_owner_policy_version and op.superseded_at is null
+      join team_representation_policies tp on tp.policy_id=g.team_policy_id
+        and tp.version=g.team_policy_version and tp.team_id=g.team_id
+        and ${policyCompatible("tp", "team")}
+      join workspace_representation_policies wp on wp.policy_id=g.workspace_policy_id
+        and wp.version=g.workspace_policy_version and wp.team_id=g.team_id
+        and wp.team_workspace_id=g.team_workspace_id and ${policyCompatible("wp", "workspace")}`;
+    const countRepresentationBinding = `r.consent_id=g.consent_id
+      and r.source_owner_policy_id=g.source_owner_policy_id
+      and r.source_owner_policy_version=g.source_owner_policy_version
+      and r.team_policy_id=g.team_policy_id and r.team_policy_version=g.team_policy_version
+      and r.workspace_policy_id=g.workspace_policy_id and r.workspace_policy_version=g.workspace_policy_version`;
+    const contentRows = visibleIds.length
+      ? (
+          await client.query<Row>(
+            `
+        select p.id,
+          (select count(*)::int from workspace_project_sources s where s.workspace_project_id=p.id and s.deleted_at is null and s.kind<>'skill') as sources,
+          (select count(*)::int from workspace_project_work_items w where w.workspace_project_id=p.id and w.deleted_at is null and w.kind='todo' and w.status<>'done') as to_dos,
+          (select count(distinct g.logical_memory_id)::int from workspace_project_share_grant_bindings b
+            join team_memory_share_grants g on g.id=b.share_grant_id and g.team_id=p.team_id and g.team_workspace_id=p.workspace_id
+            join logical_memories lm on lm.id=g.logical_memory_id and lm.source_kind='captured_session'
+            join team_memory_representations r on r.share_grant_id=g.id and ${countRepresentationBinding} and r.state in ('available','stale') and r.invalidated_at is null and r.frozen_snapshot=(g.frozen_at is not null) and r.representation in ('lcm_leaves','lcm_rollups') and (r.curated_expires_at is null or r.curated_expires_at>now())
+            ${countAuthorityJoins}
+            where b.workspace_project_id=p.id and b.workspace_project_source_id is null
+              and g.revoked_at is null and g.purge_completed_at is null and g.lifecycle='active') as chat_summaries,
+          (select count(distinct smi.id)::int from workspace_project_share_grant_bindings b
+            join team_memory_share_grants g on g.id=b.share_grant_id and g.team_id=p.team_id and g.team_workspace_id=p.workspace_id
+            join team_memory_representations r on r.share_grant_id=g.id and ${countRepresentationBinding} and r.state in ('available','stale') and r.invalidated_at is null and r.frozen_snapshot=(g.frozen_at is not null) and (r.curated_expires_at is null or r.curated_expires_at>now())
+            ${countAuthorityJoins}
+            join team_memory_semantic_items smi on smi.representation_id=r.id and smi.share_grant_id=g.id and smi.team_id=p.team_id and smi.team_workspace_id=p.workspace_id and smi.embedding_state='embedded' and smi.source_revision=r.source_revision
+            left join team_memory_curated_item_eligibility eligibility on eligibility.semantic_item_id=smi.id
+            where b.workspace_project_id=p.id and g.revoked_at is null and g.purge_completed_at is null and g.lifecycle='active'
+              and eligibility.blocked_at is null
+              and not exists (select 1 from team_memory_curated_withdrawal_fences fence where fence.share_grant_id=g.id and fence.pseudonymous_source_id=smi.pseudonymous_source_id)) as shared_memory_items
+        from workspace_projects p where p.id=any($1::uuid[])`,
+            [visibleIds]
+          )
+        ).rows
+      : [];
+    const contentByProject = new Map(
+      contentRows.map((row) => [String(row.id), row])
+    );
     const memberRows = visibleIds.length
       ? (
           await client.query<Row>(
@@ -123,11 +192,13 @@ export const readTeamSharing = async (
           await client.query<Row>(
             `
     select i.id,i.team_id,i.workspace_project_id,i.default_workspace_access,i.email,i.recipient_user_id,i.role,i.created_at,
+      t.name as team_name, invite_workspace.name as workspace_name,
       i.actor_kind,i.access_mode,i.inviter_agent_display_name,i.created_by_user_id,
       manager.role as actor_role,project.owner_team_member_id,
       owner.user_id as project_owner_user_id
     from team_invites i
     join teams t on t.id=i.team_id and t.lifecycle='active'
+    left join team_workspaces invite_workspace on invite_workspace.id=i.default_team_workspace_id
     join team_memberships manager on manager.team_id=i.team_id and manager.user_id=$1 and manager.status='enabled' and manager.disabled_at is null
     left join workspace_projects project on project.id=i.workspace_project_id and project.lifecycle='active'
     left join team_memberships owner on owner.id=project.owner_team_member_id
@@ -183,6 +254,9 @@ export const readTeamSharing = async (
       id: String(row.id),
       teamId: String(row.team_id),
       workspaceProjectId: nullableId(row.workspace_project_id),
+      teamName: String(row.team_name),
+      workspaceName:
+        typeof row.workspace_name === "string" ? row.workspace_name : null,
       person: {
         id: nullableId(row.recipient_user_id),
         displayName: String(row.email)
@@ -205,6 +279,7 @@ export const readTeamSharing = async (
           await client.query<Row>(
             `
     select grant_row.team_id,grant_row.team_workspace_id,grant_row.user_id,grant_row.access,grant_row.version,grant_row.created_at,
+      t.name as team_name,w.name as workspace_name,
       grant_row.actor_kind,grant_row.access_mode,grant_row.granted_by_user_id,
       (select accepted.inviter_agent_display_name from team_invites accepted
         where accepted.team_id=grant_row.team_id and accepted.default_team_workspace_id=grant_row.team_workspace_id
@@ -216,6 +291,7 @@ export const readTeamSharing = async (
     join team_memberships target on target.team_id=grant_row.team_id and target.user_id=grant_row.user_id and target.status='enabled' and target.disabled_at is null
     join users u on u.id=target.user_id
     join team_workspaces w on w.id=grant_row.team_workspace_id and w.lifecycle='active'
+    join teams t on t.id=grant_row.team_id and t.lifecycle='active'
     left join workspace_projects owner_project on owner_project.workspace_id=w.id and owner_project.lifecycle='active'
     left join team_memberships project_owner on project_owner.id=owner_project.owner_team_member_id
     where grant_row.team_id=any($1::uuid[]) and grant_row.disabled_at is null and grant_row.access in ('read','write')
@@ -241,6 +317,8 @@ export const readTeamSharing = async (
           teamId: String(row.team_id),
           teamWorkspaceId: String(row.team_workspace_id),
           workspaceProjectId: nullableId(row.workspace_project_id),
+          teamName: String(row.team_name),
+          workspaceName: String(row.workspace_name),
           person: {
             id: String(row.user_id),
             displayName: name(row.display_name)
@@ -260,6 +338,7 @@ export const readTeamSharing = async (
       }
     );
     const projectItems: TeamSharingRead["projects"] = projects.map((row) => {
+      const content = contentByProject.get(String(row.id));
       const members = memberByProject.get(String(row.id)) ?? [];
       const invitations = inviteItems.filter(
         (invite) => invite.workspaceProjectId === row.id
@@ -275,9 +354,20 @@ export const readTeamSharing = async (
         },
         group: { id: String(row.team_id), name: String(row.team_name) },
         ownedByMe: Boolean(row.owned_by_me),
+        joinedByMe:
+          (row.actor_project_access === "read" ||
+            row.actor_project_access === "write") &&
+          (row.actor_workspace_access === "read" ||
+            row.actor_workspace_access === "write"),
         members,
         invitations,
-        counts: { members: members.length, invitations: invitations.length }
+        counts: { members: members.length, invitations: invitations.length },
+        contentCounts: {
+          sources: Number(content?.sources ?? 0),
+          toDos: Number(content?.to_dos ?? 0),
+          chatSummaries: Number(content?.chat_summaries ?? 0),
+          sharedMemoryItems: Number(content?.shared_memory_items ?? 0)
+        }
       };
     });
     const result = teamSharingReadSchema.parse({

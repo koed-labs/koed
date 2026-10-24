@@ -110,6 +110,7 @@ describe("HQ sidebar", () => {
       projectsError?: boolean;
       nowActive?: boolean;
       onOpenNow?: () => void;
+      onOpenSharing?: () => void;
       personalProjects?: readonly Project[];
       teams?: readonly SidebarTeam[];
       onDeleteProject?: (projectId: string) => void;
@@ -126,6 +127,7 @@ describe("HQ sidebar", () => {
           onOpenSearchAndCommands={onOpenSearchAndCommands}
           onRetryProjects={onRetryProjects}
           onOpenNow={options.onOpenNow}
+          onOpenSharing={options.onOpenSharing}
           personalProjects={options.personalProjects}
           teams={options.teams}
           onDeleteProject={options.onDeleteProject}
@@ -181,6 +183,23 @@ describe("HQ sidebar", () => {
     }
     vi.restoreAllMocks();
     actEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
+  });
+
+  it("S1 gates Sharing after Now and opens it when Team collaboration is enabled", async () => {
+    await render(initialRoute, { onOpenNow: () => undefined });
+    expect(container.querySelector('[aria-label="Sharing"]')).toBeNull();
+    const onOpenSharing = vi.fn();
+    await render(initialRoute, { onOpenNow: () => undefined, onOpenSharing });
+    const now = container.querySelector(".hq-sidebar__action--now");
+    const sharing = container.querySelector<HTMLElement>(
+      '[aria-label="Sharing"]'
+    );
+    expect(sharing).not.toBeNull();
+    expect(now?.compareDocumentPosition(sharing!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
+    await act(async () => sharing!.click());
+    expect(onOpenSharing).toHaveBeenCalledOnce();
   });
 
   it("keeps v50 Now navigation and places a Pixelkin only on a known Agent Conversation", async () => {

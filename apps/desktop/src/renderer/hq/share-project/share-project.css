@@ -157,3 +157,15 @@
   opacity: 0.55;
   cursor: default;
 }
+.hq-share-sheet__sharing-link {
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--hq-border);
+}
+.hq-share-sheet__sharing-link button {
+  border: 0;
+  background: transparent;
+  color: var(--hq-accent-text, var(--hq-accent));
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}

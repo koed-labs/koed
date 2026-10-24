@@ -7,6 +7,7 @@ import type {
 
 import { App } from "./renderer/App.js";
 import { createHq521UsageFixture } from "./hq-usage-browser-fixture.js";
+import { createHq723SharingFixture } from "./hq-sharing-browser-fixture.js";
 import {
   createHq726ContributionsFixture,
   hq726WorkspaceProjectId
@@ -152,11 +153,14 @@ const hq603Capture =
   new URLSearchParams(window.location.search).get("hq603Capture") === "yes";
 const hq701Linked =
   new URLSearchParams(window.location.search).get("hq701Linked") === "yes";
+const hq723Capture =
+  new URLSearchParams(window.location.search).get("hq723Capture") === "yes";
 const hq705Capture =
   new URLSearchParams(window.location.search).get("hq705Capture") === "yes" ||
   (hq505Capture && !hq901CatchupCapture);
 const hq712Capture =
   new URLSearchParams(window.location.search).get("hq712Capture") === "yes" ||
+  hq723Capture ||
   hq701Linked ||
   hq705Capture;
 const hq701Capture =
@@ -164,9 +168,11 @@ const hq701Capture =
 const hq702Capture =
   new URLSearchParams(window.location.search).get("hq702Capture") === "yes";
 const hq711Capture =
-  new URLSearchParams(window.location.search).get("hq711Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq711Capture") === "yes" ||
+  hq723Capture;
 const hq703Capture =
-  new URLSearchParams(window.location.search).get("hq703Capture") === "yes";
+  new URLSearchParams(window.location.search).get("hq703Capture") === "yes" ||
+  hq723Capture;
 const hq703Trace = {
   decisions: [] as string[],
   joins: 0,
@@ -208,6 +214,27 @@ if (
 )
   hq703Invitation.team.name = "Koed team";
 let hq703Invitations = [hq703Invitation];
+const hq723Sharing = hq723Capture
+  ? createHq723SharingFixture(
+      () =>
+        hq703Invitations.map((invite) => ({
+          id: invite.id,
+          team: invite.team,
+          workspace: invite.workspace,
+          project: invite.project,
+          inviter: invite.inviter,
+          access:
+            invite.workspaceAccess === "write"
+              ? ("edit" as const)
+              : ("view" as const),
+          expiresAt: invite.expiresAt
+        })),
+      () => hq703Trace.joins > 0,
+      () => {
+        hq703Invitations = [hq703Invitation];
+      }
+    )
+  : null;
 let hq702PolicyStatus: "absent" | "active" | "revoked" = "absent";
 const hq702Trace = {
   statusReads: 0,
@@ -236,6 +263,7 @@ const hq407Capture =
   new URLSearchParams(window.location.search).get("hq407Capture") === "yes";
 const hq204Capture =
   new URLSearchParams(window.location.search).get("hq204Capture") === "yes" ||
+  hq723Capture ||
   hq505Capture ||
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
   hq901OriginCapture ||
@@ -317,6 +345,7 @@ let hq705Messages: TeamCollaborationMessageV2Renderer[] = [
 ];
 const hq306Capture =
   new URLSearchParams(window.location.search).get("hq306Capture") === "yes" ||
+  hq723Capture ||
   hq901CitationLifecycle ||
   hq901OriginCapture ||
   hq901ClosingCapture ||
@@ -1632,7 +1661,7 @@ const hq504Actions: KoedTextActionProjection[] = [
       ]
     : [])
 ];
-if (hq704Capture)
+if (hq704Capture && !hq723Capture)
   hq504Actions.splice(0, hq504Actions.length, {
     ...hq504ActionBase,
     id: "00000000-0000-4000-8000-000000007041",
@@ -1672,8 +1701,9 @@ if (hq714Capture)
 const hq504ManagedTextActions: ManagedTextActionDesktopApi = {
   list: async () =>
     structuredClone(
-      hq714Capture &&
-        hq204Trace.nextPrompt !== "Invite ana@example.test to landing-site"
+      hq723Capture ||
+        (hq714Capture &&
+          hq204Trace.nextPrompt !== "Invite ana@example.test to landing-site")
         ? []
         : hq504Actions
     ),
@@ -2025,6 +2055,7 @@ const installSettingsDesktop = () => {
     ...(hq726Contributions ? { curatedMemory: hq726Contributions.api } : {}),
     ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
     ...(hq521Usage ? { localAiClients: hq521Usage.api } : {}),
+    ...(hq723Sharing ? { sharing: hq723Sharing.api } : {}),
     ...(hq106Capture || hq702Capture
       ? { personalMemory: sidebarPersonalMemoryApi }
       : {}),
@@ -3563,14 +3594,16 @@ if (hq203Empty || hq204Capture || hq207Capture)
   initialSidebarPersonalProjects.push({
     ...sidebarProjectRecord(
       hq204ProjectId,
-      hq714Capture
-        ? "landing-site"
-        : hq803Capture || (hq407Capture && hq711Capture)
-          ? "Econ 101"
-          : "New empty Project"
+      hq723Capture
+        ? "Investor deck"
+        : hq714Capture
+          ? "landing-site"
+          : hq803Capture || (hq407Capture && hq711Capture)
+            ? "Econ 101"
+            : "New empty Project"
     ),
     folderPath: hq207Capture ? "/fixtures/koed" : null,
-    ...(hq712Capture && !hq703Capture
+    ...(hq712Capture && (!hq703Capture || hq723Capture)
       ? {
           teamBackendId: "fixture-team-backend",
           teamWorkspaceId: "00000000-0000-4000-8000-000000007121",
@@ -3585,6 +3618,14 @@ if (hq203Empty || hq204Capture || hq207Capture)
         }
       : {})
   });
+if (hq723Capture)
+  for (const [index, project] of initialSidebarPersonalProjects
+    .filter(({ id }) => id !== hq204ProjectId)
+    .entries()) {
+    project.teamBackendId = "fixture-team-backend";
+    project.teamWorkspaceId = "00000000-0000-4000-8000-000000000002";
+    project.workspaceProjectId = `00000000-0000-4000-8000-${String(60 + index).padStart(12, "0")}`;
+  }
 let sidebarPersonalProjects: Project[] = structuredClone(
   initialSidebarPersonalProjects
 );
@@ -4227,7 +4268,7 @@ const sidebarProjectsApi = {
   },
   sharedChatStatus: async (personalProjectId: string, sessionId: string) => {
     if (
-      !hq702Capture ||
+      (!hq702Capture && !hq723Capture) ||
       personalProjectId !== hq204ProjectId ||
       (sessionId !== hq204SessionId &&
         sessionId !== hq702MovedSessionId &&
@@ -5077,7 +5118,7 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
             : [])
         ]
       : threadId === "hq204-fixture-thread" && hq204Started
-        ? hq703Capture
+        ? hq703Capture && !hq723Capture
           ? [
               {
                 id: "hq703-private-welcome",
@@ -5694,6 +5735,12 @@ export function HqValidationApp() {
           >["control"];
         }
       ).__koedHq521Usage = hq521Usage.control;
+    if (hq723Sharing)
+      (
+        window as Window & {
+          __koedHq723Sharing?: NonNullable<typeof hq723Sharing>["control"];
+        }
+      ).__koedHq723Sharing = hq723Sharing.control;
     if (hq726Contributions)
       (
         window as Window & {
@@ -5750,6 +5797,11 @@ export function HqValidationApp() {
           >["control"];
         }
       ).__koedHq521Usage;
+      delete (
+        window as Window & {
+          __koedHq723Sharing?: NonNullable<typeof hq723Sharing>["control"];
+        }
+      ).__koedHq723Sharing;
       delete (
         window as Window & {
           __koedHq726Contributions?: ReturnType<
