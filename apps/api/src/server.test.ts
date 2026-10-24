@@ -15426,7 +15426,7 @@ describe("account and access flows", () => {
         projectId: "/repo/sports",
         actor: "user",
         eventType: "user_prompt",
-        content: "Jacobo likes football",
+        content: "The example user likes football",
         metadata: {
           projectName: "Sports Repo",
           projectPath: "/repo/sports",
@@ -15480,7 +15480,7 @@ describe("account and access flows", () => {
     });
     const pinnedMemory = jsonBody<MemoryItemsResponse>(items).memories[0];
     expect(pinnedMemory).toMatchObject({
-      text: "Jacobo likes football",
+      text: "The example user likes football",
       projectName: "Sports Repo",
       threadName: "Sports chat"
     });
