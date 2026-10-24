@@ -42,12 +42,12 @@ export function createPrivacyInstallBridge({
   return {
     getStatus: async () => {
       const result = await requestPrivacyRpc<Record<string, unknown>>("status");
-      if (result.trustedSignerConfigured === false)
+      if (result.requiredManifestPinsAvailable === false)
         return {
           available: false,
           state: "unavailable",
           message:
-            "Production Privacy Filter signer trust is not configured in this Desktop release. Update to a release with approved signer trust roots; no component can be installed until then."
+            "Required component manifest pins are unavailable in this Desktop release for this runtime. Update to a compatible control plane; no component can be installed until then."
         };
       const components = objectValue(result.components);
       const componentState = components?.privacy;
@@ -121,8 +121,7 @@ export function createPrivacyInstallBridge({
         : {
             kind: "remote",
             archiveUrl: `${origin}/${archive}`,
-            manifestUrl: `${origin}/${archive}.manifest.json`,
-            signatureUrl: `${origin}/${archive}.signature.json`
+            manifestUrl: `${origin}/${archive}.manifest.json`
           };
       try {
         const before =

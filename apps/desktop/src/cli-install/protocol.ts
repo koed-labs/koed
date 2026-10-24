@@ -18,7 +18,6 @@ export interface PrivacyInstallProgress {
 export interface PrivacyOfflineSource {
   archivePath: string;
   manifestPath: string;
-  signaturePath: string;
 }
 
 export interface PrivacyInstallBridge {

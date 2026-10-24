@@ -22,6 +22,25 @@ import {
   verifyDesktopRuntimeBundle
 } from "./desktop-runtime-capability.js";
 
+const testCatalog = vi.hoisted(() => ({
+  current: {
+    schemaVersion: 1,
+    productVersion: "0.8.1",
+    entries: [
+      {
+        component: "base",
+        target: { platform: "macos", architecture: "arm64" },
+        manifestSha256: "0".repeat(64)
+      }
+    ]
+  } as unknown
+}));
+vi.mock("./component-manifest-catalog-data.js", () => ({
+  get productionComponentManifestCatalog() {
+    return testCatalog.current;
+  }
+}));
+
 const roots: string[] = [];
 const hash = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
@@ -48,6 +67,17 @@ const fixture = () => {
 afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
+  testCatalog.current = {
+    schemaVersion: 1,
+    productVersion: "0.8.1",
+    entries: [
+      {
+        component: "base",
+        target: { platform: "macos", architecture: "arm64" },
+        manifestSha256: "0".repeat(64)
+      }
+    ]
+  };
 });
 
 describe("Desktop bundled component capability", () => {
@@ -215,7 +245,7 @@ describe("Desktop bundled component capability", () => {
         type: "koed.desktop.privacy.request",
         requestId,
         action: "cancel",
-        trustedKeys: [],
+        manifestCatalog: null,
         nonce
       })
     ).toBe(true);
@@ -227,12 +257,8 @@ describe("Desktop bundled component capability", () => {
     });
   });
 
-  it("fails closed with actionable error when production signer trust is empty", async () => {
-    const { productionComponentTrustRoots } =
-      await import("./component-trust-roots.js");
-    const trustSize = vi
-      .spyOn(productionComponentTrustRoots, "size", "get")
-      .mockReturnValue(0);
+  it("fails closed with actionable error when production pin catalog is absent", async () => {
+    testCatalog.current = null;
     const { root, manifestPath } = fixture();
     const capability = validateDesktopBundle(
       root,
@@ -257,16 +283,13 @@ describe("Desktop bundled component capability", () => {
           archiveUrl:
             "https://github.com/koed-labs/koed/releases/download/v0.8.1/archive.tar.gz",
           manifestUrl:
-            "https://github.com/koed-labs/koed/releases/download/v0.8.1/archive.manifest.json",
-          signatureUrl:
-            "https://github.com/koed-labs/koed/releases/download/v0.8.1/archive.signature.json"
+            "https://github.com/koed-labs/koed/releases/download/v0.8.1/archive.manifest.json"
         },
         version: "0.8.1"
       })
     ).rejects.toThrow(
-      "Production Privacy Filter signer trust is not configured in this Desktop release. Update to a release with approved signer trust roots; no component can be installed until then."
+      "Production component manifest pin catalog is unavailable in this Desktop release. Update to a catalog-bearing control plane; no component can be installed until then."
     );
-    trustSize.mockRestore();
   });
 
   it("rejects caller-forged bundled runtime capabilities", () => {

@@ -382,7 +382,7 @@ const persistPinState = (
   generation: VerifiedGeneration,
   requester: RuntimeOwner,
   lock: LifecycleLockRecord,
-  source: "signed-store" | "desktop-bundle" = "signed-store"
+  source: "manifest-pinned-store" | "desktop-bundle" = "manifest-pinned-store"
 ): { path: string; processIdentity: string } => {
   const processIdentity = resolveProcessIdentity(process.pid);
   if (!processIdentity)
@@ -485,7 +485,7 @@ export async function pinDesktopBundleGenerationForStart(
           prior.bundleDigest !== capability.bundleDigest
         ) {
           // An older verified bundle is only an ownership journal here. Never execute it
-          // through the new capability or require a signed-store record for it.
+          // through the new capability or require a manifest-pinned store record for it.
           const previous = prior;
           if (
             !isRecord(previous) ||

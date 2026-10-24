@@ -10,18 +10,25 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 const trust = vi.hoisted(() => ({
-  keys: new Map<string, string>(),
   runtime: undefined as
     | import("./component-contract.js").RuntimeIdentity
     | undefined
 }));
-vi.mock("./component-trust-roots.js", () => ({
-  productionComponentTrustRoots: trust.keys
-}));
+vi.mock("./component-manifest-catalog-data.js", async () => {
+  const fixtures = await import("./component-test-fixtures.js");
+  return {
+    get productionComponentManifestCatalog() {
+      return fixtures.getFixtureManifestPinCatalog();
+    }
+  };
+});
 vi.mock("./component-runtime-identity.js", () => ({
   discoverActualRuntimeIdentity: () => trust.runtime
 }));
-import { signedComponentFixture } from "./component-test-fixtures.js";
+import {
+  resetFixtureManifestPinCatalog,
+  componentFixture
+} from "./component-test-fixtures.js";
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import { createDesktopComponentManagerBridge } from "./desktop-component-manager.js";
 import { resolveKoedServerPaths } from "./paths.js";
@@ -29,21 +36,20 @@ const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
-  trust.keys.clear();
+  trust.runtime = undefined;
+  resetFixtureManifestPinCatalog();
 });
-it("installs and activates a signed first Privacy generation with Team enabled and no running services", async () => {
+it("installs and activates a pinned first Privacy generation with Team enabled and no running services", async () => {
   const home = realpathSync.native(
     mkdtempSync(resolve(tmpdir(), "koed-privacy-first-"))
   );
   roots.push(home);
-  const fixture = await signedComponentFixture({
+  const fixture = await componentFixture({
     component: "privacy",
     productVersion: "0.8.1"
   });
   roots.push(fixture.root);
   trust.runtime = fixture.input.runtime;
-  for (const [key, value] of fixture.input.trustedKeys)
-    trust.keys.set(key, value);
   const resources = resolve(home, "resources"),
     runtimeRoot = resolve(resources, "koed-runtime");
   mkdirSync(runtimeRoot, { recursive: true });
@@ -80,18 +86,17 @@ it("installs and activates a signed first Privacy generation with Team enabled a
     controlPlaneVersion: "0.8.1",
     isRunning: false
   });
-  expect((await manager.status()).required).toContain("privacy");
-  const manifestPath = resolve(home, "privacy.json"),
-    signaturePath = resolve(home, "privacy.sig.json");
+  const status = await manager.status();
+  expect(status.required).toContain("privacy");
+  expect(status.requiredManifestPinsAvailable).toBe(true);
+  const manifestPath = resolve(home, "privacy.json");
   writeFileSync(manifestPath, fixture.input.manifestBytes);
-  writeFileSync(signaturePath, JSON.stringify(fixture.input.signature));
   const installed = await manager.install({
     requestId: "11111111-1111-4111-8111-111111111111",
     source: {
       kind: "offline",
       archivePath: fixture.input.archivePath,
-      manifestPath,
-      signaturePath
+      manifestPath
     }
   });
   expect(installed.state).toBe("active");

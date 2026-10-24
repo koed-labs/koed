@@ -11,7 +11,8 @@ export interface RuntimeGenerationState {
   startedAt: string;
   owner: RuntimeOwner;
   pinToken: string;
-  source?: "signed-store" | "desktop-bundle";
+  // `signed-store` remains accepted only for already-running legacy processes.
+  source?: "manifest-pinned-store" | "signed-store" | "desktop-bundle";
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -71,7 +72,9 @@ export const isRuntimeGenerationState = (
   isRecord(value) &&
   (Object.keys(value).length === 7 ||
     (Object.keys(value).length === 8 &&
-      ["signed-store", "desktop-bundle"].includes(String(value.source)))) &&
+      ["manifest-pinned-store", "signed-store", "desktop-bundle"].includes(
+        String(value.source)
+      ))) &&
   value.schemaVersion === 1 &&
   typeof value.generationId === "string" &&
   /^[a-f0-9]{64}$/.test(value.generationId) &&

@@ -27,6 +27,11 @@ import {
   writePackageProvenance
 } from "./koed-server-package-lib.mjs";
 
+import {
+  bundleControlPlane,
+  readControlPlaneCatalog
+} from "./control-plane-bundle.mjs";
+
 const repoRoot = resolve(import.meta.dirname, "..");
 
 const usage = () => `Usage: pnpm koed-server:package -- [options]
@@ -38,6 +43,7 @@ Options:
   --arch <arch>              Package architecture. Defaults to current host.
   --version <version>        Package version. Defaults to @koed-labs/server.
   --out-dir <dir>            Output directory. Defaults to dist/koed-server-package/<platform>-<arch>.
+  --catalogless-development  Internal runtime testing only; component admission disabled.
   --json                     Print JSON result.
   -h, --help                 Show help.
 `;
@@ -52,6 +58,8 @@ const parseArgs = (argv) => {
     else if (value === "--version") options.version = argv[++i];
     else if (value === "--out-dir") options.outDir = argv[++i];
     else if (value === "--json") options.json = true;
+    else if (value === "--catalogless-development")
+      options.cataloglessDevelopment = true;
     else if (value === "--help" || value === "-h") options.help = true;
     else throw new Error(`Unknown option: ${value}\n\n${usage()}`);
   }
@@ -99,7 +107,7 @@ const writeLauncher = (packageRoot) => {
       'ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"',
       'export KOED_SERVER_PACKAGE_ROOT="${KOED_SERVER_PACKAGE_ROOT:-$ROOT}"',
       'export KOED_JS_RUNTIME_ROOT="${KOED_JS_RUNTIME_ROOT:-$ROOT/koed-runtime}"',
-      'exec node "$ROOT/koed-runtime/koed-server/dist/cli.js" "$@"',
+      'exec node "$ROOT/control-plane/cli.js" "$@"',
       ""
     ].join("\n")
   );
@@ -110,10 +118,7 @@ const validatePackagedCli = (packageRoot) =>
   run(
     "Validate packaged koed-server CLI",
     process.execPath,
-    [
-      resolve(packageRoot, "koed-runtime", "koed-server", "dist", "cli.js"),
-      "--help"
-    ],
+    [resolve(packageRoot, "control-plane", "cli.js"), "--help"],
     { cwd: packageRoot, stdio: "pipe" }
   );
 
@@ -192,13 +197,26 @@ const createArchive = ({ outDir, packageDirName }) => {
   return { tarPath, sha256Path, sha256 };
 };
 
-const main = () => {
+const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     console.log(usage());
     return;
   }
 
+  if (
+    options.cataloglessDevelopment &&
+    process.env.KOED_COMPONENT_MANIFEST_CATALOG
+  )
+    throw new Error(
+      "Catalog-less development mode conflicts with release catalog build input."
+    );
+  const catalog = options.cataloglessDevelopment
+    ? null
+    : readControlPlaneCatalog({
+        repoRoot,
+        version: options.version
+      });
   const outDir = resolve(options.outDir);
   const packageDirName = `koed-server-${options.version}-${options.platform}-${options.architecture}`;
   const packageRoot = resolve(outDir, packageDirName);
@@ -225,6 +243,13 @@ const main = () => {
     });
     pruneSharedAppRuntimeMetadata(runtimeRoot);
     pruneStandalonePackageMetadata(packageRoot);
+    await bundleControlPlane({
+      repoRoot,
+      vendorRoot: resolve(packageRoot, "control-plane"),
+      version: options.version,
+      catalog,
+      cataloglessDevelopment: options.cataloglessDevelopment
+    });
     validatePackagedCli(packageRoot);
     validatePackagedTerminalRuntime(runtimeRoot);
     writeLauncher(packageRoot);
@@ -281,4 +306,4 @@ const main = () => {
   else console.log(`Built ${result.artifact.tarPath}`);
 };
 
-main();
+await main();

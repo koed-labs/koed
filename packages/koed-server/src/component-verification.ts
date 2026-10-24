@@ -1,4 +1,4 @@
-import { createHash, verify as cryptoVerify } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   canonicalArtifactJson as canonicalJson,
   canonicalArtifactBytes
@@ -19,9 +19,12 @@ import type {
   ArtifactTarget,
   ComponentId,
   ComponentManifest,
-  ComponentSignature,
   RuntimeIdentity
 } from "./component-contract.js";
+import {
+  lookupManifestPin,
+  type ManifestPinCatalog
+} from "./component-manifest-catalog.js";
 
 export const componentManifestSigningBytes = (
   canonicalManifestBytes: Buffer
@@ -41,13 +44,12 @@ const MAX_TAR_BYTES = MAX_EXPANDED_BYTES + MAX_FILES * 1024 + 1024;
 
 export interface ComponentVerificationInput {
   manifestBytes: Buffer;
-  signature: ComponentSignature;
+  manifestCatalog: ManifestPinCatalog | null;
   archivePath: string;
-  expectedComponent?: ComponentId;
-  expectedVersion?: string;
-  target?: ArtifactTarget;
+  expectedComponent: ComponentId;
+  expectedVersion: string;
+  target: ArtifactTarget;
   runtime: RuntimeIdentity;
-  trustedKeys: ReadonlyMap<string, string>;
 }
 
 export const canonicalComponentManifestBytes = (
@@ -262,17 +264,11 @@ function verifyCompatibility(
   manifest: ComponentManifest,
   input: ComponentVerificationInput
 ): void {
-  if (input.expectedComponent && manifest.component !== input.expectedComponent)
+  if (manifest.component !== input.expectedComponent)
     throw new Error("component mismatch");
-  if (
-    input.expectedVersion &&
-    manifest.productVersion !== input.expectedVersion
-  )
+  if (manifest.productVersion !== input.expectedVersion)
     throw new Error("product version mismatch");
-  if (
-    input.target &&
-    canonicalJson(manifest.target) !== canonicalJson(input.target)
-  )
+  if (canonicalJson(manifest.target) !== canonicalJson(input.target))
     throw new Error("component target mismatch");
   if (
     manifest.target.platform !== input.runtime.platform ||
@@ -462,29 +458,16 @@ async function verifyTarArchive(
       throw new Error(`required component file is missing: ${required}`);
 }
 
-async function verifyComponentSync(
-  input: ComponentVerificationInput
-): Promise<ComponentManifest> {
-  assertRecord(input.signature, "component signature", [
-    "schemaVersion",
-    "keyId",
-    "algorithm",
-    "signature"
-  ]);
-  if (
-    input.signature.schemaVersion !== 2 ||
-    input.signature.algorithm !== "ed25519"
-  )
-    throw new Error("unsupported component signature");
-  if (
-    typeof input.signature.keyId !== "string" ||
-    !/^[A-Za-z0-9_-]{1,64}$/.test(input.signature.keyId) ||
-    typeof input.signature.signature !== "string" ||
-    !/^[A-Za-z0-9+/]+={0,2}$/.test(input.signature.signature)
-  )
-    throw new Error("component signature encoding is invalid");
-  const publicKey = input.trustedKeys.get(input.signature.keyId);
-  if (!publicKey) throw new Error("untrusted component signing key");
+export function verifyComponentManifestPin(
+  input: Pick<
+    ComponentVerificationInput,
+    | "manifestBytes"
+    | "manifestCatalog"
+    | "expectedComponent"
+    | "expectedVersion"
+    | "target"
+  >
+): ComponentManifest {
   if (input.manifestBytes.length > MAX_MANIFEST_BYTES)
     throw new Error("component manifest exceeds size limit");
   let parsed: unknown;
@@ -498,18 +481,26 @@ async function verifyComponentSync(
   const canonical = canonicalComponentManifestBytes(manifest);
   if (!canonical.equals(input.manifestBytes))
     throw new Error("component manifest is not canonical");
-  const signature = Buffer.from(input.signature.signature, "base64");
-  if (
-    signature.length !== 64 ||
-    signature.toString("base64") !== input.signature.signature ||
-    !cryptoVerify(
-      null,
-      componentManifestSigningBytes(canonical),
-      publicKey,
-      signature
-    )
-  )
-    throw new Error("component manifest signature is invalid");
+  const pinnedDigest = lookupManifestPin(input.manifestCatalog, {
+    component: input.expectedComponent,
+    productVersion: input.expectedVersion,
+    target: input.target
+  });
+  if (createHash("sha256").update(canonical).digest("hex") !== pinnedDigest)
+    throw new Error("component manifest pin mismatch");
+  if (manifest.component !== input.expectedComponent)
+    throw new Error("component mismatch");
+  if (manifest.productVersion !== input.expectedVersion)
+    throw new Error("product version mismatch");
+  if (canonicalJson(manifest.target) !== canonicalJson(input.target))
+    throw new Error("component target mismatch");
+  return manifest;
+}
+
+async function verifyComponentSync(
+  input: ComponentVerificationInput
+): Promise<ComponentManifest> {
+  const manifest = verifyComponentManifestPin(input);
   verifyCompatibility(manifest, input);
   const stat = lstatSync(input.archivePath);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_ARCHIVE_BYTES)

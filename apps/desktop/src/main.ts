@@ -408,8 +408,7 @@ const bootstrap = async () => {
     const files: string[] = [];
     for (const [label, extensions] of [
       ["Privacy archive", ["tar.gz"]],
-      ["Component manifest", ["json"]],
-      ["Detached signature", ["json"]]
+      ["Component manifest", ["json"]]
     ] as const) {
       const selected = mainWindow
         ? await dialog.showOpenDialog(mainWindow, {
@@ -425,11 +424,7 @@ const bootstrap = async () => {
       if (selected.canceled || !selected.filePaths[0]) return null;
       files.push(selected.filePaths[0]);
     }
-    return {
-      archivePath: files[0]!,
-      manifestPath: files[1]!,
-      signaturePath: files[2]!
-    };
+    return { archivePath: files[0]!, manifestPath: files[1]! };
   };
   const cliInstallSettingsFile = resolve(
     app.getPath("userData"),
@@ -628,18 +623,12 @@ const bootstrap = async () => {
             const archivePath = process.env.KOED_PRIVATE_SMOKE_PRIVACY_ARCHIVE;
             const manifestPath =
               process.env.KOED_PRIVATE_SMOKE_PRIVACY_MANIFEST;
-            const signaturePath =
-              process.env.KOED_PRIVATE_SMOKE_PRIVACY_SIGNATURE;
-            if (!archivePath || !manifestPath || !signaturePath) {
+            if (!archivePath || !manifestPath) {
               throw new Error(
-                "Private smoke Privacy installation requires an offline archive, manifest and signature."
+                "Private smoke Privacy installation requires an offline archive and manifest."
               );
             }
-            const offlineSource = {
-              archivePath,
-              manifestPath,
-              signaturePath
-            };
+            const offlineSource = { archivePath, manifestPath };
             if (!server.privacyInstall) {
               throw new Error("Desktop Privacy installation is unavailable.");
             }

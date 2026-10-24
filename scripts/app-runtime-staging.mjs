@@ -191,6 +191,17 @@ const writeThirdPartyInventory = (runtimeRoot) => {
 };
 
 export const finalizeStagedAppRuntime = (runtimeRoot) => {
+  // Runtime archives cannot carry authority over their own manifests. Do this
+  // before inventory/archive generation, never by excluding files from hashes.
+  const catalogModule = resolve(
+    runtimeRoot,
+    "node_modules/@koed-labs/server/dist/component-manifest-catalog-data.js"
+  );
+  if (existsSync(catalogModule))
+    writeFileSync(
+      catalogModule,
+      "export const productionComponentManifestCatalog = null;\n"
+    );
   removeBinDirectories(resolve(runtimeRoot, "node_modules"));
   rmSync(resolve(runtimeRoot, "node_modules", ".pnpm"), {
     recursive: true,

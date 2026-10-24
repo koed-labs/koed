@@ -12,16 +12,21 @@ import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 const fixtureRuntime = vi.hoisted(() => ({
   value: undefined as RuntimeIdentity | undefined
 }));
-const fixtureKeys = vi.hoisted(() => ({ value: new Map<string, string>() }));
+
 vi.mock("./component-runtime-identity.js", () => ({
   discoverActualRuntimeIdentity: () => {
     if (!fixtureRuntime.value) throw new Error("fixture runtime missing");
     return fixtureRuntime.value;
   }
 }));
-vi.mock("./component-trust-roots.js", () => ({
-  productionComponentTrustRoots: fixtureKeys.value
-}));
+vi.mock("./component-manifest-catalog-data.js", async () => {
+  const fixtures = await import("./component-test-fixtures.js");
+  return {
+    get productionComponentManifestCatalog() {
+      return fixtures.getFixtureManifestPinCatalog();
+    }
+  };
+});
 
 import type { RuntimeRequirements } from "./component-contract.js";
 import {
@@ -29,7 +34,10 @@ import {
   resolveKoedAppRuntime,
   resolveKoedAppRuntimeForExecution
 } from "./app-runtime.js";
-import { signedComponentFixture } from "./component-test-fixtures.js";
+import {
+  resetFixtureManifestPinCatalog,
+  componentFixture
+} from "./component-test-fixtures.js";
 import { stageComponent, stageGeneration } from "./component-store.js";
 import type { KoedServerPaths } from "./paths.js";
 import { resolveKoedServerPaths } from "./paths.js";
@@ -89,25 +97,19 @@ const verifiedGeneration = async (root: string, includePrivacy = false) => {
   ) => {
     const productVersion = "0.8.1";
     const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
-    const fixture = await signedComponentFixture(
+    const fixture = await componentFixture(
       { component, requiredFiles, productVersion, target },
       requiredFiles.map((path) => ({ path })),
       {},
       true
     );
     fixtureRuntime.value = fixture.input.runtime;
-    for (const [key, value] of fixture.input.trustedKeys)
-      fixtureKeys.value.set(key, value);
     const staged = await stageComponent(
       paths(root),
       {
         kind: "offline",
         archivePath: fixture.input.archivePath,
-        manifestPath: temporaryMetadata(root, fixture.input.manifestBytes),
-        signaturePath: temporaryMetadata(
-          root,
-          Buffer.from(JSON.stringify(fixture.input.signature))
-        )
+        manifestPath: temporaryMetadata(root, fixture.input.manifestBytes)
       },
       {
         expectedComponent: component,
@@ -133,8 +135,8 @@ const verifiedGeneration = async (root: string, includePrivacy = false) => {
 afterEach(() => {
   for (const path of temps.splice(0))
     rmSync(path, { recursive: true, force: true });
+  resetFixtureManifestPinCatalog();
   fixtureRuntime.value = undefined;
-  fixtureKeys.value.clear();
   vi.restoreAllMocks();
 });
 

@@ -33,6 +33,16 @@ package the trusted CLI and Desktop. Base contains Server code: the frozen
 component build must not be rebuilt using the catalog that authenticates itself.
 Its runtime copy is not an independently trusted installer. Verify the effective
 catalog inside packaged executables, not only a sidecar, before promotion.
+
+The standalone archive also carries its trusted control-plane launcher outside
+`koed-runtime`. Its `bin/koed` delegates to that external control plane, and
+supervisor start/restart/re-exec must retain the external entrypoint. The Base
+runtime CLI remains catalog-less and cannot admit components. Staging replaces
+any build-time catalog module with the fixed catalog-less module before full
+inventory and archive generation; no files are excluded from verification. A
+later catalog-bearing workspace rebuild therefore does not feed authority back
+into frozen Base bytes.
+
 Remove KMS verification only after negative tests pass through actual component
 install and release-promotion paths. Cloud signer retirement requires separately
 authorized operational changes and evidence; code changes do not prove live

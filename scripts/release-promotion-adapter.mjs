@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+import { inspectPackagedTrustRoots } from "./static-packaged-trust-roots.mjs";
 import { componentManifestSigningBytes } from "./component-signature-format.mjs";
+import { verifyFrozenComponentAssets } from "./verify-frozen-component-assets.mjs";
+import { verifyPackagedControlPlaneCatalog } from "./verify-packaged-control-plane-catalog.mjs";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
@@ -185,6 +188,13 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         "Expected matching GitHub draft release before promotion."
       );
     const assets = new Map(release.assets.map((asset) => [asset.name, asset]));
+    const catalogName = "component-manifest-hashes.json";
+    if (!assets.has(catalogName))
+      throw new Error(
+        "Complete component catalog is missing from draft release."
+      );
+    const catalogPath = resolve(temp, catalogName);
+    download(assets.get(catalogName), catalogPath);
     const manifests = [...assets.keys()].filter((name) =>
       /^koed-(?:base|privacy)-.*\.tar\.gz\.manifest\.json$/.test(name)
     );
@@ -254,6 +264,11 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         );
       verified.push(...result);
     }
+    await verifyFrozenComponentAssets({
+      assetsDir: temp,
+      catalogPath,
+      version: args.version
+    });
     const identityName = "koed-labs-server-release-identity.json";
     const tarballName = "koed-labs-server.tgz";
     if (!assets.has(identityName) || !assets.has(tarballName))
@@ -269,16 +284,8 @@ export const runReleasePromotion = async (args, adapters = {}) => {
       integrity: identity.npm?.integrity
     };
     const integrity = `sha512-${createHash("sha512").update(readFileSync(tarballPath)).digest("base64")}`;
-    const builtRootsPath = resolve(temp, "component-trust-roots.mjs");
-    writeFileSync(
-      builtRootsPath,
+    const builtRoots = inspectPackagedTrustRoots(
       run("tar", ["-xOf", tarballPath, "package/dist/component-trust-roots.js"])
-    );
-    const builtRootsModule = await import(
-      `${pathToFileURL(builtRootsPath).href}?${Date.now()}`
-    );
-    const builtRoots = Object.fromEntries(
-      builtRootsModule.productionComponentTrustRoots
     );
     const builtRootsDigest = createHash("sha256")
       .update(canonicalReleaseJson(builtRoots))
@@ -298,6 +305,12 @@ export const runReleasePromotion = async (args, adapters = {}) => {
       throw new Error(
         "npm tarball identity does not match exact package, version, and integrity."
       );
+    run("tar", ["-xzf", tarballPath, "-C", temp]);
+    verifyPackagedControlPlaneCatalog({
+      modulePath: resolve(temp, "package/vendor/control-plane.js"),
+      catalogPath,
+      version: args.version
+    });
     let published = await fetchRegistry(expected.packageName, expected.version);
     if (!published) {
       run("npm", [
@@ -325,6 +338,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         name.replace(/\.manifest\.json$/, ".signature.json"),
         name.replace(/\.manifest\.json$/, "")
       ]),
+      catalogName,
       identityName,
       tarballName
     ];

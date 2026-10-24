@@ -145,8 +145,15 @@ The initial CI artifact build is produced by:
 
 ```bash
 pnpm build
-pnpm koed-server:package -- --platform linux --arch x64 --json
+pnpm koed-server:package -- --catalogless-development --platform linux --arch x64 --json
 ```
+
+This explicit internal-testing mode embeds no component admission authority.
+Official release packaging instead requires the complete frozen-manifest catalog
+build input; see [component manifest catalogs](component-manifest-catalog.md).
+The trusted standalone control plane lives outside `koed-runtime/`, under
+`control-plane/`; `bin/koed` and supervisor re-execution retain that entrypoint.
+Its Base runtime copy remains catalog-less rather than authenticating itself.
 
 The script stages one private aggregate production deployment with a hoisted
 dependency graph. Deterministic service wrappers preserve the established

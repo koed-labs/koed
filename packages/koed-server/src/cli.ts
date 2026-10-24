@@ -135,7 +135,7 @@ export const runKoedServerCli = async (
     implementation = await import("./cli-implementation.js");
   } catch {
     const message =
-      "Koed service runtime is not provisioned. Install the signed base component from a trusted offline archive set, then run `koed doctor`.";
+      "Koed service runtime is not provisioned. Install the manifest-pinned base component from a trusted offline archive pair, then run `koed doctor`.";
     const stderr = dependencies?.stderr ?? process.stderr;
     if (args.includes("--json"))
       printJson(dependencies?.stdout ?? process.stdout, {

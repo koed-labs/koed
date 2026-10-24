@@ -1,7 +1,5 @@
 #!/usr/bin/env node
-import { build } from "esbuild";
 import {
-  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -10,11 +8,15 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { builtinModules } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { createPackageReleaseIdentity } from "./package-release-identity.mjs";
+import {
+  bundleControlPlane,
+  readControlPlaneCatalog,
+  writeControlPlaneLauncher
+} from "./control-plane-bundle.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceManifest = JSON.parse(
@@ -83,75 +85,26 @@ const main = async () => {
     );
     return;
   }
+  const catalog = readControlPlaneCatalog({
+    repoRoot,
+    version: sourceManifest.version
+  });
   const packageRoot = resolve(options.outDir, "package");
   const vendorRoot = resolve(packageRoot, "vendor");
   const tarballDir = resolve(options.outDir, "tarballs");
   rmSync(options.outDir, { recursive: true, force: true });
   mkdirSync(vendorRoot, { recursive: true });
   mkdirSync(tarballDir, { recursive: true });
-  const built = await build({
-    absWorkingDir: repoRoot,
-    entryPoints: ["packages/koed-server/dist/cli.js"],
-    outdir: vendorRoot,
-    entryNames: "control-plane",
-    chunkNames: "chunk-[hash]",
-    bundle: true,
-    splitting: true,
-    format: "esm",
-    platform: "node",
-    // Bundled CommonJS dependencies still require Node built-ins at runtime.
-    banner: {
-      js: 'import { createRequire as createKoedRequire } from "node:module"; const require = createKoedRequire(import.meta.url);'
-    },
-    target: "node24",
-    packages: "bundle",
-    metafile: true,
-    sourcemap: false,
-    legalComments: "none"
+  const built = await bundleControlPlane({
+    repoRoot,
+    vendorRoot,
+    version: sourceManifest.version,
+    catalog
   });
-  const unresolvedImports = Object.values(built.metafile.outputs)
-    .flatMap((output) => output.imports)
-    .filter(
-      (item) =>
-        item.external &&
-        !item.path.startsWith("node:") &&
-        !builtinModules.includes(item.path)
-    );
-  if (unresolvedImports.length > 0)
-    throw new Error(
-      `Control-plane bundle has unresolved external imports: ${unresolvedImports.map((item) => item.path).join(", ")}`
-    );
   const binRoot = resolve(packageRoot, "bin");
   mkdirSync(binRoot, { recursive: true });
   const launcher = resolve(binRoot, "koed.js");
-  writeFileSync(
-    launcher,
-    [
-      "#!/usr/bin/env node",
-      'if (Number(process.versions.node.split(".")[0]) !== 24) { console.error(`@koed-labs/server requires Node.js >=24 <25; found ${process.versions.node}.`); process.exit(1); }',
-      'const { runKoedServerCli, shouldExitPackagedSupervisor } = await import("../vendor/control-plane.js");',
-      "const args = process.argv.slice(2);",
-      "const exitCode = await runKoedServerCli(args);",
-      "if (shouldExitPackagedSupervisor(args)) process.exit(exitCode);",
-      "process.exitCode = exitCode;",
-      ""
-    ].join("\n"),
-    { mode: 0o755 }
-  );
-  chmodSync(launcher, 0o755);
-  // Bundled modules resolve auxiliary executables relative to vendor chunks.
-  writeFileSync(
-    resolve(vendorRoot, "cli.js"),
-    readFileSync(launcher, "utf8").replace(
-      "../vendor/control-plane.js",
-      "./control-plane.js"
-    ),
-    { mode: 0o755 }
-  );
-  copyFileSync(
-    resolve(repoRoot, "packages/koed-server/dist/privacy-service-bootstrap.js"),
-    resolve(vendorRoot, "privacy-service-bootstrap.js")
-  );
+  writeControlPlaneLauncher(launcher, "../vendor/control-plane.js");
   const distRoot = resolve(packageRoot, "dist");
   mkdirSync(distRoot, { recursive: true });
   copyFileSync(

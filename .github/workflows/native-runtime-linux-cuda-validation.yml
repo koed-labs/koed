@@ -138,7 +138,7 @@ jobs:
       - name: Build the exact Linux standalone Privacy runtime
         env:
           SOURCE_DATE_EPOCH: 0
-        run: pnpm koed-server:package -- --version "${GITHUB_SHA}" --platform linux --arch x64 --out-dir "${RUNNER_TEMP}/koed-cuda-standalone" --json
+        run: pnpm koed-server:package -- --catalogless-development --version "${GITHUB_SHA}" --platform linux --arch x64 --out-dir "${RUNNER_TEMP}/koed-cuda-standalone" --json
 
       - name: Inspect the exact Linux standalone Privacy runtime
         run: |

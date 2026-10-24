@@ -75,8 +75,9 @@ export function CliInstallSettingsSection({ api }: { api?: CliInstallApi }) {
     >
       <h2>Privacy Filter assets</h2>
       <p>
-        Installing optional Privacy Filter assets downloads or imports a signed
-        component. Koed does not install it without your explicit consent.
+        Installing optional Privacy Filter assets downloads or imports a
+        manifest-pinned component. Koed does not install it without your
+        explicit consent.
       </p>
       <p role="status">
         {status?.message ??

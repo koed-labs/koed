@@ -75,6 +75,29 @@ publishes nothing; do not merge the "Version Koed" release PR until these are cl
 - Run an authorized release rehearsal, then promotion with
   `KOED_NPM_PUBLICATION_AUTHORIZED` and `KOED_RELEASE_PROMOTION_APPROVED`.
 
+## Manifest-pin release stack acceptance
+
+ADR-0057 replaces runtime component-signature admission with versioned manifest
+pins from trusted npm/Desktop control planes. Historical signed-component evidence
+above is not acceptance evidence for this replacement.
+
+- Validate fresh catalog-bearing standalone npm/Desktop candidates against frozen
+  Base/Privacy bytes on macOS arm64 and Linux x64, including actual positive
+  Personal/Team startup, online/offline acquisition, restart and tamper rejection.
+- Verify signed/notarized Desktop catalog after final packaging, plus relocation,
+  helper/fuse, uninstall and clean-Mac behavior. Keep CUDA validation separate.
+- Complete actual pre-promotion candidate verification without publication before
+  removing retained KMS release-signing/rehearsal infrastructure. Confirm live
+  rehearsal authorization and consumers through separately authorized read-only
+  operational inspection; repository state is not evidence of deployed state.
+- Retire signer callers/configuration only after acceptance and explicit operational
+  authorization. Prefer reversible disablement; do not destroy keys during cleanup.
+- Obtain release-note approval: recommend minor for changed component trust,
+  configuration and packaging behavior. Keep publication approval disabled.
+- Keep broader database compatibility/restoration, CLI IPC replacement, filesystem
+  simplification, precomputed bundle identity and broad benchmarking deferred.
+  Same-version generation recovery is not whole-release rollback.
+
 ## Server distribution split (PR #404)
 
 - Completed: private Server package and `koed` command migration (#408, merged).

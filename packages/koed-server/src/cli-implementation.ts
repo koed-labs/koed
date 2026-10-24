@@ -93,7 +93,8 @@ import {
   resolveKoedControlPlaneVersion,
   resolveKoedRuntimeOwner
 } from "./app-runtime.js";
-import type { ArtifactTarget } from "./component-contract.js";
+import { resolveComponentCommandTarget } from "./component-command-target.js";
+import { productionComponentManifestCatalog } from "./component-manifest-catalog-data.js";
 import type { ComponentSource } from "./component-store.js";
 
 import {
@@ -456,10 +457,8 @@ export const runKoedServerCli = async (
           "--version",
           "--archive",
           "--manifest",
-          "--signature",
           "--archive-url",
           "--manifest-url",
-          "--signature-url",
           "--stage-only"
         ]),
         activate: new Set(["--json", "--version"]),
@@ -488,10 +487,10 @@ export const runKoedServerCli = async (
       const handlers = await import("./component-commands.js");
       const paths = resolvePaths();
       const runtime = discoverActualRuntimeIdentity();
-      const target: ArtifactTarget = {
-        platform: runtime.platform,
-        architecture: runtime.architecture
-      };
+      const target = resolveComponentCommandTarget(
+        runtime,
+        productionComponentManifestCatalog
+      );
       const context = {
         paths,
         controlPlaneVersion: resolveKoedControlPlaneVersion(),
@@ -507,40 +506,36 @@ export const runKoedServerCli = async (
         const component = requireFlagValue(args, "--component");
         if (component !== "base" && component !== "privacy")
           throw new Error("--component must be base or privacy.");
-        const offlineValues = ["--archive", "--manifest", "--signature"].map(
-          (flag) => flagValue(args, flag)
+        const offlineValues = ["--archive", "--manifest"].map((flag) =>
+          flagValue(args, flag)
         );
-        const remoteValues = [
-          "--archive-url",
-          "--manifest-url",
-          "--signature-url"
-        ].map((flag) => flagValue(args, flag));
+        const remoteValues = ["--archive-url", "--manifest-url"].map((flag) =>
+          flagValue(args, flag)
+        );
         const hasOffline = offlineValues.some((value) => value !== undefined);
         const hasRemote = remoteValues.some((value) => value !== undefined);
         if (hasOffline === hasRemote)
           throw new Error(
-            "Provide exactly one complete offline archive/manifest/signature set or exact-version URL set."
+            "Provide exactly one complete offline archive/manifest set or exact-version URL set."
           );
         if (hasOffline && offlineValues.some((value) => value === undefined))
           throw new Error(
-            "Offline install requires --archive, --manifest, and --signature paths."
+            "Offline install requires --archive and --manifest paths."
           );
         if (hasRemote && remoteValues.some((value) => value === undefined))
           throw new Error(
-            "Network install requires --archive-url, --manifest-url, and --signature-url."
+            "Network install requires --archive-url and --manifest-url."
           );
         const source: ComponentSource = hasOffline
           ? {
               kind: "offline",
               archivePath: offlineValues[0]!,
-              manifestPath: offlineValues[1]!,
-              signaturePath: offlineValues[2]!
+              manifestPath: offlineValues[1]!
             }
           : {
               kind: "remote",
               archiveUrl: remoteValues[0]!,
-              manifestUrl: remoteValues[1]!,
-              signatureUrl: remoteValues[2]!
+              manifestUrl: remoteValues[1]!
             };
         result = await handlers.runComponentInstall(context, {
           component,

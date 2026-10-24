@@ -15,8 +15,7 @@ import { resolve } from "node:path";
 import type { RuntimeIdentity } from "./component-contract.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 const fixtureTrust = vi.hoisted(() => ({
-  runtime: null as RuntimeIdentity | null,
-  keys: new Map<string, string>()
+  runtime: null as RuntimeIdentity | null
 }));
 
 vi.mock("./component-runtime-identity.js", () => ({
@@ -25,9 +24,14 @@ vi.mock("./component-runtime-identity.js", () => ({
     return fixtureTrust.runtime;
   }
 }));
-vi.mock("./component-trust-roots.js", () => ({
-  productionComponentTrustRoots: fixtureTrust.keys
-}));
+vi.mock("./component-manifest-catalog-data.js", async () => {
+  const fixtures = await import("./component-test-fixtures.js");
+  return {
+    get productionComponentManifestCatalog() {
+      return fixtures.getFixtureManifestPinCatalog();
+    }
+  };
+});
 vi.mock("./app-runtime.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("./app-runtime.js")>();
   return {
@@ -40,8 +44,9 @@ import { setupClaude } from "./claude-setup.js";
 import { setupPi } from "./pi-setup.js";
 import { repairCodexIntegration, setupCodex } from "./setup.js";
 import { resolveKoedControlPlaneVersion } from "./app-runtime.js";
-import { stageSignedSetupRuntime } from "./setup-runtime-test-fixtures.js";
+import { stagePinnedSetupRuntime } from "./setup-runtime-test-fixtures.js";
 import { inspectCodex } from "./status.js";
+import { resetFixtureManifestPinCatalog } from "./component-test-fixtures.js";
 import { ensureKoedHome, resolveKoedServerPaths } from "./paths.js";
 
 // Setup uses only the UTF-8 overload; bridge Node's broader overloads at injection.
@@ -66,27 +71,25 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
   for (const dispose of fixtureDisposers.splice(0)) dispose();
   fixtureTrust.runtime = null;
-  fixtureTrust.keys.clear();
+  resetFixtureManifestPinCatalog();
   vi.restoreAllMocks();
 });
 
 describe("packaged AI Client setup authentication", () => {
   const activateFixture = async (root: string) => {
     const paths = resolveKoedServerPaths({ KOED_HOME: root });
-    const fixture = await stageSignedSetupRuntime(
+    const fixture = await stagePinnedSetupRuntime(
       paths,
       resolveKoedControlPlaneVersion(),
-      (trustedFixture) => {
-        fixtureTrust.runtime = trustedFixture.input.runtime;
-        for (const [keyId, key] of trustedFixture.input.trustedKeys)
-          fixtureTrust.keys.set(keyId, key);
+      (pinnedFixture) => {
+        fixtureTrust.runtime = pinnedFixture.input.runtime;
       }
     );
     fixtureDisposers.push(fixture.dispose);
     return paths;
   };
 
-  it("repairs Codex using signed-selected MCP artifacts instead of CWD decoys", async () => {
+  it("repairs Codex using manifest-pinned MCP artifacts instead of CWD decoys", async () => {
     const root = makeRoot();
     const home = resolve(root, "home");
     const paths = await activateFixture(home);
