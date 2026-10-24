@@ -20,6 +20,7 @@ import {
 } from "./local-agent-settings-schemas.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { AiClientUsageCompletion } from "@koed/shared";
+import { aiClientUsageDismissalScope } from "./ai-client-usage-dismissal-scope.js";
 
 type AssignmentInput = z.infer<typeof localMemoryAgentSettingsSchema>;
 type AiClientInstance = Awaited<
@@ -371,6 +372,8 @@ const registerUsageRoutes = (
         .filter((snapshot) => enabledIds.has(snapshot.instanceId))
         .map((snapshot) => ({
           instanceId: snapshot.instanceId,
+          // Repository returns only rows joined to the current verified account binding.
+          accountVerified: true,
           source: snapshot.source,
           bucketId: snapshot.bucketId,
           bucketName: snapshot.bucketName,
@@ -383,6 +386,13 @@ const registerUsageRoutes = (
           details: snapshot.details,
           observedAt: snapshot.observedAt
         }));
+      const usageScopeId = aiClientUsageDismissalScope(
+        user.id,
+        scope,
+        await requireRepository().listAiClientUsageAccountBindings({
+          userId: user.id
+        })
+      );
       const after = await bindingFingerprint(user.id, scope);
       if (before !== after)
         throw assignmentUnavailable(
@@ -390,7 +400,8 @@ const registerUsageRoutes = (
         );
       return {
         snapshots,
-        authorityGeneration: after
+        authorityGeneration: after,
+        usageScopeId
       };
     }
   );

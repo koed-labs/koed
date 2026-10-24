@@ -197,6 +197,11 @@ The execution persists driver, instance, model, reasoning effort, permission
 mode, and runner identity. The driver and instance remain fixed for that
 execution. Runner changes use the explicit handoff flow.
 
+Subscription usage suggestions follow this boundary: a new Conversation can
+change its AI Client selection before the first message, while a running
+Conversation can only open a separate new chat with the current draft. No
+usage suggestion changes an execution's driver or instance.
+
 Users can select model, reasoning effort, and permission changes between turns.
 Desktop submits these changes with the next prompt, including the expected
 previous settings. The repository locks the execution and admits the settings

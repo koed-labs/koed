@@ -1,0 +1,47 @@
+.hq-usage-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 4px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--hq-heat-3) 12%, var(--hq-surface));
+  color: var(--hq-fg2);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.hq-usage-suggestion > svg {
+  flex: none;
+  color: var(--hq-heat-3);
+}
+.hq-usage-suggestion > span {
+  flex: 1;
+  min-width: 180px;
+}
+.hq-usage-suggestion__actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.hq-usage-suggestion button {
+  height: 28px;
+  border: 0;
+  border-radius: 14px;
+  padding: 0 11px;
+  background: var(--hq-surface-hover);
+  color: var(--hq-fg);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.hq-usage-suggestion .hq-usage-suggestion__primary {
+  background: var(--hq-btn);
+  color: var(--hq-btn-fg);
+  font-weight: 500;
+}
+.hq-usage-suggestion--chosen {
+  background: var(--hq-surface);
+}
+.hq-usage-suggestion--chosen > svg {
+  color: var(--hq-heat-2);
+}

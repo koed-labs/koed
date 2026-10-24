@@ -18669,7 +18669,11 @@ describe("AI Client usage authority", () => {
         }
       });
     const usageResponse = (response: { body: string }) =>
-      jsonBody<{ snapshots: unknown[]; authorityGeneration: string }>(response);
+      jsonBody<{
+        snapshots: unknown[];
+        authorityGeneration: string;
+        usageScopeId: string;
+      }>(response);
     expect((await bind(first, t1)).json()).toMatchObject({ accepted: true });
     expect(usageResponse(await write(first, t1)).snapshots).toHaveLength(1);
     const before = usageResponse(
@@ -18680,7 +18684,21 @@ describe("AI Client usage authority", () => {
       })
     );
     expect(before.snapshots).toHaveLength(1);
+    expect(before.snapshots[0]).toMatchObject({ accountVerified: true });
     expect(JSON.stringify(before)).not.toContain(first);
+    expect(before.usageScopeId).toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      (await bind(first, "2026-10-23T12:00:30.000Z")).json()
+    ).toMatchObject({ accepted: true });
+    const refreshed = usageResponse(
+      await app.inject({
+        method: "GET",
+        url: "/v1/memory/ai-client-instances/usage",
+        headers: ownerHeaders
+      })
+    );
+    expect(refreshed.snapshots).toHaveLength(1);
+    expect(refreshed.usageScopeId).toBe(before.usageScopeId);
     expect(
       usageResponse(
         await app.inject({
@@ -18715,6 +18733,7 @@ describe("AI Client usage authority", () => {
     );
     expect(after.snapshots).toEqual([]);
     expect(after.authorityGeneration).not.toBe(before.authorityGeneration);
+    expect(after.usageScopeId).not.toBe(before.usageScopeId);
     expect(
       (await bind(first, "2026-10-23T12:02:00.000Z")).json()
     ).toMatchObject({ accepted: true });
@@ -18726,6 +18745,7 @@ describe("AI Client usage authority", () => {
       })
     );
     expect(returned.authorityGeneration).not.toBe(before.authorityGeneration);
+    expect(returned.usageScopeId).toBe(before.usageScopeId);
     expect(returned.snapshots).toEqual([]);
     await app.close();
   });

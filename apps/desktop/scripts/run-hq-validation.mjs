@@ -710,7 +710,8 @@ try {
     }
   }
   for (const [ticket, expected] of [
-    ["723", ["S1", "S2.display", "S3", "S7", "S8", "S9", "N27"]]
+    ["723", ["S1", "S2.display", "S3", "S7", "S8", "S9", "N27"]],
+    ["522", ["U4", "U5", "U6", "N20", "N24", "N29"]]
   ]) {
     if (process.exitCode !== undefined && process.exitCode !== 0) break;
     const reportPath = resolve(

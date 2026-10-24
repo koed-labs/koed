@@ -8,6 +8,7 @@ import type {
 import { App } from "./renderer/App.js";
 import { createHq521UsageFixture } from "./hq-usage-browser-fixture.js";
 import { createHq723SharingFixture } from "./hq-sharing-browser-fixture.js";
+import { createHq522UsageFixture } from "./hq-522-usage-browser-fixture.js";
 import {
   createHq726ContributionsFixture,
   hq726WorkspaceProjectId
@@ -62,6 +63,9 @@ const FIXTURE_ID = "hq-approved-map-fixture-v1";
 const hq521Capture =
   new URLSearchParams(window.location.search).get("hq521Capture") === "yes";
 const hq521Usage = hq521Capture ? createHq521UsageFixture() : null;
+const hq522Capture =
+  new URLSearchParams(window.location.search).get("hq522Capture") === "yes";
+const hq522Usage = hq522Capture ? createHq522UsageFixture() : null;
 const hq726Capture =
   new URLSearchParams(window.location.search).get("hq726Capture") === "yes";
 const FIXTURE_TIME = "2026-10-19T09:00:00.000Z";
@@ -2054,8 +2058,10 @@ const installSettingsDesktop = () => {
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
     ...(hq726Contributions ? { curatedMemory: hq726Contributions.api } : {}),
     ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
-    ...(hq521Usage ? { localAiClients: hq521Usage.api } : {}),
     ...(hq723Sharing ? { sharing: hq723Sharing.api } : {}),
+    ...(hq521Usage || hq522Usage
+      ? { localAiClients: (hq522Usage ?? hq521Usage)!.api }
+      : {}),
     ...(hq106Capture || hq702Capture
       ? { personalMemory: sidebarPersonalMemoryApi }
       : {}),
@@ -5741,6 +5747,14 @@ export function HqValidationApp() {
           __koedHq723Sharing?: NonNullable<typeof hq723Sharing>["control"];
         }
       ).__koedHq723Sharing = hq723Sharing.control;
+    if (hq522Usage)
+      (
+        window as Window & {
+          __koedHq522Usage?: ReturnType<
+            typeof createHq522UsageFixture
+          >["control"];
+        }
+      ).__koedHq522Usage = hq522Usage.control;
     if (hq726Contributions)
       (
         window as Window & {
@@ -5857,7 +5871,7 @@ export function HqValidationApp() {
       personalMemoryApi={sidebarPersonalMemoryApi}
       projectsApi={sidebarProjectsApi}
       managedConversations={
-        hq521Capture
+        hq521Capture || hq522Capture
           ? hq521ManagedConversations
           : hq308Capture
             ? hq308ManagedConversations

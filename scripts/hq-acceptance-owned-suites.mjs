@@ -1216,5 +1216,112 @@ export const ownedAcceptanceSuites = [
         proofId: "N27"
       }
     ]
+  },
+  {
+    id: "U522.4",
+    clause:
+      "Explicit new-chat selection preserves the saved default; running chat handoff carries the draft.",
+    proof: [
+      {
+        runner: "apps/desktop/scripts/validate-hq522-native.mjs",
+        reportPath: "scratch/hq-522/HQ522.native.json",
+        proofId: "U4"
+      }
+    ]
+  },
+  {
+    id: "U522.5",
+    clause:
+      "Keep suppresses suggestions until the applicable reset or one hour.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/usage/HqUsageSuggestion.test.tsx",
+        title:
+          "keeps a dismissal across remount but does not carry it to another account",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/memory/ai-client-usage-dismissal-scope.test.ts",
+        title:
+          "survives a probe timestamp change but changes for owner, profile, or verified account binding",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq522-native.mjs",
+        reportPath: "scratch/hq-522/HQ522.native.json",
+        proofId: "U5"
+      }
+    ]
+  },
+  {
+    id: "U522.6",
+    clause:
+      "Provider/model-specific warnings distinguish no warning, alternative and warning-only cases.",
+    proof: [
+      {
+        runner: "apps/desktop/scripts/validate-hq522-native.mjs",
+        reportPath: "scratch/hq-522/HQ522.native.json",
+        proofId: "U6"
+      }
+    ]
+  },
+  {
+    id: "N522.20",
+    clause:
+      "Suggestions never switch a running Conversation or select another AI without explicit acceptance.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/usage/HqUsageSuggestion.test.tsx",
+        title:
+          "discards an accepting click when the owner changes during its usage recheck",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq522-native.mjs",
+        reportPath: "scratch/hq-522/HQ522.native.json",
+        proofId: "N20"
+      }
+    ]
+  },
+  {
+    id: "N522.24",
+    clause:
+      "Expired, stale and other-account readings cannot qualify an alternative.",
+    proof: [
+      {
+        runner: "apps/desktop/scripts/validate-hq522-native.mjs",
+        reportPath: "scratch/hq-522/HQ522.native.json",
+        proofId: "N24"
+      }
+    ]
+  },
+  {
+    id: "N522.29",
+    clause:
+      "Each provider follows verified-account and positive-evidence eligibility on every applicable reading.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/usage/hq-usage-suggestion.test.ts",
+        title:
+          "needs every current Codex bucket and window below 90, with verified identity and no restriction",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/usage/hq-usage-suggestion.test.ts",
+        title:
+          "accepts Claude allowed without utilization but preserves model limits and unexpired warnings",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq522-native.mjs",
+        reportPath: "scratch/hq-522/HQ522.native.json",
+        proofId: "N29"
+      }
+    ]
   }
 ];

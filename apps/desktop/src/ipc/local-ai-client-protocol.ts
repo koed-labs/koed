@@ -181,6 +181,7 @@ export const localAiClientResponseSchema = z
         z
           .object({
             instanceId: z.string().min(1).max(128),
+            accountVerified: z.boolean().optional(),
             source: z.enum(["codex_app_server", "claude_agent_sdk"]),
             bucketId: z.string().min(1),
             bucketName: z.string().nullable(),
@@ -197,6 +198,7 @@ export const localAiClientResponseSchema = z
       )
       .optional(),
     usageOutcome: z.enum(["checked", "failed", "unsupported"]).optional(),
+    usageScopeId: z.string().optional(),
     usageObservedAt: z.string().optional()
   })
   .strict();

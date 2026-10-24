@@ -17,6 +17,7 @@ export function useHqUsage(
   const [readModel, setReadModel] = useState<
     LocalAiClientResponse["readModel"] | null
   >(null);
+  const [usageScopeId, setUsageScopeId] = useState("");
   const [refreshMessage, setRefreshMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [stateScope, setStateScope] = useState<{
@@ -49,6 +50,7 @@ export function useHqUsage(
       setReadings(readingsRef.current);
       setInstances(response.readModel.instances);
       setReadModel(response.readModel);
+      setUsageScopeId(response.usageScopeId ?? "");
       setStateScope({ bridge, authorityKey, enabled });
     } catch {
       // Keep the last reading for this authority when a transient read fails.
@@ -62,6 +64,7 @@ export function useHqUsage(
     setReadings([]);
     setInstances([]);
     setReadModel(null);
+    setUsageScopeId("");
     setStateScope(null);
     readingsRef.current = [];
     setRefreshMessage("");
@@ -75,6 +78,7 @@ export function useHqUsage(
         setReadings([]);
         setInstances([]);
         setReadModel(null);
+        setUsageScopeId("");
         setStateScope(null);
         readingsRef.current = [];
         setRefreshMessage("");
@@ -142,6 +146,7 @@ export function useHqUsage(
     readings: active ? readings : [],
     instances: active ? instances : [],
     readModel: active ? readModel : null,
+    usageScopeId: active ? usageScopeId : "",
     refreshMessage: active ? refreshMessage : "",
     busy: active ? busy : false,
     refresh,

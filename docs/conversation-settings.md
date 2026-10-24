@@ -35,6 +35,15 @@ that mode is supported. The picker offers **Full access** as an explicit
 choice; `auto_edit` and `auto` are in More permissions. Unsupported modes are
 disabled. The existing Desktop retains its current launch default.
 
+While the user types, a current low-usage report may suggest an alternative AI
+Client with fresh, verified evidence of room. Accepting it before the first
+message changes only this new Conversation's selection; Undo restores the
+previous selection. The saved Conversations assignment is unchanged. An active
+Conversation keeps its AI Client: accepting the suggestion opens a new chat
+with the typed draft and the alternative selected. A Project HQ Conversation
+shows the warning without a switch action. **Keep** silences that window's
+warning until its reported reset, or for one hour if no reset was reported.
+
 The HQ attachment control browses Project files through the current managed
 execution. If used before the first message, it starts an empty Conversation,
 keeps the draft, and opens the file picker after an execution exists. The

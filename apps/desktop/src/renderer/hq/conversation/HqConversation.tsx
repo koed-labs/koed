@@ -80,6 +80,7 @@ import { CitedAnswer, CitationDetail } from "./Citations.js";
 import { citationAliasBatches } from "./citation-alias-batches.js";
 import { HqVisibilityLine } from "./HqVisibilityLine.js";
 import { useHqUsage } from "../usage/use-hq-usage.js";
+import { HqUsageSuggestion } from "../usage/HqUsageSuggestion.js";
 import {
   usageMenuLine,
   usageCell,
@@ -526,8 +527,14 @@ function Composer({
   onClearContext,
   localAiClients,
   usageAuthorityKey,
+  usageDismissalScopeKey,
   usageRefreshKey,
   onSeeUsage,
+  usageRunning,
+  onUsageUse,
+  onUsageUndo,
+  onUsageNewChat,
+  previousUsageChoice,
   onManageSharing
 }: {
   value: string;
@@ -557,8 +564,14 @@ function Composer({
   onClearContext?: () => void;
   localAiClients?: DesktopApi["localAiClients"];
   usageAuthorityKey?: string;
+  usageDismissalScopeKey?: string;
   usageRefreshKey?: string;
   onSeeUsage?: () => void;
+  usageRunning?: boolean;
+  onUsageUse?: (instanceId: string) => void;
+  onUsageUndo?: () => void;
+  onUsageNewChat?: (instanceId: string) => void;
+  previousUsageChoice?: string | null;
   onManageSharing?: () => void;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
@@ -585,6 +598,21 @@ function Composer({
           </button>
         </div>
       ) : null}
+      <HqUsageSuggestion
+        draft={value}
+        selection={selection}
+        options={options}
+        localAiClients={localAiClients}
+        authorityKey={usageAuthorityKey}
+        dismissalScopeKey={usageDismissalScopeKey}
+        projectHq={privateProjectHq}
+        running={usageRunning}
+        refreshKey={usageRefreshKey}
+        onUse={onUsageUse}
+        onUndo={onUsageUndo}
+        onNewChat={onUsageNewChat}
+        previousChoice={previousUsageChoice}
+      />
       <form
         className="hq-composer"
         aria-label="Conversation composer"
@@ -767,6 +795,7 @@ export function HqBlankConversation({
   api,
   localAiClients,
   usageAuthorityKey,
+  usageDismissalScopeKey,
   onSeeUsage,
   projects,
   project,
@@ -774,7 +803,9 @@ export function HqBlankConversation({
   lifecycle,
   managedProject,
   onStarted,
-  onLaunchAttempt
+  onLaunchAttempt,
+  initialAiClientInstanceId,
+  initialDraft
 }: {
   variant?: "blank" | "now";
   api: ManagedConversationDesktopApi | null;
@@ -782,6 +813,7 @@ export function HqBlankConversation({
   project: DesktopProject | null;
   localAiClients?: DesktopApi["localAiClients"];
   usageAuthorityKey?: string;
+  usageDismissalScopeKey?: string;
   onSeeUsage?: () => void;
   onProjectChange: (id: string) => void;
   lifecycle: ManagedConversationLifecycle;
@@ -792,16 +824,21 @@ export function HqBlankConversation({
     attachRequested: boolean
   ) => void;
   onLaunchAttempt?: () => void;
+  initialAiClientInstanceId?: string;
+  initialDraft?: string;
 }) {
   const [options, setOptions] =
     useState<ManagedConversationLaunchOptions | null>(null);
   const [selection, setSelection] = useState<HqSelection>(emptySelection);
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(initialDraft ?? "");
+  const [previousUsageSelection, setPreviousUsageSelection] =
+    useState<HqSelection | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [launchAttempted, setLaunchAttempted] = useState(false);
   const [savedAssignmentUnavailable, setSavedAssignmentUnavailable] =
     useState("");
+  const [handoffNeedsChoice, setHandoffNeedsChoice] = useState(false);
   const startRef = useRef<
     Parameters<ManagedConversationDesktopApi["start"]>[0] | null
   >(null);
@@ -840,29 +877,47 @@ export function HqBlankConversation({
                     mode.mode === "supervised" && mode.support === "supported"
                 )
             );
+        const initialInstance = initialAiClientInstanceId
+          ? options.instances.find(
+              (item) =>
+                item.instanceId === initialAiClientInstanceId && item.ready
+            )
+          : null;
+        const requestedUnavailable = Boolean(
+          initialAiClientInstanceId && !initialInstance
+        );
+        setHandoffNeedsChoice(requestedUnavailable);
         const base = hqSelectionForInstance(
           options,
-          instance?.instanceId ?? assignment?.ai_client_instance_id ?? ""
+          initialInstance?.instanceId ??
+            instance?.instanceId ??
+            assignment?.ai_client_instance_id ??
+            ""
         );
-        const assignedModel = instance?.models.find((item) =>
-          [item.id, item.fullId, item.model].includes(assignment?.model)
+        const assignedModel = (initialInstance ?? instance)?.models.find(
+          (item) =>
+            [item.id, item.fullId, item.model].includes(assignment?.model)
         );
         setSelection({
           ...base,
-          model: assignment
-            ? (assignedModel?.id ?? assignment.model)
-            : base.model,
-          reasoningEffort: assignment
-            ? assignment.reasoning_effort === "none" &&
-              !assignedModel?.supportedReasoningEfforts.length
-              ? ""
-              : assignment.reasoning_effort
-            : base.reasoningEffort
+          model:
+            assignment && !initialInstance
+              ? (assignedModel?.id ?? assignment.model)
+              : base.model,
+          reasoningEffort:
+            assignment && !initialInstance
+              ? assignment.reasoning_effort === "none" &&
+                !assignedModel?.supportedReasoningEfforts.length
+                ? ""
+                : assignment.reasoning_effort
+              : base.reasoningEffort
         });
         setSavedAssignmentUnavailable(
-          assignment && (!preferred || !assignedModel)
-            ? "The saved Conversations AI Client or model is unavailable. Choose a supported AI Client and model before sending."
-            : ""
+          requestedUnavailable
+            ? "The requested AI Client is unavailable. Choose an available AI Client and model before sending."
+            : assignment && !initialInstance && (!preferred || !assignedModel)
+              ? "The saved Conversations AI Client or model is unavailable. Choose a supported AI Client and model before sending."
+              : ""
         );
       })
       .catch(() => {
@@ -874,7 +929,7 @@ export function HqBlankConversation({
     return () => {
       alive = false;
     };
-  }, [api, localAiClients]);
+  }, [api, localAiClients, initialAiClientInstanceId]);
   const start = async (requestedAttach = false) => {
     const attach = attachIntent.current ?? requestedAttach;
     if (
@@ -883,6 +938,7 @@ export function HqBlankConversation({
       lifecycle.recoveryStatus !== "ready" ||
       !lifecycle.persistPendingSend ||
       busy ||
+      handoffNeedsChoice ||
       !hqSelectionIsSupported(options, selection) ||
       (!attach && !prompt.trim())
     )
@@ -1086,13 +1142,28 @@ export function HqBlankConversation({
           selection={selection}
           localAiClients={localAiClients}
           usageAuthorityKey={usageAuthorityKey}
+          usageDismissalScopeKey={usageDismissalScopeKey}
           onSeeUsage={onSeeUsage}
+          onUsageUse={(instanceId) => {
+            if (launchAttempted || !options) return;
+            setPreviousUsageSelection(selection);
+            setSelection(hqSelectionForInstance(options, instanceId));
+            setHandoffNeedsChoice(false);
+            setSavedAssignmentUnavailable("");
+          }}
+          onUsageUndo={() => {
+            if (previousUsageSelection) setSelection(previousUsageSelection);
+            setPreviousUsageSelection(null);
+          }}
+          previousUsageChoice={previousUsageSelection?.instanceId}
           onSelectionChange={
             launchAttempted
               ? () => undefined
               : (value) => {
                   setSelection(value);
                   setSavedAssignmentUnavailable("");
+                  setHandoffNeedsChoice(false);
+                  setPreviousUsageSelection(null);
                 }
           }
           locked={launchAttempted}
@@ -1104,6 +1175,7 @@ export function HqBlankConversation({
             lifecycle.recoveryStatus === "ready" &&
             lifecycle.persistPendingSend &&
             prompt.trim() &&
+            !handoffNeedsChoice &&
             hqSelectionIsSupported(options, selection)
           )}
           error={
@@ -1138,7 +1210,9 @@ export function HqActiveConversation({
   api,
   localAiClients,
   usageAuthorityKey,
+  usageDismissalScopeKey,
   onSeeUsage,
+  onNewChatWithAi,
   onManageSharing,
   privateProjectHq = false,
   privateProjectHqTeamName,
@@ -1180,7 +1254,13 @@ export function HqActiveConversation({
   api: ManagedConversationDesktopApi | null;
   localAiClients?: DesktopApi["localAiClients"];
   usageAuthorityKey?: string;
+  usageDismissalScopeKey?: string;
   onSeeUsage?: () => void;
+  onNewChatWithAi?: (input: {
+    projectId: string;
+    draft: string;
+    instanceId: string;
+  }) => void;
   onManageSharing?: (personalProjectId: string) => void;
   privateProjectHq?: boolean;
   privateProjectHqTeamName?: string | null;
@@ -3032,6 +3112,7 @@ export function HqActiveConversation({
           selection={selection}
           localAiClients={localAiClients}
           usageAuthorityKey={usageAuthorityKey}
+          usageDismissalScopeKey={usageDismissalScopeKey}
           usageRefreshKey={
             runtime?.latestCommand?.state === "completed"
               ? runtime.latestCommand.id
@@ -3042,6 +3123,14 @@ export function HqActiveConversation({
             !privateProjectHq && visibilityProject && onManageSharing
               ? () => onManageSharing(visibilityProject.personalProjectId)
               : undefined
+          }
+          usageRunning
+          onUsageNewChat={(instanceId) =>
+            onNewChatWithAi?.({
+              projectId: project.id,
+              draft: prompt,
+              instanceId
+            })
           }
           onSelectionChange={(value) => {
             if (!sendLocked && resumeStatus === "ready" && recoveryReady) {

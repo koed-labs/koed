@@ -972,5 +972,53 @@ export const hqAcceptanceContract = [
       "Unavailable backends remain explicit and counts say at least.",
     owners: ["HQ-723"],
     harness: "browser"
+  },
+  {
+    id: "U522.4",
+    category: "browser",
+    description:
+      "Explicit new-chat selection preserves the saved default; running chat handoff carries the draft.",
+    owners: ["HQ-522"],
+    harness: "browser"
+  },
+  {
+    id: "U522.5",
+    category: "browser",
+    description:
+      "Keep suppresses suggestions until the applicable reset or one hour.",
+    owners: ["HQ-522"],
+    harness: "browser"
+  },
+  {
+    id: "U522.6",
+    category: "browser",
+    description:
+      "Provider/model-specific warnings distinguish no warning, alternative and warning-only cases.",
+    owners: ["HQ-522"],
+    harness: "browser"
+  },
+  {
+    id: "N522.20",
+    category: "browser",
+    description:
+      "Suggestions never switch a running Conversation or select another AI without explicit acceptance.",
+    owners: ["HQ-522"],
+    harness: "browser"
+  },
+  {
+    id: "N522.24",
+    category: "browser",
+    description:
+      "Expired, stale and other-account readings cannot qualify an alternative.",
+    owners: ["HQ-522"],
+    harness: "browser"
+  },
+  {
+    id: "N522.29",
+    category: "browser",
+    description:
+      "Each provider follows verified-account and positive-evidence eligibility on every applicable reading.",
+    owners: ["HQ-522"],
+    harness: "browser"
   }
 ];

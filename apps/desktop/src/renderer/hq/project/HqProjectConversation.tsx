@@ -14,6 +14,7 @@ import type {
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ManagedProjectDesktopApi } from "../../../ipc/managed-project-protocol.js";
 import type { AgentsDesktopApi } from "../../../ipc/agents-protocol.js";
+import type { DesktopApi } from "../../../types.js";
 import {
   clearPendingDelegation,
   pendingDelegationRequestId,
@@ -30,6 +31,7 @@ import {
   type HqSelection
 } from "../conversation/hq-conversation-model.js";
 import { HqVisibilityLine } from "../conversation/HqVisibilityLine.js";
+import { HqUsageSuggestion } from "../usage/HqUsageSuggestion.js";
 import "./hq-project-conversation.css";
 
 /** This route owns the private HQ handle; it does not register an ordinary draft. */
@@ -38,6 +40,9 @@ export function HqProjectConversation({
   chiefName,
   chiefAgent,
   chiefInstanceId,
+  localAiClients,
+  usageAuthorityKey,
+  usageDismissalScopeKey,
   api,
   managedConversations,
   managedProject,
@@ -71,6 +76,9 @@ export function HqProjectConversation({
   chiefName: string;
   chiefAgent?: Agent | null;
   chiefInstanceId: string | null;
+  localAiClients?: DesktopApi["localAiClients"];
+  usageAuthorityKey?: string;
+  usageDismissalScopeKey?: string;
   api: ProjectHqConversationDesktopApi;
   managedConversations: ManagedConversationDesktopApi;
   managedProject: ManagedProjectDesktopApi | null;
@@ -733,6 +741,9 @@ export function HqProjectConversation({
           privateProjectHqTeamName={privateVisibilityTeamName}
           privateProjectHqIdentity={conversation}
           api={managedConversations}
+          localAiClients={localAiClients}
+          usageAuthorityKey={usageAuthorityKey}
+          usageDismissalScopeKey={usageDismissalScopeKey}
           managedProject={managedProject}
           store={store}
           project={project}
@@ -880,6 +891,15 @@ export function HqProjectConversation({
                   </button>
                 </div>
               ) : null}
+              <HqUsageSuggestion
+                draft={prompt}
+                selection={selection}
+                options={options}
+                localAiClients={localAiClients}
+                authorityKey={usageAuthorityKey}
+                dismissalScopeKey={usageDismissalScopeKey}
+                projectHq
+              />
               <form
                 className="hq-composer"
                 aria-label="HQ Conversation composer"

@@ -399,6 +399,12 @@ export function HqApplication({
   const [blankProjectId, setBlankProjectId] = useState<string | null>(null);
   const [blankProjectError, setBlankProjectError] = useState("");
   const [blankIntent, setBlankIntent] = useState(0);
+  const [usageChatIntent, setUsageChatIntent] = useState<{
+    ownerId: string;
+    profileKey: string;
+    instanceId: string;
+    draft: string;
+  } | null>(null);
   const [blankLaunchPending, setBlankLaunchPending] = useState(false);
   const [attachAfterStart, setAttachAfterStart] = useState<string | null>(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -926,6 +932,7 @@ export function HqApplication({
   const selectRoute = (next: HqRoute) => {
     setSharingOpen(false);
     setSharingLifecycleTarget(null);
+    setUsageChatIntent(null);
     setFocusDueItem(null);
     routeEpoch.current++;
     setCitationFocus(null);
@@ -2508,6 +2515,12 @@ export function HqApplication({
     managedConversationLifecycle &&
     personalMemoryStore ? (
       <HqProjectConversation
+        localAiClients={localAiClients}
+        usageAuthorityKey={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}:${visibilityRevision ?? ""}`}
+        usageDismissalScopeKey={JSON.stringify([
+          visibilityOwnerId ?? "",
+          visibilityProfileKey ?? ""
+        ])}
         key={`${visibilityOwnerId ?? "no-owner"}:${visibilityProfileKey ?? "no-profile"}:${project.id}`}
         project={project}
         chiefName={chiefAgent?.name ?? "Chief of Staff"}
@@ -3114,6 +3127,7 @@ export function HqApplication({
                       return;
                     }
                     setBlankOpen(true);
+                    setUsageChatIntent(null);
                     setBlankIntent((value) => value + 1);
                     setBlankProjectId(null);
                     setSelection({ route: { kind: "home" } });
@@ -3276,11 +3290,29 @@ export function HqApplication({
                 </div>
               ) : null}
               <HqBlankConversation
-                key={blankIntent}
+                key={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}:${blankIntent}`}
+                initialAiClientInstanceId={
+                  usageChatIntent &&
+                  usageChatIntent.ownerId === visibilityOwnerId &&
+                  usageChatIntent.profileKey === visibilityProfileKey
+                    ? usageChatIntent.instanceId
+                    : undefined
+                }
+                initialDraft={
+                  usageChatIntent &&
+                  usageChatIntent.ownerId === visibilityOwnerId &&
+                  usageChatIntent.profileKey === visibilityProfileKey
+                    ? usageChatIntent.draft
+                    : undefined
+                }
                 variant={route.kind === "home" && !blankOpen ? "now" : "blank"}
                 api={managedConversations ?? null}
                 localAiClients={localAiClients}
                 usageAuthorityKey={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}:${visibilityRevision ?? ""}`}
+                usageDismissalScopeKey={JSON.stringify([
+                  visibilityOwnerId ?? "",
+                  visibilityProfileKey ?? ""
+                ])}
                 onSeeUsage={
                   renderSettings ? () => openSettings("agents") : undefined
                 }
@@ -3498,6 +3530,28 @@ export function HqApplication({
               key={route.sessionId}
               localAiClients={localAiClients}
               usageAuthorityKey={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}:${visibilityRevision ?? ""}`}
+              usageDismissalScopeKey={JSON.stringify([
+                visibilityOwnerId ?? "",
+                visibilityProfileKey ?? ""
+              ])}
+              onNewChatWithAi={
+                managedConversations && managedConversationLifecycle
+                  ? ({ projectId, draft, instanceId }) => {
+                      if (!visibilityOwnerId || !visibilityProfileKey) return;
+                      selectRoute({ kind: "home" });
+                      setUsageChatIntent({
+                        ownerId: visibilityOwnerId,
+                        profileKey: visibilityProfileKey,
+                        instanceId,
+                        draft
+                      });
+                      setBlankProjectId(projectId);
+                      setBlankProjectError("");
+                      setBlankIntent((value) => value + 1);
+                      setBlankOpen(true);
+                    }
+                  : undefined
+              }
               onSeeUsage={
                 renderSettings ? () => openSettings("agents") : undefined
               }

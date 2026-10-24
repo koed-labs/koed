@@ -4,10 +4,18 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectHqConversationDesktopApi } from "../../../ipc/project-hq-conversation-protocol.js";
+import type { ManagedConversationDesktopApi } from "../../../ipc/managed-conversation-protocol.js";
+import type { DesktopApi } from "../../../types.js";
 import { HqProjectConversation } from "./HqProjectConversation.js";
 
+const activeProps = vi.hoisted(() => ({
+  value: null as Record<string, unknown> | null
+}));
 vi.mock("../conversation/HqConversation.js", () => ({
-  HqActiveConversation: () => <div>Captured HQ</div>,
+  HqActiveConversation: (props: Record<string, unknown>) => {
+    activeProps.value = props;
+    return <div>Captured HQ</div>;
+  },
   HqConversationSettings: () => null
 }));
 
@@ -33,6 +41,9 @@ const renderHq = async (input: {
   teamUnreadCount?: number;
   foreground?: boolean;
   activityRevision?: string;
+  chiefInstanceId?: string | null;
+  managedConversations?: ManagedConversationDesktopApi;
+  localAiClients?: DesktopApi["localAiClients"];
 }) => {
   const host = document.createElement("div");
   document.body.append(host);
@@ -46,15 +57,19 @@ const renderHq = async (input: {
             { id: next.projectId, name: "Project", path: "/project" } as never
           }
           chiefName="Chief"
-          chiefInstanceId={null}
+          chiefInstanceId={next.chiefInstanceId ?? null}
+          localAiClients={next.localAiClients}
+          usageAuthorityKey="owner:profile:revision"
+          usageDismissalScopeKey="owner:profile"
           api={next.api}
           managedConversations={
-            {
+            next.managedConversations ??
+            ({
               launchOptions: async () => ({
                 options: { runners: [], instances: [] }
               }),
               inspect: async () => ({ status: "starting", conversation: null })
-            } as never
+            } as never)
           }
           managedProject={null}
           store={{ registerPrivateThread: () => undefined } as never}
@@ -74,6 +89,124 @@ const renderHq = async (input: {
 };
 
 describe("Project HQ trusted catch-up presentation", () => {
+  it("warns in a cold Project HQ and forwards usage authority to the active HQ", async () => {
+    const projectId = randomUUID();
+    const executionId = randomUUID();
+    const conversation = {
+      executionId,
+      projectId,
+      capturedSessionId: randomUUID(),
+      threadId: randomUUID(),
+      executionOwner: { driverId: "codex", instanceId: "codex.fixture" }
+    };
+    const options = {
+      runners: [],
+      instances: [
+        {
+          instanceId: "codex.fixture",
+          driverId: "codex",
+          displayName: "Codex",
+          ready: true,
+          models: [
+            {
+              id: "gpt-fixture",
+              isDefault: true,
+              supportedReasoningEfforts: ["medium"]
+            }
+          ],
+          capabilities: {
+            defaultPermissionMode: "supervised",
+            permissionModes: [{ mode: "supervised", support: "supported" }]
+          }
+        }
+      ]
+    };
+    const managedConversations = {
+      launchOptions: async () => ({ operation: "launch_options", options }),
+      inspect: async () => ({ status: "ready", conversation })
+    } as unknown as ManagedConversationDesktopApi;
+    const localAiClients = {
+      usage: async () => ({
+        operation: "usage",
+        usageScopeId: "account-a",
+        readModel: {
+          instances: [],
+          capabilitySnapshots: [],
+          settings: [],
+          defaults: {}
+        },
+        usage: [
+          {
+            instanceId: "codex.fixture",
+            accountVerified: true,
+            source: "codex_app_server",
+            bucketId: "codex",
+            bucketName: "Codex",
+            window: "secondary",
+            windowDurationMins: 10080,
+            usedPercent: 96,
+            status: "near_limit",
+            resetsAt: new Date(Date.now() + 86_400_000).toISOString(),
+            planType: null,
+            details: {
+              ordinaryUsageAllowed: true,
+              spendControlReached: false,
+              rateLimitReachedType: null
+            },
+            observedAt: new Date(Date.now() - 60_000).toISOString()
+          }
+        ]
+      })
+    } as unknown as DesktopApi["localAiClients"];
+    const coldApi = {
+      reserve: async () => ({ projectId, executionId: null })
+    } as unknown as ProjectHqConversationDesktopApi;
+    const { host } = await renderHq({
+      projectId,
+      ownerIdentity: "owner:profile",
+      api: coldApi,
+      chiefInstanceId: "codex.fixture",
+      managedConversations,
+      localAiClients
+    });
+    await act(async () => {
+      const input = host.querySelector<HTMLTextAreaElement>("textarea")!;
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      )!.set!.call(input, "Project HQ request");
+      input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    });
+    expect(host.querySelector(".hq-usage-suggestion")?.textContent).toContain(
+      "4% of this week left"
+    );
+    expect(host.querySelector(".hq-usage-suggestion__primary")).toBeNull();
+    const activeApi = {
+      reserve: async () => ({ projectId, executionId }),
+      read: async () => ({
+        conversation: { executionId },
+        execution: {
+          capturedSessionId: conversation.capturedSessionId,
+          graphProjectId: projectId,
+          graphThreadId: conversation.threadId
+        }
+      })
+    } as unknown as ProjectHqConversationDesktopApi;
+    await renderHq({
+      projectId,
+      ownerIdentity: "owner:profile",
+      api: activeApi,
+      chiefInstanceId: "codex.fixture",
+      managedConversations,
+      localAiClients
+    });
+    expect(activeProps.value).toMatchObject({
+      privateProjectHq: true,
+      localAiClients,
+      usageAuthorityKey: "owner:profile:revision",
+      usageDismissalScopeKey: "owner:profile"
+    });
+  });
   it("does not launch catch-up before the verified feature gate is enabled", async () => {
     const projectId = randomUUID();
     const catchUp = vi.fn();

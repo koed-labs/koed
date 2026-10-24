@@ -5572,6 +5572,7 @@ export const createKoedServerManager = ({
           const row = objectValue(raw) ?? {};
           return {
             instanceId: row.instanceId,
+            accountVerified: row.accountVerified === true,
             source: row.source,
             bucketId: row.bucketId,
             bucketName: row.bucketName,
@@ -5585,6 +5586,7 @@ export const createKoedServerManager = ({
             observedAt: row.observedAt
           };
         }),
+        usageScopeId: payload.usageScopeId,
         ...(usageOutcome ? { usageOutcome } : {}),
         ...(usageObservedAt ? { usageObservedAt } : {})
       });

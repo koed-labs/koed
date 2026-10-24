@@ -72,7 +72,8 @@ describe("HQ blank Conversation", () => {
   function setup(
     start: ManagedConversationDesktopApi["start"],
     managedProject: ManagedProjectDesktopApi | null = null,
-    localAiClients?: DesktopApi["localAiClients"]
+    localAiClients?: DesktopApi["localAiClients"],
+    initial?: { instanceId: string; draft: string }
   ) {
     const send = vi.fn<ManagedConversationDesktopApi["send"]>(
       async (input) => ({
@@ -88,7 +89,7 @@ describe("HQ blank Conversation", () => {
     );
     const api = {
       launchOptions: vi.fn(async () => ({
-        operation: "launch_options",
+        operation: "launch_options" as const,
         options
       })),
       start,
@@ -124,6 +125,8 @@ describe("HQ blank Conversation", () => {
             lifecycle={lifecycle}
             managedProject={managedProject}
             onStarted={onStarted}
+            initialAiClientInstanceId={initial?.instanceId}
+            initialDraft={initial?.draft}
           />
         )
       );
@@ -147,6 +150,79 @@ describe("HQ blank Conversation", () => {
       enter
     };
   }
+
+  it("blocks an unavailable requested AI until the user explicitly chooses another model", async () => {
+    const start = vi.fn<ManagedConversationDesktopApi["start"]>(async () => ({
+      operation: "start",
+      status: "ready",
+      executionId: "execution-1",
+      conversation: identity
+    }));
+    const fixture = setup(start, null, undefined, {
+      instanceId: "claude.unavailable",
+      draft: "Carry this text"
+    });
+    fixture.api.launchOptions = vi.fn(async () => ({
+      operation: "launch_options" as const,
+      options: {
+        ...options,
+        instances: [
+          {
+            ...options.instances[0]!,
+            models: [
+              ...options.instances[0]!.models,
+              {
+                id: "model-b",
+                isDefault: false,
+                supportedReasoningEfforts: ["low", "high"]
+              }
+            ]
+          }
+        ]
+      }
+    }));
+    await fixture.render();
+    expect(container.querySelector("textarea")?.value).toBe("Carry this text");
+    expect(container.textContent).toContain(
+      "The requested AI Client is unavailable"
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')
+        ?.disabled
+    ).toBe(true);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send message"]')!
+        .click()
+    );
+    expect(start).not.toHaveBeenCalled();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label^="Model and reasoning:"]'
+        )!
+        .click()
+    );
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Choose AI Client and model"]'
+        )!
+        .click()
+    );
+    await act(async () =>
+      [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')]
+        .find((item) => item.textContent?.includes("model-b"))!
+        .click()
+    );
+    expect(container.textContent).not.toContain(
+      "The requested AI Client is unavailable"
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')
+        ?.disabled
+    ).toBe(false);
+  });
 
   it("queues a first prompt on an accepted starting execution with supervised permission", async () => {
     const start = vi.fn<ManagedConversationDesktopApi["start"]>(async () => ({
