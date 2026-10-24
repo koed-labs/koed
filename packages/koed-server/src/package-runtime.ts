@@ -354,17 +354,58 @@ const sha256Files = (root: string, files: string[]): string => {
 const readJson = <T>(path: string): T =>
   JSON.parse(readFileSync(path, "utf8")) as T;
 
+const compareIdentifiers = (left: string, right: string): number => {
+  if (left === right) return 0;
+  const leftNumeric = /^\d+$/.test(left);
+  const rightNumeric = /^\d+$/.test(right);
+  if (leftNumeric && rightNumeric)
+    return BigInt(left) < BigInt(right)
+      ? -1
+      : BigInt(left) > BigInt(right)
+        ? 1
+        : 0;
+  if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+  return left < right ? -1 : 1;
+};
 const compareVersions = (a: string, b: string): number => {
-  const numberPart = (part: string): number =>
-    /^\d+$/.test(part) ? Number.parseInt(part, 10) : 0;
-  const left = a.split(/[.-]/).map(numberPart);
-  const right = b.split(/[.-]/).map(numberPart);
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    const leftPart = left[index] ?? 0;
-    const rightPart = right[index] ?? 0;
-    if (leftPart !== rightPart) return leftPart - rightPart;
+  const parts = (version: string) => {
+    const withoutBuild = version.split("+")[0]!;
+    const separator = withoutBuild.indexOf("-");
+    return {
+      core: (separator < 0
+        ? withoutBuild
+        : withoutBuild.slice(0, separator)
+      ).split("."),
+      prerelease:
+        separator < 0 ? [] : withoutBuild.slice(separator + 1).split(".")
+    };
+  };
+  const left = parts(a),
+    right = parts(b);
+  for (let index = 0; index < 3; index++) {
+    const order = compareIdentifiers(
+      left.core[index] ?? "0",
+      right.core[index] ?? "0"
+    );
+    if (order) return order;
   }
-  return a.localeCompare(b);
+  if (!left.prerelease.length || !right.prerelease.length)
+    return (
+      Number(right.prerelease.length > 0) - Number(left.prerelease.length > 0)
+    );
+  for (
+    let index = 0;
+    index < Math.max(left.prerelease.length, right.prerelease.length);
+    index++
+  ) {
+    const l = left.prerelease[index],
+      r = right.prerelease[index];
+    if (l === undefined) return -1;
+    if (r === undefined) return 1;
+    const order = compareIdentifiers(l, r);
+    if (order) return order;
+  }
+  return 0;
 };
 
 const validateManifestShape = (
@@ -785,12 +826,17 @@ const migrationTimestamp = (
     : undefined;
 };
 
+export const isVersionDowngrade = (
+  currentVersion: string,
+  candidateVersion: string
+): boolean => compareVersions(candidateVersion, currentVersion) < 0;
+
 export const assertPackageMigrationCompatible = (
   currentManifest: KoedServerPackageManifest,
   nextManifest: KoedServerPackageManifest,
   allowDowngrade = false
 ): void => {
-  if (compareVersions(nextManifest.version, currentManifest.version) >= 0)
+  if (!isVersionDowngrade(currentManifest.version, nextManifest.version))
     return;
   if (!allowDowngrade) {
     throw new Error(

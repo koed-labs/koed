@@ -218,7 +218,7 @@ jobs:
         env:
           KOED_SERVER_PACKAGE_VERSION: ${{ github.sha }}
           SOURCE_DATE_EPOCH: 0
-        run: pnpm koed-server:package -- --platform linux --arch x64 --json
+        run: pnpm koed-server:package -- --catalogless-development --platform linux --arch x64 --json
 
       - name: Inspect standalone koed-server package
         run: |
@@ -262,7 +262,7 @@ jobs:
         env:
           KOED_SERVER_PACKAGE_VERSION: ${{ github.sha }}
           SOURCE_DATE_EPOCH: 0
-        run: pnpm koed-server:package -- --platform macos --arch arm64 --json
+        run: pnpm koed-server:package -- --catalogless-development --platform macos --arch arm64 --json
 
       - name: Inspect macOS standalone koed-server package
         run: |

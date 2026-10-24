@@ -40,12 +40,6 @@ export interface ComponentManifest {
   requiredFiles: readonly string[];
   files: readonly { path: string; sha256: string }[];
 }
-export interface ComponentSignature {
-  schemaVersion: 2;
-  keyId: string;
-  algorithm: "ed25519";
-  signature: string;
-}
 export interface RuntimeRequirements {
   components: readonly ComponentId[];
   processes: readonly ProcessId[];
@@ -57,8 +51,8 @@ export interface RuntimeOwner {
   kind: "cli" | "desktop" | "standalone";
   installationId: string;
 }
-export interface VerifiedSignedComponent {
-  kind: "signed-component";
+export interface VerifiedManifestPinnedComponent {
+  kind: "manifest-pinned-component";
   manifest: ComponentManifest;
   root: string;
   manifestDigest: string;
@@ -69,11 +63,13 @@ export interface VerifiedDesktopBase {
   root: string;
   manifestDigest: string;
 }
-export type VerifiedComponent = VerifiedSignedComponent | VerifiedDesktopBase;
+export type VerifiedComponent =
+  | VerifiedManifestPinnedComponent
+  | VerifiedDesktopBase;
 export interface VerifiedGeneration {
   id: string;
   productVersion: string;
   base: VerifiedComponent;
-  privacy?: VerifiedSignedComponent;
+  privacy?: VerifiedManifestPinnedComponent;
   owner: RuntimeOwner;
 }

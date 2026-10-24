@@ -13,21 +13,32 @@ import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 const fixtureRuntime = vi.hoisted(() => ({
   current: undefined as RuntimeIdentity | undefined
 }));
-const fixtureKeys = vi.hoisted(() => ({ current: new Map<string, string>() }));
 vi.mock("./component-runtime-identity.js", () => ({
   discoverActualRuntimeIdentity: () => {
     if (!fixtureRuntime.current) throw new Error("fixture runtime missing");
     return fixtureRuntime.current;
   }
 }));
-vi.mock("./component-trust-roots.js", () => ({
-  productionComponentTrustRoots: fixtureKeys.current
-}));
+vi.mock("./component-manifest-catalog-data.js", async () => {
+  const fixtures = await import("./component-test-fixtures.js");
+  return {
+    get productionComponentManifestCatalog() {
+      return fixtures.getFixtureManifestPinCatalog();
+    }
+  };
+});
 
 import { writeFileSync } from "node:fs";
-import { signedComponentFixture } from "./component-test-fixtures.js";
+import {
+  resetFixtureManifestPinCatalog,
+  componentFixture
+} from "./component-test-fixtures.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import { stageComponent } from "./component-store.js";
+import {
+  canonicalComponentManifestBytes,
+  validateComponentManifest
+} from "./component-verification.js";
 import { pinDesktopBundleGenerationForStart } from "./generation-lifecycle.js";
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import {
@@ -38,7 +49,7 @@ import {
 import type { ComponentCommandContext } from "./component-commands.js";
 
 const roots: string[] = [];
-const fixtures: Array<Awaited<ReturnType<typeof signedComponentFixture>>> = [];
+const fixtures: Array<Awaited<ReturnType<typeof componentFixture>>> = [];
 const context = (
   overrides: Partial<ComponentCommandContext> = {}
 ): ComponentCommandContext => {
@@ -68,31 +79,25 @@ const context = (
   };
 };
 
-const signedOfflineSource = async (
+const pinnedOfflineSource = async (
   version: string,
   component: "base" | "privacy" = "base"
 ) => {
   const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
-  const fixture = await signedComponentFixture({
+  const fixture = await componentFixture({
     productVersion: version,
     component,
     target
   });
   const manifestPath = resolve(fixture.root, "manifest.json");
-  const signaturePath = resolve(fixture.root, "signature.json");
   writeFileSync(manifestPath, fixture.input.manifestBytes);
-  writeFileSync(signaturePath, JSON.stringify(fixture.input.signature));
   fixtureRuntime.current = fixture.input.runtime;
-  fixtureKeys.current.clear();
-  for (const [key, value] of fixture.input.trustedKeys)
-    fixtureKeys.current.set(key, value);
   return {
     fixture,
     source: {
       kind: "offline" as const,
       archivePath: fixture.input.archivePath,
-      manifestPath,
-      signaturePath
+      manifestPath
     },
     runtime: fixture.input.runtime,
     target
@@ -104,17 +109,17 @@ afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
   fixtureRuntime.current = undefined;
-  fixtureKeys.current.clear();
+  resetFixtureManifestPinCatalog();
   vi.unstubAllGlobals();
 });
 
 describe("component status command", () => {
-  it("stages privacy without treating active Desktop bundle as a signed base", async () => {
-    const signed = await signedOfflineSource("0.9.0", "privacy");
-    fixtures.push(signed.fixture);
+  it("stages privacy without treating active Desktop bundle as a pinned base", async () => {
+    const pinned = await pinnedOfflineSource("0.9.0", "privacy");
+    fixtures.push(pinned.fixture);
     const current = context({
-      runtime: signed.runtime,
-      target: signed.target,
+      runtime: pinned.runtime,
+      target: pinned.target,
       execution: "packaged",
       environment: {
         KOED_DEPENDENCY_MODE: "bundled-local",
@@ -129,7 +134,7 @@ describe("component status command", () => {
         schemaVersion: 1,
         component: "base",
         productVersion: "0.9.0",
-        target: signed.target,
+        target: pinned.target,
         files: []
       })
     );
@@ -145,72 +150,133 @@ describe("component status command", () => {
     await expect(
       runComponentInstall(current, {
         component: "privacy",
-        source: signed.source
+        source: pinned.source
       })
     ).resolves.toEqual({ state: "staged" });
     expect((await runComponentStatus(current)).activeGeneration).toBe(
       desktopId
     );
   });
-  it("reports required base as missing when no signed generation is installed", async () => {
+  it("reports required base as missing when no generation is installed", async () => {
     const result = await runComponentStatus(context());
     expect(result.components).toEqual({
       base: "missing",
       privacy: "not-required"
     });
     expect(result.activeGeneration).toBeNull();
+    expect(result.requiredManifestPinsAvailable).toBe(false);
+  });
+
+  it("reports required pin catalog unavailable when required component entry is missing", async () => {
+    const pinned = await pinnedOfflineSource("0.9.0");
+    fixtures.push(pinned.fixture);
+    const current = context({
+      runtime: pinned.runtime,
+      target: pinned.target,
+      environment: {
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_TEAM_COLLABORATION_ENABLED: "true"
+      }
+    });
+    const status = await runComponentStatus(current);
+    expect(status.required).toEqual(["base", "privacy"]);
+    expect(status.requiredManifestPinsAvailable).toBe(false);
   });
 
   it("reports verified cached components that are not in a generation as installed", async () => {
-    const signed = await signedOfflineSource("0.9.0");
-    fixtures.push(signed.fixture);
-    const current = context({ runtime: signed.runtime, target: signed.target });
-    await stageComponent(current.paths, signed.source, {
+    const pinned = await pinnedOfflineSource("0.9.0");
+    fixtures.push(pinned.fixture);
+    const current = context({ runtime: pinned.runtime, target: pinned.target });
+    await stageComponent(current.paths, pinned.source, {
       expectedComponent: "base",
       expectedVersion: "0.9.0",
-      target: signed.target,
-      runtime: signed.runtime
+      target: pinned.target,
+      runtime: pinned.runtime
     });
-    expect((await runComponentStatus(current)).components.base).toBe(
-      "installed"
-    );
+    const status = await runComponentStatus(current);
+    expect(status.components.base).toBe("installed");
+    expect(status.requiredManifestPinsAvailable).toBe(true);
   });
 
-  it("stages another version and activates only under matching stopped control plane", async () => {
-    const signed = await signedOfflineSource("0.8.1");
-    fixtures.push(signed.fixture);
-    const initial = context({ runtime: signed.runtime, target: signed.target });
-    const staged = await runComponentInstall(initial, {
-      component: "base",
-      version: "0.8.1",
-      source: signed.source
-    });
-    expect(staged.state).toBe("staged");
-    expect((await runComponentStatus(initial)).components.base).toBe(
-      "incompatible"
-    );
-    await expect(runComponentActivate(initial, "0.8.1")).rejects.toThrow(
-      /matching control plane/
-    );
-    const activated = await runComponentActivate(
-      { ...initial, controlPlaneVersion: "0.8.1" },
-      "0.8.1"
-    );
-    expect(activated.productVersion).toBe("0.8.1");
-    const status = await runComponentStatus({
-      ...initial,
-      controlPlaneVersion: "0.8.1"
-    });
-    expect(status.components.base).toBe("active");
+  it("rejects requested versions outside embedded pin catalog", async () => {
+    const pinned = await pinnedOfflineSource("0.9.0");
+    fixtures.push(pinned.fixture);
+    const current = context({ runtime: pinned.runtime, target: pinned.target });
+    await expect(
+      runComponentInstall(current, {
+        component: "base",
+        version: "0.8.1",
+        source: pinned.source
+      })
+    ).rejects.toThrow("Component pin catalog version mismatch");
   });
 
-  it("installs a signed exact-version remote source only when explicitly requested", async () => {
-    const signed = await signedOfflineSource("0.9.0");
-    fixtures.push(signed.fixture);
-    const archive = readFileSync(signed.fixture.input.archivePath);
+  it("rejects remote manifest mutation before fetching archive", async () => {
+    const pinned = await pinnedOfflineSource("0.9.0");
+    fixtures.push(pinned.fixture);
+    const manifest: unknown = JSON.parse(
+      pinned.fixture.input.manifestBytes.toString("utf8")
+    );
+    validateComponentManifest(manifest);
+    manifest.runtimes[0]!.runtimeRange = ">=23 <24";
+    const mutatedManifest = canonicalComponentManifestBytes(manifest);
+    const archive = readFileSync(pinned.fixture.input.archivePath);
     const urls = {
       manifest: "https://artifacts.example/base.manifest.json",
-      signature: "https://artifacts.example/base.signature.json",
+      archive: "https://artifacts.example/base.tar.gz"
+    };
+    const requested: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        requested.push(url);
+        const body = url === urls.manifest ? mutatedManifest : archive;
+        return new Response(new Uint8Array(body), { status: 200 });
+      })
+    );
+    const current = context({
+      runtime: pinned.runtime,
+      target: pinned.target,
+      controlPlaneVersion: "0.9.0"
+    });
+    await expect(
+      runComponentInstall(current, {
+        component: "base",
+        version: "0.9.0",
+        source: {
+          kind: "remote",
+          manifestUrl: urls.manifest,
+          archiveUrl: urls.archive
+        }
+      })
+    ).rejects.toThrow("component manifest pin mismatch");
+    expect(requested).toEqual([urls.manifest]);
+  });
+
+  it("activates a pinned prerelease matching its control plane", async () => {
+    const version = "1.0.0-alpha.1";
+    const pinned = await pinnedOfflineSource(version);
+    fixtures.push(pinned.fixture);
+    const current = context({
+      runtime: pinned.runtime,
+      target: pinned.target,
+      controlPlaneVersion: version
+    });
+    const installed = await runComponentInstall(current, {
+      component: "base",
+      source: pinned.source
+    });
+    expect(installed.state).toBe("active");
+    expect((await runComponentStatus(current)).components.base).toBe("active");
+  });
+
+  it("installs a pinned exact-version remote source only when explicitly requested", async () => {
+    const pinned = await pinnedOfflineSource("0.9.0");
+    fixtures.push(pinned.fixture);
+    const archive = readFileSync(pinned.fixture.input.archivePath);
+    const urls = {
+      manifest: "https://artifacts.example/base.manifest.json",
       archive: "https://artifacts.example/base.tar.gz"
     };
     const requested: string[] = [];
@@ -220,17 +286,13 @@ describe("component status command", () => {
         const url = String(input);
         requested.push(url);
         const body =
-          url === urls.manifest
-            ? signed.fixture.input.manifestBytes
-            : url === urls.signature
-              ? Buffer.from(JSON.stringify(signed.fixture.input.signature))
-              : archive;
+          url === urls.manifest ? pinned.fixture.input.manifestBytes : archive;
         return new Response(new Uint8Array(body), { status: 200 });
       })
     );
     const current = context({
-      runtime: signed.runtime,
-      target: signed.target,
+      runtime: pinned.runtime,
+      target: pinned.target,
       controlPlaneVersion: "0.9.0"
     });
     const result = await runComponentInstall(current, {
@@ -239,26 +301,25 @@ describe("component status command", () => {
       source: {
         kind: "remote",
         manifestUrl: urls.manifest,
-        signatureUrl: urls.signature,
         archiveUrl: urls.archive
       }
     });
     expect(result.state).toBe("active");
-    expect(requested).toEqual([urls.manifest, urls.signature, urls.archive]);
+    expect(requested).toEqual([urls.manifest, urls.archive]);
   });
 
   it("never activates during install while services are running", async () => {
-    const signed = await signedOfflineSource("0.9.0");
-    fixtures.push(signed.fixture);
+    const pinned = await pinnedOfflineSource("0.9.0");
+    fixtures.push(pinned.fixture);
     const running = context({
-      runtime: signed.runtime,
-      target: signed.target,
+      runtime: pinned.runtime,
+      target: pinned.target,
       controlPlaneVersion: "0.9.0",
       isRunning: true
     });
     const result = await runComponentInstall(running, {
       component: "base",
-      source: signed.source
+      source: pinned.source
     });
     expect(result.state).toBe("staged");
     expect((await runComponentStatus(running)).components.base).toBe("staged");

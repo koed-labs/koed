@@ -34,10 +34,9 @@ import type {
   ArtifactTarget,
   ComponentId,
   ComponentManifest,
-  ComponentSignature,
   RuntimeIdentity,
   RuntimeOwner,
-  VerifiedSignedComponent,
+  VerifiedManifestPinnedComponent,
   VerifiedGeneration
 } from "./component-contract.js";
 import type { KoedServerPaths } from "./paths.js";
@@ -45,9 +44,15 @@ import { acquireDirectoryLock } from "./directory-lock.js";
 import { extractVerifiedPackageArchive } from "./package-runtime.js";
 import { discoverActualRuntimeIdentity } from "./component-runtime-identity.js";
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
-import { productionComponentTrustRoots } from "./component-trust-roots.js";
+import { productionComponentManifestCatalog } from "./component-manifest-catalog-data.js";
+import {
+  lookupManifestPin,
+  validateManifestCatalog,
+  type ManifestPinCatalog
+} from "./component-manifest-catalog.js";
 import {
   verifyComponent,
+  verifyComponentManifestPin,
   verifyExtractedComponent
 } from "./component-verification.js";
 
@@ -56,13 +61,11 @@ export type ComponentSource =
       kind: "offline";
       archivePath: string;
       manifestPath: string;
-      signaturePath: string;
     }
   | {
       kind: "remote";
       archiveUrl: string;
       manifestUrl: string;
-      signatureUrl: string;
     };
 
 export interface ComponentInstallContext {
@@ -79,11 +82,9 @@ export interface ComponentInstallContext {
 }
 
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
-const MAX_SIGNATURE_BYTES = 8 * 1024;
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
-const MAX_GENERATION_RECORD_BYTES =
-  2 * MAX_MANIFEST_BYTES + 2 * MAX_SIGNATURE_BYTES + 1024 * 1024;
+const MAX_GENERATION_RECORD_BYTES = 2 * MAX_MANIFEST_BYTES + 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const hash = (value: Buffer | string): string =>
   createHash("sha256").update(value).digest("hex");
@@ -103,23 +104,6 @@ const cancelBody = async (response: Response): Promise<void> => {
 const exactKeys = (value: Record<string, unknown>, keys: string[]): boolean =>
   Object.keys(value).length === keys.length &&
   keys.every((key) => Object.hasOwn(value, key));
-const parseSignature = (value: unknown): ComponentSignature => {
-  if (
-    !isPlainRecord(value) ||
-    !exactKeys(value, ["schemaVersion", "keyId", "algorithm", "signature"]) ||
-    value.schemaVersion !== 2 ||
-    typeof value.keyId !== "string" ||
-    typeof value.signature !== "string" ||
-    value.algorithm !== "ed25519"
-  )
-    throw new Error("component signature JSON is invalid");
-  return {
-    schemaVersion: 2,
-    keyId: value.keyId,
-    algorithm: "ed25519",
-    signature: value.signature
-  };
-};
 const assertInside = (base: string, path: string): void => {
   const rel = relative(resolve(base), resolve(path));
   if (rel.startsWith("..") || isAbsolute(rel))
@@ -160,6 +144,100 @@ const runtimeMatches = (
   given: RuntimeIdentity,
   actual: RuntimeIdentity
 ): boolean => canonicalJson(given) === canonicalJson(actual);
+const readProductionManifestPinCatalog = (): ManifestPinCatalog | null =>
+  productionComponentManifestCatalog === null
+    ? null
+    : validateManifestCatalog(productionComponentManifestCatalog);
+const compareNumericVersions = (
+  left: string,
+  right: string
+): number | undefined => {
+  const parse = (value: string) => {
+    if (!/^(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){0,2}$/.test(value))
+      return undefined;
+    const parts = value.split(".").map(Number);
+    if (parts.some((part) => !Number.isSafeInteger(part))) return undefined;
+    return [...parts, 0, 0].slice(0, 3);
+  };
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  if (!leftParts || !rightParts) return undefined;
+  for (let index = 0; index < 3; index++)
+    if (leftParts[index] !== rightParts[index])
+      return leftParts[index]! - rightParts[index]!;
+  return 0;
+};
+const resolvePinnedTarget = (
+  catalog: ManifestPinCatalog | null,
+  component: ComponentId,
+  productVersion: string,
+  target: ArtifactTarget,
+  libcVersion?: string
+): ArtifactTarget => {
+  if (!catalog) {
+    lookupManifestPin(null, { component, productVersion, target });
+    throw new Error("Component manifest pin catalog is unavailable");
+  }
+  if (catalog.productVersion !== productVersion)
+    lookupManifestPin(catalog, { component, productVersion, target });
+  if (target.libc) return target;
+  const matches = catalog.entries.filter(
+    (entry) =>
+      entry.component === component &&
+      entry.target.platform === target.platform &&
+      entry.target.architecture === target.architecture
+  );
+  if (matches.length === 1) return matches[0]!.target;
+  const compatibleLibcTargets = matches
+    .filter(
+      (entry) =>
+        libcVersion !== undefined &&
+        entry.target.libc !== undefined &&
+        (compareNumericVersions(
+          libcVersion,
+          entry.target.libc.minimumVersion
+        ) ?? -1) >= 0
+    )
+    .sort(
+      (left, right) =>
+        compareNumericVersions(
+          right.target.libc!.minimumVersion,
+          left.target.libc!.minimumVersion
+        ) ?? 0
+    );
+  if (compatibleLibcTargets.length > 0) return compatibleLibcTargets[0]!.target;
+  const platformTargets = matches.filter((entry) => !entry.target.libc);
+  if (platformTargets.length === 1) return platformTargets[0]!.target;
+  if (matches.length > 1)
+    throw new Error(
+      "Component manifest pin target is ambiguous; exact libc target is required."
+    );
+  lookupManifestPin(catalog, { component, productVersion, target });
+  throw new Error("Required component manifest pin is missing.");
+};
+export const resolveComponentManifestPinTarget = (
+  catalog: ManifestPinCatalog | null,
+  input: {
+    component: ComponentId;
+    productVersion: string;
+    target: ArtifactTarget;
+    runtime: RuntimeIdentity;
+  }
+): ArtifactTarget => {
+  const target = resolvePinnedTarget(
+    catalog,
+    input.component,
+    input.productVersion,
+    input.target,
+    input.runtime.libcVersion
+  );
+  lookupManifestPin(catalog, {
+    component: input.component,
+    productVersion: input.productVersion,
+    target
+  });
+  return target;
+};
 const parseJsonFile = (
   path: string,
   maxBytes: number,
@@ -194,8 +272,7 @@ const readOfflineSource = (
     throw new Error("component archive is not a bounded regular file");
   return {
     archivePath,
-    manifestBytes: readBoundedFile(source.manifestPath, MAX_MANIFEST_BYTES),
-    signatureBytes: readBoundedFile(source.signaturePath, MAX_SIGNATURE_BYTES)
+    manifestBytes: readBoundedFile(source.manifestPath, MAX_MANIFEST_BYTES)
   };
 };
 const readBoundedFile = (path: string, limit: number): Buffer => {
@@ -451,36 +528,33 @@ function componentPayloadPath(root: string): string {
   return resolve(root, "payload");
 }
 function readComponentRecord(path: string): {
-  schemaVersion: 1;
+  schemaVersion: 2;
   manifest: unknown;
-  signature: ComponentSignature;
   manifestDigest: string;
   archivePath: string;
 } {
-  const value = parseJsonFile(
-    path,
-    MAX_MANIFEST_BYTES + MAX_SIGNATURE_BYTES + 32_768
-  );
+  const value = parseJsonFile(path, MAX_MANIFEST_BYTES + 32_768);
+  if (isPlainRecord(value) && value.schemaVersion === 1)
+    throw new Error(
+      "Stored component predates manifest pin admission; reinstall components using a trusted versioned control plane."
+    );
   if (
     !isPlainRecord(value) ||
     !exactKeys(value, [
       "schemaVersion",
       "manifest",
-      "signature",
       "manifestDigest",
       "archivePath"
     ]) ||
-    value.schemaVersion !== 1 ||
+    value.schemaVersion !== 2 ||
     !isPlainRecord(value.manifest) ||
     typeof value.manifestDigest !== "string" ||
     typeof value.archivePath !== "string"
   )
     throw new Error("stored component record is invalid");
-  const signature = parseSignature(value.signature);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     manifest: value.manifest,
-    signature,
     manifestDigest: value.manifestDigest,
     archivePath: value.archivePath
   };
@@ -494,25 +568,35 @@ async function verifyStoredComponent(
     runtime: RuntimeIdentity;
     target?: ArtifactTarget;
   }
-): Promise<VerifiedSignedComponent> {
+): Promise<VerifiedManifestPinnedComponent> {
   assertDirectoryChain(home, root);
   const record = readComponentRecord(componentRecordPath(root));
   const manifestBytes = Buffer.from(canonicalJson(record.manifest));
   if (hash(manifestBytes) !== record.manifestDigest)
     throw new Error("stored component manifest digest mismatch");
+  const catalog = readProductionManifestPinCatalog();
+  const productVersion = expected.productVersion ?? catalog?.productVersion;
+  if (!productVersion)
+    throw new Error("Component manifest pin catalog is unavailable");
+  const target = resolveComponentManifestPinTarget(catalog, {
+    component: expected.component,
+    productVersion,
+    target: expected.target ?? {
+      platform: expected.runtime.platform,
+      architecture: expected.runtime.architecture
+    },
+    runtime: expected.runtime
+  });
   const archivePath = resolve(root, record.archivePath);
   assertInside(root, archivePath);
   const manifest = await verifyComponent({
     manifestBytes,
-    signature: record.signature,
+    manifestCatalog: catalog,
     archivePath,
     expectedComponent: expected.component,
-    ...(expected.productVersion
-      ? { expectedVersion: expected.productVersion }
-      : {}),
-    ...(expected.target ? { target: expected.target } : {}),
-    runtime: expected.runtime,
-    trustedKeys: productionComponentTrustRoots
+    expectedVersion: productVersion,
+    target,
+    runtime: expected.runtime
   });
   if (archivePath !== resolve(root, manifest.archive.name))
     throw new Error("stored component archive path is invalid");
@@ -523,7 +607,7 @@ async function verifyStoredComponent(
   assertDirectoryChain(root, payload);
   await verifyExtractedComponent(payload, manifest);
   return {
-    kind: "signed-component",
+    kind: "manifest-pinned-component",
     manifest,
     root: payload,
     manifestDigest: record.manifestDigest
@@ -534,9 +618,8 @@ async function stageComponentInternal(
   paths: KoedServerPaths,
   source: ComponentSource,
   context: ComponentInstallContext,
-  trustedKeys: ReadonlyMap<string, string>,
   runtime: RuntimeIdentity
-): Promise<VerifiedSignedComponent> {
+): Promise<VerifiedManifestPinnedComponent> {
   aborted(context.signal);
   const storeRoot = resolve(paths.componentsDir);
   assertInside(paths.koedHome, storeRoot);
@@ -545,12 +628,10 @@ async function stageComponentInternal(
   const tempRoot = mkdtempSync(resolve(storeRoot, ".stage-"));
   chmodSync(tempRoot, 0o700);
   try {
+    const catalog = readProductionManifestPinCatalog();
     let manifestBytes: Buffer;
-    let signatureBytes: Buffer;
     if (source.kind === "offline") {
-      const offline = readOfflineSource(source);
-      manifestBytes = offline.manifestBytes;
-      signatureBytes = offline.signatureBytes;
+      manifestBytes = readOfflineSource(source).manifestBytes;
     } else {
       manifestBytes = (await fetchBounded(
         source.manifestUrl,
@@ -559,27 +640,26 @@ async function stageComponentInternal(
         context.signal,
         context.progress
       ))!;
-      signatureBytes = (await fetchBounded(
-        source.signatureUrl,
-        resolve(tempRoot, "signature.json"),
-        MAX_SIGNATURE_BYTES,
-        context.signal,
-        context.progress
-      ))!;
     }
-    const manifestEnvelope: unknown = JSON.parse(
-      manifestBytes.toString("utf8")
-    );
     if (
-      !isPlainRecord(manifestEnvelope) ||
-      !isPlainRecord(manifestEnvelope.archive) ||
-      typeof manifestEnvelope.archive.name !== "string" ||
-      manifestEnvelope.archive.name.length > 255 ||
-      [".", ".."].includes(manifestEnvelope.archive.name) ||
-      basename(manifestEnvelope.archive.name) !== manifestEnvelope.archive.name
+      context.target.platform !== runtime.platform ||
+      context.target.architecture !== runtime.architecture
     )
-      throw new Error("component archive metadata is invalid");
-    const archivePath = resolve(tempRoot, manifestEnvelope.archive.name);
+      throw new Error("component target does not match actual runtime");
+    const target = resolveComponentManifestPinTarget(catalog, {
+      component: context.expectedComponent,
+      productVersion: context.expectedVersion,
+      target: context.target,
+      runtime
+    });
+    const manifest = verifyComponentManifestPin({
+      manifestBytes,
+      manifestCatalog: catalog,
+      expectedComponent: context.expectedComponent,
+      expectedVersion: context.expectedVersion,
+      target
+    });
+    const archivePath = resolve(tempRoot, manifest.archive.name);
     if (source.kind === "offline") {
       copyFileSync(resolve(source.archivePath), archivePath, 1);
       chmodSync(archivePath, 0o600);
@@ -594,18 +674,14 @@ async function stageComponentInternal(
       );
     }
     aborted(context.signal);
-    const signature = parseSignature(
-      JSON.parse(signatureBytes.toString("utf8")) as unknown
-    );
-    const manifest = await verifyComponent({
+    await verifyComponent({
       manifestBytes,
-      signature,
+      manifestCatalog: catalog,
       archivePath,
       expectedComponent: context.expectedComponent,
       expectedVersion: context.expectedVersion,
-      target: context.target,
-      runtime,
-      trustedKeys
+      target,
+      runtime
     });
     aborted(context.signal);
     const manifestDigest = hash(manifestBytes);
@@ -630,9 +706,8 @@ async function stageComponentInternal(
     writeFileSync(
       componentRecordPath(completeRoot),
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         manifest,
-        signature,
         manifestDigest,
         archivePath: resolve(versionRoot, manifest.archive.name)
       }),
@@ -703,7 +778,7 @@ async function stageComponentInternal(
           );
           committed = true;
           return {
-            kind: "signed-component",
+            kind: "manifest-pinned-component",
             manifest,
             root: componentPayloadPath(versionRoot),
             manifestDigest
@@ -723,24 +798,18 @@ export async function stageComponent(
   paths: KoedServerPaths,
   input: ComponentSource,
   context: ComponentInstallContext
-): Promise<VerifiedSignedComponent> {
+): Promise<VerifiedManifestPinnedComponent> {
   const actualRuntime = discoverActualRuntimeIdentity();
   if (!runtimeMatches(context.runtime, actualRuntime))
     throw new Error("caller runtime identity does not match actual runtime");
-  return stageComponentInternal(
-    paths,
-    input,
-    context,
-    productionComponentTrustRoots,
-    actualRuntime
-  );
+  return stageComponentInternal(paths, input, context, actualRuntime);
 }
 
 export async function stageGeneration(
   paths: KoedServerPaths,
   input: {
-    base: VerifiedSignedComponent;
-    privacy?: VerifiedSignedComponent;
+    base: VerifiedManifestPinnedComponent;
+    privacy?: VerifiedManifestPinnedComponent;
     owner: RuntimeOwner;
   }
 ): Promise<VerifiedGeneration> {
@@ -762,7 +831,7 @@ export async function stageGeneration(
     resolve(baseVerified.root) !== resolve(base.root)
   )
     throw new Error("base component is not a verified store entry");
-  let privacyVerified: VerifiedSignedComponent | undefined;
+  let privacyVerified: VerifiedManifestPinnedComponent | undefined;
   if (privacy) {
     assertDirectoryChain(paths.componentsDir, dirname(privacy.root));
     privacyVerified = await verifyStoredComponent(
@@ -886,8 +955,8 @@ export async function stageGeneration(
 export async function readStoredComponents(
   paths: KoedServerPaths,
   runtime: RuntimeIdentity
-): Promise<VerifiedSignedComponent[]> {
-  const components: VerifiedSignedComponent[] = [];
+): Promise<VerifiedManifestPinnedComponent[]> {
+  const components: VerifiedManifestPinnedComponent[] = [];
   for (const component of ["base", "privacy"] as const) {
     const componentRoot = resolve(paths.componentsDir, component);
     if (!existsSync(componentRoot)) continue;
@@ -897,7 +966,7 @@ export async function readStoredComponents(
     })) {
       if (
         !versionEntry.isDirectory() ||
-        !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*))?$/.test(
+        !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*))?(?:-[0-9A-Za-z.-]+)?$/.test(
           versionEntry.name
         )
       )
@@ -923,7 +992,14 @@ export async function readStoredComponents(
               }
             )
           );
-        } catch {
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message.startsWith(
+              "Stored component predates manifest pin admission;"
+            )
+          )
+            throw error;
           // Invalid or incompatible cache entries are never considered installed.
         }
       }
@@ -1022,7 +1098,7 @@ export async function stageDesktopPrivacyGeneration(
     resourcesPath: string;
     bundleDigest: string;
     productVersion: string;
-    privacy: VerifiedSignedComponent;
+    privacy: VerifiedManifestPinnedComponent;
     owner: RuntimeOwner;
   }
 ): Promise<VerifiedGeneration> {
@@ -1153,7 +1229,7 @@ export async function readStagedGeneration(
     throw new Error(
       "generation base reference differs from verified component"
     );
-  let privacy: VerifiedSignedComponent | undefined;
+  let privacy: VerifiedManifestPinnedComponent | undefined;
   if (Object.hasOwn(record, "privacy")) {
     const reference = record.privacy;
     if (

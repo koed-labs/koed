@@ -51,12 +51,11 @@ const invoke = async (event: never, value: unknown) => {
 };
 
 describe("CLI install IPC", () => {
-  it("accepts only main-frame actor and forwards validated offline triplet", async () => {
+  it("accepts only main-frame actor and forwards validated offline pair", async () => {
     const { event, handler, manager } = setup();
     const source = {
       archivePath: "/tmp/privacy.tar.gz",
-      manifestPath: "/tmp/privacy.manifest.json",
-      signaturePath: "/tmp/privacy.signature.json"
+      manifestPath: "/tmp/privacy.manifest.json"
     };
     await handler({
       operation: "install",

@@ -17,23 +17,28 @@ import type {
   ComponentManifest,
   RuntimeIdentity
 } from "./component-contract.js";
+import type { ManifestPinCatalog } from "./component-manifest-catalog.js";
 
 const testRuntime = vi.hoisted(() => ({
   current: undefined as RuntimeIdentity | undefined
 }));
-const testKeys = vi.hoisted(() => ({ current: new Map<string, string>() }));
+const testCatalog = vi.hoisted(() => ({
+  current: null as ManifestPinCatalog | null
+}));
 vi.mock("./component-runtime-identity.js", () => ({
   discoverActualRuntimeIdentity: () => {
     if (!testRuntime.current) throw new Error("fixture runtime missing");
     return testRuntime.current;
   }
 }));
-vi.mock("./component-trust-roots.js", () => ({
-  productionComponentTrustRoots: testKeys.current
+vi.mock("./component-manifest-catalog-data.js", () => ({
+  get productionComponentManifestCatalog() {
+    return testCatalog.current;
+  }
 }));
 import {
   goldenComponentArchive,
-  signedComponentFixture
+  componentFixture
 } from "./component-test-fixtures.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
@@ -45,7 +50,7 @@ import {
 } from "./component-store.js";
 
 const roots: string[] = [];
-const fixtures: Awaited<ReturnType<typeof signedComponentFixture>>[] = [];
+const fixtures: Awaited<ReturnType<typeof componentFixture>>[] = [];
 const activePointers: Array<{ pointer: string; bytes: Buffer }> = [];
 const preserveActivePointer = (home: string) => {
   const pointer = resolve(home, "runtime/components/current.json");
@@ -64,10 +69,10 @@ const temp = () => {
   return root;
 };
 const fixture = async (
-  overrides: Parameters<typeof signedComponentFixture>[0] = {},
-  archiveEntries?: Parameters<typeof signedComponentFixture>[1],
+  overrides: Parameters<typeof componentFixture>[0] = {},
+  archiveEntries?: Parameters<typeof componentFixture>[1],
   includeArchiveInventory = false,
-  archiveOptions: Parameters<typeof signedComponentFixture>[2] = {}
+  archiveOptions: Parameters<typeof componentFixture>[2] = {}
 ) => {
   const manifestOverrides = {
     component: "base",
@@ -75,13 +80,14 @@ const fixture = async (
     target: { platform: "linux", architecture: "x64" },
     ...overrides
   } satisfies Partial<ComponentManifest>;
-  const item = await signedComponentFixture(
+  const item = await componentFixture(
     manifestOverrides,
     archiveEntries,
     archiveOptions,
     includeArchiveInventory
   );
   fixtures.push(item);
+  mergeTestCatalog(item.input.manifestCatalog);
   return {
     ...item,
     input: {
@@ -92,23 +98,38 @@ const fixture = async (
     }
   };
 };
+const mergeTestCatalog = (catalog: ManifestPinCatalog) => {
+  const current = testCatalog.current;
+  if (!current || current.productVersion !== catalog.productVersion) {
+    testCatalog.current = catalog;
+    return;
+  }
+  const entries = [...current.entries];
+  for (const entry of catalog.entries) {
+    const index = entries.findIndex(
+      (candidate) =>
+        candidate.component === entry.component &&
+        JSON.stringify(candidate.target) === JSON.stringify(entry.target)
+    );
+    if (index < 0) entries.push(entry);
+    else entries[index] = entry;
+  }
+  testCatalog.current = { ...catalog, entries };
+};
 const stageFixture = async (
   paths: ReturnType<typeof resolveKoedServerPaths>,
-  item: Awaited<ReturnType<typeof fixture>>
+  item: Awaited<ReturnType<typeof fixture>>,
+  catalog: ManifestPinCatalog | null = item.input.manifestCatalog
 ) => {
   testRuntime.current = item.input.runtime;
-  testKeys.current.clear();
-  for (const [key, value] of item.input.trustedKeys)
-    testKeys.current.set(key, value);
+  if (catalog) mergeTestCatalog(catalog);
+  else testCatalog.current = null;
   return stageComponent(
     paths,
     {
       kind: "offline",
       archivePath: item.input.archivePath,
-      manifestPath: writeMetadata(item.input.manifestBytes),
-      signaturePath: writeMetadata(
-        Buffer.from(JSON.stringify(item.input.signature))
-      )
+      manifestPath: writeMetadata(item.input.manifestBytes)
     },
     {
       expectedComponent: item.input.expectedComponent,
@@ -162,23 +183,81 @@ afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   testRuntime.current = undefined;
-  testKeys.current.clear();
+  testCatalog.current = null;
   expect(changedPointers).toEqual([]);
 });
 
 describe("immutable component and generation store", () => {
+  it("rejects historical signatures when no compiled pin exists without changing pointer", async () => {
+    const home = temp();
+    const paths = resolveKoedServerPaths({ KOED_HOME: home });
+    const active = activePointers.at(-1)!;
+    const item = await fixture();
+    await expect(stageFixture(paths, item, null)).rejects.toThrow(
+      "Component manifest pin catalog is unavailable"
+    );
+    expect(readFileSync(active.pointer)).toEqual(active.bytes);
+  });
+
+  it("resolves exact libc pin from independent runtime identity", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const generic = await fixture();
+    const glibc = await fixture({
+      target: {
+        platform: "linux",
+        architecture: "x64",
+        libc: { family: "glibc", minimumVersion: "2.35" }
+      }
+    });
+    mergeTestCatalog(generic.input.manifestCatalog);
+    mergeTestCatalog(glibc.input.manifestCatalog);
+    testRuntime.current = glibc.input.runtime;
+    const staged = await stageComponent(
+      paths,
+      {
+        kind: "offline",
+        archivePath: glibc.input.archivePath,
+        manifestPath: writeMetadata(glibc.input.manifestBytes)
+      },
+      {
+        expectedComponent: "base",
+        expectedVersion: "0.8.1",
+        target: { platform: "linux", architecture: "x64" },
+        runtime: glibc.input.runtime
+      }
+    );
+    expect(staged.manifest.target.libc?.minimumVersion).toBe("2.35");
+  });
+
   it("stages verified components idempotently by content digest", async () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
     const item = await fixture();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
     const first = await stageFixture(paths, item);
     const second = await stageFixture(paths, item);
     expect(second).toEqual(first);
     expect(first.root).toContain(first.manifestDigest);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("persists a Desktop bundle plus signed privacy generation and re-verifies disk bytes", async () => {
+  it("rejects legacy component records with reinstall guidance instead of fallback", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    const component = await stageFixture(paths, item);
+    writeFileSync(
+      resolve(component.root, "..", "component.json"),
+      JSON.stringify({ schemaVersion: 1 })
+    );
+    await expect(stageFixture(paths, item)).rejects.toThrow(
+      "Stored component predates manifest pin admission; reinstall components using a trusted versioned control plane."
+    );
+  });
+
+  it("persists a Desktop bundle plus manifest-pinned privacy generation and re-verifies disk bytes", async () => {
     const home = temp();
     const paths = resolveKoedServerPaths({ KOED_HOME: home });
     const item = await fixture({ component: "privacy" });
@@ -208,7 +287,7 @@ describe("immutable component and generation store", () => {
     await expect(readStagedGeneration(paths, generation.id)).rejects.toThrow();
   });
 
-  it("rejects same component version with a different signed manifest digest", async () => {
+  it("rejects same component version with a different manifest digest", async () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
     const original = await fixture();
     await stageFixture(paths, original);
@@ -225,7 +304,7 @@ describe("immutable component and generation store", () => {
     );
   });
 
-  it("rejects mixed product versions without changing active pointer", async () => {
+  it("rejects a component from a different product version without changing active pointer", async () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
     const active = preserveActivePointer(paths.koedHome);
     const base = await fixture({ productVersion: "0.9.0" });
@@ -233,19 +312,10 @@ describe("immutable component and generation store", () => {
       component: "privacy",
       productVersion: "0.9.1"
     });
-    const stagedBase = await stageFixture(paths, base);
-    const stagedPrivacy = await stageFixture(paths, privacy);
-    testKeys.current.clear();
-    for (const item of [base, privacy])
-      for (const [key, value] of item.input.trustedKeys)
-        testKeys.current.set(key, value);
+    await stageFixture(paths, base);
     await expect(
-      stageGeneration(paths, {
-        base: stagedBase,
-        privacy: stagedPrivacy,
-        owner
-      })
-    ).rejects.toThrow("mixed component versions");
+      stageFixture(paths, privacy, base.input.manifestCatalog)
+    ).rejects.toThrow("Component pin catalog version mismatch");
     expect(readFileSync(active.pointer)).toEqual(active.bytes);
   });
 
@@ -263,10 +333,6 @@ describe("immutable component and generation store", () => {
     });
     const stagedBase = await stageFixture(paths, base);
     const stagedPrivacy = await stageFixture(paths, privacy);
-    testKeys.current.clear();
-    for (const item of [base, privacy])
-      for (const [key, value] of item.input.trustedKeys)
-        testKeys.current.set(key, value);
     await expect(
       stageGeneration(paths, {
         base: stagedBase,
@@ -318,8 +384,7 @@ describe("immutable component and generation store", () => {
         {
           kind: "offline",
           archivePath: resolve(temp(), "absent.tar.gz"),
-          manifestPath: resolve(temp(), "absent-manifest.json"),
-          signaturePath: resolve(temp(), "absent-signature.json")
+          manifestPath: resolve(temp(), "absent-manifest.json")
         },
         {
           expectedComponent: "base",
@@ -341,19 +406,12 @@ describe("immutable component and generation store", () => {
     fetch.mockRestore();
   });
 
-  it("retries transient remote server failures", async () => {
+  it("retries transient manifest server failures", async () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
     const item = await fixture();
     testRuntime.current = item.input.runtime;
-    testKeys.current.clear();
-    for (const [key, value] of item.input.trustedKeys)
-      testKeys.current.set(key, value);
     const urls = new Map([
       ["https://fixture.test/manifest.json", item.input.manifestBytes],
-      [
-        "https://fixture.test/signature.json",
-        Buffer.from(JSON.stringify(item.input.signature))
-      ],
       ["https://fixture.test/base.tar.gz", readFileSync(item.input.archivePath)]
     ]);
     let manifestAttempts = 0;
@@ -375,8 +433,7 @@ describe("immutable component and generation store", () => {
       {
         kind: "remote",
         archiveUrl: "https://fixture.test/base.tar.gz",
-        manifestUrl: "https://fixture.test/manifest.json",
-        signatureUrl: "https://fixture.test/signature.json"
+        manifestUrl: "https://fixture.test/manifest.json"
       },
       {
         expectedComponent: "base",
@@ -386,7 +443,7 @@ describe("immutable component and generation store", () => {
       }
     );
     expect(result.manifestDigest).toBeTruthy();
-    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch).toHaveBeenCalledTimes(3);
     fetch.mockRestore();
   });
 
@@ -395,15 +452,8 @@ describe("immutable component and generation store", () => {
     const active = preserveActivePointer(paths.koedHome);
     const item = await fixture();
     testRuntime.current = item.input.runtime;
-    testKeys.current.clear();
-    for (const [key, value] of item.input.trustedKeys)
-      testKeys.current.set(key, value);
     const urls = new Map([
       ["https://fixture.test/manifest.json", item.input.manifestBytes],
-      [
-        "https://fixture.test/signature.json",
-        Buffer.from(JSON.stringify(item.input.signature))
-      ],
       ["https://fixture.test/base.tar.gz", Buffer.from("corrupt archive")]
     ]);
     const fetch = vi
@@ -420,8 +470,7 @@ describe("immutable component and generation store", () => {
         {
           kind: "remote",
           archiveUrl: "https://fixture.test/base.tar.gz",
-          manifestUrl: "https://fixture.test/manifest.json",
-          signatureUrl: "https://fixture.test/signature.json"
+          manifestUrl: "https://fixture.test/manifest.json"
         },
         {
           expectedComponent: "base",
@@ -432,7 +481,7 @@ describe("immutable component and generation store", () => {
       )
     ).rejects.toThrow();
     expect(readFileSync(active.pointer)).toEqual(active.bytes);
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(2);
     fetch.mockRestore();
   });
 
@@ -452,8 +501,7 @@ describe("immutable component and generation store", () => {
         {
           kind: "remote",
           archiveUrl: "https://fixture.test/base.tar.gz",
-          manifestUrl: "https://fixture.test/manifest.json",
-          signatureUrl: "https://fixture.test/signature.json"
+          manifestUrl: "https://fixture.test/manifest.json"
         },
         {
           expectedComponent: "base",
@@ -471,8 +519,6 @@ describe("immutable component and generation store", () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
     const item = await fixture();
     testRuntime.current = item.input.runtime;
-    for (const [key, value] of item.input.trustedKeys)
-      testKeys.current.set(key, value);
     let resume!: (response: Response) => void;
     vi.spyOn(globalThis, "fetch")
       .mockImplementationOnce(
@@ -481,7 +527,6 @@ describe("immutable component and generation store", () => {
             resume = resolveResponse;
           })
       )
-      .mockResolvedValueOnce(new Response(JSON.stringify(item.input.signature)))
       .mockResolvedValueOnce(
         new Response(readFileSync(item.input.archivePath))
       );
@@ -490,8 +535,7 @@ describe("immutable component and generation store", () => {
       {
         kind: "remote",
         archiveUrl: "https://fixture.test/archive",
-        manifestUrl: "https://fixture.test/manifest",
-        signatureUrl: "https://fixture.test/signature"
+        manifestUrl: "https://fixture.test/manifest"
       },
       {
         expectedComponent: "base",
@@ -542,8 +586,7 @@ describe("immutable component and generation store", () => {
         {
           kind: "remote",
           archiveUrl: "https://fixture.test/archive",
-          manifestUrl: "https://fixture.test/manifest",
-          signatureUrl: "https://fixture.test/signature"
+          manifestUrl: "https://fixture.test/manifest"
         },
         {
           expectedComponent: "base",
@@ -587,8 +630,7 @@ describe("immutable component and generation store", () => {
       {
         kind: "remote",
         archiveUrl: "https://fixture.test/archive",
-        manifestUrl: "https://fixture.test/manifest",
-        signatureUrl: "https://fixture.test/signature"
+        manifestUrl: "https://fixture.test/manifest"
       },
       {
         expectedComponent: "base",
@@ -598,7 +640,7 @@ describe("immutable component and generation store", () => {
       }
     );
     const rejected = expect(pending).rejects.toThrow(
-      "component archive metadata is invalid"
+      "component manifest has invalid fields"
     );
     await vi.advanceTimersByTimeAsync(20_000);
     stream.enqueue(Buffer.from("{"));
@@ -641,8 +683,7 @@ describe("immutable component and generation store", () => {
       {
         kind: "remote",
         archiveUrl: "https://fixture.test/archive",
-        manifestUrl: "https://fixture.test/manifest",
-        signatureUrl: "https://fixture.test/signature"
+        manifestUrl: "https://fixture.test/manifest"
       },
       {
         expectedComponent: "base",
@@ -693,8 +734,7 @@ describe("immutable component and generation store", () => {
         {
           kind: "remote",
           archiveUrl: "https://fixture.test/archive",
-          manifestUrl: "https://fixture.test/manifest",
-          signatureUrl: "https://fixture.test/signature"
+          manifestUrl: "https://fixture.test/manifest"
         },
         {
           expectedComponent: "base",
@@ -719,9 +759,6 @@ describe("immutable component and generation store", () => {
     const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
     const item = await fixture();
     testRuntime.current = item.input.runtime;
-    testKeys.current.clear();
-    for (const [key, value] of item.input.trustedKeys)
-      testKeys.current.set(key, value);
     const release = await properLockfile.lock(paths.componentsDir, {
       realpath: false
     });
@@ -731,10 +768,7 @@ describe("immutable component and generation store", () => {
       {
         kind: "offline",
         archivePath: item.input.archivePath,
-        manifestPath: writeMetadata(item.input.manifestBytes),
-        signaturePath: writeMetadata(
-          Buffer.from(JSON.stringify(item.input.signature))
-        )
+        manifestPath: writeMetadata(item.input.manifestBytes)
       },
       {
         expectedComponent: "base",
@@ -770,8 +804,7 @@ describe("immutable component and generation store", () => {
         {
           kind: "remote",
           archiveUrl: "https://example.test/component.tar.gz",
-          manifestUrl: "https://example.test/manifest.json",
-          signatureUrl: "https://example.test/signature.json"
+          manifestUrl: "https://example.test/manifest.json"
         },
         {
           expectedComponent: "base",
@@ -804,10 +837,7 @@ describe("immutable component and generation store", () => {
         {
           kind: "offline",
           archivePath: item.input.archivePath,
-          manifestPath: writeMetadata(item.input.manifestBytes),
-          signaturePath: writeMetadata(
-            Buffer.from(JSON.stringify(item.input.signature))
-          )
+          manifestPath: writeMetadata(item.input.manifestBytes)
         },
         {
           expectedComponent: "base",
@@ -846,8 +876,8 @@ describe("immutable component and generation store", () => {
       )
     ) as { components: { base: unknown } };
     expect(storedGeneration.components.base).not.toHaveProperty("kind");
-    expect(base.kind).toBe("signed-component");
-    expect(generation.base.kind).toBe("signed-component");
+    expect(base.kind).toBe("manifest-pinned-component");
+    expect(generation.base.kind).toBe("manifest-pinned-component");
     await expect(readStagedGeneration(paths, generation.id)).resolves.toEqual(
       generation
     );
@@ -860,10 +890,6 @@ describe("immutable component and generation store", () => {
     const privacyItem = await fixture({ component: "privacy" });
     const base = await stageFixture(paths, baseItem);
     const privacy = await stageFixture(paths, privacyItem);
-    testKeys.current.clear();
-    for (const item of [baseItem, privacyItem])
-      for (const [key, value] of item.input.trustedKeys)
-        testKeys.current.set(key, value);
     const generation = await stageGeneration(paths, {
       base: {
         ...base,
@@ -892,10 +918,6 @@ describe("immutable component and generation store", () => {
     );
     const base = await stageFixture(paths, baseItem);
     const privacy = await stageFixture(paths, privacyItem);
-    testKeys.current.clear();
-    for (const item of [baseItem, privacyItem])
-      for (const [key, value] of item.input.trustedKeys)
-        testKeys.current.set(key, value);
     const generation = await stageGeneration(paths, { base, privacy, owner });
     const recordPath = resolve(
       paths.generationsDir,
@@ -932,10 +954,6 @@ describe("immutable component and generation store", () => {
     const privacyItem = await fixture({ component: "privacy" });
     const base = await stageFixture(paths, baseItem);
     const privacy = await stageFixture(paths, privacyItem);
-    testKeys.current.clear();
-    for (const item of [baseItem, privacyItem])
-      for (const [key, value] of item.input.trustedKeys)
-        testKeys.current.set(key, value);
     const generation = await stageGeneration(paths, { base, privacy, owner });
     const recordPath = resolve(
       paths.generationsDir,
@@ -982,8 +1000,7 @@ describe("immutable component and generation store", () => {
         {
           kind: "remote",
           archiveUrl: "https://fixture.test/archive",
-          manifestUrl: "https://fixture.test/manifest",
-          signatureUrl: "https://fixture.test/signature"
+          manifestUrl: "https://fixture.test/manifest"
         },
         {
           expectedComponent: "base",

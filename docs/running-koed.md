@@ -168,8 +168,9 @@ processes; activation is blocked while a runtime pin is live or its process
 identity cannot be confirmed. Activation also requires the generation owner to
 match the validated requester. Cleanup never removes User data or installed
 models. A current pointer is replaced atomically only after candidate
-verification succeeds. Downgrades remain blocked when migration rollback
-safety is unknown or disallowed. Lifecycle and component-store lock directories
+verification succeeds. Generation downgrades remain blocked. Activation compares
+product versions directly: its version guard does not validate database
+compatibility or restore database state. Lifecycle and component-store lock directories
 use atomic creation and never reclaim a lock automatically: observing owner data
 or elapsed time cannot prove no concurrent process is between inspection and
 replacement. A stale lock requires Operator recovery only after all Koed
@@ -195,7 +196,10 @@ paths. Source-checkout development retains source paths. Desktop-owned
 activation remains fail-closed until Desktop uses its validated private
 supervisor channel; environment flags cannot assert Desktop ownership.
 
-Empty production component trust roots remain blocked, and staging a verified
+This build includes the approved component public key; missing roots still fail
+closed. Remote signer authorization is independent of that configuration. The
+planned move to versioned manifest pins is described in
+[ADR 0057](adr/0057-versioned-component-manifest-pins.md). Staging a verified
 generation does not activate it.
 
 ### Explicit component provisioning
@@ -234,8 +238,10 @@ incomplete required component set, or a running service stages verified
 components only. Install any other required component at the same version, stop
 Koed, and use `koed components activate --version <version> --json` to activate
 a complete generation. Activation requires the invoked control plane to match
-the selected version; for rollback, launch the matching older control plane
-first. `koed components cleanup --json` removes only verified inactive
+the selected version. A matching older control plane does not authorize a
+generation downgrade or establish compatibility with newer database state.
+Same-version recovery may switch between verified generations, such as Base-only
+and Base with Privacy. `koed components cleanup --json` removes only verified inactive
 generations and retains the two newest eligible generations. Cleanup never
 removes User data or models.
 

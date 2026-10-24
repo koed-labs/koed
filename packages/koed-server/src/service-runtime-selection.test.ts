@@ -14,18 +14,26 @@ import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 const fixtureRuntime = vi.hoisted(() => ({
   value: undefined as RuntimeIdentity | undefined
 }));
-const fixtureKeys = vi.hoisted(() => ({ value: new Map<string, string>() }));
+
 vi.mock("./component-runtime-identity.js", () => ({
   discoverActualRuntimeIdentity: () => {
     if (!fixtureRuntime.value) throw new Error("fixture runtime missing");
     return fixtureRuntime.value;
   }
 }));
-vi.mock("./component-trust-roots.js", () => ({
-  productionComponentTrustRoots: fixtureKeys.value
-}));
+vi.mock("./component-manifest-catalog-data.js", async () => {
+  const fixtures = await import("./component-test-fixtures.js");
+  return {
+    get productionComponentManifestCatalog() {
+      return fixtures.getFixtureManifestPinCatalog();
+    }
+  };
+});
 
-import { signedComponentFixture } from "./component-test-fixtures.js";
+import {
+  resetFixtureManifestPinCatalog,
+  componentFixture
+} from "./component-test-fixtures.js";
 import * as appRuntime from "./app-runtime.js";
 import { collectKoedServerStatus } from "./status.js";
 import { createDesktopStatusRpcHandler } from "./desktop-status-rpc.js";
@@ -94,15 +102,13 @@ const makeGeneration = async (
   });
   mkdirSync(paths.componentsDir, { recursive: true, mode: 0o700 });
   const target: ArtifactTarget = { platform: "linux", architecture: "x64" };
-  const fixture = await signedComponentFixture(
+  const fixture = await componentFixture(
     { productVersion, component: "base", requiredFiles, target },
     requiredFiles.map((path) => ({ path })),
     {},
     true
   );
   fixtureRuntime.value = fixture.input.runtime;
-  for (const [key, value] of fixture.input.trustedKeys)
-    fixtureKeys.value.set(key, value);
   const metadataPath = (name: string, data: Buffer) => {
     const path = resolve(root, name);
     writeFileSync(path, data, { mode: 0o600 });
@@ -113,11 +119,7 @@ const makeGeneration = async (
     {
       kind: "offline",
       archivePath: fixture.input.archivePath,
-      manifestPath: metadataPath("manifest.json", fixture.input.manifestBytes),
-      signaturePath: metadataPath(
-        "signature.json",
-        Buffer.from(JSON.stringify(fixture.input.signature))
-      )
+      manifestPath: metadataPath("manifest.json", fixture.input.manifestBytes)
     },
     {
       expectedComponent: "base",
@@ -136,7 +138,7 @@ afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
   fixtureRuntime.value = undefined;
-  fixtureKeys.value.clear();
+  resetFixtureManifestPinCatalog();
   vi.restoreAllMocks();
 });
 

@@ -16,6 +16,7 @@ import { resolveKoedAppRuntimeExecution } from "./app-runtime.js";
 import {
   readStagedGeneration,
   readStoredComponents,
+  resolveComponentManifestPinTarget,
   stageComponent,
   stageGeneration
 } from "./component-store.js";
@@ -26,6 +27,8 @@ import {
   readCurrentGeneration
 } from "./generation-lifecycle.js";
 import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
+import { productionComponentManifestCatalog } from "./component-manifest-catalog-data.js";
+import { validateManifestCatalog } from "./component-manifest-catalog.js";
 
 export type ComponentState =
   | "required"
@@ -41,6 +44,7 @@ export interface ComponentStatus {
   activeGeneration: string | null;
   activeVersion: string | null;
   required: readonly ComponentId[];
+  requiredManifestPinsAvailable: boolean;
 }
 
 export interface ComponentCommandContext {
@@ -69,6 +73,42 @@ const requirementsFor = (context: ComponentCommandContext) =>
       context.execution ?? resolveKoedAppRuntimeExecution()
     )
   );
+
+const requiredManifestPinsAvailable = (
+  context: ComponentCommandContext,
+  required: readonly ComponentId[]
+): boolean => {
+  const pinRequired = context.desktopRuntimeCapability
+    ? required.filter((component) => component !== "base")
+    : required;
+  if (pinRequired.length === 0) return true;
+  if (!productionComponentManifestCatalog) return false;
+  const catalog = validateManifestCatalog(productionComponentManifestCatalog);
+  return pinRequired.every((component) => {
+    try {
+      resolveComponentManifestPinTarget(catalog, {
+        component,
+        productVersion: context.controlPlaneVersion,
+        target: context.target,
+        runtime: context.runtime
+      });
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.startsWith("Component pin catalog version mismatch") ||
+          error.message.startsWith(
+            "Required component manifest pin is missing"
+          ) ||
+          error.message.startsWith(
+            "Component manifest pin target is ambiguous"
+          ))
+      )
+        return false;
+      throw error;
+    }
+  });
+};
 
 const storedGenerations = async (
   context: ComponentCommandContext
@@ -157,7 +197,11 @@ export async function runComponentStatus(
     components: states,
     activeGeneration: active?.id ?? null,
     activeVersion: active?.productVersion ?? null,
-    required
+    required,
+    requiredManifestPinsAvailable: requiredManifestPinsAvailable(
+      context,
+      required
+    )
   };
 }
 
@@ -172,10 +216,10 @@ export async function runComponentInstall(
 ): Promise<{ state: "staged" | "active"; generationId?: string }> {
   if (!options.source)
     throw new Error(
-      "A signed component source is required; provide offline archive, manifest, and signature paths or exact-version URLs."
+      "A manifest-pinned component source is required; provide offline archive and manifest paths or exact-version URLs."
     );
   const version = options.version ?? context.controlPlaneVersion;
-  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*))?$/.test(version))
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version))
     throw new Error("component version must be an exact semantic version.");
   const required = requirementsFor(context).components;
   if (!required.includes(options.component))
@@ -206,10 +250,10 @@ export async function runComponentInstall(
               entry.manifest.component === "privacy" &&
               entry.manifest.productVersion === version
           ))
-      : active?.base.kind === "signed-component" &&
+      : active?.base.kind === "manifest-pinned-component" &&
           active.base.manifest.productVersion === version
         ? active.base
-        : ((priorGeneration?.base.kind === "signed-component"
+        : ((priorGeneration?.base.kind === "manifest-pinned-component"
             ? priorGeneration.base
             : undefined) ??
           installed.find(

@@ -77,6 +77,31 @@ describe("restartKoedServer", () => {
     ]);
   });
 
+  it("preserves external process.argv entrypoint for standalone restarts", async () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome);
+    const originalArgv1 = process.argv[1]!;
+    const spawns: Array<{ command: string; args: string[] }> = [];
+    process.argv[1] = "/opt/koed/bin/koed";
+    try {
+      const result = await restartKoedServer({
+        environment: { KOED_HOME: koedHome },
+        kill: () => undefined,
+        checkPid: () => false,
+        spawn: (command, args) => {
+          spawns.push({ command, args });
+          return { pid: 223, unref: () => undefined } as never;
+        }
+      });
+      expect(result.ok).toBe(true);
+      expect(spawns).toEqual([
+        { command: process.execPath, args: ["/opt/koed/bin/koed", "start"] }
+      ]);
+    } finally {
+      process.argv[1] = originalArgv1;
+    }
+  });
+
   it("sends SIGKILL when stopped processes stay alive before starting", async () => {
     const koedHome = makeHome();
     writeRuntime(koedHome);

@@ -187,12 +187,11 @@ describe("explicit component provisioning CLI", () => {
     expect(exitCode).toBe(1);
     expect(JSON.parse(stdout.text())).toMatchObject({
       ok: false,
-      error:
-        "Offline install requires --archive, --manifest, and --signature paths."
+      error: "Offline install requires --archive and --manifest paths."
     });
   });
 
-  it("rejects an incomplete network source triplet without fetching", async () => {
+  it("rejects an incomplete network source pair without fetching", async () => {
     const stdout = writer();
     const exitCode = await runKoedServerCli(
       [
@@ -208,8 +207,31 @@ describe("explicit component provisioning CLI", () => {
     );
     expect(exitCode).toBe(1);
     expect(JSON.parse(stdout.text())).toMatchObject({
-      error:
-        "Network install requires --archive-url, --manifest-url, and --signature-url."
+      error: "Network install requires --archive-url and --manifest-url."
+    });
+  });
+
+  it("rejects the removed signature artifact argument", async () => {
+    const stdout = writer();
+    const exitCode = await runKoedServerCli(
+      [
+        "components",
+        "install",
+        "--component",
+        "base",
+        "--archive",
+        "/tmp/base.tar.gz",
+        "--manifest",
+        "/tmp/base.manifest.json",
+        "--signature",
+        "/tmp/base.signature.json",
+        "--json"
+      ],
+      { stdout: stdout.stream }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      error: "Unsupported components option: --signature"
     });
   });
 
@@ -267,6 +289,35 @@ describe("koed-server CLI entrypoint detection", () => {
 });
 
 describe("koed-server detached supervisor", () => {
+  it("preserves external process.argv entrypoint for standalone daemon starts", () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-daemon-entrypoint-"));
+    const originalArgv1 = process.argv[1]!;
+    const spawns: Array<{ command: string; args: string[] }> = [];
+    process.argv[1] = "/opt/koed/bin/koed";
+    try {
+      const result = startKoedServerDaemon({
+        environment: { KOED_HOME: koedHome },
+        resolvePaths: () =>
+          ({
+            koedHome,
+            logsDir: resolve(koedHome, "logs"),
+            repoRoot: "/repo"
+          }) as never,
+        spawn: ((command: string, args: readonly string[]) => {
+          spawns.push({ command, args: [...args] });
+          return { pid: 43, unref: () => undefined } as never;
+        }) as never
+      });
+      expect(result.ok).toBe(true);
+      expect(spawns).toEqual([
+        { command: process.execPath, args: ["/opt/koed/bin/koed", "start"] }
+      ]);
+    } finally {
+      process.argv[1] = originalArgv1;
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("redirects detached supervisor output to the Koed log directory", () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-daemon-log-test-"));
     const logsDir = resolve(koedHome, "logs");

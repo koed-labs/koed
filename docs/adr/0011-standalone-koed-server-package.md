@@ -1,6 +1,7 @@
 # Standalone koed-server Package Boundary
 
-Status: Accepted.
+Status: Accepted; component authentication and generation rollback scope refined
+by [0057 Versioned Component Manifest Pins](0057-versioned-component-manifest-pins.md).
 
 Related decisions:
 
@@ -77,7 +78,11 @@ server package version, DB migration set, native runtime manifest schema,
 Downgrades must be blocked unless explicitly confirmed and DB-compatible. The
 bootstrap entrypoint must also be validated: hosted downloads can start with
 SHA-256 verification, but trusted default update channels need stronger
-signature or provenance checks before release hardening is complete.
+signature or provenance checks before release hardening is complete. ADR 0057
+selects canonical manifest pins embedded in a trusted versioned control plane for
+component authentication. Generation activation currently rejects downgrades but
+does not validate database compatibility; the database-compatible rollback
+direction above is not an implemented guarantee.
 
 Package installation becomes a first-class `koed-server` capability rather than
 Desktop-only logic. Desktop may provide progress UI, but the underlying package

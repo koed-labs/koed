@@ -1,4 +1,5 @@
 import { componentManifestSigningBytes } from "./component-signature-format.mjs";
+import { buildComponentManifestCatalog } from "./component-manifest-catalog.mjs";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
@@ -131,17 +132,8 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
     mkdirSync(resolve(packedRoot, "package/dist"), { recursive: true });
     writeFileSync(
       resolve(packedRoot, "package/dist/component-trust-roots.js"),
-      `export const productionComponentTrustRoots = new Map([["prod", ${JSON.stringify(publicKeyPem)}]]);`
+      `throw new Error("CANDIDATE_TRUST_ROOTS_EXECUTED"); export const productionComponentTrustRoots = new Map([["prod", ${JSON.stringify(publicKeyPem)}]]);`
     );
-    const packedPath = resolve(root, "server.tgz");
-    execFileSync("tar", ["-czf", packedPath, "-C", packedRoot, "package"]);
-    const packageTarball = readFileSync(packedPath);
-    const packageIntegrity = `sha512-${createHash("sha512").update(packageTarball).digest("base64")}`;
-    const identity = {
-      packageName: "@koed-labs/server",
-      version,
-      npm: { integrity: packageIntegrity, inventorySha256: "b".repeat(64) }
-    };
     const assets = [];
     const contents = new Map();
     for (const [component, platform, architecture] of [
@@ -164,7 +156,23 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
         component,
         productVersion: version,
         schemaVersion: 1,
-        target: { platform, architecture }
+        target: {
+          platform,
+          architecture,
+          ...(platform === "linux"
+            ? { libc: { family: "glibc", minimumVersion: "2.35" } }
+            : {})
+        },
+        runtimes: [
+          {
+            kind: "node",
+            runtimeRange: ">=24 <25",
+            nodeRange: ">=24 <25",
+            modulesAbi: "137"
+          }
+        ],
+        requiredFiles: ["main.js"],
+        files: [{ path: "main.js", sha256 }]
       };
       const manifestName = `${archiveName}.manifest.json`;
       const signatureName = `${archiveName}.signature.json`;
@@ -191,6 +199,38 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
       for (const name of [archiveName, manifestName, signatureName])
         assets.push({ name, id: assets.length + 1 });
     }
+    const catalog = buildComponentManifestCatalog({
+      version,
+      manifests: [...contents.entries()]
+        .filter(([name]) => name.endsWith(".manifest.json"))
+        .map(([, bytes]) => bytes)
+    });
+    contents.set(
+      "component-manifest-hashes.json",
+      Buffer.from(canonicalReleaseJson(catalog))
+    );
+    assets.push({
+      name: "component-manifest-hashes.json",
+      id: assets.length + 1
+    });
+    mkdirSync(resolve(packedRoot, "package/vendor"), { recursive: true });
+    writeFileSync(
+      resolve(packedRoot, "package/package.json"),
+      '{"type":"module"}'
+    );
+    writeFileSync(
+      resolve(packedRoot, "package/vendor/control-plane.js"),
+      `export const productionComponentManifestCatalog = ${JSON.stringify(catalog)};`
+    );
+    const packedPath = resolve(root, "server.tgz");
+    execFileSync("tar", ["-czf", packedPath, "-C", packedRoot, "package"]);
+    const packageTarball = readFileSync(packedPath);
+    const packageIntegrity = `sha512-${createHash("sha512").update(packageTarball).digest("base64")}`;
+    const identity = {
+      packageName: "@koed-labs/server",
+      version,
+      npm: { integrity: packageIntegrity, inventorySha256: "b".repeat(64) }
+    };
     contents.set(
       "koed-labs-server-release-identity.json",
       Buffer.from(JSON.stringify(identity))
@@ -271,6 +311,47 @@ test("promotes draft through mocked GitHub, signer, and npm adapters after real 
     assert.ok(
       calls.some(([name, args]) => name === "npm" && args.at(-1) === "latest")
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("missing complete catalog blocks promotion before publication or signer calls", async () => {
+  const root = temporary();
+  try {
+    const rootsPath = resolve(root, "roots.json");
+    const rootsBytes = Buffer.from(
+      JSON.stringify({ schemaVersion: 1, keys: {} })
+    );
+    writeFileSync(rootsPath, rootsBytes);
+    const calls = [];
+    await assert.rejects(
+      runReleasePromotion(
+        {
+          trustRoots: rootsPath,
+          trustRootsSha256: createHash("sha256")
+            .update(rootsBytes)
+            .digest("hex"),
+          controlplaneTrustRootsSha256: sha256,
+          version: "1.0.0",
+          repository: "org/repo",
+          releaseId: "42"
+        },
+        {
+          signerToken: "fixture",
+          run: (name, args) => {
+            calls.push([name, args]);
+            return JSON.stringify({
+              tag_name: "v1.0.0",
+              draft: true,
+              assets: []
+            });
+          }
+        }
+      ),
+      /complete component catalog.*missing/i
+    );
+    assert.equal(calls.length, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

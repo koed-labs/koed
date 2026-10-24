@@ -1,6 +1,8 @@
 # Release signing and promotion
 
-Both automated release and Desktop recovery workflows keep GitHub releases as drafts until `scripts/release-promotion-adapter.mjs` completes every verification. Automated asset jobs run only when the release is absent or remains a draft; reruns skip asset acquisition and promotion for already published releases.
+The release workflow keeps GitHub releases as drafts until `scripts/release-promotion-adapter.mjs` completes every verification. Automated asset jobs run only when the release is absent or remains a draft; reruns skip asset acquisition and promotion for already published releases.
+
+Component admission is migrating to [versioned manifest catalogs](component-manifest-catalog.md). Frozen component builds precede complete catalog generation, then standalone/npm and Desktop packaging. Promotion additionally verifies that catalog against every frozen archive and the effective unpacked npm control plane before publication. Existing signer checks below remain transitional release gates until target-specific acceptance and separately authorized retirement; they are not a runtime fallback for missing pins.
 
 ## Required repository variables
 
