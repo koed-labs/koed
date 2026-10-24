@@ -35,7 +35,7 @@ test("packaged smoke defaults health polling to five seconds", () => {
 
 test("packaged smoke reserves API budget for repeated readiness and doctor probes", () => {
   assert.equal(
-    createSmokeEnv("/tmp/koed-smoke-home").KOED_API_RATE_LIMIT_MAX,
+    createSmokeEnv("/tmp/koed-smoke-home").API_AUTH_RATE_LIMIT_MAX,
     "1000"
   );
 });

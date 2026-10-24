@@ -318,7 +318,7 @@ export const createSmokeEnv = (koedHome, extraEnv = {}) => {
     KOED_AUTO_PORTS: "1",
     API_HOST_PORT: isolatedSmokeApiPort(koedHome),
     // Readiness polling and doctor probes share this isolated smoke API budget.
-    KOED_API_RATE_LIMIT_MAX: "1000",
+    API_AUTH_RATE_LIMIT_MAX: "1000",
     KOED_RUNTIME_MODE: "local-personal",
     KOED_DEPENDENCY_MODE: "bundled-local",
     KOED_TEAM_COLLABORATION_ENABLED: "false",
