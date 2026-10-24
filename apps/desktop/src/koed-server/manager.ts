@@ -4851,7 +4851,24 @@ export const createKoedServerManager = ({
         : statusCommandTimeoutMs
     );
   };
-  const requestDesktopStatusRpcWithStoppedAuthority = async (
+  // Temporary authority startup and runtime start share the generation lock.
+  let lifecycleOperationQueue = Promise.resolve();
+  const withLifecycleOperation = async <T>(
+    operation: () => Promise<T>
+  ): Promise<T> => {
+    const previous = lifecycleOperationQueue;
+    let release!: () => void;
+    lifecycleOperationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+  const requestDesktopStatusRpcWithStoppedAuthorityUnlocked = async (
     action: "doctor" | "setup-core",
     startup = false,
     timeoutMs = action === "setup-core" ? 330_000 : 45_000
@@ -4891,6 +4908,21 @@ export const createKoedServerManager = ({
       session.child.kill("SIGTERM");
     }
   };
+  const requestDesktopStatusRpcWithStoppedAuthority = (
+    action: "doctor" | "setup-core",
+    startup = false,
+    timeoutMs = action === "setup-core" ? 330_000 : 45_000
+  ): Promise<unknown> => {
+    if (desktopSupervisorProcess && desktopSupervisorNonce)
+      return requestDesktopStatusRpc(action, startup);
+    return withLifecycleOperation(() =>
+      requestDesktopStatusRpcWithStoppedAuthorityUnlocked(
+        action,
+        startup,
+        timeoutMs
+      )
+    );
+  };
   const openStoppedPrivacySession = async () => {
     if (!createSupervisorInvocation || !packagedResourcesPath)
       throw new Error(
@@ -4911,7 +4943,7 @@ export const createKoedServerManager = ({
     );
   };
   let stoppedPrivacyOperation: PrivateSupervisorSession | null = null;
-  const requestPrivacyRpc = async <T>(
+  const requestPrivacyRpcUnlocked = async <T>(
     action: string,
     args: Record<string, unknown> = {},
     onProgress?: (value: Record<string, unknown>) => void
@@ -4957,7 +4989,38 @@ export const createKoedServerManager = ({
     }
   };
 
-  const requestDaemonStart = async () => {
+  const queuedPrivacyInstalls = new Map<string, { cancelled: boolean }>();
+  const requestPrivacyRpc = <T>(
+    action: string,
+    args: Record<string, unknown> = {},
+    onProgress?: (value: Record<string, unknown>) => void
+  ): Promise<T> => {
+    const requestId =
+      typeof args.requestId === "string" ? args.requestId : null;
+    if (action === "cancel" && requestId) {
+      const pending = queuedPrivacyInstalls.get(requestId);
+      if (pending) pending.cancelled = true;
+    }
+    if (
+      action === "cancel" ||
+      (desktopSupervisorProcess && desktopSupervisorNonce)
+    )
+      return requestPrivacyRpcUnlocked<T>(action, args, onProgress);
+    const pending =
+      action === "install" && requestId ? { cancelled: false } : null;
+    if (pending && requestId) queuedPrivacyInstalls.set(requestId, pending);
+    return withLifecycleOperation(async () => {
+      try {
+        if (pending?.cancelled)
+          throw new Error("Privacy Filter installation cancelled.");
+        return await requestPrivacyRpcUnlocked<T>(action, args, onProgress);
+      } finally {
+        if (pending && requestId) queuedPrivacyInstalls.delete(requestId);
+      }
+    });
+  };
+
+  const requestDaemonStartUnlocked = async () => {
     const current =
       createSupervisorInvocation && !desktopSupervisorProcess
         ? await (async () => {
@@ -5058,6 +5121,9 @@ export const createKoedServerManager = ({
     const result = await runJson(["start", "--daemon"], 45_000);
     return result;
   };
+
+  const requestDaemonStart = () =>
+    withLifecycleOperation(() => requestDaemonStartUnlocked());
 
   const start = async () => {
     const result = await requestDaemonStart();
@@ -5547,20 +5613,22 @@ export const createKoedServerManager = ({
         | "repair-pi";
       if (desktopSupervisorNonce)
         result = await requestDesktopStatusRpc(action);
-      else {
-        const session = await openStoppedPrivacySession();
-        try {
-          result = await requestSupervisor(
-            session,
-            "status",
-            action,
-            { startup: false },
-            330_000
-          );
-        } finally {
-          session.child.kill("SIGTERM");
-        }
-      }
+      else
+        result = await withLifecycleOperation(async () => {
+          if (desktopSupervisorNonce) return requestDesktopStatusRpc(action);
+          const session = await openStoppedPrivacySession();
+          try {
+            return await requestSupervisor(
+              session,
+              "status",
+              action,
+              { startup: false },
+              330_000
+            );
+          } finally {
+            session.child.kill("SIGTERM");
+          }
+        });
     } else result = await runJson(args, 120_000);
     if (!resultOk(result)) {
       throw new Error(
@@ -5768,20 +5836,21 @@ export const createKoedServerManager = ({
 
   const activatePrivacyGeneration = async (
     generationId: string
-  ): Promise<void> => {
-    const session = await openStoppedPrivacySession();
-    try {
-      await requestSupervisor(
-        session,
-        "privacy",
-        "activate",
-        { generationId },
-        30_000
-      );
-    } finally {
-      session.child.kill("SIGTERM");
-    }
-  };
+  ): Promise<void> =>
+    withLifecycleOperation(async () => {
+      const session = await openStoppedPrivacySession();
+      try {
+        await requestSupervisor(
+          session,
+          "privacy",
+          "activate",
+          { generationId },
+          30_000
+        );
+      } finally {
+        session.child.kill("SIGTERM");
+      }
+    });
 
   return {
     personalMemory,
