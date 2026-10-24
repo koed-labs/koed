@@ -922,6 +922,8 @@ describe("route identity contract", () => {
         "GET /v1/shared-memory/teams/{teamId}/workspaces/{teamWorkspaceId}/share-grants/{shareGrantId}/items/{sourceId}"
       ],
       team_memory: [
+        "GET /v1/local-edge/sharing",
+        "GET /v1/me/sharing",
         "GET /v1/teams",
         "POST /v1/teams",
         "GET /v1/team-context",
