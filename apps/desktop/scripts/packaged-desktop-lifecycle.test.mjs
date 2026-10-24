@@ -4,12 +4,15 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 import {
   connectPackagedDesktop,
-  createPackagedDesktopEnvironment
+  createPackagedDesktopEnvironment,
+  waitForPackagedDesktopExit
 } from "./packaged-desktop-lifecycle.mjs";
 
 const fixture = (timeoutMs = 1000) => {
   const child = Object.assign(new EventEmitter(), {
     connected: true,
+    exitCode: null,
+    signalCode: null,
     stdout: new EventEmitter(),
     stderr: new EventEmitter(),
     sent: [],
@@ -41,6 +44,18 @@ test("packaged launch strips caller resource override but preserves smoke home",
   assert.equal(environment.KOED_PACKAGED_RESOURCES_PATH, undefined);
   assert.equal(environment.KOED_HOME, "/smoke/koed-home");
   assert.equal(environment.KOED_PACKAGED_DESKTOP, "1");
+});
+
+test("waits for packaged Desktop process to exit after quit", async () => {
+  const { child, desktop, ready } = fixture();
+  ready();
+  await desktop.ready;
+  const exited = waitForPackagedDesktopExit(child, 1000);
+  setImmediate(() => {
+    child.exitCode = 0;
+    child.emit("exit", 0, null);
+  });
+  await exited;
 });
 
 test("waits for manager ready then sends only correlated lifecycle requests", async () => {

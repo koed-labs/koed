@@ -9,6 +9,48 @@ export const createPackagedDesktopEnvironment = (environment) => {
   return childEnvironment;
 };
 
+export const waitForPackagedDesktopExit = (child, timeoutMs = 30_000) => {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return child.exitCode === 0 && child.signalCode === null
+      ? Promise.resolve()
+      : Promise.reject(
+          new Error(
+            `Packaged Desktop exited after quit (${child.exitCode ?? child.signalCode}).`
+          )
+        );
+  }
+  return new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      child.off("error", onError);
+    };
+    const onExit = (code, signal) => {
+      cleanup();
+      if (code === 0 && signal === null) resolve();
+      else {
+        reject(
+          new Error(`Packaged Desktop exited after quit (${code ?? signal}).`)
+        );
+      }
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    timer = setTimeout(() => {
+      cleanup();
+      child.kill("SIGTERM");
+      reject(
+        new Error(`Packaged Desktop exit timed out after ${timeoutMs}ms.`)
+      );
+    }, timeoutMs);
+    child.once("exit", onExit);
+    child.once("error", onError);
+  });
+};
+
 // Launch normal packaged main, never an Electron-as-Node supervisor impersonator.
 export const launchPackagedDesktop = ({
   executable,

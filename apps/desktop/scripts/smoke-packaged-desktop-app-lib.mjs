@@ -14,6 +14,23 @@ import { resolve } from "node:path";
 export const createSmokeHome = (prefix, root = tmpdir()) =>
   realpathSync(mkdtempSync(resolve(root, prefix)));
 
+export const withSmokeFailureDiagnostics = async (work, preserve) => {
+  try {
+    return await work();
+  } catch (error) {
+    let diagnostics;
+    try {
+      diagnostics = preserve();
+    } catch (diagnosticError) {
+      diagnostics = `Could not preserve smoke diagnostics: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`;
+    }
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}\n\n${diagnostics}`,
+      { cause: error }
+    );
+  }
+};
+
 export const PACKAGED_NATIVE_ASSET_DIRECTORIES = ["postgres", "llama.cpp"];
 
 export const smokeExecutionPlan = ({ missingAssets }) => ({

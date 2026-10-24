@@ -23,10 +23,14 @@ import {
   removeSmokeHome,
   createSmokeHome,
   smokeExecutionPlan,
+  withSmokeFailureDiagnostics,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import { smokePackagedRendererFaults } from "./smoke-packaged-renderer-faults.mjs";
-import { launchPackagedDesktop } from "./packaged-desktop-lifecycle.mjs";
+import {
+  launchPackagedDesktop,
+  waitForPackagedDesktopExit
+} from "./packaged-desktop-lifecycle.mjs";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const sourceCheckoutRoot = resolve(desktopRoot, "..", "..");
@@ -382,8 +386,19 @@ const readableDiagnostic = (label, path) => {
   }
 };
 
-const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
-  const status = runPackagedCommand(layout, koedHome, ["status", "--json"]);
+const preserveFailureDiagnostics = ({
+  layout,
+  koedHome,
+  diagnosticsDir,
+  extraEnv = {},
+  desktopOutput = ""
+}) => {
+  const status = runPackagedCommand(
+    layout,
+    koedHome,
+    ["status", "--json"],
+    extraEnv
+  );
   const supervisorLog = resolve(koedHome, "logs", "supervisor.log");
   const postgresLog = resolve(koedHome, "logs", "postgres.log");
   const runtimeState = resolve(koedHome, "run", "koed-server.json");
@@ -392,6 +407,11 @@ const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
     ? createOwnedDiagnosticsDir(diagnosticsDir)
     : undefined;
   if (ownedDiagnosticsDir) {
+    writeFileSync(
+      resolve(ownedDiagnosticsDir, "desktop-output.log"),
+      desktopOutput.slice(-65_536),
+      { mode: 0o600 }
+    );
     writeFileSync(
       resolve(ownedDiagnosticsDir, "status.json"),
       status.stdout || "{}",
@@ -420,6 +440,9 @@ const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
     readableDiagnostic("Postgres log", postgresLog),
     readableDiagnostic("Runtime state", runtimeState),
     `Last status:\n${status.stdout || status.stderr || "not available"}`,
+    ...(desktopOutput
+      ? [`Desktop output:\n${desktopOutput.slice(-65_536)}`]
+      : []),
     ...(ownedDiagnosticsDir
       ? [`Preserved diagnostics: ${ownedDiagnosticsDir}`]
       : [])
@@ -1234,45 +1257,163 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   };
 };
 
+const installTeamSmokeRuntime = (layout, koedHome) => {
+  const install = runPackagedCommand(layout, koedHome, [
+    "runtime",
+    "install",
+    "--provider",
+    "packaged",
+    "--dependency-mode",
+    "bundled-local",
+    "--json"
+  ]);
+  if (install.status !== 0) {
+    throw new Error(
+      `Team runtime install failed: ${install.stderr || install.stdout}`
+    );
+  }
+  const result = parseJsonOutput("Team runtime install --json", install.stdout);
+  assertNoSourceCheckoutResolution("Team runtime install --json", result);
+  assertInstalled(result, "Team runtime install --json");
+};
+
+const installTeamEmbeddingModel = (layout, koedHome) => {
+  const status = runPackagedCommand(layout, koedHome, [
+    "models",
+    "status",
+    "--kind",
+    "embedding",
+    "--json"
+  ]);
+  if (status.status !== 0) {
+    throw new Error(
+      `Team embedding model status failed: ${status.stderr || status.stdout}`
+    );
+  }
+  const statusJson = parseJsonOutput(
+    "Team models status --kind embedding --json",
+    status.stdout
+  );
+  assertNoSourceCheckoutResolution(
+    "Team models status --kind embedding --json",
+    statusJson
+  );
+  if (statusJson.state === "installed") return;
+
+  const install = runPackagedCommand(layout, koedHome, [
+    "models",
+    "install",
+    "--kind",
+    "embedding",
+    "--json"
+  ]);
+  if (install.status !== 0) {
+    throw new Error(
+      `Team embedding model install failed: ${install.stderr || install.stdout}`
+    );
+  }
+  const result = parseJsonOutput(
+    "Team models install --kind embedding --json",
+    install.stdout
+  );
+  assertNoSourceCheckoutResolution(
+    "Team models install --kind embedding --json",
+    result
+  );
+  if (result.ok !== true) {
+    throw new Error(
+      `Team models install --kind embedding --json was not ok: ${JSON.stringify(result, null, 2)}`
+    );
+  }
+};
+
+const seedTeamSmokeDesktopGeneration = async (layout, koedHome) => {
+  const [
+    { pinDesktopBundleGenerationForStart },
+    { verifyDesktopRuntimeBundle },
+    { resolveKoedServerPaths }
+  ] = await Promise.all([
+    import("../../../packages/koed-server/dist/generation-lifecycle.js"),
+    import("../../../packages/koed-server/dist/desktop-runtime-capability.js"),
+    import("../../../packages/koed-server/dist/paths.js")
+  ]);
+  const paths = resolveKoedServerPaths({ KOED_HOME: koedHome });
+  const capability = verifyDesktopRuntimeBundle(layout.resourcesPath);
+  const pin = await pinDesktopBundleGenerationForStart(paths, capability);
+  await pin.release();
+};
+
+const prepareTeamSmokeHome = async (layout, koedHome, options) => {
+  if (options.embeddingModelSource) {
+    seedEmbeddingModel(koedHome, options.embeddingModelSource);
+  }
+  installTeamSmokeRuntime(layout, koedHome);
+  installTeamEmbeddingModel(layout, koedHome);
+  await seedTeamSmokeDesktopGeneration(layout, koedHome);
+};
+
 const smokeTeamFailClosed = async (layout, options, daemonPids) => {
   const koedHome = createSmokeHome("koed-desktop-team-smoke-");
-  const desktop = launchPackagedDesktop({
-    executable: layout.executable,
-    env: createSmokeEnv(koedHome, {
-      KOED_TEAM_COLLABORATION_ENABLED: "true"
-    }),
-    koedHome,
-    timeoutMs: options.timeoutMs
-  });
+  let desktop;
   try {
-    await desktop.ready;
-    const start = await desktop.invoke("start_daemon");
-    if (typeof start?.startedPid === "number")
-      daemonPids.push(start.startedPid);
-    assertFailClosedTeamStart(start);
-    const status = await desktop.invoke("status");
-    assertNoSourceCheckoutResolution("Team manager status", status);
-    if (
-      status?.privacyService?.state === "healthy" ||
-      status?.api?.state === "healthy"
-    ) {
-      throw new Error(
-        `Team services became healthy without verified Privacy assets: ${JSON.stringify(status)}`
-      );
-    }
-    return {
-      startRejected: true,
-      privacyHealthy: false,
-      positiveProvisioning:
-        "not exercised: signed Privacy install requires separate acceptance"
-    };
+    return await withSmokeFailureDiagnostics(
+      async () => {
+        await prepareTeamSmokeHome(layout, koedHome, options);
+        desktop = launchPackagedDesktop({
+          executable: layout.executable,
+          env: createSmokeEnv(koedHome, {
+            KOED_TEAM_COLLABORATION_ENABLED: "true"
+          }),
+          koedHome,
+          timeoutMs: options.timeoutMs
+        });
+        await desktop.ready;
+        const start = await desktop.invoke("start_daemon");
+        if (typeof start?.startedPid === "number")
+          daemonPids.push(start.startedPid);
+        assertFailClosedTeamStart(start);
+        const status = await desktop.invoke("status");
+        assertNoSourceCheckoutResolution("Team manager status", status);
+        if (
+          status?.privacyService?.state === "healthy" ||
+          status?.api?.state === "healthy"
+        ) {
+          throw new Error(
+            `Team services became healthy without verified Privacy assets: ${JSON.stringify(status)}`
+          );
+        }
+        return {
+          startRejected: true,
+          privacyHealthy: false,
+          positiveProvisioning:
+            "not exercised: signed Privacy install requires separate acceptance"
+        };
+      },
+      () =>
+        preserveFailureDiagnostics({
+          layout,
+          koedHome,
+          diagnosticsDir: options.diagnosticsDir,
+          extraEnv: { KOED_TEAM_COLLABORATION_ENABLED: "true" },
+          desktopOutput: desktop?.output
+        })
+    );
   } finally {
-    try {
-      await desktop.invoke("quit");
-    } finally {
-      killPidBestEffort(desktop.child.pid);
-      removeSmokeHome(koedHome);
+    if (desktop) {
+      try {
+        const quit = await desktop.invoke("quit");
+        if (quit?.ok !== true) {
+          console.error(`Manager cleanup failed: ${JSON.stringify(quit)}`);
+          process.exitCode = 1;
+        }
+        await waitForPackagedDesktopExit(desktop.child, 30_000);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+        killPidBestEffort(desktop.child.pid);
+      }
     }
+    removeSmokeHome(koedHome);
   }
 };
 
@@ -1370,17 +1511,17 @@ const run = async () => {
       daemonPids,
       timings
     });
+    const quit = await desktop.invoke("quit");
+    if (quit?.ok !== true) {
+      throw new Error(`Manager cleanup failed: ${JSON.stringify(quit)}`);
+    }
+    await waitForPackagedDesktopExit(desktop.child, 30_000);
+    desktop = undefined;
     const teamFailClosed = await smokeTeamFailClosed(
       layout,
       options,
       daemonPids
     );
-    const quit = await desktop.invoke("quit");
-    if (quit?.ok !== true) {
-      throw new Error(`Manager cleanup failed: ${JSON.stringify(quit)}`);
-    }
-    killPidBestEffort(desktop.child.pid);
-    desktop = undefined;
     if (options.exportEmbeddingModel) {
       await measurePhase(timings, "embedding model cache export", async () =>
         exportEmbeddingModel(koedHome, options.exportEmbeddingModel)
