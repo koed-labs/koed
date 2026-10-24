@@ -3684,6 +3684,37 @@ export const createCrossIdentitySyncRepository = (
         await client.query("begin");
         const ownerPrivateReplicaEncryptionProvider =
           requireOwnerPrivateReplicaEnvelopeEncryptionProvider();
+        // Target relationship intake locks the active credential before its
+        // relationship upsert. Use the same order here, then recheck the full
+        // authorization against that exact locked credential below.
+        const credentialLock = await client.query<{ id: string }>(
+          `select credential.id
+             from cross_identity_sync_relationships relationship
+             join users owner on owner.id=relationship.local_user_id
+             join device_credentials bound_credential on bound_credential.id=relationship.device_credential_id
+             join device_credentials credential
+               on credential.owner_user_id=bound_credential.owner_user_id
+              and credential.upstream_backend_id=bound_credential.upstream_backend_id
+              and credential.lineage_id=bound_credential.lineage_id
+             join sync_external_user_identities remote_user on remote_user.id=relationship.remote_user_identity_id
+             join sync_package_upload_sessions upload
+               on upload.id=$2 and upload.sync_relationship_id=relationship.id
+            where relationship.id=$1
+              and relationship.side='target'
+              and relationship.revoked_at is null
+              and owner.disabled_at is null
+              and owner.deleted_at is null
+              and credential.owner_user_id=relationship.local_user_id
+              and credential.revoked_at is null
+              and (credential.expires_at is null or credential.expires_at>now())
+              and 'sync'=any(credential.operation_families)
+              and remote_user.status='active'
+              and remote_user.revoked_at is null
+            for update of credential`,
+          [input.relationshipId, input.uploadSessionId]
+        );
+        const lockedCredentialId = credentialLock.rows[0]?.id;
+        if (!lockedCredentialId) throw new SyncStateConflictError();
         const relationshipResult = await client.query(
           `select relationship.*,
                   upload.package_manifest as upload_package_manifest
@@ -3708,8 +3739,9 @@ export const createCrossIdentitySyncRepository = (
               and 'sync'=any(credential.operation_families)
               and remote_user.status='active'
               and remote_user.revoked_at is null
-            for update of relationship,credential`,
-          [input.relationshipId, input.uploadSessionId]
+              and credential.id=$3
+            for update of relationship`,
+          [input.relationshipId, input.uploadSessionId, lockedCredentialId]
         );
         const relationshipRow = relationshipResult.rows[0] as Row | undefined;
         if (!relationshipRow || relationshipRow.revoked_at) {

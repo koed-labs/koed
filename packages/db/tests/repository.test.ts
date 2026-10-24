@@ -11864,6 +11864,125 @@ describeDb("memory repository visibility", () => {
         "source"
       )
     ).resolves.toBeNull();
+    await pool.query(
+      "update device_credentials set revoked_at=now() where id=$1",
+      [rotatedCredential!.id]
+    );
+    try {
+      await expect(
+        encryptedRepo.applyCapturedSessionSyncPackage({
+          relationshipId,
+          uploadSessionId: uploadId,
+          package: syncPackage
+        })
+      ).rejects.toThrow(SyncStateConflictError);
+    } finally {
+      await pool.query(
+        "update device_credentials set revoked_at=null where id=$1",
+        [rotatedCredential!.id]
+      );
+    }
+
+    let credentialLocked!: () => void;
+    const credentialHeld = new Promise<void>((resolve) => {
+      credentialLocked = resolve;
+    });
+    let releaseCredential!: () => void;
+    const credentialGate = new Promise<void>((resolve) => {
+      releaseCredential = resolve;
+    });
+    const lockingPool = new Proxy(pool, {
+      get(target, property) {
+        if (property === "connect") {
+          return async () => {
+            const client = await target.connect();
+            const originalQuery = client.query.bind(client) as (
+              sql: string,
+              params?: unknown[]
+            ) => Promise<pg.QueryResult>;
+            let held = false;
+            return new Proxy(client, {
+              get(targetClient, clientProperty) {
+                if (clientProperty === "query") {
+                  return async (sql: string, params?: unknown[]) => {
+                    const result = await originalQuery(sql, params);
+                    if (
+                      !held &&
+                      sql.includes("from device_credentials credential") &&
+                      sql.includes("for update of credential")
+                    ) {
+                      held = true;
+                      credentialLocked();
+                      await credentialGate;
+                    }
+                    return result;
+                  };
+                }
+                if (clientProperty === "release")
+                  return targetClient.release.bind(targetClient);
+                return Reflect.get(targetClient, clientProperty) as unknown;
+              }
+            });
+          };
+        }
+        return Reflect.get(target, property) as unknown;
+      }
+    });
+    const replayRepo = createMemorySourceRepository(lockingPool, {
+      envelopeEncryptionProvider: deploymentEncryptionProvider,
+      ownerPrivateReplicaEnvelopeEncryptionProvider:
+        ownerPrivateReplicaEncryptionProvider
+    });
+    let concurrentCreate: Promise<unknown> | undefined;
+    let applying: Promise<unknown> | undefined;
+    let applyState = "pending";
+    try {
+      concurrentCreate = replayRepo.createTargetSyncRelationship(
+        { userId: owner.id, deviceCredentialId: rotatedCredential!.id },
+        targetRelationshipInput
+      );
+      await credentialHeld;
+      applying = encryptedRepo.applyCapturedSessionSyncPackage({
+        relationshipId,
+        uploadSessionId: uploadId,
+        package: syncPackage
+      });
+      void applying.then(
+        () => {
+          applyState = "fulfilled";
+        },
+        (error: unknown) => {
+          applyState = `rejected: ${String(error)}`;
+        }
+      );
+      await vi.waitFor(
+        async () => {
+          const waiters = await pool.query<{ waiting: number }>(
+            `select count(*)::int as waiting from pg_stat_activity
+            where datname=current_database() and wait_event_type='Lock'
+              and pid<>pg_backend_pid()`
+          );
+          expect(waiters.rows[0]?.waiting, applyState).toBeGreaterThan(0);
+        },
+        { timeout: 20_000 }
+      );
+      releaseCredential();
+      const [replayed, appliedConcurrent] = await Promise.all([
+        concurrentCreate,
+        applying
+      ]);
+      expect(replayed).toMatchObject({ relationship: { id: relationshipId } });
+      expect(appliedConcurrent).toMatchObject({
+        eventIds: [expect.any(String)]
+      });
+    } finally {
+      releaseCredential();
+      await Promise.allSettled(
+        [concurrentCreate, applying].filter(
+          (value): value is Promise<unknown> => value !== undefined
+        )
+      );
+    }
     const applied = await encryptedRepo.applyCapturedSessionSyncPackage({
       relationshipId,
       uploadSessionId: uploadId,

@@ -344,6 +344,12 @@ credential's owner, expiry, revocation state, `sync` operation family, and
 approved source deployment/principal metadata inside the same database
 transaction that changes sync state.
 
+Target package application locks the active device credential before the sync
+relationship, in the same order as target relationship registration. It then
+rechecks authorization against that exact locked credential before applying
+content. This prevents a concurrent registration and inbox application from
+deadlocking without bypassing expiry or revocation checks.
+
 High-risk Action Grant execution applies the same rule. It locks and revalidates
 the bound device credential in the transaction that performs the protected
 side effect, so revocation or authenticated rotation cannot race an already
