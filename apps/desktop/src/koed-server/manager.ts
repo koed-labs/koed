@@ -5135,19 +5135,35 @@ export const createKoedServerManager = ({
       session.child.kill("SIGTERM");
     }
   };
+  const queuedPrivacyInstalls = new Map<string, { cancelled: boolean }>();
   const requestPrivacyRpc = <T>(
     action: string,
     args: Record<string, unknown> = {},
     onProgress?: (value: Record<string, unknown>) => void
   ): Promise<T> => {
+    const requestId =
+      typeof args.requestId === "string" ? args.requestId : null;
+    if (action === "cancel" && requestId) {
+      const pending = queuedPrivacyInstalls.get(requestId);
+      if (pending) pending.cancelled = true;
+    }
     if (
       action === "cancel" ||
       (desktopSupervisorProcess && desktopSupervisorNonce)
     )
       return requestPrivacyRpcUnlocked<T>(action, args, onProgress);
-    return withLifecycleOperation(() =>
-      requestPrivacyRpcUnlocked<T>(action, args, onProgress)
-    );
+    const pending =
+      action === "install" && requestId ? { cancelled: false } : null;
+    if (pending && requestId) queuedPrivacyInstalls.set(requestId, pending);
+    return withLifecycleOperation(async () => {
+      try {
+        if (pending?.cancelled)
+          throw new Error("Privacy Filter installation cancelled.");
+        return await requestPrivacyRpcUnlocked<T>(action, args, onProgress);
+      } finally {
+        if (pending && requestId) queuedPrivacyInstalls.delete(requestId);
+      }
+    });
   };
 
   const adoptLiveInstance = async (
@@ -5851,20 +5867,22 @@ export const createKoedServerManager = ({
         | "repair-pi";
       if (desktopSupervisorNonce)
         result = await requestDesktopStatusRpc(action);
-      else {
-        const session = await openStoppedPrivacySession();
-        try {
-          result = await requestSupervisor(
-            session,
-            "status",
-            action,
-            { startup: false },
-            330_000
-          );
-        } finally {
-          session.child.kill("SIGTERM");
-        }
-      }
+      else
+        result = await withLifecycleOperation(async () => {
+          if (desktopSupervisorNonce) return requestDesktopStatusRpc(action);
+          const session = await openStoppedPrivacySession();
+          try {
+            return await requestSupervisor(
+              session,
+              "status",
+              action,
+              { startup: false },
+              330_000
+            );
+          } finally {
+            session.child.kill("SIGTERM");
+          }
+        });
     } else result = await runJson(args, 120_000);
     if (!resultOk(result)) {
       throw new Error(

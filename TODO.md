@@ -75,6 +75,15 @@ publishes nothing; do not merge the "Version Koed" release PR until these are cl
 - Run an authorized release rehearsal, then promotion with
   `KOED_NPM_PUBLICATION_AUTHORIZED` and `KOED_RELEASE_PROMOTION_APPROVED`.
 
+## Local status control-request amplification
+
+- Measure and reduce duplicate authenticated control requests during startup and
+  diagnostics. Supervisor readiness collects status every 500ms; renderer/tray
+  status, MCP doctor, and background task claims share the 120-per-minute local
+  AI Client control bucket. Reproduce slow startup with request accounting before
+  choosing caching, coalescing, or cadence changes. Preserve authentication and
+  production rate limits; smoke-only bounded doctor recovery is not this fix.
+
 ## Manifest-pin release stack acceptance
 
 ADR-0057 replaces runtime component-signature admission with versioned manifest

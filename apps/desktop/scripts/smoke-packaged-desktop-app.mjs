@@ -21,6 +21,7 @@ import {
 } from "./smoke-diagnostics.mjs";
 import {
   removeSmokeHome,
+  runSmokeDoctor,
   createSmokeHome,
   smokeExecutionPlan,
   withSmokeFailureDiagnostics,
@@ -1142,14 +1143,15 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
       `setup codex --without-memory-guidance --json failed with ${codexSetup.status}: ${codexSetup.stderr || codexSetup.stdout}`
     );
   }
-  const doctor = await managerCommand("doctor");
-  const doctorJson = parseJsonOutput("doctor --json", doctor.stdout);
-  assertNoSourceCheckoutResolution("doctor --json", doctorJson);
-  if (doctor.status !== 0 || doctorJson.ok !== true) {
-    throw new Error(
-      `doctor --json failed with ${doctor.status}: ${doctor.stderr || doctor.stdout}`
-    );
-  }
+  const { json: doctorJson } = await runSmokeDoctor({
+    isAlive: () => pidIsRunning(startJson.startedPid),
+    run: async () => {
+      const result = await managerCommand("doctor");
+      const json = parseJsonOutput("doctor --json", result.stdout);
+      assertNoSourceCheckoutResolution("doctor --json", json);
+      return { ...result, json };
+    }
+  });
   const reconnectJson = await waitForHealthyStatus(
     {
       layout,

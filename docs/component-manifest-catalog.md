@@ -39,6 +39,26 @@ Use the actual product version and existing frozen component directory; commands
 
 Internal CI/native-runtime testing may explicitly build a standalone artifact with `--catalogless-development`. This mode embeds no catalog authority, rejects a simultaneous release catalog build input, and cannot install components. Public npm packaging has no such mode. It does not provide release-candidate component-admission acceptance.
 
+## Stopped Desktop management ordering
+
+Within one Desktop manager, stopped Privacy management, setup/doctor authority,
+activation, and daemon startup share a serialized operation queue. These paths
+must not initialize temporary supervisors concurrently: each verifies and pins
+the Desktop generation under the same exclusive lifecycle lock. Queue entries
+recheck supervisor state when executed; Privacy cancellation bypasses the queue
+so an active installation can still be cancelled. This ordering does not replace
+cross-process lifecycle locking or add Desktop ownership of a CLI-started runtime.
+
+The native smoke harness keeps production rate limits unchanged. Its final doctor
+check allows one 61-second cooldown only when structured API diagnostics report
+HTTP 429 and MCP diagnostics confirm the local rate-limit source. Only known
+quota-dependent AI Client capability-unavailability diagnostics may accompany
+that failure; unrelated blocking checks reject recovery. Both doctor calls and
+the cooldown share a deadline. Both attempts retain artifact-provenance checks;
+unknown/remote throttling, other failures, a
+stopped supervisor, or a failed final doctor remain failures. This bounded harness
+recovery does not validate or fix runtime status-polling amplification.
+
 ## Migration gate
 
 This is a staged migration. Existing component signing and external signer checks remain in official release/promotion workflows until packaged install/reuse and promotion negative-path acceptance is complete. Their presence is not a runtime pin fallback: component admission uses the trusted control plane's pins. Do not infer KMS retirement or cloud configuration changes from code changes.
