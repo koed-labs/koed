@@ -10,7 +10,21 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
+import type {
+  ArtifactTarget,
+  RuntimeIdentity,
+  VerifiedGeneration,
+  VerifiedManifestPinnedComponent
+} from "./component-contract.js";
+
+function assertPinnedFixture(
+  generation: VerifiedGeneration
+): asserts generation is VerifiedGeneration & {
+  base: VerifiedManifestPinnedComponent;
+} {
+  if (generation.base.kind !== "manifest-pinned-component")
+    throw new Error("Expected manifest-pinned fixture base");
+}
 
 const fixtureRuntime = vi.hoisted(() => ({
   value: undefined as RuntimeIdentity | undefined
@@ -116,7 +130,9 @@ const stage = async (
       runtime: fixture.input.runtime
     }
   );
-  return stageGeneration(paths, { base, owner });
+  const generation = await stageGeneration(paths, { base, owner });
+  assertPinnedFixture(generation);
+  return generation;
 };
 const stagePrivacy = async (
   paths: ReturnType<typeof resolveKoedServerPaths>,
