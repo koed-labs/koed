@@ -4,6 +4,12 @@ import type {
 } from "@koed/shared/sharing-contract";
 import type { SharingDesktopApi } from "./ipc/sharing-protocol.js";
 
+// Every Team-enabled HQ fixture exposes the same read-only Desktop bridge.
+// Only the Sharing-specific capture supplies populated example data.
+export const emptySharingBrowserApi: SharingDesktopApi = {
+  read: async () => ({ backends: [] })
+};
+
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const ownerId = "00000000-0000-4000-8000-000000000109";
@@ -78,7 +84,7 @@ const project = (
   }
 });
 
-/** Separate, query-gated Sharing data. The default approved HQ fixture is untouched. */
+/** Populated Sharing data stays isolated to the Sharing-specific query. */
 type IncomingInvitations = Extract<
   SharingOverview["backends"][number],
   { status: "available" }

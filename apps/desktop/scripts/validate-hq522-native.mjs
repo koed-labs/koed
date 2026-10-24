@@ -54,6 +54,17 @@ async function run() {
     const newChat = () =>
       "(() => {const button=document.querySelector('button[aria-label=\"New chat\"]');button?.click();return !!button;})()";
     const capture = async (name) => {
+      assert.equal(
+        await js(`(() => {
+          const sharing = document.querySelector('.hq-sidebar__action--sharing');
+          const now = document.querySelector('.hq-sidebar__action--now');
+          return !!sharing && !!now && sharing.getBoundingClientRect().width > 0
+            && sharing.getBoundingClientRect().height > 0
+            && now.compareDocumentPosition(sharing) === Node.DOCUMENT_POSITION_FOLLOWING;
+        })()`),
+        true,
+        `Sharing remains visible after Now in ${name}`
+      );
       await js(`document.fonts.ready.then(() => Promise.all(document.getAnimations({subtree:true})
         .filter(animation => Number.isFinite(animation.effect?.getComputedTiming().iterations ?? Infinity))
         .map(animation => animation.finished.catch(() => undefined))))
@@ -205,11 +216,21 @@ async function run() {
       "Project HQ warning does not misstate alternative room"
     );
     await capture("project-hq-warning-dark.png");
+    await click(
+      "(() => {const button=document.querySelector('.hq-sidebar__action--sharing');button?.click();return !!button;})()",
+      "Sharing opens from the AI usage fixture"
+    );
+    await waitFor(
+      "document.querySelector('.hq-sharing h1')?.textContent==='Sharing' && document.querySelector('.hq-sharing')?.textContent.includes('Nothing of yours is shared.') && document.querySelector('.hq-sharing')?.textContent.includes('Nothing is shared with you.')",
+      "empty Sharing page without another ticket's example data"
+    );
     const report = {
       id: "HQ522.native",
       owner: "HQ-522",
       status: "pass",
       assertions: ["U4", "U5", "U6", "N20", "N24", "N29"],
+      sharingNavigation:
+        "visible in all captures; opens the empty Sharing page",
       screenshots: [
         "codex-low-light.png",
         "codex-low-dark.png",

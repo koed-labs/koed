@@ -7,7 +7,10 @@ import type {
 
 import { App } from "./renderer/App.js";
 import { createHq521UsageFixture } from "./hq-usage-browser-fixture.js";
-import { createHq723SharingFixture } from "./hq-sharing-browser-fixture.js";
+import {
+  createHq723SharingFixture,
+  emptySharingBrowserApi
+} from "./hq-sharing-browser-fixture.js";
 import { createHq522UsageFixture } from "./hq-522-usage-browser-fixture.js";
 import {
   createHq726ContributionsFixture,
@@ -2058,7 +2061,7 @@ const installSettingsDesktop = () => {
     ...(hq304Capture ? { curatedMemory: hq304MemoryApi } : {}),
     ...(hq726Contributions ? { curatedMemory: hq726Contributions.api } : {}),
     ...(hq305Capture ? { curatedMemory: hq305MemoryApi } : {}),
-    ...(hq723Sharing ? { sharing: hq723Sharing.api } : {}),
+    sharing: hq723Sharing?.api ?? emptySharingBrowserApi,
     ...(hq521Usage || hq522Usage
       ? { localAiClients: (hq522Usage ?? hq521Usage)!.api }
       : {}),
