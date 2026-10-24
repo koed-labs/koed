@@ -31,6 +31,7 @@ import {
   provisionDesktopApiToken,
   provisionDesktopLocalCredential,
   startKoedServer,
+  startupBlockingSummary,
   stopChildProcess,
   waitForManagedProcessExits
 } from "./start.js";
@@ -319,6 +320,31 @@ afterEach(() => {
 });
 
 describe("start supervisor", () => {
+  it("retains the failed Privacy probe port and bounded reason in the startup error", () => {
+    const status = {
+      ...healthyStatus("/koed"),
+      privacyService: {
+        state: "starting" as const,
+        details: {
+          healthPort: 48092,
+          healthFailure: "connection_refused",
+          token: "private-secret"
+        }
+      }
+    };
+    expect(startupBlockingSummary(status)).toBe(
+      "Privacy Filter Service (starting; health port 48092; connection_refused)"
+    );
+    expect(
+      startupBlockingSummary({
+        ...status,
+        privacyService: {
+          state: "starting",
+          details: { healthPort: 48092, healthFailure: "private-secret" }
+        }
+      })
+    ).toBe("Privacy Filter Service (starting)");
+  });
   it("collects startup status once per readiness phase and emits correlated timings", async () => {
     const root = tempDir();
     const logs: string[] = [];

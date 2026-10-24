@@ -106,7 +106,7 @@ const startupComponentLabels: Record<
   apiToken: "Personal API Token"
 };
 
-const startupBlockingSummary = (
+export const startupBlockingSummary = (
   status: KoedServerStartupStatus,
   componentIds: readonly KoedServerStartupBlockingComponentId[] = koedServerStartupBlockingComponentIds(
     status.runtimeMode
@@ -114,9 +114,30 @@ const startupBlockingSummary = (
 ): string => {
   const blockers = componentIds.flatMap((componentId) => {
     const component = status[componentId];
+    const port = component.details?.healthPort;
+    const reason = component.details?.healthFailure;
+    const privacyProbe =
+      componentId === "privacyService" &&
+      typeof port === "number" &&
+      Number.isSafeInteger(port) &&
+      port > 0 &&
+      port <= 65535 &&
+      typeof reason === "string" &&
+      [
+        "timeout",
+        "connection_refused",
+        "dns_error",
+        "connection_timeout",
+        "invalid_response",
+        "transport_error"
+      ].includes(reason)
+        ? `; health port ${port}; ${reason}`
+        : "";
     return component.state === "healthy"
       ? []
-      : [`${startupComponentLabels[componentId]} (${component.state})`];
+      : [
+          `${startupComponentLabels[componentId]} (${component.state}${privacyProbe})`
+        ];
   });
   return blockers.length > 0 ? blockers.join(", ") : "unknown";
 };

@@ -136,12 +136,37 @@ const collectLocalPrivacyHealth = async (
             "Bundled-local Privacy Filter Service is loading its verified model.",
           details: { healthUrl, httpStatus: response.status }
         };
-  } catch {
+  } catch (error) {
+    const cause = error instanceof Error ? error.cause : undefined;
+    const code =
+      cause && typeof cause === "object" && "code" in cause
+        ? cause.code
+        : undefined;
+    const aborted =
+      error instanceof Error &&
+      (["AbortError", "TimeoutError"].includes(error.name) ||
+        (cause instanceof Error &&
+          ["AbortError", "TimeoutError"].includes(cause.name)));
+    const healthFailure = aborted
+      ? "timeout"
+      : code === "ECONNREFUSED"
+        ? "connection_refused"
+        : code === "ENOTFOUND"
+          ? "dns_error"
+          : code === "UND_ERR_CONNECT_TIMEOUT"
+            ? "connection_timeout"
+            : error instanceof SyntaxError
+              ? "invalid_response"
+              : "transport_error";
     return {
       runtime: "native-privacy",
       state: "starting",
       message: "Bundled-local Privacy Filter Service is not reachable yet.",
-      details: { healthUrl }
+      details: {
+        healthUrl,
+        healthPort: Number(env.PRIVACY_SERVICE_PORT),
+        healthFailure
+      }
     };
   }
 };

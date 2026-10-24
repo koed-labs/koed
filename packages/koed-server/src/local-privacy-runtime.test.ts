@@ -7,6 +7,39 @@ import {
 import type { KoedServerPaths } from "./paths.js";
 
 describe("native Privacy Filter Service runtime", () => {
+  it.each([
+    ["ECONNREFUSED", "connection_refused"],
+    ["ENOTFOUND", "dns_error"],
+    ["UND_ERR_CONNECT_TIMEOUT", "connection_timeout"],
+    ["other private value", "transport_error"]
+  ])(
+    "reports a bounded reason for %s without leaking transport details",
+    async (code, healthFailure) => {
+      const status = await collectLocalPrivacyRuntimeHealthStatus(
+        {
+          koedHome: "/koed",
+          modelsDir: "/koed/models",
+          repoRoot: "/repo"
+        } as KoedServerPaths,
+        { PRIVACY_SERVICE_PORT: "48092" },
+        {
+          existsSync: () => true,
+          fetch: async () => {
+            throw new TypeError("private credential and host", {
+              cause: { code }
+            });
+          }
+        }
+      );
+      expect(status).toMatchObject({
+        state: "starting",
+        details: { healthPort: 48092, healthFailure }
+      });
+      expect(JSON.stringify(status)).not.toContain("private");
+      expect(JSON.stringify(status)).not.toContain("credential");
+    }
+  );
+
   it("wires a credential-free local URL and KOED_HOME model cache", () => {
     const paths = {
       koedHome: "/koed",
