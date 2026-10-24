@@ -3882,6 +3882,11 @@ describe("local-edge collaboration command route", () => {
     const payloads = [
       { upstream_backend_id: "team-vps", command: personal },
       { command: team },
+      { command: { ...personal, backendId: "team-vps" } },
+      {
+        upstream_backend_id: "team-vps",
+        command: { ...team, backendId: "other-enrolled" }
+      },
       {
         command: {
           ...personal,

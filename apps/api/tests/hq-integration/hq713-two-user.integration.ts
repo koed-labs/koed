@@ -52,7 +52,12 @@ import { runHq713ShareOrigin } from "./hq713-share-origin.js";
 import { runHq713AiClientUsageBoundary } from "./hq713-ai-client-usage.js";
 import { runHq726Contributions } from "./hq726-contributions.js";
 
+import { runHq724Invitations, runHq724Sequential } from "./hq724-removals.js";
+
 const required = [
+  "I724.1",
+  "I724.2",
+  "I724.3",
   "I13-I14-step1-step2-share-join",
   "HQ713-step2-private-project-HQ",
   "I713.3",
@@ -161,6 +166,12 @@ afterAll(async () => {
 });
 
 describe("HQ-713 real two-user Team backend", () => {
+  it("reviews invitation cancellation and accepted-access removal with exact lost-reply recovery", async () => {
+    await withRecordedFixture(runHq724Invitations);
+  }, 180_000);
+  it("serializes two real member removals with Undo and second-target failure", async () => {
+    await withRecordedFixture(runHq724Sequential);
+  }, 180_000);
   it("keeps Project contributions through departure and owner-reviewed removal", async () => {
     await withRecordedFixture(runHq726Contributions);
   }, 180_000);

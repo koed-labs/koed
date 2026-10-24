@@ -6,6 +6,7 @@ import { HqShell } from "../../src/renderer/hq/HqShell.js";
 import { HqSidebar } from "../../src/renderer/hq/HqSidebar.js";
 import { HqProjectView } from "../../src/renderer/hq/project/HqProjectView.js";
 import { SharedProjectStore } from "../../src/renderer/hq/shared-project/shared-project-store.js";
+import { RemovalCoordinator } from "../../src/renderer/hq/sharing/removal-coordinator.js";
 import { HqShareSheet } from "../../src/renderer/hq/share-project/HqShareSheet.js";
 import { NowView } from "../../src/renderer/hq/now/NowView.js";
 import {
@@ -35,6 +36,8 @@ const bridge = (
 // These are the production HQ components, stores and typed preload. Business
 // data comes from each user's listening Personal/Team services through real IPC.
 function Hq713Desktop() {
+  const removalCoordinator = useMemo(() => new RemovalCoordinator(), []);
+  useEffect(() => () => removalCoordinator.cancel(), [removalCoordinator]);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -175,6 +178,7 @@ function Hq713Desktop() {
           }
           projectsApi={bridge.projects}
           collaboration={collaboration}
+          removalCoordinator={removalCoordinator}
           identityKey={profileKey ?? profile.ownerId}
           onClose={() => setExtra(null)}
           onShared={() => undefined}

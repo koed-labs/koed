@@ -66,7 +66,11 @@ const baseRepository = () => ({
       email: "member@example.test",
       displayName: "Member Name"
     },
-    activeOwnerCount: 2
+    activeOwnerCount: 2,
+    affectedProjects: [
+      { id: ids.team, name: "Investor deck" },
+      { id: ids.workspace, name: "Launch plan" }
+    ]
   })),
   getTeamLeaveReview: vi.fn(async () => ({
     team: { id: ids.team, name: "Koed Team", version: 4 },
@@ -380,10 +384,12 @@ describe("Team and membership action definitions", () => {
       policy: {
         disposition: "step_up",
         review: {
-          title: "Disable Member Name?",
+          title: "Remove Member Name from Koed Team?",
+          description: expect.stringContaining("What Member Name added stays"),
           details: [
             { label: "Team", value: "Koed Team" },
-            { label: "Member", value: "Member Name" }
+            { label: "Member", value: "Member Name" },
+            { label: "Affected Projects", value: "Investor deck, Launch plan" }
           ]
         }
       }
@@ -544,7 +550,8 @@ describe("Team and membership action definitions", () => {
         email: "member@example.test",
         displayName: "Member Name"
       },
-      activeOwnerCount: 2
+      activeOwnerCount: 2,
+      affectedProjects: []
     });
     await expect(
       admit(

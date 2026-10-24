@@ -111,6 +111,12 @@ export type CollaborationActionGrantProjection = {
     | "failed";
 };
 
+/** An approved removal held only in renderer memory until its Undo window closes. */
+export type PreparedCollaborationRemoval = {
+  expiresAt: string;
+  execute(): Promise<void>;
+};
+
 export class CollaborationClientError extends Error {
   readonly safeError: CollaborationSafeError;
 
@@ -245,6 +251,7 @@ export interface CollaborationRendererClient {
   listInvitations(input: {
     teamId: string;
     cursor?: string | null;
+    backendId?: string;
   }): Promise<CollaborationInvitationPage>;
   listMyInvitations(): Promise<CollaborationMyInvitation[]>;
   decideInvitation(
@@ -256,6 +263,12 @@ export interface CollaborationRendererClient {
     invitationId: string;
     expectedVersion: number;
   }): Promise<CollaborationInvitation>;
+  prepareRevokeInvitation(input: {
+    teamId: string;
+    invitationId: string;
+    expectedVersion: number;
+    backendId?: string;
+  }): Promise<PreparedCollaborationRemoval>;
   updateMemberRole(input: {
     teamId: string;
     userId: string;
@@ -267,6 +280,19 @@ export interface CollaborationRendererClient {
     userId: string;
     expectedVersion: number;
   }): Promise<CollaborationMembership>;
+  prepareDisableMember(input: {
+    teamId: string;
+    userId: string;
+    expectedVersion: number;
+    backendId?: string;
+  }): Promise<PreparedCollaborationRemoval>;
+  prepareDisableWorkspaceAccess(input: {
+    teamId: string;
+    workspaceId: string;
+    userId: string;
+    expectedVersion: number;
+    backendId?: string;
+  }): Promise<PreparedCollaborationRemoval>;
   leaveTeam(input: {
     teamId: string;
     expectedVersion: number;
@@ -275,6 +301,7 @@ export interface CollaborationRendererClient {
   reviewProjectLifecycle(input: {
     projectId: string;
     targetUserId?: string;
+    backendId?: string;
   }): Promise<WorkspaceProjectLifecycleReview>;
   leaveProject(input: {
     teamId: string;
@@ -290,6 +317,14 @@ export interface CollaborationRendererClient {
     expectedProjectVersion: number;
     expectedMemberVersion: number;
   }): Promise<WorkspaceProjectLifecycleResult>;
+  prepareRemoveProjectMember(input: {
+    teamId: string;
+    projectId: string;
+    targetUserId: string;
+    expectedProjectVersion: number;
+    expectedMemberVersion: number;
+    backendId?: string;
+  }): Promise<PreparedCollaborationRemoval>;
   deleteSharedProject(input: {
     teamId: string;
     projectId: string;
@@ -1647,6 +1682,7 @@ export const createCollaborationRendererClient = (
     }
   >();
   const actionGrantProjections = new CollaborationActionGrantProjectionStore();
+  const actionGrantBackendIds = new Map<string, string>();
   const sourceBackfills = new SharedSourceBackfillCoordinator();
   let selectionRequestGeneration = 0;
   let selectionIntentGeneration = 0;
@@ -1938,14 +1974,16 @@ export const createCollaborationRendererClient = (
 
   const command = async <TName extends CollaborationRendererCommand["command"]>(
     name: TName,
-    input: Extract<CollaborationRendererCommand, { command: TName }>["input"]
+    input: Extract<CollaborationRendererCommand, { command: TName }>["input"],
+    backendId?: string
   ) =>
     run(
       collaborationRendererCommandSchema.parse({
         contractVersion: COLLABORATION_CONTRACT_VERSION,
         requestId: crypto.randomUUID(),
         command: name,
-        input
+        input,
+        ...(backendId ? { backendId } : {})
       })
     );
 
@@ -2221,17 +2259,23 @@ export const createCollaborationRendererClient = (
   };
 
   const waitForActionGrant = async (
-    intent: CollaborationActionGrantIntent
+    intent: CollaborationActionGrantIntent,
+    backendId?: string
   ): Promise<CollaborationActionGrantReference> => {
     const grantAuthorityGeneration =
       actionGrantProjections.authorityGeneration();
-    let result = await command("collaboration.request_action_grant", {
-      intent
-    });
+    let result = await command(
+      "collaboration.request_action_grant",
+      {
+        intent
+      },
+      backendId
+    );
     if (!result.ok || result.command !== "collaboration.request_action_grant") {
       throw new Error("Unexpected Action Grant result.");
     }
     let status = result.data.status;
+    if (backendId) actionGrantBackendIds.set(status.actionGrant.id, backendId);
     const operation = actionGrantOperation(intent.intent);
     if (status.state === "review_required") {
       publishActionGrant({
@@ -2248,7 +2292,8 @@ export const createCollaborationRendererClient = (
         {
           actionGrant: status.actionGrant,
           decision
-        }
+        },
+        backendId
       );
       if (
         !decisionResult.ok ||
@@ -2323,9 +2368,13 @@ export const createCollaborationRendererClient = (
         throw new CollaborationClientError(accessRevokedError());
       }
       try {
-        result = await command("collaboration.await_action_grant", {
-          actionGrant: status.actionGrant
-        });
+        result = await command(
+          "collaboration.await_action_grant",
+          {
+            actionGrant: status.actionGrant
+          },
+          backendId
+        );
       } catch (caught) {
         if (
           !(caught instanceof CollaborationClientError) ||
@@ -2406,6 +2455,7 @@ export const createCollaborationRendererClient = (
             state: "completed"
           });
         }
+        if (actionGrant) actionGrantBackendIds.delete(actionGrant.id);
         return result;
       } catch (error) {
         if (
@@ -3467,13 +3517,102 @@ export const createCollaborationRendererClient = (
     return requireSnapshot();
   };
 
-  const projectAuthority = () => {
+  const projectAuthority = (backendId?: string) => {
     const generation = clientRuntime.authorityGeneration();
-    const backendId = requireSnapshot().connection.backendId;
-    if (!backendId) throw new CollaborationClientError(offlineError());
+    const activeBackendId = requireSnapshot().connection.backendId;
+    if (!backendId && !activeBackendId)
+      throw new CollaborationClientError(offlineError());
     return () =>
       clientRuntime.authorityIsCurrent(generation) &&
-      requireSnapshot().connection.backendId === backendId;
+      (backendId !== undefined ||
+        requireSnapshot().connection.backendId === activeBackendId);
+  };
+
+  const prepareRemoval = async (
+    intent: {
+      intent:
+        | "collaboration.remove_project_member"
+        | "collaboration.revoke_invitation"
+        | "collaboration.disable_member"
+        | "collaboration.set_workspace_access";
+      teamId: string;
+      projectId?: string;
+      targetUserId?: string;
+      invitationId?: string;
+      userId?: string;
+      workspaceId?: string;
+      access?: "disabled";
+      expectedProjectVersion?: number;
+      expectedMemberVersion?: number;
+      expectedVersion?: number | null;
+      backendId?: string;
+    },
+    commandName:
+      | "collaboration.remove_project_member"
+      | "collaboration.revoke_invitation"
+      | "collaboration.disable_member"
+      | "collaboration.set_workspace_access",
+    validate: (result: CollaborationCommandResult) => void
+  ): Promise<PreparedCollaborationRemoval> => {
+    const isCurrent = projectAuthority(intent.backendId);
+    const commandRequestId = crypto.randomUUID();
+    const { backendId, ...grantIntent } = intent;
+    const actionGrant = await waitForActionGrant(
+      {
+        ...grantIntent,
+        commandRequestId
+      } as CollaborationActionGrantIntent,
+      backendId
+    );
+    if (!isCurrent()) throw new CollaborationClientError(accessRevokedError());
+    const approval = actionGrantProjections.get(actionGrant.id);
+    if (!approval || approval.state !== "approved")
+      throw new Error("Approval changed. Review it again.");
+    const { intent: operation, ...actionInput } = grantIntent;
+    if (operation !== commandName)
+      throw new Error("Approved removal operation changed.");
+    const approvedCommand = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: commandRequestId,
+      command: commandName,
+      input: { ...actionInput, actionGrant },
+      ...(backendId ? { backendId } : {})
+    });
+    return {
+      expiresAt: approval.expiresAt,
+      async execute() {
+        if (!isCurrent())
+          throw new CollaborationClientError(accessRevokedError());
+        const current = actionGrantProjections.get(actionGrant.id);
+        if (
+          !current ||
+          (current.state !== "approved" && current.state !== "failed") ||
+          !Number.isFinite(Date.parse(approval.expiresAt)) ||
+          Date.parse(approval.expiresAt) <= Date.now()
+        )
+          throw new Error("Approval expired. Access is unchanged.");
+        // Retrying this immutable command retains both the request ID and grant.
+        let result: CollaborationCommandResult;
+        try {
+          result = await runApprovedAction(approvedCommand);
+        } catch (cause) {
+          if (cause instanceof CollaborationClientError && cause.retryable)
+            throw new Error(
+              "Removal outcome is unknown. Refresh Sharing to check current access.",
+              { cause }
+            );
+          throw cause;
+        }
+        validate(result);
+        // A confirmed mutation receipt is success even if the follow-up read fails.
+        // The owning view reconciles separately and keeps its read error visible.
+        try {
+          if (isCurrent()) await loadSnapshot(true);
+        } catch {
+          /* Do not reinterpret a committed removal as a failed removal. */
+        }
+      }
+    };
   };
 
   const approvedProjectLifecycle = async (
@@ -3683,9 +3822,13 @@ export const createCollaborationRendererClient = (
     async cancelActionGrant(id) {
       const existing = actionGrantProjections.get(id);
       if (!existing || existing.state !== "awaiting_approval") return;
-      const result = await command("collaboration.cancel_action_grant", {
-        actionGrant: { id }
-      });
+      const result = await command(
+        "collaboration.cancel_action_grant",
+        {
+          actionGrant: { id }
+        },
+        actionGrantBackendIds.get(id)
+      );
       if (
         !result.ok ||
         result.command !== "collaboration.cancel_action_grant"
@@ -3697,6 +3840,7 @@ export const createCollaborationRendererClient = (
         retryable: false,
         state: "canceled"
       });
+      actionGrantBackendIds.delete(id);
     },
     async authorizeManagedConversationTransfer(input) {
       return waitForActionGrant(
@@ -3853,13 +3997,17 @@ export const createCollaborationRendererClient = (
       }
       return result.data;
     },
-    async listInvitations({ teamId, cursor = null }) {
-      const result = await command("collaboration.list_invitations", {
-        teamId,
-        includeRevoked: false,
-        cursor,
-        limit: requireSnapshot().limits.historyPageMaxItems
-      });
+    async listInvitations({ teamId, cursor = null, backendId }) {
+      const result = await command(
+        "collaboration.list_invitations",
+        {
+          teamId,
+          includeRevoked: false,
+          cursor,
+          limit: requireSnapshot().limits.historyPageMaxItems
+        },
+        backendId
+      );
       if (!result.ok || result.command !== "collaboration.list_invitations") {
         throw new Error("Unexpected collaboration result.");
       }
@@ -3927,6 +4075,21 @@ export const createCollaborationRendererClient = (
       }
       return result.data.invitation;
     },
+    async prepareRevokeInvitation(input) {
+      return prepareRemoval(
+        { intent: "collaboration.revoke_invitation", ...input },
+        "collaboration.revoke_invitation",
+        (result) => {
+          if (
+            !result.ok ||
+            result.command !== "collaboration.revoke_invitation" ||
+            result.data.invitation.id !== input.invitationId ||
+            result.data.invitation.lifecycle !== "revoked"
+          )
+            throw new Error("Invitation outcome is unknown. Refresh sharing.");
+        }
+      );
+    },
     async updateMemberRole(input) {
       const commandRequestId = crypto.randomUUID();
       const actionGrant = await waitForActionGrant({
@@ -3976,6 +4139,45 @@ export const createCollaborationRendererClient = (
         }
       );
       return result.data.membership;
+    },
+    async prepareDisableMember(input) {
+      return prepareRemoval(
+        { intent: "collaboration.disable_member", ...input },
+        "collaboration.disable_member",
+        (result) => {
+          if (
+            !result.ok ||
+            result.command !== "collaboration.disable_member" ||
+            result.data.membership.userId !== input.userId ||
+            result.data.membership.status !== "disabled"
+          )
+            throw new Error(
+              "Group removal outcome is unknown. Refresh sharing."
+            );
+        }
+      );
+    },
+    async prepareDisableWorkspaceAccess(input) {
+      return prepareRemoval(
+        {
+          intent: "collaboration.set_workspace_access",
+          ...input,
+          access: "disabled"
+        },
+        "collaboration.set_workspace_access",
+        (result) => {
+          if (
+            !result.ok ||
+            result.command !== "collaboration.set_workspace_access" ||
+            result.data.access.workspaceId !== input.workspaceId ||
+            result.data.access.userId !== input.userId ||
+            result.data.access.access !== "disabled"
+          )
+            throw new Error(
+              "Workspace removal outcome is unknown. Refresh sharing."
+            );
+        }
+      );
     },
     async leaveTeam(input) {
       const current = requireSnapshot();
@@ -4060,10 +4262,12 @@ export const createCollaborationRendererClient = (
       return result.data.membership;
     },
     async reviewProjectLifecycle(input) {
-      const isCurrent = projectAuthority();
+      const isCurrent = projectAuthority(input.backendId);
+      const { backendId, ...reviewInput } = input;
       const result = await command(
         "collaboration.review_project_lifecycle",
-        input
+        reviewInput,
+        backendId
       );
       if (!isCurrent())
         throw new CollaborationClientError(accessRevokedError());
@@ -4081,6 +4285,41 @@ export const createCollaborationRendererClient = (
       return approvedProjectLifecycle(
         "collaboration.remove_project_member",
         input
+      );
+    },
+    async prepareRemoveProjectMember(input) {
+      const isCurrent = projectAuthority(input.backendId);
+      const review = await this.reviewProjectLifecycle({
+        projectId: input.projectId,
+        targetUserId: input.targetUserId,
+        backendId: input.backendId
+      });
+      if (
+        !isCurrent() ||
+        review.project.id !== input.projectId ||
+        review.project.teamId !== input.teamId ||
+        review.project.version !== input.expectedProjectVersion ||
+        review.targetUserId !== input.targetUserId ||
+        review.targetMemberVersion !== input.expectedMemberVersion ||
+        review.actorTeamMemberId !== review.project.ownerTeamMemberId ||
+        review.targetTeamMemberId === review.actorTeamMemberId
+      )
+        throw new Error("Project review changed. Refresh and try again.");
+      return prepareRemoval(
+        { intent: "collaboration.remove_project_member", ...input },
+        "collaboration.remove_project_member",
+        (result) => {
+          if (
+            !result.ok ||
+            result.command !== "collaboration.remove_project_member" ||
+            result.data.result.projectId !== input.projectId ||
+            !("memberId" in result.data.result) ||
+            result.data.result.memberId !== review.targetTeamMemberId
+          )
+            throw new Error(
+              "Project removal outcome is unknown. Refresh sharing."
+            );
+        }
       );
     },
     async deleteSharedProject(input) {

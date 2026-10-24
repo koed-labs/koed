@@ -2569,6 +2569,7 @@ export const createWorkspaceProjectRepository = (
              actor_workspace.access as actor_workspace_access,
              owner_member.user_id as owner_user_id,
              target_member.id as target_member_id,
+             target_user.display_name as target_display_name,
              target_member.version as target_membership_version,
              target_link.access as target_access,
              target_link.version as target_link_version
@@ -2588,6 +2589,7 @@ export const createWorkspaceProjectRepository = (
         left join team_memberships target_member
           on target_member.team_id=project.team_id and target_member.user_id=$3
          and target_member.status='enabled' and target_member.disabled_at is null
+        left join users target_user on target_user.id=target_member.user_id
         left join workspace_project_members target_link
           on target_link.workspace_project_id=project.id
          and target_link.team_member_id=target_member.id
@@ -2608,6 +2610,7 @@ export const createWorkspaceProjectRepository = (
         actorMemberVersion: Number(row.actor_link_version),
         ownerUserId: String(row.owner_user_id),
         targetUserId: targetUserId ?? null,
+        targetDisplayName: nullableText(row.target_display_name),
         targetTeamMemberId: nullableText(row.target_member_id),
         targetMemberVersion: row.target_link_version
           ? Number(row.target_link_version)

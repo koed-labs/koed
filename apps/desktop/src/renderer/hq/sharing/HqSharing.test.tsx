@@ -152,6 +152,35 @@ describe("HQ-723 Sharing owner boundary", () => {
     );
     expect(html).toContain("Alice");
     expect(html).not.toContain("Bob");
+    const withGroup = renderToStaticMarkup(
+      <HqSharing
+        store={store}
+        ownerId="owner"
+        profileKey="profile"
+        projectFilter={{
+          id: projectId,
+          name: "Same Project",
+          backendId: "team-a"
+        }}
+        groups={[
+          {
+            backendId: "team-a",
+            teamId: "00000000-0000-4000-8000-000000000002",
+            teamName: "Team",
+            people: [
+              {
+                id: "00000000-0000-4000-8000-000000000005",
+                name: "Alice",
+                version: 2
+              }
+            ]
+          }
+        ]}
+        onRequestGroupRemoval={() => undefined}
+      />
+    );
+    expect(withGroup).toContain("Remove from group");
+    expect(withGroup).not.toContain("Bob");
     store.stop();
   });
 });

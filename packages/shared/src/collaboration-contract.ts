@@ -2907,7 +2907,9 @@ export const conversationSourceAccessSchema = z
 
 const commandBaseShape = {
   contractVersion: z.literal(COLLABORATION_CONTRACT_VERSION),
-  requestId: z.uuid()
+  requestId: z.uuid(),
+  /** Selects an already enrolled Team backend for this command only. */
+  backendId: upstreamBackendIdSchema.optional()
 } as const;
 
 const command = <const TName extends string, T extends z.ZodRawShape>(

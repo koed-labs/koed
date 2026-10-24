@@ -3,7 +3,10 @@ import type { SharingOverview } from "@koed/shared/sharing-contract";
 export type SharingRow = {
   key: string;
   backendId: string;
+  teamId: string;
   projectId: string;
+  invitationId: string | null;
+  memberVersion: number | null;
   projectName: string;
   projectOwner: string;
   projectOwnerId: string | null;
@@ -41,7 +44,10 @@ export function sharingRows(overview: SharingOverview): SharingRow[] {
       ...project.members.map((member) => ({
         key: `${backend.backendId}:access:${project.id}:${member.teamWorkspaceId}:${member.person.id ?? member.person.displayName}`,
         backendId: backend.backendId,
+        teamId: project.teamId,
         projectId: project.id,
+        invitationId: null,
+        memberVersion: member.version,
         projectName: project.name,
         projectOwner: project.owner.displayName,
         projectOwnerId: project.owner.id,
@@ -61,7 +67,10 @@ export function sharingRows(overview: SharingOverview): SharingRow[] {
       ...project.invitations.map((invite) => ({
         key: `${backend.backendId}:invite:${invite.id}`,
         backendId: backend.backendId,
+        teamId: project.teamId,
         projectId: project.id,
+        invitationId: invite.id,
+        memberVersion: null,
         projectName: project.name,
         projectOwner: project.owner.displayName,
         projectOwnerId: project.owner.id,

@@ -431,7 +431,7 @@ const success = (
           review: null,
           state: "approved",
           activationUrl: null,
-          expiresAt: "2026-07-18T09:30:00.000Z"
+          expiresAt: "2099-01-01T09:30:00.000Z"
         }
       };
       break;
@@ -1878,6 +1878,165 @@ describe("collaboration renderer client", () => {
         })
       })
     );
+    client.dispose();
+  });
+
+  it("prepares a removal without dispatch and reuses the exact approved request", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    const prepared = await client.prepareDisableMember({
+      teamId: ids.team,
+      userId: ids.other,
+      expectedVersion: 2
+    });
+    expect(
+      mock.command.mock.calls.some(
+        ([command]) => command.command === "collaboration.disable_member"
+      )
+    ).toBe(false);
+    const grant = mock.command.mock.calls
+      .map(([command]) => command)
+      .find(
+        (command) =>
+          command.command === "collaboration.request_action_grant" &&
+          command.input.intent.intent === "collaboration.disable_member"
+      );
+    expect(grant).toBeDefined();
+    await prepared.execute();
+    const dispatch = mock.command.mock.calls
+      .map(([command]) => command)
+      .find((command) => command.command === "collaboration.disable_member");
+    expect(dispatch?.requestId).toBe(
+      grant?.command === "collaboration.request_action_grant"
+        ? grant.input.intent.commandRequestId
+        : undefined
+    );
+    expect(dispatch?.input).toMatchObject({
+      userId: ids.other,
+      expectedVersion: 2,
+      actionGrant: { id: ids.actionGrant }
+    });
+    client.dispose();
+  });
+
+  it("keeps a removal's selected backend through grant and dispatch", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    const backendId = "up_other_enrolled";
+    const prepared = await client.prepareDisableMember({
+      teamId: ids.team,
+      userId: ids.other,
+      expectedVersion: 2,
+      backendId
+    });
+    await prepared.execute();
+    const commands = mock.command.mock.calls.map(([value]) => value);
+    for (const name of [
+      "collaboration.request_action_grant",
+      "collaboration.disable_member"
+    ]) {
+      expect(commands.find((value) => value.command === name)?.backendId).toBe(
+        backendId
+      );
+    }
+    const grant = commands.find(
+      (value) => value.command === "collaboration.request_action_grant"
+    );
+    expect(grant?.input).not.toHaveProperty("backendId");
+    const removal = commands.find(
+      (value) => value.command === "collaboration.disable_member"
+    );
+    expect(removal?.input).not.toHaveProperty("backendId");
+    client.dispose();
+  });
+
+  it("cancels prepared removal authority after disconnect without a mutation", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const client = createCollaborationRendererClient(mock.bridge);
+    await client.load();
+    const prepared = await client.prepareDisableMember({
+      teamId: ids.team,
+      userId: ids.other,
+      expectedVersion: 2
+    });
+    await client.disconnect();
+    await expect(prepared.execute()).rejects.toBeInstanceOf(
+      CollaborationClientError
+    );
+    expect(
+      mock.command.mock.calls.filter(
+        ([value]) => value.command === "collaboration.disable_member"
+      )
+    ).toHaveLength(0);
+    client.dispose();
+  });
+
+  it("reports an unknown removal outcome after exact-request retries are exhausted", async () => {
+    vi.useFakeTimers();
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    const client = createCollaborationRendererClient({
+      ...mock.bridge,
+      async command(value) {
+        const result = await mock.bridge.command(value);
+        if (value.command === "collaboration.disable_member")
+          throw new Error("Reply lost");
+        return result;
+      }
+    });
+    try {
+      await client.load();
+      const prepared = await client.prepareDisableMember({
+        teamId: ids.team,
+        userId: ids.other,
+        expectedVersion: 2
+      });
+      const outcome = expect(prepared.execute()).rejects.toThrow(
+        "Removal outcome is unknown."
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await outcome;
+      const sent = mock.command.mock.calls
+        .map(([value]) => value)
+        .filter((value) => value.command === "collaboration.disable_member");
+      expect(sent).toHaveLength(3);
+      expect(sent[1]).toEqual(sent[0]);
+      expect(sent[2]).toEqual(sent[0]);
+      expect(
+        mock.command.mock.calls.filter(
+          ([value]) => value.command === "collaboration.request_action_grant"
+        )
+      ).toHaveLength(1);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a confirmed removal successful when its snapshot refresh fails", async () => {
+    const mock = createBridge(fixture({ selectedTeam: true }));
+    let loads = 0;
+    const client = createCollaborationRendererClient({
+      ...mock.bridge,
+      async command(command) {
+        if (command.command === "collaboration.load" && ++loads === 2)
+          throw new Error("Read model unavailable");
+        return mock.bridge.command(command);
+      }
+    });
+    await client.load();
+    const prepared = await client.prepareDisableMember({
+      teamId: ids.team,
+      userId: ids.other,
+      expectedVersion: 2
+    });
+    await expect(prepared.execute()).resolves.toBeUndefined();
+    expect(
+      mock.command.mock.calls.filter(
+        ([command]) => command.command === "collaboration.disable_member"
+      )
+    ).toHaveLength(1);
     client.dispose();
   });
 

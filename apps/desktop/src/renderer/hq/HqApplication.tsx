@@ -78,6 +78,8 @@ import { SharedProjectStore } from "./shared-project/shared-project-store.js";
 import { HqShareSheet } from "./share-project/HqShareSheet.js";
 import { SharingStore } from "./sharing/sharing-store.js";
 import { HqSharing } from "./sharing/HqSharing.js";
+import { RemovalCoordinator } from "./sharing/removal-coordinator.js";
+import { projectSharingRemovalTarget } from "./sharing/sharing-removal-target.js";
 import { reviewSharingInvitation } from "./sharing/sharing-invitation-review.js";
 import {
   sharingLeaveTarget,
@@ -186,6 +188,21 @@ export function HqApplication({
     () => (sharingApi ? new SharingStore(sharingApi) : null),
     [sharingApi]
   );
+  const removalCoordinator = useMemo(() => new RemovalCoordinator(), []);
+  const removalState = useSyncExternalStore(
+    removalCoordinator.subscribe,
+    removalCoordinator.current,
+    removalCoordinator.current
+  );
+  useEffect(() => () => removalCoordinator.cancel(), [removalCoordinator]);
+  useEffect(() => {
+    removalCoordinator.cancel();
+  }, [
+    removalCoordinator,
+    visibilityOwnerId,
+    visibilityProfileKey,
+    visibilityClient?.current()?.connection.backendId
+  ]);
   const sharingEnabled = teamCollaborationEnabled && Boolean(sharingStore);
   const [sharingOpen, setSharingOpen] = useState(false);
   const showingSharing = sharingOpen && sharingEnabled;
@@ -3011,22 +3028,14 @@ export function HqApplication({
                     const project = projectsStore
                       .current()
                       ?.projects.find(({ id }) => id === projectId);
-                    if (
-                      !project?.workspaceProjectId ||
-                      !project.teamBackendId ||
-                      visibilityClient.current()?.connection.backendId !==
-                        project.teamBackendId
-                    )
+                    if (!project?.workspaceProjectId || !project.teamBackendId)
                       throw new Error("Project link changed");
                     const review =
                       await visibilityClient.reviewProjectLifecycle({
-                        projectId: project.workspaceProjectId
+                        projectId: project.workspaceProjectId,
+                        backendId: project.teamBackendId
                       });
-                    if (
-                      review.project.id !== project.workspaceProjectId ||
-                      visibilityClient.current()?.connection.backendId !==
-                        project.teamBackendId
-                    )
+                    if (review.project.id !== project.workspaceProjectId)
                       throw new Error("Project review changed");
                     return review.actorTeamMemberId ===
                       review.project.ownerTeamMemberId
@@ -3157,6 +3166,228 @@ export function HqApplication({
                 profileKey={visibilityProfileKey ?? null}
                 projectFilter={sharingProjectFilter}
                 onClearProjectFilter={() => setSharingProjectFilter(null)}
+                onRequestAction={
+                  visibilityClient
+                    ? ({ row }) => {
+                        void removalCoordinator.start([
+                          projectSharingRemovalTarget(
+                            row,
+                            sharingStore,
+                            visibilityClient
+                          )
+                        ]);
+                      }
+                    : undefined
+                }
+                onRequestBatch={
+                  visibilityClient
+                    ? (rows) => {
+                        void removalCoordinator.start(
+                          rows.map((row) =>
+                            projectSharingRemovalTarget(
+                              row,
+                              sharingStore,
+                              visibilityClient
+                            )
+                          )
+                        );
+                      }
+                    : undefined
+                }
+                onRequestStandaloneInvitation={
+                  visibilityClient
+                    ? (backendId, item) => {
+                        void removalCoordinator.start([
+                          {
+                            name: item.person.displayName,
+                            place: "the Team",
+                            pendingMessage: `Canceling invitation to ${item.person.displayName}…`,
+                            doneMessage: `Invitation to ${item.person.displayName} canceled`,
+                            reconcile: () => sharingStore.refresh(),
+                            async prepare() {
+                              await sharingStore.refresh();
+                              const backend = sharingStore
+                                .current()
+                                .overview?.backends.find(
+                                  (entry) => entry.backendId === backendId
+                                );
+                              const fresh =
+                                backend?.status === "available"
+                                  ? backend.data.invitations.find(
+                                      (entry) =>
+                                        entry.id === item.id &&
+                                        entry.teamId === item.teamId &&
+                                        entry.workspaceProjectId === null
+                                    )
+                                  : null;
+                              if (!fresh?.canCancel)
+                                throw new Error(
+                                  "Invitation changed. Refresh sharing."
+                                );
+                              let cursor: string | null = null;
+                              for (;;) {
+                                const page =
+                                  await visibilityClient.listInvitations({
+                                    teamId: item.teamId,
+                                    cursor,
+                                    backendId
+                                  });
+                                const invitation = page.items.find(
+                                  (candidate) => candidate.id === item.id
+                                );
+                                if (invitation) {
+                                  if (invitation.lifecycle !== "pending")
+                                    throw new Error(
+                                      "Invitation is no longer pending."
+                                    );
+                                  return visibilityClient.prepareRevokeInvitation(
+                                    {
+                                      teamId: item.teamId,
+                                      invitationId: item.id,
+                                      expectedVersion: invitation.version,
+                                      backendId
+                                    }
+                                  );
+                                }
+                                if (!page.nextCursor) break;
+                                cursor = page.nextCursor;
+                              }
+                              throw new Error(
+                                "Invitation changed. Refresh sharing."
+                              );
+                            }
+                          }
+                        ]);
+                      }
+                    : undefined
+                }
+                onRequestWorkspaceRemoval={
+                  visibilityClient
+                    ? (backendId, item) => {
+                        if (!item.person.id) return;
+                        const userId = item.person.id;
+                        void removalCoordinator.start([
+                          {
+                            name: item.person.displayName,
+                            place: "the Workspace",
+                            reconcile: () => sharingStore.refresh(),
+                            async prepare() {
+                              await sharingStore.refresh();
+                              const current = sharingStore
+                                .current()
+                                .overview?.backends.find(
+                                  (backend) => backend.backendId === backendId
+                                );
+                              const access =
+                                current?.status === "available"
+                                  ? current.data.workspaceAccess.find(
+                                      (entry) =>
+                                        entry.teamWorkspaceId ===
+                                          item.teamWorkspaceId &&
+                                        entry.person.id === userId &&
+                                        entry.workspaceProjectId === null
+                                    )
+                                  : null;
+                              if (!access?.canRemove)
+                                throw new Error(
+                                  "Workspace Access changed. Refresh sharing."
+                                );
+                              return visibilityClient.prepareDisableWorkspaceAccess(
+                                {
+                                  teamId: access.teamId,
+                                  workspaceId: access.teamWorkspaceId,
+                                  userId,
+                                  expectedVersion: access.version,
+                                  backendId
+                                }
+                              );
+                            }
+                          }
+                        ]);
+                      }
+                    : undefined
+                }
+                groups={visibilityClient
+                  ?.current()
+                  ?.navigation.teams.filter(
+                    (team) =>
+                      team.lifecycle === "active" &&
+                      (team.role === "owner" || team.role === "admin")
+                  )
+                  .map((team) => ({
+                    backendId:
+                      visibilityClient.current()?.connection.backendId ?? "",
+                    teamId: team.id,
+                    teamName: team.name,
+                    people: team.people
+                      .filter(
+                        (person) =>
+                          person.id !==
+                            visibilityClient.current()?.navigation.teamPrincipal
+                              ?.id &&
+                          person.management?.status === "enabled" &&
+                          (person.management.role !== "owner" ||
+                            (team.role === "owner" &&
+                              team.people.filter(
+                                (candidate) =>
+                                  candidate.management?.role === "owner" &&
+                                  candidate.management.status === "enabled"
+                              ).length > 1))
+                      )
+                      .map((person) => ({
+                        id: person.id,
+                        name: person.displayName,
+                        version: person.management!.version
+                      }))
+                  }))}
+                onRequestGroupRemoval={
+                  visibilityClient
+                    ? (backendId, teamId, person) => {
+                        void removalCoordinator.start([
+                          {
+                            name: person.name,
+                            place: "the group",
+                            reconcile: () => sharingStore.refresh(),
+                            async prepare() {
+                              const fresh = await visibilityClient.load();
+                              if (fresh.connection.backendId !== backendId)
+                                throw new Error("Team connection changed.");
+                              const team = fresh.navigation.teams.find(
+                                (item) => item.id === teamId
+                              );
+                              const member = team?.people.find(
+                                (item) => item.id === person.id
+                              );
+                              if (
+                                !team ||
+                                team.lifecycle !== "active" ||
+                                (team.role !== "owner" &&
+                                  team.role !== "admin") ||
+                                member?.management?.status !== "enabled" ||
+                                (member.management.role === "owner" &&
+                                  (team.role !== "owner" ||
+                                    team.people.filter(
+                                      (candidate) =>
+                                        candidate.management?.role ===
+                                          "owner" &&
+                                        candidate.management.status ===
+                                          "enabled"
+                                    ).length <= 1))
+                              )
+                                throw new Error(
+                                  "Group authority changed. Refresh sharing."
+                                );
+                              return visibilityClient.prepareDisableMember({
+                                teamId,
+                                userId: person.id,
+                                expectedVersion: member.management.version
+                              });
+                            }
+                          }
+                        ]);
+                      }
+                    : undefined
+                }
                 localConversations={
                   new Map(
                     projects.flatMap((item) =>
@@ -3829,6 +4060,39 @@ export function HqApplication({
           }
         />
       ) : null}
+      {removalState.phase !== "idle" ? (
+        <div
+          role="status"
+          className="hq-project-toast hq-sharing__removal-status"
+          data-hq-shell=""
+        >
+          <span
+            className={
+              removalState.results.some((result) => result.state === "failed")
+                ? "hq-project-toast__error"
+                : undefined
+            }
+          >
+            {removalState.message}
+          </span>
+          {removalState.phase === "pending" ? (
+            <button type="button" onClick={() => removalCoordinator.undo()}>
+              Undo
+            </button>
+          ) : null}
+          {removalState.phase === "complete" &&
+          removalState.results.some((result) =>
+            result.reason?.startsWith("Approval expired.")
+          ) ? (
+            <button
+              type="button"
+              onClick={() => removalCoordinator.retryExpired()}
+            >
+              Try again
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <HqSearch
         destinations={destinations}
         open={searchOpen}
@@ -3844,6 +4108,7 @@ export function HqApplication({
           }
           projectsApi={projectsApi}
           collaboration={visibilityClient}
+          removalCoordinator={removalCoordinator}
           identityKey={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}:${visibilityRevision ?? ""}`}
           onClose={() => setShareProjectId(null)}
           onShared={() => {

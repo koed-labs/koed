@@ -762,6 +762,77 @@ describe("Desktop collaboration local transport", () => {
     });
   });
 
+  it("routes an explicit Team backend without changing the active selection", async () => {
+    const selected = "up_other_enrolled";
+    const resolveConnection = vi.fn(
+      async (_team: boolean, backendId?: string) => ({
+        ...connection,
+        backendId: backendId ?? connection.backendId
+      })
+    );
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        command: { requestId: string; command: string };
+      };
+      return Response.json({
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId: body.command.requestId,
+        command: body.command.command,
+        ok: false,
+        error: {
+          code: "not_available",
+          userMessage: collaborationSafeErrorMessages.not_available,
+          retryable: false,
+          retryAfterMs: null
+        }
+      });
+    });
+    const transport = createDesktopCollaborationBrokerLocalTransport({
+      fetch: fetchMock,
+      resolveConnection
+    });
+    const team = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId,
+      backendId: selected,
+      command: "collaboration.list_invitations",
+      input: { teamId, includeRevoked: false, cursor: null, limit: 10 }
+    });
+    await transport.request(team, context());
+    expect(resolveConnection).toHaveBeenCalledWith(true, selected);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      upstream_backend_id: selected,
+      command: team
+    });
+    const wrongConnection = createDesktopCollaborationBrokerLocalTransport({
+      fetch: fetchMock,
+      resolveConnection: async () => connection
+    });
+    await expect(
+      wrongConnection.request(team, context())
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "not_available" }
+    });
+    wrongConnection.stop();
+    const personal = collaborationRendererCommandSchema.parse({
+      contractVersion: COLLABORATION_CONTRACT_VERSION,
+      requestId: "5a1f3c7c-72f2-49c1-9c83-d8e81e5c57ec",
+      backendId: selected,
+      command: "collaboration.load",
+      input: {}
+    });
+    await expect(transport.request(personal, context())).resolves.toMatchObject(
+      {
+        ok: false,
+        error: { code: "invalid_input" }
+      }
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(resolveConnection).toHaveBeenCalledTimes(1);
+    transport.stop();
+  });
+
   it("uses the atomic Team broker snapshot, applies before ack, and binds every realtime request", async () => {
     const brokerEvent = {
       protocolVersion: COLLABORATION_CONTRACT_VERSION,

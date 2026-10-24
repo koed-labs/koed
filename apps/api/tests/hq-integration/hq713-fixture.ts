@@ -1650,6 +1650,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
               ],
               deviceCredentialId: seed.deviceCredentialId,
               principalUserId: seed.teamUserId,
+              sourceOwnerPrincipalId: seed.id,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
               expiresAt: null,
@@ -1667,6 +1668,7 @@ export const createHq713Fixture = async (): Promise<Hq713Fixture> => {
       );
       assert.equal(enrollment?.deviceCredentialId, seed.deviceCredentialId);
       assert.equal(enrollment?.principalUserId, seed.teamUserId);
+      assert.equal(enrollment?.sourceOwnerPrincipalId, seed.id);
       assert.equal(
         readUpstreamCredentialAuthorization(personalHome, credential.reference),
         `Koed-Device ${seed.deviceKeyId}:${seed.deviceSecret}`,

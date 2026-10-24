@@ -31,6 +31,7 @@ export const workspaceProjectLifecycleReviewSchema = z
     actorMemberVersion: z.number().int().positive(),
     ownerUserId: z.uuid(),
     targetUserId: z.uuid().nullable(),
+    targetDisplayName: z.string().nullable().optional(),
     targetTeamMemberId: z.uuid().nullable(),
     targetMemberVersion: z.number().int().positive().nullable(),
     targetAccess: z.enum(["read", "write", "disabled"]).nullable(),

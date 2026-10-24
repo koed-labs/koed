@@ -18,7 +18,7 @@ import {
 } from "./sharing-view-model.js";
 import "./hq-sharing.css";
 
-type Action = { kind: "remove" | "cancel"; row: SharingRow };
+export type SharingAction = { kind: "remove" | "cancel"; row: SharingRow };
 const time = (value: string) => new Date(value).toLocaleString();
 const age = (value: string) => {
   const minutes = Math.max(
@@ -40,6 +40,11 @@ export function HqSharing({
   localConversations,
   onOpenConversation,
   onRequestAction,
+  onRequestBatch,
+  onRequestWorkspaceRemoval,
+  onRequestStandaloneInvitation,
+  groups,
+  onRequestGroupRemoval,
   onReviewInvitation,
   onReviewLeave
 }: {
@@ -50,7 +55,32 @@ export function HqSharing({
   onClearProjectFilter?: () => void;
   localConversations?: ReadonlyMap<string, string>;
   onOpenConversation?: (id: string) => void;
-  onRequestAction?: (action: Action) => void;
+  onRequestAction?: (action: SharingAction) => void;
+  onRequestBatch?: (rows: SharingRow[]) => void;
+  onRequestWorkspaceRemoval?: (
+    backendId: string,
+    item: {
+      teamId: string;
+      teamWorkspaceId: string;
+      person: { id: string | null; displayName: string };
+      version: number;
+    }
+  ) => void;
+  onRequestStandaloneInvitation?: (
+    backendId: string,
+    item: { teamId: string; id: string; person: { displayName: string } }
+  ) => void;
+  groups?: readonly {
+    backendId: string;
+    teamId: string;
+    teamName: string;
+    people: readonly { id: string; name: string; version: number }[];
+  }[];
+  onRequestGroupRemoval?: (
+    backendId: string,
+    teamId: string,
+    person: { id: string; name: string; version: number }
+  ) => void;
   onReviewInvitation?: (
     id: string,
     backendId: string,
@@ -195,12 +225,29 @@ export function HqSharing({
             item.teamName ?? ""
           ].some((value) => wordStartMatch(value, q))
       );
+  const standaloneGroupPeople = projectFilter
+    ? []
+    : (groups ?? []).flatMap((team) =>
+        team.people
+          .filter(
+            (person) =>
+              !own.some(
+                (row) =>
+                  row.backendId === team.backendId && row.personId === person.id
+              ) &&
+              (!q ||
+                wordStartMatch(person.name, q) ||
+                wordStartMatch(team.teamName, q))
+          )
+          .map((person) => ({ team, person }))
+      );
   const showFilter =
     ownGroups.length +
       incoming.length +
       theirs.length +
       standaloneAccess.length +
-      standaloneInvites.length >
+      standaloneInvites.length +
+      standaloneGroupPeople.length >
       8 || Boolean(q);
   const limit = (section: "you" | "them") => (expanded[section] ? Infinity : 6);
   const action = (row: SharingRow) =>
@@ -302,6 +349,21 @@ export function HqSharing({
           ? `Sees ${[...new Set(groupRows.map((row) => row.projectName))].join(", ")}`
           : `${groupRows.length} ${groupRows.length === 1 ? "person" : "people"} · ${groupRows[0]?.groupName}`}
       </p>
+      {onRequestBatch &&
+      groupRows.filter((row) => row.canRemove || row.canCancel).length > 1 ? (
+        <button
+          type="button"
+          onClick={() =>
+            onRequestBatch(
+              groupRows.filter((row) => row.canRemove || row.canCancel)
+            )
+          }
+        >
+          {by === "person"
+            ? `Stop sharing everything with ${group.name}`
+            : `Stop sharing ${group.name}`}
+        </button>
+      ) : null}
       {groupRows.map((row) => (
         <div className="hq-sharing__row" key={row.key}>
           <div>
@@ -338,6 +400,46 @@ export function HqSharing({
           {action(row)}
         </div>
       ))}
+      {by === "person"
+        ? groups
+            ?.filter(
+              (team) =>
+                team.backendId === groupRows[0]?.backendId &&
+                team.people.some(
+                  (person) => person.id === groupRows[0]?.personId
+                )
+            )
+            .map((team) => {
+              const person = team.people.find(
+                (candidate) => candidate.id === groupRows[0]?.personId
+              )!;
+              return (
+                <div
+                  className="hq-sharing__detail"
+                  key={`${team.backendId}:${team.teamId}`}
+                >
+                  <p>
+                    {person.name} is in {team.teamName}. Removing them from this
+                    group ends access to its Projects and Team memory. What they
+                    added stays in those Projects.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={!onRequestGroupRemoval}
+                    onClick={() =>
+                      onRequestGroupRemoval?.(
+                        team.backendId,
+                        team.teamId,
+                        person
+                      )
+                    }
+                  >
+                    Remove from group
+                  </button>
+                </div>
+              );
+            })
+        : null}
     </article>
   );
   return (
@@ -417,6 +519,14 @@ export function HqSharing({
           Couldn’t reach {backend.backendId}; its shares aren’t shown.
         </p>
       ))}
+      {snapshot.error ? (
+        <p role="alert" className="hq-sharing__unavailable">
+          Sharing could not be refreshed: {snapshot.error}
+          <button type="button" onClick={() => void store.refresh()}>
+            Retry
+          </button>
+        </p>
+      ) : null}
       {projectFilter ? (
         <div className="hq-sharing__chip">
           {projectFilter.name}
@@ -468,6 +578,7 @@ export function HqSharing({
                     </button>
                     {action(row)}
                   </div>
+                  <p>Previously shared knowledge stays in the Project.</p>
                   {detail === row.key ? detailView(row) : null}
                 </article>
               ))}
@@ -544,7 +655,9 @@ export function HqSharing({
         )}
       </section>
       {!projectFilter &&
-      (matchedStandaloneAccess.length || matchedStandaloneInvites.length) ? (
+      (matchedStandaloneAccess.length ||
+        matchedStandaloneInvites.length ||
+        standaloneGroupPeople.length) ? (
         <section>
           <h2>Workspace and Team access</h2>
           <div className="hq-sharing__list">
@@ -563,8 +676,16 @@ export function HqSharing({
                 {item.canRemove ? (
                   <button
                     type="button"
-                    disabled
-                    title="Access removal is pending capability"
+                    disabled={!onRequestWorkspaceRemoval || !item.person.id}
+                    onClick={() =>
+                      item.person.id &&
+                      onRequestWorkspaceRemoval?.(backendId, {
+                        teamId: item.teamId,
+                        teamWorkspaceId: item.teamWorkspaceId,
+                        person: item.person,
+                        version: item.version
+                      })
+                    }
                   >
                     Remove access
                   </button>
@@ -585,12 +706,35 @@ export function HqSharing({
                 {item.canCancel ? (
                   <button
                     type="button"
-                    disabled
-                    title="Invitation cancellation is pending capability"
+                    disabled={!onRequestStandaloneInvitation}
+                    onClick={() =>
+                      onRequestStandaloneInvitation?.(backendId, item)
+                    }
                   >
                     Cancel invitation
                   </button>
                 ) : null}
+              </article>
+            ))}
+            {standaloneGroupPeople.map(({ team, person }) => (
+              <article
+                className="hq-sharing__card"
+                key={`${team.backendId}:${team.teamId}:${person.id}`}
+              >
+                <h3>{person.name}</h3>
+                <p>
+                  Member of {team.teamName}. Removing them ends group access.
+                  What they added stays in the Team’s Projects.
+                </p>
+                <button
+                  type="button"
+                  disabled={!onRequestGroupRemoval}
+                  onClick={() =>
+                    onRequestGroupRemoval?.(team.backendId, team.teamId, person)
+                  }
+                >
+                  Remove from group
+                </button>
               </article>
             ))}
           </div>

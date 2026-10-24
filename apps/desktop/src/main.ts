@@ -950,6 +950,10 @@ app.on("before-quit", (event) => {
   if (koedServerStoppedForQuit) {
     return;
   }
+  // Revoke renderer commands before asynchronous shutdown can outlive an Undo window.
+  if (desktopFeatureFlagsFromEnvironment(process.env).hqEnabled) {
+    allowedRendererOrigins.clear();
+  }
   event.preventDefault();
   void (async () => {
     await managedPreviewController.close();

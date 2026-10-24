@@ -67,7 +67,7 @@ const renderer = (url = "koed://app/") => {
 };
 
 describe("desktop IPC command registry", () => {
-  const register = () => {
+  const register = (allowedRendererOrigins = new Set(["koed://app"])) => {
     const registered = new Map<string, (...args: any[]) => Promise<unknown>>();
     const collaboration = vi.fn(
       (
@@ -255,7 +255,7 @@ describe("desktop IPC command registry", () => {
         ...checkHandlers
       } as never,
       {
-        allowedRendererOrigins: new Set(["koed://app"]),
+        allowedRendererOrigins,
         personalMemory,
         managedConversation: managedConversation as never,
         managedProject: managedProject as never,
@@ -337,6 +337,26 @@ describe("desktop IPC command registry", () => {
         delete process.env.KOED_DESKTOP_HQ_ENABLED;
       else process.env.KOED_DESKTOP_HQ_ENABLED = previousFlag;
     }
+  });
+
+  it("refuses a delayed approved removal after quit revokes renderer command trust", async () => {
+    const origins = new Set(["koed://app"]);
+    const { registered, collaboration } = register(origins);
+    origins.clear();
+    await expect(
+      registered.get(collaborationCommandChannel)!(renderer(), {
+        contractVersion: COLLABORATION_CONTRACT_VERSION,
+        requestId,
+        command: "collaboration.disable_member",
+        input: {
+          teamId: requestId,
+          userId: requestId,
+          expectedVersion: 1,
+          actionGrant: { id: requestId }
+        }
+      })
+    ).rejects.toThrow("Untrusted Desktop IPC sender");
+    expect(collaboration).not.toHaveBeenCalled();
   });
 
   it("accepts only trusted, read-only Sharing IPC requests", async () => {

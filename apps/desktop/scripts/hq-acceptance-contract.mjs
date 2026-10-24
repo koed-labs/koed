@@ -1020,5 +1020,101 @@ export const hqAcceptanceContract = [
       "Each provider follows verified-account and positive-evidence eligibility on every applicable reading.",
     owners: ["HQ-522"],
     harness: "browser"
+  },
+  {
+    id: "S724.2",
+    category: "positive",
+    description:
+      "Recently shared offers reviewed removals and invitation cancellation, retaining published knowledge.",
+    owners: ["HQ-724"],
+    harness: "browser"
+  },
+  {
+    id: "S724.4",
+    category: "positive",
+    description:
+      "Project removal names the affected person, retains contributions, and requires Step-up.",
+    owners: ["HQ-724"],
+    harness: "browser"
+  },
+  {
+    id: "S724.5",
+    category: "positive",
+    description:
+      "Team removal lists affected Projects and retains contributions under existing Step-up.",
+    owners: ["HQ-724"],
+    harness: "browser"
+  },
+  {
+    id: "S724.6",
+    category: "positive",
+    description:
+      "Multi-target removal reviews fresh versions sequentially, with truthful per-target outcomes.",
+    owners: ["HQ-724"],
+    harness: "browser"
+  },
+  {
+    id: "N724.18",
+    category: "negative",
+    description:
+      "Every removal uses its existing review tier and the exact enrolled backend.",
+    owners: ["HQ-724"],
+    harness: "unit-and-real"
+  },
+  {
+    id: "N724.25",
+    category: "negative",
+    description:
+      "Undo, expired authority and identity loss send no removal; a retry requires new review.",
+    owners: ["HQ-724"],
+    harness: "unit-and-real"
+  },
+  {
+    id: "N724.30",
+    category: "negative",
+    description:
+      "A committed lost reply replays the same request and authority without a second mutation.",
+    owners: ["HQ-724"],
+    harness: "unit-and-real"
+  },
+  {
+    id: "N724.32",
+    category: "negative",
+    description:
+      "The second target waits for reconciliation and fresh Project versions, including cancellation and failure.",
+    owners: ["HQ-724"],
+    harness: "unit-and-real"
+  },
+  {
+    id: "N724.33",
+    category: "negative",
+    description:
+      "Only current Team managers can cancel invitations; Project ownership alone is insufficient.",
+    owners: ["HQ-724"],
+    harness: "unit-and-real"
+  },
+  {
+    id: "I724.1",
+    category: "positive",
+    description:
+      "Real Native-reviewed invitation cancellation and private origin/read-model attribution.",
+    owners: ["HQ-724"],
+    harness: "real-api"
+  },
+  {
+    id: "I724.2",
+    category: "positive",
+    description:
+      "Real accepted invitation retains origin, then Step-up removal recovers a committed lost reply.",
+    owners: ["HQ-724"],
+    harness: "real-api"
+  },
+  {
+    id: "I724.3",
+    category: "positive",
+    description:
+      "Real sequential multi-member removal with one Undo and a forced second-target failure.",
+    owners: ["HQ-724"],
+    harness: "real-api"
   }
 ];

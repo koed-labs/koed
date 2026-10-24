@@ -529,6 +529,7 @@ export interface TeamMembershipActionReviewRecord {
     displayName: string | null;
   };
   activeOwnerCount: number;
+  affectedProjects?: Array<{ id: string; name: string }>;
 }
 
 export interface TeamLeaveReviewRecord {

@@ -1498,16 +1498,29 @@ export const createDesktopCollaborationBrokerLocalTransport = (
     if (existing && existing.ownerId !== context.ownerId) {
       return failureResult(command, safeError("not_available"));
     }
+    const requiresTeamBackend = commandRequiresTeamBackend(command, existing);
+    if (command.backendId && !requiresTeamBackend) {
+      return failureResult(command, safeError("invalid_input"));
+    }
+    if (
+      existing &&
+      command.backendId &&
+      existing.connection.backendId !== command.backendId
+    ) {
+      return failureResult(command, safeError("invalid_input"));
+    }
     const connection =
       existing?.connection ??
       (await options
         .resolveConnection(
-          commandRequiresTeamBackend(command, existing),
-          preferredBackendId
+          requiresTeamBackend,
+          command.backendId ?? preferredBackendId
         )
         .catch(() => null));
     if (!connection) return failureResult(command, safeError("offline"));
-    const requiresTeamBackend = commandRequiresTeamBackend(command, existing);
+    if (command.backendId && connection.backendId !== command.backendId) {
+      return failureResult(command, safeError("not_available"));
+    }
     if (requiresTeamBackend && !connection.backendId) {
       return failureResult(command, safeError("offline"));
     }

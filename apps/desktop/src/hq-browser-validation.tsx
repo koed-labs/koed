@@ -162,6 +162,9 @@ const hq701Linked =
   new URLSearchParams(window.location.search).get("hq701Linked") === "yes";
 const hq723Capture =
   new URLSearchParams(window.location.search).get("hq723Capture") === "yes";
+const hq724Capture =
+  new URLSearchParams(window.location.search).get("hq724Capture") === "yes";
+const hq724Trace = { reviewed: 0, sent: 0 };
 const hq705Capture =
   new URLSearchParams(window.location.search).get("hq705Capture") === "yes" ||
   (hq505Capture && !hq901CatchupCapture);
@@ -1100,6 +1103,28 @@ const settingsCollaborationClient = {
     projectId: string;
     targetUserId?: string;
   }) => {
+    if (hq724Capture && projectId === hq712WorkspaceProjectId) {
+      const ownerMemberId = "00000000-0000-4000-8000-000000007124";
+      return {
+        project: {
+          ...hq712State().project,
+          teamId: "00000000-0000-4000-8000-000000000001",
+          ownerTeamMemberId: ownerMemberId,
+          name: "Investor deck",
+          version: 1
+        },
+        actorUserId: "00000000-0000-4000-8000-000000007110",
+        actorTeamMemberId: ownerMemberId,
+        actorMemberVersion: 1,
+        ownerUserId: "00000000-0000-4000-8000-000000007110",
+        actorAccess: "write" as const,
+        actorWorkspaceAccess: "write" as const,
+        targetUserId: targetUserId ?? null,
+        targetTeamMemberId: targetUserId ?? null,
+        targetMemberVersion: targetUserId ? 1 : null,
+        targetAccess: targetUserId ? ("read" as const) : null
+      };
+    }
     if (!hq704Capture || projectId !== hq712WorkspaceProjectId)
       throw new Error("Lifecycle fixture unavailable");
     const project = {
@@ -1138,6 +1163,20 @@ const settingsCollaborationClient = {
       projectId: hq712WorkspaceProjectId,
       memberId: "00000000-0000-4000-8000-000000007127",
       access: "disabled" as const
+    };
+  },
+  prepareRemoveProjectMember: async (input: {
+    projectId: string;
+    targetUserId: string;
+  }) => {
+    if (!hq724Capture) throw new Error("Removal fixture unavailable");
+    hq724Trace.reviewed++;
+    return {
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      execute: async () => {
+        hq724Trace.sent++;
+        hq723Sharing?.control.removeAccess(input.projectId, input.targetUserId);
+      }
     };
   },
   deleteSharedProject: async () => {
@@ -5750,6 +5789,10 @@ export function HqValidationApp() {
           __koedHq723Sharing?: NonNullable<typeof hq723Sharing>["control"];
         }
       ).__koedHq723Sharing = hq723Sharing.control;
+    if (hq724Capture)
+      (
+        window as Window & { __koedHq724Trace?: typeof hq724Trace }
+      ).__koedHq724Trace = hq724Trace;
     if (hq522Usage)
       (
         window as Window & {

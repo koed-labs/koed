@@ -810,6 +810,10 @@ const createClient = (initial = baseSnapshot()): MockClient => {
         revokedAt: at
       })
     ),
+    prepareRevokeInvitation: vi.fn(async () => ({
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      execute: async () => undefined
+    })),
     updateMemberRole: vi.fn(
       async ({ teamId, userId, role, expectedVersion }) => ({
         id: ids.membership,
@@ -840,6 +844,14 @@ const createClient = (initial = baseSnapshot()): MockClient => {
       acceptedAt: at,
       disabledAt: at
     })),
+    prepareDisableMember: vi.fn(async () => ({
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      execute: async () => undefined
+    })),
+    prepareDisableWorkspaceAccess: vi.fn(async () => ({
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      execute: async () => undefined
+    })),
     leaveTeam: vi.fn(async ({ teamId, expectedVersion }) => ({
       id: ids.membership,
       teamId,
@@ -863,6 +875,10 @@ const createClient = (initial = baseSnapshot()): MockClient => {
     removeProjectMember: vi.fn(async () => {
       throw new Error("No shared Project member fixture");
     }),
+    prepareRemoveProjectMember: vi.fn(async () => ({
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      execute: async () => undefined
+    })),
     deleteSharedProject: vi.fn(async () => {
       throw new Error("No shared Project delete fixture");
     }),

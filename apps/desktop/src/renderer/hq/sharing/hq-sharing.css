@@ -8,6 +8,15 @@
   gap: 22px;
   overflow: auto;
 }
+.hq-sharing__removal-status {
+  z-index: 260;
+  max-inline-size: min(620px, calc(100vw - 32px));
+  line-height: 1.35;
+}
+.hq-sharing__removal-status button {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .hq-sharing__header {
   display: flex;
   align-items: end;

@@ -1323,5 +1323,284 @@ export const ownedAcceptanceSuites = [
         proofId: "N29"
       }
     ]
+  },
+  {
+    id: "S724.2",
+    clause:
+      "Recently shared offers reviewed removals and invitation cancellation, retaining published knowledge.",
+    proof: [
+      {
+        runner: "apps/desktop/scripts/validate-hq724-native.mjs",
+        reportPath: "scratch/hq-724/HQ724.native.json",
+        proofId: "S2.removal.ui"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "reviews invitation cancellation and accepted-access removal with exact lost-reply recovery",
+        record: "I724.1"
+      }
+    ]
+  },
+  {
+    id: "S724.4",
+    clause:
+      "Project removal names the affected person, retains contributions, and requires Step-up.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "reviews invitation cancellation and accepted-access removal with exact lost-reply recovery",
+        record: "I724.2"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq724-native.mjs",
+        reportPath: "scratch/hq-724/HQ724.native.json",
+        proofId: "S4.ui"
+      }
+    ]
+  },
+  {
+    id: "S724.5",
+    clause:
+      "Team removal lists affected Projects and retains contributions under existing Step-up.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "serializes two real member removals with Undo and second-target failure",
+        record: "I724.3"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/high-risk/team-and-membership-action-definitions.test.ts",
+        title: "owns member disablement binding and Step-up review",
+        titleMatch: "exact-leaf-unique-in-file"
+      }
+    ]
+  },
+  {
+    id: "S724.6",
+    clause:
+      "Multi-target removal reviews fresh versions sequentially, with truthful per-target outcomes.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "serializes two real member removals with Undo and second-target failure",
+        record: "I724.3"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/removal-coordinator.test.ts",
+        title:
+          "reviews the next target only after the previous dispatch and reconciliation",
+        titleMatch: "exact-leaf-unique-in-file"
+      }
+    ]
+  },
+  {
+    id: "N724.18",
+    clause:
+      "Every removal uses its existing review tier and the exact enrolled backend.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "reviews invitation cancellation and accepted-access removal with exact lost-reply recovery",
+        record: "I724.1"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "reviews invitation cancellation and accepted-access removal with exact lost-reply recovery",
+        record: "I724.2"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/local-edge/collaboration-team-control.test.ts",
+        title:
+          "resolves a Native-reviewed full_access invitation against the exact local command body",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "packages/koed-server/src/desktop-collaboration-broker-local-transport.test.ts",
+        title:
+          "routes an explicit Team backend without changing the active selection",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/local-edge/collaboration-command.test.ts",
+        title:
+          "strictly rejects cross-scope and authority-smuggling request envelopes",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/collaboration/renderer-client.test.ts",
+        title: "keeps a removal's selected backend through grant and dispatch",
+        titleMatch: "exact-leaf-unique-in-file"
+      }
+    ]
+  },
+  {
+    id: "N724.25",
+    clause:
+      "Undo, expired authority and identity loss send no removal; a retry requires new review.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/ipc/commands.test.ts",
+        title:
+          "refuses a delayed approved removal after quit revokes renderer command trust",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/removal-coordinator.test.ts",
+        title:
+          "holds a reviewed removal for five seconds and Undo sends nothing",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/renderer/hq/sharing/removal-coordinator.test.ts",
+        title:
+          "cancels a pending removal on authority change and never dispatches an expired grant",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/collaboration/renderer-client.test.ts",
+        title:
+          "cancels prepared removal authority after disconnect without a mutation",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        runner: "apps/desktop/scripts/validate-hq724-native.mjs",
+        reportPath: "scratch/hq-724/HQ724.native.json",
+        proofId: "N25.ui"
+      }
+    ]
+  },
+  {
+    id: "N724.30",
+    clause:
+      "A committed lost reply replays the same request and authority without a second mutation.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/collaboration/renderer-client.test.ts",
+        title:
+          "reports an unknown removal outcome after exact-request retries are exhausted",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "reviews invitation cancellation and accepted-access removal with exact lost-reply recovery",
+        record: "I724.2"
+      },
+      {
+        kind: "vitest",
+        file: "apps/desktop/src/collaboration/renderer-client.test.ts",
+        title:
+          "keeps a confirmed removal successful when its snapshot refresh fails",
+        titleMatch: "exact-leaf-unique-in-file"
+      }
+    ]
+  },
+  {
+    id: "N724.32",
+    clause:
+      "The second target waits for reconciliation and fresh Project versions, including cancellation and failure.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "serializes two real member removals with Undo and second-target failure",
+        record: "I724.3"
+      }
+    ]
+  },
+  {
+    id: "N724.33",
+    clause:
+      "Only current Team managers can cancel invitations; Project ownership alone is insufficient.",
+    proof: [
+      {
+        kind: "vitest",
+        file: "apps/api/src/team/sharing-read.test.ts",
+        title:
+          "limits cancellation to current Team managers and owner invitations to owners",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "vitest",
+        file: "apps/api/src/high-risk/team-and-membership-action-definitions.test.ts",
+        title:
+          "owns exact invitation revocation context, version, and Native review",
+        titleMatch: "exact-leaf-unique-in-file"
+      },
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "reviews invitation cancellation and accepted-access removal with exact lost-reply recovery",
+        record: "I724.1"
+      }
+    ]
+  },
+  {
+    id: "I724.1",
+    clause:
+      "Real Native-reviewed invitation cancellation and private origin/read-model attribution.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "reviews invitation cancellation and accepted-access removal with exact lost-reply recovery",
+        record: "I724.1"
+      }
+    ]
+  },
+  {
+    id: "I724.2",
+    clause:
+      "Real accepted invitation retains origin, then Step-up removal recovers a committed lost reply.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "reviews invitation cancellation and accepted-access removal with exact lost-reply recovery",
+        record: "I724.2"
+      }
+    ]
+  },
+  {
+    id: "I724.3",
+    clause:
+      "Real sequential multi-member removal with one Undo and a forced second-target failure.",
+    proof: [
+      {
+        kind: "hq713-record",
+        file: "apps/api/tests/hq-integration/hq713-two-user.integration.ts",
+        title:
+          "serializes two real member removals with Undo and second-target failure",
+        record: "I724.3"
+      }
+    ]
   }
 ];

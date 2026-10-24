@@ -8,6 +8,7 @@ import type { Project } from "@koed/shared/project-contract";
 import type { ProjectsDesktopApi } from "../../../ipc/projects-protocol.js";
 import type { CollaborationRendererClient } from "../../../collaboration/renderer-client.js";
 import { HqShareSheet } from "./HqShareSheet.js";
+import { RemovalCoordinator } from "../sharing/removal-coordinator.js";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -80,6 +81,7 @@ describe("Share Project pending cancellation", () => {
           project={project}
           projectsApi={projects}
           collaboration={collaborationFixture}
+          removalCoordinator={new RemovalCoordinator()}
           identityKey="owner:profile"
           onClose={() => undefined}
           onShared={() => undefined}
@@ -170,6 +172,7 @@ describe("Share Project pending cancellation", () => {
           project={project}
           projectsApi={projects}
           collaboration={collaborationFixture}
+          removalCoordinator={new RemovalCoordinator()}
           identityKey="owner:profile"
           onClose={() => undefined}
           onShared={onShared}
@@ -259,6 +262,7 @@ describe("Share Project pending cancellation", () => {
           project={oldProject}
           projectsApi={projects}
           collaboration={collaborationFixture}
+          removalCoordinator={new RemovalCoordinator()}
           identityKey="old-owner"
           onClose={() => undefined}
           onShared={() => undefined}
@@ -273,6 +277,7 @@ describe("Share Project pending cancellation", () => {
           project={newProject}
           projectsApi={projects}
           collaboration={collaborationFixture}
+          removalCoordinator={new RemovalCoordinator()}
           identityKey="new-owner"
           onClose={() => undefined}
           onShared={() => undefined}

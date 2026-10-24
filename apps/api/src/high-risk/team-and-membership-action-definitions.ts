@@ -362,14 +362,21 @@ const teamMemberDisableActionDefinition = defineTeamAction<
       unavailable("Team member disablement");
     }
     return stepUp({
-      title: `Disable ${memberDisplay(review)}?`,
-      description: "This immediately removes the member's current Team access.",
+      title: `Remove ${memberDisplay(review)} from ${review.team.name}?`,
+      description: `${memberDisplay(review)} and their Agents lose access to this Team and its Projects. What ${memberDisplay(review)} added stays in those Projects.`,
       consequence:
         "Active work may be interrupted. Owner and last-owner safeguards are rechecked before execution.",
       confirmLabel: "Disable member",
       details: [
         { label: "Team", value: review.team.name },
-        { label: "Member", value: memberDisplay(review) }
+        { label: "Member", value: memberDisplay(review) },
+        {
+          label: "Affected Projects",
+          value:
+            review.affectedProjects
+              ?.map((project) => project.name)
+              .join(", ") || "None"
+        }
       ]
     });
   }

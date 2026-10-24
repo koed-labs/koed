@@ -68,6 +68,11 @@ const definition = (action: Intent["action"]) => ({
       )
         denied();
     } else if (!owner) denied();
+    const targetName =
+      review.targetDisplayName?.trim() ||
+      (intent.action === "workspace_project.member_remove"
+        ? intent.targetUserId
+        : "member");
     const path =
       intent.action === "workspace_project.leave"
         ? `/v1/workspace-projects/${intent.projectId}/leave`
@@ -90,10 +95,10 @@ const definition = (action: Intent["action"]) => ({
             ? `Delete ${review.project.name}?`
             : intent.action === "workspace_project.leave"
               ? `Leave ${review.project.name}?`
-              : `Remove member from ${review.project.name}?`,
+              : `Remove ${targetName} from ${review.project.name}?`,
         description:
           intent.action === "workspace_project.member_remove"
-            ? `Remove Team member ${intent.targetUserId} from this Project?`
+            ? `${targetName} and their Agents lose access to ${review.project.name}. What ${targetName} added stays in ${review.project.name}.`
             : "Review the exact Workspace Project lifecycle change.",
         consequence:
           intent.action === "workspace_project.delete"
@@ -105,7 +110,8 @@ const definition = (action: Intent["action"]) => ({
           { label: "Project version", value: String(review.project.version) },
           ...(intent.action === "workspace_project.member_remove"
             ? [
-                { label: "Member", value: intent.targetUserId },
+                { label: "Member", value: targetName },
+                { label: "Member ID", value: intent.targetUserId },
                 {
                   label: "Member link version",
                   value: String(review.targetMemberVersion)

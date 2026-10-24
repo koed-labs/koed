@@ -97,6 +97,7 @@ export function createHq723SharingFixture(
   let unavailable = true;
   let recentEmpty = false;
   let priya = false;
+  const removed = new Set<string>();
   const trace = { reads: 0 };
   const refresh = () => window.dispatchEvent(new Event("focus"));
   const overview = (): SharingOverview => {
@@ -110,6 +111,12 @@ export function createHq723SharingFixture(
       project(11, "Koed mobile", ["Ines", "Lukas", "Nadia"], recentEmpty),
       project(12, "Japan trip", ["Ravi", "Theo"], recentEmpty)
     ];
+    for (const entry of owned) {
+      entry.members = entry.members.filter(
+        (member) => !removed.has(`${entry.id}:${member.person.id}`)
+      );
+      entry.counts.members = entry.members.length;
+    }
     if (priya)
       owned[0]!.invitations.push({
         kind: "invitation",
@@ -223,7 +230,11 @@ export function createHq723SharingFixture(
       restoreInvitation();
       refresh();
     },
-    refresh
+    refresh,
+    removeAccess: (projectId: string, userId: string) => {
+      removed.add(`${projectId}:${userId}`);
+      refresh();
+    }
   };
   return { api, control };
 }

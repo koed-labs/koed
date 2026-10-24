@@ -35,6 +35,7 @@ import {
   teamWorkspaceAccessGrants,
   teamWorkspaces,
   workspaceProjects,
+  workspaceProjectMembers,
   workspaceRepresentationPolicies,
   users
 } from "./schema.js";
@@ -4484,6 +4485,23 @@ export const createTeamAccessRepository = (
         return null;
       }
       const member = mapMembershipRecord(row.member);
+      const affectedProjects = await db
+        .select({ id: workspaceProjects.id, name: workspaceProjects.name })
+        .from(workspaceProjects)
+        .innerJoin(
+          workspaceProjectMembers,
+          eq(workspaceProjectMembers.workspaceProjectId, workspaceProjects.id)
+        )
+        .where(
+          and(
+            eq(workspaceProjects.teamId, input.teamId),
+            eq(workspaceProjects.lifecycle, "active"),
+            eq(workspaceProjectMembers.teamMemberId, member.id),
+            isNull(workspaceProjectMembers.disabledAt),
+            inArray(workspaceProjectMembers.access, ["read", "write"])
+          )
+        )
+        .orderBy(workspaceProjects.name, workspaceProjects.id);
       return {
         managerRole: row.managerRole,
         team: { id: row.teamId, name: row.teamName },
@@ -4496,7 +4514,8 @@ export const createTeamAccessRepository = (
           email: row.email,
           displayName: row.displayName
         },
-        activeOwnerCount: row.activeOwnerCount
+        activeOwnerCount: row.activeOwnerCount,
+        affectedProjects
       };
     },
 

@@ -112,9 +112,12 @@ const personalCollaborationCommandRequestSchema = z
     command: collaborationRendererCommandSchema
   })
   .strict()
-  .refine((input) => isPersonalCommand(input.command), {
-    message: "Command is not a Personal collaboration command"
-  });
+  .refine(
+    (input) => isPersonalCommand(input.command) && !input.command.backendId,
+    {
+      message: "Command is not a Personal collaboration command"
+    }
+  );
 
 const teamCollaborationCommandRequestSchema = z
   .object({
@@ -122,9 +125,15 @@ const teamCollaborationCommandRequestSchema = z
     command: collaborationRendererCommandSchema
   })
   .strict()
-  .refine((input) => isTeamCommand(input.command), {
-    message: "Command is not a Team collaboration command"
-  });
+  .refine(
+    (input) =>
+      isTeamCommand(input.command) &&
+      (!input.command.backendId ||
+        input.command.backendId === input.upstream_backend_id),
+    {
+      message: "Command is not a Team collaboration command"
+    }
+  );
 
 export const collaborationCommandRequestSchema = z.union([
   personalCollaborationCommandRequestSchema,
