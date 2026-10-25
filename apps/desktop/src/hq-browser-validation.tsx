@@ -59,8 +59,10 @@ import type {
 import type { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
 import {
   initialHqOnboarding,
+  readHqOnboarding,
   writeHqOnboarding
 } from "./renderer/hq/onboarding/onboarding-preference.js";
+import type { HqOnboardingStatus } from "./ipc/hq-onboarding-protocol.js";
 
 const FIXTURE_ID = "hq-approved-map-fixture-v1";
 const hq521Capture =
@@ -127,6 +129,61 @@ const hq502Capture =
   new URLSearchParams(window.location.search).get("hq502Capture") === "yes";
 const hq506Capture =
   new URLSearchParams(window.location.search).get("hq506Capture") === "yes";
+const hq506OwnerId = "00000000-0000-4000-8000-000000000109";
+const hq506ProfileKey = "hq506-local-profile";
+const hq506Resuming =
+  hq506Capture && readHqOnboarding(hq506OwnerId, hq506ProfileKey).completed;
+const hq506Trace = {
+  commands: [] as string[],
+  chiefPatches: [] as object[],
+  memoryPreparations: 0,
+  memoryNotes: [] as string[],
+  memoryAsks: [] as string[],
+  status: {
+    profileKey: hq506ProfileKey,
+    ownerId: hq506OwnerId,
+    memoryState: hq506Resuming ? "ready" : "not_started",
+    error: null,
+    clients: [
+      {
+        driver: "codex",
+        name: "Codex",
+        installed: hq506Resuming,
+        authenticated: hq506Resuming ? "yes" : "unknown",
+        selected: hq506Resuming,
+        configured: hq506Resuming,
+        memoryConnected: hq506Resuming,
+        error: null
+      }
+    ]
+  } as HqOnboardingStatus,
+  failMemory() {
+    this.status = {
+      ...this.status,
+      memoryState: "failed",
+      error: "Local startup failed."
+    };
+  },
+  completeMemory() {
+    this.status = {
+      ...this.status,
+      memoryState: "ready",
+      error: null,
+      progress: this.status.progress
+        ? {
+            ...this.status.progress,
+            message: "Local Memory is ready.",
+            completedSteps: this.status.progress.totalSteps
+          }
+        : null,
+      clients: this.status.clients.map((client) => ({
+        ...client,
+        configured: true,
+        memoryConnected: client.selected
+      }))
+    };
+  }
+};
 const hq901CatchupCapture =
   new URLSearchParams(window.location.search).get("hq901Catchup") === "yes";
 const hq505Capture =
@@ -2192,7 +2249,7 @@ const installSettingsDesktop = () => {
     ...(hq521Usage || hq522Usage
       ? { localAiClients: (hq522Usage ?? hq521Usage)!.api }
       : {}),
-    ...(hq106Capture || hq702Capture
+    ...(hq106Capture || hq702Capture || hq506Capture
       ? { personalMemory: sidebarPersonalMemoryApi }
       : {}),
     ...(hq204Capture ||
@@ -2255,19 +2312,26 @@ const installSettingsDesktop = () => {
             delegations: async () => [],
             ...(hq506Capture
               ? {
-                  ensureChief: async () => ({
-                    id: "00000000-0000-4000-8000-000000002046",
-                    ownerUserId: "00000000-0000-4000-8000-000000000109",
-                    isChiefOfStaff: true,
-                    aiClientInstanceId: "codex.fixture"
-                  }),
-                  patch: async (_id: string, value: object) => ({
-                    id: "00000000-0000-4000-8000-000000002046",
-                    ownerUserId: "00000000-0000-4000-8000-000000000109",
-                    isChiefOfStaff: true,
-                    aiClientInstanceId: "codex.fixture",
-                    ...value
-                  })
+                  ensureChief: async () => {
+                    hq506Trace.commands.push("ensureChief");
+                    return {
+                      id: "00000000-0000-4000-8000-000000002046",
+                      ownerUserId: hq506OwnerId,
+                      isChiefOfStaff: true,
+                      aiClientInstanceId: null
+                    };
+                  },
+                  patch: async (_id: string, value: object) => {
+                    hq506Trace.commands.push("patchChief");
+                    hq506Trace.chiefPatches.push(value);
+                    return {
+                      id: "00000000-0000-4000-8000-000000002046",
+                      ownerUserId: hq506OwnerId,
+                      isChiefOfStaff: true,
+                      aiClientInstanceId: "codex.fixture",
+                      ...value
+                    };
+                  }
                 }
               : {}),
             ...(hq503Capture
@@ -2521,7 +2585,57 @@ const installSettingsDesktop = () => {
           }
         }
       : {}),
-    invoke: async (channel: string) => {
+    invoke: async (channel: string, args?: Record<string, unknown>) => {
+      if (hq506Capture && channel.startsWith("hq_onboarding_")) {
+        hq506Trace.commands.push(channel);
+        if (channel === "hq_onboarding_status")
+          return structuredClone(hq506Trace.status);
+        if (channel === "hq_onboarding_identity")
+          return { profileKey: hq506ProfileKey, ownerId: hq506OwnerId };
+        if (channel === "hq_onboarding_discover") {
+          hq506Trace.status = {
+            ...hq506Trace.status,
+            clients: hq506Trace.status.clients.map((client) => ({
+              ...client,
+              installed: true,
+              authenticated: "yes"
+            }))
+          };
+          return structuredClone(hq506Trace.status);
+        }
+        if (channel === "hq_onboarding_connect") {
+          if (args?.operatorConsented !== true || args.driver !== "codex")
+            throw new Error("HQ506 requires explicit Codex selection.");
+          hq506Trace.status = {
+            ...hq506Trace.status,
+            clients: hq506Trace.status.clients.map((client) => ({
+              ...client,
+              selected: true
+            }))
+          };
+          return structuredClone(hq506Trace.status);
+        }
+        if (channel === "hq_onboarding_prepare_memory") {
+          if (
+            args?.operatorConsented !== true ||
+            !hq506Trace.status.clients.some((client) => client.selected)
+          )
+            throw new Error("HQ506 requires an explicitly selected AI Client.");
+          hq506Trace.memoryPreparations += 1;
+          hq506Trace.status = {
+            ...hq506Trace.status,
+            memoryState: "preparing",
+            error: null,
+            progress: {
+              message: "Starting local Memory…",
+              completedSteps: 3,
+              totalSteps: 8,
+              startedAt: Date.now()
+            }
+          };
+          return structuredClone(hq506Trace.status);
+        }
+      }
       if (channel === "ensure_independent_project")
         return {
           project: sidebarProjectMetadata.find(
@@ -5120,6 +5234,51 @@ const sidebarPersonalMemoryApi: PersonalDesktopApi = {
       )
     }));
   },
+  ...(hq506Capture
+    ? {
+        createNote: async ({ body }: { body: string }) => {
+          if (hq506Trace.status.memoryState !== "ready")
+            throw new Error("HQ506 Memory was used before it was ready.");
+          hq506Trace.memoryNotes.push(body);
+          return {
+            noteId: "00000000-0000-4000-8000-000000005061",
+            title: "Work preference",
+            titleVersion: 1,
+            revisionId: "00000000-0000-4000-8000-000000005062",
+            revision: 1,
+            contentHash: "0".repeat(64),
+            memoryEventId: "00000000-0000-4000-8000-000000005063",
+            projectionState: "available" as const,
+            projectionFailureCode: null,
+            createdAt: FIXTURE_TIME,
+            updatedAt: FIXTURE_TIME,
+            sourceSequence: 1,
+            body,
+            logicalMemoryId: "00000000-0000-4000-8000-000000005064",
+            event: null
+          };
+        },
+        submitAsk: async ({ query }: { query: string }) => {
+          hq506Trace.memoryAsks.push(query);
+          return {
+            id: "00000000-0000-4000-8000-000000005065",
+            askThreadId: "00000000-0000-4000-8000-000000005066",
+            askTurnIndex: 0,
+            query,
+            answerMarkdown: hq506Trace.memoryNotes.includes(
+              "Keep answers short"
+            )
+              ? "webhookRetryPolicy — a short name, following your saved work preference."
+              : "webhookRetryPolicy — based on your saved work preference.",
+            errorMessage: null,
+            status: "answered" as const,
+            createdAt: FIXTURE_TIME,
+            updatedAt: FIXTURE_TIME,
+            answeredAt: FIXTURE_TIME
+          };
+        }
+      }
+    : {}),
   ...(hq106Capture
     ? {
         trashSession: async ({
@@ -5863,6 +6022,9 @@ export function HqValidationApp() {
         }
       ).__koedHq711VisibilityFixture = hq711VisibilityFixture;
     window.__koedHqFixture = fixture;
+    if (hq506Capture)
+      (window as Window & { __koedHq506?: typeof hq506Trace }).__koedHq506 =
+        hq506Trace;
     if (hq521Usage)
       (
         window as Window & {
@@ -5970,6 +6132,8 @@ export function HqValidationApp() {
       delete (window as Window & { __koedHq307Trace?: typeof hq307Trace })
         .__koedHq307Trace;
       delete window.__koedHqFixture;
+      delete (window as Window & { __koedHq506?: typeof hq506Trace })
+        .__koedHq506;
       delete (window as Window & { __koedHq701Trace?: typeof hq701Trace })
         .__koedHq701Trace;
       delete (window as Window & { __koedHq702Trace?: typeof hq702Trace })

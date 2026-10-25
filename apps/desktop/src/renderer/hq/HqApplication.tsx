@@ -28,6 +28,7 @@ import type { ProjectsDesktopApi } from "../../ipc/projects-protocol.js";
 import { ProjectsStore } from "./useProjects.js";
 import { AgentsStore } from "./agents/agents-store.js";
 import { HqOnboarding } from "./onboarding/HqOnboarding.js";
+import { useOnboardingGate } from "./onboarding/useOnboardingGate.js";
 import {
   hqSuggestedProjectName,
   readHqOnboarding
@@ -306,6 +307,11 @@ export function HqApplication({
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [onboardingRevision, setOnboardingRevision] = useState(0);
+  const onboardingGate = useOnboardingGate(
+    visibilityOwnerId ?? null,
+    visibilityProfileKey ?? null,
+    Boolean(agentsApi)
+  );
   const [settingsSection, setSettingsSection] =
     useState<HqSettingsSection>("general");
   const [chatDeleteRequest, setChatDeleteRequest] =
@@ -2959,17 +2965,33 @@ export function HqApplication({
     agentsApi &&
     visibilityOwnerId &&
     visibilityProfileKey &&
-    !readHqOnboarding(visibilityOwnerId, visibilityProfileKey).completed
+    onboardingGate.record &&
+    !onboardingGate.record.completed
   );
   void onboardingRevision;
+  if (onboardingGate.loading || onboardingGate.error)
+    return (
+      <div className="hq-onboarding-shell">
+        <HqShell title="Opening Koed" contextAvailable={false} onboarding>
+          <div role={onboardingGate.error ? "alert" : "status"}>
+            {onboardingGate.error ?? "Opening Koed…"}
+            {onboardingGate.error ? (
+              <button type="button" onClick={onboardingGate.retry}>
+                Retry
+              </button>
+            ) : null}
+          </div>
+        </HqShell>
+      </div>
+    );
   if (needsOnboarding && visibilityOwnerId && visibilityProfileKey)
     return (
       <div className="hq-onboarding-shell">
-        <HqShell title="Getting started" contextAvailable={false}>
+        <HqShell title="Getting started" contextAvailable={false} onboarding>
           <HqOnboarding
-            key={`${visibilityOwnerId}:${visibilityProfileKey}`}
+            key={`${visibilityOwnerId}:${onboardingGate.profileKey}`}
             ownerId={visibilityOwnerId}
-            profileKey={visibilityProfileKey}
+            profileKey={onboardingGate.profileKey!}
             agentsApi={agentsApi}
             localAiClients={localAiClients}
             personalMemoryApi={personalMemoryApi}

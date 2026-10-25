@@ -75,6 +75,25 @@ describe("HQ shell layout", () => {
     await act(async () => root.render(<HqShell {...props} />));
   };
 
+  it("places onboarding progress in the workspace header instead of a Getting started title", async () => {
+    await render({
+      onboarding: true,
+      title: "Getting started",
+      contextAvailable: false
+    });
+    const header = container.querySelector(".hq-main__header");
+    expect(header?.querySelector("#hq-onboarding-progress")).not.toBeNull();
+    expect(header?.querySelector("h1")).toBeNull();
+    expect(
+      header?.querySelector('button[aria-label="Collapse sidebar"]')
+    ).not.toBeNull();
+    await render({ title: "A project" });
+    expect(container.querySelector("#hq-onboarding-progress")).toBeNull();
+    expect(container.querySelector(".hq-main__heading h1")?.textContent).toBe(
+      "A project"
+    );
+  });
+
   it("omits context controls on routes without Project context without changing layout preferences", async () => {
     const actions = createRef<HqShellActions>();
     await render({ contextAvailable: false, actionsRef: actions });

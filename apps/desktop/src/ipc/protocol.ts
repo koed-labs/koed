@@ -54,7 +54,12 @@ export const desktopCommandNames = [
   "onboarding_status",
   "onboarding_complete",
   "setup_inspect",
-  "setup_run"
+  "setup_run",
+  "hq_onboarding_status",
+  "hq_onboarding_identity",
+  "hq_onboarding_discover",
+  "hq_onboarding_connect",
+  "hq_onboarding_prepare_memory"
 ] as const;
 
 export type DesktopCommandName = (typeof desktopCommandNames)[number];

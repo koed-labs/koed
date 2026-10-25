@@ -3,6 +3,7 @@ import "./pixelkin-core.js";
 import type { Agent } from "@koed/shared/agent-contract";
 
 type Spec = {
+  top?: "none" | "antenna" | "sprout" | "ears";
   body: {
     shape: "sphere" | "roundedBox" | "cuboid" | "capsule";
     width: number;
@@ -56,6 +57,9 @@ export function pixelkinSpec(agent: Pick<Agent, "id" | "look">): Spec {
       ? String(value.seed)
       : agent.id;
   const spec = core.generate(seed);
+  spec.top = ["antenna", "sprout", "ears"].includes(String(value.top))
+    ? (value.top as Spec["top"])
+    : "none";
   const body =
     value.body && typeof value.body === "object" && !Array.isArray(value.body)
       ? (value.body as Record<string, unknown>)
@@ -214,7 +218,89 @@ export function renderPixelkin(
       avatar.set(data.subarray(from, from + 4), (y * SIZE + x) * 4);
     }
   }
-  return avatar;
+  return paintPixelkinTop(avatar, spec);
+}
+
+/** Optional pixel accessories wrap the approved Lab character, without changing old looks. */
+function paintPixelkinTop(
+  pixels: Uint8ClampedArray,
+  spec: Spec
+): Uint8ClampedArray {
+  if (!spec.top || spec.top === "none") return pixels;
+  const output = new Uint8ClampedArray(pixels.length);
+  const scale = 0.84;
+  const width = Math.round(SIZE * scale);
+  const offsetX = Math.floor((SIZE - width) / 2);
+  const offsetY = SIZE - width;
+  let minX = SIZE,
+    maxX = 0,
+    topY = SIZE;
+  for (let y = 0; y < width; y++) {
+    for (let x = 0; x < width; x++) {
+      const from = (Math.floor(y / scale) * SIZE + Math.floor(x / scale)) * 4;
+      const px = x + offsetX,
+        py = y + offsetY;
+      output.set(pixels.subarray(from, from + 4), (py * SIZE + px) * 4);
+      if (pixels[from + 3]) {
+        minX = Math.min(minX, px);
+        maxX = Math.max(maxX, px);
+        topY = Math.min(topY, py);
+      }
+    }
+  }
+  if (topY === SIZE) return output;
+  const base = spec.palette.base.match(
+    /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i
+  );
+  const colour = base
+    ? base.slice(1).map((value) => parseInt(value, 16))
+    : [157, 147, 251];
+  const dark = colour.map((channel) => Math.round(channel * 0.38));
+  const light = colour.map((channel) =>
+    Math.round(channel + (255 - channel) * 0.5)
+  );
+  const paint = (x: number, y: number, rgb: number[]) => {
+    if (x < 0 || y < 0 || x >= SIZE || y >= SIZE) return;
+    const at = (y * SIZE + x) * 4;
+    output[at] = rgb[0]!;
+    output[at + 1] = rgb[1]!;
+    output[at + 2] = rgb[2]!;
+    output[at + 3] = 255;
+  };
+  const rectangle = (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    rgb: number[]
+  ) => {
+    for (let py = y; py < y + h; py++)
+      for (let px = x; px < x + w; px++) paint(px, py, rgb);
+  };
+  const centre = Math.round((minX + maxX) / 2);
+  if (spec.top === "antenna") {
+    rectangle(centre - 1, topY - 7, 3, 9, dark);
+    rectangle(centre - 2, topY - 10, 5, 5, dark);
+    rectangle(centre - 1, topY - 9, 3, 3, light);
+  } else if (spec.top === "sprout") {
+    rectangle(centre, topY - 7, 2, 9, [42, 104, 57]);
+    rectangle(centre - 5, topY - 8, 5, 3, [82, 172, 100]);
+    rectangle(centre + 2, topY - 10, 5, 3, [103, 194, 109]);
+    rectangle(centre - 3, topY - 5, 4, 2, [42, 104, 57]);
+  } else {
+    for (const centreX of [minX + 7, maxX - 7]) {
+      for (let row = 0; row < 7; row++) {
+        for (let dx = -row; dx <= row; dx++) {
+          paint(
+            centreX + dx,
+            topY - 7 + row,
+            Math.abs(dx) === row || row === 0 ? dark : light
+          );
+        }
+      }
+    }
+  }
+  return output;
 }
 
 export const pixelkinResolution = SIZE;

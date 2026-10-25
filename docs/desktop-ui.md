@@ -28,17 +28,63 @@ environment; it does not automatically load the repository-root or Desktop
 `.env` files. The `.env.example` files catalogue setup values and do not
 configure Desktop's launch environment.
 
-On first run, HQ presents its own local setup screen. It inspects the existing
-trusted setup stages and asks for explicit confirmation before preparing the
-local runtime and services. After verification, **Continue to Koed** checks
-the stages again and proceeds to HQ role and Agent onboarding. The previous
-interface's setup presentation is used only when the HQ flag is disabled.
+On first run, HQ opens conversational onboarding immediately. Its four stages
+are **Your agent**, **Your AI**, **Memory**, and **Working together**. The Agent's
+name and appearance are saved as a local profile draft before the Personal
+backend or its owner credential exists. Onboarding follows the v56 conversation:
+welcome, Agent maker, accepted Agent card, the User's name-confirmation message,
+and the Agent's introduction to the next three topics. Earlier messages remain
+visible as the User advances; onboarding does not replace them with wizard pages.
+Hire and completion acknowledge the click immediately with **Hiring…** and
+**Opening Koed…**. They read the current capability model without running new
+AI discovery. Agent endpoint discovery is reused only while local runtime and
+configuration inputs remain unchanged; credentials and owner identity are still
+checked around every Agent request. Profile changes invalidate that discovery.
+Completion uses the stable local-profile identity, independently of transport
+reconnect epochs. The app waits for saved setup state before deciding whether
+to show onboarding, so completion and reload do not flash the Agent maker.
+The progress indicator and Skip setup control live in the workspace header.
+Existing role preferences remain editable in Settings; onboarding adds no extra
+role-question screen.
 
-During HQ startup, setup reads the local runtime status before starting the
-remaining package, model, and service checks. Concurrent requests for the same
-full service status or package status share the in-flight inspection. Completed
-results are not cached: the next request checks again, including after an
-inspection fails. Setup still checks every required stage before continuing.
+**Your AI** discovers installed AI Clients and their native sign-in state only
+when the User asks. The User explicitly selects clients; installation, sign-in,
+selection, and a verified Koed Memory connection are separate states. These
+first two stages do not start the local backend. Provider sign-in remains with
+the provider's own client. Token-dependent MCP and capture integration is
+finalised during **Memory**, rather than claiming that selection alone connected
+Memory.
+
+Entering **Memory** starts local preparation in the background. The main process
+owns one preparation run per active profile, reuses completed setup stages, and
+reports a small Memory readiness state to onboarding. The User does not see a
+service checklist or a separate infrastructure setup screen. Preparation installs
+and verifies required local runtime resources and models, starts services,
+provisions the internal local credentials, completes the selected AI Client
+integrations, and verifies their Memory capability. Failure preserves the draft
+and offers retry in the Memory conversation. Reopening onboarding resumes its
+saved stage. Service readiness is not the same as completing onboarding.
+The Memory conversation shows the current preparation stage, completed setup
+steps and elapsed time. This is stage progress, not an estimate of time left.
+The preference buttons and message input stay disabled until Memory is ready.
+If preparation fails, **Retry** starts another verified preparation run without
+resetting the Agent, selected AI Clients or conversation.
+The Memory example saves the preference the User supplies as a Personal Note,
+waits for its Projection, and asks the connected local AI Client to answer using
+retrieved Memory. Its answer is displayed only when the real Ask request finishes;
+pending work and failures remain visible without a simulated answer or citation count.
+
+**Working together** retains the v56 explanation, optional demonstrations and
+final recap within the same conversation. Collaboration remains optional.
+Personal-only setup does not enroll a Team connection, send invitations,
+or enable sharing. Completion requires a verified Memory connection and a Chief
+of Staff bound to the owning User and a selected, available AI Client. The
+existing previous-interface onboarding remains behind its explicit launch flag.
+
+**Settings > Services** lists service names and their current health, refreshed
+automatically. It does not contain setup steps, operator diagnostic buttons,
+logs buttons, or embedding performance statistics. Technical diagnostics remain
+available through the existing operator commands.
 
 HQ stores its resizable pane widths and context-pane visibility in the native
 Electron `userData/hq-layout-preferences.json` file. Drag a divider or focus it

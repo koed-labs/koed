@@ -18,6 +18,30 @@ const signature = (pixels: Uint8ClampedArray) => {
 };
 
 describe("Pixelkin Lab HQ avatar", () => {
+  it("persists distinct optional top accessories while preserving existing unadorned looks", () => {
+    const renderTop = (top: string) => {
+      const spec = pixelkinSpec({
+        ...agent,
+        look: { pixelkin: { seed: agent.id, top } }
+      });
+      return signature(renderPixelkin(spec));
+    };
+    expect(renderTop("none")).toBe(
+      signature(renderPixelkin(pixelkinSpec(agent)))
+    );
+    expect(renderTop("unknown")).toBe(renderTop("none"));
+    expect(
+      new Set(["none", "antenna", "sprout", "ears"].map(renderTop)).size
+    ).toBe(4);
+    const adorned = pixelkinSpec({
+      ...agent,
+      look: { pixelkin: { top: "sprout" } }
+    });
+    expect(adorned.top).toBe("sprout");
+    expect(signature(renderPixelkin(adorned, 0, 0, 1))).not.toBe(
+      signature(renderPixelkin(adorned))
+    );
+  });
   it("renders a stable seeded real body and separate moving/blinking face", () => {
     const spec = pixelkinSpec(agent);
     const neutral = renderPixelkin(spec);

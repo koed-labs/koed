@@ -10,6 +10,9 @@ export {
 } from "./status.js";
 export { restartKoedServer } from "./restart.js";
 export { removeCodexIntegration, setupCore, setupCodex } from "./setup.js";
+export { resolveCodexExecutablePath } from "./ai-client-registry.js";
+export { resolveClaudeExecutablePath } from "./claude-setup.js";
+export { resolvePiSetupExecutable } from "./pi-setup.js";
 export { removePi, setupPi } from "./pi-setup.js";
 export { removeClaude, setupClaude } from "./claude-setup.js";
 export { startKoedServer } from "./start.js";

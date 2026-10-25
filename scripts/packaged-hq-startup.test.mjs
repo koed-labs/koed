@@ -22,6 +22,27 @@ const fakeClock = () => {
   };
 };
 
+test("fresh HQ opens conversational onboarding before local preparation", async () => {
+  const clock = fakeClock();
+  const firstRun = {
+    hqEnabled: true,
+    hqSetup: false,
+    shell: true,
+    setup: false,
+    onboarding: true
+  };
+  const result = await waitForPackagedHqSurface({
+    expectedSurface: "setup",
+    readState: async () => firstRun,
+    continueSetup: async () =>
+      assert.fail("No service checklist or Continue action"),
+    delayImpl: clock.delay,
+    nowImpl: clock.now
+  });
+  assert.equal(result, firstRun);
+  assert.equal(clock.now(), 0);
+});
+
 test("initial inspection can reach the HQ shell at its 180-second deadline", async () => {
   const clock = fakeClock();
   let reads = 0;

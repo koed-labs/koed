@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { createAgentsAuthorityResolver } from "./agents-authority.js";
 import { desktopFeatureFlagsFromEnvironment } from "../ipc/desktop-feature-flags.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createChatLifecycleClient } from "./chat-lifecycle-client.js";
@@ -93,6 +94,8 @@ import {
   managedDevelopmentPreviewAccessSchema,
   managedTerminalClientFrameSchema,
   managedTerminalServerFrameSchema,
+  nodeCliInvocation,
+  nodeCliProcessEnvironment,
   PDS_PEER_ENDPOINT_RUNTIME_FILE,
   readDesktopLocalCredentialAuthorization,
   readLocalEdgeClientCredentialAuthorization,
@@ -131,6 +134,9 @@ import {
   resolveKoedServerConfig,
   resolveKoedServerPaths,
   runPersonalSyncCommand,
+  resolveCodexExecutablePath,
+  resolveClaudeExecutablePath,
+  resolvePiSetupExecutable,
   writeKoedServerConfig
 } from "@koed-labs/server";
 import { discoverProjectSourceRepos } from "./project-source-repos.js";
@@ -154,6 +160,17 @@ import type {
   KoedServerStatus
 } from "../types.js";
 import type { DesktopCommandName } from "../ipc/protocol.js";
+import type {
+  HqOnboardingClient,
+  HqOnboardingDriver,
+  HqOnboardingStatus
+} from "../ipc/hq-onboarding-protocol.js";
+import {
+  ensureHqOnboardingState,
+  hqOnboardingStatePath,
+  readHqOnboardingState,
+  writeHqOnboardingState
+} from "./hq-onboarding-state.js";
 import {
   localAiClientCommandSchema,
   localAiClientResponseSchema,
@@ -1953,6 +1970,355 @@ export const createKoedServerManager = ({
   const onboardingStatePath = desktopOnboardingStatePath(
     resolveKoedHome(environment)
   );
+  const hqOnboardingPath = hqOnboardingStatePath(resolveKoedHome(environment));
+  let hqMemoryError: string | null = null;
+  let hqMemoryPreparation: Promise<void> | null = null;
+  let hqMemoryProgress: HqOnboardingStatus["progress"] = null;
+  let hqVerifiedServerStatus: Record<string, unknown> | null = null;
+  let hqVerifiedAt = 0;
+  let hqBackendRead: Promise<void> | null = null;
+  const refreshHqBackendStatus = (): Promise<void> => {
+    if (hqBackendRead) return hqBackendRead;
+    const read = runJson(["status"], statusCommandTimeoutMs)
+      .then((value) => {
+        hqVerifiedServerStatus = objectValue(value);
+        hqVerifiedAt = Date.now();
+      })
+      .finally(() => {
+        if (hqBackendRead === read) hqBackendRead = null;
+      });
+    hqBackendRead = read;
+    return read;
+  };
+  const hqNativeProbes = new Map<
+    HqOnboardingDriver,
+    Pick<HqOnboardingClient, "installed" | "authenticated">
+  >();
+
+  const probeNativeClient = async (
+    driver: HqOnboardingDriver
+  ): Promise<void> => {
+    const nativeEnvironment = { ...process.env, ...environment };
+    let executable: string;
+    try {
+      executable =
+        driver === "codex"
+          ? resolveCodexExecutablePath(nativeEnvironment)
+          : driver === "claude"
+            ? resolveClaudeExecutablePath(nativeEnvironment)
+            : resolvePiSetupExecutable(nativeEnvironment);
+    } catch {
+      hqNativeProbes.set(driver, {
+        installed: false,
+        authenticated: "unknown"
+      });
+      return;
+    }
+    const run = (
+      args: string[]
+    ): Promise<{ ok: boolean; stdout: string; stderr: string }> =>
+      new Promise((resolveProbe) => {
+        const invocation = nodeCliInvocation(executable, args);
+        execFile(
+          invocation.command,
+          invocation.args,
+          {
+            cwd: repoRoot,
+            env: nodeCliProcessEnvironment(invocation, nativeEnvironment),
+            timeout: 15_000
+          },
+          (error, stdout, stderr) =>
+            resolveProbe({
+              ok: !error,
+              stdout: stdout.slice(0, 4096),
+              stderr: stderr.slice(0, 4096)
+            })
+        );
+      });
+    const version = await run(["--version"]);
+    if (!version.ok) {
+      hqNativeProbes.set(driver, {
+        installed: false,
+        authenticated: "unknown"
+      });
+      return;
+    }
+    const auth = await run(
+      driver === "codex"
+        ? ["login", "status"]
+        : driver === "claude"
+          ? ["auth", "status", "--json"]
+          : ["--list-models"]
+    );
+    let authenticated: HqOnboardingClient["authenticated"] = "unknown";
+    if (driver === "claude" && auth.ok) {
+      try {
+        const value = objectValue(JSON.parse(auth.stdout));
+        authenticated =
+          value?.loggedIn === true
+            ? "yes"
+            : value?.loggedIn === false
+              ? "no"
+              : "unknown";
+      } catch {
+        /* Invalid native response remains unknown. */
+      }
+    } else if (driver === "codex") {
+      const response = `${auth.stdout}\n${auth.stderr}`.toLowerCase();
+      authenticated = /not logged in/u.test(response)
+        ? "no"
+        : auth.ok && /logged in/u.test(response)
+          ? "yes"
+          : "unknown";
+    } else if (driver === "pi" && auth.ok) {
+      const lines = auth.stdout
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      authenticated = /^no models available(?:\.|$)/iu.test(lines[0] ?? "")
+        ? "no"
+        : /^provider\s+model(?:\s|$)/iu.test(lines[0] ?? "") && lines.length > 1
+          ? "yes"
+          : "unknown";
+    }
+    hqNativeProbes.set(driver, { installed: true, authenticated });
+  };
+
+  const discoverNativeClients = async (): Promise<HqOnboardingStatus> => {
+    await Promise.all(
+      (["codex", "claude", "pi"] as const).map(probeNativeClient)
+    );
+    await refreshHqBackendStatus();
+    return hqOnboardingStatus();
+  };
+
+  const hqOnboardingStatus = async (): Promise<HqOnboardingStatus> => {
+    const saved = ensureHqOnboardingState(hqOnboardingPath);
+    if (
+      saved.memoryEntered &&
+      !hqMemoryPreparation &&
+      Date.now() - hqVerifiedAt > 10_000
+    ) {
+      await refreshHqBackendStatus();
+    }
+    const status = hqVerifiedServerStatus;
+    const readiness = objectValue(status?.aiClients);
+    const descriptions: readonly [HqOnboardingDriver, string, string][] = [
+      ["codex", "Codex", "codex"],
+      ["claude", "Claude Code", "claudeCode"],
+      ["pi", "Pi", "pi"]
+    ];
+    const clients: HqOnboardingClient[] = descriptions.map(
+      ([driver, name, componentName]) => {
+        const profile = objectValue(status?.[componentName]);
+        const client = objectValue(readiness?.[driver]);
+        const native = hqNativeProbes.get(driver);
+        const installed =
+          native?.installed ??
+          (objectValue(client?.installed)?.state === "healthy" ||
+            profile?.detected === true ||
+            (driver === "codex" && profile?.configured === true));
+        const authentication = client?.authentication;
+        const authenticated =
+          native?.authenticated ??
+          (authentication === "authenticated"
+            ? ("yes" as const)
+            : authentication === "unauthenticated"
+              ? ("no" as const)
+              : ("unknown" as const));
+        const capabilities = Array.isArray(client?.capabilities)
+          ? client.capabilities
+          : [];
+        const mcp = capabilities
+          .map(objectValue)
+          .find((capability) => capability?.id === "mcp_recall");
+        const configured = profile?.configured === true;
+        const memoryConnected =
+          configured &&
+          authenticated === "yes" &&
+          setupStartupReady(status) &&
+          objectValue(status?.mcpServer)?.state === "healthy" &&
+          mcp?.readiness === "ready";
+        const signInGuidance =
+          driver === "codex"
+            ? "Run `codex login`, then discover again."
+            : driver === "claude"
+              ? "Run `claude auth login`, then discover again."
+              : "Sign in to Pi and make a model available, then discover again.";
+        return {
+          driver,
+          name,
+          installed,
+          authenticated,
+          selected: saved.selected.includes(driver),
+          configured,
+          memoryConnected,
+          error:
+            installed && authenticated === "no"
+              ? signInGuidance
+              : typeof profile?.message === "string" &&
+                  profile?.state === "needs_attention"
+                ? profile.message
+                : null
+        };
+      }
+    );
+    const ownerId =
+      readDesktopLocalCredentialAuthorization(resolveKoedHome(environment))
+        ?.ownerUserId ?? null;
+    const prepared =
+      ownerId !== null &&
+      setupStartupReady(status) &&
+      saved.selected.length > 0 &&
+      clients
+        .filter((client) => client.selected)
+        .every((client) => client.memoryConnected);
+    const memoryState: HqOnboardingStatus["memoryState"] = hqMemoryPreparation
+      ? "preparing"
+      : !saved.memoryEntered
+        ? "not_started"
+        : prepared && hqMemoryError === null
+          ? "ready"
+          : "failed";
+    return {
+      profileKey: saved.profileKey,
+      memoryState,
+      ownerId,
+      error:
+        memoryState === "failed"
+          ? (hqMemoryError ??
+            "Memory connection is unavailable. Retry Memory setup.")
+          : null,
+      progress: hqMemoryProgress ? { ...hqMemoryProgress } : null,
+      clients
+    };
+  };
+
+  const hqOnboardingConnect = async (
+    driver: HqOnboardingDriver
+  ): Promise<HqOnboardingStatus> => {
+    await probeNativeClient(driver);
+    const current = await hqOnboardingStatus();
+    const client = current.clients.find(
+      (candidate) => candidate.driver === driver
+    );
+    if (!client?.installed)
+      throw new Error(`${client?.name ?? driver} is not installed.`);
+    if (client.authenticated !== "yes") {
+      throw new Error(
+        client.error ?? `${client.name} sign-in could not be verified.`
+      );
+    }
+    const saved = readHqOnboardingState(hqOnboardingPath);
+    if (!saved) throw new Error("HQ onboarding state is unavailable.");
+    if (!saved.selected.includes(driver)) {
+      writeHqOnboardingState(hqOnboardingPath, {
+        ...saved,
+        selected: [...saved.selected, driver]
+      });
+    }
+    return hqOnboardingStatus();
+  };
+
+  const startHqMemoryPreparation = (): void => {
+    if (hqMemoryPreparation) return;
+    hqMemoryError = null;
+    const current = ensureHqOnboardingState(hqOnboardingPath);
+    hqMemoryProgress = {
+      message: "Checking what Memory needs…",
+      completedSteps: 0,
+      totalSteps: 7 + current.selected.length,
+      startedAt: Date.now()
+    };
+    if (!current.memoryEntered) {
+      writeHqOnboardingState(hqOnboardingPath, {
+        ...current,
+        memoryEntered: true
+      });
+    }
+    const task = (async () => {
+      const selected = readHqOnboardingState(hqOnboardingPath)?.selected ?? [];
+      if (selected.length === 0)
+        throw new Error("Select an AI Client before preparing Memory.");
+      for (const driver of selected) {
+        await probeNativeClient(driver);
+        const probe = hqNativeProbes.get(driver);
+        if (!probe?.installed || probe.authenticated !== "yes") {
+          throw new Error(
+            `${driver} must be installed and signed in before Memory setup.`
+          );
+        }
+      }
+      const stageMessages: Record<DesktopSetupStageId, string> = {
+        package: "Preparing Memory…",
+        runtime: "Preparing local storage…",
+        model: "Preparing local models…",
+        services: "Starting local Memory…",
+        integration: "Connecting Memory…",
+        verification: "Checking Memory is ready…"
+      };
+      const result = await hqSetupWorkflow.run((snapshot) => {
+        if (!hqMemoryProgress) return;
+        hqMemoryProgress = {
+          ...hqMemoryProgress,
+          message: snapshot.activeStage
+            ? stageMessages[snapshot.activeStage]
+            : "Checking what Memory needs…",
+          completedSteps: snapshot.stages.filter(
+            (stage) => stage.state === "complete"
+          ).length
+        };
+      });
+      if (result.state !== "complete")
+        throw new Error(result.error ?? "Memory setup failed.");
+      for (const [index, driver] of selected.entries()) {
+        if (hqMemoryProgress)
+          hqMemoryProgress = {
+            ...hqMemoryProgress,
+            message: `Connecting ${driver === "codex" ? "Codex" : driver === "claude" ? "Claude Code" : "Pi"} to Memory…`,
+            completedSteps: 6 + index
+          };
+        const setup = await runJson(["setup", driver], 120_000);
+        if (!resultOk(setup))
+          throw new Error(
+            resultMessage(setup, `${driver} integration setup failed.`)
+          );
+      }
+      if (hqMemoryProgress)
+        hqMemoryProgress = {
+          ...hqMemoryProgress,
+          message: "Checking your Memory connection…",
+          completedSteps: 6 + selected.length
+        };
+      await refreshHqBackendStatus();
+      const verified = await hqOnboardingStatus();
+      if (!verified.ownerId) {
+        throw new Error("Memory owner identity could not be verified.");
+      }
+      const unconnected = verified.clients.filter(
+        (client) => client.selected && !client.memoryConnected
+      );
+      if (unconnected.length) {
+        throw new Error(
+          `Memory connection could not be verified for ${unconnected.map((client) => client.name).join(", ")}.`
+        );
+      }
+      if (hqMemoryProgress)
+        hqMemoryProgress = {
+          ...hqMemoryProgress,
+          message: "Local Memory is ready.",
+          completedSteps: hqMemoryProgress.totalSteps
+        };
+    })();
+    hqMemoryPreparation = task
+      .catch((error: unknown) => {
+        hqMemoryError =
+          error instanceof Error ? error.message : "Memory setup failed.";
+      })
+      .finally(() => {
+        hqMemoryPreparation = null;
+      });
+  };
 
   const selectedRuntimeInstallProvider = () =>
     runtimeInstallProvider(environment, existsSync);
@@ -5431,9 +5797,43 @@ export const createKoedServerManager = ({
     return remote.payload;
   };
 
+  const hqAgentsAuthority = createAgentsAuthorityResolver({
+    revision: () => {
+      const paths = resolveKoedServerPaths(environment);
+      const hash = createHash("sha256")
+        .update(JSON.stringify(environment))
+        .update(paths.koedHome);
+      for (const path of [
+        paths.runtimeStatePath,
+        paths.serverConfigPath,
+        paths.localPortsPath,
+        environment.KOED_ENV_PATH || resolve(repoRoot, ".env")
+      ]) {
+        hash.update(path);
+        try {
+          const content = readFileSync(path);
+          hash.update(`:${content.length}:`).update(content);
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            !("code" in error) ||
+            error.code !== "ENOENT"
+          )
+            throw error;
+          hash.update("missing");
+        }
+      }
+      return hash.digest("hex");
+    },
+    credential: () =>
+      readDesktopLocalCredentialAuthorization(resolveKoedHome(environment)),
+    discover: () => managedProjectAccess(true)
+  });
   const agents = createAgentsClient({
     requestJson: agentsRequestJson,
     authority: async () => {
+      if (desktopFeatureFlagsFromEnvironment(environment).hqEnabled)
+        return hqAgentsAuthority();
       const access = await managedProjectAccess(true);
       const credential = readDesktopLocalCredentialAuthorization(
         resolveKoedHome(environment)
@@ -6376,6 +6776,12 @@ export const createKoedServerManager = ({
     inspectStage: inspectSetupStage,
     runStage: runSetupStage
   });
+  // This run belongs to the main process and is not tied to a renderer's
+  // AbortSignal. A remount or navigation can observe the same preparation.
+  const hqSetupWorkflow = createDesktopSetupWorkflow({
+    inspectStage: inspectSetupStage,
+    runStage: runSetupStage
+  });
 
   const stop = async () => {
     futurePolicyLoop.stop();
@@ -7098,6 +7504,60 @@ export const createKoedServerManager = ({
           throw new Error("Desktop setup context is required.");
         }
         return setupWorkflow.run(context.emitSetupProgress, context.signal);
+      },
+      hq_onboarding_status: (args) => {
+        if (
+          !desktopFeatureFlagsFromEnvironment(environment).hqEnabled ||
+          (args && Object.keys(args).length > 0)
+        )
+          throw new Error("Invalid HQ onboarding status request.");
+        return hqOnboardingStatus();
+      },
+      hq_onboarding_identity: (args) => {
+        if (
+          !desktopFeatureFlagsFromEnvironment(environment).hqEnabled ||
+          (args && Object.keys(args).length > 0)
+        )
+          throw new Error("Invalid HQ onboarding identity request.");
+        return {
+          profileKey: ensureHqOnboardingState(hqOnboardingPath).profileKey,
+          ownerId:
+            readDesktopLocalCredentialAuthorization(
+              resolveKoedHome(environment)
+            )?.ownerUserId ?? null
+        };
+      },
+      hq_onboarding_discover: (args) => {
+        if (
+          !desktopFeatureFlagsFromEnvironment(environment).hqEnabled ||
+          (args && Object.keys(args).length > 0)
+        )
+          throw new Error("Invalid HQ onboarding discovery request.");
+        return discoverNativeClients();
+      },
+      hq_onboarding_connect: (args) => {
+        if (
+          !desktopFeatureFlagsFromEnvironment(environment).hqEnabled ||
+          !args ||
+          Object.keys(args).length !== 2 ||
+          args.operatorConsented !== true ||
+          !["codex", "claude", "pi"].includes(String(args.driver))
+        )
+          throw new Error("Invalid HQ onboarding Connect request.");
+        return hqOnboardingConnect(args.driver as HqOnboardingDriver);
+      },
+      hq_onboarding_prepare_memory: async (args) => {
+        if (
+          !desktopFeatureFlagsFromEnvironment(environment).hqEnabled ||
+          !args ||
+          Object.keys(args).length !== 1 ||
+          args.operatorConsented !== true
+        )
+          throw new Error("Memory setup requires explicit operator consent.");
+        const current = await hqOnboardingStatus();
+        if (current.memoryState === "ready") return current;
+        startHqMemoryPreparation();
+        return hqOnboardingStatus();
       }
     },
     stop

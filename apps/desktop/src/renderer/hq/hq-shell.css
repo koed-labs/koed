@@ -516,6 +516,12 @@
   min-inline-size: 0;
   flex: 1;
 }
+.hq-onboarding-progress-host {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-inline-size: 0;
+}
 .hq-main__heading h1 {
   margin: 0;
   overflow: hidden;

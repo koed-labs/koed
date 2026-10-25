@@ -157,11 +157,13 @@ export function HqShell({
   contextContent,
   actionsRef,
   route,
+  onboarding = false,
   contextAvailable = true,
   onRightColumnVisibilityChange
 }: {
   children?: ReactNode;
   title?: string;
+  onboarding?: boolean;
   route?: HqRoute;
   sidebar?: ReactNode | ((layout: HqSidebarLayout) => ReactNode);
   contextContent?: ReactNode;
@@ -365,6 +367,7 @@ export function HqShell({
     <div
       className="hq-shell"
       data-hq-shell=""
+      data-hq-onboarding-shell={onboarding ? "" : undefined}
       data-hq-compact={compact || undefined}
     >
       <div
@@ -509,9 +512,16 @@ export function HqShell({
                     >
                       <Menu aria-hidden="true" />
                     </Button>
-                    <div className="hq-main__heading">
-                      <h1>{title}</h1>
-                    </div>
+                    {onboarding ? (
+                      <div
+                        id="hq-onboarding-progress"
+                        className="hq-onboarding-progress-host"
+                      />
+                    ) : (
+                      <div className="hq-main__heading">
+                        <h1>{title}</h1>
+                      </div>
+                    )}
                     <div className="hq-main__actions">
                       {contextAvailable ? (
                         <HqControlTooltip label="Show or hide context panel">

@@ -366,14 +366,15 @@ describe("HQ-owned Settings", () => {
     );
     expect(client.disconnect).toHaveBeenCalledOnce();
   });
-  it("runs service diagnostics and opens logs with existing commands", async () => {
+  it("shows read-only service health and refreshes automatically", async () => {
     await render({ initialSection: "services" });
-    await click("Run diagnostics");
-    await click("Open logs");
-    await click("Refresh status");
-    expect(invoke).toHaveBeenCalledWith("doctor", undefined);
-    expect(invoke).toHaveBeenCalledWith("open_logs", undefined);
+    expect(container.textContent).not.toContain("Run diagnostics");
+    expect(container.textContent).not.toContain("Open logs");
+    expect(container.textContent).not.toContain("Refresh status");
     expect(container.textContent).toContain("Healthy");
+    expect(invoke).toHaveBeenCalledWith("status", undefined);
+    expect(invoke).not.toHaveBeenCalledWith("doctor", undefined);
+    expect(invoke).not.toHaveBeenCalledWith("open_logs", undefined);
   });
   it("recognizes the existing macOS and other-platform shortcut without extra modifiers", () => {
     const event = {

@@ -347,6 +347,28 @@ export const registerDesktopCommandHandlers = (
       if (!isDesktopCommandName(command)) {
         throw new Error("Unsupported Desktop command.");
       }
+      if (command.startsWith("hq_onboarding_")) {
+        if (!desktopFeatureFlagsFromEnvironment(process.env).hqEnabled) {
+          throw new Error("HQ onboarding is unavailable.");
+        }
+        const valid =
+          command === "hq_onboarding_connect"
+            ? args !== null &&
+              typeof args === "object" &&
+              Object.keys(args).length === 2 &&
+              ["codex", "claude", "pi"].includes(String(args.driver)) &&
+              args.operatorConsented === true
+            : command === "hq_onboarding_prepare_memory"
+              ? args !== null &&
+                typeof args === "object" &&
+                Object.keys(args).length === 1 &&
+                args.operatorConsented === true
+              : args === undefined ||
+                (args !== null &&
+                  typeof args === "object" &&
+                  Object.keys(args).length === 0);
+        if (!valid) throw new Error("Invalid HQ onboarding arguments.");
+      }
       if (command === "collaboration") {
         throw new Error("Use the strict collaboration command channel.");
       }

@@ -43,6 +43,12 @@ Local Desktop native setup is the local personal path. Koed Desktop starts and
 monitors its managed local `koed-server`, and bundled-local mode may run native
 Postgres and Embedding Service resources under `KOED_HOME`. This path should
 not require Docker.
+For a fresh HQ profile, local provisioning starts only at the **Memory** stage
+of onboarding. **Your agent** and **Your AI** use local draft and native-client
+state without starting the Personal backend. The existing setup engine runs in
+the main process behind the Memory conversation and completes selected AI-client
+memory integrations after local credentials become available. Returning profiles
+continue to use the existing verified-runtime resume path.
 
 Source-checkout development can use Docker Compose as a convenience starter for
 external dependencies. In this mode, Compose may start Postgres, Redis, and the

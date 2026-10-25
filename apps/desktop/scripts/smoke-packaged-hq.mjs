@@ -35,7 +35,9 @@ export const waitForPackagedHqSurface = async ({
     if (
       state?.hqEnabled === true &&
       (expectedSurface === "setup"
-        ? state.hqSetup && !state.setup
+        ? ((state.onboarding && state.shell && !state.hqSetup) ||
+            state.hqSetup) &&
+          !state.setup
         : state.shell && !state.hqSetup)
     )
       break;
@@ -167,7 +169,7 @@ export const smokePackagedHqDefault = async ({
       state.url.includes("browser-validation") ||
       state.hqEnabled !== true ||
       !(expectedSurface === "setup"
-        ? state.hqSetup && !state.setup
+        ? state.onboarding && state.shell && !state.hqSetup && !state.setup
         : state.shell && !state.hqSetup)
     ) {
       const setupInspection = await evaluate(`Promise.race([
@@ -191,8 +193,8 @@ export const smokePackagedHqDefault = async ({
       return {
         packageDefaultEnabled: true,
         productionEntry: state.url,
-        hqSetupSurface: true,
-        screenshotPath: await captureScreenshot("first-run-setup")
+        hqOnboardingSurface: true,
+        screenshotPath: await captureScreenshot("first-run-onboarding")
       };
     const screenshotPath = await captureScreenshot("default");
     return {
