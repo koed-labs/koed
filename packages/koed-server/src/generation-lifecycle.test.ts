@@ -423,6 +423,56 @@ describe("generation lifecycle", () => {
     );
   });
 
+  it("rejects structurally valid foreign prior ownership across versions", async () => {
+    const paths = pathsForTest();
+    const staged = await stage(paths, "0.9.0");
+    const foreign = { ...owner, installationId: "foreign-installation" };
+    const current = await stageGeneration(paths, {
+      base: staged.base,
+      owner: foreign
+    });
+    await activateGeneration(paths, current.id, foreign);
+    const pointerPath = resolve(paths.componentsDir, "current.json");
+    const pointer = readFileSync(pointerPath);
+    const candidate = await stage(paths, "0.9.1");
+    await expect(
+      activateGeneration(paths, candidate.id, owner)
+    ).rejects.toThrow("runtime owner mismatch");
+    expect(readFileSync(pointerPath)).toEqual(pointer);
+    expect(existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))).toBe(
+      false
+    );
+    expect(existsSync(`${paths.componentsDir}.lock`)).toBe(false);
+  });
+
+  it.each(["manifest", "archive", "payload"])(
+    "rejects tampered cross-version candidate %s",
+    async (field) => {
+      const paths = pathsForTest();
+      const current = await stage(paths, "0.9.0");
+      await activateGeneration(paths, current.id, owner);
+      const pointerPath = resolve(paths.componentsDir, "current.json");
+      const pointer = readFileSync(pointerPath);
+      const candidate = await stage(paths, "0.9.1");
+      const base = candidate.base;
+      const target =
+        field === "manifest"
+          ? resolve(base.root, "..", "component.json")
+          : field === "archive"
+            ? resolve(base.root, "..", base.manifest.archive.name)
+            : resolve(base.root, "entry.js");
+      writeFileSync(target, "tampered");
+      await expect(
+        activateGeneration(paths, candidate.id, owner)
+      ).rejects.toThrow();
+      expect(readFileSync(pointerPath)).toEqual(pointer);
+      expect(
+        existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))
+      ).toBe(false);
+      expect(existsSync(`${paths.componentsDir}.lock`)).toBe(false);
+    }
+  );
+
   it.each([
     "schema",
     "kind",
@@ -545,9 +595,16 @@ describe("generation lifecycle", () => {
     const current = await stage(paths, "0.9.0");
     await activateGeneration(paths, current.id, owner);
     await stage(paths, "0.9.1");
-    expect(
-      componentStore.readGenerationOrderingEvidence(paths, current.id)
-    ).toEqual({
+    const evidence = componentStore.readGenerationOrderingEvidence(
+      paths,
+      current.id
+    );
+    // @ts-expect-error Ordering metadata cannot grant runnable generation authority.
+    const runnable: VerifiedGeneration = evidence;
+    expect(runnable).toBe(evidence);
+    // @ts-expect-error Ordering metadata must not expose runnable components.
+    expect(evidence.base).toBeUndefined();
+    expect(evidence).toEqual({
       kind: "generation-ordering-evidence",
       id: current.id,
       productVersion: "0.9.0",
@@ -556,6 +613,66 @@ describe("generation lifecycle", () => {
     await expect(
       componentStore.readStagedGeneration(paths, current.id)
     ).rejects.toThrow("component manifest pin mismatch");
+  });
+
+  it.each([
+    "live-supervisor",
+    "uncertain-supervisor",
+    "live-pin",
+    "uncertain-pin",
+    "dead-pin"
+  ])("checks %s liveness before cross-version activation", async (kind) => {
+    const paths = pathsForTest();
+    const current = await stage(paths, "0.9.0");
+    await activateGeneration(paths, current.id, owner);
+    const pointerPath = resolve(paths.componentsDir, "current.json");
+    const pointer = readFileSync(pointerPath);
+    const candidate = await stage(paths, "0.9.1");
+    if (kind === "live-supervisor") {
+      expect(
+        supervisorLock.acquireKoedServerSupervisorLock(paths).acquired
+      ).toBe(true);
+    } else if (kind === "uncertain-supervisor") {
+      writeFileSync(resolve(paths.runDir, "koed-server.lock"), "invalid");
+    } else {
+      const dead = kind === "dead-pin";
+      writeFileSync(
+        paths.generationStatePath!,
+        JSON.stringify({
+          schemaVersion: 1,
+          generationId: current.id,
+          pid: dead ? 2147483647 : process.pid,
+          processIdentity: dead
+            ? "dead-process-identity"
+            : supervisorLock.resolveProcessIdentity(process.pid),
+          startedAt: new Date().toISOString(),
+          owner,
+          pinToken: "a".repeat(64)
+        })
+      );
+      if (kind === "uncertain-pin") {
+        const identify = supervisorLock.resolveProcessIdentity;
+        let lookups = 0;
+        vi.spyOn(supervisorLock, "resolveProcessIdentity").mockImplementation(
+          (pid) => (++lookups === 1 ? identify(pid) : null)
+        );
+      }
+    }
+    if (kind === "dead-pin") {
+      await expect(
+        activateGeneration(paths, candidate.id, owner)
+      ).resolves.toMatchObject({ id: candidate.id });
+      expect(existsSync(paths.generationStatePath!)).toBe(false);
+    } else {
+      await expect(
+        activateGeneration(paths, candidate.id, owner)
+      ).rejects.toThrow(/running|pinned|uncertain/);
+      expect(readFileSync(pointerPath)).toEqual(pointer);
+    }
+    expect(existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))).toBe(
+      false
+    );
+    expect(existsSync(`${paths.componentsDir}.lock`)).toBe(false);
   });
 
   it("accepts a pinned SemVer prerelease generation", async () => {
