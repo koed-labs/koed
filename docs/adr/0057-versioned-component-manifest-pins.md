@@ -1,6 +1,6 @@
 # Versioned Component Manifest Pins
 
-Status: Accepted direction; implementation and release acceptance pending.
+Status: Accepted direction; runtime pins implemented, release replacement and actual acceptance pending.
 
 Related: [0011 Standalone koed-server Package Boundary](0011-standalone-koed-server-package.md).
 
@@ -43,10 +43,22 @@ inventory and archive generation; no files are excluded from verification. A
 later catalog-bearing workspace rebuild therefore does not feed authority back
 into frozen Base bytes.
 
-Remove KMS verification only after negative tests pass through actual component
-install and release-promotion paths. Cloud signer retirement requires separately
-authorized operational changes and evidence; code changes do not prove live
-service configuration.
+Release candidate verification must bind repository, reviewed commit, approved
+workflow run, version, frozen catalog/artifact hashes and npm SRI to protected
+reviewed-build outputs. A coherent replacement of every asset in a mutable draft
+must not authorize itself. Read-only verification cannot publish, tag, sign or
+update releases. Production promotion repeats verification before its first
+mutation and independently requires publication approval; candidate code must
+not execute in the credential-bearing verifier.
+
+Remove component KMS verification only after replacement negative tests and
+actual component install/candidate verification pass. Retained release-side
+component signing is temporary, not a runtime fallback or a second final trust
+path. This component signer exists only in the unmerged stack: removing its
+source dependency is repository cleanup, not a shipped-service migration or
+mandatory cloud retirement. Any provisioned resources remain owner-controlled;
+cloud inventory, disablement or key deletion is separate work requiring explicit
+authorization. Source cleanup does not authorize or require cloud mutations.
 
 Retain Desktop private IPC nonce/process-identity/constrained-request checks,
 bundle inventory verification and lifecycle `bundleDigest`, store filesystem
