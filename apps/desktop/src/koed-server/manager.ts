@@ -2278,7 +2278,12 @@ export const createKoedServerManager = ({
             message: `Connecting ${driver === "codex" ? "Codex" : driver === "claude" ? "Claude Code" : "Pi"} to Memory…`,
             completedSteps: 6 + index
           };
-        const setup = await runJson(["setup", driver], 120_000);
+        // Source Codex setup gives its bootstrap subprocess five minutes.
+        // Keep the parent alive through that work and core setup/registration.
+        const setup = await runJson(
+          ["setup", driver],
+          driver === "codex" ? 420_000 : 120_000
+        );
         if (!resultOk(setup))
           throw new Error(
             resultMessage(setup, `${driver} integration setup failed.`)
@@ -2290,6 +2295,17 @@ export const createKoedServerManager = ({
           message: "Checking your Memory connection…",
           completedSteps: 6 + selected.length
         };
+      // Setup writes the client registry. Publish those new capabilities before
+      // reading readiness; the background discovery interval is not a barrier.
+      const capabilityRefresh = await refreshLocalAiRuntime({
+        fetch: personalMemoryFetch,
+        koedHome: resolveKoedHome(environment)
+      });
+      if (!capabilityRefresh.refreshed)
+        throw new Error(
+          capabilityRefresh.refreshError ??
+            "Memory capabilities could not be refreshed. Retry Memory setup."
+        );
       await refreshHqBackendStatus();
       const verified = await hqOnboardingStatus();
       if (!verified.ownerId) {

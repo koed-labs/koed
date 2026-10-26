@@ -64,6 +64,11 @@ provisions the internal local credentials, completes the selected AI Client
 integrations, and verifies their Memory capability. Failure preserves the draft
 and offers retry in the Memory conversation. Reopening onboarding resumes its
 saved stage. Service readiness is not the same as completing onboarding.
+After client setup, preparation explicitly refreshes and publishes Local AI
+Runtime capabilities before verifying the Memory connections. A failed refresh
+keeps setup incomplete and offers Retry. The source Codex setup command has a
+seven-minute parent deadline so its five-minute bootstrap and core setup can
+finish without Electron terminating the command early.
 The Memory conversation shows the current preparation stage, completed setup
 steps and elapsed time. This is stage progress, not an estimate of time left.
 The preference buttons and message input stay disabled until Memory is ready.

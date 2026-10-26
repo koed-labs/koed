@@ -72,6 +72,8 @@ const createHarness = (
     coldServices?: boolean;
     coreDependencyDown?: boolean;
     skipOwnerCredential?: boolean;
+    includePi?: boolean;
+    failCapabilityRefresh?: boolean;
   } = {}
 ) => {
   const home =
@@ -88,7 +90,27 @@ const createHarness = (
   const codexPath = resolve(bin, "codex");
   writeFileSync(codexPath, "#!/bin/sh\nexit 0\n");
   chmodSync(codexPath, 0o700);
+  const piPath = resolve(bin, "pi");
+  if (options.includePi) {
+    writeFileSync(piPath, "#!/bin/sh\nexit 0\n");
+    chmodSync(piPath, 0o700);
+  }
+  mkdirSync(resolve(home, "run"), { recursive: true });
+  writeFileSync(
+    resolve(home, "run/local-ai-runtime.json"),
+    JSON.stringify({
+      protocolVersion: 1,
+      url: "http://127.0.0.1:43123/",
+      authorization: `Bearer ${"a".repeat(43)}`,
+      pid: process.pid,
+      startedAt: new Date().toISOString()
+    }),
+    { mode: 0o600 }
+  );
   const commands: string[][] = [];
+  const setupTimeouts: number[] = [];
+  let capabilitiesPublished = false;
+  let piConfigured = false;
   let remainingProviderFailures = failFirstProviderSetup ? 1 : 0;
   let providerConfigured = options.providerConfigured ?? false;
   let servicesStarted = false;
@@ -101,12 +123,46 @@ const createHarness = (
       PATH: `${bin}:${process.env.PATH ?? ""}`,
       MEMORY_CODEX_APP_SERVER_BINARY: codexPath,
       KOED_CLAUDE_CODE_EXECUTABLE: resolve(bin, "missing-claude"),
-      KOED_PI_EXECUTABLE: resolve(bin, "missing-pi")
+      KOED_PI_EXECUTABLE: options.includePi
+        ? piPath
+        : resolve(bin, "missing-pi")
+    },
+    personalMemoryFetch: async (url, init) => {
+      expect(String(url)).toBe(
+        "http://127.0.0.1:43123/v1/capabilities/refresh"
+      );
+      expect(init?.method).toBe("POST");
+      commands.push(["capabilities-refresh"]);
+      capabilitiesPublished = !options.failCapabilityRefresh;
+      return new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          publications: [
+            {
+              instanceId: "pi.default",
+              published: capabilitiesPublished,
+              error: capabilitiesPublished ? null : "Publication failed"
+            }
+          ]
+        })
+      );
     },
     createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
     existsSync: () => true,
     execFile: (command, args, _options, callback) => {
       commands.push([command, ...args]);
+      if (args[0] === "setup" && args[1] === "codex")
+        setupTimeouts.push(_options.timeout);
+      if (command.endsWith("/pi") && options.includePi) {
+        callback(
+          null,
+          args.includes("--version")
+            ? "0.60.0"
+            : "provider model\nopenai gpt-test",
+          ""
+        );
+        return;
+      }
       if (command.endsWith("/codex")) {
         const auth = options.codexAuth ?? "Logged in";
         callback(
@@ -138,11 +194,32 @@ const createHarness = (
         return;
       }
       if (args[0] === "setup" && args[1] === "codex") providerConfigured = true;
+      if (args[0] === "setup" && args[1] === "pi") piConfigured = true;
       if (args[0] === "start" && args[1] === "--daemon") servicesStarted = true;
       const payload =
         args[0] === "status"
           ? {
               ...readyStatus(),
+              ...(options.includePi
+                ? {
+                    pi: { configured: piConfigured, state: "healthy" },
+                    aiClients: {
+                      ...readyStatus().aiClients,
+                      pi: {
+                        installed: { state: "healthy" },
+                        authentication: "authenticated",
+                        capabilities: [
+                          {
+                            id: "mcp_recall",
+                            readiness: capabilitiesPublished
+                              ? "ready"
+                              : "unavailable"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                : {}),
               ...(options.coreDependencyDown
                 ? {
                     database: { state: "needs_attention" }
@@ -203,7 +280,7 @@ const createHarness = (
       args?: Record<string, unknown>
     ) => Promise<HqOnboardingStatus>;
   };
-  return { manager: { ...manager, handlers }, commands, home };
+  return { manager: { ...manager, handlers }, commands, home, setupTimeouts };
 };
 
 describe("HQ onboarding main-owned bridge", () => {
@@ -426,6 +503,56 @@ describe("HQ onboarding main-owned bridge", () => {
       )
     ).toHaveLength(2);
   });
+
+  it.each([false, true])(
+    "publishes newly configured Pi capabilities before verifying Memory (refresh failure: %s)",
+    async (failCapabilityRefresh) => {
+      const { manager, commands, setupTimeouts } = createHarness(
+        undefined,
+        false,
+        {
+          includePi: true,
+          failCapabilityRefresh
+        }
+      );
+      for (const driver of ["codex", "pi"]) {
+        await manager.handlers.hq_onboarding_connect!({
+          driver,
+          operatorConsented: true
+        });
+      }
+      await manager.handlers.hq_onboarding_prepare_memory!({
+        operatorConsented: true
+      });
+      const deadline = Date.now() + 2000;
+      let status = await manager.handlers.hq_onboarding_status!();
+      while (status.memoryState === "preparing" && Date.now() < deadline) {
+        await new Promise((done) => setTimeout(done, 5));
+        status = await manager.handlers.hq_onboarding_status!();
+      }
+      expect(setupTimeouts).toEqual([420_000]);
+      const piSetup = commands.findIndex(
+        (args) => args.includes("setup") && args.includes("pi")
+      );
+      const refresh = commands.findIndex(
+        (args) => args[0] === "capabilities-refresh"
+      );
+      expect(piSetup).toBeGreaterThan(-1);
+      expect(refresh).toBeGreaterThan(piSetup);
+      if (failCapabilityRefresh) {
+        expect(status.memoryState).toBe("failed");
+        expect(status.error).toContain("Capability publication failed");
+      } else {
+        expect(status).toMatchObject({ memoryState: "ready", error: null });
+        expect(
+          status.clients.find((client) => client.driver === "pi")
+        ).toMatchObject({ selected: true, memoryConnected: true });
+        expect(
+          commands.slice(refresh + 1).some((args) => args.includes("status"))
+        ).toBe(true);
+      }
+    }
+  );
 
   it("keeps the latest setup failure visible despite cached client readiness", async () => {
     const { manager, home } = createHarness(undefined, true, {
