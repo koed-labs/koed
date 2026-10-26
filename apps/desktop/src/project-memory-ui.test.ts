@@ -1,5 +1,6 @@
 import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
 import { describe, expect, it } from "vitest";
+import { projectConversationFolders } from "./project-conversation-folders.js";
 import {
   assignmentTargetProjects,
   LatestRequestGate,
@@ -225,6 +226,67 @@ describe("repositoryPresentationFromRemoteDisplay", () => {
 });
 
 describe("project memory UI view model", () => {
+  it.each([null, "checkout_alpha"])(
+    "excludes unrelated historical folders when the source checkout ID is %s",
+    (checkoutId) => {
+      const root = "/private/tmp/alpha-one";
+      const automatic: RepositoryIdentity = {
+        kind: "non_git_project",
+        key: "ng_alpha",
+        root,
+        branch: null,
+        reason: "non_git",
+        checkoutId,
+        originatingDeviceId: "device_one",
+        selectedRemote: null,
+        anchorDisplay: null
+      };
+      const runtimePath =
+        "/tmp/koed/managed-conversations/independent/unrelated-uuid";
+      const source = graphProject({
+        name: "alpha-one",
+        path: root,
+        threads: [
+          {
+            ...graphProject().threads[0]!,
+            projectPath: root,
+            repositoryAssignment: {
+              state: "recorded",
+              version: 1,
+              automatic,
+              override: null,
+              effective: automatic
+            }
+          }
+        ]
+      });
+      const projects = mergeProjectSources(
+        [source],
+        [
+          metadata({
+            localProjectId: "lp_runtime",
+            path: { cwd: runtimePath, projectRoot: null },
+            repository: {
+              ...automatic,
+              key: "ng_unrelated",
+              root: runtimePath,
+              checkoutId: null
+            }
+          })
+        ]
+      );
+      const selected = projects.find(
+        (project) => project.id === repositoryScopeId(automatic)
+      )!;
+
+      expect(projects).toHaveLength(2);
+      expect(selected.threads).toEqual(source.threads);
+      expect(projectConversationFolders(selected).folders).toMatchObject([
+        { path: root, count: 1 }
+      ]);
+    }
+  );
+
   it("groups recorded repository identities across checkout paths and retains both local navigation targets", () => {
     const identity: RepositoryIdentity = {
       kind: "portable_repository",
@@ -296,6 +358,59 @@ describe("project memory UI view model", () => {
       "/checkout/two"
     ]);
     expect(projects[0]?.threads).toHaveLength(2);
+  });
+
+  it("retains a moved Conversation's recorded checkout from the matching device", () => {
+    const automatic: RepositoryIdentity = {
+      kind: "portable_repository",
+      key: "gr_source",
+      root: "/checkout/source",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "checkout_source",
+      originatingDeviceId: "device_one",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/team/source"
+    };
+    const destination = { ...automatic, key: "gr_destination" };
+    const source = graphProject({
+      threads: [
+        {
+          ...graphProject().threads[0]!,
+          repositoryAssignment: {
+            state: "recorded",
+            version: 2,
+            automatic,
+            override: destination,
+            effective: destination
+          }
+        }
+      ]
+    });
+    const projects = mergeProjectSources(
+      [source],
+      [
+        metadata({
+          repository: automatic,
+          path: { cwd: automatic.root!, projectRoot: automatic.root }
+        }),
+        metadata({
+          localProjectId: "lp_other_device",
+          repository: { ...automatic, originatingDeviceId: "device_two" },
+          path: { cwd: "/other/device", projectRoot: null }
+        })
+      ]
+    );
+    const selected = projects.find(
+      (project) => project.id === repositoryScopeId(destination)
+    )!;
+
+    expect(selected.checkouts).toMatchObject([
+      { localProjectId: "lp_koed", path: automatic.root }
+    ]);
+    expect(projectConversationFolders(selected).folders).toMatchObject([
+      { path: automatic.root, count: 1 }
+    ]);
   });
 
   it("keeps unresolved history separate from current catalogue metadata at the same path", () => {

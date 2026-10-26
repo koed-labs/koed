@@ -207,7 +207,10 @@ export function ProjectTransferCard({
     });
   };
   const include = () => {
-    draft.include(selectedLeft);
+    const additions = selectedLeft.flatMap((row) =>
+      row.kind === "folder" && !row.target ? sources.children(row) : [row]
+    );
+    draft.include([...new Map(additions.map((row) => [row.id, row])).values()]);
     setLeft(new Set());
     setRight(new Set());
   };
@@ -271,9 +274,21 @@ export function ProjectTransferCard({
           >
             {rows.length ? (
               rows.map((row) => {
-                const included = hasTransferInclusion(row, inclusions);
+                const included =
+                  hasTransferInclusion(row, inclusions) ||
+                  (row.kind === "folder" &&
+                    !row.target &&
+                    row.threads.length > 0 &&
+                    sources
+                      .children(row)
+                      .every((child) =>
+                        hasTransferInclusion(child, inclusions)
+                      ));
                 const Icon = sourceIcon(row.kind);
-                const selectable = row.target || row.sessionId;
+                const selectable =
+                  row.target ||
+                  row.sessionId ||
+                  (row.kind === "folder" && row.threads.length > 0);
                 const children =
                   row.kind === "session"
                     ? []

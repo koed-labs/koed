@@ -75,6 +75,7 @@ const conversation = (thread: Thread): TransferSource => ({
 export function projectTransferSources(projects: readonly DesktopProject[]) {
   const repositories = new Map<string, TransferSource>();
   const folders = new Map<string, TransferSource>();
+  const historicalFolders = new Map<string, TransferSource>();
   const allThreads = uniqueThreads(
     projects.flatMap((project) => project.threads)
   );
@@ -92,6 +93,20 @@ export function projectTransferSources(projects: readonly DesktopProject[]) {
         target: { kind: "folder", folder: project.folder.reference },
         threads: uniqueThreads([
           ...(folders.get(id)?.threads ?? []),
+          ...project.threads
+        ])
+      });
+    } else if (project.repository?.kind === "non_git_project" && project.path) {
+      // Retain the existing source group for browsing; a legacy directory
+      // identity cannot establish a native Folder rule or future membership.
+      const id = `historical-folder:${project.id}`;
+      historicalFolders.set(id, {
+        id,
+        name: project.name,
+        detail: `Existing Conversations only · ${project.path} · ${project.repository.originatingDeviceId}`,
+        kind: "folder",
+        threads: uniqueThreads([
+          ...(historicalFolders.get(id)?.threads ?? []),
           ...project.threads
         ])
       });
@@ -114,14 +129,21 @@ export function projectTransferSources(projects: readonly DesktopProject[]) {
       });
     }
   }
-  const folderRows = [...folders.values()].sort(byName);
-  const repositoryRows = [...repositories.values()].sort(byName);
   const knownFolders = sessionIds(
-    folderRows.flatMap((folder) => folder.threads)
+    [...folders.values()].flatMap((folder) => folder.threads)
   );
-  const unfiled = allThreads.filter(
-    (thread) => !overlaps(thread, knownFolders)
-  );
+  const historicalRows = [...historicalFolders.values()]
+    .map((folder) => ({
+      ...folder,
+      threads: folder.threads.filter(
+        (thread) => !overlaps(thread, knownFolders)
+      )
+    }))
+    .filter((folder) => folder.threads.length > 0);
+  const folderRows = [...folders.values(), ...historicalRows].sort(byName);
+  const repositoryRows = [...repositories.values()].sort(byName);
+  const grouped = sessionIds(folderRows.flatMap((folder) => folder.threads));
+  const unfiled = allThreads.filter((thread) => !overlaps(thread, grouped));
   const unresolved: TransferSource = {
     id: "unresolved-folders",
     name: "Other Conversations",

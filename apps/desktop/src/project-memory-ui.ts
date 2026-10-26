@@ -295,6 +295,7 @@ export const mergeProjectSources = (
         metadata.repository &&
         recordedCheckouts.some(
           (recorded) =>
+            Boolean(recorded.checkoutId) &&
             recorded.checkoutId === metadata.repository!.checkoutId &&
             recorded.originatingDeviceId ===
               metadata.repository!.originatingDeviceId

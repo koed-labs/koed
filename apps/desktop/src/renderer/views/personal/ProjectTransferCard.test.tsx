@@ -71,7 +71,8 @@ function fixture({
   wrongPreview = false,
   blocked = false,
   failSecond = false,
-  included = false
+  included = false,
+  historical = false
 } = {}) {
   const named: PersonalDesktopProject = {
     id: uuid(90),
@@ -122,6 +123,29 @@ function fixture({
     },
     named
   ];
+  if (historical) {
+    const root = "/work/recall-environment";
+    catalog = [
+      {
+        id: "historical-recall",
+        name: "recall-environment",
+        path: root,
+        repository: {
+          ...repository,
+          kind: "non_git_project",
+          key: "ng_recall",
+          root,
+          reason: "non_git",
+          checkoutId: null,
+          selectedRemote: null,
+          anchorDisplay: null
+        },
+        eventCount: 2,
+        threads: threads.map((thread) => ({ ...thread, projectPath: root }))
+      },
+      named
+    ];
+  }
   let sequence = 100,
     writes = 0;
   const manage = vi.fn<NonNullable<PersonalDesktopApi["manageProject"]>>(
@@ -352,6 +376,49 @@ describe("Project header and transfer card", () => {
     await click("Set up Project");
     return f;
   };
+  it("lists historical folders and stages their existing Conversations without a future rule", async () => {
+    const f = await mount({ historical: true });
+    await click("Folders");
+    const available = document.querySelector(
+      '[aria-label="Available sources list"]'
+    )!;
+    expect(available.textContent).toContain("recall-environment");
+    expect(available.textContent).toContain("Existing Conversations only");
+    await click("Browse Conversations in recall-environment");
+    expect(available.textContent).toContain("Conversation 1");
+    expect(available.textContent).toContain("Conversation 2");
+    await click("Folders");
+    await select("Select recall-environment");
+    await click("Include selected in Project");
+    expect(f.manage).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[aria-label="Project inclusions list"]')
+        ?.textContent
+    ).toContain("Conversation 1");
+    await click("Confirm");
+    expect(f.manage.mock.calls.map(([command]) => command.action)).toEqual([
+      "explain_session",
+      "add_session",
+      "explain_session",
+      "add_session"
+    ]);
+    expect(f.project().directInclusions).toHaveLength(2);
+    expect(f.project().inclusionRules).toHaveLength(0);
+  });
+  it("keeps exclusions when including a historical folder's Conversations", async () => {
+    const f = await mount({ historical: true, blocked: true });
+    await click("Folders");
+    await select("Select recall-environment");
+    await click("Include selected in Project");
+    await click("Confirm");
+    expect(f.manage.mock.calls.map(([command]) => command.action)).toEqual([
+      "explain_session"
+    ]);
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+      "excluded"
+    );
+    expect(f.project().directInclusions).toHaveLength(0);
+  });
   it("keeps setup out of document flow and opens Edit and Sync from Project actions", async () => {
     const f = fixture();
     await act(async () => {
@@ -605,6 +672,77 @@ describe("Project header and transfer card", () => {
 });
 
 describe("recorded source hierarchy", () => {
+  const historical = (
+    device: string,
+    conversations: PersonalDesktopProjectThread[]
+  ): PersonalDesktopProject => ({
+    id: `historical-${device}`,
+    name: "recall-environment",
+    path: "/work/recall-environment",
+    repository: {
+      ...repository,
+      kind: "non_git_project",
+      key: "ng_recall",
+      originatingDeviceId: device,
+      root: "/work/recall-environment",
+      reason: "non_git",
+      checkoutId: null,
+      selectedRemote: null,
+      anchorDisplay: null
+    },
+    eventCount: conversations.length,
+    threads: conversations
+  });
+
+  it("keeps equal historical paths on different devices separate without creating Folder targets", () => {
+    const catalog = projectTransferSources(
+      mergeProjectSources(
+        [historical("one", [threads[0]!]), historical("two", [threads[1]!])],
+        []
+      )
+    );
+
+    expect(catalog.folders).toHaveLength(2);
+    expect(catalog.folders.map((row) => row.target)).toEqual([
+      undefined,
+      undefined
+    ]);
+    expect(
+      catalog.folders.map((row) =>
+        catalog.children(row).map((child) => child.sessionId)
+      )
+    ).toEqual([[threads[0]!.sessionId], [threads[1]!.sessionId]]);
+  });
+
+  it("uses established Folder membership before historical display groups", () => {
+    const catalog = projectTransferSources(
+      mergeProjectSources(
+        [
+          historical("device", threads),
+          {
+            id: personalFolderScopeId(folder.reference),
+            name: "API",
+            folder,
+            path: folder.normalizedPath,
+            eventCount: 1,
+            threads: [threads[0]!]
+          }
+        ],
+        []
+      )
+    );
+    const recorded = catalog.folders.find((row) => row.target);
+    const older = catalog.folders.find((row) => !row.target);
+
+    expect(catalog.folders).toHaveLength(2);
+    expect(recorded?.threads.map((thread) => thread.sessionId)).toEqual([
+      threads[0]!.sessionId
+    ]);
+    expect(older?.threads.map((thread) => thread.sessionId)).toEqual([
+      threads[1]!.sessionId
+    ]);
+  });
+
   it("uses source bindings rather than equal paths or external thread labels for Git/Folder intersection", () => {
     const f = fixture();
     const snapshots = f.project();
