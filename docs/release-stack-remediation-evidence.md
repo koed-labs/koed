@@ -1,6 +1,47 @@
 # Manifest-pin remediation: local verification
 
-## Scope and status
+## Review follow-up: current local evidence
+
+Core remediation starts from reviewed #421 `b86f39e3257702dfca9d49ca191bab694083a706`.
+Local commits `acd999b33` and `67c11c86c` repair ordinary cross-version activation,
+install composition and prior-component diagnostics. `f1db8ca56` corrects remaining
+component provisioning instructions. These commits have not been pushed or
+propagated into #428/#432; this is not final-stack acceptance.
+
+Node **24.13.1**, pnpm **11.1.2**, macOS arm64:
+
+- Fresh Server build and Server suite: **68 files, 941 tests passed**.
+- Root test-source typecheck (`pnpm exec tsc -p tsconfig.test.json`), Server
+  typecheck, and targeted ESLint/Prettier checks passed for the additional runtime
+  fixes. This is not a fresh full-stack lint or final-head CI claim.
+- Actual globally installed packed npm fixture admission/tamper smoke passed:
+  **1 test**. It uses synthetic components, blocks checkout imports and guards
+  fetch calls. It does **not** establish native startup, two-version installed
+  command acceptance, or operating-system-level offline isolation.
+- Provisioning documentation regressions: **2 tests passed**, following a
+  reproduced failure on obsolete signature-sidecar instructions.
+- Independent read-only runtime review found no actionable issues in the added
+  diagnostic-presence and cross-version authority/liveness regressions.
+
+Fresh remote inspection found default/required checks green on the reviewed
+stack heads; native/full-candidate/KMS tiers were skipped. The historical local
+missing-database result below is not a current CI failure or proof that current
+required-suite acceptance passed locally.
+
+**Open merge gates:** actual frozen Base/Privacy on both supported targets;
+assembled-candidate verification without publication; installed online/offline
+Personal and Team startup, lifecycle and cross-version flows; Linux native
+acceptance; and supported signed/notarized clean-Mac Desktop acceptance. This
+host reported zero valid signing identities. Complete Privacy assets, trusted
+native artifact provenance, Linux-host access and signed artifacts remain
+unestablished. Synthetic fixtures do not waive these gates. Component signer
+cleanup remains gated on actual replacement install/candidate acceptance; no
+cloud resource changes are authorized or required by source cleanup.
+
+## Historical scope and status
+
+The remaining sections record the earlier remediation snapshot, not current
+working-tree state, final-head results or additional acceptance.
 
 Local remediation for #421 → #428 → #432 implements ADR-0057 and the approved
 external standalone control-plane boundary. This is **not** release-candidate
@@ -34,7 +75,7 @@ No push, cloud mutation, signing rehearsal or publication was performed.
   call inside the asar's component store. Comment strings and unused catalog
   imports do not satisfy the check. Reinspection clears the asar header cache.
 
-## Verification
+## Historical verification
 
 Runtime: Node **24.13.1**, macOS arm64. Node 26 is outside standalone support.
 Commands below assume supported Node 24 appears first on `PATH`.
