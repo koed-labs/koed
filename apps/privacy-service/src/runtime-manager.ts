@@ -323,16 +323,22 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
     return this.active.runtime.isReady() || this.acceleratorIdleUnloaded;
   }
 
-  async classify(text: string): Promise<RawPrivacyClassification> {
+  async classify(
+    text: string,
+    signal?: AbortSignal,
+    onProgress?: () => void
+  ): Promise<RawPrivacyClassification> {
+    signal?.throwIfAborted();
     this.cancelIdleUnload();
     await this.idleUnloadPromise;
     const slot = this.active;
     slot.inFlight += 1;
     try {
       try {
-        return await slot.runtime.classify(text);
+        return await slot.runtime.classify(text, signal, onProgress);
       } catch (error) {
         if (
+          signal?.aborted ||
           slot !== this.active ||
           slot.runtime.provider === "cpu" ||
           error instanceof ClassificationError
@@ -346,7 +352,7 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
           this.requestedProvider = requestedProvider;
           this.fallbackReason = "provider_runtime_failed";
           this.recordFailure(slot.runtime.provider, "provider_runtime_failed");
-          return await this.classify(text);
+          return await this.classify(text, signal, onProgress);
         } catch {
           this.requestedProvider = requestedProvider;
           this.fallbackReason = "provider_runtime_failed";

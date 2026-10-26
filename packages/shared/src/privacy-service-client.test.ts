@@ -21,6 +21,7 @@ import {
   PrivacyServiceContractError,
   PrivacyServiceUnavailableError
 } from "./privacy-service-client.js";
+import { PRIVACY_CLASSIFICATION_STREAM_TYPE } from "./privacy-classification-transport.js";
 
 const hash = "a".repeat(64);
 
@@ -52,6 +53,133 @@ const responseFor = (text: string, path = "/content/text") =>
   );
 
 describe("Privacy Service client", () => {
+  it("keeps a long request alive only while bounded inference progress advances", async () => {
+    vi.useFakeTimers();
+    try {
+      let output!: ReadableStreamDefaultController<Uint8Array>;
+      const body: unknown = await responseFor("Ada").json();
+      const client = createPrivacyServiceClient({
+        baseUrl: "http://127.0.0.1:8092",
+        token: "token",
+        timeoutMs: 100,
+        fetchImpl: vi.fn(
+          async () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  output = controller;
+                }
+              }),
+              {
+                headers: { "content-type": PRIVACY_CLASSIFICATION_STREAM_TYPE }
+              }
+            )
+        )
+      });
+      const result = client.classify([{ path: "/content/text", text: "Ada" }]);
+      await vi.advanceTimersByTimeAsync(0);
+      for (let unit = 1; unit <= 3; unit += 1) {
+        await vi.advanceTimersByTimeAsync(90);
+        output.enqueue(
+          new TextEncoder().encode(
+            JSON.stringify({ type: "progress", completedUnits: unit }) + "\n"
+          )
+        );
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      output.enqueue(
+        new TextEncoder().encode(
+          JSON.stringify({
+            type: "result",
+            status: 200,
+            retryAfter: false,
+            body
+          }) + "\n"
+        )
+      );
+      output.close();
+      await expect(result).resolves.toMatchObject({
+        classifier: { classifierHash: hash }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a stalled progress stream without immediately submitting another request", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(
+        async () =>
+          new Response(new ReadableStream(), {
+            headers: { "content-type": PRIVACY_CLASSIFICATION_STREAM_TYPE }
+          })
+      );
+      const client = createPrivacyServiceClient({
+        baseUrl: "http://127.0.0.1:8092",
+        token: "token",
+        timeoutMs: 100,
+        fetchImpl
+      });
+      const result = expect(
+        client.classify([{ path: "/content/text", text: "Ada" }])
+      ).rejects.toBeInstanceOf(PrivacyServiceUnavailableError);
+      await vi.advanceTimersByTimeAsync(101);
+      await result;
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([{ units: [1, 1] }, { units: [99] }, { units: [1] }])(
+    "rejects repeated, excessive, or incomplete progress $units",
+    async ({ units }) => {
+      const fetchImpl = vi.fn(
+        async () =>
+          new Response(
+            units
+              .map(
+                (completedUnits) =>
+                  JSON.stringify({ type: "progress", completedUnits }) + "\n"
+              )
+              .join(""),
+            { headers: { "content-type": PRIVACY_CLASSIFICATION_STREAM_TYPE } }
+          )
+      );
+      const client = createPrivacyServiceClient({
+        baseUrl: "http://127.0.0.1:8092",
+        token: "token",
+        fetchImpl
+      });
+      await expect(
+        client.classify([{ path: "/content/text", text: "Ada" }])
+      ).rejects.toBeInstanceOf(PrivacyServiceContractError);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  );
+  it.each(["timeout", "capacity"])(
+    "defers %s to durable retry without immediate resubmission",
+    async (failure) => {
+      const fetchImpl = vi.fn(async () => {
+        if (failure === "timeout")
+          throw new DOMException("timed out", "TimeoutError");
+        return new Response(null, {
+          status: 503,
+          headers: { "retry-after": "1" }
+        });
+      });
+      const client = createPrivacyServiceClient({
+        baseUrl: "http://127.0.0.1:8092",
+        token: "token",
+        fetchImpl
+      });
+      await expect(
+        client.classify([{ path: "text", text: "hello" }])
+      ).rejects.toBeInstanceOf(PrivacyServiceUnavailableError);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  );
   it("accepts only the exact authenticated capacity contract", async () => {
     const client = createPrivacyServiceClient({
       baseUrl: "http://127.0.0.1:8092",

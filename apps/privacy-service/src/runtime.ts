@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import {
   PRIVACY_MAX_FIELD_TOKENS,
@@ -30,7 +31,11 @@ export interface PrivacyRuntimeAdapter {
   readonly classifierHash: string;
   readonly provider: PrivacyRuntimeProvider;
   isReady(): boolean;
-  classify(text: string): Promise<RawPrivacyClassification>;
+  classify(
+    text: string,
+    signal?: AbortSignal,
+    onProgress?: () => void
+  ): Promise<RawPrivacyClassification>;
   unload?(): Promise<void>;
   dispose?(): Promise<void>;
 }
@@ -271,6 +276,16 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
       dtype: "q4",
       local_files_only: true,
       device: this.provider,
+      // Small, sequential windows suffer from oversized ONNX thread pools,
+      // especially when CPU services share a container host.
+      ...(this.provider === "cpu"
+        ? {
+            session_options: {
+              intraOpNumThreads: Math.min(4, availableParallelism()),
+              interOpNumThreads: 1
+            }
+          }
+        : {}),
       ...(this.provider === "coreml"
         ? {
             // Core ML cannot resolve ONNX external data relative to the model
@@ -316,7 +331,12 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
     this.viterbiBiases = parseViterbiCalibration(calibration);
   }
 
-  async classify(text: string): Promise<RawPrivacyClassification> {
+  async classify(
+    text: string,
+    signal?: AbortSignal,
+    onProgress?: () => void
+  ): Promise<RawPrivacyClassification> {
+    signal?.throwIfAborted();
     if (this.disposed) {
       throw new ClassificationError("privacy runtime has been disposed");
     }
@@ -339,16 +359,20 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
     });
     await previous;
     try {
-      return await this.classifyBounded(text);
+      signal?.throwIfAborted();
+      return await this.classifyBounded(text, signal, onProgress);
     } finally {
       release();
     }
   }
 
   private async classifyBounded(
-    text: string
+    text: string,
+    signal?: AbortSignal,
+    onProgress?: () => void
   ): Promise<RawPrivacyClassification> {
     await this.load();
+    signal?.throwIfAborted();
     const tokenizer = this.tokenizer;
     const model = this.model;
     const Tensor = this.Tensor;
@@ -366,6 +390,7 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
       tensorList(encoded.input_ids, "input_ids"),
       "input_ids"
     );
+    signal?.throwIfAborted();
     if (tokenIds.length > PRIVACY_MAX_FIELD_TOKENS) {
       throw new ClassificationError(
         `privacy field exceeds ${PRIVACY_MAX_FIELD_TOKENS} tokens`
@@ -398,6 +423,7 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
       coreStart < tokenIds.length;
       coreStart += PRIVACY_WINDOW_CORE_TOKENS
     ) {
+      signal?.throwIfAborted();
       const coreEnd = Math.min(
         tokenIds.length,
         coreStart + PRIVACY_WINDOW_CORE_TOKENS
@@ -425,6 +451,7 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
         input_ids: inputIds,
         attention_mask: attentionMask
       });
+      signal?.throwIfAborted();
       const windowLogits = numericRows(
         tensorList(output.logits, "logits"),
         "logits"
@@ -441,6 +468,7 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
           retainedStart + (coreEnd - coreStart)
         )
       );
+      onProgress?.();
     }
 
     return {

@@ -1,12 +1,20 @@
-import { describe, expect, it } from "vitest";
-import { PRIVACY_CLASSIFICATION_CONTRACT_VERSION } from "@koed/shared";
+import { describe, expect, it, vi } from "vitest";
+import {
+  PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+  createPrivacyServiceClient,
+  PrivacyServiceUnavailableError
+} from "@koed/shared";
 import type { PrivacyServiceConfig } from "./config.js";
 import {
   DeterministicPrivacyRuntime,
   type PrivacyRuntimeAdapter,
   type RawPrivacyClassification
 } from "./runtime.js";
-import { createPrivacyService } from "./server.js";
+import {
+  createNodeHttpServer,
+  createPrivacyService,
+  listenNodeHttpServer
+} from "./server.js";
 import { ZERO_VITERBI_BIASES } from "./decoder.js";
 
 const config = (
@@ -49,6 +57,155 @@ const contractBody = (fields: Array<{ path: string; text: string }>): string =>
   });
 
 describe("Privacy Service routes", () => {
+  it("propagates a real HTTP disconnect to inference cancellation", async () => {
+    const runtime: PrivacyRuntimeAdapter = new DeterministicPrivacyRuntime();
+    const original = runtime.classify.bind(runtime);
+    let started!: () => void;
+    let cancelled!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const observed = new Promise<void>((resolve) => {
+      cancelled = resolve;
+    });
+    runtime.classify = async (text, signal, onProgress) => {
+      if (text === "hold") {
+        onProgress?.();
+        started();
+        await new Promise<void>((resolve) =>
+          signal!.addEventListener(
+            "abort",
+            () => {
+              cancelled();
+              resolve();
+            },
+            { once: true }
+          )
+        );
+        signal!.throwIfAborted();
+      }
+      return original(text);
+    };
+    const server = createNodeHttpServer(
+      createPrivacyService(config(), runtime),
+      1024
+    );
+    await listenNodeHttpServer(server, "127.0.0.1", 0);
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("test server has no port");
+    try {
+      const cancellation = new AbortController();
+      const post = (text: string, signal?: AbortSignal) =>
+        fetch(`http://127.0.0.1:${address.port}/v1/classify`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-koed-privacy-token": "internal-secret"
+          },
+          body: contractBody([{ path: "text", text }]),
+          signal
+        });
+      const pending = post("hold", cancellation.signal).catch(() => null);
+      await entered;
+      cancellation.abort();
+      await pending;
+      await observed;
+      // The service retains its slot until the cancelled inference settles.
+      await vi.waitFor(async () =>
+        expect((await post("next")).status).toBe(200)
+      );
+      const client = createPrivacyServiceClient({
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        token: "internal-secret"
+      });
+      await expect(
+        client.classify([{ path: "text", text: "next" }])
+      ).resolves.toMatchObject({
+        fields: [{ path: "text", inputByteLength: 4 }]
+      });
+      const fetchImpl = vi.fn(fetch);
+      const timedClient = createPrivacyServiceClient({
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        token: "internal-secret",
+        timeoutMs: 100,
+        fetchImpl
+      });
+      await expect(
+        timedClient.classify([{ path: "text", text: "hold" }])
+      ).rejects.toBeInstanceOf(PrivacyServiceUnavailableError);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      );
+    }
+  });
+  it("rejects concurrent inference without queueing and keeps authentication required", async () => {
+    const runtime = new DeterministicPrivacyRuntime();
+    const original = runtime.classify.bind(runtime);
+    let release!: () => void;
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    runtime.classify = vi.fn(async (text: string) => {
+      started();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return original(text);
+    });
+    const service = createPrivacyService(config(), runtime);
+    const request = () =>
+      classifyRequest(contractBody([{ path: "text", text: "hello" }]), {
+        "x-koed-privacy-token": "internal-secret"
+      });
+    const first = service.handle(request());
+    await entered;
+    expect(
+      (await service.handle(classifyRequest(contractBody([])))).status
+    ).toBe(401);
+    const busy = await service.handle(request());
+    expect(busy.status).toBe(503);
+    expect(busy.headers.get("retry-after")).toBe("1");
+    expect(runtime.classify).toHaveBeenCalledTimes(1);
+    release();
+    expect((await first).status).toBe(200);
+  });
+
+  it("discards a cancelled request without classifying its remaining fields", async () => {
+    const runtime: PrivacyRuntimeAdapter = new DeterministicPrivacyRuntime();
+    const original = runtime.classify.bind(runtime);
+    const cancellation = new AbortController();
+    runtime.classify = vi.fn(async (text: string, signal?: AbortSignal) => {
+      expect(signal?.aborted).toBe(false);
+      cancellation.abort();
+      return original(text);
+    });
+    const service = createPrivacyService(config(), runtime);
+    const request = new Request(
+      classifyRequest(
+        contractBody([
+          { path: "first", text: "hello" },
+          { path: "second", text: "world" }
+        ]),
+        { "x-koed-privacy-token": "internal-secret" }
+      ),
+      { signal: cancellation.signal }
+    );
+    const response = await service.handle(request);
+    expect(response.status).toBe(499);
+    expect(runtime.classify).toHaveBeenCalledTimes(1);
+    runtime.classify = original;
+    const next = await service.handle(
+      classifyRequest(contractBody([{ path: "next", text: "next" }]), {
+        "x-koed-privacy-token": "internal-secret"
+      })
+    );
+    expect(next.status).toBe(200);
+  });
   it("exposes the authenticated versioned capacity contract", async () => {
     const service = createPrivacyService(
       config(),

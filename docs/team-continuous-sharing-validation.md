@@ -4026,3 +4026,234 @@ and the existing Desktop process remains open. No new approval or Keychain promp
 was needed. The additional cumulative-preview regression brings focused
 verification to 115 passing cases. Packaged release-artifact reassembly and the
 previously documented external release qualifications remain separate.
+
+## Privacy queue recovery for six Git Anchor publications — 23 October 2026
+
+Six owner-approved publications remained in Privacy filtering while large
+transport requests timed out. The Worker now preserves the original 16-field
+manifest and saves encrypted, owner-bound partial field results when a chunk
+needs several smaller requests. Requests normally carry at most 8 KiB of text;
+a target yields after two requests, 16 KiB, or five seconds between requests.
+A Worker turn also yields between targets after five seconds. One larger
+indivisible field still receives complete windowed classification. No source
+truncation, label reduction, new consent, or partial publication is permitted.
+
+The Privacy Service admits one authenticated classification request at a time.
+Excess requests return capacity backpressure. HTTP disconnect propagates an
+AbortSignal to field and window boundaries; native inference already running
+finishes before cancellation releases capacity. Timed-out and capacity-limited
+calls return to durable scheduling without immediate duplicate submission.
+Owner Shares report queued, filtering, or retrying with saved manifest chunks;
+these diagnostics confer no Workspace access.
+
+Focused checks cover byte-bounded checkpoint restart and transient failure,
+complete field coverage, small-target fairness, classifier/source/policy
+binding failures, real HTTP disconnect, cancellation without provider fallback,
+owner-only progress and stale-worker denial after revocation. The existing
+maximum-preview capacity harness remains opt-in and was not expanded or run.
+Live verification of the original six operations remains in progress. Deployment
+preserves their original source revisions, candidate hashes, consent and grants;
+the five unfinished operations expose no partial Team representations. The small
+sixth operation is activated and complete.
+
+The live six include indivisible fields up to 65,536 bytes. A fixed HTTP deadline
+still interrupted those fields after smaller batches removed the retry backlog.
+The coordinated client and service now stream finite, consecutive progress
+counters after actual model windows and completed fields. Those counters renew
+an inactivity deadline; they do not satisfy any classification or publication
+check. Missing, repeated, excessive or malformed progress fails closed, and the
+final response still passes the original schema and field/source bindings.
+Focused transport tests cover sustained progress beyond the deadline, stalled
+cancellation without immediate resubmission, malformed/incomplete progress, and
+a real HTTP classification through the coordinated client and service.
+
+CPU sessions now cap intra-operation threads at four available CPUs and use one
+inter-operation thread. The pinned real model produced identical decoded labels,
+input text and offsets on the existing three-input parity corpus and a 631-token,
+three-window synthetic field. The 31 focused runtime and provider tests pass.
+Host memory contention made timing comparisons variable; no general speedup
+claim follows from that parity check. The native model runtime is stopped during
+the live Team queue drain to avoid duplicate model memory on the 16 GiB host.
+
+## Clean remote manual performance test — 23 October 2026
+
+The User stopped the local six-publication recovery check before completion was
+proved and requested an empty remote Team for a new manual Git Anchor sharing
+trial. The local Docker fixture remains stopped with its data and checkpoints
+preserved; the native local runtime is healthy.
+
+The current worktree was built on the `koed-vps` rootless Docker engine and
+deployed as an isolated test stack. API and Privacy use the same image,
+`sha256:4b2398b50466c8c780e7637648d2d8beafac371687bf87b1280d169402b250fa`;
+the Linux x64 source-runtime fingerprint is
+`sha256:22d3951c6030b0cb9d26a09074bc2273a4b89ff93da0eb0940dcbb9d6797ebc8`.
+All six services are healthy. Bounded HTTPS checks pass readiness, normal owner
+password sign-in, secure HttpOnly cookies, authenticated Team/Workspace reads,
+unauthenticated Team denial, and public internal-route denial. The test uses the
+existing developer-profile password-authentication path with public registration
+disabled and private tailnet HTTPS. It does not qualify production WorkOS.
+
+The backend contains one owner, one Team and one General Workspace, with zero
+Captured Sessions, Memory Events, Share Grants, sharing rules or enrolled devices.
+The User will enroll and approve the new sharing operation manually. No local
+Personal Memory or existing grants were copied. The eight unrelated running
+containers retain identical IDs, start times and restart counts; the five older
+stopped rootless Koed containers remain unchanged. No full fixture or harness
+was run. Remote publication throughput and completion remain unproven until the
+User performs the new sharing trial.
+
+The initial remote developer profile passed health and session-login checks but
+failed real Desktop enrollment: capability discovery updated the registered
+profile to `developer`, after which the existing private-network guard denied the
+Tailscale address. The deployment was corrected to the supported `private_vps`
+profile. Normal secure capability refresh and the bounded HTTPS/password-login
+checks now pass. Private-network guards remain unchanged; device enrollment and
+permission approval remain the User's manual step. An independent initial block
+was the old local backend's pending credential revocation. Its normal
+authenticated revocation endpoint acknowledged the disconnect after a temporary
+API-only startup; its journal cleared and the local fixture is stopped again.
+The offline-backend switch behavior is recorded for investigation in `TODO.md`.
+
+The User then enrolled and approved the same Git Anchor on the remote backend.
+Rule `493d8521-bfe4-4f8f-b4a6-815b916101d2` initially produced operations for source
+revisions 129 and 130. Both remain in source synchronization with HTTP 409;
+remote semantic previews and Privacy classification results are still absent.
+Read-only local relationship metadata confirms that these sources retain paused
+relationships to the old loopback backend. The source relationship service's
+session-only lookup selects those rows and rejects the new destination binding.
+This second backend-switch finding is recorded in `TODO.md`; no existing
+relationship or consent was rewritten to bypass it.
+
+The saved local four-thread recovery sample contains 13 turns, 30 inference
+calls, 234,052 classified bytes and 333,641 ms of measured Privacy service time
+(about 0.69 KiB/s). It is a resumed, cache-warm workload with varying field lengths,
+not a cold-start latency benchmark. No remote filtering speedup can yet be claimed
+because the new run has not reached classification. A thread monitor follows the
+approved rule's state changes and completion without mutating publications or
+permissions. The local Docker fixture remains off.
+
+## Backend-switch destination-bound source sync — 23 October 2026
+
+The native source relationship lookup now requires the requested upstream backend.
+Preparation additionally selects the deterministic relationship derived from the
+verified source and target deployment/User identities. Owner pause and revoke
+commands use the requested backend too. Existing consent, creation hash, source
+ownership, replica, recipient-key, credential-lineage, revocation and remote
+response checks remain in place. No migration or relationship retargeting is
+required; a newly approved destination creates its own relationship and source
+outbox while retaining the original source identity.
+
+All 90 collaboration-command cases pass, including six added paused/revoked
+other-destination and altered same-destination binding cases. Targeted lint,
+formatting and the complete source-runtime build/check pass. The running native
+source fingerprint is
+`sha256:e63af9c1f5edbc2f20ee12e216e5a4e5520402ab770edf9fe9f0b2931a99b5f3`.
+Twenty read-only checks against actual source relationships verify exact lookup
+and denial for a different owner, Session, backend or relationship. The remote
+classifier image and configuration were kept unchanged for this trial.
+
+At 16:17:05 UTC the two original source-work records completed through their
+existing retry path. Separate remote relationships reached ready in about 22 and
+43 seconds. The old loopback relationships remain paused with their pre-fix
+15:23:05 UTC update timestamps; their complete row hashes remain unchanged.
+The two original Pending Shares resumed Privacy filtering without resubmission
+or replacement approval.
+
+Catch-up accounting is separate from those two recoveries. The initial committed
+selection contains 15 native-eligible Conversations. Thirteen still have no
+remote admission receipt or outstanding admission mutation: four repeatedly defer
+and nine have not been attempted. Two Conversations added after initial approval
+have completed. The remaining admission/fairness investigation is recorded in
+`TODO.md`; this trial does not establish complete initial Git Anchor catch-up.
+
+Both original operations are now `activated/complete`, with active Workspace
+access and no failure code. Revision 129 completed at 16:29:06 UTC and revision
+130 at 16:29:40 UTC: about 12 minutes 1 second and 12 minutes 36 seconds after
+source recovery. Their original creation-to-completion times include roughly
+41 minutes of the pre-fix source-binding block. The normal authenticated owner
+Shares list confirms both completed entries. Before/after hashes match for
+original request, source revision/hash, consent, preview, authority, logical
+grant, destination, detail, Curated Memory choice and mode. Both grants are
+active with matching owner/source/destination/detail bindings. Their available
+representations match the ready semantic previews' classifier, policy, source
+manifest and sanitized-content hashes; all 57 manifest chunks are complete.
+
+| Measured classifier work              | Saved local sample | Remote recovery |
+| ------------------------------------- | -----------------: | --------------: |
+| Classified bytes                      |            234,052 |         508,124 |
+| Inference calls                       |                 30 |              80 |
+| Worker turns with classification work |                 13 |              38 |
+| Privacy service time                  |          333.641 s |       518.222 s |
+| Measured throughput                   |        0.685 KiB/s |     0.958 KiB/s |
+| Classification failures               |                  0 |               0 |
+
+Remote measured throughput is about 40% higher in these samples. This is not a
+matched cold-start or end-to-end speedup claim: the local sample is partial and
+cache-warm, source/field sizes differ, and both runs reuse classification and
+continuation checkpoints. The complete remote manifests contain 884 fields and
+508,902 bytes; inference-byte counters omit reused content. The local Apple
+Silicon Docker run experienced memory contention on a 16 GiB host. The remote
+x64 host has 16 CPUs and 32 GiB, while this Privacy container is limited to four
+CPUs and 4 GiB; observation showed about four CPUs and 3 GiB in use. The same
+pinned classifier and four-thread cap were retained. Long fields and queue time
+still affect total publication latency.
+
+Only metadata and remotely allowlisted numeric timing counters were collected;
+no captured content was inspected for this comparison. The eight unrelated
+running remote containers retain identical IDs, start times and restart counts.
+The local Docker fixture remains off. No grants, policies, permissions or
+classifier configuration were changed, and no publication was resubmitted.
+The changeset remains omitted as agreed. Packaged distribution artifacts have
+not been reassembled for this later native source correction.
+
+## Isolated remote Privacy engine benchmark — 23 October 2026
+
+A bounded synthetic comparison on `koed-vps` tested ONNX Runtime 1.24.3 against
+1.31.0 with the same pinned Q4 model, tokenizer, existing 512-token windows,
+calibration, Viterbi decoder, secret detector and masking code. Both comparison
+variants used Python engine bindings with the exact token tensors generated by
+Koed. The old Python engine matched the production Node baseline bit-for-bit in
+logits and decoded output on all six inputs. No production dependency or runtime
+was upgraded.
+
+The runner used four CPUs, four intra-op threads, one inter-op thread, a 4 GiB
+memory/swap limit and CPU execution only. Six synthetic cases contained 11,129
+bytes and 2,079 tokens, covering contact data, test secrets, ordinary code,
+Unicode, multi-window prose and tool-shaped JSON. Old/new/new/old process order,
+one warm-up per case per process and three timed repeats produced six timing
+samples per case per version. The measured runner completed in 108 seconds.
+
+| Sum of per-case medians                                        | ONNX 1.24.3 | ONNX 1.31.0 |
+| -------------------------------------------------------------- | ----------: | ----------: |
+| Inference only                                                 |     6.673 s |     2.090 s |
+| Koed classification including the benchmark bridge and masking |     7.030 s |     2.445 s |
+| Peak Python engine RSS                                         |    2.24 GiB |    0.90 GiB |
+
+Inference improved 3.19 times; the measured classification path improved 2.88
+times. Short-case improvements ranged from 4.04 to 11.93 times; longer prose and
+JSON improved 2.30 and 2.57 times. All reference comparisons and timed repeats
+matched decoded text, complete byte offsets, labels, spans and masked text
+exactly. Maximum cross-version logit difference was approximately 0.0000267.
+Model artifact and input-tensor hashes matched across every process. This small
+synthetic parity check is not a broad privacy-quality evaluation or a new live
+publication-throughput measurement.
+
+Node/common 1.31.0 packages were unavailable in npm. The official native 1.31
+library also failed the existing Node binding's versioned-symbol requirement
+(`VERS_1.24.3`), so it cannot be treated as a drop-in deployment. A supported,
+reproducible Node integration remains a follow-up in `TODO.md`. No ABI patch,
+model replacement, batching or window change was applied. No large harness was
+run. The benchmark had no network or database/credential mounts and read only
+the pinned model-cache subdirectory. Its temporary containers and image tags
+were removed; all six live Team and eight unrelated remote containers retained
+identical identities, start times and restart counts. The local fixture remained
+off. Architecture and operational runtime behavior are unchanged; only this
+validation record and the implementation follow-up were updated.
+
+Planning update, 26 October 2026: subsequent short-field batching and CPU worker
+experiments justify the [Privacy runtime migration plan](privacy-runtime-migration-plan.md).
+It summarizes those measurements and replaces the Node-only follow-up with a
+supported inference worker behind the existing authenticated service boundary.
+The preferred implementation candidate retains TypeScript tokenization and
+masking with supervised Python ONNX execution. Runtime integration and deployment
+remain unimplemented; the historical benchmark results above are unchanged.

@@ -255,7 +255,8 @@ export const prepareSourceSyncRelationship = async (
   });
   const existing = await repository.getSourceSyncRelationshipForSession(
     { userId: input.localUserId },
-    input.sessionId
+    input.sessionId,
+    { upstreamBackendId: backend.id, relationshipId }
   );
   if (existing?.revokedAt) {
     throw Object.assign(new Error("Sync relationship is revoked"), {

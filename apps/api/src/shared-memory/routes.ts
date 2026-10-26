@@ -619,6 +619,7 @@ const pendingShareDto = (pendingShare: PendingShareRecord) =>
     sourceUpdateState: pendingShare.sourceUpdateState,
     operationVersion: pendingShare.operationVersion,
     attemptCount: pendingShare.attemptCount,
+    privacyProgress: pendingShare.privacyProgress ?? null,
     redactedFailureCode: pendingShare.redactedFailureCode,
     lastProgressAt: pendingShare.lastProgressAt,
     createdAt: pendingShare.createdAt,

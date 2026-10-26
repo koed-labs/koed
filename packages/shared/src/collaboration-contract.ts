@@ -2488,6 +2488,28 @@ export const pendingShareSchema = z
     ]),
     operationVersion: positiveVersionSchema,
     attemptCount: nonNegativeSequenceSchema,
+    privacyProgress: z
+      .object({
+        state: z.enum(["queued", "filtering", "retrying"]),
+        completedChunks: nonNegativeSequenceSchema,
+        totalChunks: positiveVersionSchema.nullable(),
+        retryAt: collaborationTimestampSchema.nullable()
+      })
+      .strict()
+      .superRefine((progress, context) => {
+        if (
+          (progress.totalChunks === null && progress.completedChunks !== 0) ||
+          (progress.totalChunks !== null &&
+            progress.completedChunks > progress.totalChunks)
+        ) {
+          context.addIssue({
+            code: "custom",
+            message: "Privacy progress exceeds its manifest"
+          });
+        }
+      })
+      .nullable()
+      .optional(),
     redactedFailureCode: z
       .string()
       .max(120)

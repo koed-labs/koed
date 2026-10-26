@@ -881,10 +881,19 @@ policy, or full URLs containing customer content.
 - `PRIVACY_FINGERPRINT_KEY`: optional stable key of at least 32 bytes for
   trust-boundary-scoped content fingerprints. Production Team mode requires
   this or derives it from `API_DATA_ENCRYPTION_KEY`/`DATA_ENCRYPTION_KEY`.
-- `PRIVACY_SERVICE_TIMEOUT_MS`: Worker request timeout. Default `30000`; valid
-  range `100`–`120000`.
+- `PRIVACY_SERVICE_TIMEOUT_MS`: Worker request inactivity deadline. Default
+  `30000`; valid range `100`–`120000`. Classification uses a versioned internal
+  NDJSON response with content-free completed-window and completed-field counters.
+  Only validated, consecutive progress within the input-derived work bound renews
+  the deadline. A large field can finish while making progress; a stalled call
+  still aborts at the configured deadline. Service proxies must forward these
+  progress frames without buffering. The complete final result retains the same
+  classifier, source-hash, field-path, byte-count and masking validation.
 - `PRIVACY_SERVICE_MAX_ATTEMPTS`: bounded Team materialization attempts.
   Default `3`; valid range `1`–`5`.
+  A timed-out request, or an explicit capacity response with `Retry-After`,
+  returns to durable retry immediately instead of exhausting immediate HTTP
+  attempts against occupied inference capacity.
 - Transient Privacy Service and Team-safe embedding failures remain durable
   pending work. PostgreSQL notifications wake immediate work, while each
   Worker keeps one exact timer for the earliest persisted retry, claim-expiry,
@@ -907,11 +916,32 @@ policy, or full URLs containing customer content.
   and the encoded request body respectively. The pinned byte-level tokenizer
   has a `262144`-token outer field guard while model inference remains bounded
   to a 256-token core plus 128 context tokens on either side.
+- CPU Privacy inference caps the ONNX session at four intra-operation threads
+  (or the available CPU count when lower) and one inter-operation thread. This
+  avoids oversized thread pools competing with other services for small,
+  sequential windows. Model weights, complete window coverage, calibration,
+  decoding, and the existing provider parity checks remain unchanged.
 - A semantic preview admits at most 65,536 classification fields, 64 MiB of
   classification text, and 80 MiB for its complete encoded canonical payload.
   Privacy work persists deterministic 16-field cache chunks. Each limit has
   one meaning; these whole-preview limits bound trusted Worker finalization
   memory and do not alter the Privacy request limits.
+- Shared Memory classification sends at most one manifest chunk per request,
+  normally at most 8 KiB of text. A target's turn admits at most two requests
+  and normally 16 KiB, yielding after five seconds between requests. The Worker
+  also yields between targets after that time budget. One larger indivisible
+  field is admitted alone and receives complete, overlapping window inference;
+  it is never truncated. Split chunks save encrypted, owner-bound field results
+  after each response and reconstruct the original manifest chunk after every
+  field is available. Restart and transient retry reuse those verified results.
+  Yielded targets return to the existing durable eligibility ordering.
+- The Privacy Service admits one classification request at a time. Excess
+  authenticated requests receive `503` with `Retry-After`; they do not enter
+  an inference queue. Client disconnect cancels remaining fields and model
+  windows after the current native inference returns. Cancellation produces
+  no partial classification response and does not trigger provider fallback.
+  Complete source, classifier, policy, consent and publication checks remain
+  required after all manifest chunks finish.
 - Complete semantic-preview reconstruction and publication use one
   deployment-wide PostgreSQL advisory-lock slot. The slot is non-blocking,
   crash-released, and fixed at one. The opt-in maximum-preview capacity test

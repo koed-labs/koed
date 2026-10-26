@@ -6544,6 +6544,27 @@ describeDb("Shared Memory repository", () => {
         chunks
       }
     );
+    const ownerProgress = await repository.getOwnerShare(
+      actor(fixture.ownerUserId),
+      { kind: "pending", id: pending.id }
+    );
+    expect(ownerProgress).toMatchObject({
+      kind: "pending",
+      pendingShare: {
+        privacyProgress: {
+          state: "filtering",
+          completedChunks: 0,
+          totalChunks: chunks.length,
+          retryAt: null
+        }
+      }
+    });
+    await expect(
+      repository.getOwnerShare(actor(fixture.outsiderUserId), {
+        kind: "pending",
+        id: pending.id
+      })
+    ).resolves.toBeNull();
     await pool.query(
       "update shared_source_semantic_privacy_work_claims set expires_at=now()-interval '1 second' where semantic_preview_id=$1",
       [target.id]

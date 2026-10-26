@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  requestPrivacyClassification,
+  PrivacyClassificationTransportError
+} from "./privacy-classification-transport.js";
+import {
   PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
   privacyClassificationRequestSchema,
   privacyClassificationResponseSchema,
@@ -124,27 +128,35 @@ export const createPrivacyServiceClient = (
       });
       let lastError: unknown;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        let deferRetry = false;
         try {
-          const response = await fetchImpl(`${baseUrl}/v1/classify`, {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "x-koed-privacy-token": token,
-              "x-request-id": randomUUID()
-            },
+          const response = await requestPrivacyClassification({
+            fetchImpl,
+            url: `${baseUrl}/v1/classify`,
+            token,
+            requestId: randomUUID(),
             body: JSON.stringify(request),
-            signal: AbortSignal.timeout(timeoutMs)
+            fields: request.fields,
+            timeoutMs
           });
-          if (!response.ok) {
+          if (response.status < 200 || response.status >= 300) {
             if (!retryableStatus(response.status)) {
               throw new PrivacyServiceContractError(
                 `Privacy classification request was rejected (${response.status})`
               );
             }
+            if (response.retryAfter) {
+              // Return capacity contention to the durable caller rather than
+              // immediately retrying into the same occupied classifier.
+              deferRetry = true;
+              throw new PrivacyServiceUnavailableError(
+                "Privacy classification capacity is busy"
+              );
+            }
             throw new PrivacyServiceUnavailableError();
           }
           const parsed = privacyClassificationResponseSchema.safeParse(
-            await response.json()
+            response.body
           );
           if (!parsed.success) throw new PrivacyServiceContractError();
           if (
@@ -165,8 +177,15 @@ export const createPrivacyServiceClient = (
           }
           return parsed.data;
         } catch (error) {
+          if (error instanceof PrivacyClassificationTransportError)
+            throw new PrivacyServiceContractError();
           if (error instanceof PrivacyServiceContractError) throw error;
           lastError = error;
+          if (
+            deferRetry ||
+            (error instanceof Error && error.name === "TimeoutError")
+          )
+            break;
           if (attempt < maxAttempts)
             await delay(Math.min(100 * 2 ** (attempt - 1), 500));
         }

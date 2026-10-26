@@ -1,3 +1,4 @@
+export { PRIVACY_CLASSIFICATION_STREAM_TYPE } from "./privacy-classification-transport.js";
 export {
   readPiToolProvenance,
   resolvePiToolProvenance,

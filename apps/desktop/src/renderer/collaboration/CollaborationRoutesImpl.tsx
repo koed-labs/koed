@@ -301,6 +301,20 @@ const pendingShareStageLabel = (stage: PendingShare["stage"]): string => {
   return "complete";
 };
 
+const pendingSharePrivacyProgressLabel = (share: PendingShare): string => {
+  const progress = share.privacyProgress;
+  if (!progress || share.state !== "preparing") return "";
+  const count =
+    progress.totalChunks === null
+      ? ""
+      : ` ${progress.completedChunks} of ${progress.totalChunks} chunks saved.`;
+  if (progress.state === "retrying")
+    return ` Waiting to retry Privacy filtering.${count}`;
+  if (progress.state === "queued")
+    return ` Queued for Privacy filtering.${count}`;
+  return ` Privacy filtering in progress.${count}`;
+};
+
 const liveStateLabel = (value: SharedMemorySession["liveState"]): string =>
   value === "live"
     ? "Live"
@@ -1768,6 +1782,7 @@ function OwnedSharesWorkspace({
               <p role="status">
                 Preparation stage:{" "}
                 {pendingShareStageLabel(selectedShare.pendingShare.stage)}.
+                {pendingSharePrivacyProgressLabel(selectedShare.pendingShare)}
                 {ownedShareHasError(selectedShare)
                   ? " Needs attention; retry or review the failed operation from Modify."
                   : " Waiting for Team publication."}
@@ -4022,6 +4037,7 @@ function SharedMemoryOwnerModal({
                         <small>
                           {share.state.replaceAll("_", " ")} ·{" "}
                           {pendingShareStageLabel(share.stage)}
+                          {pendingSharePrivacyProgressLabel(share)}
                         </small>
                       </div>
                     </li>

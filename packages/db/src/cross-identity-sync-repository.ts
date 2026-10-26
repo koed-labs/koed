@@ -452,7 +452,8 @@ export interface CrossIdentitySyncRepository {
   ): Promise<CrossIdentitySyncRelationshipRecord | null>;
   getSourceSyncRelationshipForSession(
     actor: ActorContext,
-    sessionId: string
+    sessionId: string,
+    destination: { upstreamBackendId: string; relationshipId?: string }
   ): Promise<CrossIdentitySyncRelationshipRecord | null>;
   getSyncRelationshipForService(
     id: string,
@@ -2280,21 +2281,30 @@ export const createCrossIdentitySyncRepository = (
         client.release();
       }
     },
-    async getSourceSyncRelationshipForSession(actor, sessionId) {
+    async getSourceSyncRelationshipForSession(actor, sessionId, destination) {
       const result = await pool.query<Row>(
         `select relationship.*
            from cross_identity_sync_relationships relationship
            join memory_replicas replica
              on replica.id=relationship.local_replica_id
+           join deployment_identities remote_deployment
+             on remote_deployment.id=relationship.remote_deployment_identity_id
            join local_captured_session_logical_memories local_memory
              on local_memory.logical_memory_id=relationship.logical_memory_id
             and local_memory.owner_user_id=relationship.local_user_id
           where relationship.side='source'
             and relationship.local_user_id=$1
             and local_memory.local_session_id=$2
+            and remote_deployment.upstream_backend_id=$3
+            and ($4::uuid is null or relationship.id=$4)
           order by relationship.created_at desc
           limit 1`,
-        [actor.userId, sessionId]
+        [
+          actor.userId,
+          sessionId,
+          nonEmpty(destination.upstreamBackendId, "upstreamBackendId"),
+          destination.relationshipId ?? null
+        ]
       );
       return result.rows[0] ? mapRelationship(result.rows[0]) : null;
     },

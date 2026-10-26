@@ -3453,7 +3453,8 @@ export const registerCollaborationCommandRoute = (
             const relationship =
               await repository.getSourceSyncRelationshipForSession(
                 { userId: user.id },
-                command.input.sessionId
+                command.input.sessionId,
+                { upstreamBackendId: input.upstream_backend_id }
               );
             if (!relationship) {
               return failureResult(command, safeError("not_available"));

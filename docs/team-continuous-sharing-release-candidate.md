@@ -109,6 +109,11 @@ over to a rebuilt application.
 The User's decision to omit a changeset remains in effect. A push, PR, merge,
 external deployment or release publication requires a separate decision.
 
+The later Privacy queue correction uses coordinated source and local Team
+runtime builds. The packaged candidate artifacts above precede that correction;
+reassemble and verify them before distributing it. Its focused checks and actual
+publication recovery status are recorded in the validation record.
+
 Before distributing or deploying, supply portable runtime assets and Developer ID
 signing/notarization inputs, qualify WorkOS and the target remote deployment, and
 complete accelerator qualification where GPU execution is offered. These remain

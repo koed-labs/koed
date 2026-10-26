@@ -2058,6 +2058,24 @@ describe("collaboration results and realtime", () => {
   });
 
   it("carries Privacy filtering and its redacted terminal state through renderer contracts", () => {
+    const progress = {
+      state: "filtering",
+      completedChunks: 2,
+      totalChunks: 7,
+      retryAt: null
+    };
+    expect(
+      pendingShareSchema.safeParse({
+        ...pendingShare(),
+        privacyProgress: progress
+      }).success
+    ).toBe(true);
+    expect(
+      pendingShareSchema.safeParse({
+        ...pendingShare(),
+        privacyProgress: { ...progress, completedChunks: 8 }
+      }).success
+    ).toBe(false);
     const terminalPendingShare = {
       ...pendingShare(),
       state: "needs_attention" as const,

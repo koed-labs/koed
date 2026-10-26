@@ -606,6 +606,20 @@ const fixture = (input?: {
   };
 };
 
+const finishPendingTarget = async (
+  service: ReturnType<typeof createSharedMemoryPrivacyMaterializationService>,
+  limit = 80
+) => {
+  for (let pass = 0; pass < limit; pass += 1) {
+    const result = await service.processOnce();
+    expect(result.failed).toBe(0);
+    if (result.ready > 0) return result;
+  }
+  throw new Error(
+    "Privacy target did not complete within the bounded test passes"
+  );
+};
+
 describe("Shared Memory privacy materialization service", () => {
   it("invalidates stale Team previews before Privacy Service preflight", async () => {
     const unavailable = new PrivacyServiceUnavailableError(
@@ -905,9 +919,18 @@ describe("Shared Memory privacy materialization service", () => {
       const classification = new Promise<unknown>((resolve) => {
         resolveClassification = resolve;
       });
-      const state = fixture({ classify: async () => classification });
+      let started!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const state = fixture({
+        classify: async () => {
+          started();
+          return classification;
+        }
+      });
       const processing = state.service.processOnce();
-      await flush();
+      await entered;
       expect(state.classify).toHaveBeenCalledOnce();
       const renewalsBeforeHeartbeat =
         state.renewSemanticPrivacyClaim.mock.calls.length;
@@ -999,11 +1022,12 @@ describe("Shared Memory privacy materialization service", () => {
     expect(state.logger.warn).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       classifierInferenceCalls: 2,
-      ready: 1,
+      ready: 0,
       failed: 0
     });
+    await finishPendingTarget(state.restartService());
     expect(state.classify.mock.calls.map(([batch]) => batch.length)).toEqual([
-      128, 1
+      16, 16, 16, 16, 16, 16, 16, 16, 1
     ]);
     const storedChunkSizes = state.storeClassificationResult.mock.calls.map(
       ([storeInput]) => storeInput.response.fields.length
@@ -1018,7 +1042,7 @@ describe("Shared Memory privacy materialization service", () => {
       (_, index) => ({
         ...item,
         sourceId: randomUUID(),
-        content: { text: String(index).padEnd(256 * 1_024, "x") }
+        content: { text: String(index).padEnd(6 * 1_024, "x") }
       })
     );
     const target = targetFor(
@@ -1056,19 +1080,42 @@ describe("Shared Memory privacy materialization service", () => {
         }))
       })
     });
-    state.findCachedClassification.mockResolvedValue(null);
 
     await expect(state.service.processOnce()).resolves.toMatchObject({
-      classifierInferenceCalls: 4,
-      cacheChunks: 1,
-      chunksAttached: 1,
-      ready: 1,
+      classifierInferenceCalls: 2,
+      chunksAttached: 0,
+      ready: 0,
       failed: 0
     });
-    expect(state.classify.mock.calls.map(([batch]) => batch.length)).toEqual([
-      4, 4, 4, 4
-    ]);
-    expect(state.storeClassificationResult).toHaveBeenCalledOnce();
+    expect(state.storeSanitizedSemanticPreview).not.toHaveBeenCalled();
+    state.classify.mockRejectedValueOnce(new PrivacyServiceUnavailableError());
+    await expect(state.restartService().processOnce()).resolves.toMatchObject({
+      failed: 0,
+      ready: 0
+    });
+    expect(state.storeSanitizedSemanticPreview).not.toHaveBeenCalled();
+    await finishPendingTarget(state.restartService());
+    expect(state.classify.mock.calls).toHaveLength(17);
+    const completedBeforeFailure = state.classify.mock.calls
+      .slice(0, 2)
+      .flatMap(([batch]) => batch.map((field) => field.path));
+    expect(
+      state.classify.mock.calls
+        .slice(2)
+        .flatMap(([batch]) => batch.map((field) => field.path))
+        .some((path) => completedBeforeFailure.includes(path))
+    ).toBe(false);
+    expect(
+      state.classify.mock.calls.every(([batch]) => batch.length === 1)
+    ).toBe(true);
+    expect(
+      new Set(
+        state.classify.mock.calls.flatMap(([batch]) =>
+          batch.map((field) => field.path)
+        )
+      ).size
+    ).toBe(16);
+    expect(state.storeSanitizedSemanticPreview).toHaveBeenCalledOnce();
   });
 
   it("persists and resumes a preview above the former aggregate field limit", async () => {
@@ -1123,7 +1170,7 @@ describe("Shared Memory privacy materialization service", () => {
 
     const passes = [];
     let service = state.service;
-    for (let pass = 0; pass < 10; pass += 1) {
+    for (let pass = 0; pass < 128; pass += 1) {
       const result = await service.processOnce();
       passes.push(result);
       if (result.ready === 1) break;
@@ -1140,7 +1187,7 @@ describe("Shared Memory privacy materialization service", () => {
     const requestSizes = state.classify.mock.calls.map(
       ([batch]) => batch.length
     );
-    expect(Math.max(...requestSizes)).toBe(128);
+    expect(Math.max(...requestSizes)).toBe(16);
     expect(requestSizes.reduce((total, size) => total + size, 0)).toBe(
       loaded.classificationFields.length
     );
@@ -1455,11 +1502,7 @@ describe("Shared Memory privacy materialization service", () => {
         })
       );
 
-      await expect(state.service.processOnce()).resolves.toMatchObject({
-        classifierInferenceCalls: 2,
-        ready: 1,
-        failed: 0
-      });
+      await finishPendingTarget(state.service);
       state.classify.mockClear();
 
       const nextTarget = {
@@ -1468,13 +1511,13 @@ describe("Shared Memory privacy materialization service", () => {
       };
       state.setTarget(nextTarget, buildLoaded(nextTarget, 130));
       await expect(state.service.processOnce()).resolves.toMatchObject({
-        classifierCacheHits: 8,
+        classifierCacheHits: 9,
         classifierInferenceCalls: 1,
         ready: 1,
         failed: 0
       });
       expect(state.classify).toHaveBeenCalledOnce();
-      expect(state.classify.mock.calls[0]?.[0]).toHaveLength(2);
+      expect(state.classify.mock.calls[0]?.[0]).toHaveLength(1);
     }
   );
 
@@ -1722,16 +1765,17 @@ describe("Shared Memory privacy materialization service", () => {
     await expect(state.service.processOnce()).resolves.toMatchObject({
       failed: 0,
       ready: 0,
-      chunksAttached: 8
-    });
-    await expect(state.service.processOnce()).resolves.toMatchObject({
-      failed: 0,
-      ready: 1,
-      resumedChunks: 8,
       chunksAttached: 1
     });
+    await expect(state.restartService().processOnce()).resolves.toMatchObject({
+      failed: 0,
+      ready: 0,
+      resumedChunks: 1,
+      chunksAttached: 2
+    });
+    await finishPendingTarget(state.restartService());
     expect(state.classify.mock.calls.map(([batch]) => batch.length)).toEqual([
-      128, 1, 1
+      16, 16, 16, 16, 16, 16, 16, 16, 16, 1
     ]);
     expect(state.storeClassificationResult).toHaveBeenCalledTimes(9);
     expect(state.markSemanticPrivacyTargetFailed).not.toHaveBeenCalled();

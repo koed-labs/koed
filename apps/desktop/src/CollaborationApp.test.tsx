@@ -5931,6 +5931,59 @@ describe("CollaborationApp", () => {
     ).not.toBeNull();
   });
 
+  it.each(["queued", "filtering", "retrying"] as const)(
+    "shows durable Privacy progress while %s without claiming Workspace access",
+    async (state) => {
+      const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
+      const pending = activatedOwnedShare();
+      pending.pendingShare.state = "preparing";
+      pending.pendingShare.stage = "privacy_filtering";
+      pending.pendingShare.workspaceAccessState = "none";
+      pending.pendingShare.privacyProgress = {
+        state,
+        completedChunks: 2,
+        totalChunks: 7,
+        retryAt: null
+      };
+      pending.summary.sharingReasons = [];
+      pending.summary.lastReadyRevision = null;
+      const client = createClient(snapshot);
+      vi.mocked(client.listOwnedShares).mockResolvedValue({
+        shares: [pending],
+        nextCursor: null
+      });
+      vi.mocked(client.getOwnedShare).mockResolvedValue(pending);
+      await act(async () =>
+        root.render(
+          <PersonalMemoryView
+            client={client}
+            initialSection="shares"
+            markdownAdapters={{
+              openExternal: vi.fn(),
+              writeClipboard: vi.fn()
+            }}
+            onShare={vi.fn()}
+            snapshot={snapshot}
+          />
+        )
+      );
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("2 of 7 chunks saved.")
+      );
+      expect(document.body.textContent).toContain(
+        state === "queued"
+          ? "Queued for Privacy filtering."
+          : state === "retrying"
+            ? "Waiting to retry Privacy filtering."
+            : "Privacy filtering in progress."
+      );
+      expect(document.body.textContent).toContain(
+        "Waiting for Team publication."
+      );
+      expect(client.controlPendingShare).not.toHaveBeenCalled();
+    }
+  );
+
   it("cancels pending Shares refresh when leaving the view", async () => {
     vi.useFakeTimers();
     const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });

@@ -2,6 +2,13 @@
 
 ## Current production implementation
 
+Pending Shares expose owner-only Privacy progress: queued, filtering, or waiting
+to retry, together with completed and total manifest chunks when known. Saved
+chunks describe durable preparation, not Workspace access. A Pending Share still
+grants no access until its entire approved representation is validated and
+published. Progress uses the existing owner-authorized Shares reads and refresh;
+it does not expose captured text or a new Team read capability.
+
 The [production plan](../tickets.md) restores rule content-policy editing after
 local acceptance of P2-09A and P2-09B. Conversation, Git Anchor, Folder, and
 Project rules use the same reviewed amendment and durable delivery boundaries.
@@ -22,6 +29,16 @@ is unavailable, an accepted share remains pending with no Workspace content
 access until its source can be uploaded. Enable `--sync enabled` explicitly and
 approve a replacement enrollment when the current credential lacks that family.
 Personal Note sharing uses its separate source-upload path.
+
+Captured Session source sync is destination-specific. Preparing an approved
+share selects the relationship for the current upstream backend and the
+deterministic source/target deployment and User identities. Switching backends
+creates an independent relationship under the new destination's approved
+enrollment and sharing authority. It does not retarget, resume, or reuse consent
+from the old backend's relationship. Retries at the same destination retain
+their original consent and idempotency binding; revoked or mismatched bindings
+still fail closed. Owner pause and revoke commands select only the requested
+backend's source relationship.
 
 A replacement enrollment is bound locally only after Team confirms its current
 credential ID and principal. The owner and backend alone cannot establish that

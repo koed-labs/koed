@@ -23,6 +23,7 @@ import {
   PRIVACY_CLASSIFICATION_CACHE_FIELD_LIMIT,
   PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES,
   PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES,
+  privacyLabels,
   privacyClassificationResponseSchema,
   sanitizeTextWithPrivacySpans,
   SharedMemorySemanticResourceLimitError,
@@ -43,8 +44,10 @@ const WAKE_CHANNELS = [
 ] as const;
 const CLAIM_LEASE_MS = 120_000;
 const CLAIM_HEARTBEAT_MS = Math.floor(CLAIM_LEASE_MS / 3);
-const MAX_INFERENCE_REQUESTS_PER_PASS = 8;
-const MAX_CLASSIFIED_BYTES_PER_PASS = 4 * 1024 * 1024;
+const MAX_INFERENCE_REQUESTS_PER_PASS = 2;
+const MAX_CLASSIFIED_BYTES_PER_REQUEST = 8 * 1024;
+const MAX_CLASSIFIED_BYTES_PER_PASS = 16 * 1024;
+const MAX_CLASSIFICATION_MS_PER_PASS = 5_000;
 
 interface SharedMemoryPrivacyLogger {
   info(bindings: Record<string, unknown>, message: string): void;
@@ -490,7 +493,11 @@ const materializeTarget = async (
       if (
         current.length > 0 &&
         (candidate.length > PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT ||
-          fieldBytes > PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES ||
+          fieldBytes >
+            Math.min(
+              MAX_CLASSIFIED_BYTES_PER_REQUEST,
+              PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES
+            ) ||
           bodyBytes > PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES)
       ) {
         groups.push(current);
@@ -550,7 +557,32 @@ const materializeTarget = async (
     await renewClaim(entry.chunkIndex);
   };
 
-  const missing: Array<(typeof manifest)[number]> = [];
+  // Keep the durable manifest stable. Smaller, owner-bound field results let a
+  // partially completed manifest chunk resume after timeout or process restart.
+  let inferenceRequests = 0;
+  let classifiedBytes = 0;
+  const inferenceStartedAt = performance.now();
+  const allLabelsPolicy = Object.fromEntries(
+    privacyLabels.map((label) => [label, true])
+  ) as Parameters<typeof sanitizeTextWithPrivacySpans>[0]["policy"];
+  const asResponseField = (
+    field: { path: string; text: string },
+    classified: DecryptedPrivacyClassificationResult["fields"][number]
+  ): PrivacyClassifiedField => ({
+    ...classified,
+    maskedText: sanitizeTextWithPrivacySpans({
+      text: field.text,
+      spans: classified.spans,
+      policy: allLabelsPolicy
+    }).text,
+    decodedTextMatchesInput: true
+  });
+  const budgetExhausted = (): boolean =>
+    inferenceRequests >= MAX_INFERENCE_REQUESTS_PER_PASS ||
+    classifiedBytes >= MAX_CLASSIFIED_BYTES_PER_PASS ||
+    (inferenceRequests > 0 &&
+      performance.now() - inferenceStartedAt >= MAX_CLASSIFICATION_MS_PER_PASS);
+
   for (const entry of manifest) {
     if (entry.status === "ready") continue;
     const chunk = cacheChunks[entry.chunkIndex]!;
@@ -563,117 +595,104 @@ const materializeTarget = async (
       counters.classifierCacheHits += 1;
       counters.remaskedTargets += 1;
       await attachRecord(entry, cached);
-    } else {
-      missing.push(entry);
+      continue;
     }
-  }
+    if (budgetExhausted()) break;
 
-  const selected: Array<(typeof manifest)[number]> = [];
-  let selectedBytes = 0;
-  for (const entry of missing) {
-    const chunk = cacheChunks[entry.chunkIndex]!;
-    const chunkBytes = chunk.reduce(
-      (total, field) => total + Buffer.byteLength(field.text, "utf8"),
-      0
-    );
-    const candidate = [...selected, entry];
-    const groups = packTransport(
-      candidate.flatMap((value) => cacheChunks[value.chunkIndex]!)
-    );
-    if (
-      selected.length > 0 &&
-      (groups.length > MAX_INFERENCE_REQUESTS_PER_PASS ||
-        selectedBytes + chunkBytes > MAX_CLASSIFIED_BYTES_PER_PASS)
-    ) {
-      break;
-    }
-    selected.push(entry);
-    selectedBytes += chunkBytes;
-  }
-  const entryByPath = new Map<string, (typeof manifest)[number]>();
-  const inferredByChunk = new Map<
-    number,
-    Map<string, PrivacyClassifiedField>
-  >();
-  for (const entry of selected) {
-    inferredByChunk.set(entry.chunkIndex, new Map());
-    for (const field of cacheChunks[entry.chunkIndex]!) {
-      entryByPath.set(field.path, entry);
-    }
-  }
-  const attachedChunkIndexes = new Set<number>();
-  for (const group of packTransport(
-    selected.flatMap((entry) => cacheChunks[entry.chunkIndex]!)
-  )) {
-    counters.classifierInferenceCalls += 1;
-    const serviceStartedAt = performance.now();
-    const response = privacyClassificationResponseSchema.safeParse(
-      await withClaimHeartbeat(
-        () => options.privacyService.classify(group),
-        entryByPath.get(group[0]!.path)?.chunkIndex ?? null
-      )
-    );
-    counters.privacyServiceDurationMs += performance.now() - serviceStartedAt;
-    if (
-      !response.success ||
-      response.data.classifier.classifierHash !== classifier.classifierHash ||
-      response.data.classifier.modelKey !== classifier.modelKey ||
-      response.data.classifier.modelRevision !== classifier.modelRevision ||
-      response.data.fields.length !== group.length ||
-      response.data.fields.some((field, index) => {
-        const expected = group[index];
-        return (
-          !expected ||
-          field.path !== expected.path ||
-          field.inputSha256 !== sha256(expected.text) ||
-          field.inputByteLength !== Buffer.byteLength(expected.text, "utf8")
-        );
-      })
-    ) {
-      throw new SharedMemoryPrivacyMaterializationError(
-        "SharedMemoryPrivacyClassifierContractError",
-        entryByPath.get(group[0]!.path)?.chunkIndex ?? null
-      );
-    }
-    counters.classifiedBytes += group.reduce(
-      (total, field) => total + Buffer.byteLength(field.text, "utf8"),
-      0
-    );
-    for (const field of response.data.fields) {
-      const entry = entryByPath.get(field.path);
-      if (!entry) {
-        throw new SharedMemoryPrivacyMaterializationError(
-          "SharedMemoryPrivacyClassifierContractError"
-        );
+    const inferred = new Map<string, PrivacyClassifiedField>();
+    const missingFields: typeof chunk = [];
+    for (const field of chunk) {
+      const fieldRecord =
+        await options.privacyRepository.findCachedClassification({
+          actor,
+          classifierHash: target.classifierHash,
+          fields: [field]
+        });
+      if (fieldRecord) {
+        const result = await readExactClassification(fieldRecord, [field]);
+        inferred.set(field.path, asResponseField(field, result.fields[0]!));
+        counters.classifierCacheHits += 1;
+      } else {
+        missingFields.push(field);
       }
-      inferredByChunk.get(entry.chunkIndex)!.set(field.path, field);
     }
-    for (const entry of selected) {
-      if (attachedChunkIndexes.has(entry.chunkIndex)) continue;
-      const chunk = cacheChunks[entry.chunkIndex]!;
-      const inferred = inferredByChunk.get(entry.chunkIndex)!;
-      if (inferred.size !== chunk.length) continue;
-      const responseFields = chunk.map((field) => inferred.get(field.path));
-      if (responseFields.some((field) => !field)) {
+
+    for (const group of packTransport(missingFields)) {
+      const groupBytes = group.reduce(
+        (total, field) => total + Buffer.byteLength(field.text, "utf8"),
+        0
+      );
+      // An indivisible field may exceed the turn's byte budget; it must still
+      // receive complete windowed classification, never truncation or sampling.
+      if (
+        budgetExhausted() ||
+        (inferenceRequests > 0 &&
+          classifiedBytes + groupBytes > MAX_CLASSIFIED_BYTES_PER_PASS)
+      )
+        break;
+      inferenceRequests += 1;
+      counters.classifierInferenceCalls += 1;
+      const serviceStartedAt = performance.now();
+      const response = privacyClassificationResponseSchema.safeParse(
+        await withClaimHeartbeat(
+          () => options.privacyService.classify(group),
+          entry.chunkIndex
+        )
+      );
+      counters.privacyServiceDurationMs += performance.now() - serviceStartedAt;
+      if (
+        !response.success ||
+        response.data.classifier.classifierHash !== classifier.classifierHash ||
+        response.data.classifier.modelKey !== classifier.modelKey ||
+        response.data.classifier.modelRevision !== classifier.modelRevision ||
+        response.data.fields.length !== group.length ||
+        response.data.fields.some((field, index) => {
+          const expected = group[index];
+          return (
+            !expected ||
+            field.path !== expected.path ||
+            field.inputSha256 !== sha256(expected.text) ||
+            field.inputByteLength !== Buffer.byteLength(expected.text, "utf8")
+          );
+        })
+      ) {
         throw new SharedMemoryPrivacyMaterializationError(
           "SharedMemoryPrivacyClassifierContractError",
           entry.chunkIndex
         );
       }
-      const record = await options.privacyRepository.storeClassificationResult({
-        actor,
-        provider: options.classificationEncryptionProvider,
-        fields: chunk,
-        response: {
-          schemaVersion: 1,
-          inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
-          classifier: classifierIdentity,
-          fields: responseFields as PrivacyClassifiedField[]
+      classifiedBytes += groupBytes;
+      counters.classifiedBytes += groupBytes;
+      const completeChunk = group.length === chunk.length;
+      for (let index = 0; index < group.length; index += 1) {
+        const field = group[index]!;
+        const result = response.data.fields[index]!;
+        // Whole chunks are persisted below. Split chunks checkpoint each field
+        // immediately so the next transport failure cannot discard this batch.
+        if (!completeChunk) {
+          await options.privacyRepository.storeClassificationResult({
+            actor,
+            provider: options.classificationEncryptionProvider,
+            fields: [field],
+            response: { ...response.data, fields: [result] }
+          });
         }
-      });
-      await attachRecord(entry, record);
-      attachedChunkIndexes.add(entry.chunkIndex);
+        inferred.set(field.path, result);
+      }
     }
+    if (inferred.size !== chunk.length) break;
+    const record = await options.privacyRepository.storeClassificationResult({
+      actor,
+      provider: options.classificationEncryptionProvider,
+      fields: chunk,
+      response: {
+        schemaVersion: 1,
+        inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+        classifier: classifierIdentity,
+        fields: chunk.map((field) => inferred.get(field.path)!)
+      }
+    });
+    await attachRecord(entry, record);
   }
 
   manifest = await options.sharedMemoryRepository.listSemanticPrivacyManifest(
@@ -919,7 +938,13 @@ export const createSharedMemoryPrivacyMaterializationService = (
         await options.sharedMemoryRepository.listPendingSemanticPrivacyTargets({
           limit: targetLimit
         });
+      const turnStartedAt = performance.now();
       for (const target of targets) {
+        if (
+          result.processed > 0 &&
+          performance.now() - turnStartedAt >= MAX_CLASSIFICATION_MS_PER_PASS
+        )
+          break;
         result.maxQueueAgeMs = Math.max(
           result.maxQueueAgeMs,
           Math.max(Date.now() - Date.parse(target.enqueuedAt), 0)

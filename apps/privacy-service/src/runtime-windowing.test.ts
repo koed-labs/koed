@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { availableParallelism } from "node:os";
 import { maskClassification } from "./masking.js";
 import {
   HuggingFacePrivacyRuntime,
@@ -38,6 +39,7 @@ const calibration = JSON.stringify({
 const fakeTransformers = (options?: {
   compactLogits?: boolean;
   delayMs?: number;
+  onWindow?: () => void;
 }) => {
   const windowSizes: number[] = [];
   const loadOptions: Record<string, unknown>[] = [];
@@ -63,6 +65,7 @@ const fakeTransformers = (options?: {
     const input = inputs.input_ids as FakeTensor;
     const ids = Array.from(input.data, Number);
     windowSizes.push(ids.length);
+    options?.onWindow?.();
     active += 1;
     maxActive = Math.max(maxActive, active);
     if (options?.delayMs) {
@@ -113,6 +116,25 @@ const fakeTransformers = (options?: {
 };
 
 describe("bounded Privacy Filter runtime", () => {
+  it("cancels between windows without returning partial classification and releases inference capacity", async () => {
+    const cancellation = new AbortController();
+    const fixture = fakeTransformers({ onWindow: () => cancellation.abort() });
+    const runtime = new HuggingFacePrivacyRuntime(
+      "openai/privacy-filter",
+      "pinned",
+      "/verified/privacy-cache",
+      async () => fixture.module,
+      async () => calibration
+    );
+    await expect(
+      runtime.classify("a".repeat(1_025), cancellation.signal)
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fixture.windowSizes).toHaveLength(1);
+    await expect(runtime.classify("next")).resolves.toMatchObject({
+      decodedText: "next"
+    });
+    expect(fixture.windowSizes).toHaveLength(2);
+  });
   it("mounts the pinned external ONNX data explicitly for Core ML", async () => {
     const fixture = fakeTransformers();
     const runtime = new HuggingFacePrivacyRuntime(
@@ -166,12 +188,20 @@ describe("bounded Privacy Filter runtime", () => {
       {
         dtype: "q4",
         local_files_only: true,
-        device: "cpu"
+        device: "cpu",
+        session_options: {
+          intraOpNumThreads: Math.min(4, availableParallelism()),
+          interOpNumThreads: 1
+        }
       },
       {
         dtype: "q4",
         local_files_only: true,
-        device: "cpu"
+        device: "cpu",
+        session_options: {
+          intraOpNumThreads: Math.min(4, availableParallelism()),
+          interOpNumThreads: 1
+        }
       }
     ]);
     expect(fixture.module.env).toEqual({
@@ -246,8 +276,11 @@ describe("bounded Privacy Filter runtime", () => {
       async () => calibration
     );
     const text = "é".repeat(1_025);
-
-    const result = await runtime.classify(text);
+    let completedWindows = 0;
+    const result = await runtime.classify(text, undefined, () => {
+      completedWindows += 1;
+    });
+    expect(completedWindows).toBe(fixture.windowSizes.length);
 
     expect(result.decodedText).toBe(text);
     expect(result.tokenOffsets.at(-1)).toEqual({

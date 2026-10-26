@@ -1,31 +1,116 @@
 # Implementation backlog
 
-## Operational alpha follow-ups
+## Production follow-ups from the accepted alpha
 
-- [ ] Make explicit LCM preview preparation finalize eligible live-capture
-      tails using the correct work class. The Cedar trial used the existing
-      compaction function explicitly before its final summary cycle.
+- [ ] Investigate switching backends when the previous backend is offline.
+      Connecting to the new remote backend was blocked by pending revocation
+      of its device credential on the stopped local fixture and surfaced only
+      “Collaboration is temporarily unavailable.” Assess separating new-backend
+      connection from durable old-backend revocation, with clear status and
+      recovery controls. Preserve identity isolation, credential and route
+      fencing, and pending revocation; do not report old remote access as ended
+      until the old backend acknowledges it. Reproduce with backend A offline
+      while connecting to backend B, then bring A online and verify cleanup.
 
-- [ ] Normalize generated migration metadata formatting. The handover-wide
-      Prettier check reports the journal and 18 generated snapshots. Keep this
-      formatting cleanup separate from alpha runtime behavior.
+- [x] Fix destination-specific source sync after switching backends. Source
+      preparation and owner pause/revoke select the requested backend;
+      preparation also selects its deterministic relationship. The original two
+      blocked remote Pending Shares completed with unchanged approvals and
+      security bindings. Old local relationships remain paused and unchanged.
+      Ninety collaboration-command tests and 20 live lookup-isolation checks
+      pass. See the [validation record](docs/team-continuous-sharing-validation.md#backend-switch-destination-bound-source-sync--23-october-2026).
 
-- [ ] Support or clearly prevent adding a direct snapshot after a Git rule has
-      already created the destination grant. The current Pending Share reaches
-      activation and rejects the existing destination grant. The alpha overlap
-      walkthrough must establish the direct reason before Git admission.
+- [ ] Investigate the remaining initial Git Anchor admissions in the remote
+      manual trial. The approved selection contains 15 initial native-eligible
+      Conversations, but only two reached remote admission; 13 have no remote
+      receipt or outstanding admission mutation. Four of those are repeatedly
+      deferred and nine have not been attempted. Inspect candidate-admission
+      failures and source scheduling fairness without widening eligibility,
+      replacing ambiguous writes, or changing the approved selection. Two later
+      Conversations have already completed. Keep this separate from recovery of
+      the two existing Pending Shares and the destination-specific sync fix.
 
-- [ ] Reduce Pending Share activation conflicts (PostgreSQL 40001 and 40P01)
-      observed during the native trial and Project trial. Rule admission now
-      retries these conflicts up to three times before requiring attention.
-      Investigate underlying transaction lock ordering and the remaining direct
-      activation path; preserve approval, current authority, and publication gates.
-- [ ] Make owner share labels show pending activation failures before an active
-      rule's update status, and preserve the source title in owner navigation.
+- [ ] Bound Privacy transport work, persist partial chunk results, cancel
+      abandoned inference, and expose owner-only progress. Verify the six
+      existing Git Anchor publications complete with their original approvals.
 
-- [ ] Make the setup confirmation copy distinguish configured external model
-      services from model downloads. The external setup gate already uses
-      service health and does not install models.
+- [ ] Execute the [Privacy runtime migration plan](docs/privacy-runtime-migration-plan.md)
+      agreed for planning on 26 October 2026. Use the existing authenticated
+      service boundary and a supported, reproducible inference worker; a newer
+      Node binding is not a prerequisite. The preferred candidate uses official
+      Python ONNX Runtime behind the existing TypeScript tokenizer and masking.
+      Preserve all classifier, source, consent, policy and publication checks.
+      Implement and qualify the engine, concurrency and batching separately.
+      See the [initial benchmark record](docs/team-continuous-sharing-validation.md#isolated-remote-privacy-engine-benchmark--23-october-2026)
+      and the plan's later benchmark summary. Further measurements are bounded
+      migration gates, not an open-ended optimization survey.
+  - [ ] PRIV-01: select and reproducibly package the supported inference boundary.
+  - [ ] PRIV-02: integrate one supervised CPU worker with existing service behavior.
+  - [ ] PRIV-03: add bounded two-worker concurrency and coordinated capacity contracts.
+  - [ ] PRIV-04: batch up to eight ready short fields within one admitted request.
+  - [ ] PRIV-05: qualify the combined service and one synthetic publication journey.
+  - [ ] PRIV-06: stage authorized rollout, restart/recovery and matching-build rollback.
+
+Manual-test correction: continuous Git Anchor and Project sharing review now
+checks selection scope instead of requiring capture to stop. Nine isolated
+consumer cases and eleven review-security cases pass. Live Project (four sources)
+and Git Anchor (eight sources) preview and approval-review handoffs pass in the
+updated development runtime. A follow-up correction also shows standalone selection rules in Shares and
+allows initial publisher catch-up during capture, with complete membership and
+fresh removal-proof checks. Fixed-snapshot, consent, Privacy and publication
+checks remain required. Reassemble and verify packaged
+candidate artifacts before distributing this later source correction.
+
+- [x] Preserve verified Pi tool names and call IDs, align owner-preview tool
+      eligibility, and keep published owner previews at their approved activation
+      detail. Native wrappers and sibling reasoning stay excluded; canonical
+      hashes, exact candidate validation, consent, device and Privacy checks stay
+      strict. All four original failed publications recover through normal owner
+      retry, and authenticated owner previews and grant reads pass. The local CPU
+      backend uses the supported 120-second Privacy request timeout. See the
+      [validation record](docs/team-continuous-sharing-validation.md#pi-tool-provenance-and-preview-correction-23-october-2026).
+
+
+The User accepted the operational alpha on 21 October 2026 after manual testing.
+The [production tickets](tickets.md) own the sequence and acceptance criteria.
+PROD-01 through PROD-06 and P2-09 through P2-14 are locally complete.
+The [candidate status](docs/team-continuous-sharing-release-candidate.md) records
+matching artifacts, operator steps, exact acceptance scope and release prerequisites.
+The [validation record](docs/team-continuous-sharing-validation.md#prod-06-final-local-disposition-23-october-2026)
+contains the final disposition of every combined criterion.
+
+The final native snapshot-after-rule correction passes matching-package acceptance:
+the approved snapshot stays fixed at revision 51 while the transferred Git rule
+advances to revision 55. The final encrypted backup, exact 262-table comparison
+and actual restored-service checks preserve Alice's ten and Bob's three logical
+contributions, independent reasons, consent, source revocation and publisher fences.
+The acceptance database and backup are preserved separately; the clean manual-test
+Team is running. Disposable native acceptance profiles remain stopped.
+
+The User waived Koed recall and chose to omit the changeset for this work package.
+Secure credential storage remains enabled. Portable native assets, signing and
+notarization, WorkOS, remote staging and applicable GPU qualification require their
+actual release inputs. They are not local passes. No push, PR, merge, external
+deployment or publication is authorized by this completed local gate.
+
+- [x] [PROD-01](tickets.md#prod-01-resolve-activation-contention): resolve activation
+      contention across rule and direct sharing. Focused concurrency, source-update,
+      retry-limit, revocation and policy-lock checks passed.
+- [x] [PROD-02](tickets.md#prod-02-complete-normal-lcm-publication): finalize eligible
+      live-capture tails through normal preparation and configured AI Client synthesis.
+      A later synthetic turn reached Team LCM publication through ordinary APIs.
+- [x] [PROD-03](tickets.md#prod-03-support-both-sharing-creation-orders): support a
+      direct snapshot after a selection rule creates the destination grant.
+- [x] [PROD-04](tickets.md#prod-04-make-owner-sharing-state-accurate): correct failure
+      labels, source titles, revision explanations, and independent-reason controls.
+- [x] [PROD-05](tickets.md#prod-05-make-the-production-build-reproducible): complete
+      packaged startup, setup copy, and necessary build hygiene without demo paths.
+      Fresh native core verification, approved fixture enrollment, shutdown,
+      restart and authorized Shared Memory reads pass on matching artifacts.
+
+Retain the completed Shares refresh, latest published source preview, and
+fresh-rule admission after snapshot revocation. Their evidence remains in the
+[validation record](docs/team-continuous-sharing-validation.md).
 
 ## Recall grouping and continuous sharing
 
@@ -48,7 +133,7 @@ native acceptance journeys and package checks passed. The User chose to omit
 the recommended minor changeset on 20 October 2026. See the
 [validation record](docs/personal-project-validation.md).
 Package 1 completion evidence remains in that validation record.
-The [local ticket file](tickets.md) now contains the operational alpha milestone.
+The [local ticket file](tickets.md) now contains the production plan.
 
 - [x] Confirm exact Folder matching, original context until correction,
       multiple Project membership, and no nesting in Package 1.
@@ -113,27 +198,40 @@ This package owns sharing authority, local publication, Team backend processing,
 Desktop sharing controls, and Team recall. Personal Projects remain private
 sharing selectors. Team collections are deferred.
 The [decision record](docs/team-continuous-sharing-preparation.md) records the
-confirmed behavior. On 21 October 2026, the User approved a smaller operational
-alpha milestone. The [implementation plan](docs/team-continuous-sharing-implementation-plan.md)
-and [current tickets](tickets.md) define ALPHA-01 through ALPHA-05.
-The [archived tickets](docs/archive/2026-10-21-package-2/tickets.md) retain the
-original fourteen slices and their criteria. P2-01 through P2-08 are locally
-complete. P2-09 through P2-14 and the full package gate are deferred.
+confirmed behavior. The User accepted the operational alpha after manual testing
+on 21 October 2026 and approved the production plan. The
+[implementation plan](docs/team-continuous-sharing-implementation-plan.md) and
+[current tickets](tickets.md) define the active production sequence.
+The [alpha archive](docs/archive/2026-10-21-operational-alpha/tickets.md) preserves
+ALPHA-01 through ALPHA-05. The
+[original archive](docs/archive/2026-10-21-package-2/tickets.md) preserves the
+fourteen feature slices. P2-01 through P2-14 are locally complete. The full
+package gate remains open.
 See the [Package 2 validation record](docs/team-continuous-sharing-validation.md).
-Tests remain deferred until a changed boundary or acceptance requirement needs them.
-Package 2 targets the current alpha build. Breaking API, protocol, and schema
-changes can be coordinated across components; backward compatibility is out of scope.
+Run focused tests for changed behavior or acceptance requirements. Run broader
+checks at integration checkpoints and the final production gate.
+Coordinate current API, protocol, and schema changes across components.
+Legacy datasets, historical database layouts, old protocols, mixed-version
+operation, and historical upgrades are out of scope for this package.
+Bring forward resolved principles and designs. Preserve current-build persistence,
+restart, recovery, and backup restoration, plus all production behavior and
+security guarantees. The current tickets supersede historical compatibility
+requirements. This does not authorize deletion of unrelated data or backups.
 
-The active milestone is:
+The accepted alpha milestones are complete within their recorded scope:
 
-- [ ] ALPHA-01: Disable unfinished content-policy editing across all entry points.
-- [ ] ALPHA-02: Run matching native Desktop and local Docker Team Backend builds.
-- [ ] ALPHA-03: Demonstrate sharing, later updates, lifecycle controls, and teammate recall.
-- [ ] ALPHA-04: Demonstrate brief disconnect and restart recovery on one publisher.
-- [ ] ALPHA-05: Deliver the trial guide, acceptance evidence, and known limitations.
+- [x] ALPHA-01: Disable unfinished content-policy editing across all entry points.
+- [x] ALPHA-02: Run matching native Desktop and local Docker Team Backend builds.
+- [x] ALPHA-03: Demonstrate sharing, later updates, lifecycle controls, and teammate recall.
+- [x] ALPHA-04: Demonstrate brief disconnect and restart recovery on one publisher.
+- [x] ALPHA-05: Deliver the trial guide, acceptance evidence, and known limitations.
+
+Production starts with PROD-01. Workspace exclusions, P2-10 and P2-11, remain
+the first new feature priority. The current tickets define all remaining
+follow-ups, dependencies, and the PROD-06 production acceptance gate.
 
 The following list records the original Package 2 decisions and implementation
-status. Deferred entries are follow-up work, not prerequisites for the alpha.
+status. Open entries now belong to the production plan, not the accepted alpha.
 
 - [x] Confirm that Project removal revokes only its sharing reason and that
       a destination exclusion blocks every sharing route for the owner's source.
@@ -184,30 +282,68 @@ status. Deferred entries are follow-up work, not prerequisites for the alpha.
       receipt recovery after independent owner-policy expansion, Privacy-policy
       drift rejection, and Desktop owner controls. The combined native journey
       remains in the package acceptance checklist.
-- [ ] P2-09: Change a rule's content policy. Deferred with partial implementation: per-rule Privacy
-      categories under enclosing constraints, content-bound policy identity,
-      reviewed scope contracts, native review, durable delivery, current read
-      gates and owner controls are wired. The first Docker case verifies paused
-      retained-history reprocessing and restoration without new revisions.
-      ALPHA-01 isolates unfinished editing. Resume outstanding acceptance only
-      when this capability returns to scope. Preserve paused and stopped lifecycle.
-- [ ] P2-10: Deferred. Exclude a Conversation from one Workspace. Prioritize before
-      routine sharing of mixed private and work content.
-- [ ] P2-11: Deferred. Remove an exclusion and catch up eligible sharing.
-- [ ] P2-12: Deferred. Convert an existing snapshot explicitly.
-- [ ] P2-13: Deferred. Recover a selection rule after an extended interruption.
-- [ ] P2-14: Deferred. Continue a rule from another Personal device.
-- [ ] Deferred full-package acceptance: verify the combined
-      two-owner, two-Workspace, two-device journey and complete selector/control
-      matrix, run applicable checks, and record results.
+- [x] P2-09: Change a rule's content policy. Both production slices pass local
+      acceptance: restrictive denial, fresh broader approval, current enclosing
+      permissions, active and paused history, subsequent revisions, independent
+      reasons, recall and cached expansion denial, obsolete Privacy work, exact
+      delivery receipt recovery and stopped-state preservation. Editing is
+      restored across HTTP, native/browser approval, durable delivery and both
+      Desktop owner placements. The combined native journey passes PROD-06.
+- [x] P2-10: Exclude a Conversation from one Workspace. Focused publication,
+      recall, delivery, approval, Desktop and destination-isolation checks passed.
+- [x] P2-11: Remove an exclusion through fresh native approval. Eligible active
+      rules catch up; paused, stopped, removed-member and no-rule cases stay private.
+- [x] P2-12: Convert a snapshot created by the current build explicitly. Exact
+      snapshot and destination authority, consent limits, native approval,
+      durable retry, delayed retirement, stale and duplicate rejection, later
+      turns and pause/resume/stop pass local checks. Independent reasons and
+      another Workspace remain unchanged; separate Source Access authority is
+      preserved. The combined native journey passes PROD-06.
+- [x] P2-13: Recover a selection rule after an extended interruption.
+      Expired and unavailable checkpoint recovery preserves the installed
+      baseline and exact outstanding request in six focused cases. Fresh
+      offline stop review failures explain the online approval boundary.
+      Combined journal recovery now covers the outage, queued stop and independent
+      Workspace without duplicates. Actual Team publication and read-back pass
+      after restart, missing history, membership changes and later turns.
+      The combined native recovery journey passes PROD-06.
+- [x] P2-14: Continue a rule from another Personal device running the current build.
+      Backend native-reviewed transfer and exact replay now preserve active/paused
+      state, existing grants, consent and original source identity. Former publisher
+      writes are fenced; later source publication requires both the committed
+      transfer and a native-bound portable member. Receiving review, protected
+      delivery and new local baselines now pass focused checks, including paged
+      existing-member reconciliation and later available Personal evidence.
+      Resolve receiving Project views through signed portable catalog identity.
+      Discovery, creation review and fresh queue validation now use that identity,
+      while proven native Projects remain supported before Personal sync setup.
+      Interactive owner controls now pass focused UI, route and renderer build
+      checks. The native Git Anchor two-device journey now passes.
+      Previously published sources removed automatically by selection can now
+      re-enter through retained-source admission and durable delivery. Team
+      prepares current candidates from original sync mappings, creates fresh
+      consent under the approved future rule and reuses the destination grant.
+      Original credential/policy revocation before activation denies publication;
+      exact receipt recovery never queues a receiving-device source upload.
+      Stale retained admissions now recover under fresh exact authority and
+      leave healthy work unchanged. Bounded journal observation survives restart
+      until Team initializes the member. Originally native unpublished admissions
+      now continue from their accepted candidate, including first destination
+      creation and initial policy creation within the approved scope. Explicit
+      cancellation and later policy restrictions remain vetoes. Combined restoration and controls now pass PROD-06.
+- [x] PROD-06 production acceptance milestone: combined two-owner, multi-Workspace,
+      two-device native acceptance and focused processing intersections pass.
+      Matching artifacts, restart and recovery, exact encrypted same-build restore,
+      applicable checks and the candidate handoff are recorded. Unavailable release
+      qualifications remain explicit prerequisites.
 - [x] Resolve the Docker fixture's `SharedMemoryPersonalEmbeddingReuseConflict`
       for Removed Member Deployment Note before declaring the package fixture
       gate passed. Retained Team authorization must not depend on restoring the
       removed owner's Workspace access. Do not invalidate Personal vectors as a
       validation workaround.
-- [ ] Complete remaining full-package sharing, mapping, publication, and operation
-      documentation when deferred capabilities return to scope. ALPHA-05 owns
-      the current trial guide and status documentation.
+- [x] Complete production sharing, mapping, publication, and operation documentation.
+      Preserve ALPHA-05's trial guide and evidence; current operator handoff and
+      release prerequisites are in the candidate status record.
 
 ## Asynchronous Memory Answer adapters
 

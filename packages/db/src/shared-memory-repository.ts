@@ -417,6 +417,12 @@ export interface PendingShareRecord {
   sourceUpdateState: "preparing" | "active" | "paused" | "failed" | "stopped";
   operationVersion: number;
   attemptCount: number;
+  privacyProgress?: {
+    state: "queued" | "filtering" | "retrying";
+    completedChunks: number;
+    totalChunks: number | null;
+    retryAt: string | null;
+  } | null;
   redactedFailureCode: string | null;
   lastProgressAt: string;
   createdAt: string;
@@ -3595,6 +3601,8 @@ const mapPendingShare = (row: Row): PendingShareRecord => ({
     row.source_update_state as PendingShareRecord["sourceUpdateState"],
   operationVersion: numberValue(row.operation_version),
   attemptCount: numberValue(row.attempt_count),
+  privacyProgress: (row.privacy_progress ??
+    null) as PendingShareRecord["privacyProgress"],
   redactedFailureCode:
     row.redacted_failure_code === null
       ? null
@@ -24141,6 +24149,26 @@ export const createSharedMemoryRepository = (
         }
         const result = await client.query<Row>(
           `select owned.record_kind,owned.payload,owned.source_access,
+                  (select jsonb_build_object(
+                     'state',case
+                       when semantic.next_attempt_at>now() then 'retrying'
+                       when exists(select 1 from shared_source_semantic_privacy_work_claims claim
+                         where claim.semantic_preview_id=semantic.id
+                           and claim.state='active' and claim.expires_at>now()) then 'filtering'
+                       else 'queued' end,
+                     'completedChunks',semantic.completed_chunk_count,
+                     'totalChunks',semantic.expected_chunk_count,
+                     'retryAt',semantic.next_attempt_at)
+                   from shared_source_semantic_previews semantic
+                   join privacy_classifier_generations classifier
+                     on classifier.id=semantic.classifier_generation_id and classifier.status='active'
+                   where owned.record_kind='pending' and owned.payload->>'state'='preparing'
+                     and semantic.owner_user_id=$1 and semantic.logical_memory_id=owned.logical_memory_id
+                     and semantic.team_id=owned.team_id and semantic.team_workspace_id=owned.team_workspace_id
+                     and semantic.source_revision=owned.source_revision
+                     and semantic.representation::text=owned.payload->>'activation_representation'
+                     and semantic.status='pending'
+                   order by semantic.created_at desc,semantic.id desc limit 1) as privacy_progress,
                   coalesce(reasons.entries,'[]'::jsonb) as sharing_reasons,
                   (select to_jsonb(exclusion) from team_memory_workspace_exclusions exclusion
                     where exclusion.owner_user_id=$1 and exclusion.logical_memory_id=owned.logical_memory_id
@@ -24468,6 +24496,7 @@ export const createSharedMemoryRepository = (
                   kind: "pending",
                   pendingShare: mapPendingShare({
                     ...payload,
+                    privacy_progress: row.privacy_progress,
                     effective_source_kind: row.effective_source_kind,
                     effective_source_session_id:
                       row.effective_source_session_id,

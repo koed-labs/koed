@@ -396,7 +396,12 @@ const createSourceRepository = (
   const summaryActors: string[] = [];
   const activationActors: string[] = [];
   const retryActors: string[] = [];
+  const relationshipLookups: Parameters<
+    SourceSyncRelationshipRepository["getSourceSyncRelationshipForSession"]
+  >[] = [];
   let relationship: CrossIdentitySyncRelationshipRecord | null = null;
+  let otherBackendRelationship: CrossIdentitySyncRelationshipRecord | null =
+    null;
   let logicalMemoryId: string | null = null;
   const summary = (): CapturedSessionSummaryRecord => ({
     sessionId: ids.session,
@@ -500,10 +505,23 @@ const createSourceRepository = (
       };
       return relationship;
     },
-    getSourceSyncRelationshipForSession: async (actor, sessionId) =>
-      actor.userId === ownerUserId && sessionId === ids.session
+    getSourceSyncRelationshipForSession: async (
+      actor,
+      sessionId,
+      destination
+    ) => {
+      relationshipLookups.push([actor, sessionId, destination]);
+      if (actor.userId !== ownerUserId || sessionId !== ids.session)
+        return null;
+      // An unscoped lookup reproduces the original latest-relationship bug.
+      if (!destination) return otherBackendRelationship ?? relationship;
+      if (destination.upstreamBackendId !== "team-vps") return null;
+      return relationship &&
+        (!destination.relationshipId ||
+          destination.relationshipId === relationship.id)
         ? relationship
-        : null,
+        : null;
+    },
     pauseCrossIdentitySyncRelationship: async (actor, relationshipId) => {
       if (
         actor.userId !== ownerUserId ||
@@ -569,6 +587,35 @@ const createSourceRepository = (
     summaryActors,
     activationActors,
     retryActors,
+    relationshipLookups,
+    seedOtherBackendRelationship: (revoked: boolean) => {
+      otherBackendRelationship = sourceRelationshipRecord(
+        {
+          relationshipId: randomUUID(),
+          logicalMemoryId: randomUUID(),
+          localReplicaId: randomUUID(),
+          remoteDeploymentIdentityId: randomUUID(),
+          remoteUserIdentityId: randomUUID(),
+          remoteReplicaId: randomUUID(),
+          idempotencyKey: randomUUID(),
+          creationRequestHash: "a".repeat(64),
+          policyManifest: {},
+          consentManifest: { consented_at: iso },
+          sessionId: ids.session,
+          localDeploymentIdentityId: ids.localDeployment
+        },
+        ownerUserId,
+        revoked ? "revoked" : "paused"
+      );
+      if (revoked) otherBackendRelationship.revokedAt = iso;
+      return otherBackendRelationship;
+    },
+    otherBackendRelationship: () => otherBackendRelationship,
+    alterRelationship: (
+      change: Partial<CrossIdentitySyncRelationshipRecord>
+    ) => {
+      if (relationship) relationship = { ...relationship, ...change };
+    },
     failRelationship: () => {
       if (relationship) relationship = { ...relationship, state: "failed" };
     },
@@ -1791,6 +1838,85 @@ describe("local-edge collaboration command route", () => {
     await harness.app.close();
   });
 
+  it.each([false, true])(
+    "creates independent destination sync while preserving an old backend relationship (revoked=%s)",
+    async (revoked) => {
+      const source = createSourceRepository();
+      const old = structuredClone(source.seedOtherBackendRelationship(revoked));
+      const harness = createHarness({
+        backend: sourceSyncBackend(),
+        personalRepository: source.repository,
+        response: (call) => sourceSyncResponse(source, call)
+      });
+      const first = prepareSourceCommand();
+      for (const command of [first, prepareSourceCommand()]) {
+        expect(
+          parseResult((await injectCommand(harness.app, command)).body)
+        ).toMatchObject({ ok: true });
+      }
+      expect(source.otherBackendRelationship()).toEqual(old);
+      expect(source.relationship()?.id).not.toBe(old.id);
+      expect(source.createInputs.map((entry) => entry.idempotencyKey)).toEqual([
+        first.requestId,
+        first.requestId
+      ]);
+      expect(source.relationshipLookups).toEqual(
+        Array(2).fill([
+          { userId: ids.actor },
+          ids.session,
+          {
+            upstreamBackendId: "team-vps",
+            relationshipId: source.relationship()?.id
+          }
+        ])
+      );
+      await harness.app.close();
+    }
+  );
+
+  it.each([
+    { revokedAt: iso, state: "revoked" as const },
+    { remoteReplicaId: randomUUID() },
+    { creationRequestHash: "f".repeat(64) },
+    {
+      consentManifest: {
+        consented_at: iso,
+        policy_version: 1,
+        source_boundary: "captured_session",
+        selectedSessionId: randomUUID()
+      }
+    }
+  ])(
+    "still rejects a revoked or mismatched same-destination binding: %j",
+    async (change) => {
+      const source = createSourceRepository();
+      const harness = createHarness({
+        backend: sourceSyncBackend(),
+        personalRepository: source.repository,
+        response: (call) => sourceSyncResponse(source, call)
+      });
+      expect(
+        parseResult(
+          (await injectCommand(harness.app, prepareSourceCommand())).body
+        )
+      ).toMatchObject({ ok: true });
+      source.alterRelationship(change);
+      const callsBefore = harness.calls.length;
+      expect(
+        parseResult(
+          (await injectCommand(harness.app, prepareSourceCommand())).body
+        )
+      ).toMatchObject({ ok: false });
+      expect(source.createInputs).toHaveLength(1);
+      expect(
+        harness.calls
+          .slice(callsBefore)
+          .map((call) => new URL(call.url).pathname)
+      ).toEqual(["/koed/v1/cross-identity-sync/intake/context"]);
+      await harness.app.close();
+    }
+  );
+
   it("recovers a failed source relationship whether the target stays active or also fails", async () => {
     const source = createSourceRepository();
     let targetFailed = false;
@@ -2004,6 +2130,9 @@ describe("local-edge collaboration command route", () => {
       data: { entry: { id: ids.session, syncState: "ready" } }
     });
     expect(source.createInputs).toHaveLength(2);
+    expect(source.relationshipLookups[1]?.[2]).toEqual({
+      upstreamBackendId: "team-vps"
+    });
     expect(
       new Set(source.createInputs.map((input) => input.relationshipId))
     ).toEqual(new Set([source.relationship()?.id]));
