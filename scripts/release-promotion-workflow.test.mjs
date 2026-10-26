@@ -2,12 +2,107 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
 const release = readFileSync(
   resolve(root, ".github/workflows/release.yml"),
   "utf8"
 );
+
+test("candidate verification has read-only permissions and protected build identity dependencies", () => {
+  const { jobs } = parse(release);
+  const identity = jobs["reviewed-release-identity"];
+  const verification = jobs["verify-release-candidate"];
+  assert.ok(identity, "missing independent build identity job");
+  assert.deepEqual(verification.permissions, {
+    contents: "read",
+    actions: "read"
+  });
+  assert.ok(verification.needs.includes("reviewed-release-identity"));
+  assert.ok(jobs["publish-release"].needs.includes("verify-release-candidate"));
+  assert.equal(
+    verification.steps.some((step) => step.env?.ACTIONS_ID_TOKEN_REQUEST_TOKEN),
+    false
+  );
+  const verifyStep = verification.steps.find((step) =>
+    step.run?.includes("--verify-only")
+  );
+  assert.ok(verifyStep);
+  assert.ok(verifyStep.run.includes("--identity-artifact-id"));
+  assert.ok(identity.steps.some((step) => step.id === "identity-upload"));
+});
+
+test("reviewed identity comes from immutable build artifacts, not candidate draft; publication retains separate approval", () => {
+  const { jobs } = parse(release);
+  const identity = jobs["reviewed-release-identity"];
+  const hashStep = identity.steps.find((step) => step.id === "identity");
+  assert.match(hashStep.run, /scripts\/reviewed-build-identity\.mjs/);
+  assert.doesNotMatch(
+    identity.steps.map((step) => step.run ?? "").join("\n"),
+    /releases\/|release download|release view/
+  );
+  assert.ok(
+    jobs["verify-release-candidate"].steps.some((step) =>
+      step.run?.includes("scripts/component-pin-rehearsal.mjs")
+    )
+  );
+  const publication = jobs["publish-release"].steps.find((step) =>
+    step.run?.includes("--trust-roots ")
+  );
+  assert.equal(
+    publication.env.KOED_RELEASE_PROMOTION_APPROVED,
+    "${{ vars.KOED_RELEASE_PROMOTION_APPROVED }}"
+  );
+  assert.equal(
+    publication.env.KOED_NPM_PUBLICATION_AUTHORIZED,
+    "${{ vars.KOED_NPM_PUBLICATION_AUTHORIZED }}"
+  );
+  assert.match(publication.run, /--expected-build-sha256/);
+  const desktop = jobs["signed-desktop-release-assets"].steps;
+  const retained = desktop.findIndex(
+    (step) => step.with?.name === "koed-desktop-final-assets"
+  );
+  assert.ok(retained >= 0, "signed Desktop job retains final bytes");
+  // Retain only after signing/notarization/sealing, integrity and composition
+  // checks, so the protected identity binds the bytes that are published.
+  for (const marker of [
+    "desktop:package:release",
+    "verify-macos-package",
+    "inspect-desktop-artifact"
+  ])
+    assert.ok(
+      retained > desktop.findIndex((step) => step.run?.includes(marker)),
+      `final Desktop bytes retained before ${marker}`
+    );
+  assert.match(desktop[retained].with.path, /koed-desktop-macos-arm64\.sha256/);
+});
+
+test("protected identity downloads flatten artifact-ID layout to expected CLI path", () => {
+  const { jobs } = parse(release);
+  for (const jobName of ["verify-release-candidate", "publish-release"]) {
+    const job = jobs[jobName];
+    const download = job.steps.find((step) =>
+      step.with?.["artifact-ids"]?.includes(
+        "needs.reviewed-release-identity.outputs.artifact_id"
+      )
+    );
+    assert.ok(download, `${jobName}: missing identity artifact download`);
+    assert.equal(
+      download.with["merge-multiple"],
+      true,
+      `${jobName}: artifact-ID download must not add artifact-name subdirectory`
+    );
+    assert.equal(download.with.path, "scratch/expected-build");
+    assert.ok(
+      job.steps.some((step) =>
+        step.run?.includes(
+          "--expected-build scratch/expected-build/reviewed-build.json"
+        )
+      )
+    );
+  }
+});
 
 test("asset jobs only run for absent releases or resumable drafts", () => {
   assert.match(

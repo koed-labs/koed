@@ -1,15 +1,22 @@
 import { createHash } from "node:crypto";
+import { verifyComponent } from "../packages/koed-server/dist/component-verification.js";
 import { createReadStream, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildComponentManifestCatalog } from "./component-manifest-catalog.mjs";
 import { canonicalComponentManifestBytes } from "./koed-server-package-lib.mjs";
+import {
+  reviewedRuntimeIdentities,
+  validateReviewedRuntimeIdentities
+} from "./reviewed-build-identity-runtimes.mjs";
 
 export const verifyFrozenComponentAssets = async ({
   assetsDir,
   catalogPath,
-  version
+  version,
+  runtimeIdentities = reviewedRuntimeIdentities()
 }) => {
+  const consumers = validateReviewedRuntimeIdentities(runtimeIdentities);
   const names = readdirSync(assetsDir).filter((name) =>
     /^koed-(base|privacy)-.*\.tar\.gz\.manifest\.json$/.test(name)
   );
@@ -37,6 +44,21 @@ export const verifyFrozenComponentAssets = async ({
       throw new Error(
         `Frozen component archive digest/size mismatch: ${archiveName}`
       );
+    // Cross-target archive admission only, not evidence of native startup.
+    for (const runtime of consumers.filter(
+      (consumer) =>
+        consumer.platform === manifest.target.platform &&
+        consumer.architecture === manifest.target.architecture
+    ))
+      await verifyComponent({
+        manifestBytes: manifests[index],
+        manifestCatalog: catalog,
+        archivePath: path,
+        expectedComponent: manifest.component,
+        expectedVersion: version,
+        target: manifest.target,
+        runtime
+      });
   }
   return catalog;
 };

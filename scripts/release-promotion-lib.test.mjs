@@ -10,10 +10,11 @@ const sha256 = "a".repeat(64);
 const expected = {
   version: "1.2.3",
   npm: { integrity: "sha512-abc=", inventorySha256: sha256 },
+  catalogVerified: true,
   github: {
     assets: [
-      { name: "base.tar.gz", sha256, signature: "ed25519:fixture" },
-      { name: "privacy.tar.gz", sha256, signature: "ed25519:fixture" }
+      { name: "base.tar.gz", sha256 },
+      { name: "privacy.tar.gz", sha256 }
     ]
   }
 };
