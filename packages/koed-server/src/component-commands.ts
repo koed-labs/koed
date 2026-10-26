@@ -11,7 +11,10 @@ import {
   resolveEffectiveRuntimeConfig
 } from "./effective-runtime-config.js";
 import type { KoedServerPaths } from "./paths.js";
-import type { ComponentSource } from "./component-store.js";
+import type {
+  ComponentSource,
+  GenerationOrderingEvidence
+} from "./component-store.js";
 import { resolveKoedAppRuntimeExecution } from "./app-runtime.js";
 import {
   readStagedGeneration,
@@ -24,6 +27,7 @@ import {
   activateGeneration,
   cleanupGenerations,
   readCurrentDesktopGeneration,
+  readCurrentGenerationOrderingEvidence,
   readCurrentGeneration
 } from "./generation-lifecycle.js";
 import type { DesktopRuntimeCapability } from "./desktop-runtime-capability.js";
@@ -135,14 +139,19 @@ const storedGenerations = async (
 
 const readOwnedCurrentGeneration = async (
   context: ComponentCommandContext
-): Promise<VerifiedGeneration | null> => {
+): Promise<VerifiedGeneration | GenerationOrderingEvidence | null> => {
   try {
+    const evidence = context.desktopRuntimeCapability
+      ? null
+      : readCurrentGenerationOrderingEvidence(context.paths);
     const generation = context.desktopRuntimeCapability
       ? await readCurrentDesktopGeneration(
           context.paths,
           context.desktopRuntimeCapability
         )
-      : await readCurrentGeneration(context.paths);
+      : evidence!.productVersion === context.controlPlaneVersion
+        ? await readCurrentGeneration(context.paths)
+        : evidence!;
     return generation.owner.kind === context.owner.kind &&
       generation.owner.installationId === context.owner.installationId
       ? generation
@@ -173,7 +182,7 @@ export async function runComponentStatus(
   };
   for (const component of ["base", "privacy"] as const) {
     if (!required.includes(component)) continue;
-    if (active?.[component]) {
+    if (active && !("kind" in active) && active[component]) {
       states[component] =
         active.productVersion === context.controlPlaneVersion
           ? "active"
@@ -191,7 +200,9 @@ export async function runComponentStatus(
         ? "incompatible"
         : installed.some((entry) => entry.manifest.component === component)
           ? "installed"
-          : "missing";
+          : active && "kind" in active && component === "base"
+            ? "incompatible"
+            : "missing";
   }
   return {
     components: states,
@@ -234,7 +245,8 @@ export async function runComponentInstall(
     signal: context.signal,
     progress: context.progress
   });
-  const active = await readOwnedCurrentGeneration(context);
+  const selection = await readOwnedCurrentGeneration(context);
+  const active = selection && !("kind" in selection) ? selection : null;
   const staged = await storedGenerations(context);
   const installed = await readStoredComponents(context.paths, context.runtime);
   const priorGeneration = staged.find(
