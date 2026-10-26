@@ -22,11 +22,18 @@ Node **24.13.1**, pnpm **11.1.2**, macOS arm64:
   reproduced failure on obsolete signature-sidecar instructions.
 - Independent read-only runtime review found no actionable issues in the added
   diagnostic-presence and cross-version authority/liveness regressions.
+- `pnpm test:required-suites` passed against a new isolated PostgreSQL **17.10**
+  cluster with explicit UTF8 encoding: **289 Vitest tests plus 59 Node tests**.
+  Database, API, authorization, realtime, IPC, Electron UI, accessibility and
+  runtime-component assembly tiers executed. The disposable server was stopped
+  afterwards. No existing Personal Memory or database was used. These suites do
+  not establish installed native or signed Desktop acceptance.
 
 Fresh remote inspection found default/required checks green on the reviewed
 stack heads; native/full-candidate/KMS tiers were skipped. The historical local
-missing-database result below is not a current CI failure or proof that current
-required-suite acceptance passed locally.
+missing-database result below is not a current CI failure. The fresh local
+required-suite result above supersedes that environment blocker, not the native
+or signed acceptance gates.
 
 **Open merge gates:** actual frozen Base/Privacy on both supported targets;
 assembled-candidate verification without publication; installed online/offline
