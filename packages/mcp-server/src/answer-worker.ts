@@ -51,7 +51,7 @@ import {
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 30 * 60_000;
-export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v10";
+export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-worker-v11";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 const MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE = "koed_memory";
 
@@ -769,6 +769,8 @@ interface MemoryAnswerToolState {
   sourceBefore?: string;
   limit: number;
   evidence: unknown[];
+  observedEvidence: unknown[];
+  observedEvidenceTokens: number;
   citations: unknown[];
   retrievals: unknown[];
   searches: ToolSearchRecord[];
@@ -1778,13 +1780,54 @@ const withinRequestDeadline = async <T>(
   }
 };
 
-const indexedEvidenceObservation = (evidence: unknown[], items: unknown[]) =>
-  items.map((item) => ({
-    evidence_index: evidence.findIndex(
-      (candidate) => sourceKey(candidate) === sourceKey(item)
-    ),
+const observedEvidenceKey = (item: unknown): string => {
+  return createHash("sha256").update(JSON.stringify(item)).digest("hex");
+};
+
+const mergeObservedEvidence = (existing: unknown[], items: unknown[]) => {
+  const merged = new Map(
+    existing.map((item) => [observedEvidenceKey(item), item])
+  );
+  for (const item of items) {
+    const key = observedEvidenceKey(item);
+    if (!merged.has(key)) merged.set(key, item);
+  }
+  return [...merged.values()];
+};
+
+const indexedEvidenceObservation = (evidence: unknown[], items: unknown[]) => {
+  const indexes = new Map(
+    evidence.map((candidate, index) => [observedEvidenceKey(candidate), index])
+  );
+  return items.map((item) => ({
+    evidence_index: indexes.get(observedEvidenceKey(item)) ?? -1,
     item
   }));
+};
+
+const observeEvidence = (
+  state: MemoryAnswerToolState,
+  items: unknown[],
+  config: MemoryAnswerWorkerConfig
+) => {
+  const merged = mergeObservedEvidence(state.observedEvidence, items);
+  // Each response and the initial prompt admit at most one evidence budget.
+  // Keep that finite history separate from the reranked working set.
+  const observations = 1 + config.maxSearches + config.maxExpansions;
+  const added = merged.slice(state.observedEvidence.length);
+  const bounded = boundEvidence(added, config);
+  const totalTokens = state.observedEvidenceTokens + bounded.tokenEstimate;
+  if (
+    bounded.evidence.length !== added.length ||
+    merged.length >
+      Math.min(config.maxCandidates, config.maxEvidenceItems) * observations ||
+    totalTokens > config.maxEvidenceTokens * observations
+  )
+    throw new Error("Memory answer observed-evidence budget exhausted");
+  state.observedEvidence = merged;
+  state.observedEvidenceTokens = totalTokens;
+  return indexedEvidenceObservation(merged, items);
+};
 
 export const evidenceSelectedByAnswer = (
   evidence: unknown[],
@@ -1823,7 +1866,14 @@ export const evidenceSelectedByAnswer = (
         "Memory answer worker returned without resolvable supporting evidence for a selection"
       );
     }
-    return distinct;
+    const indexed = Number.isInteger(selection.evidence_index)
+      ? evidence[selection.evidence_index!]
+      : undefined;
+    // Prefer the exact observed snapshot only after identity and visibility
+    // resolution established one unambiguous source.
+    return indexed && evidenceMatchesObservedSelection(indexed, selection)
+      ? [indexed]
+      : distinct;
   });
   // Observed references only serve resolution; keep them out of the bundle.
   return appendEvidence([], resolved).map((item) =>
@@ -2343,11 +2393,20 @@ const createMemoryAnswerDynamicToolHandler = (
           phase: "worker",
           durationMs: Date.now() - started
         });
+        const hitKeys = hits.map((hit, index) =>
+          sourceKey(normalizeCandidateIdentity(hit, index, stage))
+        );
+        const admittedHits = state.evidence.filter((candidate) =>
+          hitKeys.includes(sourceKey(candidate))
+        );
         return dynamicToolResult({
           kind: "search_result",
           query: searchQuery,
           stage,
-          hits: indexedEvidenceObservation(state.evidence, hits),
+          hits: observeEvidence(state, admittedHits, options.config),
+          omittedEvidenceCount: hitKeys.filter(
+            (key) => !admittedHits.some((item) => sourceKey(item) === key)
+          ).length,
           retrieval: workerRetrievalDiagnostic(
             searchResult.retrieval ?? searchResult
           ),
@@ -2428,9 +2487,9 @@ const createMemoryAnswerDynamicToolHandler = (
           state.citations,
           citationsFromHits(expandedEvidence)
         );
-        const admittedExpandedEvidence = expandedEvidence.filter((item) =>
-          state.evidence.some(
-            (candidate) => sourceKey(candidate) === sourceKey(item)
+        const admittedExpandedEvidence = state.evidence.filter((candidate) =>
+          expandedEvidence.some(
+            (item) => sourceKey(candidate) === sourceKey(item)
           )
         );
         const expansionRecord: ToolExpansionRecord = {
@@ -2444,9 +2503,10 @@ const createMemoryAnswerDynamicToolHandler = (
         return dynamicToolResult({
           kind: "expand_result",
           nodeId,
-          expandedEvidence: indexedEvidenceObservation(
-            state.evidence,
-            admittedExpandedEvidence
+          expandedEvidence: observeEvidence(
+            state,
+            admittedExpandedEvidence,
+            options.config
           ),
           state: toolStateSummary(state, options.config)
         });
@@ -2527,7 +2587,10 @@ const buildDynamicMemoryAnswerPrompt = (
   const render = (): string => {
     const firstPassContext = boundedUnknown(
       {
-        evidence: state.evidence,
+        evidence: indexedEvidenceObservation(
+          mergeObservedEvidence(state.observedEvidence, state.evidence),
+          state.evidence
+        ),
         citations: state.citations,
         retrievals: state.retrievals.map(workerRetrievalDiagnostic),
         retrievalHints: state.retrievalHints,
@@ -3918,6 +3981,8 @@ const runDynamicToolMemoryAnswer = async (
     sourceBefore: options.sourceBefore,
     limit: options.limit,
     evidence: initialBoundedEvidence.evidence,
+    observedEvidence: [],
+    observedEvidenceTokens: 0,
     citations: appendCitations(
       citationsFromPayload(payload),
       firstPass.citations
@@ -3987,6 +4052,7 @@ const runDynamicToolMemoryAnswer = async (
       );
       prompt = built.prompt;
       promptTokens = built.promptTokens;
+      observeEvidence(state, state.evidence, options.config);
     } catch (error) {
       markBudgetExhausted(state.ledger, "prompt_tokens");
       throw error;
@@ -4170,9 +4236,19 @@ const runDynamicToolMemoryAnswer = async (
       );
     }
     const selectedEvidence = evidenceSelectedByAnswer(
-      state.evidence,
+      state.observedEvidence,
       structuredAnswer
     );
+    // Historical observations may span several working sets, but the final
+    // support must still fit a single configured evidence-token budget.
+    if (
+      boundEvidence(selectedEvidence, options.config).exhausted.includes(
+        "evidence_tokens"
+      )
+    ) {
+      markBudgetExhausted(state.ledger, "evidence_tokens");
+      throw new Error("Memory answer budget exhausted: evidence_tokens");
+    }
     const selectedEvidenceLimit = Math.min(
       state.limit,
       options.config.maxCandidates,
@@ -4466,6 +4542,8 @@ export const answerWithMemoryWorker = async (
                 sourceBefore: options.sourceBefore,
                 limit: options.limit ?? 10,
                 evidence: answer.candidates,
+                observedEvidence: [],
+                observedEvidenceTokens: 0,
                 citations: answer.citations,
                 retrievals: answer.retrievals,
                 searches: answer.searches,

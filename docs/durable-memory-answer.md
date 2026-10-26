@@ -36,6 +36,29 @@ delivery identity, never task results or a second execution queue.
 The runtime's bounded database reconciliation is infrastructure work, not
 model polling. Koed exposes no task status, wait, or queue tool to the model.
 
+## Evidence Reference Lifetime
+
+Within one Memory Answer execution, the helper can select evidence it was
+shown earlier even after a later search replaces that candidate in the working
+set. Prompt and tool observations carry request-local stable `evidence_index`
+values. Indexes are not positions in the latest ranked list. Koed keeps the
+bounded evidence snapshots and their complete observed references for final
+selection, including references from earlier validation attempts.
+
+The working-set candidate, item and token limits are unchanged. Only admitted
+evidence is exposed as selectable tool results. The observation history is
+bounded by one initial evidence budget plus one for each permitted search or
+expansion: at most `(1 + maxSearches + maxExpansions)` times the configured
+evidence item and token limits. Duplicate observations reuse their indexes.
+Final selected support must still fit the normal answer item and evidence-token
+limits; retaining history does not allow fabricated references or a different
+visibility to pass validation. Retrieval authorization boundaries are unchanged.
+
+This history is execution-local, not another durable evidence store or an access
+grant. A separate Memory Answer starts a new helper task and retrieves evidence
+again through the normal authorized pipeline. Existing durable source records
+and final Memory Question persistence remain the source of later retrieval.
+
 ## Queue And Failure Ownership
 
 BullMQ and the generic local work queue are intentionally not used. Their
