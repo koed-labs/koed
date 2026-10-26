@@ -227,7 +227,7 @@ jobs:
           path: dist/koed-components/${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
           compression-level: 0
-          retention-days: 1
+          retention-days: 30
 
   component-manifest-catalog:
     name: Bind complete frozen component catalog
@@ -267,7 +267,7 @@ jobs:
           path: release-components
           if-no-files-found: error
           compression-level: 0
-          retention-days: 1
+          retention-days: 30
       - name: Upload exact catalog to draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -425,7 +425,7 @@ jobs:
           name: koed-server-app-runtime-${{ matrix.platform }}-${{ matrix.arch }}
           path: release-artifacts/koed-server-app-runtime-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 30
           compression-level: 0
 
       - name: Upload standalone koed-server assets to GitHub release
@@ -476,6 +476,14 @@ jobs:
             --artifact-root release-artifacts \
             --out "koed-release-artifacts-${{ needs.release.outputs.version }}.json" \
             --json
+
+      - name: Retain reviewed release metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-release-metadata
+          path: koed-release-artifacts-${{ needs.release.outputs.version }}.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Upload release artifact metadata to GitHub release
         env:
@@ -607,7 +615,7 @@ jobs:
           name: koed-native-runtime-linux-x64
           path: release-artifacts/native-runtime-linux-x64
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 30
           compression-level: 0
 
       - name: Upload native runtime assets to GitHub release
@@ -726,6 +734,20 @@ jobs:
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      # #428 must retain this upload AFTER final signing/notarization/sealing.
+      - name: Retain final Desktop bytes for independent candidate verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-desktop-final-assets
+          path: |
+            apps/desktop/release/Koed-*-arm64.dmg
+            apps/desktop/release/Koed-*-arm64.zip
+            apps/desktop/release/desktop-artifact-size-report.json
+            apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
       - name: Upload unsigned Desktop assets to GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -736,12 +758,108 @@ jobs:
             apps/desktop/release/desktop-artifact-size-report.json \
             apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256
 
+  reviewed-release-identity:
+    name: Bind reviewed build outputs independently of release draft
+    runs-on: ubuntu-24.04
+    needs:
+      [
+        release,
+        component-manifest-catalog,
+        standalone-koed-server-release-assets,
+        standalone-koed-server-release-metadata,
+        native-runtime-linux-x64-release-assets,
+        unsigned-desktop-release-assets
+      ]
+    if: needs.release.outputs.desktop_assets_enabled == 'true'
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.identity-upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.identity-upload.outputs.artifact-digest }}
+      identity_sha256: ${{ steps.identity.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+      - run: pnpm install --frozen-lockfile && pnpm --filter @koed-labs/server build
+      - name: Resolve immutable artifact IDs from this reviewed run
+        id: sources
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p scratch
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > scratch/build-artifacts.json
+          ids="$(jq -r '[.artifacts[] | select(.name == "koed-component-catalog" or .name == "koed-server-app-runtime-linux-x64" or .name == "koed-server-app-runtime-macos-arm64" or .name == "koed-desktop-final-assets" or .name == "koed-native-runtime-linux-x64" or .name == "koed-release-metadata") | .id] | join(",")' scratch/build-artifacts.json)"
+          test -n "${ids}"
+          echo "ids=${ids}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ steps.sources.outputs.ids }}
+          path: scratch/reviewed-build-outputs
+      - name: Hash protected frozen and final packaged bytes
+        id: identity
+        run: |
+          set -euo pipefail
+          digest="$(node scripts/reviewed-build-identity.mjs scratch/reviewed-build-outputs scratch/build-artifacts.json scratch/reviewed-build.json '${{ needs.release.outputs.version }}')"
+          echo "sha256=${digest}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        id: identity-upload
+        with:
+          name: koed-reviewed-release-identity
+          path: scratch/reviewed-build.json
+          if-no-files-found: error
+          retention-days: 30
+
+  verify-release-candidate:
+    name: Read-only pin and packaged-artifact verification
+    runs-on: ubuntu-24.04
+    needs: [release, reviewed-release-identity]
+    if: needs.release.outputs.desktop_assets_enabled == 'true'
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+      - run: pnpm install --frozen-lockfile && pnpm --filter @koed-labs/server build
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.reviewed-release-identity.outputs.artifact_id }}
+          path: scratch/expected-build
+          merge-multiple: true
+      - name: Verify without publication or signer capability
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/release-promotion-adapter.mjs --verify-only \
+            --expected-build scratch/expected-build/reviewed-build.json \
+            --expected-build-sha256 '${{ needs.reviewed-release-identity.outputs.identity_sha256 }}' \
+            --identity-artifact-id '${{ needs.reviewed-release-identity.outputs.artifact_id }}' \
+            --identity-artifact-digest 'sha256:${{ needs.reviewed-release-identity.outputs.artifact_digest }}' \
+            --repository '${{ github.repository }}' --reviewed-commit '${{ github.sha }}' \
+            --approved-run-id '${{ github.run_id }}' --approved-run-attempt '${{ github.run_attempt }}' \
+            --release-id '${{ needs.release.outputs.release_id }}' --version '${{ needs.release.outputs.version }}' --json
+      - name: Exercise isolated fixture pin admission
+        run: node scripts/component-pin-rehearsal.mjs
+
   publish-release:
     name: Verify assets and publish release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
+      actions: read
       id-token: write
     needs:
       - release
@@ -749,17 +867,30 @@ jobs:
       - standalone-koed-server-release-metadata
       - native-runtime-linux-x64-release-assets
       - unsigned-desktop-release-assets
+      - reviewed-release-identity
+      - verify-release-candidate
     if: needs.release.outputs.desktop_assets_enabled == 'true'
 
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.reviewed-release-identity.outputs.artifact_id }}
+          path: scratch/expected-build
+          merge-multiple: true
+
       - name: Setup Node and npm trusted publishing
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24.13.1
           registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile && pnpm --filter @koed-labs/server build
 
       - name: Require official signer, trust roots, npm authorization, and explicit promotion approval
         env:
@@ -869,6 +1000,8 @@ jobs:
 
       - name: Verify signatures, promote npm candidate, and publish GitHub release
         env:
+          KOED_RELEASE_PROMOTION_APPROVED: ${{ vars.KOED_RELEASE_PROMOTION_APPROVED }}
+          KOED_NPM_PUBLICATION_AUTHORIZED: ${{ vars.KOED_NPM_PUBLICATION_AUTHORIZED }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SIGNER_URL: ${{ vars.KOED_COMPONENT_SIGNER_URL }}
           SIGNER_KEY_ID: ${{ vars.KOED_COMPONENT_SIGNER_KEY_ID }}
@@ -882,6 +1015,12 @@ jobs:
           trust_roots="${RUNNER_TEMP}/koed-component-trust-roots.json"
           printf '%s' "${TRUST_ROOTS_JSON}" > "${trust_roots}"
           node scripts/release-promotion-adapter.mjs \
+            --expected-build scratch/expected-build/reviewed-build.json \
+            --expected-build-sha256 '${{ needs.reviewed-release-identity.outputs.identity_sha256 }}' \
+            --identity-artifact-id '${{ needs.reviewed-release-identity.outputs.artifact_id }}' \
+            --identity-artifact-digest 'sha256:${{ needs.reviewed-release-identity.outputs.artifact_digest }}' \
+            --reviewed-commit '${{ github.sha }}' \
+            --approved-run-id '${{ github.run_id }}' --approved-run-attempt '${{ github.run_attempt }}' \
             --trust-roots "${trust_roots}" \
             --trust-roots-sha256 "${TRUST_ROOTS_SHA256}" \
             --controlplane-trust-roots-sha256 "${CONTROLPLANE_TRUST_ROOTS_SHA256}" \

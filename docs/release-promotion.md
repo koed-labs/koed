@@ -2,7 +2,92 @@
 
 The release workflow keeps GitHub releases as drafts until `scripts/release-promotion-adapter.mjs` completes every verification. Automated asset jobs run only when the release is absent or remains a draft; reruns skip asset acquisition and promotion for already published releases.
 
-Component admission is migrating to [versioned manifest catalogs](component-manifest-catalog.md). Frozen component builds precede complete catalog generation, then standalone/npm and Desktop packaging. Promotion additionally verifies that catalog against every frozen archive and the effective unpacked npm control plane before publication. Existing signer checks below remain transitional release gates until target-specific acceptance and separately authorized retirement; they are not a runtime fallback for missing pins.
+Component admission is migrating to [versioned manifest catalogs](component-manifest-catalog.md). Frozen component builds precede complete catalog generation, then standalone/npm and Desktop packaging. Promotion additionally verifies that catalog against every frozen archive and the effective packed npm and Desktop control planes before publication. Existing signer checks below remain transitional release gates until target-specific replacement acceptance permits component-signing source cleanup; they are not a runtime fallback for missing pins. This cleanup does not authorize changing or deleting live cloud resources.
+
+## Read-only candidate verification
+
+`verifyReleaseCandidate(input, readers)` returns evidence, not permission to publish.
+Its reader interface contains only GitHub/registry GET operations. The
+`--verify-only` entry path does not request OIDC tokens, contact the component
+signer, or expose npm publish/dist-tag or GitHub release-update methods. Use a
+read-only token (`contents: read`, `actions: read`); do not provide publication or
+signing credentials to this job.
+
+The workflow retains frozen catalog/components, app-runtime/npm outputs, native
+runtime assets, release metadata and final Desktop ZIP/DMG bytes as immutable
+Actions artifacts for 30 days. `reviewed-release-identity` hashes those outputs,
+not the mutable release draft, and emits `reviewed-build.json`. Downstream jobs
+receive its artifact ID, Actions artifact digest and exact JSON SHA-256 through
+job outputs. Verification also binds repository, reviewed commit, workflow path,
+run ID/attempt and product version, and rechecks artifact origin/expiry through
+GitHub. Missing or expired evidence blocks verification; never regenerate
+expected hashes from downloaded draft assets.
+
+For an already approved build, the read-only CLI shape is:
+
+```bash
+node scripts/release-promotion-adapter.mjs --verify-only \
+  --expected-build /path/to/approved/reviewed-build.json \
+  --expected-build-sha256 "$APPROVED_IDENTITY_SHA256" \
+  --identity-artifact-id "$APPROVED_IDENTITY_ARTIFACT_ID" \
+  --identity-artifact-digest "$APPROVED_IDENTITY_ARTIFACT_DIGEST" \
+  --repository "$APPROVED_REPOSITORY" --reviewed-commit "$APPROVED_COMMIT" \
+  --approved-run-id "$APPROVED_RUN_ID" --approved-run-attempt "$APPROVED_RUN_ATTEMPT" \
+  --release-id "$CANDIDATE_DRAFT_ID" --version "$APPROVED_VERSION" --json
+```
+
+All `APPROVED_*` values must come from independently reviewed build evidence,
+not candidate-supplied metadata. Artifact digest includes the `sha256:` prefix.
+A caller who controls both expected identity and candidate is not independently
+authenticated by this comparison.
+
+Verification compares exact remote asset bytes with protected hashes; checks the
+complete Base/Privacy × Linux x64 glibc/macOS arm64 tuple matrix, canonical
+manifests and archive/file inventories; and statically inspects actual npm
+name/version/bin/SRI/inventory and effective npm/Desktop catalog pins. Candidate
+modules are parsed, never imported or executed. Desktop inspection extracts
+`app.asar` from the final ZIP, without modifying sealed app bytes. The
+Desktop job retains the final ZIP, DMG, size report and checksum file as a
+run artifact only after signing, notarization, sealing, integrity verification
+and composition inspection. Retaining and hashing those bytes binds what is
+published; it is not signed/notarized clean-Mac launch acceptance.
+Registry checks reject version/SRI conflicts and `latest` downgrades; absent npm
+candidate is valid verification evidence, not authorization to create it.
+
+npm inspection accepts the generated `bin/koed.js` launcher only, then resolves
+its actual control-plane exports and split-module bindings statically. The CLI
+must reach admission calls whose `manifestCatalog` value comes from the same
+validated catalog authority inspected by the exported catalog check. Uncalled
+nested consumers, incidental catalog references, property overrides and spreads
+cannot satisfy this gate. This is a generated-code shape check, not a proof of
+arbitrary JavaScript semantics or a replacement for protected build provenance.
+
+`reviewed-build.json` now includes mandatory `runtimeIdentities`. These come from
+protected checkout policy in `scripts/reviewed-build-identity-runtimes.mjs`, not
+candidate manifests: Node 24.13.1 / ABI 137 / N-API 10 for Linux x64 and macOS
+arm64; Electron 39.8.10 / embedded Node 22.22.1 / ABI 140 / N-API 10 for macOS
+arm64. Electron must match the resolved Desktop lock and independently validated
+runtime policy. Linux glibc 2.35 is the admission baseline, not a candidate-chosen
+minimum. Frozen verification checks each component against every required
+consumer on its target, including N-API-only contracts. Missing, duplicate or
+changed protected runtime identities fail closed; regenerate older reviewed
+identities through the approved build job. CLI frozen verification uses the same
+protected checkout policy without a candidate runtime-input flag. Runtime
+upgrades require separately reviewed measurements and policy/toolchain updates;
+these static compatibility checks do not establish native startup acceptance.
+
+`node scripts/component-pin-rehearsal.mjs` exercises real installer/admission
+calls in disposable homes with fixture control planes, offline network denial,
+HTTPS-shaped fetch fixtures and manifest/archive/extracted-file/missing-pin/
+wrong-pin rejection. It uses synthetic payloads and does not establish actual
+network isolation, native startup, signatures, notarization or Task 4 acceptance.
+
+Publication approval remains separate and is checked before any mutation.
+Production promotion reruns protected candidate verification immediately before
+its first mutation and binds publication bytes to that evidence. No receipt or
+caller-supplied success flag substitutes for either approval or verification.
+Transitional production signer/root checks remain required until Task 4's real
+replacement-path acceptance passes; their removal belongs to Task 5.
 
 ## Required repository variables
 
@@ -26,7 +111,7 @@ The workflow signs each component manifest remotely, then verifies canonical man
 
 Recovery applies same checks to existing draft assets; it does not rewrite previously uploaded immutable signatures. Missing configuration, untrusted roots, unsigned/placeholder assets, registry mismatch, or signer errors leave release draft and fail workflow.
 
-Candidate publication uses `candidate-<version>` (for example, `candidate-0.9.0`), which npm accepts as a dist-tag. Canonical manifest bytes have no trailing newline and are identical to the installer signing domain. Promotion reads trust roots from the actual packed `package/dist/component-trust-roots.js`; adapter tests extract a real tarball and stream multi-megabyte assets.
+Candidate publication uses `candidate-<version>` (for example, `candidate-0.9.0`), which npm accepts as a dist-tag. Canonical manifest bytes have no trailing newline and are identical to the installer signing domain. Promotion reads trust roots from the actual packed `package/dist/component-trust-roots.js`; adapter tests inspect a real tarball and exercise production signature verification and mutations through local mocks.
 
 ## Component signature format and Google Cloud KMS
 

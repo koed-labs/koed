@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runReleaseVerification } from "./release-candidate-readers.mjs";
 import { inspectPackagedTrustRoots } from "./static-packaged-trust-roots.mjs";
 import { componentManifestSigningBytes } from "./component-signature-format.mjs";
 import { verifyFrozenComponentAssets } from "./verify-frozen-component-assets.mjs";
@@ -112,12 +113,29 @@ export const parseArgs = (argv) => {
     ["--signer-key-id", "signerKeyId"],
     ["--repository", "repository"],
     ["--release-id", "releaseId"],
-    ["--version", "version"]
+    ["--version", "version"],
+    ["--expected-build", "expectedBuild"],
+    ["--expected-build-sha256", "expectedBuildSha256"],
+    ["--identity-artifact-id", "identityArtifactId"],
+    ["--identity-artifact-digest", "identityArtifactDigest"],
+    ["--reviewed-commit", "reviewedCommit"],
+    ["--approved-run-id", "approvedRunId"],
+    ["--approved-run-attempt", "approvedRunAttempt"]
   ]);
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--json") args.json = true;
-    else if (flags.has(argv[i])) args[flags.get(argv[i])] = argv[++i];
-    else throw new Error(`Unknown option: ${argv[i]}`);
+    else if (argv[i] === "--verify-only") args.verifyOnly = true;
+    else if (flags.has(argv[i])) {
+      const flag = argv[i];
+      const value = argv[++i];
+      if (
+        !value ||
+        value.startsWith("--") ||
+        args[flags.get(flag)] !== undefined
+      )
+        throw new Error(`Missing or duplicate option: ${flag}`);
+      args[flags.get(flag)] = value;
+    } else throw new Error(`Unknown option: ${argv[i]}`);
   }
   return args;
 };
@@ -141,6 +159,16 @@ const registryVersion = async (packageName, version) => {
 };
 
 export const runReleasePromotion = async (args, adapters = {}) => {
+  if (args.verifyOnly) return runReleaseVerification(args, adapters.readers);
+  if (adapters.publicationApproved !== true)
+    throw new Error(
+      "Independent publication approval is required before promotion."
+    );
+  const candidate = await runReleaseVerification(args, adapters.readers);
+  if (!candidate.desktop)
+    throw new Error(
+      "Full release promotion requires effective Desktop verification."
+    );
   const {
     run = command,
     fetchRegistry = registryVersion,
@@ -276,6 +304,19 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     const tarballPath = resolve(temp, tarballName);
     download(assets.get(identityName), identityPath);
     download(assets.get(tarballName), tarballPath);
+    // Bind downloaded bytes to the protected build before tar or JSON parsing
+    // touches them; the full asset check below stays as the pre-mutation gate.
+    for (const [name, path] of [
+      [identityName, identityPath],
+      [tarballName, tarballPath]
+    ]) {
+      const reviewed = candidate.assets.find((asset) => asset.name === name);
+      const digest = createHash("sha256")
+        .update(readFileSync(path))
+        .digest("hex");
+      if (!reviewed || reviewed.sha256 !== digest)
+        throw new Error(`Release asset differs from protected build: ${name}`);
+    }
     const identity = JSON.parse(readFileSync(identityPath, "utf8"));
     const expected = {
       packageName: "@koed-labs/server",
@@ -310,6 +351,38 @@ export const runReleasePromotion = async (args, adapters = {}) => {
       catalogPath,
       version: args.version
     });
+    // Rerun from protected input, not a caller-supplied receipt; bind bytes used
+    // below to the same evidence immediately before the first mutation.
+    const rechecked = await runReleaseVerification(args, adapters.readers);
+    if (canonicalReleaseJson(rechecked) !== canonicalReleaseJson(candidate))
+      throw new Error("Candidate changed before publication.");
+    const immutableAssets = [
+      ...manifests.flatMap((name) => [
+        name,
+        name.replace(/\.manifest\.json$/, ".signature.json"),
+        name.replace(/\.manifest\.json$/, "")
+      ]),
+      catalogName,
+      identityName,
+      tarballName
+    ];
+    const expectedAssets = immutableAssets.map((name) => {
+      const path =
+        name === identityName
+          ? identityPath
+          : name === tarballName
+            ? tarballPath
+            : resolve(temp, name);
+      const digest = createHash("sha256")
+        .update(readFileSync(path))
+        .digest("hex");
+      const reviewed = candidate.assets.find((asset) => asset.name === name);
+      if (!reviewed || reviewed.sha256 !== digest)
+        throw new Error(`Release asset differs from protected build: ${name}`);
+      return { name, sha256: digest };
+    });
+    // Every consumed immutable asset, including retained signature envelopes,
+    // must match protected build bytes before any irreversible mutation.
     let published = await fetchRegistry(expected.packageName, expected.version);
     if (!published) {
       run("npm", [
@@ -331,31 +404,10 @@ export const runReleasePromotion = async (args, adapters = {}) => {
       candidateNpmTag(args.version)
     ]);
     const latest = await fetchRegistry(expected.packageName, "latest");
-    const immutableAssets = [
-      ...manifests.flatMap((name) => [
-        name,
-        name.replace(/\.manifest\.json$/, ".signature.json"),
-        name.replace(/\.manifest\.json$/, "")
-      ]),
-      catalogName,
-      identityName,
-      tarballName
-    ];
-    const expectedAssets = immutableAssets.map((name) => {
-      const path =
-        name === identityName
-          ? identityPath
-          : name === tarballName
-            ? tarballPath
-            : resolve(temp, name);
-      const digest = createHash("sha256")
-        .update(readFileSync(path))
-        .digest("hex");
-      return { name, sha256: digest, signature: `verified:${digest}` };
-    });
     const plan = planReleasePromotion(
       {
         version: args.version,
+        catalogVerified: true,
         npm: {
           integrity: expected.integrity,
           inventorySha256: identity.npm.inventorySha256
@@ -416,6 +468,31 @@ export const runReleasePromotion = async (args, adapters = {}) => {
 const main = async () => {
   const args = parseArgs(process.argv.slice(2));
   for (const field of [
+    "expectedBuild",
+    "expectedBuildSha256",
+    "identityArtifactId",
+    "identityArtifactDigest",
+    "reviewedCommit",
+    "approvedRunId",
+    "approvedRunAttempt",
+    "repository",
+    "releaseId",
+    "version"
+  ])
+    if (!args[field])
+      throw new Error(`Missing required verification option: ${field}`);
+  if (args.verifyOnly) {
+    console.log(JSON.stringify(await runReleaseVerification(args)));
+    return;
+  }
+  const publicationApproved =
+    process.env.KOED_RELEASE_PROMOTION_APPROVED === "true" &&
+    process.env.KOED_NPM_PUBLICATION_AUTHORIZED === "true";
+  if (!publicationApproved)
+    throw new Error(
+      "Independent publication approval is required before promotion."
+    );
+  for (const field of [
     "trustRoots",
     "trustRootsSha256",
     "controlplaneTrustRootsSha256",
@@ -441,7 +518,10 @@ const main = async () => {
   const { value: signerToken } = await tokenResponse.json();
   if (typeof signerToken !== "string" || !signerToken)
     throw new Error("Missing GitHub signing token");
-  const result = await runReleasePromotion(args, { signerToken });
+  const result = await runReleasePromotion(args, {
+    signerToken,
+    publicationApproved
+  });
   console.log(
     args.json
       ? JSON.stringify(result)

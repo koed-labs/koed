@@ -1,0 +1,273 @@
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { resolve } from "node:path";
+import { verifyFrozenComponentAssets } from "./verify-frozen-component-assets.mjs";
+import { inspectReleasePackage } from "./inspect-release-package.mjs";
+import { validateReviewedRuntimeIdentities } from "./reviewed-build-identity-runtimes.mjs";
+import { compareVersions } from "./release-promotion-lib.mjs";
+import { verifyPackagedDesktopCatalog } from "../apps/desktop/scripts/verify-packaged-component-catalog.mjs";
+
+export const sha256 = (bytes) =>
+  createHash("sha256").update(bytes).digest("hex");
+const digestPattern = /^[a-f0-9]{64}$/;
+const versionPattern = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/;
+const fail = (message) => {
+  throw new Error(message);
+};
+const positive = (value) => Number.isSafeInteger(value) && value > 0;
+
+export const validateReviewedBuildIdentity = (expected) => {
+  validateReviewedRuntimeIdentities(expected?.runtimeIdentities);
+  if (
+    expected?.schemaVersion !== 1 ||
+    !/^[\w.-]+\/[\w.-]+$/.test(expected.repository ?? "") ||
+    !/^[a-f0-9]{40}$/.test(expected.commit ?? "") ||
+    expected.workflowPath !== ".github/workflows/release.yml" ||
+    !positive(expected.runId) ||
+    !positive(expected.runAttempt) ||
+    !versionPattern.test(expected.version ?? "")
+  )
+    fail("Invalid protected reviewed-build identity.");
+  if (
+    !Array.isArray(expected.artifacts) ||
+    !expected.artifacts.length ||
+    new Set(expected.artifacts.map((a) => a.id)).size !==
+      expected.artifacts.length
+  )
+    fail("Missing or duplicate protected build artifact identity.");
+  for (const artifact of expected.artifacts)
+    if (
+      !positive(artifact.id) ||
+      typeof artifact.name !== "string" ||
+      !artifact.name ||
+      !/^sha256:[a-f0-9]{64}$/.test(artifact.digest ?? "")
+    )
+      fail("Invalid protected build artifact identity.");
+  if (
+    !Array.isArray(expected.assets) ||
+    !expected.assets.length ||
+    new Set(expected.assets.map((a) => a.name)).size !== expected.assets.length
+  )
+    fail("Missing or duplicate protected asset identity.");
+  for (const asset of expected.assets)
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(asset.name ?? "") ||
+      !digestPattern.test(asset.sha256 ?? "")
+    )
+      fail("Invalid protected asset identity.");
+  if (
+    !/^sha512-[A-Za-z0-9+/]{86}==$/.test(expected.npm?.integrity ?? "") ||
+    !digestPattern.test(expected.npm?.inventorySha256 ?? "") ||
+    !positive(expected.npm?.bytes)
+  )
+    fail("Invalid protected npm identity.");
+  if (
+    expected.desktop !== null &&
+    (!expected.desktop ||
+      !expected.assets.some((a) => a.name === expected.desktop.asset) ||
+      expected.desktop.asarEntry !== "Koed.app/Contents/Resources/app.asar")
+  )
+    fail("Invalid protected Desktop identity.");
+  return expected;
+};
+
+const verifyBuildOrigin = async (expected, readers) => {
+  const run = await readers.getWorkflowRun(expected.repository, expected.runId);
+  if (
+    run.id !== expected.runId ||
+    run.run_attempt !== expected.runAttempt ||
+    run.head_sha !== expected.commit ||
+    run.path !== expected.workflowPath ||
+    run.repository?.full_name !== expected.repository ||
+    !["in_progress", "completed"].includes(run.status) ||
+    (run.status === "completed" && run.conclusion !== "success")
+  )
+    fail("Approved workflow run identity mismatch.");
+  for (const expectedArtifact of expected.artifacts) {
+    const artifact = await readers.getArtifact(
+      expected.repository,
+      expectedArtifact.id
+    );
+    if (
+      artifact.expired !== false ||
+      artifact.id !== expectedArtifact.id ||
+      artifact.name !== expectedArtifact.name ||
+      artifact.digest !== expectedArtifact.digest ||
+      artifact.workflow_run?.id !== expected.runId ||
+      artifact.workflow_run?.head_sha !== expected.commit
+    )
+      fail("Protected build artifact identity mismatch or expired artifact.");
+  }
+};
+
+const downloadCandidate = async (input, expected, readers, root) => {
+  const release = await readers.getRelease(
+    expected.repository,
+    input.releaseId
+  );
+  if (
+    String(release.id) !== String(input.releaseId) ||
+    release.draft !== true ||
+    release.tag_name !== `v${expected.version}` ||
+    !Array.isArray(release.assets)
+  )
+    fail("Candidate draft identity mismatch.");
+  const assets = new Map();
+  const ids = new Set();
+  for (const asset of release.assets) {
+    if (!positive(asset.id) || assets.has(asset.name) || ids.has(asset.id))
+      fail("Duplicate candidate asset identity.");
+    assets.set(asset.name, asset);
+    ids.add(asset.id);
+  }
+  for (const asset of expected.assets) {
+    const remote = assets.get(asset.name);
+    if (!remote) fail(`Missing protected candidate asset: ${asset.name}`);
+    const bytes = await readers.getAsset(expected.repository, remote.id);
+    if (!Buffer.isBuffer(bytes) || sha256(bytes) !== asset.sha256)
+      fail(`Candidate asset digest mismatch: ${asset.name}`);
+    writeFileSync(resolve(root, asset.name), bytes, {
+      flag: "wx",
+      mode: 0o600
+    });
+  }
+  // Manifest additions cannot hide outside the protected inventory.
+  for (const name of assets.keys())
+    if (
+      /^koed-(base|privacy)-.*\.manifest\.json$/.test(name) &&
+      !expected.assets.some((a) => a.name === name)
+    )
+      fail("Unreviewed component manifest asset.");
+  return release;
+};
+
+const inspectDesktop = (expected, root, catalogPath) => {
+  if (expected.desktop === null) return null;
+  const archive = resolve(root, expected.desktop.asset);
+  const entry = expected.desktop.asarEntry;
+  const listing = execFileSync("unzip", ["-Z1", archive], {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024
+  }).split("\n");
+  if (listing.filter((name) => name === entry).length !== 1)
+    fail("Desktop archive ASAR identity is missing or duplicate.");
+  const asar = execFileSync("unzip", ["-p", archive, entry], {
+    maxBuffer: 1024 * 1024 * 1024
+  });
+  const appPath = resolve(root, "desktop/Koed.app");
+  mkdirSync(resolve(appPath, "Contents/Resources"), { recursive: true });
+  writeFileSync(resolve(appPath, "Contents/Resources/app.asar"), asar, {
+    flag: "wx"
+  });
+  verifyPackagedDesktopCatalog({
+    appPath,
+    catalogPath,
+    version: expected.version
+  });
+  return {
+    asset: expected.desktop.asset,
+    asarSha256: sha256(asar),
+    catalogVerified: true
+  };
+};
+
+/** Evidence only. Readers expose GETs, never a shell, signer or mutation capability. */
+export const verifyReleaseCandidate = async (input, readers) => {
+  const original = JSON.stringify(input);
+  const snapshot = structuredClone(input);
+  const expected = validateReviewedBuildIdentity(snapshot.expected);
+  for (const field of [
+    "repository",
+    "commit",
+    "runId",
+    "runAttempt",
+    "version"
+  ])
+    if (snapshot[field] !== expected[field])
+      fail(`Protected candidate identity mismatch: ${field}`);
+  if (!positive(Number(snapshot.releaseId)))
+    fail("Invalid candidate release identity.");
+  await verifyBuildOrigin(expected, readers);
+  mkdirSync(resolve("scratch"), { recursive: true });
+  const root = mkdtempSync(resolve("scratch/release-candidate-"));
+  try {
+    const release = await downloadCandidate(snapshot, expected, readers, root);
+    const catalogPath = resolve(root, "component-manifest-hashes.json");
+    await verifyFrozenComponentAssets({
+      assetsDir: root,
+      catalogPath,
+      version: expected.version,
+      runtimeIdentities: expected.runtimeIdentities
+    });
+    const identity = JSON.parse(
+      readFileSync(
+        resolve(root, "koed-labs-server-release-identity.json"),
+        "utf8"
+      )
+    );
+    if (
+      identity.packageName !== "@koed-labs/server" ||
+      identity.version !== expected.version ||
+      JSON.stringify(identity.npm) !== JSON.stringify(expected.npm)
+    )
+      fail("npm release identity mismatch.");
+    const npm = inspectReleasePackage({
+      bytes: readFileSync(resolve(root, "koed-labs-server.tgz")),
+      expected: expected.npm,
+      version: expected.version,
+      root: resolve(root, "package"),
+      catalogPath
+    });
+    const desktop = inspectDesktop(expected, root, catalogPath);
+    const registry = await readers.getRegistryVersion(
+      "@koed-labs/server",
+      expected.version
+    );
+    if (
+      registry &&
+      (registry.name !== "@koed-labs/server" ||
+        registry.version !== expected.version ||
+        registry.dist?.integrity !== npm.integrity)
+    )
+      fail("npm candidate registry identity/integrity mismatch.");
+    const latest = await readers.getRegistryVersion(
+      "@koed-labs/server",
+      "latest"
+    );
+    if (
+      latest &&
+      (!versionPattern.test(latest.version ?? "") ||
+        compareVersions(latest.version, expected.version) > 0)
+    )
+      fail("Refusing npm latest downgrade or invalid registry version.");
+    if (JSON.stringify(input) !== original)
+      fail("Protected build identity changed during verification.");
+    return {
+      kind: "verified-release-candidate",
+      runtimeIdentities: structuredClone(expected.runtimeIdentities),
+      repository: expected.repository,
+      commit: expected.commit,
+      runId: expected.runId,
+      runAttempt: expected.runAttempt,
+      version: expected.version,
+      releaseId: snapshot.releaseId,
+      assets: expected.assets.map((asset) => ({
+        ...asset,
+        id: release.assets.find((a) => a.name === asset.name).id
+      })),
+      components: 4,
+      npm,
+      desktop,
+      registry: registry ? "verified" : "unpublished"
+    };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+};
