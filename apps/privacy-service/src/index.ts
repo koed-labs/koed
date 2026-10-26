@@ -1,7 +1,7 @@
 import { createValidationCache } from "./validation-cache.js";
 import { resolveConfig } from "./config.js";
 import { PrivacyRuntimeManager } from "./runtime-manager.js";
-import { HuggingFacePrivacyRuntime } from "./runtime.js";
+import { createPrivacyRuntime } from "./runtime-factory.js";
 import {
   createNodeHttpServer,
   createPrivacyService,
@@ -26,17 +26,17 @@ reportStartup("initialization_started");
 const runtime = await PrivacyRuntimeManager.create({
   onStartupProgress: reportStartup,
   preference: config.runtimeProvider,
-  validationCache: await createValidationCache(config.transformersCache),
+  validationCache: await createValidationCache(
+    config.transformersCache,
+    undefined,
+    config.runtimeEngine,
+    config.cpuWorkers
+  ),
+  ...(config.runtimeEngine === "onnx-worker"
+    ? { candidateProviders: ["cpu" as const] }
+    : {}),
   acceleratorIdleUnloadSeconds: config.gpuIdleUnloadSeconds,
-  factory: (provider) =>
-    new HuggingFacePrivacyRuntime(
-      config.modelId,
-      config.modelRevision,
-      config.transformersCache,
-      undefined,
-      undefined,
-      provider
-    )
+  factory: (provider) => createPrivacyRuntime(config, provider)
 });
 const server = createNodeHttpServer(
   createPrivacyService(config, runtime),
@@ -49,7 +49,10 @@ process.stdout.write(
 );
 
 const shutdown = () => {
+  const drainTimeout = setTimeout(() => server.closeAllConnections(), 5_000);
+  drainTimeout.unref();
   server.close(() => {
+    clearTimeout(drainTimeout);
     void runtime.dispose().finally(() => process.exit(0));
   });
   server.closeIdleConnections();

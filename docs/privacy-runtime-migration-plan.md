@@ -1,6 +1,14 @@
 # Privacy runtime migration plan
 
-Status: planned, 26 October 2026. The benchmarks justify implementation of a
+Status: complete for the qualified Linux x64 Team CPU scope, 26 October 2026.
+Tickets 01–08 passed service qualification, synthetic publication/recovery/denial,
+isolated rollback and the explicitly approved manual rollout/restart/observation.
+Four normally approved member publications activated and the User confirmed the
+Team view opens. Native/GPU qualification and broader initial Git Anchor catch-up
+remain outside this completion. See the
+[validation record](privacy-runtime-migration-validation.md).
+
+The original benchmarks justified implementation of a
 candidate behind the existing Privacy Service interface. Further measurements
 are acceptance checks for that candidate; a wider optimization survey is not
 required before starting.

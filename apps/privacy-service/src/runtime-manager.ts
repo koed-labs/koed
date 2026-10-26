@@ -10,6 +10,7 @@ import {
 } from "./provider.js";
 import type {
   PrivacyRuntimeAdapter,
+  PrivacyRuntimeAvailability,
   RawPrivacyClassification
 } from "./runtime.js";
 
@@ -37,6 +38,7 @@ export interface PrivacyRuntimeStatus {
   candidateProviders: PrivacyRuntimeProvider[];
   verifiedProviders: PrivacyRuntimeProvider[];
   switchState: "ready" | "switching";
+  inferenceState?: PrivacyRuntimeAvailability;
   drainingProviders: PrivacyRuntimeProvider[];
   acceleratorIdleUnloadSeconds: number;
   acceleratorResident: boolean;
@@ -92,7 +94,7 @@ const CALIBRATION_TEXT =
 
 export type ParityBaseline = Array<{ maskedText: string; spans: string }>;
 
-const parityOutput = async (
+export const parityOutput = async (
   runtime: PrivacyRuntimeAdapter,
   corpus: readonly string[] = PARITY_CORPUS
 ): Promise<ParityBaseline> => {
@@ -319,6 +321,41 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
     return this.active.runtime.provider;
   }
 
+  get maximumConcurrentRequests(): 1 | 2 {
+    return this.active.runtime.maximumConcurrentRequests ?? 1;
+  }
+  get maximumConcurrentFields(): 1 | 2 {
+    return this.active.runtime.maximumConcurrentFields ?? 1;
+  }
+
+  get supportsBatch(): boolean {
+    return this.active.runtime.supportsBatch ?? false;
+  }
+
+  async classifyFields(
+    texts: readonly string[],
+    onField: (index: number, field: RawPrivacyClassification) => void,
+    signal?: AbortSignal,
+    onProgress?: () => void
+  ): Promise<void> {
+    signal?.throwIfAborted();
+    const slot = this.active;
+    if (!slot.runtime.supportsBatch || !slot.runtime.classifyFields)
+      throw new ClassificationError("privacy batching unavailable");
+    slot.inFlight += 1;
+    try {
+      return await slot.runtime.classifyFields(
+        texts,
+        onField,
+        signal,
+        onProgress
+      );
+    } finally {
+      slot.inFlight -= 1;
+      if (slot.retired && slot.inFlight === 0) void this.disposeSlot(slot);
+    }
+  }
+
   isReady(): boolean {
     return this.active.runtime.isReady() || this.acceleratorIdleUnloaded;
   }
@@ -379,6 +416,9 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
       candidateProviders: [...this.options.candidateProviders],
       verifiedProviders: [...this.verified],
       switchState: this.switchState,
+      ...(this.active.runtime.availability
+        ? { inferenceState: this.active.runtime.availability() }
+        : {}),
       drainingProviders: [...this.retired]
         .filter((slot) => !slot.disposed)
         .map((slot) => slot.runtime.provider),
@@ -429,6 +469,12 @@ export class PrivacyRuntimeManager implements PrivacyRuntimeAdapter {
     preference: PrivacyRuntimePreference,
     initial: boolean
   ): Promise<PrivacyRuntimeStatus> {
+    if (
+      preference === "auto" &&
+      this.active.runtime.supportsBatch &&
+      this.options.candidateProviders.every((provider) => provider === "cpu")
+    )
+      return this.status();
     this.fallbackReason = undefined;
     let target: PrivacyRuntimeProvider =
       preference === "auto" ? "cpu" : preference;

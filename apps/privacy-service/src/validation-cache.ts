@@ -89,7 +89,9 @@ export function fileValidationCache(
 
 export async function createValidationCache(
   modelCache: string,
-  cachePath = join(modelCache, "runtime-validation-v1.json")
+  cachePath = join(modelCache, "runtime-validation-v1.json"),
+  engine: "transformers" | "onnx-worker" = "transformers",
+  cpuWorkers = 1
 ): Promise<PrivacyValidationCache | undefined> {
   try {
     const require = createRequire(import.meta.url);
@@ -108,6 +110,22 @@ export async function createValidationCache(
         "provenance"
       ].map((name) => readFile(new URL(`./${name}.js`, import.meta.url)))
     );
+    const workerSources =
+      engine === "onnx-worker"
+        ? await Promise.all([
+            readFile(new URL("./onnx-worker.js", import.meta.url)),
+            readFile(new URL("./supervised-runtime.js", import.meta.url)),
+            readFile(new URL("./onnx-pool.js", import.meta.url)),
+            readFile(new URL("./runtime-factory.js", import.meta.url)),
+            readFile(new URL("./field-classification.js", import.meta.url)),
+            readFile(new URL("./inference-contract.js", import.meta.url)),
+            readFile(new URL("../worker/inference.py", import.meta.url)),
+            readFile(
+              new URL("../worker/requirements-linux-x64.lock", import.meta.url)
+            ),
+            readFile("/opt/koed-privacy/runtime-identity.json")
+          ])
+        : [];
     const command =
       process.platform === "darwin"
         ? ([
@@ -127,19 +145,23 @@ export async function createValidationCache(
               "nvidia-smi",
               ["--query-gpu=uuid,name,driver_version", "--format=csv,noheader"]
             ] as const);
-    let acceleratorIdentity: string;
+    let acceleratorIdentity = "packaged-cpu-only";
     try {
-      acceleratorIdentity = (
-        await promisify(execFile)(command[0], [...command[1]], {
-          timeout: 3000,
-          maxBuffer: 1024 * 1024
-        })
-      ).stdout;
+      if (engine !== "onnx-worker")
+        acceleratorIdentity = (
+          await promisify(execFile)(command[0], [...command[1]], {
+            timeout: 3000,
+            maxBuffer: 1024 * 1024
+          })
+        ).stdout;
     } catch {
       // Without a stable accelerator identity, do not reuse provider validation.
       return undefined;
     }
     const hash = createHash("sha256");
+    hash.update(engine);
+    hash.update(String(cpuWorkers));
+    for (const source of workerSources) hash.update(source);
     hash.update(acceleratorIdentity);
     hash.update(
       JSON.stringify(

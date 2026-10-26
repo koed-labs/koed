@@ -195,6 +195,13 @@ CPU parity validation, provider selection and HTTP listening. These logs contain
 no classified text or credentials. A timeout still fails readiness; use the last
 completed stage to distinguish slow loading from an unavailable service.
 
+The separate Linux x64 Team CPU image packages the newer ONNX worker, bounded
+two-worker scheduling and short-field batching. Its qualified service profile,
+resource bounds, qualified publication/rollout results and platform limits are documented in
+[Packaged Privacy CPU worker](privacy-cpu-worker.md). Native/provider defaults
+remain unchanged. [Qualification replay](privacy-runtime-qualification.md)
+uses isolated synthetic runners and does not modify a running Team backend.
+
 Bundled-local Team startup verifies every pinned Privacy Filter model file once
 before the Privacy Filter process is spawned. Readiness polling then trusts the
 running service health response and does not read the model again. A later

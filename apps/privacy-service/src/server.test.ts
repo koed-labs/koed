@@ -16,6 +16,7 @@ import {
   listenNodeHttpServer
 } from "./server.js";
 import { ZERO_VITERBI_BIASES } from "./decoder.js";
+import { request as httpRequest } from "node:http";
 
 const config = (
   overrides: Partial<PrivacyServiceConfig> = {}
@@ -57,6 +58,96 @@ const contractBody = (fields: Array<{ path: string; text: string }>): string =>
   });
 
 describe("Privacy Service routes", () => {
+  it.each(["missing", "duplicate"])(
+    "fails the whole response closed for %s batch field mapping",
+    async (mode) => {
+      const native = new DeterministicPrivacyRuntime();
+      const runtime = Object.assign(native, {
+        supportsBatch: true,
+        classifyFields: async (
+          texts: readonly string[],
+          onField: (index: number, raw: RawPrivacyClassification) => void
+        ) => {
+          onField(0, await native.classify(texts[0]!));
+          if (mode === "duplicate")
+            onField(0, await native.classify(texts[0]!));
+        }
+      });
+      const response = await createPrivacyService(config(), runtime).handle(
+        classifyRequest(
+          contractBody([
+            { path: "/first", text: "Synthetic A" },
+            { path: "/second", text: "Synthetic B" }
+          ]),
+          { "x-koed-privacy-token": "internal-secret" }
+        )
+      );
+      expect(response.status).toBe(503);
+      expect(await response.json()).not.toHaveProperty("fields");
+    }
+  );
+  it("reserves both profile slots before reading an HTTP body and rejects a third header-only request", async () => {
+    const runtime = Object.assign(new DeterministicPrivacyRuntime(), {
+      maximumConcurrentRequests: 2 as const,
+      maximumConcurrentFields: 2 as const
+    });
+    const service = createPrivacyService(config(), runtime);
+    const headers = {
+      "content-type": "application/json",
+      "x-koed-privacy-token": "internal-secret"
+    };
+    const headerRequest = () =>
+      new Request("http://privacy/v1/classify", { method: "POST", headers });
+    const first = service.reserve!(headerRequest())!;
+    const second = service.reserve!(headerRequest())!;
+    const server = createNodeHttpServer(service, config().maxBodyBytes);
+    await listenNodeHttpServer(server, "127.0.0.1", 0);
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("missing listener");
+    try {
+      const result = await new Promise<{
+        status: number | undefined;
+        retry: string | undefined;
+      }>((resolve, reject) => {
+        const request = httpRequest(
+          {
+            host: "127.0.0.1",
+            port: address.port,
+            path: "/v1/classify",
+            method: "POST",
+            headers: { ...headers, "content-length": "100" }
+          },
+          (response) => {
+            response.resume();
+            response.once("end", () => {
+              resolve({
+                status: response.statusCode,
+                retry: response.headers["retry-after"]
+              });
+              request.destroy();
+            });
+          }
+        );
+        request.on("error", reject);
+        request.flushHeaders(); // Deliberately send no body: rejection must not wait for it.
+      });
+      expect(result).toEqual({ status: 503, retry: "1" });
+      first.release();
+      first.release();
+      const accepted = await service.handle(
+        classifyRequest(
+          contractBody([{ path: "/same", text: "Synthetic" }]),
+          headers
+        )
+      );
+      expect(accepted.status).toBe(200);
+    } finally {
+      first.release();
+      second.release();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
   it("propagates a real HTTP disconnect to inference cancellation", async () => {
     const runtime: PrivacyRuntimeAdapter = new DeterministicPrivacyRuntime();
     const original = runtime.classify.bind(runtime);

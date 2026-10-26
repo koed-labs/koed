@@ -1,0 +1,36 @@
+# Linux x64 Team CPU candidate. The general/native image remains Dockerfile.
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS build
+WORKDIR /app
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1 ONNXRUNTIME_NODE_INSTALL=skip
+RUN corepack enable && corepack prepare pnpm@11.1.2 --activate
+COPY . .
+RUN pnpm install --frozen-lockfile --ignore-scripts \
+  && find apps packages -name "*.tsbuildinfo" -delete \
+  && rm -rf apps/*/dist packages/*/dist \
+  && pnpm --filter @koed/shared build \
+  && pnpm --filter @koed/privacy-service build \
+  && pnpm --filter @koed/privacy-service deploy --legacy --prod /deploy/privacy-service
+
+FROM python:3.11.14-slim-bookworm@sha256:65a93d69fa75478d554f4ad27c85c1e69fa184956261b4301ebaf6dbb0a3543d AS runtime
+ARG TARGETARCH
+RUN test "$TARGETARCH" = amd64
+# Both immutable bases use Bookworm. Preserve the C++ runtime and its notices.
+COPY --from=build /usr/local/bin/node /usr/local/bin/node
+COPY --from=build /usr/local/LICENSE /usr/local/share/doc/node/LICENSE
+COPY --from=build /usr/lib/x86_64-linux-gnu/libstdc++.so.6* /usr/lib/x86_64-linux-gnu/
+COPY --from=build /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 /usr/lib/x86_64-linux-gnu/
+COPY --from=build /usr/share/doc/libstdc++6 /usr/share/doc/libstdc++6
+COPY --from=build /usr/share/doc/libgcc-s1 /usr/share/doc/libgcc-s1
+COPY apps/privacy-service/worker/requirements-linux-x64.lock /opt/koed-privacy-requirements.lock
+RUN python -m venv --copies /opt/koed-privacy \
+  && /opt/koed-privacy/bin/python -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/koed-privacy-requirements.lock \
+  && /opt/koed-privacy/bin/python -c 'import onnxruntime, numpy; assert onnxruntime.__version__ == "1.31.0" and numpy.__version__ == "2.2.6"'
+COPY apps/privacy-service/worker/package-identity.py /opt/koed-privacy-package-identity.py
+RUN /opt/koed-privacy/bin/python /opt/koed-privacy-package-identity.py > /opt/koed-privacy/runtime-identity.json
+WORKDIR /app
+COPY --from=build --chown=1000:1000 /deploy/privacy-service ./
+COPY apps/privacy-service/worker ./worker
+ENV NODE_ENV=production PRIVACY_SERVICE_HOST=0.0.0.0 PRIVACY_SERVICE_PORT=8092 PRIVACY_RUNTIME_ENGINE=onnx-worker PRIVACY_RUNTIME_PROVIDER=cpu PRIVACY_CPU_WORKERS=2
+USER 1000:1000
+EXPOSE 8092
+CMD ["node", "dist/index.js"]

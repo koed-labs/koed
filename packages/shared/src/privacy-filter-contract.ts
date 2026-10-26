@@ -40,7 +40,7 @@ export const PRIVACY_WINDOW_MAX_TOKENS =
 // The pinned byte-level BPE has no normalizer. With special tokens disabled,
 // token count cannot exceed the UTF-8 byte count admitted by the semantic field contract.
 export const PRIVACY_MAX_FIELD_TOKENS = SHARED_MEMORY_SEMANTIC_FIELD_MAX_BYTES;
-export const PRIVACY_MAX_CONCURRENT_REQUESTS = 1;
+export const PRIVACY_MAX_CONCURRENT_REQUESTS = 2;
 
 const PRIVACY_FINGERPRINT_KEY_DOMAIN = "koed:privacy-owner-fingerprint-key:v1";
 
@@ -224,7 +224,10 @@ export const privacyServiceCapabilitiesSchema = z
     maximumSemanticPreviewEncodedBytes: z.literal(
       SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES
     ),
-    maximumConcurrentRequests: z.literal(PRIVACY_MAX_CONCURRENT_REQUESTS)
+    maximumConcurrentRequests: z.union([
+      z.literal(1),
+      z.literal(PRIVACY_MAX_CONCURRENT_REQUESTS)
+    ])
   })
   .strict();
 

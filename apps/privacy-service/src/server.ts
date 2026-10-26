@@ -38,7 +38,16 @@ import type { PrivacyRuntimeAdapter } from "./runtime.js";
 import { validateClassifyRequest } from "./schemas.js";
 
 export interface PrivacyService {
-  handle(request: Request, onProgress?: () => void): Promise<Response>;
+  reserve?(request: Request): PrivacyAdmission | undefined;
+  handle(
+    request: Request,
+    onProgress?: () => void,
+    admission?: PrivacyAdmission
+  ): Promise<Response>;
+}
+
+export interface PrivacyAdmission {
+  release(): void;
 }
 
 type ManagedPrivacyRuntime = PrivacyRuntimeAdapter &
@@ -151,9 +160,46 @@ export const createPrivacyService = (
   config: PrivacyServiceConfig,
   runtime: PrivacyRuntimeAdapter
 ): PrivacyService => {
-  let classificationActive = false;
+  let activeRequests = 0;
+  const reservations = new WeakSet<PrivacyAdmission>();
+  const claimed = new WeakSet<PrivacyAdmission>();
+  const capacity = () =>
+    Math.min(
+      PRIVACY_MAX_CONCURRENT_REQUESTS,
+      runtime.maximumConcurrentRequests ?? 1
+    );
+  const reserve = (request: Request): PrivacyAdmission | undefined => {
+    if (
+      request.method !== "POST" ||
+      new URL(request.url).pathname !== "/v1/classify"
+    )
+      return undefined;
+    requirePrivacyToken(
+      config.token,
+      request.headers.get("x-koed-privacy-token")
+    );
+    if (!runtime.isReady() || activeRequests >= capacity())
+      throw new HttpError(
+        503,
+        "privacy classification capacity is busy",
+        "classification_busy"
+      );
+    activeRequests += 1;
+    const admission = {
+      release() {
+        if (reservations.delete(admission)) activeRequests -= 1;
+      }
+    };
+    reservations.add(admission);
+    return admission;
+  };
   return {
-    async handle(request: Request, onProgress?: () => void): Promise<Response> {
+    reserve,
+    async handle(
+      request: Request,
+      onProgress?: () => void,
+      suppliedAdmission?: PrivacyAdmission
+    ): Promise<Response> {
       const requestId = requestIdFor(request);
       try {
         const url = new URL(request.url);
@@ -176,11 +222,17 @@ export const createPrivacyService = (
                     component: runtimeStatus.component,
                     requestedProvider: runtimeStatus.requestedProvider,
                     activeProvider: runtimeStatus.activeProvider,
-                    switchState: runtimeStatus.switchState
+                    switchState: runtimeStatus.switchState,
+                    ...(runtimeStatus.inferenceState
+                      ? { inferenceState: runtimeStatus.inferenceState }
+                      : {})
                   }
                 : {
                     component: "privacy_filter",
-                    activeProvider: runtime.provider
+                    activeProvider: runtime.provider,
+                    ...(runtime.availability
+                      ? { inferenceState: runtime.availability() }
+                      : {})
                   }
             },
             runtime.isReady() ? 200 : 503,
@@ -215,7 +267,7 @@ export const createPrivacyService = (
                 SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
               maximumSemanticPreviewEncodedBytes:
                 SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES,
-              maximumConcurrentRequests: PRIVACY_MAX_CONCURRENT_REQUESTS
+              maximumConcurrentRequests: capacity()
             },
             200,
             requestId
@@ -260,32 +312,30 @@ export const createPrivacyService = (
           config.token,
           request.headers.get("x-koed-privacy-token")
         );
-        if (classificationActive) {
-          throw new HttpError(
-            503,
-            "privacy classification capacity is busy",
-            "classification_busy"
-          );
-        }
-        // Reserve before reading the body: simultaneous callers cannot build an
-        // unbounded inference queue while a request is still being validated.
-        classificationActive = true;
+        const admission = suppliedAdmission ?? reserve(request)!;
+        if (!reservations.has(admission) || claimed.has(admission))
+          throw new ClassificationError("invalid privacy capacity reservation");
+        claimed.add(admission);
         try {
           request.signal.throwIfAborted();
           const input = validateClassifyRequest(
             await parseBody(request, config.maxBodyBytes),
             config
           );
-          const fields = [];
-          for (const field of input.fields) {
-            request.signal.throwIfAborted();
-            const classified = maskClassification(
-              field.text,
-              await runtime.classify(field.text, request.signal, onProgress)
-            );
-            request.signal.throwIfAborted();
+          const fields: PrivacyClassificationResponse["fields"] = new Array(
+            input.fields.length
+          );
+          const failure = new AbortController();
+          const signal = AbortSignal.any([request.signal, failure.signal]);
+          const makeField = (
+            index: number,
+            raw: Awaited<ReturnType<PrivacyRuntimeAdapter["classify"]>>
+          ) => {
+            signal.throwIfAborted();
+            const field = input.fields[index]!;
+            const classified = maskClassification(field.text, raw);
             onProgress?.();
-            fields.push({
+            fields[index] = {
               path: field.path,
               inputSha256: createHash("sha256")
                 .update(field.text)
@@ -293,7 +343,62 @@ export const createPrivacyService = (
               inputByteLength: Buffer.byteLength(field.text, "utf8"),
               ...classified,
               decodedTextMatchesInput: true as const
-            });
+            };
+          };
+          let cursor = 0;
+          const classifyFields = async () => {
+            while (cursor < input.fields.length) {
+              signal.throwIfAborted();
+              const index = cursor++;
+              const field = input.fields[index]!;
+              makeField(
+                index,
+                await runtime.classify(field.text, signal, onProgress)
+              );
+            }
+          };
+          const tasks =
+            runtime.supportsBatch && runtime.classifyFields
+              ? [
+                  (async () => {
+                    await runtime.classifyFields!(
+                      input.fields.map((field) => field.text),
+                      (index, raw) => {
+                        if (
+                          !Number.isSafeInteger(index) ||
+                          index < 0 ||
+                          index >= fields.length ||
+                          fields[index]
+                        )
+                          throw new ClassificationError(
+                            "invalid privacy field mapping"
+                          );
+                        makeField(index, raw);
+                      },
+                      signal,
+                      onProgress
+                    );
+                    if (Array.from(fields).some((result) => !result))
+                      throw new ClassificationError(
+                        "incomplete privacy batch results"
+                      );
+                  })()
+                ]
+              : Array.from(
+                  {
+                    length: Math.min(
+                      runtime.maximumConcurrentFields ?? 1,
+                      input.fields.length
+                    )
+                  },
+                  () => classifyFields()
+                );
+          try {
+            await Promise.all(tasks);
+          } catch (error) {
+            failure.abort();
+            await Promise.allSettled(tasks);
+            throw error;
           }
           const response: PrivacyClassificationResponse = {
             schemaVersion: 1,
@@ -311,7 +416,7 @@ export const createPrivacyService = (
             requestId
           );
         } finally {
-          classificationActive = false;
+          admission.release();
         }
       } catch (error) {
         if (request.signal.aborted) {
@@ -421,13 +526,22 @@ export const createNodeHttpServer = (
       };
       request.once("aborted", abort);
       response.once("close", onClose);
+      let admission: PrivacyAdmission | undefined;
       try {
         const host = request.headers.host ?? "127.0.0.1";
+        const requestUrl = `http://${host}${request.url ?? "/"}`;
+        admission = service.reserve?.(
+          new Request(requestUrl, {
+            method: request.method,
+            headers: request.headers as HeadersInit,
+            signal: cancellation.signal
+          })
+        );
         const body =
           request.method === "POST"
             ? await readBody(request, maxBodyBytes)
             : undefined;
-        const webRequest = new Request(`http://${host}${request.url ?? "/"}`, {
+        const webRequest = new Request(requestUrl, {
           method: request.method,
           headers: request.headers as HeadersInit,
           signal: cancellation.signal,
@@ -456,7 +570,8 @@ export const createNodeHttpServer = (
                 completedUnits += 1;
                 writeFrame({ type: "progress", completedUnits });
               }
-            : undefined
+            : undefined,
+          admission
         );
         if (!cancellation.signal.aborted) {
           if (streaming) {
@@ -480,10 +595,13 @@ export const createNodeHttpServer = (
         response.statusCode = status;
         response.setHeader("content-type", "application/json; charset=utf-8");
         response.setHeader("cache-control", "no-store");
+        if (code === "classification_busy")
+          response.setHeader("retry-after", "1");
         response.end(
           JSON.stringify({ error: { code, detail: "request failed" } })
         );
       } finally {
+        admission?.release();
         request.off("aborted", abort);
         response.off("close", onClose);
       }

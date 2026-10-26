@@ -44,12 +44,14 @@
       See the [initial benchmark record](docs/team-continuous-sharing-validation.md#isolated-remote-privacy-engine-benchmark--23-october-2026)
       and the plan's later benchmark summary. Further measurements are bounded
       migration gates, not an open-ended optimization survey.
-  - [ ] PRIV-01: select and reproducibly package the supported inference boundary.
-  - [ ] PRIV-02: integrate one supervised CPU worker with existing service behavior.
-  - [ ] PRIV-03: add bounded two-worker concurrency and coordinated capacity contracts.
-  - [ ] PRIV-04: batch up to eight ready short fields within one admitted request.
-  - [ ] PRIV-05: qualify the combined service and one synthetic publication journey.
-  - [ ] PRIV-06: stage authorized rollout, restart/recovery and matching-build rollback.
+  - [x] PRIV-01: select and reproducibly package the supported inference boundary.
+  - [x] PRIV-02: integrate one supervised CPU worker with existing service behavior.
+  - [x] PRIV-03: add bounded two-worker concurrency and coordinated capacity contracts.
+  - [x] PRIV-04: batch up to eight ready short fields within one admitted request.
+  - [x] PRIV-05: qualify the combined service and one synthetic publication journey.
+        Service adoption, normal publication, encrypted recovery and current-authority denial passed tickets 05–06.
+  - [x] PRIV-06: stage authorized rollout, restart/recovery and matching-build rollback.
+        Isolated rollback, approved manual rollout/restart/observation and four normally approved member publications passed tickets 07–08. The User confirmed the authorized Team view opens.
 
 Manual-test correction: continuous Git Anchor and Project sharing review now
 checks selection scope instead of requiring capture to stop. Nine isolated
@@ -69,7 +71,6 @@ candidate artifacts before distributing this later source correction.
       retry, and authenticated owner previews and grant reads pass. The local CPU
       backend uses the supported 120-second Privacy request timeout. See the
       [validation record](docs/team-continuous-sharing-validation.md#pi-tool-provenance-and-preview-correction-23-october-2026).
-
 
 The User accepted the operational alpha on 21 October 2026 after manual testing.
 The [production tickets](tickets.md) own the sequence and acceptance criteria.

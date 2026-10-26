@@ -27,6 +27,8 @@ export interface PrivacyServiceConfig {
   maxBodyBytes: number;
   runtimeProvider: PrivacyRuntimePreference;
   gpuIdleUnloadSeconds: number;
+  runtimeEngine?: "transformers" | "onnx-worker";
+  cpuWorkers?: 1 | 2;
 }
 
 const positiveInteger = (
@@ -84,7 +86,35 @@ export const resolveConfig = (
   if (!transformersCache) {
     throw new Error("KOED_PRIVACY_TRANSFORMERS_CACHE is required");
   }
+  const runtimeEngine =
+    environment.PRIVACY_RUNTIME_ENGINE?.trim() || "transformers";
+  if (runtimeEngine !== "transformers" && runtimeEngine !== "onnx-worker") {
+    throw new Error(
+      "PRIVACY_RUNTIME_ENGINE must be transformers or onnx-worker"
+    );
+  }
+  const cpuWorkers = positiveInteger(environment, "PRIVACY_CPU_WORKERS", 2);
+  if (cpuWorkers !== 1 && cpuWorkers !== 2)
+    throw new Error("PRIVACY_CPU_WORKERS must be 1 or 2");
+  if (
+    runtimeEngine === "onnx-worker" &&
+    (process.platform !== "linux" || process.arch !== "x64")
+  ) {
+    throw new Error(
+      "onnx-worker requires the packaged Linux x64 Team CPU image"
+    );
+  }
+  if (
+    runtimeEngine === "onnx-worker" &&
+    !["cpu", "auto"].includes(
+      parsePrivacyRuntimePreference(environment.PRIVACY_RUNTIME_PROVIDER)
+    )
+  ) {
+    throw new Error("onnx-worker supports only the CPU provider");
+  }
   return {
+    runtimeEngine,
+    cpuWorkers,
     host: environment.PRIVACY_SERVICE_HOST?.trim() || "127.0.0.1",
     port: positiveInteger(environment, "PRIVACY_SERVICE_PORT", 8092),
     token: environment.PRIVACY_SERVICE_TOKEN?.trim() || "",

@@ -6,6 +6,10 @@ low-level `@huggingface/transformers` tokenizer and token-classification model,
 then decodes its raw 33-way token logits with the in-package constrained BIOES
 Viterbi decoder. Deterministic credential patterns are unioned with model spans.
 
+The separate Linux x64 Team CPU candidate image replaces only model execution
+with a packaged ONNX worker. It retains this API, tokenizer and masking path.
+See [candidate packaging, lifecycle and support](../../docs/privacy-cpu-worker.md).
+
 ## API
 
 `GET /health` is content-free and unauthenticated. `POST /v1/classify` requires
@@ -25,9 +29,16 @@ appear in `maskedText`. The response includes the pinned model revision and
 classifier hash, and never returns the detected plaintext.
 
 Inference uses one 256-token output core at a time with 128 tokens of context
-on each side (at most 512 model-input tokens). Calls are serialized per runtime,
-fields are processed sequentially, and a field may contain at most 128,000
-tokens.
+on each side (at most 512 model-input tokens), and a field may contain at most
+128,000 tokens. General/native calls remain serialized. The packaged CPU pool
+admits at most two requests and schedules their existing windows fairly across
+two two-thread workers. Each request can process two independent fields, with
+bounded preparation and exact result ordering. The service reserves capacity
+before reading HTTP bodies. Short fields batch within their request in groups of
+at most eight independent attention-masked rows, with at most 256 tokens per
+field and 2,048 padded positions. Padding is validated and removed before decoding;
+long fields retain the existing complete windows. Publication finalization remains
+single-slot.
 
 `PRIVACY_RUNTIME_PROVIDER` accepts `cpu`, `auto`, `cuda`, `coreml`, or `dml`
 and inherits Koed's product-level Hardware acceleration preference in

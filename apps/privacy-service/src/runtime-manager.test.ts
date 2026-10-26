@@ -95,6 +95,23 @@ const normalCuda = async () => ({
 });
 
 describe("Privacy Filter runtime manager", () => {
+  it("keeps CPU-only batching controls from starting competing calibration", async () => {
+    const runtime = Object.assign(new FakeRuntime("cpu"), {
+      supportsBatch: true
+    });
+    const classify = vi.spyOn(runtime, "classify");
+    const manager = await PrivacyRuntimeManager.create({
+      preference: "cpu",
+      candidateProviders: ["cpu"],
+      factory: () => runtime
+    });
+    const before = classify.mock.calls.length;
+    expect(await manager.switchProvider("auto")).toMatchObject({
+      activeProvider: "cpu"
+    });
+    expect(classify).toHaveBeenCalledTimes(before);
+    await manager.dispose();
+  });
   it("does not treat cancellation as accelerator failure or retry on CPU", async () => {
     let cuda!: FakeRuntime;
     const manager = await PrivacyRuntimeManager.create({

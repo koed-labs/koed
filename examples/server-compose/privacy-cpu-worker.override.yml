@@ -1,0 +1,35 @@
+# Linux x64 CPU rollout; requires Docker Compose 2.24.4 or newer.
+# Validate immutable image identities before applying. See docs/privacy-runtime-rollout.md.
+services:
+  koed-server:
+    image: ${KOED_TEAM_RUNTIME_IMAGE:?Set the qualified matching backend image}
+    pull_policy: never
+  privacy-service:
+    image: ${KOED_PRIVACY_CPU_IMAGE:?Set the qualified packaged CPU image}
+    pull_policy: never
+    entrypoint: ["node", "dist/index.js"]
+    command: []
+    environment:
+      PRIVACY_SERVICE_HOST: 0.0.0.0
+      PRIVACY_SERVICE_PORT: 8092
+      PRIVACY_RUNTIME_ENGINE: onnx-worker
+      PRIVACY_RUNTIME_PROVIDER: cpu
+      PRIVACY_CPU_WORKERS: 2
+      KOED_PRIVACY_TRANSFORMERS_CACHE: /models
+    # Replace inherited model-install/home mounts; only public model assets enter this image.
+    volumes: !override
+      - privacy-cpu-models:/models:ro
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 4
+    mem_limit: 4g
+    memswap_limit: 4g
+    pids_limit: 128
+volumes:
+  privacy-cpu-models:
+    external: true
+    name: ${KOED_PRIVACY_MODEL_VOLUME:?Set the verified public-only model volume}

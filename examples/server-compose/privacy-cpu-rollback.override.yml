@@ -1,0 +1,11 @@
+# Apply after privacy-cpu-worker.override.yml. Retain its matching current client/API.
+services:
+  privacy-service:
+    image: ${KOED_PRIVACY_ROLLBACK_IMAGE:?Set the frozen previous one-slot service image}
+    pull_policy: never
+    entrypoint: ["node", "apps/privacy-service/dist/index.js"]
+    command: []
+    environment:
+      PRIVACY_RUNTIME_ENGINE: transformers
+      PRIVACY_RUNTIME_PROVIDER: cpu
+      PRIVACY_CPU_WORKERS: 1

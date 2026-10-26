@@ -180,46 +180,54 @@ describe("Privacy Service client", () => {
       expect(fetchImpl).toHaveBeenCalledOnce();
     }
   );
-  it("accepts only the exact authenticated capacity contract", async () => {
-    const client = createPrivacyServiceClient({
-      baseUrl: "http://127.0.0.1:8092",
-      token: "token",
-      fetchImpl: vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              schemaVersion: 1,
-              inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
-              tokenizerSha256: hash,
-              tokenizerNormalization: "none",
-              maximumFieldsPerRequest:
-                PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT,
-              maximumFieldBytes: PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES,
-              maximumRequestFieldBytes:
-                PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES,
-              maximumRequestBodyBytes:
-                PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES,
-              windowCoreTokens: PRIVACY_WINDOW_CORE_TOKENS,
-              windowContextTokens: PRIVACY_WINDOW_CONTEXT_TOKENS,
-              windowMaximumTokens: PRIVACY_WINDOW_MAX_TOKENS,
-              maximumFieldTokens: PRIVACY_MAX_FIELD_TOKENS,
-              maximumSemanticPreviewFields:
-                SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS,
-              maximumSemanticPreviewBytes:
-                SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
-              maximumSemanticPreviewEncodedBytes:
-                SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES,
-              maximumConcurrentRequests: PRIVACY_MAX_CONCURRENT_REQUESTS
-            }),
-            { status: 200 }
-          )
-      ) as unknown as typeof fetch
-    });
-    await expect(client.capabilities()).resolves.toMatchObject({
-      maximumFieldsPerRequest: 128,
-      maximumFieldBytes: 262_144
-    });
-  });
+  it.each([1, PRIVACY_MAX_CONCURRENT_REQUESTS, 0, 3])(
+    "validates authenticated profile capacity %s",
+    async (capacity) => {
+      const client = createPrivacyServiceClient({
+        baseUrl: "http://127.0.0.1:8092",
+        token: "token",
+        fetchImpl: vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                schemaVersion: 1,
+                inputContractVersion: PRIVACY_CLASSIFICATION_CONTRACT_VERSION,
+                tokenizerSha256: hash,
+                tokenizerNormalization: "none",
+                maximumFieldsPerRequest:
+                  PRIVACY_CLASSIFICATION_REQUEST_FIELD_LIMIT,
+                maximumFieldBytes: PRIVACY_CLASSIFICATION_MAX_FIELD_BYTES,
+                maximumRequestFieldBytes:
+                  PRIVACY_CLASSIFICATION_MAX_REQUEST_FIELD_BYTES,
+                maximumRequestBodyBytes:
+                  PRIVACY_CLASSIFICATION_MAX_REQUEST_BODY_BYTES,
+                windowCoreTokens: PRIVACY_WINDOW_CORE_TOKENS,
+                windowContextTokens: PRIVACY_WINDOW_CONTEXT_TOKENS,
+                windowMaximumTokens: PRIVACY_WINDOW_MAX_TOKENS,
+                maximumFieldTokens: PRIVACY_MAX_FIELD_TOKENS,
+                maximumSemanticPreviewFields:
+                  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_FIELDS,
+                maximumSemanticPreviewBytes:
+                  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_BYTES,
+                maximumSemanticPreviewEncodedBytes:
+                  SHARED_MEMORY_SEMANTIC_PREVIEW_MAX_ENCODED_BYTES,
+                maximumConcurrentRequests: capacity
+              }),
+              { status: 200 }
+            )
+        ) as unknown as typeof fetch
+      });
+      if (capacity === 0 || capacity === 3) {
+        await expect(client.capabilities()).rejects.toThrow();
+        return;
+      }
+      await expect(client.capabilities()).resolves.toMatchObject({
+        maximumConcurrentRequests: capacity,
+        maximumFieldsPerRequest: 128,
+        maximumFieldBytes: 262_144
+      });
+    }
+  );
 
   it("authenticates and verifies response binding", async () => {
     const fetchImpl = vi.fn(

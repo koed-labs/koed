@@ -17,6 +17,14 @@ import { TOKEN_LABELS, type PrivacyLabel } from "./labels.js";
 import { createUtf8OffsetLookup, type TokenOffset } from "./offsets.js";
 import type { PrivacyRuntimeProvider } from "./provider.js";
 import { PRIVACY_CLASSIFIER_HASH } from "./provenance.js";
+import {
+  classifyRequestFields,
+  type PreparedPrivacyField
+} from "./field-classification.js";
+import type {
+  PrivacyBatchInput,
+  PrivacyBatchOutput
+} from "./inference-contract.js";
 
 export interface RawPrivacyClassification {
   decodedText: string;
@@ -25,12 +33,23 @@ export interface RawPrivacyClassification {
   viterbiBiases: ViterbiBiases;
 }
 
+export type PrivacyRuntimeAvailability =
+  | "loading"
+  | "ready"
+  | "recovering"
+  | "unavailable"
+  | "stopping";
+
 export interface PrivacyRuntimeAdapter {
   readonly modelId: string;
   readonly modelRevision: string;
   readonly classifierHash: string;
   readonly provider: PrivacyRuntimeProvider;
+  readonly supportsBatch?: boolean;
+  readonly maximumConcurrentRequests?: 1 | 2;
+  readonly maximumConcurrentFields?: 1 | 2;
   isReady(): boolean;
+  availability?(): PrivacyRuntimeAvailability;
   classify(
     text: string,
     signal?: AbortSignal,
@@ -38,6 +57,35 @@ export interface PrivacyRuntimeAdapter {
   ): Promise<RawPrivacyClassification>;
   unload?(): Promise<void>;
   dispose?(): Promise<void>;
+  inferBatch?(
+    rows: readonly PrivacyBatchInput[],
+    signal?: AbortSignal
+  ): Promise<PrivacyBatchOutput[]>;
+  classifyFields?(
+    texts: readonly string[],
+    onField: (index: number, field: RawPrivacyClassification) => void,
+    signal?: AbortSignal,
+    onProgress?: () => void
+  ): Promise<void>;
+  inferWindow?(
+    tokenIds: readonly number[],
+    signal?: AbortSignal
+  ): Promise<number[][]>;
+}
+
+/** Model execution only. Tokenization, complete windows and decoding stay here. */
+export interface PrivacyModelExecution {
+  readonly maximumConcurrentRequests?: 1 | 2;
+  readonly maximumConcurrentFields?: 1 | 2;
+  availability?(): PrivacyRuntimeAvailability;
+  load(modelPath: string): Promise<void>;
+  isReady(): boolean;
+  infer(tokenIds: readonly number[], signal?: AbortSignal): Promise<number[][]>;
+  inferBatch?(
+    rows: readonly PrivacyBatchInput[],
+    signal?: AbortSignal
+  ): Promise<PrivacyBatchOutput[]>;
+  unload(): Promise<void>;
 }
 
 type TensorLike = {
@@ -234,6 +282,11 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
   private inferenceTail: Promise<void> = Promise.resolve();
   private viterbiBiases: ViterbiBiases | null = null;
   private disposed = false;
+  private readonly parallelFields = new Set<
+    Promise<RawPrivacyClassification>
+  >();
+  availability?: () => PrivacyRuntimeAvailability;
+  private readonly batchRequests = new Set<Promise<void>>();
 
   constructor(
     readonly modelId: string,
@@ -243,14 +296,89 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
       (await dynamicImport("@huggingface/transformers")) as TransformersModule,
     private readonly loadCalibration: CalibrationLoader = (path) =>
       readFile(path, "utf8"),
-    readonly provider: PrivacyRuntimeProvider = "cpu"
-  ) {}
+    readonly provider: PrivacyRuntimeProvider = "cpu",
+    private readonly execution?: PrivacyModelExecution
+  ) {
+    if (execution?.availability)
+      this.availability = () => execution.availability!();
+  }
+
+  get maximumConcurrentRequests(): 1 | 2 {
+    return this.execution?.maximumConcurrentRequests ?? 1;
+  }
+  get maximumConcurrentFields(): 1 | 2 {
+    return this.execution?.maximumConcurrentFields ?? 1;
+  }
+
+  async inferWindow(
+    tokenIds: readonly number[],
+    signal?: AbortSignal
+  ): Promise<number[][]> {
+    if (!this.execution || !this.isReady() || this.disposed)
+      throw new ClassificationError("privacy window executor unavailable");
+    return this.execution.infer(tokenIds, signal);
+  }
+
+  get supportsBatch(): boolean {
+    return this.execution?.inferBatch !== undefined;
+  }
+
+  async inferBatch(
+    rows: readonly PrivacyBatchInput[],
+    signal?: AbortSignal
+  ): Promise<PrivacyBatchOutput[]> {
+    if (!this.execution?.inferBatch || !this.isReady() || this.disposed)
+      throw new ClassificationError("privacy batch executor unavailable");
+    return this.execution.inferBatch(rows, signal);
+  }
+
+  async classifyFields(
+    texts: readonly string[],
+    onField: (index: number, field: RawPrivacyClassification) => void,
+    signal?: AbortSignal,
+    onProgress?: () => void
+  ): Promise<void> {
+    signal?.throwIfAborted();
+    if (
+      !this.supportsBatch ||
+      this.disposed ||
+      this.batchRequests.size >= this.maximumConcurrentFields
+    )
+      throw new ClassificationError(
+        "privacy request preparation capacity unavailable"
+      );
+    const work = (async () => {
+      await this.load();
+      signal?.throwIfAborted();
+      await classifyRequestFields(
+        texts,
+        {
+          prepare: (text, requestSignal) =>
+            this.prepareField(text, requestSignal),
+          classify: (field, requestSignal, progress) =>
+            this.classifyPrepared(field, requestSignal, progress),
+          batch: (rows, requestSignal) => this.inferBatch(rows, requestSignal)
+        },
+        this.maximumConcurrentFields,
+        signal,
+        onProgress,
+        onField
+      );
+    })();
+    this.batchRequests.add(work);
+    try {
+      return await work;
+    } finally {
+      this.batchRequests.delete(work);
+    }
+  }
 
   isReady(): boolean {
     return (
       this.tokenizer !== null &&
-      this.model !== null &&
-      this.Tensor !== null &&
+      (this.execution
+        ? this.execution.isReady()
+        : this.model !== null && this.Tensor !== null) &&
       this.viterbiBiases !== null
     );
   }
@@ -309,10 +437,12 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
     );
     const [tokenizer, model, calibrationText] = await Promise.all([
       imported.AutoTokenizer.from_pretrained(verifiedModelPath, options),
-      imported.AutoModelForTokenClassification.from_pretrained(
-        verifiedModelPath,
-        options
-      ),
+      this.execution
+        ? this.execution.load(verifiedModelPath).then(() => null)
+        : imported.AutoModelForTokenClassification.from_pretrained(
+            verifiedModelPath,
+            options
+          ),
       this.loadCalibration(
         resolve(verifiedModelPath, "viterbi_calibration.json")
       )
@@ -352,6 +482,19 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
         viterbiBiases: this.viterbiBiases
       };
     }
+    if (this.maximumConcurrentFields === 2) {
+      // Two admitted requests, each preparing at most two complete fields.
+      // Field token limits therefore bound all active prepared tokens to 512,000.
+      if (this.parallelFields.size >= 4)
+        throw new ClassificationError("privacy field capacity unavailable");
+      const task = this.classifyBounded(text, signal, onProgress);
+      this.parallelFields.add(task);
+      try {
+        return await task;
+      } finally {
+        this.parallelFields.delete(task);
+      }
+    }
     const previous = this.inferenceTail;
     let release!: () => void;
     this.inferenceTail = new Promise<void>((resolve) => {
@@ -373,11 +516,21 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
   ): Promise<RawPrivacyClassification> {
     await this.load();
     signal?.throwIfAborted();
+    return this.classifyPrepared(
+      await this.prepareField(text, signal),
+      signal,
+      onProgress
+    );
+  }
+
+  private async prepareField(
+    text: string,
+    signal?: AbortSignal
+  ): Promise<PreparedPrivacyField> {
+    signal?.throwIfAborted();
     const tokenizer = this.tokenizer;
-    const model = this.model;
-    const Tensor = this.Tensor;
     const viterbiBiases = this.viterbiBiases;
-    if (!tokenizer || !model || !Tensor || !viterbiBiases) {
+    if (!tokenizer || !viterbiBiases) {
       throw new ClassificationError("privacy runtime is unavailable");
     }
 
@@ -417,6 +570,18 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
         })()
       : vocabularyTokenOffsets(tokenizer, tokenIds, text);
 
+    return { tokenIds, decodedText, tokenOffsets, viterbiBiases };
+  }
+
+  private async classifyPrepared(
+    prepared: PreparedPrivacyField,
+    signal?: AbortSignal,
+    onProgress?: () => void
+  ): Promise<RawPrivacyClassification> {
+    const { tokenIds, decodedText, tokenOffsets, viterbiBiases } = prepared;
+    const model = this.model;
+    const Tensor = this.Tensor;
+
     const logits: number[][] = [];
     for (
       let coreStart = 0;
@@ -437,25 +602,29 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
         coreEnd + PRIVACY_WINDOW_CONTEXT_TOKENS
       );
       const windowIds = tokenIds.slice(windowStart, windowEnd);
-      const inputIds = new Tensor(
-        "int64",
-        BigInt64Array.from(windowIds, BigInt),
-        [1, windowIds.length]
-      );
-      const attentionMask = new Tensor(
-        "int64",
-        BigInt64Array.from({ length: windowIds.length }, () => 1n),
-        [1, windowIds.length]
-      );
-      const output = await model({
-        input_ids: inputIds,
-        attention_mask: attentionMask
-      });
+      const windowLogits = this.execution
+        ? await this.execution.infer(windowIds, signal)
+        : await (async () => {
+            if (!Tensor || !model)
+              throw new ClassificationError("privacy model is unavailable");
+            const inputIds = new Tensor(
+              "int64",
+              BigInt64Array.from(windowIds, BigInt),
+              [1, windowIds.length]
+            );
+            const attentionMask = new Tensor(
+              "int64",
+              BigInt64Array.from({ length: windowIds.length }, () => 1n),
+              [1, windowIds.length]
+            );
+            const output = await model({
+              input_ids: inputIds,
+              attention_mask: attentionMask
+            });
+            signal?.throwIfAborted();
+            return numericRows(tensorList(output.logits, "logits"), "logits");
+          })();
       signal?.throwIfAborted();
-      const windowLogits = numericRows(
-        tensorList(output.logits, "logits"),
-        "logits"
-      );
       if (windowLogits.length !== windowIds.length) {
         throw new ClassificationError(
           "privacy runtime window logits do not match input tokens"
@@ -481,6 +650,8 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
 
   async unload(): Promise<void> {
     if (this.disposed) return;
+    await Promise.allSettled([...this.parallelFields]);
+    await Promise.allSettled([...this.batchRequests]);
     await this.inferenceTail;
     const model = this.model;
     this.model = null;
@@ -489,6 +660,7 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
     this.viterbiBiases = null;
     this.loadPromise = null;
     await model?.dispose?.();
+    await this.execution?.unload();
   }
 
   async dispose(): Promise<void> {
