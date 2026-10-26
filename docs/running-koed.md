@@ -82,14 +82,14 @@ koed components status --json
 ```
 
 Service components, native runtime dependencies, and models remain separate,
-explicit installs. Component archives require verified signed metadata; offline
-setup supplies archive, manifest, and signature paths to `koed components
-install`. Do not rely on `koed start`, help, or status to download or provision
+explicit installs. Component archives require canonical manifests matching hashes
+compiled into the trusted version-matched control plane; offline setup supplies
+archive and manifest paths to `koed components install`. Do not rely on `koed start`, help, or status to download or provision
 runtime artifacts. Then install the native runtime and required models explicitly
 with `koed runtime install --provider homebrew --dependency-mode bundled-local
 --json` and `koed models install --kind embedding --json` as applicable. See
 [Explicit component provisioning](#explicit-component-provisioning) for upgrade,
-staging, activation, and rollback rules.
+staging, activation, and downgrade rejection rules.
 
 `pnpm desktop:start` opens Koed Desktop, which auto-starts `koed-server`, runs
 mandatory core setup when needed, and keeps the startup screen visible until
@@ -1211,8 +1211,10 @@ Team-enabled Desktop onboarding exposes the same consent-gated Privacy Filter
 installer used in Preferences before local services are ready. If Privacy Filter
 assets are missing, install them there before selecting **Set up Koed** or
 **Retry setup**. Installation requires its own explicit consent; opening onboarding
-never downloads these assets. Offline installation uses the signed archive,
-manifest, and signature files through the same verified installer bridge. Missing
+never downloads these assets. Offline installation supplies archive and manifest
+files through the same verified installer bridge. The trusted version-matched
+Desktop control plane supplies expected manifest hashes; downloaded sidecars
+cannot replace those pins. Missing
 bridges and installation failures remain visible in onboarding, with retry
 controls; installation does not complete onboarding or bypass service and final
 verification. Start or retry setup explicitly after installation. Personal-only

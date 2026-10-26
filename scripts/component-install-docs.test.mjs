@@ -2,6 +2,28 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+test("overview and Desktop component inputs do not request signature sidecars", async () => {
+  const docs = await readFile(
+    new URL("../docs/running-koed.md", import.meta.url),
+    "utf8"
+  );
+  const overview = docs
+    .split("Service components, native runtime dependencies")[1]
+    ?.split("`pnpm desktop:start`")[0];
+  const desktop = docs
+    .split("### Packaged Desktop first-run")[1]
+    ?.split("Packaged Koed Desktop starts")[0];
+  for (const section of [overview, desktop]) {
+    assert.ok(section);
+    assert.doesNotMatch(
+      section,
+      /signed metadata|signed archive|signature (?:paths|files)/
+    );
+    assert.match(section, /archive.*manifest/s);
+    assert.match(section, /version-matched/);
+  }
+});
+
 test("component provisioning examples use supported archive/manifest inputs", async () => {
   const docs = await readFile(
     new URL("../docs/running-koed.md", import.meta.url),
