@@ -54,6 +54,8 @@ race defenses, and ownership/lifecycle locks. These checks do not claim a hard
 boundary against arbitrary same-user code. Native runtime and model trust remain
 separate.
 
+Replacing a prior ordinary selection does not require authenticating its old payloads with a newer single-version catalog. Bounded, canonical no-follow metadata establishes only prior owner/version ordering and local consistency. This evidence exposes no runnable roots, cannot satisfy executable generation admission, rejects malformed or unsupported records, and never authenticates historical publisher identity. The new candidate remains fully verified under current pins before atomic selection replacement under lifecycle/store locks. New-version installation requires a complete matching-version component set; old Base/Privacy cannot be reused across versions. Capability-backed Desktop admission remains separate.
+
 Generation activation rejects version downgrades. Same-version generation
 switching is recovery between verified component sets, not whole-release rollback.
 Activation compares product versions without database migration metadata; version

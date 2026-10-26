@@ -19,7 +19,10 @@ import {
   type DesktopRuntimeCapability
 } from "./desktop-runtime-capability.js";
 import type { KoedServerPaths } from "./paths.js";
-import { readStagedGeneration } from "./component-store.js";
+import {
+  readGenerationOrderingEvidence,
+  readStagedGeneration
+} from "./component-store.js";
 import {
   readSupervisorLock,
   resolveProcessIdentity
@@ -220,7 +223,7 @@ const readPinState = (
   return parsed;
 };
 const assertOwner = (
-  generation: VerifiedGeneration,
+  generation: { readonly owner: Readonly<RuntimeOwner> },
   requester: RuntimeOwner
 ): void => {
   if (!sameOwner(generation.owner, requester))
@@ -260,6 +263,12 @@ const assertNoActivePin = (
   )
     throw new Error("runtime generation is running or pinned");
 };
+export function readCurrentGenerationOrderingEvidence(paths: KoedServerPaths) {
+  const id = readCurrentId(paths);
+  if (!id) throw new Error("no active runtime generation");
+  return readGenerationOrderingEvidence(paths, id);
+}
+
 export async function readCurrentGeneration(
   paths: KoedServerPaths
 ): Promise<VerifiedGeneration> {
@@ -637,7 +646,7 @@ export async function activateGeneration(
               currentId,
               capability
             )
-          : await readStagedGeneration(paths, currentId);
+          : readGenerationOrderingEvidence(paths, currentId);
         assertOwner(current, requester);
         if (
           isVersionDowngrade(current.productVersion, candidate.productVersion)

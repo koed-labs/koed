@@ -4,15 +4,19 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
+  truncateSync,
   writeFileSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { canonicalArtifactJson } from "./artifact-canonical-json.mjs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ArtifactTarget,
   RuntimeIdentity,
+  RuntimeOwner,
   VerifiedGeneration,
   VerifiedManifestPinnedComponent
 } from "./component-contract.js";
@@ -389,20 +393,169 @@ describe("generation lifecycle", () => {
     expect((await readCurrentGeneration(paths)).id).toBe(baseOnly.id);
   });
 
-  it("rejects an older catalog generation without changing current pointer or retaining locks", async () => {
+  it("upgrades an old selection using new control-plane pins", async () => {
     const paths = pathsForTest();
     const current = await stage(paths, "0.9.0");
     await activateGeneration(paths, current.id, owner);
+    const candidate = await stage(paths, "0.9.1");
+    await activateGeneration(paths, candidate.id, owner);
+    expect((await readCurrentGeneration(paths)).id).toBe(candidate.id);
+    const pinned = await pinGenerationForStart(paths, owner);
+    expect(pinned.generation.productVersion).toBe("0.9.1");
+    await pinned.release();
+  });
+
+  it("rejects a genuine downgrade at version guard without changing pointer or retaining locks", async () => {
+    const paths = pathsForTest();
+    const current = await stage(paths, "0.9.1");
+    await activateGeneration(paths, current.id, owner);
     const pointerPath = resolve(paths.componentsDir, "current.json");
     const pointer = readFileSync(pointerPath);
-    const candidate = await stage(paths, "0.9.1");
+    const candidate = await stage(paths, "0.9.0");
     await expect(
       activateGeneration(paths, candidate.id, owner)
-    ).rejects.toThrow("component manifest pin mismatch");
+    ).rejects.toThrow(
+      "Cannot activate generation 0.9.0 over active 0.9.1: generation downgrades are not supported."
+    );
     expect(readFileSync(pointerPath)).toEqual(pointer);
     expect(existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))).toBe(
       false
     );
+  });
+
+  it.each([
+    "schema",
+    "kind",
+    "unknown",
+    "owner",
+    "version",
+    "root",
+    "digest",
+    "manifest",
+    "noncanonical"
+  ])(
+    "rejects tampered prior %s metadata without pointer mutation",
+    async (field) => {
+      const paths = pathsForTest();
+      const current = await stage(paths, "0.9.0");
+      await activateGeneration(paths, current.id, owner);
+      const pointerPath = resolve(paths.componentsDir, "current.json");
+      const pointer = readFileSync(pointerPath);
+      const recordPath = resolve(
+        paths.generationsDir,
+        current.id,
+        "generation.json"
+      );
+      const record = JSON.parse(readFileSync(recordPath, "utf8")) as {
+        schemaVersion: number;
+        kind?: string;
+        extra?: boolean;
+        owner: RuntimeOwner;
+        productVersion: string;
+        base: { root: string; manifestDigest: string };
+        components: { base: { manifest: { productVersion: string } } };
+      };
+      switch (field) {
+        case "schema":
+          record.schemaVersion = 99;
+          break;
+        case "kind":
+          record.kind = "desktop-bundle-with-privacy";
+          break;
+        case "unknown":
+          record.extra = true;
+          break;
+        case "owner":
+          record.owner.installationId = "other-owner";
+          break;
+        case "version":
+          record.productVersion = "0.9.2";
+          break;
+        case "root":
+          record.base.root = "../escaped/payload";
+          break;
+        case "digest":
+          record.base.manifestDigest = "0".repeat(64);
+          break;
+        case "manifest":
+          record.components.base.manifest.productVersion = "0.9.2";
+          break;
+      }
+      writeFileSync(
+        recordPath,
+        field === "noncanonical"
+          ? JSON.stringify(record, null, 2)
+          : canonicalArtifactJson(record)
+      );
+      const candidate = await stage(paths, "0.9.1");
+      await expect(
+        activateGeneration(paths, candidate.id, owner)
+      ).rejects.toThrow();
+      expect(readFileSync(pointerPath)).toEqual(pointer);
+      expect(
+        existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))
+      ).toBe(false);
+      expect(existsSync(`${paths.componentsDir}.lock`)).toBe(false);
+    }
+  );
+
+  it.each(["oversized", "symlink"])(
+    "rejects %s prior metadata and preserves pointer",
+    async (kind) => {
+      const paths = pathsForTest();
+      const current = await stage(paths, "0.9.0");
+      await activateGeneration(paths, current.id, owner);
+      const pointerPath = resolve(paths.componentsDir, "current.json");
+      const pointer = readFileSync(pointerPath);
+      const recordPath = resolve(
+        paths.generationsDir,
+        current.id,
+        "generation.json"
+      );
+      if (kind === "oversized") {
+        truncateSync(recordPath, 129 * 1024 * 1024 + 1);
+      } else {
+        const copy = resolve(paths.koedHome, "prior-metadata.json");
+        writeFileSync(copy, readFileSync(recordPath));
+        rmSync(recordPath);
+        symlinkSync(copy, recordPath);
+      }
+      const next = await stage(paths, "0.9.1");
+      await expect(activateGeneration(paths, next.id, owner)).rejects.toThrow();
+      expect(readFileSync(pointerPath)).toEqual(pointer);
+      expect(
+        existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))
+      ).toBe(false);
+      expect(existsSync(`${paths.componentsDir}.lock`)).toBe(false);
+    }
+  );
+
+  it("rejects symlinked prior component payload reference", async () => {
+    const paths = pathsForTest();
+    const current = await stage(paths, "0.9.0");
+    rmSync(current.base.root, { recursive: true });
+    symlinkSync(paths.koedHome, current.base.root, "dir");
+    expect(() =>
+      componentStore.readGenerationOrderingEvidence(paths, current.id)
+    ).toThrow("symbolic link");
+  });
+
+  it("exposes only non-executable ordering evidence for prior selection", async () => {
+    const paths = pathsForTest();
+    const current = await stage(paths, "0.9.0");
+    await activateGeneration(paths, current.id, owner);
+    await stage(paths, "0.9.1");
+    expect(
+      componentStore.readGenerationOrderingEvidence(paths, current.id)
+    ).toEqual({
+      kind: "generation-ordering-evidence",
+      id: current.id,
+      productVersion: "0.9.0",
+      owner
+    });
+    await expect(
+      componentStore.readStagedGeneration(paths, current.id)
+    ).rejects.toThrow("component manifest pin mismatch");
   });
 
   it("accepts a pinned SemVer prerelease generation", async () => {
@@ -689,23 +842,33 @@ describe("generation lifecycle", () => {
     expect((await readCurrentGeneration(paths)).id).toBe(active.id);
   });
 
-  it("preserves current pointer when atomic rename is interrupted", async () => {
-    const paths = pathsForTest();
-    const current = await stage(paths, "0.9.0");
-    const privacy = await stagePrivacy(paths, "0.9.0");
-    const next = await stageGeneration(paths, {
-      base: current.base,
-      privacy,
-      owner
-    });
-    await activateGeneration(paths, current.id, owner);
-    const pointer = resolve(paths.componentsDir, "current.json");
-    const before = readFileSync(pointer, "utf8");
-    pointerFailure.path = pointer;
-    await expect(activateGeneration(paths, next.id, owner)).rejects.toThrow(
-      "simulated interrupted pointer swap"
-    );
-    expect(readFileSync(pointer, "utf8")).toBe(before);
-    expect((await readCurrentGeneration(paths)).id).toBe(current.id);
-  });
+  it.each(["0.9.0", "0.9.1"])(
+    "preserves current pointer and retries after interrupted rename to %s",
+    async (version) => {
+      const paths = pathsForTest();
+      const current = await stage(paths, "0.9.0");
+      await activateGeneration(paths, current.id, owner);
+      const base =
+        version === "0.9.0" ? current.base : (await stage(paths, version)).base;
+      const privacy = await stagePrivacy(paths, version);
+      const next = await stageGeneration(paths, { base, privacy, owner });
+      const pointer = resolve(paths.componentsDir, "current.json");
+      const before = readFileSync(pointer, "utf8");
+      pointerFailure.path = pointer;
+      await expect(activateGeneration(paths, next.id, owner)).rejects.toThrow(
+        "simulated interrupted pointer swap"
+      );
+      expect(readFileSync(pointer, "utf8")).toBe(before);
+      expect(
+        componentStore.readGenerationOrderingEvidence(paths, current.id).id
+      ).toBe(current.id);
+      expect(
+        existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))
+      ).toBe(false);
+      expect(existsSync(`${paths.componentsDir}.lock`)).toBe(false);
+      pointerFailure.path = undefined;
+      await activateGeneration(paths, next.id, owner);
+      expect((await readCurrentGeneration(paths)).id).toBe(next.id);
+    }
+  );
 });

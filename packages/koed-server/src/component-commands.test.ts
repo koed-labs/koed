@@ -114,6 +114,69 @@ afterEach(() => {
 });
 
 describe("component status command", () => {
+  it.each([false, true])(
+    "provisions new-version Base over prior selection (stageOnly=%s)",
+    async (stageOnly) => {
+      const old = await pinnedOfflineSource("0.9.0");
+      fixtures.push(old.fixture);
+      const current = context({ runtime: old.runtime, target: old.target });
+      await runComponentInstall(current, {
+        component: "base",
+        source: old.source
+      });
+      const next = await pinnedOfflineSource("0.9.1");
+      fixtures.push(next.fixture);
+      const upgraded = { ...current, controlPlaneVersion: "0.9.1" };
+      const status = await runComponentStatus(upgraded);
+      expect(status.activeVersion).toBe("0.9.0");
+      expect(status.components.base).toBe("incompatible");
+      const result = await runComponentInstall(upgraded, {
+        component: "base",
+        source: next.source,
+        stageOnly
+      });
+      expect(result.state).toBe(stageOnly ? "staged" : "active");
+      expect((await runComponentStatus(upgraded)).activeVersion).toBe(
+        stageOnly ? "0.9.0" : "0.9.1"
+      );
+    }
+  );
+  it("does not reuse old-version Base while staging new Privacy", async () => {
+    const old = await pinnedOfflineSource("0.9.0");
+    fixtures.push(old.fixture);
+    const current = context({ runtime: old.runtime, target: old.target });
+    await runComponentInstall(current, {
+      component: "base",
+      source: old.source
+    });
+    const pointerPath = resolve(current.paths.componentsDir, "current.json");
+    const pointer = readFileSync(pointerPath);
+    const next = await pinnedOfflineSource("0.9.1", "privacy");
+    fixtures.push(next.fixture);
+    const upgraded = {
+      ...current,
+      controlPlaneVersion: "0.9.1",
+      execution: "packaged" as const,
+      environment: {
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_TEAM_COLLABORATION_ENABLED: "true"
+      }
+    };
+    expect((await runComponentStatus(upgraded)).components.privacy).toBe(
+      "missing"
+    );
+    const result = await runComponentInstall(upgraded, {
+      component: "privacy",
+      source: next.source
+    });
+    expect(result.state).toBe("staged");
+    expect((await runComponentStatus(upgraded)).components.privacy).toBe(
+      "installed"
+    );
+    expect(readFileSync(pointerPath)).toEqual(pointer);
+    expect((await runComponentStatus(upgraded)).activeVersion).toBe("0.9.0");
+  });
+
   it("stages privacy without treating active Desktop bundle as a pinned base", async () => {
     const pinned = await pinnedOfflineSource("0.9.0", "privacy");
     fixtures.push(pinned.fixture);
