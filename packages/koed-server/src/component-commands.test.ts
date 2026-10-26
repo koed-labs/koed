@@ -177,6 +177,60 @@ describe("component status command", () => {
     expect((await runComponentStatus(upgraded)).activeVersion).toBe("0.9.0");
   });
 
+  it("reports prior Privacy as incompatible until complete new-version components activate", async () => {
+    const oldBase = await pinnedOfflineSource("0.9.0");
+    const oldPrivacy = await pinnedOfflineSource("0.9.0", "privacy");
+    fixtures.push(oldBase.fixture, oldPrivacy.fixture);
+    const current = context({
+      runtime: oldBase.runtime,
+      target: oldBase.target,
+      execution: "packaged",
+      environment: {
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_TEAM_COLLABORATION_ENABLED: "true"
+      }
+    });
+    await runComponentInstall(current, {
+      component: "base",
+      source: oldBase.source
+    });
+    await runComponentInstall(current, {
+      component: "privacy",
+      source: oldPrivacy.source
+    });
+    const pointerPath = resolve(current.paths.componentsDir, "current.json");
+    const pointer = readFileSync(pointerPath);
+    const nextBase = await pinnedOfflineSource("0.9.1");
+    const nextPrivacy = await pinnedOfflineSource("0.9.1", "privacy");
+    fixtures.push(nextBase.fixture, nextPrivacy.fixture);
+    const upgraded = { ...current, controlPlaneVersion: "0.9.1" };
+    expect((await runComponentStatus(upgraded)).components).toEqual({
+      base: "incompatible",
+      privacy: "incompatible"
+    });
+    expect(
+      await runComponentInstall(upgraded, {
+        component: "base",
+        source: nextBase.source
+      })
+    ).toMatchObject({ state: "staged" });
+    expect(readFileSync(pointerPath)).toEqual(pointer);
+    expect((await runComponentStatus(upgraded)).components).toEqual({
+      base: "staged",
+      privacy: "incompatible"
+    });
+    expect(
+      await runComponentInstall(upgraded, {
+        component: "privacy",
+        source: nextPrivacy.source
+      })
+    ).toMatchObject({ state: "active" });
+    expect(await runComponentStatus(upgraded)).toMatchObject({
+      activeVersion: "0.9.1",
+      components: { base: "active", privacy: "active" }
+    });
+  });
+
   it("stages privacy without treating active Desktop bundle as a pinned base", async () => {
     const pinned = await pinnedOfflineSource("0.9.0", "privacy");
     fixtures.push(pinned.fixture);

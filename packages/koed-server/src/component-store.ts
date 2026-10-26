@@ -1277,11 +1277,7 @@ function parseOrderingRecord(
   };
 }
 
-// Local consistency only: never grants authority to execute historical payloads.
-export function readGenerationOrderingEvidence(
-  paths: KoedServerPaths,
-  id: string
-): GenerationOrderingEvidence {
+function readConsistentOrderingRecord(paths: KoedServerPaths, id: string) {
   const record = parseOrderingRecord(readGenerationRecord(paths, id), id);
   const base = readOrderingComponent(
     paths,
@@ -1310,6 +1306,28 @@ export function readGenerationOrderingEvidence(
   };
   if (hash(canonicalJson(identity)) !== id)
     throw new Error("generation digest mismatch");
+  return record;
+}
+
+// Diagnostic presence only; never returns runnable payloads or publisher authority.
+export function readGenerationComponentPresence(
+  paths: KoedServerPaths,
+  id: string
+): readonly ComponentId[] {
+  const record = readConsistentOrderingRecord(paths, id);
+  return Object.freeze(
+    Object.hasOwn(record, "privacy")
+      ? (["base", "privacy"] as const)
+      : (["base"] as const)
+  );
+}
+
+// Local consistency only: never grants authority to execute historical payloads.
+export function readGenerationOrderingEvidence(
+  paths: KoedServerPaths,
+  id: string
+): GenerationOrderingEvidence {
+  const record = readConsistentOrderingRecord(paths, id);
   return Object.freeze({
     kind: "generation-ordering-evidence",
     id,

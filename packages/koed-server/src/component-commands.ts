@@ -18,6 +18,7 @@ import type {
 import { resolveKoedAppRuntimeExecution } from "./app-runtime.js";
 import {
   readStagedGeneration,
+  readGenerationComponentPresence,
   readStoredComponents,
   resolveComponentManifestPinTarget,
   stageComponent,
@@ -171,6 +172,10 @@ export async function runComponentStatus(
 ): Promise<ComponentStatus> {
   const required = requirementsFor(context).components;
   const active = await readOwnedCurrentGeneration(context);
+  const priorPresence =
+    active && "kind" in active
+      ? readGenerationComponentPresence(context.paths, active.id)
+      : [];
   const generations = await storedGenerations(context);
   const installed = await readStoredComponents(context.paths, context.runtime);
   const staged = generations.filter(
@@ -200,7 +205,7 @@ export async function runComponentStatus(
         ? "incompatible"
         : installed.some((entry) => entry.manifest.component === component)
           ? "installed"
-          : active && "kind" in active && component === "base"
+          : priorPresence.includes(component)
             ? "incompatible"
             : "missing";
   }
