@@ -25,14 +25,13 @@ export function SharesStatusView({
   const loading = state === "loading";
   return (
     <section
-      className="collab-route-root collab-shares-workspace personal-shares-status"
+      className="collab-route-root collab-shares-workspace collab-shares-overview personal-shares-status"
       data-narrow-view="list"
       data-responsive="master-detail-to-drilldown"
     >
       <aside className="collab-shares-pane" aria-label="Shares">
         <header>
           <h1>Shares</h1>
-          <span aria-label="0 Shares">0</span>
         </header>
         <label className="collab-share-search">
           <span className="collab-visually-hidden">Search Shares</span>
@@ -65,30 +64,6 @@ export function SharesStatusView({
           </div>
         </div>
       </aside>
-      <section
-        aria-label={loading ? "Loading Shares" : undefined}
-        className="collab-share-empty-detail personal-memory-empty-detail"
-        role={loading ? "status" : "alert"}
-      >
-        {loading ? (
-          <StatusIcon loading />
-        ) : (
-          <div>
-            <StatusIcon loading={false} />
-            <h2>Shares unavailable</h2>
-            {message ? <p>{message}</p> : null}
-            {onAction && actionLabel ? (
-              <button
-                className="personal-retry-button"
-                onClick={onAction}
-                type="button"
-              >
-                {actionLabel}
-              </button>
-            ) : null}
-          </div>
-        )}
-      </section>
     </section>
   );
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { ChevronRight, Folder, FolderPlus, GitFork } from "lucide-react";
 import {
   Button,
@@ -31,7 +31,10 @@ export function ConversationProjectsDialog({
   manage,
   store,
   create,
-  menuitem = false
+  menuitem = false,
+  open: controlledOpen,
+  onOpenChange,
+  returnFocus
 }: {
   thread: PersonalDesktopProjectThread;
   projects: readonly PersonalDesktopProject[];
@@ -39,12 +42,26 @@ export function ConversationProjectsDialog({
   store: PersonalMemoryStore;
   create?: CreateProject;
   menuitem?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  returnFocus?: RefObject<HTMLButtonElement | null>;
 }) {
-  const [open, setOpen] = useState(false),
+  const [localOpen, setLocalOpen] = useState(false),
     [expanded, setExpanded] = useState<string | null>(null);
+  const open = controlledOpen ?? localOpen;
+  const setOpen = (next: boolean) => {
+    setLocalOpen(next);
+    onOpenChange?.(next);
+  };
   const draft = useConversationProjectsDraft(manage, store, () =>
     setOpen(false)
   );
+  useEffect(() => {
+    if (controlledOpen && thread.sessionId) {
+      setExpanded(null);
+      void draft.load(projects, thread.sessionId);
+    }
+  }, [controlledOpen, thread.sessionId]);
   if (!thread.sessionId) return null;
   const disabled = draft.loading || draft.busy || draft.failed;
   const cancel = () => {
@@ -81,7 +98,7 @@ export function ConversationProjectsDialog({
         if (!next) cancel();
       }}
     >
-      {menuitem ? (
+      {controlledOpen !== undefined ? null : menuitem ? (
         <button type="button" role="menuitem" onClick={openDialog}>
           <FolderPlus aria-hidden="true" />
           Add to Project
@@ -91,7 +108,10 @@ export function ConversationProjectsDialog({
           Add to Project
         </Button>
       )}
-      <DialogPopup className="personal-conversation-card">
+      <DialogPopup
+        className="personal-conversation-card"
+        finalFocus={returnFocus}
+      >
         <DialogHeader>
           <DialogTitle>Projects for this Conversation</DialogTitle>
           <DialogDescription>{thread.name}</DialogDescription>

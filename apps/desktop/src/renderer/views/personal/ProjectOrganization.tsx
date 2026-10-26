@@ -3,6 +3,7 @@ import {
   Ellipsis,
   Pencil,
   RefreshCw,
+  Share2,
   SlidersHorizontal,
   X
 } from "lucide-react";
@@ -33,6 +34,7 @@ type Props = {
   sync?: PersonalDesktopApi["manageMembershipSync"];
   store: PersonalMemoryStore;
   onDeleted: () => void;
+  onReviewSharing?: () => void;
 };
 export function ProjectOrganization({
   project,
@@ -40,7 +42,8 @@ export function ProjectOrganization({
   manage,
   sync,
   store,
-  onDeleted
+  onDeleted,
+  onReviewSharing
 }: Props) {
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
@@ -132,6 +135,12 @@ export function ProjectOrganization({
               <Ellipsis aria-hidden="true" />
             </DropdownMenuTrigger>
             <DropdownMenuPopup align="end" aria-label="Project actions">
+              {onReviewSharing ? (
+                <DropdownMenuItem onClick={onReviewSharing}>
+                  <Share2 aria-hidden="true" />
+                  Share
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem onClick={() => setAction("rename")}>
                 <Pencil aria-hidden="true" />
                 Edit

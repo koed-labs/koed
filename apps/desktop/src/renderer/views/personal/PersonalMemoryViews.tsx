@@ -1,3 +1,10 @@
+import {
+  Button,
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuPopup,
+  DropdownMenuItem
+} from "@koed/ui";
 import { ProjectOrganization } from "./ProjectOrganization.js";
 import type { GitAnchorSharingReviewInput } from "@koed/shared/collaboration";
 import { SourceContextCorrectionDialog } from "./SourceContextCorrectionDialog.js";
@@ -35,6 +42,8 @@ import {
   ChevronDown,
   CircleAlert,
   Folder,
+  FolderPlus,
+  FilePenLine,
   CirclePlay,
   Clock3,
   Ellipsis,
@@ -47,6 +56,7 @@ import {
   Pencil,
   Pin,
   RefreshCw,
+  Share2,
   X
 } from "lucide-react";
 import {
@@ -1088,24 +1098,6 @@ function ProjectDetail({
   }
   return (
     <section className="personal-project-detail">
-      {project.namedProject &&
-      project.projectReference &&
-      onReviewGitAnchorSharing ? (
-        <div className="personal-project-detail-actions">
-          <button
-            type="button"
-            className="personal-session-manage-button"
-            onClick={() =>
-              onReviewGitAnchorSharing(
-                { kind: "project", project: project.projectReference! },
-                project.name
-              )
-            }
-          >
-            Review Project sharing
-          </button>
-        </div>
-      ) : null}
       {organization ?? (
         <ProjectHeader
           key={project.id}
@@ -1138,7 +1130,7 @@ function ProjectDetail({
                   )
                 }
               >
-                Review Folder sharing
+                Share
               </button>
             ) : null}
             {gitAnchor && onReviewGitAnchorSharing ? (
@@ -1152,7 +1144,7 @@ function ProjectDetail({
                   })
                 }
               >
-                Review sharing
+                Share
               </button>
             ) : null}
             <button
@@ -3401,42 +3393,6 @@ function ManagedConversationComposer({
   );
 }
 
-function ShareAffordance({
-  candidates,
-  onShare,
-  projectId,
-  records,
-  suggestions,
-  thread
-}: {
-  candidates: readonly WorkspaceShareCandidate[];
-  onShare?: (request: ShareToWorkspaceRequest) => void;
-  projectId: string;
-  records: readonly PersonalMemorySharingRecord[];
-  suggestions: readonly ProjectWorkspaceSuggestion[];
-  thread: PersonalDesktopProjectThread;
-}) {
-  const source = personalMemorySharingSource(thread, records);
-  const destinations = writableWorkspaceDestinations(candidates);
-  if (!source || destinations.length === 0 || !onShare) return null;
-  const suggested = suggestedWorkspaceId(projectId, destinations, suggestions);
-  return (
-    <button
-      className="personal-share-button"
-      onClick={() =>
-        onShare({
-          destinations,
-          source,
-          suggestedWorkspaceId: suggested
-        })
-      }
-      type="button"
-    >
-      Share
-    </button>
-  );
-}
-
 function SessionDetail({
   manageProject,
   manageSourceContext,
@@ -3491,6 +3447,14 @@ function SessionDetail({
   onRetryManagedConversation: (() => void) | null;
 }) {
   const title = thread.name || "Untitled session";
+  const [headerAction, setHeaderAction] = useState<
+    "context" | "project" | null
+  >(null);
+  const actionsTrigger = useRef<HTMLButtonElement>(null);
+  const sharingSource = personalMemorySharingSource(thread, records);
+  const destinations = writableWorkspaceDestinations(candidates);
+  const canShare = Boolean(sharingSource && destinations.length > 0 && onShare);
+
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(title);
   const [titleBusy, setTitleBusy] = useState(false);
@@ -3625,20 +3589,67 @@ function SessionDetail({
           </p>
         </div>
         <div className="personal-session-header-actions">
-          <ShareAffordance
-            candidates={candidates}
-            onShare={onShare}
-            projectId={project.id}
-            records={records}
-            suggestions={suggestions}
-            thread={thread}
-          />
+          {thread.sessionId &&
+          (canShare || manageSourceContext || manageProject) ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                ref={actionsTrigger}
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Conversation actions"
+                    title="Conversation actions"
+                  />
+                }
+              >
+                <Ellipsis aria-hidden="true" />
+              </DropdownMenuTrigger>
+              <DropdownMenuPopup align="end" aria-label="Conversation actions">
+                {canShare ? (
+                  <DropdownMenuItem
+                    onClick={() =>
+                      onShare!({
+                        destinations,
+                        source: sharingSource!,
+                        suggestedWorkspaceId: suggestedWorkspaceId(
+                          project.id,
+                          destinations,
+                          suggestions
+                        )
+                      })
+                    }
+                  >
+                    <Share2 aria-hidden="true" />
+                    Share
+                  </DropdownMenuItem>
+                ) : null}
+                {manageSourceContext ? (
+                  <DropdownMenuItem onClick={() => setHeaderAction("context")}>
+                    <FilePenLine aria-hidden="true" />
+                    Correct context
+                  </DropdownMenuItem>
+                ) : null}
+                {manageProject ? (
+                  <DropdownMenuItem onClick={() => setHeaderAction("project")}>
+                    <FolderPlus aria-hidden="true" />
+                    Add to Project
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuPopup>
+            </DropdownMenu>
+          ) : null}
           {manageSourceContext ? (
             <SourceContextCorrectionDialog
               thread={thread}
               projects={projects}
               manage={manageSourceContext}
               store={store}
+              open={headerAction === "context"}
+              onOpenChange={(open) => {
+                if (!open) setHeaderAction(null);
+              }}
+              returnFocus={actionsTrigger}
             />
           ) : null}
           {manageProject ? (
@@ -3648,6 +3659,11 @@ function SessionDetail({
               manage={manageProject}
               store={store}
               create={onCreateProject}
+              open={headerAction === "project"}
+              onOpenChange={(open) => {
+                if (!open) setHeaderAction(null);
+              }}
+              returnFocus={actionsTrigger}
             />
           ) : null}
         </div>
@@ -3979,6 +3995,19 @@ export function PersonalMemoryWorkspace({
                     sync={manageMembershipSync}
                     store={store}
                     onDeleted={() => onNavigate({ kind: "projects" })}
+                    onReviewSharing={
+                      selectedProject.projectReference &&
+                      onReviewGitAnchorSharing
+                        ? () =>
+                            onReviewGitAnchorSharing(
+                              {
+                                kind: "project",
+                                project: selectedProject.projectReference!
+                              },
+                              selectedProject.name
+                            )
+                        : undefined
+                    }
                   />
                 ) : undefined
               }

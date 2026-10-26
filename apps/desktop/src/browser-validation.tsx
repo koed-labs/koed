@@ -41,6 +41,8 @@ const uuid = (suffix: number) =>
   `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
 const timestamp = "2099-01-02T09:38:00.000Z";
 const revision = "snapshot.revision-browser-0001";
+const sharingRuleValidation =
+  new URLSearchParams(location.search).get("rules") === "1";
 const maxName = (prefix: string, index: number) =>
   `${prefix} ${index} ${"coordination-".repeat(8)}`.slice(
     0,
@@ -148,6 +150,13 @@ const interactionReviewGit = {
   selectedRemote: "origin",
   anchorDisplay: "example.test/koed-review"
 };
+const sharingValidationRepositories = ["koed", "memory-tools"].map(
+  (name, index) => ({
+    ...interactionReviewGit,
+    key: `gr_browser_sharing_anchor_${index}`,
+    anchorDisplay: `github.com/koed-labs/${name}`
+  })
+);
 
 const independentProjectMetadata: PersonalDesktopProjectMetadata = {
   schemaVersion: 1,
@@ -405,6 +414,25 @@ const personalMemoryApi: PersonalDesktopApi = {
   },
   assignSessionProject: async () => {
     throw new Error("unsupported_operation");
+  },
+  manageSourceContext: async (input) => {
+    if (input.action !== "get") throw new Error("Unsupported fixture command");
+    return {
+      context: {
+        sessionId: input.sessionId,
+        logicalSessionId: uuid(804),
+        git: {
+          revision: 1,
+          original: { state: "unresolved", reason: "historical_unresolved" },
+          correction: { state: "original" }
+        },
+        folder: {
+          revision: 1,
+          original: { state: "unresolved", reason: "historical_unresolved" },
+          correction: { state: "original" }
+        }
+      }
+    };
   },
   manageProject: async (input) => {
     if (
@@ -1288,15 +1316,24 @@ const createInteractionPersonalMemoryApi = (
   };
   return {
     ...personalMemoryApi,
-    listProjects: async () => [
-      { ...personalProject, repository: interactionReviewGit }
-    ],
+    listProjects: async () =>
+      sharingRuleValidation
+        ? sharingValidationRepositories.map((repository, index) => ({
+            ...personalProject,
+            id: `sharing-project-${index}`,
+            repository,
+            threads: []
+          }))
+        : [{ ...personalProject, repository: interactionReviewGit }],
     listProjectMetadata: async () =>
-      ((await personalMemoryApi.listProjectMetadata?.()) ?? []).map((entry) =>
-        entry.localProjectId === personalProject.id
-          ? { ...entry, repository: interactionReviewGit }
-          : entry
-      ),
+      sharingRuleValidation
+        ? []
+        : ((await personalMemoryApi.listProjectMetadata?.()) ?? []).map(
+            (entry) =>
+              entry.localProjectId === personalProject.id
+                ? { ...entry, repository: interactionReviewGit }
+                : entry
+          ),
     listNotes: async () => ({
       notes: notes.map(interactionNoteSummary),
       nextBeforeSequence: null
@@ -1576,8 +1613,27 @@ const explainFixtureShare = (share: OwnedShareItem): OwnedShareItem => {
         ? [
             {
               id: grantId,
-              kind: "direct",
-              rule: null,
+              kind:
+                sharingRuleValidation && record.mode === "continuous"
+                  ? "rule"
+                  : "direct",
+              rule:
+                sharingRuleValidation && record.mode === "continuous"
+                  ? {
+                      id: uuid(910),
+                      selectorKind: "repository",
+                      authorityVersion: 1,
+                      publisherFence: 1,
+                      state: stopped
+                        ? "stopped"
+                        : share.kind === "pending" &&
+                            share.pendingShare.sourceUpdateState === "paused"
+                          ? "paused"
+                          : "active",
+                      catchUpState: "idle",
+                      failureCode: null
+                    }
+                  : null,
               consentId: record.consentId,
               consentVersion: 1,
               mode: record.mode,
@@ -2358,6 +2414,35 @@ const createStatefulCollaborationBridge = (actor: StatefulActor) => {
           }
         });
       }
+      case "collaboration.list_repository_rules":
+        return result(parsed, {
+          page: {
+            rules: sharingRuleValidation
+              ? sharingValidationRepositories.map((repository, index) => ({
+                  ruleId: uuid(910 + index),
+                  team: {
+                    id: interactionIds.alphaTeam,
+                    name: "Electron Team App"
+                  },
+                  workspace: {
+                    id: interactionIds.alphaWorkspace,
+                    name: "General"
+                  },
+                  selector: {
+                    kind: "portable_repository",
+                    key: repository.key
+                  },
+                  state: "active",
+                  maximumFidelity: "memory_events",
+                  includeCuratedMemory: false,
+                  authorityVersion: 1,
+                  publisherFence: 1,
+                  publisherAvailable: true
+                }))
+              : [],
+            nextCursor: null
+          }
+        });
       case "collaboration.list_owned_shares":
         return result(parsed, {
           shares: (parsed.input.history

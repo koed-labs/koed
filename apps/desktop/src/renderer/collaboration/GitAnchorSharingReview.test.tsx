@@ -9,6 +9,8 @@ import type {
   GitAnchorSharingReviewPage
 } from "@koed/shared/collaboration";
 import { GitAnchorSharingReview } from "./GitAnchorSharingReview.js";
+import { RepositorySharingRules } from "./RepositorySharingRules.js";
+import { mergeProjectSources } from "../../project-memory-ui.js";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 const reviewClient = (
   reviewGitAnchorSharing: CollaborationRendererClient["reviewGitAnchorSharing"]
@@ -64,7 +66,7 @@ const target = {
   kind: "repository",
   repository: {
     kind: "portable_repository",
-    key: "github.com/example/anchor",
+    key: "gr_fixture_anchor",
     root: null,
     branch: null,
     reason: "origin",
@@ -177,6 +179,96 @@ const click = async (label: string) =>
   });
 
 describe("Git Anchor sharing review dialog", () => {
+  it("uses the local anchor label and exposes Pause and Stop without changing rule identity", async () => {
+    const client = reviewClient(vi.fn());
+    const ruleId = id(20);
+    client.listRepositoryRules.mockResolvedValue({
+      rules: [
+        {
+          ruleId,
+          selector: sharingSelectionDescriptor(target),
+          team: { id: id(1), name: "Engineering" },
+          workspace: { id: id(2), name: "Workspace" },
+          state: "active",
+          maximumFidelity: "memory_events",
+          includeCuratedMemory: false,
+          authorityVersion: 4,
+          publisherFence: 2,
+          publisherAvailable: true
+        }
+      ],
+      nextCursor: null
+    });
+    client.controlRepositoryRule.mockImplementation(
+      async ({ workspaceId, ...intent }) => ({
+        intent: { ...intent, teamWorkspaceId: workspaceId },
+        presentation: {
+          sourceTitle: "example/anchor",
+          teamName: "Engineering",
+          workspaceName: "Workspace"
+        },
+        state: "queued",
+        control: null,
+        creation: null,
+        failureCode: null,
+        updatedAt: new Date().toISOString()
+      })
+    );
+    const localProjects = mergeProjectSources(
+      [
+        {
+          id: "local-project",
+          name: "Local checkout",
+          path: "/work/anchor",
+          repository: target.repository,
+          eventCount: 0,
+          threads: []
+        }
+      ],
+      []
+    );
+    await act(async () =>
+      root.render(
+        <RepositorySharingRules
+          client={client}
+          creation={null}
+          localProjects={localProjects}
+          query="example/anchor"
+        />
+      )
+    );
+    const summary = document.querySelector<HTMLElement>(
+      ".collab-sharing-rule-list-item > summary"
+    )!;
+    expect(summary.textContent).toContain("example/anchor");
+    expect(summary.textContent).not.toContain("gr_fixture_anchor");
+    await act(async () => {
+      summary.click();
+    });
+    expect(
+      document.querySelector('[aria-label="More sharing actions"]')
+    ).toBeNull();
+    expect(
+      [
+        ...document.querySelectorAll(".collab-sharing-inline-actions button")
+      ].map((button) => button.textContent)
+    ).toEqual(["Pause", "Stop"]);
+    const stop = [
+      ...document.querySelectorAll<HTMLButtonElement>("button")
+    ].find((item) => item.textContent === "Stop");
+    expect(stop).toBeDefined();
+    await act(async () => stop!.click());
+    expect(client.controlRepositoryRule).toHaveBeenCalledExactlyOnceWith({
+      selectorKind: "selection",
+      mutationId: expect.any(String),
+      ruleId,
+      teamId: id(1),
+      workspaceId: id(2),
+      expectedAuthorityVersion: 4,
+      publisherFence: 2,
+      controlAction: "stop"
+    });
+  });
   it.each([target, folderTarget, projectTarget])(
     "uses the completed $kind review for explicit future-member creation and waits for Team acknowledgment",
     async (target) => {
@@ -237,7 +329,7 @@ describe("Git Anchor sharing review dialog", () => {
       );
       const share = () =>
         [...document.querySelectorAll("button")].find(
-          (button) => button.textContent === "Share existing and future Memory"
+          (button) => button.textContent === "Continue to approval"
         )!;
       expect(client.listRepositoryRules).toHaveBeenCalledWith({
         selector: sharingSelectionDescriptor(target),
@@ -245,12 +337,12 @@ describe("Git Anchor sharing review dialog", () => {
         afterRuleId: null,
         limit: 50
       });
-      expect(share().disabled).toBe(true);
+      expect(share()).toBeUndefined();
       await select(0, id(1));
       await select(1, id(2));
       await click("Review");
       expect(share().disabled).toBe(false);
-      await click("Share existing and future Memory");
+      await click("Continue to approval");
       expect(
         client.reviewRepositoryRuleCreation
       ).toHaveBeenCalledExactlyOnceWith({
@@ -334,14 +426,29 @@ describe("Git Anchor sharing review dialog", () => {
           />
         )
       );
-      expect(document.body.textContent).toContain(
-        "recorded publisher is unavailable"
-      );
+      expect(document.body.textContent).toContain("Publisher unavailable");
+      expect(document.body.textContent).not.toContain("Sharing rules for this");
+      expect(document.body.textContent).not.toContain("Refresh sharing rules");
+      if (target.kind === "repository")
+        expect(
+          document.querySelector(".collab-sharing-rule-list-item > summary")
+            ?.textContent
+        ).toContain(target.repository.anchorDisplay);
       const retry = [...document.querySelectorAll("button")].find(
         (button) => button.textContent === "Retry catch-up"
       )!;
       expect(retry.disabled).toBe(true);
-      await click("Stop rule");
+      await act(async () => {
+        document.querySelector<HTMLDetailsElement>(
+          ".collab-sharing-rule-list-item"
+        )!.open = true;
+      });
+      await act(async () => {
+        const item = [
+          ...document.querySelectorAll<HTMLButtonElement>("button")
+        ].find((node) => node.textContent === "Stop")!;
+        item.click();
+      });
       expect(client.controlRepositoryRule).toHaveBeenCalledExactlyOnceWith({
         selectorKind: "selection",
         mutationId: expect.any(String),
@@ -391,17 +498,18 @@ describe("Git Anchor sharing review dialog", () => {
     );
     expect(document.body.textContent).not.toContain("Complete review:");
     await act(async () => finish(page(true)));
-    expect(document.body.textContent).toContain(
-      "Complete review: 1 eligible; 0 unresolved."
-    );
+    expect(document.body.textContent).toContain("1 Conversation1 ready");
     expect(
-      document.querySelectorAll('[aria-label="Reviewed Conversations"] li')
-    ).toHaveLength(1);
+      document.querySelector(".collab-sharing-readiness strong")?.textContent
+    ).toBe("1 Conversation");
+    expect(
+      document.querySelector('[aria-label="Reviewed Conversations"]')
+    ).toBeNull();
     expect(document.body.textContent).toContain(
-      "future Conversations matching this Git Anchor"
+      "Existing & future Conversations"
     );
     expect(document.body.textContent).toContain(
-      "creates no consent or Share Grant"
+      "No consent or Share Grant exists until sharing is approved"
     );
     expect(reviewGitAnchorSharing).toHaveBeenLastCalledWith({
       target,
@@ -410,6 +518,7 @@ describe("Git Anchor sharing review dialog", () => {
       representation: "lcm_rollups",
       cursor: "opaque-review-cursor"
     });
+    await click("Back");
     await click("Cancel");
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -453,7 +562,7 @@ describe("Git Anchor sharing review dialog", () => {
     await click("Refresh review");
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain(
-        "Complete review: 0 eligible; 1 unresolved."
+        "1 Conversation0 ready1 waiting"
       )
     );
     expect(reviewGitAnchorSharing).toHaveBeenLastCalledWith({

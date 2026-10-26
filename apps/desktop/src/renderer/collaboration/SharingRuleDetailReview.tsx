@@ -5,7 +5,16 @@ import type {
   SharingRuleDelivery
 } from "@koed/shared";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
-import { failureMessage } from "./collaboration-primitives.js";
+import {
+  Modal,
+  ModalHeader,
+  failureMessage
+} from "./collaboration-primitives.js";
+import {
+  SharingDetailChoices,
+  SharingRow,
+  sharingDetailTitle
+} from "./SharingControls.js";
 
 export type RuleDetailClient = Pick<
   CollaborationRendererClient,
@@ -26,6 +35,7 @@ export function SharingRuleDetailReview({
   maximumFidelity,
   includeCuratedMemory,
   disabled = false,
+  trigger = "button",
   onDelivery
 }: {
   client: RuleDetailClient;
@@ -35,6 +45,7 @@ export function SharingRuleDetailReview({
   maximumFidelity: SharedMemoryFidelityCeiling;
   includeCuratedMemory: boolean;
   disabled?: boolean;
+  trigger?: "button" | "row";
   onDelivery: (delivery: SharingRuleDelivery) => void;
 }) {
   const [open, setOpen] = useState(false),
@@ -115,6 +126,22 @@ export function SharingRuleDetailReview({
       if (current === epoch.current) setBusy(false);
     }
   };
+  const close = () => {
+    epoch.current++;
+    setOpen(false);
+    setReview(null);
+    setError("");
+    setBusy(false);
+  };
+  if (!open && trigger === "row")
+    return (
+      <SharingRow
+        label="Shared detail"
+        value={sharingDetailTitle(maximumFidelity)}
+        disabled={disabled}
+        onClick={() => setOpen(true)}
+      />
+    );
   if (!open)
     return (
       <button type="button" disabled={disabled} onClick={() => setOpen(true)}>
@@ -122,108 +149,111 @@ export function SharingRuleDetailReview({
       </button>
     );
   return (
-    <section aria-label="Change rule detail">
-      <h4>Change this rule’s shared detail</h4>
-      <p>
-        This change applies to the whole rule, including existing and future
-        eligible Conversations. Other sharing reasons keep their permissions.
-      </p>
-      {review ? (
-        <>
-          <p>
-            {review.teamName} · {review.workspaceName}
-          </p>
-          <p>
-            {label(review.previousMaximumFidelity)} →{" "}
-            {label(review.maximumFidelity)}
-            {review.includeCuratedMemory
-              ? " with Curated Memory"
-              : " without Curated Memory"}
-            .
-          </p>
-          <p>
-            {review.memberCount} existing members. Rule remains {review.state}.
-          </p>
-          {review.ownerPolicyExpansionCount > 0 ? (
+    <Modal
+      label="Change rule detail"
+      className="collab-sharing-modal collab-rule-detail-modal"
+      onClose={close}
+    >
+      <ModalHeader title="Change shared detail" onClose={close} />
+      <section
+        className="collab-form collab-sharing-form"
+        aria-label="Change rule detail"
+      >
+        <p className="collab-form-context">
+          Applies to this whole rule · Existing & future Conversations
+        </p>
+        {review ? (
+          <>
             <p>
-              Owner permission also broadens for{" "}
-              {review.ownerPolicyExpansionCount} existing members.
+              {review.teamName} · {review.workspaceName}
             </p>
-          ) : null}
-          <p>
-            Reductions restrict this rule when Team acknowledges the change.
-            Publication of newly permitted content may take time.
-          </p>
-          <button
-            type="button"
-            disabled={busy || disabled}
-            onClick={() => void confirm()}
-          >
-            {review.disclosureIncrease
-              ? "Review increased sharing"
-              : "Confirm rule detail"}
-          </button>
-          <button type="button" disabled={busy} onClick={() => setReview(null)}>
-            Edit detail
-          </button>
-        </>
-      ) : (
-        <>
-          <label>
-            Shared detail{" "}
-            <select
+            <p>
+              {label(review.previousMaximumFidelity)} →{" "}
+              {label(review.maximumFidelity)}
+              {review.includeCuratedMemory
+                ? " with Curated Memory"
+                : " without Curated Memory"}
+              .
+            </p>
+            <p>
+              {review.memberCount} existing members. Rule remains {review.state}
+              .
+            </p>
+            {review.ownerPolicyExpansionCount > 0 ? (
+              <p>
+                Owner permission also broadens for{" "}
+                {review.ownerPolicyExpansionCount} existing members.
+              </p>
+            ) : null}
+            <p>
+              Reductions restrict this rule when Team acknowledges the change.
+              Publication of newly permitted content may take time.
+            </p>
+          </>
+        ) : (
+          <>
+            <SharingDetailChoices
               value={detail}
               disabled={busy}
-              onChange={(event) =>
-                setDetail(event.target.value as SharedMemoryFidelityCeiling)
-              }
-            >
-              <option value="lcm_rollups">LCM Rollups</option>
-              <option value="lcm_leaves">LCM Leaves</option>
-              <option value="memory_events">Memory Events</option>
-            </select>
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={curated}
+              onChange={setDetail}
+            />
+            <label className="collab-check">
+              <input
+                type="checkbox"
+                checked={curated}
+                disabled={busy}
+                onChange={(event) => setCurated(event.target.checked)}
+              />{" "}
+              Include Curated Memory
+            </label>
+          </>
+        )}
+        {busy ? (
+          <p role="status">
+            {review
+              ? "Waiting for approval and Team delivery…"
+              : "Reviewing current rule and policy…"}
+          </p>
+        ) : null}
+        {error ? <p role="alert">{error}</p> : null}
+        <footer className="collab-modal-actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={close}
+          >
+            Cancel
+          </button>
+          {review ? (
+            <button
+              type="button"
+              className="secondary"
               disabled={busy}
-              onChange={(event) => setCurated(event.target.checked)}
-            />{" "}
-            Include Curated Memory
-          </label>
+              onClick={() => setReview(null)}
+            >
+              Edit detail
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={
               busy ||
               disabled ||
-              (detail === maximumFidelity && curated === includeCuratedMemory)
+              (!review &&
+                detail === maximumFidelity &&
+                curated === includeCuratedMemory)
             }
-            onClick={() => void loadReview()}
+            onClick={() => void (review ? confirm() : loadReview())}
           >
-            Review detail change
+            {review
+              ? review.disclosureIncrease
+                ? "Review increased sharing"
+                : "Confirm rule detail"
+              : "Review detail change"}
           </button>
-        </>
-      )}
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => {
-          setOpen(false);
-          setReview(null);
-          setError("");
-        }}
-      >
-        Cancel
-      </button>
-      {busy ? (
-        <p role="status">
-          {review
-            ? "Waiting for approval and Team delivery…"
-            : "Reviewing current rule and policy…"}
-        </p>
-      ) : null}
-      {error ? <p role="alert">{error}</p> : null}
-    </section>
+        </footer>
+      </section>
+    </Modal>
   );
 }

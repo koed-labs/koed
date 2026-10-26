@@ -127,6 +127,29 @@ const trustedClick = async (window, locator) => {
   await delay(30);
 };
 
+const openShareDiagnostics = async (window) => {
+  await waitFor(
+    window,
+    `Boolean(document.querySelector('.collab-manage-share-modal'))`,
+    "Share management dialog"
+  );
+  const summary = `[...document.querySelectorAll('.collab-manage-share-modal details > summary')].find((item) => item.textContent?.trim() === 'Diagnostics')`;
+  if (await evaluate(window, `!(${summary}).parentElement.open`))
+    await trustedClick(window, summary);
+};
+const openShareActions = async (window) => {
+  if (
+    await evaluate(
+      window,
+      `document.querySelector('.collab-sharing-footer [aria-label="More sharing actions"]')?.getAttribute('aria-expanded') !== 'true' `
+    )
+  )
+    await trustedClick(
+      window,
+      `document.querySelector('.collab-sharing-footer [aria-label="More sharing actions"]')`
+    );
+};
+
 const byText = (selector, text) =>
   `[...document.querySelectorAll(${JSON.stringify(selector)})].find((element) => element.textContent?.trim() === ${JSON.stringify(text)})`;
 
@@ -895,9 +918,10 @@ const run = async () => {
       `[...document.querySelectorAll('.collab-share-row')]
         .find((item) => item.textContent?.includes('Browser launch note'))`
     );
+    await openShareDiagnostics(alice);
     await waitFor(
       alice,
-      `${bodyIncludes("Latest published source revision: 1.")} && ${bodyIncludes("Two independent reviewers are required.")} && ${bodyExcludes("Privacy-safe replacement content.")}`,
+      `${bodyIncludes("Latest published revision1")} && ${bodyExcludes("Two independent reviewers are required.")} && ${bodyExcludes("Privacy-safe replacement content.")}`,
       "last authorized Note revision while update is preparing"
     );
     await evaluate(
@@ -906,10 +930,9 @@ const run = async () => {
     );
     await waitFor(
       alice,
-      `${bodyIncludes("Continuous browser revision two")} && ${bodyIncludes("Latest published source revision: 2.")} && ${bodyIncludes("Privacy-safe replacement content.")}`,
+      `${bodyIncludes("Continuous browser revision two")} && ${bodyIncludes("Latest published revision2")} && ${bodyExcludes("Privacy-safe replacement content.")}`,
       "atomically published Continuous Note revision two"
     );
-    await trustedClick(alice, `${byText("button", "Modify")}`);
     await trustedClick(alice, `${byText("button", "Pause updates")}`);
     await waitFor(
       alice,
@@ -924,7 +947,7 @@ const run = async () => {
     assert.equal(pauseNote.input.expectedOperationVersion, 4);
     assert.equal(pauseNote.input.action, "pause");
     assert.equal(typeof pauseNote.input.mutationId, "string");
-    await trustedClick(alice, `${byText("button", "Done")}`);
+    await trustedClick(alice, `${byText("button", "Close")}`);
 
     await trustedClick(
       alice,
@@ -964,12 +987,12 @@ const run = async () => {
       `[...document.querySelectorAll('.collab-share-row')]
         .find((item) => item.textContent?.includes('Continuous browser revision two'))`
     );
+    await openShareDiagnostics(alice);
     await waitFor(
       alice,
-      `${bodyIncludes("Updates paused")} && ${bodyIncludes("Latest published source revision: 2.")} && ${bodyIncludes("Privacy-safe replacement content.")} && ${bodyExcludes("Catch up only after updates resume.")}`,
+      `${bodyIncludes("Updates paused")} && ${bodyIncludes("Latest published revision2")} && ${bodyExcludes("Privacy-safe replacement content.")} && ${bodyExcludes("Catch up only after updates resume.")}`,
       "paused Note Share retains its last authorized revision"
     );
-    await trustedClick(alice, `${byText("button", "Modify")}`);
     await trustedClick(alice, `${byText("button", "Resume updates")}`);
     await waitFor(
       alice,
@@ -984,21 +1007,27 @@ const run = async () => {
     assert.equal(resumeNote.input.expectedOperationVersion, 5);
     assert.equal(resumeNote.input.action, "resume");
     assert.equal(typeof resumeNote.input.mutationId, "string");
-    await trustedClick(alice, `${byText("button", "Done")}`);
+    await trustedClick(alice, `${byText("button", "Close")}`);
     await evaluate(
       alice,
       `window.__koedCollaborationInteractions.completeContinuousNoteRevision()`
     );
+    await trustedClick(
+      alice,
+      `[...document.querySelectorAll('.collab-share-row')].find((item) => item.textContent?.includes('Continuous browser revision'))`
+    );
+    await openShareDiagnostics(alice);
     await waitFor(
       alice,
-      `${bodyIncludes("Continuous browser revision three")} && ${bodyIncludes("Latest published source revision: 3.")} && ${bodyIncludes("Catch up only after updates resume.")}`,
+      `${bodyIncludes("Continuous browser revision three")} && ${bodyIncludes("Latest published revision3")} && ${bodyExcludes("Catch up only after updates resume.")}`,
       "resumed Continuous Note catches up to revision three"
     );
 
     const noteRevocationsBeforeCancel = (await commands(alice)).filter(
       (command) => command.command === "collaboration.revoke_shared_memory"
     ).length;
-    await trustedClick(alice, `${byText("button", "Revoke")}`);
+    await openShareActions(alice);
+    await trustedClick(alice, `${byText('[role="menuitem"]', "Revoke")}`);
     await waitFor(
       alice,
       bodyIncludes("Your Personal Memory will not be deleted."),
@@ -1017,7 +1046,8 @@ const run = async () => {
       noteRevocationsBeforeCancel,
       "Canceling Continuous Note revocation must preserve access"
     );
-    await trustedClick(alice, `${byText("button", "Revoke")}`);
+    await openShareActions(alice);
+    await trustedClick(alice, `${byText('[role="menuitem"]', "Revoke")}`);
     await waitFor(
       alice,
       bodyIncludes("Your Personal Memory will not be deleted."),
@@ -1035,35 +1065,36 @@ const run = async () => {
       "collaboration.revoke_shared_memory"
     );
     assert.equal(noteRevocation.input.shareGrantId, ids.noteGrant);
+    await trustedClick(alice, `${byText("button", "Close")}`);
 
     await trustedClick(
       alice,
       `[...document.querySelectorAll('.collab-share-row')]
         .find((item) => item.textContent?.includes('Packaged asynchronous sharing'))`
     );
-    await trustedClick(alice, `${byText("button", "Modify")}`);
     await trustedClick(alice, `${byText("button", "Pause updates")}`);
     await waitFor(
       alice,
       `${byText("button", "Resume updates")} === document.activeElement && ${bodyIncludes("Packaged asynchronous sharing")}`,
       "stable focus after pausing updates"
     );
-    await trustedClick(alice, `${byText("button", "Done")}`);
+    await trustedClick(alice, `${byText("button", "Close")}`);
     await trustedClick(
       alice,
       `[...document.querySelectorAll('.collab-share-row')]
         .find((item) => item.textContent?.includes('Packaged revocation fixture'))`
     );
+    await openShareDiagnostics(alice);
     await waitFor(
       alice,
-      `${bodyIncludes(ownerOnlyCredentialSource)} &&
-        document.querySelector('.collab-share-facts .collab-share-state')?.textContent?.trim().toLowerCase() === 'active'`,
-      "active owner-only Personal source preview"
+      `${bodyIncludes("Published items")} && ${bodyExcludes(ownerOnlyCredentialSource)} &&
+        Boolean(document.querySelector('.collab-manage-share-modal'))`,
+      "published data overview without Personal source content"
     );
     assert.equal(
       await evaluate(alice, bodyIncludes(teamSafeCredentialSource)),
       false,
-      "The owner Personal source preview was replaced by the Team derivative"
+      "Share management must not render source content"
     );
     await evaluate(
       alice,
@@ -1071,8 +1102,8 @@ const run = async () => {
     );
     await waitFor(
       alice,
-      `document.activeElement?.textContent?.includes('Packaged revocation fixture') &&
-        document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged revocation fixture') &&
+      `document.querySelector('.collab-manage-share-modal')?.contains(document.activeElement) &&
+        document.querySelector('.collab-manage-share-modal')?.textContent?.includes('Packaged revocation fixture') &&
         [...document.querySelectorAll('[role="status"][aria-live="polite"]')]
           .some((item) => item.textContent?.includes('Packaged asynchronous sharing: Needs attention'))`,
       "stable selection and live announcement after background update"
@@ -1108,7 +1139,8 @@ const run = async () => {
     );
     const snapshotRevocationsBeforeCancel =
       snapshotRevocationCommandsBeforeCancel.length;
-    await trustedClick(alice, `${byText("button", "Revoke")}`);
+    await openShareActions(alice);
+    await trustedClick(alice, `${byText('[role="menuitem"]', "Revoke")}`);
     await waitFor(
       alice,
       bodyIncludes("Your Personal Memory will not be deleted."),
@@ -1127,7 +1159,8 @@ const run = async () => {
       snapshotRevocationsBeforeCancel,
       "Canceling destructive confirmation must preserve access"
     );
-    await trustedClick(alice, `${byText("button", "Revoke")}`);
+    await openShareActions(alice);
+    await trustedClick(alice, `${byText('[role="menuitem"]', "Revoke")}`);
     await waitFor(
       alice,
       bodyIncludes("Your Personal Memory will not be deleted."),
@@ -1138,7 +1171,7 @@ const run = async () => {
       alice,
       `[...document.querySelectorAll('[aria-labelledby="collab-revoked-shares"] .collab-share-row')]
         .some((item) => item.textContent?.includes('Packaged revocation fixture')) &&
-        document.querySelector('.collab-share-detail-workspace')?.textContent?.includes('Packaged revocation fixture')`,
+        document.querySelector('.collab-manage-share-modal')?.textContent?.includes('Packaged revocation fixture')`,
       "confirmed Workspace revocation"
     );
 

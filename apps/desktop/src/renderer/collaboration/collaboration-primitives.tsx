@@ -64,8 +64,13 @@ export function Modal({
         aria-modal="true"
         className={`collab-modal${className ? ` ${className}` : ""}`}
         initialFocus={() =>
-          popupRef.current?.querySelector<HTMLElement>(
-            "input:not([disabled]), textarea:not([disabled]), select:not([disabled]), .collab-command-list button:not([disabled]), .collab-modal-actions button:not([disabled])"
+          Array.from(
+            popupRef.current?.querySelectorAll<HTMLElement>(
+              "input:not([disabled]), textarea:not([disabled]), select:not([disabled]), .collab-command-list button:not([disabled]), .collab-modal-actions button:not([disabled])"
+            ) ?? []
+          ).find(
+            (element) =>
+              !element.closest("[hidden], details:not([open]) > :not(summary)")
           ) ?? true
         }
         ref={popupRef}

@@ -6,13 +6,13 @@ import type {
   SharedMemoryRepresentation
 } from "@koed/shared/collaboration";
 
-const updateExplanation: Record<OwnedSharingReason["updateState"], string> = {
-  fixed_snapshot: "Fixed snapshot. Later content is not included.",
-  active: "Updates active for this Conversation only.",
-  paused: "Updates paused. Previously authorized content remains shared.",
-  stopped: "Sharing stopped. This reason no longer grants access.",
-  expired: "Consent expired. This reason no longer grants access.",
-  pending: "Publication pending. Content becomes available after processing."
+const updateLabel: Record<OwnedSharingReason["updateState"], string> = {
+  fixed_snapshot: "Fixed snapshot",
+  active: "Updates active",
+  paused: "Updates paused",
+  stopped: "Stopped",
+  expired: "Consent expired",
+  pending: "Publication pending"
 };
 
 export function OwnedSharingReasons({
@@ -34,187 +34,155 @@ export function OwnedSharingReasons({
     reason: OwnedSharingReason,
     action: ConversationSharingRuleControlIntent["controlAction"]
   ) => void;
-
   pending: boolean;
   representationLabel: (representation: SharedMemoryRepresentation) => string;
 }) {
   return (
-    <section
-      className="collab-sharing-reasons"
-      aria-label="Why this Conversation is shared"
-    >
-      <h3>Why this Conversation is shared</h3>
+    <section className="collab-sharing-reasons" aria-label="Sharing reasons">
       {reasons.length === 0 ? (
-        <p>
-          {pending
-            ? "Preparing a direct share. No Workspace content access has been granted yet."
-            : "No published sharing reason."}
-        </p>
+        <p>{pending ? "Preparing share" : "No published sharing reasons"}</p>
       ) : (
-        reasons.map((reason) => {
-          const delivery = deliveries.find(
-            (item) =>
-              ("snapshotConversion" in item.intent &&
-                item.intent.snapshotConversion?.reasonId === reason.id &&
-                item.intent.snapshotConversion.consentId ===
-                  reason.consentId) ||
-              ("ruleId" in item.intent &&
-                item.intent.ruleId === reason.rule?.id &&
-                (!("reasonId" in item.intent) ||
-                  item.intent.reasonId === reason.id))
-          );
-          const queued = delivery?.state === "queued";
-          const expired =
-            reason.updateState === "expired" ||
-            (reason.expiresAt !== null &&
-              Date.parse(reason.expiresAt) <= Date.now());
-          return (
-            <div key={reason.id}>
-              <p>
-                <strong>
-                  {reason.kind === "rule"
-                    ? reason.rule?.selectorKind === "folder"
-                      ? "Folder sharing rule"
-                      : reason.rule?.selectorKind === "project"
-                        ? "Project sharing rule"
-                        : reason.rule?.selectorKind === "repository"
-                          ? "Git Anchor sharing rule"
-                          : "Continuous sharing rule"
-                    : "Direct share"}
-                </strong>{" "}
-                ·{" "}
-                {workspaceExcluded
-                  ? "Blocked by this Workspace exclusion. This reason cannot publish or grant access here."
-                  : reason.updateState === "active" &&
-                      reason.rule?.selectorKind === "folder"
-                    ? "Updates active for eligible Conversations in this exact Folder."
-                    : reason.updateState === "active" &&
-                        reason.rule?.selectorKind === "project"
-                      ? "Updates active while this Conversation remains in the private Project."
-                      : reason.updateState === "active" &&
-                          reason.rule?.selectorKind === "repository"
-                        ? "Updates active for eligible Conversations matching this Git Anchor."
-                        : updateExplanation[reason.updateState]}
-              </p>
-              <p>
-                Consent permits{" "}
-                {reason.permittedRepresentations
-                  .map(representationLabel)
-                  .join(", ") || "no representations"}
-                .
-                {reason.maximumAuthorizedSourceRevision !== null
-                  ? reason.mode === "snapshot"
-                    ? ` Fixed approval: source revision ${reason.maximumAuthorizedSourceRevision}.`
-                    : ` Limited to source revision ${reason.maximumAuthorizedSourceRevision}.`
-                  : " Future eligible revisions are permitted while updates are active."}
-              </p>
-              {reason.rule?.catchUpState === "needs_attention" ? (
-                <p>
-                  Catch-up needs attention. Automatic retries continue while
-                  authority remains valid.
-                </p>
-              ) : reason.rule?.catchUpState === "queued" ? (
-                <p>
-                  {reason.rule.failureCode === "source_not_ready"
-                    ? "Waiting for eligible source content. Catch-up will retry automatically."
-                    : "Catch-up queued. New content appears after processing."}
-                </p>
-              ) : null}
-              {reason.expiresAt ? (
-                <p>
-                  Consent expires {new Date(reason.expiresAt).toLocaleString()}.
-                </p>
-              ) : null}
-              <p>
-                Approved repository:{" "}
-                {reason.repositorySnapshot.label ??
-                  reason.repositorySnapshot.classification}
-                {reason.repositorySnapshotSourceRevision !== null
-                  ? ` · source revision ${reason.repositorySnapshotSourceRevision}`
-                  : ""}
-                .
-              </p>
-              {reason.publishedRepresentations.length > 0 ? (
-                <p>
-                  Published content:{" "}
-                  {reason.publishedRepresentations
-                    .map(
-                      (entry) =>
-                        `${representationLabel(entry.representation)} at revision ${entry.sourceRevision}${entry.state === "stale" ? " (stale)" : ""}`
-                    )
-                    .join(", ")}
-                  . Current access and policy still apply.
-                </p>
-              ) : (
-                <p>No content is currently published under this consent.</p>
-              )}
-              {queued ? (
-                <p role="status">
-                  {"controlAction" in delivery.intent &&
-                  delivery.intent.controlAction === "stop"
-                    ? "Stop"
-                    : "Sharing change"}{" "}
-                  requested here. Waiting for Team acknowledgment.
-                  {"controlAction" in delivery.intent &&
-                  delivery.intent.controlAction === "stop"
-                    ? " Team access may remain until acknowledged."
-                    : " Current Team state is shown above."}
-                </p>
-              ) : delivery?.state === "needs_review" ? (
-                <p role="alert">
-                  Team acknowledgment could not be confirmed. Refresh and review
-                  this rule again.
-                </p>
-              ) : null}
-              {detailReview?.(reason, queued)}
-              {onControl && reason.rule && reason.rule.state !== "stopped" ? (
-                <div
-                  className="collab-share-header-actions"
-                  aria-label="Control this sharing rule"
-                >
-                  {!expired && reason.rule.state === "active" ? (
-                    <button
-                      type="button"
-                      disabled={busy || queued}
-                      onClick={() => onControl(reason, "pause")}
-                    >
-                      Pause updates
-                    </button>
-                  ) : null}
-                  {!expired && reason.rule.state === "paused" ? (
-                    <button
-                      type="button"
-                      disabled={busy || queued}
-                      onClick={() => onControl(reason, "resume")}
-                    >
-                      Resume updates
-                    </button>
-                  ) : null}
-                  {!expired &&
-                  reason.rule.state === "active" &&
-                  reason.rule.catchUpState === "needs_attention" ? (
-                    <button
-                      type="button"
-                      disabled={busy || queued}
-                      onClick={() => onControl(reason, "retry")}
-                    >
-                      Retry catch-up
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="danger-secondary"
-                    disabled={busy || queued}
-                    onClick={() => onControl(reason, "stop")}
-                  >
-                    Stop this rule
-                  </button>
+        <ul className="collab-sharing-reason-list">
+          {reasons.map((reason) => {
+            const delivery = deliveries.find(
+              (item) =>
+                ("snapshotConversion" in item.intent &&
+                  item.intent.snapshotConversion?.reasonId === reason.id &&
+                  item.intent.snapshotConversion.consentId ===
+                    reason.consentId) ||
+                ("ruleId" in item.intent &&
+                  item.intent.ruleId === reason.rule?.id &&
+                  (!("reasonId" in item.intent) ||
+                    item.intent.reasonId === reason.id))
+            );
+            const queued = delivery?.state === "queued";
+            const expired =
+              reason.updateState === "expired" ||
+              (reason.expiresAt !== null &&
+                Date.parse(reason.expiresAt) <= Date.now());
+            const publicationRevision = reason.publishedRepresentations.length
+              ? Math.max(
+                  ...reason.publishedRepresentations.map(
+                    (entry) => entry.sourceRevision
+                  )
+                )
+              : null;
+            const allowedDetail = (
+              ["memory_events", "lcm_leaves", "lcm_rollups"] as const
+            ).find((detail) =>
+              reason.permittedRepresentations.includes(detail)
+            );
+            const curated =
+              reason.permittedRepresentations.includes("curated_assertions");
+            const state = workspaceExcluded
+              ? "Excluded"
+              : expired
+                ? "Consent expired"
+                : updateLabel[reason.updateState];
+            const waiting = queued
+              ? "controlAction" in delivery.intent &&
+                delivery.intent.controlAction === "stop"
+                ? "Stop pending"
+                : "Change pending"
+              : delivery?.state === "needs_review"
+                ? "Needs review"
+                : null;
+            const catchUp =
+              !workspaceExcluded && !expired && reason.updateState === "active"
+                ? reason.rule?.catchUpState === "needs_attention"
+                  ? "Needs attention"
+                  : reason.rule?.catchUpState === "queued"
+                    ? reason.rule.failureCode === "source_not_ready"
+                      ? "Waiting for content"
+                      : "Catching up"
+                    : null
+                : null;
+            return (
+              <li key={reason.id}>
+                <div className="collab-sharing-reason-row">
+                  <strong>
+                    {reason.kind === "direct"
+                      ? "Direct share"
+                      : reason.rule?.selectorKind === "folder"
+                        ? "Folder sharing rule"
+                        : reason.rule?.selectorKind === "project"
+                          ? "Project sharing rule"
+                          : reason.rule?.selectorKind === "repository"
+                            ? "Git Anchor sharing rule"
+                            : "Conversation sharing rule"}
+                  </strong>
+                  <span className="collab-sharing-reason-detail">
+                    {allowedDetail
+                      ? representationLabel(allowedDetail)
+                      : curated
+                        ? "Curated Memory"
+                        : "No permitted detail"}
+                    {allowedDetail && curated ? " + Curated Memory" : ""}
+                    {publicationRevision !== null ? (
+                      <small
+                        aria-label={`Published source revision ${publicationRevision}`}
+                      >
+                        {" "}
+                        · r{publicationRevision}
+                      </small>
+                    ) : null}
+                  </span>
+                  <span className="collab-sharing-reason-state">
+                    <span>{waiting ? state : (catchUp ?? state)}</span>
+                    {waiting ? (
+                      <span role={queued ? "status" : "alert"}>{waiting}</span>
+                    ) : null}
+                  </span>
                 </div>
-              ) : null}
-              <p>Conversation Source Access requires separate authorization.</p>
-            </div>
-          );
-        })
+                {detailReview?.(reason, queued)}
+                {onControl && reason.rule && reason.rule.state !== "stopped" ? (
+                  <div
+                    className="collab-share-header-actions"
+                    aria-label="Control this sharing rule"
+                  >
+                    {!expired && reason.rule.state === "active" ? (
+                      <button
+                        type="button"
+                        disabled={busy || queued || workspaceExcluded}
+                        onClick={() => onControl(reason, "pause")}
+                      >
+                        Pause updates
+                      </button>
+                    ) : null}
+                    {!expired && reason.rule.state === "paused" ? (
+                      <button
+                        type="button"
+                        disabled={busy || queued || workspaceExcluded}
+                        onClick={() => onControl(reason, "resume")}
+                      >
+                        Resume updates
+                      </button>
+                    ) : null}
+                    {!expired &&
+                    reason.rule.state === "active" &&
+                    reason.rule.catchUpState === "needs_attention" ? (
+                      <button
+                        type="button"
+                        disabled={busy || queued || workspaceExcluded}
+                        onClick={() => onControl(reason, "retry")}
+                      >
+                        Retry catch-up
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="danger-secondary"
+                      disabled={busy || queued}
+                      onClick={() => onControl(reason, "stop")}
+                    >
+                      Stop this rule
+                    </button>
+                  </div>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
       )}
     </section>
   );

@@ -418,6 +418,10 @@ describe("PersonalMemoryWorkspace", () => {
         deletedAt: null,
         createdAt: stamp,
         updatedAt: stamp
+      },
+      projectReference: {
+        ownerUserId: "00000000-0000-4000-8000-000000000093",
+        projectId: id
       }
     };
     const store = new PersonalMemoryStore(
@@ -425,10 +429,12 @@ describe("PersonalMemoryWorkspace", () => {
     );
     const manageProject =
       vi.fn<NonNullable<PersonalDesktopApi["manageProject"]>>();
+    const reviewSharing = vi.fn();
     await act(async () =>
       root.render(
         <PersonalMemoryWorkspace
           manageProject={manageProject}
+          onReviewGitAnchorSharing={reviewSharing}
           route={{ kind: "project", projectId: id }}
           store={store}
           onNavigate={() => undefined}
@@ -449,6 +455,22 @@ describe("PersonalMemoryWorkspace", () => {
     expect(container.textContent).not.toContain("Move existing Conversations");
     expect(container.querySelector('[aria-label="Move Project"]')).toBeNull();
     expect(document.querySelector(".personal-project-transfer")).toBeNull();
+    expect(container.textContent).not.toContain("Review Project sharing");
+    expect(container.textContent).not.toContain("Review Sharing");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Project actions"]')!
+        .click()
+    );
+    const reviewItem = [
+      ...document.querySelectorAll<HTMLElement>('[role="menuitem"]')
+    ].find((item) => item.textContent?.trim() === "Share");
+    expect(reviewItem).toBeDefined();
+    await act(async () => reviewItem!.click());
+    expect(reviewSharing).toHaveBeenCalledExactlyOnceWith(
+      { kind: "project", project: named.projectReference },
+      "New Release"
+    );
   });
 
   it("filters folders without navigating, keeps unmatched history accessible, and restores saved filters", async () => {
@@ -1503,12 +1525,19 @@ describe("PersonalMemoryWorkspace", () => {
       })
     );
     const onShare = vi.fn();
+    const manageContext = vi
+      .fn<NonNullable<PersonalDesktopApi["manageSourceContext"]>>()
+      .mockRejectedValue(new Error("Context unavailable in fixture"));
+    const manageProject =
+      vi.fn<NonNullable<PersonalDesktopApi["manageProject"]>>();
 
     await act(async () => {
       root.render(
         <PersonalMemoryWorkspace
           onNavigate={vi.fn()}
           onShareToWorkspace={onShare}
+          manageSourceContext={manageContext}
+          manageProject={manageProject}
           projectWorkspaceSuggestions={[
             { projectId: source.id, workspaceId: "revoked" }
           ]}
@@ -1544,12 +1573,29 @@ describe("PersonalMemoryWorkspace", () => {
         />
       );
     });
-    await vi.waitFor(() => expect(container.textContent).toContain("Share"));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector('[aria-label="Conversation actions"]')
+      ).not.toBeNull()
+    );
+    expect(container.querySelector(".personal-share-button")).toBeNull();
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>(".personal-share-button")
-        ?.click();
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Conversation actions"]'
+        )!
+        .click();
     });
+    expect(
+      [...document.querySelectorAll('[role="menuitem"]')].map((item) =>
+        item.textContent?.trim()
+      )
+    ).toEqual(["Share", "Correct context", "Add to Project"]);
+    await act(async () =>
+      [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+        .find((item) => item.textContent?.trim() === "Share")!
+        .click()
+    );
 
     expect(onShare).toHaveBeenCalledWith({
       destinations: [
@@ -1579,6 +1625,44 @@ describe("PersonalMemoryWorkspace", () => {
       },
       suggestedWorkspaceId: null
     });
+    const chooseAction = async (label: string) => {
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[aria-label="Conversation actions"]'
+          )!
+          .click()
+      );
+      await act(async () =>
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+          .find((item) => item.textContent?.trim() === label)!
+          .click()
+      );
+    };
+    await chooseAction("Correct context");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      "Correct source context"
+    );
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(manageContext).toHaveBeenCalledExactlyOnceWith({
+      action: "get",
+      sessionId
+    });
+    await act(async () =>
+      [
+        ...document.querySelectorAll<HTMLButtonElement>(
+          '[role="dialog"] button'
+        )
+      ]
+        .find((button) => button.textContent === "Cancel")!
+        .click()
+    );
+    await chooseAction("Add to Project");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      "Projects for this Conversation"
+    );
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(manageProject).not.toHaveBeenCalled();
   });
 
   it.each([false, true])(

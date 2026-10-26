@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   Button,
   Dialog,
@@ -32,15 +32,21 @@ export function SourceContextCorrectionDialog({
   projects,
   manage,
   store,
-  menuitem = false
+  menuitem = false,
+  open: controlledOpen,
+  onOpenChange,
+  returnFocus
 }: {
   thread: Pick<PersonalDesktopProjectThread, "sessionId" | "name">;
   projects: readonly PersonalDesktopProject[];
   manage: Manage;
   store: PersonalMemoryStore;
   menuitem?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  returnFocus?: RefObject<HTMLButtonElement | null>;
 }) {
-  const [open, setOpen] = useState(false),
+  const [localOpen, setLocalOpen] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const [context, setContext] = useState<Context | null>(null),
@@ -48,6 +54,14 @@ export function SourceContextCorrectionDialog({
   const [axis, setAxis] = useState<"git" | "folder">("git"),
     [target, setTarget] = useState("reset");
   const running = useRef(false);
+  const open = controlledOpen ?? localOpen;
+  const setOpen = (next: boolean) => {
+    setLocalOpen(next);
+    onOpenChange?.(next);
+  };
+  useEffect(() => {
+    if (controlledOpen && thread.sessionId) void load();
+  }, [controlledOpen, thread.sessionId]);
   if (!thread.sessionId) return null;
   const repositories = new Map<
     string,
@@ -213,7 +227,7 @@ export function SourceContextCorrectionDialog({
         if (!busy) setOpen(next);
       }}
     >
-      {menuitem ? (
+      {controlledOpen !== undefined ? null : menuitem ? (
         <button type="button" role="menuitem" onClick={openDialog}>
           <FilePenLine aria-hidden="true" />
           Correct source context
@@ -223,7 +237,10 @@ export function SourceContextCorrectionDialog({
           Correct source context
         </Button>
       )}
-      <DialogPopup className="personal-conversation-card personal-source-context-card">
+      <DialogPopup
+        className="personal-conversation-card personal-source-context-card"
+        finalFocus={returnFocus}
+      >
         <DialogHeader>
           <DialogTitle>Correct source context</DialogTitle>
           <DialogDescription>{thread.name}</DialogDescription>
@@ -313,13 +330,7 @@ export function SourceContextCorrectionDialog({
                 </section>
               </div>
               <SourceContextStatus context={context} />
-              {preview ? (
-                <SourceCorrectionImpact preview={preview} />
-              ) : (
-                <p className="personal-source-review-hint">
-                  Review the affected Projects before confirming.
-                </p>
-              )}
+              {preview ? <SourceCorrectionImpact preview={preview} /> : null}
             </>
           ) : busy ? (
             <p role="status">Loading source context…</p>

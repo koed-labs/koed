@@ -666,6 +666,10 @@ export function App({
     readPersonalMemory,
     readPersonalMemory
   );
+  const localSharingProjects = useMemo(
+    () => Array.from(personalMemorySnapshot?.projectsById.values() ?? []),
+    [personalMemorySnapshot]
+  );
   const desktopStatus = useDesktopStatus(activeStatusStore);
   const desktopHealthSummary = compactHealthSummary(desktopStatus.status);
   const desktopHealthIsReady = desktopHealthSummary.state === "healthy";
@@ -688,7 +692,10 @@ export function App({
   const selectedAskThreadId =
     route.kind === "personal-memory-ask" ? route.askThreadId : undefined;
   useEffect(() => {
-    if (route.kind === "personal-memory-ask") {
+    if (
+      route.kind === "personal-memory-ask" ||
+      route.kind === "personal-memory-shares"
+    ) {
       void personalMemoryStore?.loadProjects({ silent: true });
     }
   }, [personalMemoryStore, route.kind]);
@@ -1766,6 +1773,7 @@ export function App({
         <Suspense fallback={<SharesStatusView state="loading" />}>
           <PersonalMemorySharesView
             client={client}
+            localProjects={localSharingProjects}
             initialSection="shares"
             initialShareKey={route.shareKey}
             markdownAdapters={collaboration.markdownAdapters}

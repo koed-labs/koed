@@ -10,6 +10,11 @@ import type {
 } from "@koed/shared/collaboration";
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 import type { SharingRuleDelivery } from "@koed/shared";
+import {
+  SharingDetailChoices,
+  SharingRow,
+  sharingDetailTitle
+} from "./SharingControls.js";
 import { RepositorySharingRules } from "./RepositorySharingRules.js";
 import {
   Modal,
@@ -225,84 +230,134 @@ export function GitAnchorSharingReview({
     }
   };
   return (
-    <Modal label={`Review ${selectionLabel} sharing`} onClose={onClose}>
+    <Modal
+      className="collab-sharing-modal"
+      label={`Review ${selectionLabel} sharing`}
+      onClose={onClose}
+    >
       <ModalHeader
-        title={`Review ${selectionLabel} sharing`}
+        title={state === "ready" ? "Review sharing" : "Share memory"}
         onClose={onClose}
       />
-      <div className="collab-form collab-git-sharing-review">
-        <p>
-          <strong>{selectionLabel}</strong>{" "}
+      <div className="collab-form collab-sharing-form collab-git-sharing-review">
+        <p className="collab-form-context">
+          {selectionLabel} ·{" "}
           {target.kind === "repository"
             ? (target.repository.anchorDisplay ?? target.repository.key)
             : (selectionTitle ??
-              (target.kind === "folder"
-                ? "Exact Folder on its originating device"
-                : "Private Project"))}
+              (target.kind === "folder" ? "Exact Folder" : "Personal Project"))}
         </p>
-        <label>
-          Team
-          <select
-            value={teamId}
-            disabled={state === "loading" || creating}
-            onChange={(event) => {
-              setTeamId(event.target.value);
-              setWorkspaceId("");
-            }}
-          >
-            <option value="">Choose a Team</option>
-            {teams.map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {entry.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Workspace
-          <select
-            value={workspaceId}
-            disabled={!team || state === "loading" || creating}
-            onChange={(event) => setWorkspaceId(event.target.value)}
-          >
-            <option value="">Choose a Workspace</option>
-            {workspaces.map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {entry.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Shared detail
-          <select
-            value={representation}
-            disabled={state === "loading" || creating}
-            onChange={(event) =>
-              setRepresentation(event.target.value as typeof representation)
-            }
-          >
-            <option value="lcm_rollups">LCM Rollups</option>
-            <option value="lcm_leaves">LCM Leaves</option>
-            <option value="memory_events">Memory Events</option>
-          </select>
-        </label>
-        {target.kind === "project" ? (
-          <p>
-            The Project name and private membership structure stay in Personal
-            Memory. This shares eligible contributions with the selected
-            Workspace.
-          </p>
-        ) : null}
-        <p>
-          Sharing would include existing eligible Conversations and future
-          Conversations matching this {selectionLabel}. Privacy and Workspace
-          policies apply.
-        </p>
-        <p>
-          Review alone creates no consent or Share Grant and publishes no
-          Memory.
-        </p>
+        {state === "ready" ? (
+          <>
+            <div>
+              <SharingRow
+                label="Share with"
+                value={`${team?.name} / ${workspace?.name}`}
+              />
+              <SharingRow
+                label="Who can recall"
+                value="Members with Workspace Access"
+              />
+              <SharingRow
+                label="Shared detail"
+                value={sharingDetailTitle(representation)}
+              />
+              <SharingRow
+                label="Updates"
+                value="Existing & future Conversations"
+              />
+              <SharingRow label="Source access" value="Not allowed" />
+            </div>
+            <div className="collab-sharing-readiness" role="status">
+              <strong>
+                {sources.length}{" "}
+                {sources.length === 1 ? "Conversation" : "Conversations"}
+              </strong>
+              <span className="collab-sharing-state active">
+                {
+                  sources.filter((entry) => entry.readiness === "eligible")
+                    .length
+                }{" "}
+                ready
+              </span>
+              {sources.some((entry) => entry.readiness === "unresolved") ? (
+                <span className="collab-sharing-state pending">
+                  {
+                    sources.filter((entry) => entry.readiness === "unresolved")
+                      .length
+                  }{" "}
+                  waiting
+                </span>
+              ) : null}
+            </div>
+            <p className="collab-sharing-notice">
+              Available after Privacy processing.
+            </p>
+            <details className="collab-sharing-disclosure">
+              <summary>Privacy & technical details</summary>
+              <SharingRow label="Privacy" value="Required categories hidden" />
+              {expiresAt ? (
+                <SharingRow
+                  label="Review expires"
+                  value={new Date(expiresAt).toLocaleString()}
+                />
+              ) : null}
+              {target.kind === "project" ? (
+                <p>The Project name and membership stay in Personal Memory.</p>
+              ) : null}
+              <p>No consent or Share Grant exists until sharing is approved.</p>
+            </details>
+          </>
+        ) : (
+          <>
+            <div className="collab-sharing-destination">
+              <label>
+                Team
+                <select
+                  value={teamId}
+                  disabled={state === "loading" || creating}
+                  onChange={(event) => {
+                    setTeamId(event.target.value);
+                    setWorkspaceId("");
+                  }}
+                >
+                  <option value="">Choose a Team</option>
+                  {teams.map((entry) => (
+                    <option key={entry.id} value={entry.id}>
+                      {entry.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Workspace
+                <select
+                  value={workspaceId}
+                  disabled={!team || state === "loading" || creating}
+                  onChange={(event) => setWorkspaceId(event.target.value)}
+                >
+                  <option value="">Choose a Workspace</option>
+                  {workspaces.map((entry) => (
+                    <option key={entry.id} value={entry.id}>
+                      {entry.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <SharingDetailChoices
+              value={representation}
+              onChange={setRepresentation}
+              disabled={state === "loading" || creating}
+            />
+            <div className="collab-sharing-updates-summary">
+              <SharingRow
+                label="Updates"
+                value="Existing & future Conversations"
+              />
+            </div>
+          </>
+        )}
         {creation?.state === "acknowledged" ? (
           <p role="status">Team accepted the sharing rule.</p>
         ) : null}
@@ -313,77 +368,60 @@ export function GitAnchorSharingReview({
         ) : null}
         {state === "loading" ? (
           <p role="status">
-            Reviewing every page… {sources.length} Conversations inspected so
-            far. The selection is not complete yet.
+            Reviewing Conversations… {sources.length} inspected. The selection
+            is not complete yet.
           </p>
         ) : null}
-        {state === "ready" ? (
-          <>
-            <p role="status">
-              Complete review:{" "}
-              {sources.filter((entry) => entry.readiness === "eligible").length}{" "}
-              eligible;{" "}
-              {
-                sources.filter((entry) => entry.readiness === "unresolved")
-                  .length
-              }{" "}
-              unresolved.
-            </p>
-            <p>
-              Unavailable Personal sources wait until their identity and
-              selected detail can be verified.
-            </p>
-            <ul
-              className="collab-source-list"
-              aria-label="Reviewed Conversations"
+        <footer className="collab-modal-actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={creating}
+            onClick={
+              state === "ready" && !creation
+                ? () => {
+                    setState("idle");
+                    setCompletedReview(null);
+                  }
+                : onClose
+            }
+          >
+            {state === "ready" && !creation
+              ? "Back"
+              : creation || creating
+                ? "Close"
+                : "Cancel"}
+          </button>
+          {state === "ready" ? (
+            <button
+              type="button"
+              disabled={!completedReview || creating}
+              onClick={() => void share()}
             >
-              {sources.map((entry) => (
-                <li key={entry.source.localSessionId}>
-                  <strong>{entry.title}</strong> ·{" "}
-                  {entry.readiness === "eligible"
-                    ? `${entry.itemCount} ${entry.itemCount === 1 ? "item" : "items"} at revision ${entry.sourceRevision}`
-                    : "Source readiness unresolved for this detail"}
-                  {entry.source.identityState === "local_only"
-                    ? " · available on this device only"
-                    : ""}
-                </li>
-              ))}
-            </ul>
-            {expiresAt ? (
-              <p>
-                Review expires {new Date(expiresAt).toLocaleString()}. Refresh
-                before sharing.
-              </p>
-            ) : null}
-          </>
-        ) : null}
-        <div className="collab-modal-actions">
-          <button type="button" className="secondary" onClick={onClose}>
-            {creation || creating ? "Close" : "Cancel"}
-          </button>
-          <button
-            type="button"
-            disabled={!workspace || state === "loading" || creating}
-            onClick={() => void review()}
-          >
-            {state === "idle" ? "Review" : "Refresh review"}
-          </button>
-          <button
-            type="button"
-            disabled={state !== "ready" || !completedReview || creating}
-            onClick={() => void share()}
-          >
-            {creating
-              ? "Waiting for sharing approval…"
-              : "Share existing and future Memory"}
-          </button>
-        </div>
-        <RepositorySharingRules
-          client={client}
-          selector={selector}
-          target={target}
-          creation={creation}
-        />
+              {creating
+                ? "Waiting for sharing approval…"
+                : "Continue to approval"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!workspace || state === "loading" || creating}
+              onClick={() => void review()}
+            >
+              {state === "idle" ? "Review" : "Refresh review"}
+            </button>
+          )}
+        </footer>
+        <details className="collab-sharing-disclosure">
+          <summary>Existing sharing rules</summary>
+          <RepositorySharingRules
+            embedded
+            client={client}
+            selector={selector}
+            target={target}
+            creation={creation}
+          />
+        </details>
       </div>
     </Modal>
   );

@@ -1,7 +1,7 @@
 import { SharingRuleContentPolicyReview } from "./SharingRuleContentPolicyReview.js";
 import { SharingRulePublisherReview } from "./SharingRulePublisherReview.js";
 import { SharingRuleDetailReview } from "./SharingRuleDetailReview.js";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   OwnedRepositorySharingRule,
   SharingRuleDelivery
@@ -10,6 +10,12 @@ import { canonicalJsonDigest as crossIdentitySyncDigest } from "@koed/shared/col
 import type { CollaborationRendererClient } from "../../collaboration/renderer-client.js";
 import { SharingRuleDeliveryStatus } from "./SharingRuleDeliveryStatus.js";
 import { failureMessage } from "./collaboration-primitives.js";
+import { SharingRow, sharingDetailTitle } from "./SharingControls.js";
+import {
+  localSharingRuleLabels,
+  sharingRuleLabel
+} from "./sharing-rule-labels.js";
+import type { DesktopProject } from "../../project-memory-ui.js";
 
 export type RepositorySharingRulesClient = Pick<
   CollaborationRendererClient,
@@ -28,7 +34,10 @@ export function RepositorySharingRules({
   client,
   selector,
   target: selectionTarget,
-  creation
+  creation,
+  localProjects,
+  embedded = false,
+  query = ""
 }: {
   client: RepositorySharingRulesClient;
   selector?: Parameters<
@@ -38,7 +47,14 @@ export function RepositorySharingRules({
     RepositorySharingRulesClient["listRepositoryRules"]
   >[0]["target"];
   creation: SharingRuleDelivery | null;
+  query?: string;
+  localProjects?: readonly DesktopProject[];
+  embedded?: boolean;
 }) {
+  const localLabels = useMemo(
+    () => localSharingRuleLabels(localProjects ?? []),
+    [localProjects]
+  );
   const [rules, setRules] = useState<OwnedRepositorySharingRule[]>([]),
     [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false),
@@ -225,11 +241,13 @@ export function RepositorySharingRules({
           : "Continuous sharing rules"
       }
     >
-      <h3>
-        {selector
-          ? `Sharing rules for this ${selector.kind === "folder" ? "Folder" : selector.kind === "project" ? "Project" : "Git Anchor"}`
-          : "Continuous sharing rules"}
-      </h3>
+      {!embedded ? (
+        <h3>
+          {selector
+            ? `Sharing rules for this ${selector.kind === "folder" ? "Folder" : selector.kind === "project" ? "Project" : "Git Anchor"}`
+            : "Continuous sharing rules"}
+        </h3>
+      ) : null}
       {error ? (
         <p role="alert" className="collab-form-error">
           {error}
@@ -239,152 +257,185 @@ export function RepositorySharingRules({
       {!loading && !rules.length && !error ? (
         <p>No continuous sharing rules.</p>
       ) : null}
-      {rules.map((rule) => {
-        const pending = deliveries.some(
-          (delivery) =>
-            delivery.state === "queued" &&
-            "ruleId" in delivery.intent &&
-            delivery.intent.ruleId === rule.ruleId
-        );
-        const disabled = busy !== null || pending;
-        return (
-          <article key={rule.ruleId}>
-            {!selector ? (
-              <p>
-                {rule.selector.kind === "folder"
-                  ? "Folder"
-                  : rule.selector.kind === "project"
-                    ? "Project"
-                    : "Git Anchor"}
-              </p>
-            ) : null}
-            <strong>
-              {rule.team.name} · {rule.workspace.name}
-            </strong>
-            <p>
-              {rule.state === "active"
-                ? "Active"
-                : rule.state === "paused"
-                  ? "Paused"
-                  : "Stopped"}{" "}
-              ·{" "}
-              {rule.maximumFidelity === "memory_events"
-                ? "Memory Events"
-                : rule.maximumFidelity === "lcm_leaves"
-                  ? "LCM Leaves"
-                  : "LCM Rollups"}
-              {rule.includeCuratedMemory ? " and Curated Memory" : ""}
-            </p>
-            {rule.state === "active" ? (
-              <p>
-                Existing and future eligible Conversations appear after their
-                selected Memory detail is ready and passes Privacy processing.
-              </p>
-            ) : rule.state === "paused" ? (
-              <p>
-                Published Memory remains available. New members and revisions
-                wait. Sources that stop matching lose this rule’s access.
-              </p>
-            ) : (
-              <p>
-                This rule supplies no Team access and admits no future
-                Conversations.
-              </p>
-            )}
-            {rule.publisher ? (
-              <p>Publisher: {rule.publisher.label ?? "Unnamed device"}</p>
-            ) : null}
-            {!rule.publisherAvailable && rule.state !== "stopped" ? (
-              <p>
-                The recorded publisher is unavailable. You can still pause or
-                stop this rule.
-              </p>
-            ) : null}
-            {selectionTarget && rule.state !== "stopped" ? (
-              <SharingRulePublisherReview
-                client={client}
-                ruleId={rule.ruleId}
-                teamId={rule.team.id}
-                workspaceId={rule.workspace.id}
-                authorityVersion={rule.authorityVersion}
-                publisherFence={rule.publisherFence}
-                maximumFidelity={rule.maximumFidelity}
-                target={selectionTarget}
-                disabled={disabled}
-                onDelivery={recordDelivery}
-              />
-            ) : null}
-            <SharingRuleDetailReview
-              key={rule.authorityVersion}
-              client={client}
-              ruleId={rule.ruleId}
-              teamId={rule.team.id}
-              workspaceId={rule.workspace.id}
-              maximumFidelity={rule.maximumFidelity}
-              includeCuratedMemory={rule.includeCuratedMemory}
-              disabled={disabled}
-              onDelivery={recordDelivery}
-            />
-            <SharingRuleContentPolicyReview
-              key={`${rule.ruleId}:content:${rule.authorityVersion}`}
-              client={client}
-              ruleId={rule.ruleId}
-              teamId={rule.team.id}
-              workspaceId={rule.workspace.id}
-              authorityVersion={rule.authorityVersion}
-              disabled={disabled}
-              onDelivery={recordDelivery}
-            />
-            {rule.state === "active" ? (
-              <>
-                <button
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => void control(rule, "pause")}
+      {rules
+        .filter((rule) =>
+          [
+            rule.team.name,
+            rule.workspace.name,
+            rule.state,
+            rule.selector.kind,
+            rule.selector.key,
+            sharingRuleLabel(rule.selector, localLabels, selectionTarget),
+            sharingDetailTitle(rule.maximumFidelity)
+          ].some((value) =>
+            value.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
+          )
+        )
+        .map((rule) => {
+          const pending = deliveries.some(
+            (delivery) =>
+              delivery.state === "queued" &&
+              "ruleId" in delivery.intent &&
+              delivery.intent.ruleId === rule.ruleId
+          );
+          const disabled = busy !== null || pending;
+          return (
+            <details
+              className="collab-sharing-rule-list-item"
+              key={rule.ruleId}
+            >
+              <summary>
+                <span>
+                  <strong>
+                    {sharingRuleLabel(
+                      rule.selector,
+                      localLabels,
+                      selectionTarget
+                    )}
+                  </strong>
+                  <small>
+                    {rule.team.name} / {rule.workspace.name} ·{" "}
+                    {sharingDetailTitle(rule.maximumFidelity)}
+                  </small>
+                </span>
+                <span
+                  className={`collab-sharing-state ${rule.state === "active" ? "active" : ""}`}
                 >
-                  Pause updates
-                </button>
-                <button
-                  type="button"
-                  disabled={disabled || !rule.publisherAvailable}
-                  onClick={() => void control(rule, "retry")}
-                >
-                  Retry catch-up
-                </button>
-              </>
-            ) : rule.state === "paused" ? (
-              <button
-                type="button"
-                disabled={disabled || !rule.publisherAvailable}
-                onClick={() => void control(rule, "resume")}
-              >
-                Resume updates
-              </button>
-            ) : null}
-            {rule.state !== "stopped" ? (
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => void control(rule, "stop")}
-              >
-                Stop rule
-              </button>
-            ) : null}
-          </article>
-        );
-      })}
+                  {rule.state === "active"
+                    ? "Sharing updates"
+                    : rule.state === "paused"
+                      ? "Updates paused"
+                      : "Stopped"}
+                </span>
+              </summary>
+              <article>
+                <div className="collab-sharing-control-row">
+                  <span className="collab-sharing-updates-label">
+                    {pending ? "Awaiting acknowledgment" : "Updates"}
+                  </span>
+                  <div className="collab-sharing-inline-actions">
+                    {rule.state !== "stopped" ? (
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={
+                          disabled ||
+                          (rule.state === "paused" && !rule.publisherAvailable)
+                        }
+                        onClick={() =>
+                          void control(
+                            rule,
+                            rule.state === "paused" ? "resume" : "pause"
+                          )
+                        }
+                      >
+                        {rule.state === "paused" ? "Resume" : "Pause"}
+                      </button>
+                    ) : null}
+                    {rule.state !== "stopped" ? (
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={disabled}
+                        onClick={() => void control(rule, "stop")}
+                      >
+                        Stop
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <SharingRuleDetailReview
+                  key={rule.authorityVersion}
+                  trigger="row"
+                  client={client}
+                  ruleId={rule.ruleId}
+                  teamId={rule.team.id}
+                  workspaceId={rule.workspace.id}
+                  maximumFidelity={rule.maximumFidelity}
+                  includeCuratedMemory={rule.includeCuratedMemory}
+                  disabled={disabled || rule.state === "stopped"}
+                  onDelivery={recordDelivery}
+                />
+                {!rule.publisherAvailable && rule.state !== "stopped" ? (
+                  <p role="status">
+                    Publisher unavailable. Pause and stop remain available.
+                  </p>
+                ) : null}
+                <details className="collab-sharing-disclosure">
+                  <summary>Diagnostics</summary>
+                  <div className="collab-sharing-diagnostic-content">
+                    <div className="collab-sharing-diagnostic-facts">
+                      <SharingRow
+                        label="Publisher"
+                        value={
+                          rule.publisher
+                            ? (rule.publisher.label ?? "Unnamed device")
+                            : rule.publisherAvailable
+                              ? "Available"
+                              : "Unavailable"
+                        }
+                      />
+                      <SharingRow
+                        label="Selection ID"
+                        value={rule.selector.key}
+                      />
+                    </div>
+                    <div className="collab-sharing-diagnostic-actions">
+                      {selectionTarget && rule.state !== "stopped" ? (
+                        <SharingRulePublisherReview
+                          client={client}
+                          ruleId={rule.ruleId}
+                          teamId={rule.team.id}
+                          workspaceId={rule.workspace.id}
+                          authorityVersion={rule.authorityVersion}
+                          publisherFence={rule.publisherFence}
+                          maximumFidelity={rule.maximumFidelity}
+                          target={selectionTarget}
+                          disabled={disabled}
+                          onDelivery={recordDelivery}
+                        />
+                      ) : null}
+                      <SharingRuleContentPolicyReview
+                        key={`${rule.ruleId}:content:${rule.authorityVersion}`}
+                        client={client}
+                        ruleId={rule.ruleId}
+                        teamId={rule.team.id}
+                        workspaceId={rule.workspace.id}
+                        authorityVersion={rule.authorityVersion}
+                        disabled={disabled}
+                        onDelivery={recordDelivery}
+                      />
+                      {rule.state === "active" ? (
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={disabled || !rule.publisherAvailable}
+                          onClick={() => void control(rule, "retry")}
+                        >
+                          Retry catch-up
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </details>
+              </article>
+            </details>
+          );
+        })}
       <SharingRuleDeliveryStatus
         deliveries={deliveries}
         onRefresh={() => void load(null)}
       />
-      <button
-        type="button"
-        className="secondary"
-        disabled={loading || busy !== null}
-        onClick={() => void load(null)}
-      >
-        Refresh sharing rules
-      </button>
+      {!embedded ? (
+        <button
+          type="button"
+          className="secondary"
+          disabled={loading || busy !== null}
+          onClick={() => void load(null)}
+        >
+          Refresh sharing rules
+        </button>
+      ) : null}
       {cursor ? (
         <button
           type="button"

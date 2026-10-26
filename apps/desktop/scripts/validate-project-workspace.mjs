@@ -1072,11 +1072,19 @@ const run = async () => {
     );
     await waitFor(
       window,
-      `[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Add to Project')`,
+      `Boolean(document.querySelector('button[aria-label="Conversation actions"]'))`,
       "Conversation inclusion action"
     );
     await window.webContents.executeJavaScript(
-      `[...document.querySelectorAll('button')].find(button=>button.textContent.trim()==='Add to Project').click()`
+      `document.querySelector('button[aria-label="Conversation actions"]').click()`
+    );
+    await waitFor(
+      window,
+      `Boolean([...document.querySelectorAll('[role="menuitem"]')].find(item=>item.textContent.trim()==='Add to Project'))`,
+      "Conversation Project action"
+    );
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('[role="menuitem"]')].find(item=>item.textContent.trim()==='Add to Project').click()`
     );
     const inclusionCheckbox = 'input[aria-label="Include in Added Project"]';
     await waitFor(

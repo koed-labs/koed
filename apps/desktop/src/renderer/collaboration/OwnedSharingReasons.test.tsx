@@ -14,11 +14,11 @@ afterEach(async () => {
 
 describe("owner sharing explanation", () => {
   it.each([
-    ["fixed_snapshot", "Fixed snapshot. Later content is not included."],
-    ["active", "Updates active for this Conversation only."],
-    ["paused", "Updates paused. Previously authorized content remains shared."],
-    ["stopped", "Sharing stopped. This reason no longer grants access."],
-    ["expired", "Consent expired. This reason no longer grants access."]
+    ["fixed_snapshot", "Fixed snapshot"],
+    ["active", "Updates active"],
+    ["paused", "Updates paused"],
+    ["stopped", "Stopped"],
+    ["expired", "Consent expired"]
   ] as const)(
     "explains %s without treating source access as shared detail",
     async (updateState, explanation) => {
@@ -64,11 +64,47 @@ describe("owner sharing explanation", () => {
         )
       );
       expect(host.textContent).toContain(explanation);
-      expect(host.textContent).toContain("lcm_leaves at revision 3");
-      expect(host.textContent).toContain(
-        "Conversation Source Access requires separate authorization."
+      expect(host.textContent).toContain("lcm_leaves");
+      expect(
+        host.querySelector('[aria-label="Published source revision 3"]')
+      ).not.toBeNull();
+      expect(host.querySelectorAll(".collab-sharing-reason-row")).toHaveLength(
+        1
       );
+      expect(host.querySelector("h3")).toBeNull();
       expect(host.textContent).not.toContain("memory_events");
+      if (updateState === "active") {
+        await act(async () =>
+          root.render(
+            <OwnedSharingReasons
+              reasons={[
+                reason,
+                {
+                  ...reason,
+                  id: "00000000-0000-4000-8000-000000000004",
+                  updateState: "paused",
+                  maximumFidelity: "memory_events",
+                  permittedRepresentations: ["lcm_rollups"]
+                }
+              ]}
+              pending={false}
+              representationLabel={(value) => value}
+            />
+          )
+        );
+        expect(
+          host.querySelectorAll(".collab-sharing-reason-row")
+        ).toHaveLength(2);
+        expect(
+          host.querySelectorAll(".collab-sharing-reason-row")[1]?.textContent
+        ).toContain("Updates paused");
+        expect(
+          host.querySelectorAll(".collab-sharing-reason-row")[1]?.textContent
+        ).toContain("lcm_rollups");
+        expect(
+          host.querySelectorAll(".collab-sharing-reason-row")[1]?.textContent
+        ).not.toContain("memory_events");
+      }
     }
   );
 
@@ -83,9 +119,7 @@ describe("owner sharing explanation", () => {
         />
       )
     );
-    expect(host.textContent).toContain(
-      "No Workspace content access has been granted yet."
-    );
+    expect(host.textContent).toContain("Preparing share");
   });
   it.each(["captured_session", "repository", "folder", "project"] as const)(
     "keeps Team state visible while an exact %s rule stop awaits acknowledgment",
@@ -178,19 +212,9 @@ describe("owner sharing explanation", () => {
       expect(
         [...host.querySelectorAll("button")].every((button) => button.disabled)
       ).toBe(true);
-      expect(host.textContent).toContain(
-        selectorKind === "captured_session"
-          ? "Updates active for this Conversation only."
-          : selectorKind === "folder"
-            ? "Updates active for eligible Conversations in this exact Folder."
-            : selectorKind === "project"
-              ? "Updates active while this Conversation remains in the private Project."
-              : "Updates active for eligible Conversations matching this Git Anchor."
-      );
-      expect(host.textContent).toContain(
-        "Team access may remain until acknowledged."
-      );
-      expect(host.textContent).not.toContain("Sharing stopped.");
+      expect(host.textContent).toContain("Updates active");
+      expect(host.textContent).toContain("Stop pending");
+      expect(host.textContent).not.toContain("Stopped");
     }
   );
 });

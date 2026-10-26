@@ -1143,7 +1143,9 @@ const createClient = (initial = baseSnapshot()): MockClient => {
 };
 
 const click = async (container: HTMLElement, label: string) => {
-  const button = [...document.body.querySelectorAll("button")].find(
+  const button = [
+    ...document.body.querySelectorAll("button, [role='menuitem']")
+  ].find(
     (item) =>
       item.getAttribute("aria-label") === label ||
       item.querySelector("strong")?.textContent?.trim() === label ||
@@ -1153,6 +1155,28 @@ const click = async (container: HTMLElement, label: string) => {
   ) as HTMLButtonElement | undefined;
   if (!button) throw new Error(`Missing button: ${label}`);
   await act(async () => button.click());
+};
+
+const openShareManagement = async () => {
+  if (document.body.querySelector(".collab-manage-share-modal")) return;
+  const row =
+    document.body.querySelector<HTMLButtonElement>(
+      '.collab-share-row[aria-current="page"]'
+    ) ?? document.body.querySelector<HTMLButtonElement>(".collab-share-row");
+  expect(row).not.toBeNull();
+  await act(async () => row!.click());
+  await vi.waitFor(() =>
+    expect(
+      document.body.querySelector(".collab-manage-share-modal")
+    ).not.toBeNull()
+  );
+};
+const openSharingActions = async () => {
+  const trigger = document.body.querySelector<HTMLButtonElement>(
+    '.collab-sharing-footer [aria-label="More sharing actions"]'
+  )!;
+  if (trigger.getAttribute("aria-expanded") !== "true")
+    await act(async () => trigger.click());
 };
 
 /** Overflow menus gate destructive actions; open one, then hit the item. */
@@ -1542,11 +1566,8 @@ describe("CollaborationApp", () => {
         .find((button) => button.textContent?.includes("History A"))!
         .click()
     );
-    await act(async () =>
-      [...container.querySelectorAll("button")]
-        .find((button) => button.textContent?.trim() === "Add to Project")!
-        .click()
-    );
+    await click(container, "Conversation actions");
+    await click(container, "Add to Project");
     const destinationCheckbox = () =>
       document.querySelector<HTMLInputElement>(
         'input[aria-label="Include in Destination"]'
@@ -1582,11 +1603,8 @@ describe("CollaborationApp", () => {
       (await api.listProjects()).find((project) => project.id === "unassigned")
         ?.threads
     ).toEqual([history, other]);
-    await act(async () =>
-      [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .find((button) => button.textContent?.trim() === "Add to Project")!
-        .click()
-    );
+    await click(container, "Conversation actions");
+    await click(container, "Add to Project");
     await vi.waitFor(() => expect(destinationCheckbox()?.disabled).toBe(false));
     expect(destinationCheckbox().checked).toBe(true);
     await act(async () => destinationCheckbox().click());
@@ -1918,13 +1936,16 @@ describe("CollaborationApp", () => {
         ?.click()
     );
     await vi.waitFor(() =>
-      expect(container.querySelector(".personal-share-button")).not.toBeNull()
+      expect(
+        container.querySelector('[aria-label="Conversation actions"]')
+      ).not.toBeNull()
     );
     await act(async () =>
       container
-        .querySelector<HTMLButtonElement>(".personal-share-button")
+        .querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')
         ?.click()
     );
+    await click(container, "Share");
 
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain("Review")
@@ -2503,13 +2524,16 @@ describe("CollaborationApp", () => {
     const rules = document.body.querySelector(
       '[aria-label="Continuous sharing rules"]'
     );
-    expect(rules?.textContent).toContain("Atlas Research · Launch Plans");
+    expect(rules?.textContent).toContain("Atlas Research / Launch Plans");
     expect(rules?.textContent).toContain("Project");
-    expect(rules?.textContent).toContain("Active");
-    expect(rules?.textContent).toContain(
-      "Existing and future eligible Conversations"
-    );
-    expect(rules?.textContent).toContain("Pause updates");
+    expect(rules?.textContent).toContain("Sharing updates");
+    await click(container, "Sharing rules");
+    expect(
+      document.body.querySelector('[role="tab"][aria-selected="true"]')
+        ?.textContent
+    ).toBe("Sharing rules");
+    expect(rules?.textContent).toContain("Pause");
+    expect(rules?.textContent).toContain("Stop");
     expect(document.body.textContent).toContain("No Conversation shares yet");
     expect(document.body.textContent).not.toContain("No shares yet");
   });
@@ -2719,7 +2743,7 @@ describe("CollaborationApp", () => {
     ).not.toBeNull();
     expect(
       shareRow?.querySelector(".collab-share-row-copy small")?.textContent
-    ).toBe("Launch Plans");
+    ).toBe("Launch Plans · Memory Events");
     expect(shareRow?.querySelector("time")?.textContent).not.toBe("");
     expect(
       [...document.body.querySelectorAll("button")].some(
@@ -2739,49 +2763,25 @@ describe("CollaborationApp", () => {
           ?.getAttribute("data-narrow-view")
       ).toBe("detail")
     );
+    const management = document.body.querySelector(
+      ".collab-manage-share-modal"
+    )!;
+    expect(management.querySelector("h2")?.textContent).toBe(
+      pending.summary.sourceTitle
+    );
     expect(
-      document.body.querySelector(
-        ".collab-share-detail-header .collab-share-state"
-      )
-    ).toBeNull();
-    expect(
-      document.body.querySelector(".collab-share-facts .collab-share-state")
+      management.querySelector(".collab-sharing-control-row button")
         ?.textContent
-    ).toBe("active");
+    ).toContain("Pause updates");
     expect(
-      [...document.body.querySelectorAll(".collab-share-facts strong")].map(
-        (label) => label.textContent
-      )
-    ).toEqual([
-      "Status",
-      "Shared detail",
-      "Updates",
-      "Source access",
-      "Workspace access"
-    ]);
-    expect(document.body.textContent).not.toContain("Authorized preview");
+      management.querySelector('button[aria-label="Change shared detail"]')
+        ?.textContent
+    ).toContain("Memory Events");
+    expect(management.querySelector(".collab-share-facts")).toBeNull();
     expect(
-      [...document.body.querySelectorAll("button")].some(
-        (button) => button.textContent === "Revoke"
-      )
-    ).toBe(true);
-    await click(container, "Modify");
-    expect(
-      document.body.querySelector(".collab-modify-share-modal h2")?.textContent
-    ).toBe(pending.summary.sourceTitle);
-    expect(
-      [...document.body.querySelectorAll(".collab-modify-share-modal button")]
-        .map((button) => button.textContent?.trim())
-        .filter(Boolean)
-    ).not.toContain("Revoke Share");
-    expect(
-      [
-        ...document.body.querySelectorAll(
-          ".collab-modify-share-form > section h3"
-        )
-      ].map((heading) => heading.textContent)
-    ).toEqual(["Updates", "Shared detail", "Source access"]);
-    await click(container, "Change detail");
+      management.querySelector(".collab-sharing-footer")?.textContent
+    ).toContain("Close");
+    await click(container, "Change shared detail");
     await vi.waitFor(() =>
       expect(
         document.body.querySelector(".collab-change-detail-modal h2")
@@ -2797,7 +2797,7 @@ describe("CollaborationApp", () => {
     );
     expect(document.body.textContent).not.toContain("Pause updates");
     const leaves = document.body.querySelector<HTMLInputElement>(
-      '.collab-change-detail-modal input[aria-label="Up to LCM Leaves"]'
+      '.collab-change-detail-modal input[aria-label="Detailed summaries"]'
     );
     expect(leaves).not.toBeNull();
     await act(async () => leaves!.click());
@@ -2832,7 +2832,7 @@ describe("CollaborationApp", () => {
     expect(
       document.body.querySelector(".collab-change-detail-modal")
     ).toBeNull();
-    await click(container, "Modify");
+    await openShareManagement();
     const pause = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent === "Pause updates"
     );
@@ -2846,8 +2846,10 @@ describe("CollaborationApp", () => {
       expectedOperationVersion: 3,
       action: "pause"
     });
-    await click(container, "Done");
+    await click(container, "Close");
     vi.mocked(client.listOwnedSharedMemoryGrants).mockClear();
+    await openShareManagement();
+    await openSharingActions();
     await click(container, "Revoke");
     await click(container, "Revoke Share");
     await vi.waitFor(() =>
@@ -2958,7 +2960,7 @@ describe("CollaborationApp", () => {
       await click(container, "Review");
       await vi.waitFor(() =>
         expect(
-          document.body.querySelector(".collab-preview-list")
+          document.body.querySelector(".collab-sharing-readiness")
         ).not.toBeNull()
       );
       expect(client.previewSharedMemory).toHaveBeenCalledWith(
@@ -3070,6 +3072,98 @@ describe("CollaborationApp", () => {
     expect(client.changeSharedMemoryFidelity).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "reviews Source Access separately before %s changes become mutations",
+    async (alreadyShared) => {
+      const snapshot = baseSnapshot();
+      const owned = activatedOwnedShare();
+      if (alreadyShared)
+        owned.sourceAccess = {
+          mode: "continuous",
+          lifecycle: "active",
+          version: 7
+        };
+      const client = createClient(snapshot);
+      vi.mocked(client.listOwnedShares).mockImplementation(
+        async ({ history }) => ({
+          shares: history ? [] : [owned],
+          nextCursor: null
+        })
+      );
+      vi.mocked(client.getOwnedShare).mockResolvedValue(owned);
+      vi.mocked(client.shareConversationSource).mockRejectedValue(
+        new Error("Approval denied")
+      );
+      vi.mocked(client.revokeConversationSource).mockRejectedValue(
+        new Error("Approval denied")
+      );
+      await act(async () =>
+        root.render(
+          <PersonalMemoryView
+            client={client}
+            initialSection="shares"
+            markdownAdapters={{
+              openExternal: vi.fn(),
+              writeClipboard: vi.fn()
+            }}
+            onShare={vi.fn()}
+            snapshot={snapshot}
+          />
+        )
+      );
+      await vi.waitFor(() =>
+        expect(document.body.querySelector(".collab-share-row")).not.toBeNull()
+      );
+      await openShareManagement();
+      const selectDraft = async () => {
+        await click(container, "Change source access");
+        const input = [
+          ...document.body.querySelectorAll<HTMLInputElement>(
+            '.collab-source-access-modal input[type="radio"]'
+          )
+        ].find((node) =>
+          node
+            .closest("label")
+            ?.textContent?.includes(alreadyShared ? "Not allowed" : "Snapshot")
+        )!;
+        await act(async () => input.click());
+      };
+      await selectDraft();
+      expect(client.shareConversationSource).not.toHaveBeenCalled();
+      expect(client.revokeConversationSource).not.toHaveBeenCalled();
+      await click(container, "Cancel");
+      expect(
+        document.body.querySelector('[aria-label="Change source access"]')
+          ?.textContent
+      ).toContain(alreadyShared ? "continuous" : "Not allowed");
+      await selectDraft();
+      await click(container, "Review source access");
+      if (alreadyShared)
+        expect(client.revokeConversationSource).toHaveBeenCalledExactlyOnceWith(
+          {
+            teamId: owned.pendingShare.teamId,
+            shareGrantId: owned.pendingShare.grantId,
+            expectedVersion: 7,
+            reasonCode: "owner_revoked"
+          }
+        );
+      else
+        expect(client.shareConversationSource).toHaveBeenCalledExactlyOnceWith({
+          teamId: owned.pendingShare.teamId,
+          shareGrantId: owned.pendingShare.grantId,
+          expectedVersion: 0,
+          mode: "snapshot"
+        });
+      expect(
+        document.body.querySelector(
+          '.collab-source-access-modal [role="alert"]'
+        )
+      ).not.toBeNull();
+      expect(client.changeSharedMemoryFidelity).not.toHaveBeenCalled();
+      expect(client.controlPendingShare).not.toHaveBeenCalled();
+    }
+  );
+
   it("closes Share revocation confirmation after approval while execution continues", async () => {
     const snapshot = baseSnapshot();
     const grant: SharedMemoryGrant = {
@@ -3163,6 +3257,8 @@ describe("CollaborationApp", () => {
       expect(document.body.textContent).toContain(share.summary.sourceTitle)
     );
 
+    await openShareManagement();
+    await openSharingActions();
     await click(container, "Revoke");
     expect(
       document.body.querySelector(
@@ -3285,14 +3381,15 @@ describe("CollaborationApp", () => {
       )
     );
 
-    const modify = [...document.body.querySelectorAll("button")].find(
-      (button) => button.textContent === "Modify"
+    const modify = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change shared detail"]'
     );
-    const revoke = [...document.body.querySelectorAll("button")].find(
-      (button) => button.textContent === "Revoke"
-    );
-    expect(modify?.disabled).toBe(true);
-    expect(revoke?.disabled).toBe(false);
+    await openSharingActions();
+    const revoke = [
+      ...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')
+    ].find((button) => button.textContent === "Revoke");
+    expect(modify === null || modify.disabled).toBe(true);
+    expect(revoke?.hasAttribute("data-disabled")).toBe(false);
     expect(client.previewSharedMemoryCandidate).not.toHaveBeenCalled();
 
     await act(async () => revoke?.click());
@@ -3341,12 +3438,12 @@ describe("CollaborationApp", () => {
     ).not.toContain("Loading Shares");
     expect(
       document.body.querySelectorAll('[aria-label="Loading Shares"]')
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
       document.body.querySelectorAll(
         ".personal-shares-status .personal-loading-icon"
       )
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
       document.body.querySelector(
         ".personal-shares-status > .collab-shares-pane"
@@ -3356,7 +3453,7 @@ describe("CollaborationApp", () => {
       document.body.querySelector(
         ".personal-shares-status > .collab-share-empty-detail"
       )
-    ).not.toBeNull();
+    ).toBeNull();
   });
 
   it("shows one retryable Shares error and mutes the clickable sidebar item", async () => {
@@ -3389,7 +3486,7 @@ describe("CollaborationApp", () => {
     expect(status.textContent).toContain("Koed could not load your Shares.");
     expect(status.textContent).toContain("Retry");
     expect(status.querySelector(".collab-shares-pane")).not.toBeNull();
-    expect(status.querySelector(".collab-share-empty-detail")).not.toBeNull();
+    expect(status.querySelector(".collab-share-empty-detail")).toBeNull();
     expect(
       status.querySelector(".personal-projects-narrow-state")?.textContent
     ).toContain("Shares unavailable");
@@ -3615,7 +3712,7 @@ describe("CollaborationApp", () => {
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain(source.title)
     );
-    await click(container, "Modify");
+    await openShareManagement();
     await click(container, "Review again");
 
     await vi.waitFor(() =>
@@ -3629,6 +3726,8 @@ describe("CollaborationApp", () => {
       "Personal Memory unavailable"
     );
     await click(container, "Cancel");
+    await openShareManagement();
+    await openSharingActions();
     await click(container, "Revoke");
     expect(document.body.textContent).toContain("Stop Pending Share");
     expect(document.body.textContent).toContain(
@@ -5372,6 +5471,8 @@ describe("CollaborationApp", () => {
         />
       )
     );
+    await openShareManagement();
+    await openSharingActions();
     await click(container, "Exclude from Workspace");
     expect(client.excludeConversationFromWorkspace).toHaveBeenCalledWith({
       mutationId: expect.any(String),
@@ -5380,7 +5481,7 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).toContain(
       "Waiting for Team acknowledgment"
     );
-    expect(document.body.textContent).not.toContain("Blocked by exclusion");
+    expect(document.body.textContent).not.toContain("All sharing routes");
     const queued = delivery as SharingRuleDelivery | null;
     if (!queued) throw new Error("Expected exclusion delivery");
     const exclusion = {
@@ -5401,11 +5502,11 @@ describe("CollaborationApp", () => {
     };
     delivery = { ...queued, state: "acknowledged", exclusion };
     await vi.waitFor(
-      () => expect(document.body.textContent).toContain("Blocked by exclusion"),
+      () => expect(document.body.textContent).toContain("All sharing routes"),
       { timeout: 6000 }
     );
     expect(document.body.textContent).toContain("Excluded");
-    expect(document.body.textContent).toContain("Personal Memory");
+    expect(document.body.querySelector(".collab-share-preview")).toBeNull();
     expect(
       Array.from(document.body.querySelectorAll("button")).some(
         (button) => button.textContent === "Exclude from Workspace"
@@ -5437,6 +5538,8 @@ describe("CollaborationApp", () => {
         return delivery;
       }
     );
+    await openShareManagement();
+    await openSharingActions();
     await click(container, "Remove exclusion");
     expect(client.restoreConversationToWorkspace).toHaveBeenCalledWith({
       mutationId: expect.any(String),
@@ -5446,7 +5549,7 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).toContain(
       "the exclusion remains in effect until acknowledged"
     );
-    expect(document.body.textContent).toContain("Blocked by exclusion");
+    expect(document.body.textContent).toContain("All sharing routes");
     const pendingRestoration = delivery as SharingRuleDelivery | null;
     if (!pendingRestoration) throw new Error("Expected restoration delivery");
     const restored = {
@@ -5477,7 +5580,7 @@ describe("CollaborationApp", () => {
     };
     await vi.waitFor(
       () =>
-        expect(document.body.textContent).not.toContain("Blocked by exclusion"),
+        expect(document.body.textContent).not.toContain("All sharing routes"),
       { timeout: 6000 }
     );
     expect(document.body.textContent).toContain(
@@ -5734,6 +5837,7 @@ describe("CollaborationApp", () => {
           )
         ).not.toBeNull()
       );
+      await openShareManagement();
       expect(document.body.textContent).toContain(
         `Preparation stage: ${stage === "syncing" ? "preparing source" : stage === "privacy_filtering" ? "privacy filtering" : "publishing"}.`
       );
@@ -5741,7 +5845,7 @@ describe("CollaborationApp", () => {
         "Independent sharing reasons may still provide access under their own consent."
       );
       expect(document.body.textContent).toContain(
-        "Latest published source revision: 12."
+        "Latest published revision12"
       );
       expect(
         document.body.querySelector(".collab-share-row-error")
@@ -5830,6 +5934,7 @@ describe("CollaborationApp", () => {
         />
       )
     );
+    await openShareManagement();
     await vi.waitFor(() =>
       expect(document.body.textContent).toContain("Stop this snapshot")
     );
@@ -5860,7 +5965,7 @@ describe("CollaborationApp", () => {
       })
     );
     expect(
-      document.body.querySelector(".collab-share-state.active")
+      document.body.querySelector(".collab-sharing-state.active")
     ).not.toBeNull();
     expect(client.revokeSharedMemory).not.toHaveBeenCalled();
     expect(client.controlSharingRule).not.toHaveBeenCalled();
@@ -5914,12 +6019,12 @@ describe("CollaborationApp", () => {
       expect(button).toBeDefined();
       await act(async () => button!.click());
     };
-    await clickButton("Modify");
+    await openShareManagement();
     await clickButton("Retry");
     expect(client.controlPendingShare).toHaveBeenCalledWith(
       expect.objectContaining({ action: "retry" })
     );
-    await clickButton("Done");
+    await clickButton("Close");
     current = activated;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
@@ -5967,6 +6072,7 @@ describe("CollaborationApp", () => {
           />
         )
       );
+      await openShareManagement();
       await vi.waitFor(() =>
         expect(document.body.textContent).toContain("2 of 7 chunks saved.")
       );
@@ -6113,7 +6219,7 @@ describe("CollaborationApp", () => {
     await vi.waitFor(() =>
       expect(client.listOwnedShares).toHaveBeenCalledTimes(initialListCalls + 4)
     );
-    await click(container, "Modify");
+    await openShareManagement();
     const pause = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent === "Pause updates"
     );
@@ -6421,7 +6527,7 @@ pnpm test
     expect(source?.textContent).toContain("Authorization · Medium");
   });
 
-  it("renders the same rich Shared Memory source in the consent preview", async () => {
+  it("keeps Conversation contents out of the sharing consent review", async () => {
     const snapshot = baseSnapshot();
     const client = createClient(snapshot);
     const writeClipboard = vi.fn(async () => undefined);
@@ -6452,17 +6558,17 @@ pnpm test
     ).not.toBeNull();
     await click(container, "Review");
     await vi.waitFor(() =>
-      expect(document.body.querySelector(".collab-preview-list")).not.toBeNull()
+      expect(
+        document.body.querySelector(".collab-sharing-readiness")
+      ).not.toBeNull()
     );
 
-    const preview = document.body.querySelector(".collab-preview-list");
-    expect(preview?.querySelector(".memory-markdown h2")).not.toBeNull();
-    expect(preview?.querySelector(".memory-markdown table")).not.toBeNull();
-    const copy = preview?.querySelector<HTMLButtonElement>(
-      '.memory-markdown-copy-code[aria-label="Copy code"]'
-    );
-    await act(async () => copy?.click());
-    expect(writeClipboard).toHaveBeenCalledWith("pnpm typecheck");
+    expect(
+      document.body.querySelector(".collab-sharing-readiness")?.textContent
+    ).toContain("1 Conversation");
+    expect(document.body.querySelector(".collab-preview-list")).toBeNull();
+    expect(document.body.querySelector(".memory-markdown")).toBeNull();
+    expect(writeClipboard).not.toHaveBeenCalled();
   });
 
   it("opens sharing on the first active writable Workspace", async () => {
@@ -6599,7 +6705,9 @@ pnpm test
     await click(container, "Review");
 
     await vi.waitFor(() =>
-      expect(document.body.querySelector(".collab-preview-list")).not.toBeNull()
+      expect(
+        document.body.querySelector(".collab-sharing-readiness")
+      ).not.toBeNull()
     );
     expect(client.previewSharedMemoryCandidate).toHaveBeenCalledWith({
       source: {
@@ -6748,10 +6856,12 @@ pnpm test
 
     await vi.waitFor(() => {
       expect(
-        document.body.querySelector(".collab-preview-list")
+        document.body.querySelector(".collab-sharing-readiness")
       ).not.toBeNull();
     });
-    const previewList = document.body.querySelector(".collab-preview-list");
+    const previewList = document.body.querySelector(
+      ".collab-sharing-readiness"
+    );
     const pendingConsentButton = document.body.querySelector<HTMLButtonElement>(
       ".collab-consent-action"
     );
@@ -6831,11 +6941,13 @@ pnpm test
         resolveSnapshotPreview = resolve;
       })
     );
+    await click(container, "Back");
     const snapshotRadio = Array.from(
       document.body.querySelectorAll<HTMLInputElement>('input[type="radio"]')
     ).find((input) => input.parentElement?.textContent?.includes("revision"));
     expect(snapshotRadio).toBeDefined();
     await act(async () => snapshotRadio?.click());
+    await click(container, "Review");
     await vi.waitFor(() =>
       expect(client.previewSharedMemory).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -7495,7 +7607,7 @@ pnpm test
     await click(container, "View share");
     expect(onViewShare).toHaveBeenCalledWith(`pending:${pendingShareId}`);
   });
-  it.each(["pause", "detail"] as const)(
+  it.each(["pause", "detail", "stop"] as const)(
     "applies %s to a rule through its activated Pending Share without changing direct consent",
     async (operation) => {
       const snapshot = viewFor(baseSnapshot(), { kind: "personal_memory" });
@@ -7607,6 +7719,27 @@ pnpm test
         }
       ];
       const client = createClient(snapshot);
+      pending.preview = {
+        source: pending.pendingShare.source,
+        logicalMemoryId: pending.pendingShare.logicalMemoryId,
+        sourceCapabilities: ["memory_events"],
+        teamId: ids.team,
+        workspaceId: ids.workspace,
+        activationRepresentation: "memory_events",
+        maximumFidelity: "memory_events",
+        includeCuratedMemory: false,
+        mode: "continuous",
+        previewRevision: 1,
+        sourceRevision: 12,
+        policyRevision: 1,
+        contentPolicyVersion: 1,
+        classifierVersion: 1,
+        sourceContentHash: "a".repeat(64),
+        previewHash: "b".repeat(64),
+        itemCount: 1,
+        items: [sourceItem("memory_events")],
+        nextCursor: null
+      };
       let delivery: SharingRuleDelivery | null = null;
       vi.mocked(client.listOwnedShares).mockResolvedValue({
         shares: [pending],
@@ -7695,8 +7828,22 @@ pnpm test
       await vi.waitFor(() =>
         expect(document.body.textContent).toContain("Pending rule controls")
       );
-      if (operation === "pause") {
-        await click(container, "Pause updates");
+      await openShareManagement();
+      expect(document.body.textContent).not.toContain("Rule diagnostics");
+      expect(document.body.textContent).not.toContain(richSharedSource);
+      expect(document.body.textContent).toContain(
+        "Published items1 Memory Events"
+      );
+      expect(document.body.querySelector(".collab-share-preview")).toBeNull();
+      expect(
+        document.body.querySelectorAll('[aria-label="More sharing actions"]')
+      ).toHaveLength(1);
+      if (operation === "pause" || operation === "stop") {
+        if (operation === "stop") await openSharingActions();
+        await click(
+          container,
+          operation === "stop" ? "Stop this rule" : "Pause updates"
+        );
         expect(client.controlSharingRule).toHaveBeenCalledWith(
           expect.objectContaining({
             teamId: pending.pendingShare.teamId,
@@ -7706,15 +7853,16 @@ pnpm test
             reasonId: uuid(950),
             expectedAuthorityVersion: 11,
             expectedGrantVersion: 7,
-            controlAction: "pause"
+            controlAction: operation
           })
         );
       } else {
-        await click(container, "Change rule detail");
-        const select = document.body.querySelector<HTMLSelectElement>(
-          'section[aria-label="Change rule detail"] select'
+        await openShareManagement();
+        await click(container, "Change shared detail");
+        const input = document.body.querySelector<HTMLInputElement>(
+          'input[aria-label="Detailed summaries"]'
         )!;
-        await act(async () => setValue(select, "lcm_leaves"));
+        await act(async () => input.click());
         await click(container, "Review detail change");
         expect(client.reviewRuleDetail).toHaveBeenCalledExactlyOnceWith({
           ruleId: uuid(951),
@@ -7739,9 +7887,7 @@ pnpm test
       expect(document.body.textContent).toContain(
         "Waiting for Team acknowledgment"
       );
-      expect(document.body.textContent).toContain(
-        "Updates active for this Conversation only."
-      );
+      expect(document.body.textContent).toContain("Updates active");
       const pause = Array.from(
         document.body.querySelectorAll<HTMLButtonElement>("button")
       ).find((button) => button.textContent === "Pause updates");

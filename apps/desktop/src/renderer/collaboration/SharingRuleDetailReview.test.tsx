@@ -71,19 +71,20 @@ const mount = async (client: RuleDetailClient, onDelivery = vi.fn()) => {
   return onDelivery;
 };
 const click = async (text: string) => {
-  const button = [...container.querySelectorAll("button")].find(
+  const button = [...document.body.querySelectorAll("button")].find(
     (entry) => entry.textContent === text
   );
   expect(button).toBeDefined();
   await act(async () => button!.click());
 };
 const chooseEvents = async () => {
-  const select = container.querySelector("select")!;
-  await act(async () => {
-    select.value = "memory_events";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  const input = document.body.querySelector<HTMLInputElement>(
+    'input[aria-label="Memory Events"]'
+  )!;
+  expect(input).not.toBeNull();
+  await act(async () => input.click());
 };
+
 describe("rule detail review", () => {
   it("reviews the whole rule and sends only the exact reviewed scope for native confirmation", async () => {
     const client = {
@@ -109,6 +110,11 @@ describe("rule detail review", () => {
     };
     const onDelivery = await mount(client);
     await click("Change rule detail");
+    expect(
+      [...document.body.querySelectorAll(".collab-modal-actions button")].map(
+        (button) => button.textContent
+      )
+    ).toEqual(["Cancel", "Review detail change"]);
     await chooseEvents();
     await click("Review detail change");
     expect(client.reviewRuleDetail).toHaveBeenCalledExactlyOnceWith({
@@ -118,11 +124,11 @@ describe("rule detail review", () => {
       maximumFidelity: "memory_events",
       includeCuratedMemory: false
     });
-    expect(container.textContent).toContain("whole rule");
-    expect(container.textContent).toContain(
+    expect(document.body.textContent).toContain("whole rule");
+    expect(document.body.textContent).toContain(
       "7 existing members. Rule remains paused."
     );
-    expect(container.textContent).toContain(
+    expect(document.body.textContent).toContain(
       "Owner permission also broadens for 2 existing members."
     );
     expect(client.amendRuleDetail).not.toHaveBeenCalled();
@@ -151,8 +157,8 @@ describe("rule detail review", () => {
     await chooseEvents();
     await click("Review detail change");
     await click("Review increased sharing");
-    expect(container.querySelector("[role=alert]")).not.toBeNull();
-    expect(container.textContent).not.toContain("Review increased sharing");
+    expect(document.body.querySelector("[role=alert]")).not.toBeNull();
+    expect(document.body.textContent).not.toContain("Review increased sharing");
     await click("Review detail change");
     expect(client.reviewRuleDetail).toHaveBeenCalledTimes(2);
     expect(client.amendRuleDetail).toHaveBeenCalledTimes(1);
