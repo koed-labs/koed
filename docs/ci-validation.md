@@ -11,15 +11,25 @@ Every pull-request update runs these gates in order:
    types, and test-source types without starting Postgres or Redis.
 2. `Tests` and `Build` run in parallel after static checks pass. Tests owns the
    Postgres and Redis services and migration acceptance checks.
-3. `Relevant packaged Desktop app smoke` starts after a successful `Build`,
-   without waiting for `Tests`, and runs only when the tested change policy
-   identifies a Desktop, packaged-runtime, shared dependency, native script,
-   package metadata, lockfile, CI, or release workflow change. `CI required`
-   still waits for both `Tests` and the policy-selected packaged validation.
+3. `Relevant packaged Desktop app smoke` starts immediately, in parallel with
+   static checks, because it installs and builds on its own macOS runner and
+   consumes no output from `Static checks`, `Tests`, or `Build`. It runs only
+   when the tested change policy identifies a Desktop, packaged-runtime, shared
+   dependency, native script, package metadata, lockfile, CI, or release
+   workflow change. `CI required` still waits for `Static checks`, `Tests`,
+   `Build`, and the policy-selected packaged validation, so a failure in any of
+   them blocks merge even though the smoke does not wait for them.
 
 The exact path policy is implemented in `.github/scripts/ci-policy.mjs` and
-covered by `scripts/ci-policy.test.mjs`. Documentation-only changes skip macOS.
-Unknown paths are treated as relevant so a newly introduced runtime area cannot
+covered by `scripts/ci-policy.test.mjs`. Documentation-only changes skip macOS,
+as do changes confined to `src/` in `apps/api`, `apps/worker`, `packages/core`,
+`packages/db`, and `packages/mcp-server`: `Tests` and the Linux standalone
+package inspection in `Build` cover that source. Package metadata, build
+configuration, migrations, and any other file in those packages still select the
+smoke, as does any change under Desktop, `koed-server`, `embedding-service`,
+`shared`, `ui`, or `memory-ui`. Packaging regressions from backend source
+changes that only the packaged app would expose are caught by the smoke on the
+Changesets release pull request and the weekly scheduled run. Unknown paths are treated as relevant so a newly introduced runtime area cannot
 silently bypass packaged validation.
 
 Add the `full-ci` label to a pull request to force the app-only packaged smoke.
@@ -100,6 +110,20 @@ block maps, regenerates Desktop runtime staging, builds a second isolated app,
 requires identical symlink-aware runtime and app trees, verifies the app and
 mounted DMG, and runs both packaged daemon startup cycles. These are validation
 outputs, not publishable release artifacts.
+
+The Changesets action opens and updates that pull request with `GITHUB_TOKEN`.
+GitHub does not run workflows for such pull requests automatically: the
+`pull_request` run is created in an approval-required state with no jobs, so
+`CI required` would not report until someone approves it. After the action
+creates or updates the version pull request (its `pullRequestNumber` output is
+set; it is not set when every pending changeset is empty),
+`.github/workflows/release.yml` therefore dispatches `ci.yml` on
+`changeset-release/main` with `validation_level=full`. Checks from the
+dispatched run attach to the branch head commit, so the same `CI required`
+status gates the pull request. The dispatch needs the `actions: write`
+permission and uses the same full-validation path as a manual `full` run.
+Replacing the token with a GitHub App token would restore ordinary
+`pull_request` runs and make this step unnecessary.
 
 After the Changesets pull request merges, `.github/workflows/release.yml`
 remains the publication authority. It rebuilds from the exact release commit,
