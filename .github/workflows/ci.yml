@@ -98,6 +98,8 @@ jobs:
         run: pnpm fmt:check
 
       - name: Lint
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: pnpm lint
 
       - name: Typecheck production sources
