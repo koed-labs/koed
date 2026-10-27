@@ -45,7 +45,18 @@ Install each new version using its version-matched trusted control plane and new
 
 Activation fully verifies the candidate against current compiled pins. Under the existing lifecycle/store locks it then reads bounded, canonical, no-follow metadata for the prior ordinary selection to establish owner and version ordering only. This evidence checks strict schema, contained normalized references, stored/embedded manifest digests and identity agreement, target agreement and recomputed generation identity. It exposes no component roots or runnable generation and does not authenticate historical publisher identity. Malformed prior metadata fails closed; neither old payload reuse nor ignoring corrupt state is an upgrade fallback.
 
-A stopped, same-owner selection can advance to a newer verified generation; genuine downgrades remain rejected and same-version recovery remains supported. Active runtime pins prevent replacement. Failures preserve the selected pointer and release locks. Start and payload reuse still require full verification under current pins. Capability-backed Desktop records retain their separate admission path.
+A stopped, same-owner selection can advance to a newer verified generation; genuine downgrades remain rejected and same-version recovery remains supported. Active runtime pins prevent replacement. Failures preserve the selected pointer and release locks. Start and payload reuse still require full verification under current pins.
+
+Desktop ownership discovery and changed-bundle status use a separate bounded,
+no-follow journal reader, not full verification of the overwritten application's
+old resources or old Privacy pins. A validated private Desktop capability must
+match journal ownership and installation resources before replacement; this
+journal cannot authorize payload execution. Privacy journals also bind their
+canonical generation identity. The matching-owner ordinary-generation fallback
+remains available without admitting its payloads through Desktop journal evidence.
+Unchanged bundle reuse still requires full verification, and replacement verifies
+the new bundled Base and rejects version downgrades under lifecycle/store locks.
+Old Privacy is reported incompatible, never attached to the replacement bundle.
 
 ## Stopped Desktop management ordering
 

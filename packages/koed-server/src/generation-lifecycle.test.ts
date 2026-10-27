@@ -79,8 +79,11 @@ import {
   pinDesktopBundleGenerationForStart,
   activateGeneration,
   cleanupGenerations,
-  readCurrentGeneration
+  readCurrentGeneration,
+  readCurrentDesktopGenerationOrderingEvidence,
+  readCurrentRuntimeOwner
 } from "./generation-lifecycle.js";
+import { runComponentStatus } from "./component-commands.js";
 import * as componentStore from "./component-store.js";
 import * as supervisorLock from "./supervisor-lock.js";
 import {
@@ -219,49 +222,72 @@ describe("generation lifecycle", () => {
     expect(after.generation.productVersion).toBe("0.9.0");
     expect(after.generation.id).not.toBe(oldId);
     await after.release();
-  });
-
-  it("rejects a foreign bundle ownership journal during an application upgrade", async () => {
-    const paths = pathsForTest();
-    const resources = resolve(paths.koedHome, "resources"),
-      root = resolve(resources, "koed-runtime");
-    mkdirSync(root, { recursive: true });
-    const manifestPath = resolve(root, "desktop-bundle-manifest.json");
-    const manifest = {
-      schemaVersion: 1,
-      component: "base",
-      productVersion: "0.8.1",
-      target: { platform: "linux", architecture: "x64" },
-      files: []
-    };
-    writeFileSync(manifestPath, JSON.stringify(manifest));
-    const pin = await pinDesktopBundleGenerationForStart(
-      paths,
-      verifyDesktopRuntimeBundle(resources)
+    const pointer = readFileSync(
+      resolve(paths.componentsDir, "current.json"),
+      "utf8"
     );
-    const id = pin.generation.id;
-    await pin.release();
-    const journalPath = resolve(
-      paths.generationsDir,
-      id,
-      "desktop-bundle.json"
-    );
-    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
-      owner: { installationId: string };
-    };
-    journal.owner.installationId = "foreign-installation";
-    writeFileSync(journalPath, JSON.stringify(journal));
-    writeFileSync(
-      manifestPath,
-      JSON.stringify({ ...manifest, productVersion: "0.9.0" })
-    );
+    writeBundle("0.8.1");
     await expect(
       pinDesktopBundleGenerationForStart(
         paths,
-        verifyDesktopRuntimeBundle(resources)
+        verifyDesktopRuntimeBundle(resourcesPath)
       )
-    ).rejects.toThrow("owner mismatch");
+    ).rejects.toThrow("Desktop generation downgrades are not supported.");
+    expect(
+      readFileSync(resolve(paths.componentsDir, "current.json"), "utf8")
+    ).toBe(pointer);
+    expect(existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))).toBe(
+      false
+    );
   });
+
+  it.each(["owner", "bundleDigest"])(
+    "rejects an inconsistent bundle %s journal during an application upgrade",
+    async (mutation) => {
+      const paths = pathsForTest();
+      const resources = resolve(paths.koedHome, "resources"),
+        root = resolve(resources, "koed-runtime");
+      mkdirSync(root, { recursive: true });
+      const manifestPath = resolve(root, "desktop-bundle-manifest.json");
+      const manifest = {
+        schemaVersion: 1,
+        component: "base",
+        productVersion: "0.8.1",
+        target: { platform: "linux", architecture: "x64" },
+        files: []
+      };
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      const pin = await pinDesktopBundleGenerationForStart(
+        paths,
+        verifyDesktopRuntimeBundle(resources)
+      );
+      const id = pin.generation.id;
+      await pin.release();
+      const journalPath = resolve(
+        paths.generationsDir,
+        id,
+        "desktop-bundle.json"
+      );
+      const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
+        owner: { installationId: string };
+        bundleDigest: string;
+      };
+      if (mutation === "owner")
+        journal.owner.installationId = "foreign-installation";
+      else journal.bundleDigest = "0".repeat(64);
+      writeFileSync(journalPath, JSON.stringify(journal));
+      writeFileSync(
+        manifestPath,
+        JSON.stringify({ ...manifest, productVersion: "0.9.0" })
+      );
+      await expect(
+        pinDesktopBundleGenerationForStart(
+          paths,
+          verifyDesktopRuntimeBundle(resources)
+        )
+      ).rejects.toThrow("Desktop bundle generation identity mismatch");
+    }
+  );
 
   it("keeps active manifest-pinned privacy generation when pinning unchanged Desktop bundle", async () => {
     const paths = pathsForTest();
@@ -346,9 +372,25 @@ describe("generation lifecycle", () => {
         files: []
       })
     );
+    const upgradedCapability = verifyDesktopRuntimeBundle(resourcesPath);
+    // Startup discovers ownership before pinning the replacement bundle.
+    await expect(readCurrentRuntimeOwner(paths)).resolves.toEqual(desktopOwner);
+    const status = await runComponentStatus({
+      paths,
+      controlPlaneVersion: upgradedCapability.productVersion,
+      target,
+      runtime: fixture.input.runtime,
+      owner: desktopOwner,
+      desktopRuntimeCapability: upgradedCapability,
+      environment: { KOED_TEAM_COLLABORATION_ENABLED: "true" },
+      execution: "packaged",
+      isRunning: false
+    });
+    expect(status.activeVersion).toBe(productVersion);
+    expect(status.components.privacy).toBe("incompatible");
     const upgraded = await pinDesktopBundleGenerationForStart(
       paths,
-      verifyDesktopRuntimeBundle(resourcesPath)
+      upgradedCapability
     );
     expect(upgraded.generation.productVersion).toBe("0.9.0");
     expect(upgraded.generation.privacy).toBeUndefined();
@@ -391,6 +433,50 @@ describe("generation lifecycle", () => {
     expect((await readCurrentGeneration(paths)).id).toBe(withPrivacy.id);
     await activateGeneration(paths, baseOnly.id, owner);
     expect((await readCurrentGeneration(paths)).id).toBe(baseOnly.id);
+  });
+
+  it("rejects oversized journals during ownership discovery", async () => {
+    const paths = pathsForTest();
+    const generation = await stage(paths, "0.9.0");
+    await activateGeneration(paths, generation.id, owner);
+    truncateSync(
+      resolve(paths.generationsDir, generation.id, "generation.json"),
+      129 * 1024 * 1024 + 1
+    );
+    await expect(readCurrentRuntimeOwner(paths)).rejects.toThrow(
+      "bounded regular file"
+    );
+  });
+
+  it("preserves capability-bound ordinary Desktop generation fallback", async () => {
+    const paths = pathsForTest();
+    const resourcesPath = resolve(paths.koedHome, "resources");
+    mkdirSync(resolve(resourcesPath, "koed-runtime"), { recursive: true });
+    writeFileSync(
+      resolve(resourcesPath, "koed-runtime/desktop-bundle-manifest.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        component: "base",
+        productVersion: "0.9.0",
+        target: { platform: "linux", architecture: "x64" },
+        files: []
+      })
+    );
+    const capability = verifyDesktopRuntimeBundle(resourcesPath);
+    const desktopOwner = resolveDesktopRuntimeOwner(capability, paths.koedHome);
+    const staged = await stage(paths, "0.9.0");
+    const ordinary = await stageGeneration(paths, {
+      base: staged.base,
+      owner: desktopOwner
+    });
+    await activateGeneration(paths, ordinary.id, desktopOwner, capability);
+    expect(
+      readCurrentDesktopGenerationOrderingEvidence(paths, capability).id
+    ).toBe(ordinary.id);
+    const pin = await pinDesktopBundleGenerationForStart(paths, capability);
+    expect(pin.generation.base.kind).toBe("desktop-bundle");
+    expect(pin.generation.owner).toEqual(desktopOwner);
+    await pin.release();
   });
 
   it("upgrades an old selection using new control-plane pins", async () => {
