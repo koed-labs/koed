@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createReadStream } from "node:fs";
 import { basename, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 export const decideAssetAction = ({ expectedSha256, actualSha256 }) => {
   if (!/^[a-f0-9]{64}$/.test(expectedSha256 ?? ""))
@@ -23,9 +23,40 @@ const gh = (args, options = {}) => {
     );
   return result.stdout;
 };
-const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const hashStream = async (stream) => {
+  const hash = createHash("sha256");
+  for await (const chunk of stream) hash.update(chunk);
+  return hash.digest("hex");
+};
 
-const main = () => {
+const hashRemoteAsset = async (repository, assetId) => {
+  const child = spawn(
+    "gh",
+    [
+      "api",
+      "--header",
+      "Accept: application/octet-stream",
+      `repos/${repository}/releases/assets/${assetId}`
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] }
+  );
+  const exit = new Promise((resolveExit, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) resolveExit();
+      else reject(new Error(`gh asset download failed: ${signal ?? code}`));
+    });
+  });
+  try {
+    const [digest] = await Promise.all([hashStream(child.stdout), exit]);
+    return digest;
+  } catch (error) {
+    child.kill();
+    throw error;
+  }
+};
+
+const main = async () => {
   const [tag, ...paths] = process.argv.slice(2);
   const repository = process.env.GITHUB_REPOSITORY;
   if (!tag || !repository || paths.length === 0)
@@ -41,22 +72,11 @@ const main = () => {
   for (const input of paths) {
     const path = resolve(input);
     const name = basename(path);
-    const expectedSha256 = hash(readFileSync(path));
+    const expectedSha256 = await hashStream(createReadStream(path));
     const existing = assets.get(name);
     if (existing) {
-      const bytes = gh(
-        [
-          "api",
-          "--header",
-          "Accept: application/octet-stream",
-          `repos/${repository}/releases/assets/${existing.id}`
-        ],
-        { binary: true }
-      );
-      const action = decideAssetAction({
-        expectedSha256,
-        actualSha256: hash(bytes)
-      });
+      const actualSha256 = await hashRemoteAsset(repository, existing.id);
+      const action = decideAssetAction({ expectedSha256, actualSha256 });
       if (action.action === "block")
         throw new Error(
           `Existing release asset differs from expected bytes: ${name}`
@@ -73,10 +93,8 @@ if (
   process.argv[1] &&
   import.meta.url === new URL(`file://${resolve(process.argv[1])}`).href
 ) {
-  try {
-    main();
-  } catch (error) {
+  main().catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
-  }
+  });
 }
