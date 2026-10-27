@@ -65,31 +65,52 @@ export async function loadRendererValidation(
     // Chromium applies CSP bypass when a document is initialized, so navigate
     // at the package origin before replacing its contents with the test fixture.
     await cdp.call("Page.navigate", { url: query.href });
-    let ready = false;
-    for (let attempt = 0; attempt < 200; attempt++) {
-      try {
-        const response = await cdp.call("Runtime.evaluate", {
-          expression: `document.readyState === 'complete' && location.href === ${JSON.stringify(query.href)}`,
-          returnByValue: true
-        });
-        ready = response.result?.value === true;
-        if (ready) break;
-      } catch {
-        // A navigation briefly replaces the execution context.
+    const installDocument = async (previousLoaderId) => {
+      let ready = false;
+      let frame;
+      for (let attempt = 0; attempt < 200; attempt++) {
+        try {
+          const { frameTree } = await cdp.call("Page.getFrameTree");
+          frame = frameTree.frame;
+          if (previousLoaderId && frame.loaderId === previousLoaderId) {
+            await delay(25);
+            continue;
+          }
+          const response = await cdp.call("Runtime.evaluate", {
+            expression: `document.readyState === 'complete' && location.href === ${JSON.stringify(query.href)}`,
+            returnByValue: true
+          });
+          ready = response.result?.value === true;
+          if (ready) break;
+        } catch {
+          // A navigation briefly replaces the execution context.
+        }
+        await delay(25);
       }
-      await delay(25);
-    }
-    if (!ready)
-      throw new Error("Package renderer did not finish fixture navigation");
-    const { frameTree } = await cdp.call("Page.getFrameTree");
-    await cdp.call("Page.setDocumentContent", {
-      frameId: frameTree.frame.id,
-      html: html.replace(
-        /((?:src|href)=["'])\.\/assets\//gu,
-        `$1${base}assets/`
-      )
-    });
-    return { dispose };
+      if (!ready)
+        throw new Error("Package renderer did not finish fixture navigation");
+      await cdp.call("Page.setDocumentContent", {
+        frameId: frame.id,
+        html: html.replace(
+          /((?:src|href)=["'])\.\/assets\//gu,
+          `$1${base}assets/`
+        )
+      });
+    };
+    await installDocument();
+    return {
+      dispose,
+      async reload() {
+        const { frameTree } = await cdp.call("Page.getFrameTree");
+        const previousLoaderId = frameTree.frame.loaderId;
+        if (!previousLoaderId)
+          throw new Error("Package renderer loader is unavailable");
+        await cdp.call("Page.reload", { ignoreCache: true });
+        // A reload restores the packaged production document. Wait for the new
+        // document before reinstalling synthetic assets at the same origin.
+        await installDocument(previousLoaderId);
+      }
+    };
   } catch (error) {
     await dispose();
     throw error;

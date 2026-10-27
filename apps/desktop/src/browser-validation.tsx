@@ -1171,9 +1171,6 @@ const createInteractionPersonalMemoryApi = (
         : [
             {
               ...personalProject,
-              namedProject: undefined,
-              projectReference: undefined,
-              inclusionRules: undefined,
               repository: interactionReviewGit
             }
           ],

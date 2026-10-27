@@ -28,11 +28,24 @@ test("packaged fault fixtures preserve the trusted renderer origin and serve onl
     "globalThis.fixture = true;"
   );
   const calls = [];
+  let reloading = false;
+  let reloadFrameReads = 0;
   const cdp = {
     call: async (method, params) => {
       calls.push({ method, params });
+      if (method === "Page.reload") reloading = true;
       return method === "Page.getFrameTree"
-        ? { frameTree: { frame: { id: "package-frame" } } }
+        ? {
+            frameTree: {
+              frame: {
+                id: "package-frame",
+                loaderId:
+                  reloading && reloadFrameReads++ > 0
+                    ? "reloaded-document"
+                    : "original-document"
+              }
+            }
+          }
         : { result: { value: true } };
     }
   };
@@ -64,6 +77,23 @@ test("packaged fault fixtures preserve the trusted renderer origin and serve onl
     assert.equal(
       (await fetch(`${base}assets/%2F..%2F..%2Foutside.js`)).status,
       403
+    );
+    await fixture.reload();
+    const afterReload = calls.slice(
+      calls.findIndex(({ method }) => method === "Page.reload") + 1
+    );
+    assert.deepEqual(
+      afterReload.slice(0, 3).map(({ method }) => method),
+      ["Page.getFrameTree", "Page.getFrameTree", "Runtime.evaluate"]
+    );
+    const documents = calls.filter(
+      ({ method }) => method === "Page.setDocumentContent"
+    );
+    assert.equal(documents.length, 2);
+    assert.deepEqual(documents[1].params, document);
+    assert.equal(
+      calls.filter(({ method }) => method === "Page.navigate").length,
+      1
     );
   } finally {
     await fixture.dispose();
