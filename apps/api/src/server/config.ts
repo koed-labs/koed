@@ -14,6 +14,10 @@ import {
 import type { RateLimitName, RateLimitPolicy } from "../infra/rate-limit.js";
 import { parseCsv } from "./utils.js";
 import { resolveTeamCollaborationEnabled } from "./team-collaboration-feature.js";
+import {
+  resolveWorkosAgentRegistrationConfig,
+  type WorkosAgentRegistrationConfig
+} from "../auth/workos-agent-config.js";
 
 export interface ApiServerConfig {
   nodeEnv: string;
@@ -85,6 +89,7 @@ export interface ApiServerConfig {
     clientSecret?: string;
     redirectUri?: string;
     providerEnvironment: string;
+    agentRegistration?: WorkosAgentRegistrationConfig;
   };
   ops: {
     backupStatusPath?: string;
@@ -502,7 +507,14 @@ export const resolveApiServerConfig = (
       clientSecret: optionalEnv(environment.WORKOS_API_KEY),
       redirectUri: optionalEnv(environment.WORKOS_REDIRECT_URI),
       providerEnvironment:
-        optionalEnv(environment.WORKOS_PROVIDER_ENVIRONMENT) ?? "default"
+        optionalEnv(environment.WORKOS_PROVIDER_ENVIRONMENT) ?? "default",
+      agentRegistration: resolveWorkosAgentRegistrationConfig(environment, {
+        remoteMcpEnabled,
+        deploymentProfile: resolveDeploymentProfile(
+          environment.KOED_DEPLOYMENT_PROFILE,
+          runtimeMode
+        )
+      })
     },
     ops: {
       backupStatusPath: optionalEnv(environment.KOED_BACKUP_STATUS_PATH),

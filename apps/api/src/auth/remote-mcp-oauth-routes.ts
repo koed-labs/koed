@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import express from "express";
+import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { OAuthError as AuthorizationServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
@@ -9,6 +10,8 @@ import { sessionCookieName, type AuthHelpers } from "./session.js";
 
 const consentPath = "/auth/mcp/authorize";
 const csrfCookie = "koed_mcp_consent";
+const connectionsPath = "/auth/mcp/connections";
+const connectionsCookie = "koed_mcp_connections";
 const escapeHtml = (value: string) =>
   value.replace(
     /[&<>"']/g,
@@ -31,7 +34,8 @@ const requestSecretFor = (request: FastifyRequest) => {
 };
 const browserHeaders = (reply: FastifyReply, nonce: string) => {
   reply.header("cache-control", "no-store");
-  reply.header("referrer-policy", "no-referrer");
+  // Preserve the POST Origin for browser CSRF checks without exposing query secrets.
+  reply.header("referrer-policy", "strict-origin");
   reply.header("x-content-type-options", "nosniff");
   reply.header(
     "content-security-policy",
@@ -40,7 +44,7 @@ const browserHeaders = (reply: FastifyReply, nonce: string) => {
   reply.type("text/html; charset=utf-8");
 };
 const page = (nonce: string, content: string) =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Koed</title><style nonce="${nonce}">body{font:16px system-ui,sans-serif;color:#1c2521;background:#f7f9f8;margin:0}main{max-width:560px;padding:40px 24px;margin:40px auto}h1{font-size:28px}p,li{line-height:1.5;overflow-wrap:anywhere}label{display:block;margin-top:20px}input{box-sizing:border-box;width:100%;padding:10px;margin-top:6px;border:1px solid #adb9b1;border-radius:4px;font:inherit}button{padding:10px 18px;margin:16px 12px 0 0;border:1px solid #61756a;border-radius:4px;background:#fff;color:#1c2521;font:inherit;cursor:pointer}button[value=allow],button[type=submit]{background:#205c42;color:white}small{color:#4a5b52;overflow-wrap:anywhere}#error{color:#9e2424}</style></head><body><main>${content}</main></body></html>`;
+  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Koed</title><style nonce="${nonce}">body{font:16px system-ui,sans-serif;color:#1c2521;background:#f7f9f8;margin:0}main{max-width:560px;padding:40px 24px;margin:40px auto}h1{font-size:28px}h2{font-size:20px;margin:0}section{border-top:1px solid #adb9b1;padding:20px 0}p,li{line-height:1.5;overflow-wrap:anywhere}label{display:block;margin-top:20px}input{box-sizing:border-box;width:100%;padding:10px;margin-top:6px;border:1px solid #adb9b1;border-radius:4px;font:inherit}button{padding:10px 18px;margin:16px 12px 0 0;border:1px solid #61756a;border-radius:4px;background:#fff;color:#1c2521;font:inherit;cursor:pointer}button[value=allow],button[type=submit]{background:#205c42;color:white}small{color:#4a5b52;overflow-wrap:anywhere}#error{color:#9e2424}</style></head><body><main>${content}</main></body></html>`;
 const scopeLabels: Record<string, string> = {
   "koed:memory:read": "Read your Personal Memory",
   "koed:team:read": "Read Team Workspace memory you currently have access to",
@@ -58,6 +62,8 @@ export const registerRemoteMcpOAuthRoutes = (
     auth: AuthHelpers;
     workosAvailable: boolean;
     publicOrigin: string;
+    browserPublicUrl?: string;
+    additionalAuthorizationServers?: readonly string[];
   }
 ) => {
   const publicOrigin = new URL(options.publicOrigin).origin;
@@ -65,6 +71,29 @@ export const registerRemoteMcpOAuthRoutes = (
     throw new Error("OAuth public origin must match its issuer");
   const sdkApp = express();
   sdkApp.disable("x-powered-by");
+  if (options.additionalAuthorizationServers?.length) {
+    sdkApp.use(
+      "/.well-known/oauth-protected-resource",
+      (_request, response, next) => {
+        const json = response.json.bind(response);
+        response.json = (metadata: Record<string, unknown>) =>
+          json({
+            ...metadata,
+            authorization_servers: [
+              ...new Set([
+                ...(Array.isArray(metadata.authorization_servers)
+                  ? metadata.authorization_servers.filter(
+                      (issuer): issuer is string => typeof issuer === "string"
+                    )
+                  : [options.issuerUrl.toString()]),
+                ...options.additionalAuthorizationServers!
+              ])
+            ]
+          });
+        next();
+      }
+    );
+  }
   let cleanupTimer: ReturnType<typeof setInterval> | undefined;
   let cleanup: Promise<void> | undefined;
   const pruneExpired = () => {
@@ -122,18 +151,27 @@ export const registerRemoteMcpOAuthRoutes = (
         token
       ])
     );
-  const sameOrigin = (request: FastifyRequest) => {
+  const connectionOrigins = new Set([
+    publicOrigin,
+    ...(options.browserPublicUrl
+      ? [new URL(options.browserPublicUrl).origin]
+      : [])
+  ]);
+  const sameOrigin = (
+    request: FastifyRequest,
+    allowedOrigins: ReadonlySet<string> = new Set([publicOrigin])
+  ) => {
     if (
       request.headers["sec-fetch-site"] &&
       request.headers["sec-fetch-site"] !== "same-origin"
     )
       return false;
     const origin = request.headers.origin;
-    if (origin !== undefined) return origin === publicOrigin;
+    if (origin !== undefined) return allowedOrigins.has(origin);
     const referer = request.headers.referer;
     if (!referer) return false;
     try {
-      return new URL(referer).origin === publicOrigin;
+      return allowedOrigins.has(new URL(referer).origin);
     } catch {
       return false;
     }
@@ -181,6 +219,143 @@ export const registerRemoteMcpOAuthRoutes = (
         sdkApp(raw, reply.raw);
       });
     }
+
+    routes.get(connectionsPath, async (request, reply) => {
+      let user: Awaited<ReturnType<AuthHelpers["authenticateSession"]>>;
+      try {
+        user = await options.auth.authenticateSession(request);
+      } catch (error) {
+        if (
+          !(
+            error &&
+            typeof error === "object" &&
+            "statusCode" in error &&
+            error.statusCode === 401
+          )
+        )
+          throw error;
+        if (options.workosAvailable)
+          return reply.redirect(
+            `/auth/workos/login?${new URLSearchParams({ return_to: connectionsPath })}`
+          );
+        const nonce = randomBytes(18).toString("base64url");
+        browserHeaders(reply, nonce);
+        return reply.send(
+          page(
+            nonce,
+            `<h1>Sign in to Koed</h1><form id="login"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Sign in</button><p id="error" role="alert"></p></form><script nonce="${nonce}">document.getElementById('login').addEventListener('submit',async(event)=>{event.preventDefault();try{const form=event.currentTarget;const r=await fetch('/auth/login',{method:'POST',headers:{'content-type':'application/json'},credentials:'same-origin',body:JSON.stringify({email:form.elements.email.value,password:form.elements.password.value})});if(r.ok)location.reload();else document.getElementById('error').textContent='Sign-in failed';}catch{document.getElementById('error').textContent='Sign-in unavailable';}});</script>`
+          )
+        );
+      }
+      const query = z
+        .object({ page: z.coerce.number().int().min(0).max(10_000).default(0) })
+        .parse(request.query);
+      const connections = await options.oauth.listConnections(
+        user.id,
+        query.page
+      );
+      const cookie = randomBytes(32).toString("base64url");
+      const expires = Math.floor(Date.now() / 1000) + 600;
+      reply.setCookie(connectionsCookie, cookie, {
+        httpOnly: true,
+        secure: options.issuerUrl.protocol === "https:",
+        sameSite: "strict",
+        path: connectionsPath,
+        maxAge: 600
+      });
+      const nonce = randomBytes(18).toString("base64url");
+      browserHeaders(reply, nonce);
+      const items = connections
+        .slice(0, 50)
+        .map((connection) => {
+          const inactive =
+            !!connection.revokedAt ||
+            connection.expiresAt.getTime() <= Date.now();
+          const status = connection.revokedAt
+            ? "Disconnected"
+            : inactive
+              ? "Expired"
+              : "Connected";
+          const action = inactive ? "approve" : "disconnect";
+          const proof = options.auth.hashSecret(
+            JSON.stringify([
+              request.cookies[sessionCookieName],
+              user.id,
+              cookie,
+              connection.id,
+              connection.authorizationVersion,
+              action,
+              expires
+            ])
+          );
+          const form =
+            !inactive || connection.registrationId
+              ? `<form method="post" action="${connectionsPath}"><input type="hidden" name="id" value="${connection.id}"><input type="hidden" name="version" value="${connection.authorizationVersion}"><input type="hidden" name="action" value="${action}"><input type="hidden" name="expires" value="${expires}"><input type="hidden" name="csrfToken" value="${proof}"><button type="submit">${inactive ? "Authorise again for 30 days" : "Disconnect"}</button></form>`
+              : "<p>Reconnect through your AI Client to authorise a new connection.</p>";
+          return `<section><h2>${escapeHtml(connection.clientName)}</h2><p>${status}</p>${connection.providerIssuer ? `<p>${escapeHtml(connection.providerIssuer)}</p><small>${escapeHtml(connection.registrationId!)}<br>Organisation: ${escapeHtml(connection.providerOrganizationId!)}</small>` : ""}<ul>${connection.scopes.map((scope) => `<li>${escapeHtml(scopeLabels[scope] ?? scope)}</li>`).join("")}</ul><p>Authorisation expires: ${escapeHtml(connection.expiresAt.toISOString())}</p>${form}</section>`;
+        })
+        .join("");
+      return reply.send(
+        page(
+          nonce,
+          `<h1>Connected AI Clients</h1><p>${escapeHtml(user.email)}</p>${items || "<p>No connections.</p>"}<nav>${query.page > 0 ? `<a href="${connectionsPath}?page=${query.page - 1}">Previous</a> ` : ""}${connections.length > 50 ? `<a href="${connectionsPath}?page=${query.page + 1}">Next</a>` : ""}</nav>`
+        )
+      );
+    });
+
+    routes.post(connectionsPath, async (request, reply) => {
+      const user = await options.auth.authenticateSession(request);
+      const input = z
+        .object({
+          id: z.string().uuid(),
+          version: z.coerce.number().int().positive(),
+          action: z.enum(["disconnect", "approve"]),
+          expires: z.coerce.number().int().positive(),
+          csrfToken: z.string().regex(/^[a-f0-9]{64}$/)
+        })
+        .parse(request.body);
+      const cookie = request.cookies[connectionsCookie];
+      const now = Math.floor(Date.now() / 1000);
+      if (
+        !sameOrigin(request, connectionOrigins) ||
+        !cookie ||
+        !/^[A-Za-z0-9_-]{43}$/.test(cookie) ||
+        input.expires <= now ||
+        input.expires > now + 600
+      )
+        throw forbidden();
+      const expected = Buffer.from(
+        options.auth.hashSecret(
+          JSON.stringify([
+            request.cookies[sessionCookieName],
+            user.id,
+            cookie,
+            input.id,
+            input.version,
+            input.action,
+            input.expires
+          ])
+        )
+      );
+      const received = Buffer.from(input.csrfToken);
+      if (
+        received.length !== expected.length ||
+        !timingSafeEqual(received, expected)
+      )
+        throw forbidden();
+      const updated = await options.oauth.updateConnection({
+        userId: user.id,
+        id: input.id,
+        version: input.version,
+        action: input.action
+      });
+      if (!updated)
+        return reply
+          .code(409)
+          .send({ error: "Connection changed. Reload before trying again." });
+      reply.clearCookie(connectionsCookie, { path: connectionsPath });
+      return reply.redirect(connectionsPath);
+    });
 
     routes.get(consentPath, async (request, reply) => {
       const pending = requestSecretFor(request);
@@ -236,7 +411,7 @@ export const registerRemoteMcpOAuthRoutes = (
       return reply.send(
         page(
           nonce,
-          `<h1>Authorize AI Client</h1><p>${escapeHtml(consent.clientName)}</p><small>Client ${escapeHtml(consent.clientId)}</small><p>Signed in as ${escapeHtml(user.email)}</p><p>${escapeHtml(consent.resource)}</p><ul>${consent.scopes.map((scope) => `<li>${escapeHtml(scopeLabels[scope] ?? scope)}</li>`).join("")}</ul><form method="post" action="${consentPath}?${new URLSearchParams({ request: pending })}"><input type="hidden" name="csrfToken" value="${token}"><button name="decision" value="allow" type="submit">Allow</button><button name="decision" value="deny" type="submit">Deny</button></form>`
+          `<h1>Authorize AI Client</h1><p>${escapeHtml(consent.clientName)}</p><small>Client ${escapeHtml(consent.clientId)}</small><p>Signed in as ${escapeHtml(user.email)}</p><p>${escapeHtml(consent.resource)}</p><ul>${consent.scopes.map((scope) => `<li>${escapeHtml(scopeLabels[scope] ?? scope)}</li>`).join("")}</ul><form method="post" action="${consentPath}?${new URLSearchParams({ request: pending })}"><input type="hidden" name="csrfToken" value="${token}"><button name="decision" value="allow" type="submit">Allow</button><button name="decision" value="deny" type="submit">Deny</button></form><p><a href="${connectionsPath}">Connected AI Clients</a></p>`
         )
       );
     });
