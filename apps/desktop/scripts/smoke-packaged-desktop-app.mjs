@@ -955,6 +955,8 @@ export const waitForHealthyStatus = async (
 };
 
 const smokeHealthyDaemon = async (layout, koedHome, options) => {
+  const desktop = options.desktop;
+  assertPackagedNoticeState(await desktop.invoke("update_state"));
   const timings = options.timings ?? {};
   let phaseStarted = beginPhase("runtime install and verification");
   const packageStatus = smokePackageStatus(layout, koedHome);
@@ -1079,8 +1081,6 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   finishPhase(timings, "required model verification or install", phaseStarted);
 
-  const desktop = options.desktop;
-  assertPackagedNoticeState(await desktop.invoke("update_state"));
   const managerCommand = async (command) => {
     const payload = await desktop.invoke(command);
     assertNoSourceCheckoutResolution(`manager ${command}`, payload);

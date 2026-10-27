@@ -50,7 +50,8 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     (channel, value) => ipcRenderer.invoke(channel, value),
     {
       on: (channel, listener) => ipcRenderer.on(channel, listener),
-      removeListener: (channel, listener) => ipcRenderer.removeListener(channel, listener)
+      removeListener: (channel, listener) =>
+        ipcRenderer.removeListener(channel, listener)
     }
   ),
   personalMemory: createPersonalMemoryPreloadApi(

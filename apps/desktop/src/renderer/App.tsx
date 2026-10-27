@@ -2004,7 +2004,12 @@ export function App({
   return (
     <ToastProvider>
       <AppShell
-        updateControl={<DesktopUpdateIndicator update={desktopUpdate} onOpen={() => openPreferences("about")} />}
+        updateControl={
+          <DesktopUpdateIndicator
+            update={desktopUpdate}
+            onOpen={() => openPreferences("about")}
+          />
+        }
         activeScope={activeScope}
         canGoBack={navigation.index > 0}
         canGoForward={navigation.index < navigation.entries.length - 1}

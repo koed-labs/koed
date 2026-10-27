@@ -1,5 +1,10 @@
 # Running Koed
 
+## Desktop updates
+
+For update notices and safe manual replacement, including CLI-owned runtimes
+that can remain active after Desktop quits, see [Desktop Update Notices](desktop-updates.md).
+
 ## Headless Remote Integration
 
 An AI Client can use an existing backend without Electron or local database,

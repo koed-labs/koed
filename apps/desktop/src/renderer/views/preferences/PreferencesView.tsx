@@ -1330,7 +1330,11 @@ export function PreferencesView({
           />
         ) : null}
         {section === "about" ? (
-          <AboutSection acknowledgements={acknowledgements} version={version} update={update} />
+          <AboutSection
+            acknowledgements={acknowledgements}
+            version={version}
+            update={update}
+          />
         ) : null}
         {section === "advanced" ? (
           <AdvancedSection statusStore={statusStore} />

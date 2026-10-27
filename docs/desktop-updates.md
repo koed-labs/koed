@@ -36,6 +36,7 @@ Use a supported signed macOS arm64 distribution at its existing supported instal
    Run `stop` only where a remaining runtime needs an explicit Operator stop. Require `stop` result `ok: true`. Inspect full final status JSON and require `lifecycle.state: "stopped"`; status exit code alone is not proof. Unknown ownership, a failed stop, remaining runtime or another process that can restart it blocks replacement.
 
    The launcher exports its configured `KOED_HOME` unconditionally. Prefixing another `KOED_HOME` does **not** select that other home. Use the correct launcher/configuration for each home. `koed runtime status` reports native dependency installation, not supervisor shutdown.
+
 4. Replace the app at the same supported location, then reopen it. Verify installed version, runtime health, selected Base/Privacy profile and Personal Memory readability. Preserve Koed home, configuration, token references and models; no delete/reset/re-embedding step is part of an update.
 5. If a launcher is absent, ownership cannot be verified, another home may still use the app or supported signing checks fail, do not guess or kill unrelated processes. Ask the Operator to resolve the blocker before replacement.
 
@@ -43,18 +44,18 @@ This manual procedure is not a global process inventory or durable replacement r
 
 ## Selective-port ledger
 
-Foundation: #432 `1d492d3fe400e0d7d6bf568742f78f1308a7e0b3`. Reference: #339 `055fab76571e6fa9afb77624c7c8b563b91c82bf`; #339 remains unchanged. New implementation is written against current foundation, informed by the useful #339 interface/test patterns below, not a merge of its old lifecycle or release code.
+Initial foundation: #432 `1d492d3fe400e0d7d6bf568742f78f1308a7e0b3`; the branch also incorporates the subsequent pin-only stack through #432 `31c77c60afc52e8020a6689e39357a1f20d5571a`. Reference: #339 `055fab76571e6fa9afb77624c7c8b563b91c82bf`; #339 remains unchanged. New implementation is written against current foundation, informed by the useful #339 interface/test patterns below, not a merge of its old lifecycle or release code.
 
-| Reference capability | First-checkpoint disposition |
-| --- | --- |
-| Shared update contract and version validation | Replaced with strict notice-only schema and stable numeric comparison; no old download/install states or permissive version regex. |
-| Main-owned fixed IPC, preload cleanup and state subscriptions | Adapted pattern; strengthened with current-window identity, exact requests, sanitized failure and initial-snapshot/event ordering tests. |
-| Coordinator scheduling/single-flight/disposal tests | Reimplemented as metadata-only discovery with bounded network, backoff, artifact eligibility and no updater dependency. |
-| Indicator, About surface, text notes and stale-response tests | Selectively adapted to current shell/Preferences; one shared notice hook, installed Electron version, manual instructions and no Download/Restart UI. |
-| Updater downloader, cache, native installer and quit coordinator | Deferred entirely to milestone 2. No normal download-consent step will be ported. |
-| Older main/manager lifecycle and workflow replacement | Not ported. Current ownership, stopped-authority queue, signing, catalog and promotion code remain authoritative. |
-| Feed/artifact/native acceptance helpers | Deferred to milestone 2; notice eligibility tests cover current manual distribution policy only. No simulated signed/native acceptance claim. |
-| Old changeset/package metadata and obsolete tests | Not copied. Current release conventions and current no-installer requirements govern new release notes/tests. |
+| Reference capability                                             | First-checkpoint disposition                                                                                                                          |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shared update contract and version validation                    | Replaced with strict notice-only schema and stable numeric comparison; no old download/install states or permissive version regex.                    |
+| Main-owned fixed IPC, preload cleanup and state subscriptions    | Adapted pattern; strengthened with current-window identity, exact requests, sanitized failure and initial-snapshot/event ordering tests.              |
+| Coordinator scheduling/single-flight/disposal tests              | Reimplemented as metadata-only discovery with bounded network, backoff, artifact eligibility and no updater dependency.                               |
+| Indicator, About surface, text notes and stale-response tests    | Selectively adapted to current shell/Preferences; one shared notice hook, installed Electron version, manual instructions and no Download/Restart UI. |
+| Updater downloader, cache, native installer and quit coordinator | Deferred entirely to milestone 2. No normal download-consent step will be ported.                                                                     |
+| Older main/manager lifecycle and workflow replacement            | Not ported. Current ownership, stopped-authority queue, signing, catalog and promotion code remain authoritative.                                     |
+| Feed/artifact/native acceptance helpers                          | Deferred to milestone 2; notice eligibility tests cover current manual distribution policy only. No simulated signed/native acceptance claim.         |
+| Old changeset/package metadata and obsolete tests                | Not copied. Current release conventions and current no-installer requirements govern new release notes/tests.                                         |
 
 ## Validation and public-release gates
 
@@ -65,6 +66,7 @@ Live read-only inspection on 2026-10-26 confirmed unauthenticated HTTP 200 metad
 Local PR checkpoint and public release are distinct. Still required before public release:
 
 - Confirm minor changeset/release version under current fixed-group rules.
+- Resolve or enforce release ordering: GitHub's `/releases/latest` selects by release creation time, not highest semantic version. A later-created maintenance release can hide a newer version; do not claim comprehensive update discovery unless release policy prevents this or discovery is changed and tested.
 - Publish through existing approved signed release gates; validate real supported official metadata/assets and signed manual instructions together.
 - On supported clean Mac, verify official artifact/checksum, expected Apple identity, Gatekeeper/notarization, installed launcher/home binding, adopted-runtime stop, multiple-home limitations, replacement/reopen and readable preserved data/profile.
 - Record actual final-head checks and packaged acceptance separately. No signing/cloud/publication authorization is implied by this document or local implementation.

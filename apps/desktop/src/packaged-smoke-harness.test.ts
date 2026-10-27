@@ -48,7 +48,12 @@ describe("private packaged smoke harness", () => {
     f.request("update_install", "install");
     await tick();
     expect(f.calls).toEqual(["update_state"]);
-    expect(f.messages.filter((value) => typeof value === "object" && value !== null && "error" in value)).toHaveLength(2);
+    expect(
+      f.messages.filter(
+        (value) =>
+          typeof value === "object" && value !== null && "error" in value
+      )
+    ).toHaveLength(2);
   });
   it("requires packaged main and inherited connected IPC, not flag alone", () => {
     for (const [packaged, connected] of [

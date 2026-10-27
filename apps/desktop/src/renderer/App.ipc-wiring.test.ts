@@ -7,7 +7,9 @@ describe("App Desktop IPC wiring", () => {
     expect(source).toContain("useDesktopUpdate(window.koedDesktop?.updates)");
     expect(source).toContain("update={desktopUpdate}");
     expect(source).toContain("<DesktopUpdateIndicator");
-    expect(source).toContain('version={desktopUpdate.state?.installedVersion ?? "Unavailable"}');
+    expect(source).toContain(
+      'version={desktopUpdate.state?.installedVersion ?? "Unavailable"}'
+    );
     expect(source).not.toContain("__KOED_DESKTOP_VERSION__");
   });
   it("passes Local AI Client settings from the trusted preload bridge to Preferences", () => {

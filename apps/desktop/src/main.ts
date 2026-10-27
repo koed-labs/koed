@@ -18,7 +18,10 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
-import { createUpdateDiscovery, updateNoticeEligible } from "./main/update-discovery.js";
+import {
+  createUpdateDiscovery,
+  updateNoticeEligible
+} from "./main/update-discovery.js";
 import { registerDesktopUpdateIpc } from "./ipc/update.js";
 import { attachPackagedSmokeHarness } from "./packaged-smoke-harness.js";
 import type { DesktopCommandName } from "./ipc/protocol.js";
@@ -378,13 +381,24 @@ const bootstrap = async () => {
   await app.whenReady();
   const updateDiscovery = createUpdateDiscovery({
     installedVersion: app.getVersion(),
-    eligible: updateNoticeEligible({ packaged: app.isPackaged, platform: process.platform, arch: process.arch, argv: process.argv })
+    eligible: updateNoticeEligible({
+      packaged: app.isPackaged,
+      platform: process.platform,
+      arch: process.arch,
+      argv: process.argv
+    })
   });
   const removeUpdateIpc = registerDesktopUpdateIpc({
-    ipcMain, discovery: updateDiscovery, getMainWindow: () => mainWindow,
-    allowedRendererOrigins, openExternal: (url) => shell.openExternal(url)
+    ipcMain,
+    discovery: updateDiscovery,
+    getMainWindow: () => mainWindow,
+    allowedRendererOrigins,
+    openExternal: (url) => shell.openExternal(url)
   });
-  disposeUpdateNotice = () => { removeUpdateIpc(); updateDiscovery.dispose(); };
+  disposeUpdateNotice = () => {
+    removeUpdateIpc();
+    updateDiscovery.dispose();
+  };
   updateDiscovery.start();
   const launchAtStartup = createLaunchAtStartupController({
     appDataPath: app.getPath("appData"),
