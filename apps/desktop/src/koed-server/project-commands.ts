@@ -75,13 +75,6 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
   };
   const repositoryReviewCommand = async (raw: unknown) => {
     const input = repositoryReviewCommandSchema.parse(raw);
-    if (input.operation === "apply")
-      throw Object.assign(
-        new Error(
-          "Repository reassignment is retired. Use the versioned source-context correction controls."
-        ),
-        { code: "unsupported_operation", retryable: false }
-      );
     const paths = deps.paths;
     const local = (listProjectMetadata(paths).projects ?? []).find(
       (project) => project.localProjectId === input.localProjectId

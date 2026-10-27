@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizePdsJson,
   repositoryIdentitySchema,
+  personalGitContextSchema,
   type PdsConversationSourceItem,
   createPdsSessionManifest,
   createPdsSessionPackage,
@@ -445,17 +446,28 @@ describe.skipIf(!databaseUrl)(
         const identity = repositoryIdentitySchema.parse(
           old.session.repository_automatic_identity
         );
-        const moved = await memory.moveCapturedSessionToProject(
+        // A correction may select only a context already recorded for this owner.
+        await memory.createCapturedSession(
+          { userId },
+          { externalSessionId: randomUUID(), repositoryIdentity: identity }
+        );
+        const correction = await memory.previewPersonalSourceCorrection(
           { userId },
           sessionId,
           {
-            id: "explicit-project",
-            name: "Explicit Project",
-            path: identity.root,
-            repositoryIdentity: identity,
-            expectedAssignmentVersion: assignment.version
+            axis: "git",
+            action: "set",
+            repository: personalGitContextSchema.parse(identity),
+            expectedVersion: assignment.version
           }
         );
+        await memory.applyPersonalSourceCorrection(
+          { userId },
+          sessionId,
+          correction.preview.reviewId,
+          { expectedVersion: assignment.version }
+        );
+        const moved = await memory.getCapturedSession({ userId }, sessionId);
         expect(moved?.repositoryAssignment?.effective).toEqual(identity);
         await local.materializePdsReplica({
           ...input,
@@ -465,11 +477,19 @@ describe.skipIf(!databaseUrl)(
           (await memory.getCapturedSession({ userId }, sessionId))
             ?.repositoryAssignment?.effective
         ).toEqual(identity);
-        const reset = await memory.resetCapturedSessionProject(
+        const resetVersion = moved!.repositoryAssignment!.version;
+        const resetReview = await memory.previewPersonalSourceCorrection(
           { userId },
           sessionId,
-          moved!.repositoryAssignment!.version
+          { axis: "git", action: "reset", expectedVersion: resetVersion }
         );
+        await memory.applyPersonalSourceCorrection(
+          { userId },
+          sessionId,
+          resetReview.preview.reviewId,
+          { expectedVersion: resetVersion }
+        );
+        const reset = await memory.getCapturedSession({ userId }, sessionId);
         expect(reset?.repositoryAssignment).toMatchObject({
           state: "historical_unresolved",
           effective: null

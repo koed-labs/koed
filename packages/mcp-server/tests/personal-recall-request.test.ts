@@ -45,9 +45,6 @@ describe("public Personal recall targets", () => {
         .mockResolvedValue({
           task: { id: randomUUID(), teamWorkspaceId: null }
         } as Awaited<ReturnType<MemoryApiClient["acceptMemoryAnswerTask"]>>);
-      const route = vi
-        .spyOn(client, "resolveProjectRouting")
-        .mockRejectedValue(new Error("Must not discover a checkout"));
       const coordinator = createMemoryAnswerTaskCoordinator(client, {
         KOED_HOME: "/fixture/no-enrollment"
       });
@@ -78,7 +75,6 @@ describe("public Personal recall targets", () => {
         (accept.mock.calls[0]![0].request.input as Record<string, unknown>)
           .recall_target
       ).toBeUndefined();
-      expect(route).not.toHaveBeenCalled();
     }
   );
 

@@ -61,21 +61,12 @@ export type RepositoryReviewOptions = z.infer<
   typeof repositoryReviewOptionsSchema
 >;
 export type RepositoryReview = z.infer<typeof repositoryReviewSchema>;
-export const repositoryReviewActionSchema = z.discriminatedUnion("action", [
-  z
-    .object({
-      action: z.literal("apply"),
-      expectedRevision: z.number().int().positive(),
-      sessionIds: z.array(z.string().uuid()).max(500)
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("dismiss"),
-      expectedRevision: z.number().int().positive()
-    })
-    .strict()
-]);
+export const repositoryReviewActionSchema = z
+  .object({
+    action: z.literal("dismiss"),
+    expectedRevision: z.number().int().positive()
+  })
+  .strict();
 
 const localProjectId = z.string().regex(/^lp_[0-9a-f]{32}$/);
 export const repositoryReviewCommandSchema = z.discriminatedUnion("operation", [
@@ -86,15 +77,6 @@ export const repositoryReviewCommandSchema = z.discriminatedUnion("operation", [
       localProjectId,
       eventId: z.string().uuid(),
       options: repositoryReviewOptionsSchema
-    })
-    .strict(),
-  z
-    .object({
-      operation: z.literal("apply"),
-      localProjectId,
-      reviewId: z.string().uuid(),
-      expectedRevision: z.number().int().positive(),
-      sessionIds: z.array(z.string().uuid()).max(500)
     })
     .strict(),
   z

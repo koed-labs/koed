@@ -514,8 +514,7 @@ export const createMemoryAnswerTaskCoordinator = (
         const pinned = await pinRepositoryRecallContext(
           input,
           { cwd: caller?.cwd ?? "" },
-          environment,
-          client.resolveProjectRouting?.bind(client)
+          environment
         );
         return {
           backendId: "personal",

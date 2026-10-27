@@ -201,11 +201,10 @@ The current [`Session schema`](../packages/db/src/schema.ts) retains automatic
 identity, overrides, and capture provenance. Preserve those facts while adding
 an independent Folder selection and Project inclusion model.
 
-Replace the grouping use of
-[`project-routing-repository.ts`](../packages/db/src/project-routing-repository.ts).
-Its `moveProjectConversations` operation changes Session overrides and writes
-`personal_project_routes`. Its route lookup also redirects recall.
-Neither operation represents umbrella membership.
+The former `project-routing-repository.ts` module was removed after the membership
+cutover. Its bulk move operation changed Session overrides and wrote
+`personal_project_routes`; its route lookup redirected recall. The current
+membership model replaces those grouping operations while preserving source facts.
 
 An inclusion must record its owner, Project, source kind, and source identity.
 The implementation must retain each reason when inclusions overlap.

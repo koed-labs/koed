@@ -3734,62 +3734,6 @@ const createFakeRepository = () => {
       capturedSessions.set(sessionId, nextSession);
       return nextSession;
     },
-    async moveCapturedSessionToProject(actor, sessionId, project) {
-      const session = capturedSessions.get(sessionId);
-      if (
-        !session ||
-        session.ownerUserId !== actor.userId ||
-        session.visibility !== "personal"
-      )
-        return null;
-      const updatedAt = new Date().toISOString();
-      const nextSession: CapturedSessionRecord = {
-        ...session,
-        repositoryAssignment: {
-          state: session.repositoryAssignment?.state ?? "historical_unresolved",
-          version: (session.repositoryAssignment?.version ?? 1) + 1,
-          automatic: session.repositoryAssignment?.automatic ?? null,
-          override: project.repositoryIdentity ?? null,
-          effective:
-            project.repositoryIdentity ??
-            session.repositoryAssignment?.automatic ??
-            null
-        },
-        projectOverride: project,
-        project,
-        projectAssignmentSource: "user_override",
-        projectAssignmentUpdatedAt: updatedAt
-      };
-      capturedSessions.set(sessionId, nextSession);
-      return nextSession;
-    },
-    async resetCapturedSessionProject(actor, sessionId) {
-      const session = capturedSessions.get(sessionId);
-      if (
-        !session ||
-        session.ownerUserId !== actor.userId ||
-        session.visibility !== "personal"
-      )
-        return null;
-      const nextSession: CapturedSessionRecord = {
-        ...session,
-        repositoryAssignment: {
-          state: session.repositoryAssignment?.state ?? "historical_unresolved",
-          version: (session.repositoryAssignment?.version ?? 1) + 1,
-          automatic: session.repositoryAssignment?.automatic ?? null,
-          override: null,
-          effective: session.repositoryAssignment?.automatic ?? null
-        },
-        projectOverride: null,
-        project: session.automaticProject,
-        projectAssignmentSource: session.automaticProject ? "detected" : null,
-        projectAssignmentUpdatedAt: session.automaticProject
-          ? new Date().toISOString()
-          : null
-      };
-      capturedSessions.set(sessionId, nextSession);
-      return nextSession;
-    },
     async listCapturedSessionsNeedingTitles(actor, input = {}) {
       const limit = Math.min(Math.max(input.limit ?? 5, 1), 25);
       const minUserEvents = Math.min(Math.max(input.minUserEvents ?? 3, 1), 50);

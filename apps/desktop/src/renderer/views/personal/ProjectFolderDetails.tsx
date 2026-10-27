@@ -149,7 +149,7 @@ export function ProjectFolderDetails({
             <FolderAction
               icon={ListChecks}
               title={folderPageTitle.review}
-              description="Choose which older Conversations move to another Project."
+              description="Inspect older Conversations without changing their source context."
               onClick={() => onNavigate("review")}
             />
           ) : null}

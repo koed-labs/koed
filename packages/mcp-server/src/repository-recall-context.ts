@@ -22,8 +22,7 @@ export const pinRepositoryRecallContext = async <
 >(
   input: Input,
   caller: { cwd: string },
-  environment: NodeJS.ProcessEnv,
-  resolveRouting?: (scope: string) => Promise<RepositoryIdentity | null>
+  environment: NodeJS.ProcessEnv
 ): Promise<Input & { repository_context?: RepositoryIdentity | null }> => {
   if (input.search_domain === "global") {
     // Null is an explicit, durable unknown context; retries must not discover the worker cwd.
@@ -39,8 +38,7 @@ export const pinRepositoryRecallContext = async <
       const pinned = await pinRepositoryRecallContext(
         { ...input, search_domain: "project", repository_context: undefined },
         caller,
-        environment,
-        resolveRouting
+        environment
       );
       return {
         ...input,
@@ -120,13 +118,10 @@ export const pinRepositoryRecallContext = async <
         retryable: false
       }
     );
-  const effective = resolveRouting
-    ? ((await resolveRouting(repositoryScopeId(context))) ?? context)
-    : context;
   return {
     ...input,
-    project_id: repositoryScopeId(effective),
-    repository_context: effective
+    project_id: repositoryScopeId(context),
+    repository_context: context
   };
 };
 

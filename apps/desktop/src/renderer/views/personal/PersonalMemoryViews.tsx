@@ -4208,10 +4208,7 @@ export function PersonalMemoryWorkspace({
               onReviewRepository={
                 reviewRepository
                   ? async (input) => {
-                      const result = await reviewRepository(input);
-                      if (input.operation === "apply")
-                        await store.loadProjects();
-                      return result;
+                      return reviewRepository(input);
                     }
                   : undefined
               }

@@ -13,8 +13,7 @@ export const registerRepositoryReviewRoutes = (
   const {
     requireRepository,
     auth: { authenticate },
-    rateLimit: { memoryRead, memoryWrite },
-    graph: { cacheProvider }
+    rateLimit: { memoryRead, memoryWrite }
   } = context;
   app.post(
     "/v1/memory/repository-changes",
@@ -96,8 +95,6 @@ export const registerRepositoryReviewRoutes = (
           reviewId,
           action
         );
-      if (action.action === "apply")
-        await cacheProvider.deleteByPrefix("koed:graph:");
       return { review };
     }
   );

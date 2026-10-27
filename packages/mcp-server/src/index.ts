@@ -10,7 +10,6 @@ import {
   memoryAnswerTaskClaimResponseSchema,
   type PersonalSelectionSnapshot,
   personalSelectionCompatibilityError,
-  repositoryRecallContextSchema,
   memoryAnswerTaskResponseSchema,
   memoryAnswerTaskHeartbeatResponseSchema,
   type AcceptMemoryAnswerTaskInput,
@@ -572,23 +571,6 @@ export class MemoryApiClient {
 
   async capabilities(): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>("GET", "/v1/capabilities");
-  }
-
-  async resolveProjectRouting(
-    projectId: string
-  ): Promise<import("@koed/shared").RepositoryIdentity | null> {
-    const payload = await this.request<{
-      project: { repositoryIdentity: unknown } | null;
-    }>(
-      "GET",
-      `/v1/memory/graph/projects/resolve?${new URLSearchParams({ projectId })}`
-    );
-    if (payload.project === null) return null;
-    if (!payload.project)
-      throw new Error("Project routing response is missing its result");
-    return repositoryRecallContextSchema.parse(
-      payload.project.repositoryIdentity
-    );
   }
 
   async getEffectiveCapturePolicy(input: {

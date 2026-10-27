@@ -936,13 +936,6 @@ export const routeIdentityContracts = [
   ),
   route(
     "PATCH",
-    "/v1/memory/graph/sessions/{sessionId}/project",
-    "session_or_api_token",
-    "personal_memory",
-    "Move a personal Captured Session to a Personal Project or reset automatic placement."
-  ),
-  route(
-    "PATCH",
     "/v1/memory/graph/sessions/{sessionId}/presentation",
     "session_or_api_token",
     "personal_memory",

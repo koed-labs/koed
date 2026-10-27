@@ -1,4 +1,3 @@
-import { personalLegacyWriteRetired } from "./personal-model-boundary.js";
 import type pg from "pg";
 import { randomUUID } from "node:crypto";
 import {
@@ -171,7 +170,6 @@ export const createRepositoryReviewRepository = (pool: pg.Pool) => ({
     rawAction: unknown
   ) {
     const action = repositoryReviewActionSchema.parse(rawAction);
-    if (action.action === "apply") throw personalLegacyWriteRetired();
     return transaction(pool, async (client) => {
       let row =
         (

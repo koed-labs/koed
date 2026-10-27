@@ -36,8 +36,7 @@ export type RemoteMemoryApiClient = Pick<
   | "acceptMemoryAnswerTask"
   | "getMemoryAnswerTask"
   | "cancelMemoryAnswerTask"
-> &
-  Partial<Pick<MemoryApiClient, "resolveProjectRouting">>;
+>;
 
 export interface RemoteBackendRuntimeClientOptions {
   /** Every API operation must revalidate the request principal's authority. */
@@ -185,12 +184,7 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
     );
     let input = pinned.input;
     if (!pinned.selection) {
-      input = await pinRepositoryRecallContext(
-        input,
-        caller,
-        process.env,
-        this.options.client.resolveProjectRouting?.bind(this.options.client)
-      );
+      input = await pinRepositoryRecallContext(input, caller, process.env);
       requireProject(input);
     }
     if (
@@ -320,8 +314,7 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
         const pinned = await pinRepositoryRecallContext(
           input,
           caller,
-          process.env,
-          this.options.client.resolveProjectRouting?.bind(this.options.client)
+          process.env
         );
         requireProject(pinned);
         if (input.search_domain === "session" && !input.session_id)
@@ -343,8 +336,7 @@ export class RemoteBackendRuntimeClient implements KoedMcpRuntimeClient {
         const pinned = await pinRepositoryRecallContext(
           input,
           caller,
-          process.env,
-          this.options.client.resolveProjectRouting?.bind(this.options.client)
+          process.env
         );
         return this.options.client.expand(input.nodeId, {
           searchDomain: input.search_domain,

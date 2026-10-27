@@ -13,7 +13,6 @@ import type {
   PersonalFolderAssignment,
   PersonalSelectionSnapshot
 } from "@koed/shared";
-import type { ProjectRoutingRepository } from "./project-routing-repository.js";
 import type {
   LcmSourceItem,
   MemoryActor,
@@ -1972,7 +1971,6 @@ export interface MemorySourceRepository
   extends
     MemoryEngineRepository,
     RepositoryReviewRepository,
-    ProjectRoutingRepository,
     CapturedSessionRepository,
     PersonalMembershipRepository,
     PersonalMembershipReviewRepository,

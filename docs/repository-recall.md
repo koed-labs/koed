@@ -1,9 +1,9 @@
 # Personal Repository Recall
 
-This document describes the branch's current implementation.
-The agreed [recall and continuous sharing model](recall-and-continuous-sharing-model.md)
-replaces named Project reassignment with umbrella membership and independent
-Git and Folder filters. That change is not implemented yet.
+This document describes repository identity and recall in the current Personal model.
+Named Projects group Conversations through membership, independently of recorded
+Git and Folder context. See the [recall and continuous sharing model](recall-and-continuous-sharing-model.md)
+and [Personal inventory](personal-inventory.md) for current organization and navigation.
 
 ## Team Project snapshots
 
@@ -225,114 +225,48 @@ checks cover encrypted context across worker replacement, terminal persistence,
 and repeated owner collection. Semantic tests use deterministic embedding vectors;
 they validate boundaries, not model answer quality.
 
-## Desktop Groups and Single-Session Assignment
+## Desktop Projects and source context
 
-Use **+** in the Projects header to create a named local Project. Enter a name;
-no folder is selected or created. The local catalog retains its stable identity,
-name, and creation time in `config/projects.json`, separately from discovered
-checkout metadata. Empty Projects remain available as assignment destinations.
-Ingestion continues to discover Git repositories and fallback folders.
-
-Use **Move** on the right side of a Conversation header to assign that Conversation.
-Choose a destination and select **Move**. **Create Project…** opens the name dialog
-and selects the new Project as a destination. Creating a Project does not move
-history. **Reset to automatic** restores the recorded capture assignment,
-including unresolved history for legacy Conversations.
-
-Use **Move** on the right side of a Project header to move all of its existing
-Conversations. The API selects every current owner-visible Session in the source
-Project, including Sessions beyond Desktop's loaded page and hidden subagents.
-One transaction updates their overrides and saves an owner-specific routing rule
-in `personal_project_routes`. It preserves automatic identities and capture
-provenance. A failed update rolls back both the assignments and the rule.
-
-New captures from that source also use the destination. Capture takes a shared
-owner routing lock; a Project move takes the exclusive lock. Captures that finish
-before the move are included, and captures that start afterward use its saved
-rule. Repeated moves flatten incoming rules and reject cycles. A continued
-Conversation, inherited lineage assignment, or verified PDS assignment keeps its
-existing assignment. Individual moves do not create routing rules. Resetting an
-individual override restores that Conversation's recorded identity; it does not
-remove the rule for later new captures.
-
-Migration `0046_project_scoped_recall` adds the routing table and recognizes
-`local_project` identities in the common SQL scope functions. Named identities
-have no root, branch, remote, or checkout and retain originating-device scope.
-They are not portable Team repository fingerprints. Project recall accepts a
-named catalog identity without filesystem discovery. For a discovered source,
-the authenticated Personal API resolves its saved route before new work is
-accepted. The resulting context remains pinned for that request.
-
-The historical cutoff remains unchanged. New observations and routing rules do
-not resolve legacy Sessions. Moving **Unresolved history** explicitly assigns
-its existing Conversations but creates no rule for unidentified future captures.
-Adding a Project never backfills legacy assignments.
-
-Desktop groups Captured Sessions by the same effective identity that recall uses.
-Current catalogue entries with that identity join the group, even when their
-checkout paths differ. Each local checkout retains its opaque local Project id,
-root, and checkout/device provenance for navigation. Paths, extra remotes, and
-historical aliases never establish group membership. A stable originating
-checkout can remain a navigation target after its selected anchor changes,
-without moving its recorded sessions into the new group.
-
-Unresolved history remains visible in its own owner group. Catalogue metadata at
-the same path does not resolve or absorb it. The source inspector retains the
-recorded automatic assignment and original cwd/root separately from the effective
-User assignment. An override can be portable, device-local, non-Git, a named local Project, or
-explicitly unresolved. It replaces the automatic identity rather than adding a matching value.
-
-**Move Conversation** moves one Session or resets its override. Each request
-includes the assignment version the User inspected. The API atomically compares
-that version and updates both the override and version. Stale owner requests
-return 409; missing or other-owner sessions return 404. Capture observations do
-not overwrite this state. Reset restores the original automatic identity, or
-unresolved history when no automatic identity was recorded.
-
-The Desktop Personal contract is version 16. Graph thread responses carry source
-assignment state and version through the API and main process. New named Projects
-use the database catalog and independent direct membership described in
+Named Projects use the database catalog and independent membership described in
 [the Personal selection contract](personal-selection-contract.md#named-projects-and-direct-membership).
 Adding or removing membership leaves recorded source context, Capture Policy,
-and Team snapshots intact. Named Project inventory and Ask requests carry the
-selected Project identity separately from recorded Git context.
+and Team snapshots intact. A Conversation can belong to several Projects.
+Named Project inventory and Ask requests carry the selected Project identity
+separately from recorded Git context.
 
-The [Personal inventory boundary](personal-inventory.md) separates named Projects,
-Git sources, exact Folders, and local checkout metadata. Source enumeration uses
-stable identifier pages and reaches sources beyond the first 500 Conversations.
-Inventory loading does not discover checkouts or change Project membership.
+The [Personal inventory](personal-inventory.md) separates named Projects, Git
+sources, exact Folders, and local checkout metadata. Source enumeration uses
+stable identifier pages beyond the first 500 Conversations. Inventory reads do
+not discover checkouts or change membership.
 
-Review membership shows every direct, Git Anchor, and Folder inclusion reason.
-Removing a direct inclusion preserves matching rules. Exclude blocks all inclusion
-reasons in that Project. Git, Folder, Global, and other Project selections remain
-independent. Add back requires the reviewed Project version and exclusion revision.
-It clears the exclusion and records a direct inclusion in one transaction.
-The database retains each exclusion and its clear revision.
+Membership inspection shows direct, Git Anchor, and Folder inclusion reasons.
+Removing a direct inclusion preserves matching rules. Exclusion blocks all reasons
+in that Project; Git, Folder, Global, and other Project selections stay independent.
+Add back checks the reviewed Project version and exclusion revision, then clears
+the exclusion and records a direct inclusion atomically.
 
-Correct source context provides independent Git and Folder controls. Each control
-supports a recorded context, explicit unresolved state, or reset to the original.
-The preview shows the resulting source filters and Project inclusion reasons.
-Apply requires the reviewed source version and unchanged Project effects.
-A correction preserves original facts, direct inclusions, logical identity, and
-existing Team repository snapshots. The database retains an audit revision.
+**Correct source context** provides independent Git and Folder controls. Each
+supports recorded context, explicit unresolved state, or reset to the original.
+Preview shows affected membership before applying the reviewed version. Capture
+observations never overwrite a correction. Owner and stale-version checks remain
+independent from Project inclusion.
 
-The legacy Move and reset routes remain compatibility paths until the upgrade
-and retirement tickets complete. New named Project creation and inclusion controls
-do not use them. Legacy source corrections use the assignment version the User
-inspected. Inventory reads check current sources rather than reusing a cached
-source decision.
+The retired Session/Project move and Project-routing endpoints are removed.
+Fresh repository recall pins discovered context directly; accepted requests retain
+their pinned context through retries. Existing Capture Target routes and bindings
+remain independent of Project membership and source correction.
 
 Renderer code imports the browser-safe `@koed/shared/repository-recall` entry point.
 The server entry point includes Node dependencies and must not enter the renderer bundle.
 
-## Fixed Assignment Reviews
+## Read-only repository assignment reviews
 
 Shared selection controls are described in
 [Personal Project association and selection records](personal-project-selection.md).
 An accepted association changes live discovery, including quiet checkouts.
 Its encrypted configuration updates and deletions run independently of Conversation
-capture. Existing Session assignments remain recorded; fixed reassignment still
-requires the separate review below. Concurrent shared choices remain unresolved
+capture. Existing Session assignments remain recorded. Changing recorded source
+context uses the separate per-Conversation correction workflow. Concurrent shared choices remain unresolved
 until explicitly resolved, while a local explicit choice retains precedence.
 
 Anchor discovery records changes in an atomic, profile-local outbox. An unchanged
@@ -357,32 +291,24 @@ automatic identity and no manual override. The User can explicitly include manua
 overrides or unresolved history that has recorded observations from this exact
 checkout and device. Every included override is shown. Paths alone never qualify.
 A review is limited to 500 Sessions; exceeding that limit rejects preparation instead
-of truncating the count. The User can select a subset of the fixed list.
+of truncating the count. The snapshot remains fixed when later capture or source
+correction changes the live inventory.
 
-Applying locks the reviewed Sessions in stable order, then the checkout/event and
-review. This follows capture's Session-before-event lock order. The transaction
-rechecks ownership, live Session eligibility, checkout/device provenance, event
-revision/state, and every reviewed assignment version. A stale set returns 409 and
-changes nothing. Accepted Sessions receive User overrides and incremented versions;
-Session source bytes, automatic assignments, and existing Team snapshots stay intact.
-Later Sessions never join the set. Completion and selected ids are recorded in the
-same transaction, so exact replay returns the result without applying again.
+The review is read-only. **Dismiss** records completion without changing any
+Session assignment. It checks the owner, current checkout, event revision and
+retained review; stale changes require a fresh review. The API exposes owner-scoped
+event listing, review preparation/read and dismissal under
+`/v1/memory/repository-changes` and `/v1/memory/repository-reviews`.
+Renderer commands use validated opaque IDs; local paths and API credentials stay
+main-owned. The retired apply command is not accepted.
 
-Desktop rediscovery also checks the actual local checkout and current target before
-execution. Replaced checkouts and changed anchors require a new review. **Dismiss
-without reassignment** records dismissal and changes no Session assignments. Project
-grouping and subsequent recall use the resulting effective assignments immediately.
-The API exposes owner-scoped event listing, review preparation/read, and apply/dismiss
-under `/v1/memory/repository-changes` and `/v1/memory/repository-reviews`. Renderer
-commands use validated opaque ids; local paths and API credentials stay main-owned.
-
-`pnpm test:repository-review-fixture` runs the snapshot-preservation regression when
-`KOED_REPOSITORY_REVIEW_FIXTURE_DATABASE_URL` names a disposable fixture database.
-Run under the fixture's test/developer guard. It seeds the existing truth sheet with
-three synthetic encryption providers, stages a recorded Personal repository identity,
-applies/resets a fixed review, and compares materialized Team families and decrypted
-representations. It also repeats the fixture's positive and negative access validation.
-It does not replace the later Team Project snapshot or staged release gates.
+`pnpm test:repository-review-fixture` runs the source-correction preservation
+regression when `KOED_REPOSITORY_REVIEW_FIXTURE_DATABASE_URL` names a disposable
+fixture database. Under the fixture's test/developer guard, it seeds three
+synthetic encryption providers, inspects a fixed review, applies and resets a
+versioned source correction, and compares materialized Team families and decrypted
+representations. It repeats the fixture's positive and negative access validation.
+It does not replace Team Project snapshot or staged release qualification.
 
 ## Historical import assignments
 

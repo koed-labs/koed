@@ -24,9 +24,6 @@ import {
   graphThreadIndexResponseSchema,
   graphSessionParamsSchema,
   graphSessionPresentationPatchSchema,
-  graphSessionProjectPatchSchema,
-  graphProjectMoveSchema,
-  graphProjectResolveSchema,
   graphSessionTitlePatchSchema,
   graphNodesQuerySchema,
   graphQuerySchema,
@@ -347,82 +344,6 @@ export const registerGraphRoutes = (
         return reply
           .status(404)
           .send({ error: "Captured session not found or not visible" });
-      }
-      await cacheProvider.deleteByPrefix("koed:graph:");
-      return { session };
-    }
-  );
-
-  app.get(
-    "/v1/memory/graph/projects/resolve",
-    { preHandler: memoryReadRateLimit },
-    async (request) => {
-      const user = await authenticate(request);
-      const input = graphProjectResolveSchema.parse(request.query);
-      return {
-        project: await requireRepository().resolveProjectRouting(
-          { userId: user.id },
-          input.projectId
-        )
-      };
-    }
-  );
-
-  app.post(
-    "/v1/memory/graph/projects/move",
-    { preHandler: memoryWriteRateLimit },
-    async (request, reply) => {
-      const user = await authenticate(request);
-      const input = graphProjectMoveSchema.parse(request.body);
-      const result = await requireRepository().moveProjectConversations(
-        { userId: user.id },
-        input
-      );
-      if (!result.movedCount)
-        return reply
-          .status(404)
-          .send({ error: "Project has no Conversations available to move" });
-      await cacheProvider.deleteByPrefix("koed:graph:");
-      return result;
-    }
-  );
-
-  app.patch(
-    "/v1/memory/graph/sessions/:sessionId/project",
-    { preHandler: memoryWriteRateLimit },
-    async (request, reply) => {
-      const repo = requireRepository();
-      const user = await authenticate(request);
-      const params = graphSessionParamsSchema.parse(request.params);
-      const input = graphSessionProjectPatchSchema.parse(request.body);
-      const session =
-        input.action === "move"
-          ? await repo.moveCapturedSessionToProject(
-              { userId: user.id },
-              params.sessionId,
-              {
-                ...input.project,
-                expectedAssignmentVersion: input.expectedVersion
-              }
-            )
-          : await repo.resetCapturedSessionProject(
-              { userId: user.id },
-              params.sessionId,
-              input.expectedVersion
-            );
-      if (!session) {
-        const current = await repo.getCapturedSession(
-          { userId: user.id },
-          params.sessionId
-        );
-        return current
-          ? reply.status(409).send({
-              error:
-                "Repository assignment changed. Reload the session before moving it."
-            })
-          : reply
-              .status(404)
-              .send({ error: "Captured session not found or not visible" });
       }
       await cacheProvider.deleteByPrefix("koed:graph:");
       return { session };

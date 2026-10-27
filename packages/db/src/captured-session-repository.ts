@@ -1,4 +1,3 @@
-import { personalLegacyWriteRetired } from "./personal-model-boundary.js";
 import { preserveRoutedCaptureTarget } from "./personal-capture-target-routing.js";
 import {
   personalSourceSelectionSql,
@@ -97,20 +96,6 @@ export interface CapturedSessionRepository {
     actor: ActorContext,
     sessionId: string,
     input: { title: string }
-  ): Promise<CapturedSessionRecord | null>;
-  moveCapturedSessionToProject(
-    actor: ActorContext,
-    sessionId: string,
-    project: PersonalProjectReference
-  ): Promise<CapturedSessionRecord | null>;
-  moveProjectConversations(
-    actor: ActorContext,
-    input: { sourceProjectId: string; project: PersonalProjectReference }
-  ): Promise<{ movedCount: number; projectId: string }>;
-  resetCapturedSessionProject(
-    actor: ActorContext,
-    sessionId: string,
-    expectedAssignmentVersion?: number
   ): Promise<CapturedSessionRecord | null>;
   listCapturedSessionsNeedingTitles(
     actor: ActorContext,
@@ -1122,18 +1107,6 @@ export const createCapturedSessionRepository = (
       [actor.userId, sessionId, title]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
-  },
-
-  moveCapturedSessionToProject() {
-    return Promise.reject(personalLegacyWriteRetired());
-  },
-
-  moveProjectConversations() {
-    return Promise.reject(personalLegacyWriteRetired());
-  },
-
-  resetCapturedSessionProject() {
-    return Promise.reject(personalLegacyWriteRetired());
   },
 
   async getCapturedSession(actor, sessionId, input = {}) {

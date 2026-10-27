@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
+import { ZodError } from "zod";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createDbPool,
@@ -44,6 +45,17 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
       headers: Record<string, unknown>;
     }) => ({
       id: request.headers["x-fixture-owner"] === "other" ? otherId : ownerId
+    });
+    app.setErrorHandler((error, _request, reply) => {
+      const statusCode =
+        error instanceof ZodError
+          ? 400
+          : ((error as { statusCode?: number }).statusCode ?? 500);
+      return reply
+        .status(statusCode)
+        .send({
+          error: error instanceof Error ? error.message : "Request failed"
+        });
     });
     registerGraphRoutes(app, {
       requireRepository: () => repo,
@@ -258,163 +270,21 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
       })
     );
   });
-  it("rejects retired bulk assignment for every owner without routing future capture", async () => {
-    const actor = { userId: ownerId };
-    const source: RepositoryIdentity = {
-      kind: "non_git_project",
-      key: `ng_${randomUUID()}`,
-      root: "/fixture/fallback",
-      branch: null,
-      checkoutId: "fallback",
-      originatingDeviceId: "device",
-      selectedRemote: null,
-      anchorDisplay: null,
-      reason: "non_git"
-    };
-    const destination: RepositoryIdentity = {
-      kind: "local_project",
-      key: `project_${randomUUID()}`,
-      root: null,
-      branch: null,
-      checkoutId: null,
-      originatingDeviceId: "device",
-      selectedRemote: null,
-      anchorDisplay: null,
-      reason: "manual"
-    };
-    const first = await repo.createCapturedSession(actor, {
-      repositoryIdentity: source
-    });
-    await repo.createCapturedSession(actor, { repositoryIdentity: source });
-    const payload = {
-      sourceProjectId: repositoryScopeId(source),
-      project: {
-        id: repositoryScopeId(destination),
-        name: "Planning",
-        path: null,
-        repositoryIdentity: destination
+  it("does not expose retired source move or routing endpoints", async () => {
+    for (const request of [
+      { method: "POST" as const, url: "/v1/memory/graph/projects/move" },
+      {
+        method: "GET" as const,
+        url: "/v1/memory/graph/projects/resolve?projectId=unassigned"
+      },
+      {
+        method: "PATCH" as const,
+        url: `/v1/memory/graph/sessions/${randomUUID()}/project`
       }
-    };
-    const denied = await app.inject({
-      method: "POST",
-      url: "/v1/memory/graph/projects/move",
-      payload,
-      headers: { "x-fixture-owner": "other" }
-    });
-    expect(denied.statusCode).toBe(410);
-    expect(
-      (await repo.getCapturedSession(actor, first.id))?.repositoryAssignment
-        ?.version
-    ).toBe(1);
-    const moved = await app.inject({
-      method: "POST",
-      url: "/v1/memory/graph/projects/move",
-      payload
-    });
-    expect(moved.statusCode, moved.body).toBe(410);
-    expect(moved.json()).toMatchObject({
-      code: "personal_legacy_write_retired"
-    });
-    const url = `/v1/memory/graph/projects/resolve?${new URLSearchParams({ projectId: payload.sourceProjectId })}`;
-    expect(
-      (await app.inject({ method: "GET", url })).json().project
-    ).toBeNull();
-    expect(
-      (
-        await app.inject({
-          method: "GET",
-          url,
-          headers: { "x-fixture-owner": "other" }
-        })
-      ).json()
-    ).toEqual({ project: null });
-    const later = await repo.createCapturedSession(actor, {
-      externalSessionId: randomUUID(),
-      repositoryIdentity: source
-    });
-    expect(later.repositoryAssignment).toMatchObject({
-      automatic: source,
-      effective: source
-    });
+    ])
+      expect((await app.inject(request)).statusCode).toBe(404);
   });
-  it("keeps source groups readable while rejecting retired move and reset requests", async () => {
-    const identity = (name: string): RepositoryIdentity => ({
-      kind: "portable_repository",
-      key: `gr_${name}`,
-      root: `/fixture/${name}`,
-      branch: "main",
-      reason: "origin",
-      checkoutId: `checkout_${name}`,
-      originatingDeviceId: "fixture_device",
-      selectedRemote: "origin",
-      anchorDisplay: `example.test/team/${name}`
-    });
-    const a = identity("a"),
-      b = identity("b");
-    const actor = { userId: ownerId };
-    const session = await repo.createCapturedSession(actor, {
-      externalSessionId: randomUUID(),
-      repositoryIdentity: a,
-      metadata: { threadName: "Cobalt decision" }
-    });
-    const url = `/v1/memory/graph/sessions/${session.id}/project`;
-    const move = {
-      action: "move",
-      expectedVersion: 1,
-      project: {
-        id: repositoryScopeId(b),
-        name: "Project B",
-        path: b.root,
-        repositoryIdentity: b
-      }
-    };
-    const forbidden = await app.inject({
-      method: "PATCH",
-      url,
-      headers: { "x-fixture-owner": "other" },
-      payload: move
-    });
-    expect(forbidden.statusCode).toBe(410);
-    const moved = await app.inject({ method: "PATCH", url, payload: move });
-    expect(moved.statusCode, moved.body).toBe(410);
-    expect(moved.json()).toMatchObject({
-      code: "personal_legacy_write_retired"
-    });
-    expect(
-      (await app.inject({ method: "PATCH", url, payload: move })).statusCode
-    ).toBe(410);
-    const graph = await app.inject({
-      method: "GET",
-      url: "/v1/memory/graph/threads"
-    });
-    expect(graph.statusCode, graph.body).toBe(200);
-    const projects = (
-      graph.json() as {
-        projects: Array<{
-          id: string;
-          threads: Array<{ repositoryAssignment: unknown }>;
-        }>;
-      }
-    ).projects;
-    const original = projects.find(
-      (project) => project.id === repositoryScopeId(a)
-    );
-    expect(original?.threads[0]?.repositoryAssignment).toMatchObject({
-      version: 1,
-      effective: a,
-      automatic: a
-    });
-    const reset = await app.inject({
-      method: "PATCH",
-      url,
-      payload: { action: "reset", expectedVersion: 2 }
-    });
-    expect(reset.statusCode, reset.body).toBe(410);
-    expect(
-      (await repo.getCapturedSession(actor, session.id))?.repositoryAssignment
-    ).toMatchObject({ version: 1, effective: a, override: null });
-  });
-  it("exposes owner-scoped read-only reviews and rejects every retired application", async () => {
+  it("exposes owner-scoped read-only reviews with fenced dismissal", async () => {
     const a: RepositoryIdentity = {
       kind: "portable_repository",
       key: "gr_review_a",
@@ -471,41 +341,35 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
       externalSessionId: randomUUID(),
       repositoryIdentity: a
     });
-    const action = {
-      action: "apply",
-      expectedRevision: event.revision,
-      sessionIds: [captured.id]
-    };
     const url = `/v1/memory/repository-reviews/${review.id}`;
-    const expanded = await app.inject({
+    const rejected = await app.inject({
       method: "POST",
       url,
-      payload: { ...action, sessionIds: [captured.id, late.id] }
+      payload: {
+        action: "apply",
+        expectedRevision: event.revision,
+        sessionIds: [captured.id]
+      }
     });
-    expect(expanded.statusCode).toBe(410);
+    expect(rejected.statusCode).toBe(400);
     const stale = await app.inject({
       method: "POST",
       url,
-      payload: { ...action, expectedRevision: event.revision + 1 }
+      payload: { action: "dismiss", expectedRevision: event.revision + 1 }
     });
-    expect(stale.statusCode).toBe(410);
-    const apply = await app.inject({ method: "POST", url, payload: action });
-    expect(apply.statusCode, apply.body).toBe(410);
-    expect(
-      (await repo.getCapturedSession(actor, captured.id))?.repositoryAssignment
-        ?.version
-    ).toBe(1);
-    expect(
-      (await repo.getCapturedSession(actor, late.id))?.repositoryAssignment
-        ?.version
-    ).toBe(1);
-    expect(
-      (await app.inject({ method: "POST", url, payload: action })).statusCode
-    ).toBe(410);
-    expect(
-      (await repo.getCapturedSession(actor, captured.id))?.repositoryAssignment
-        ?.version
-    ).toBe(1);
+    expect(stale.statusCode).toBe(409);
+    const dismissed = await app.inject({
+      method: "POST",
+      url,
+      payload: { action: "dismiss", expectedRevision: event.revision }
+    });
+    expect(dismissed.statusCode, dismissed.body).toBe(200);
+    expect(dismissed.json().review.status).toBe("dismissed");
+    for (const session of [captured, late])
+      expect(
+        (await repo.getCapturedSession(actor, session.id))?.repositoryAssignment
+          ?.version
+      ).toBe(1);
     const other = await app.inject({
       method: "GET",
       url,

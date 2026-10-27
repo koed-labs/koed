@@ -406,9 +406,6 @@ describe("Memory Answer task coordinator", () => {
     const accept = vi
       .spyOn(client, "acceptMemoryAnswerTask")
       .mockResolvedValue({ task: accepted });
-    const routing = vi
-      .spyOn(client, "resolveProjectRouting")
-      .mockRejectedValue(new Error("Checkout discovery must not run"));
     const adapter = createMemoryAnswerTaskCoordinator(client, {
       KOED_HOME: "/fixture/no-enrollment"
     });
@@ -444,7 +441,7 @@ describe("Memory Answer task coordinator", () => {
         repository_context: null
       }
     });
-    expect(routing).not.toHaveBeenCalled();
+
     await expect(
       adapter.acceptMemoryAnswerTask({
         ...request,

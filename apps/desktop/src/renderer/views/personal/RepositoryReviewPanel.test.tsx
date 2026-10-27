@@ -57,16 +57,16 @@ const button = (container: HTMLDivElement, text: string) =>
   [...container.querySelectorAll("button")].find(
     (el) => el.textContent === text || el.getAttribute("aria-label") === text
   )!;
-it("shows fixed versions and replaced overrides, applies only selected ids, and reloads groups", async () => {
-  const container = document.createElement("div");
-  const root = createRoot(container);
+it("previews immutable source assignments and dismisses without offering a move", async () => {
+  const container = document.createElement("div"),
+    root = createRoot(container);
   const changed = vi.fn().mockResolvedValue(undefined);
   const onReview = vi.fn(async (input: RepositoryReviewCommand) =>
     input.operation === "list"
       ? { events: [event] }
       : input.operation === "preview"
         ? { review }
-        : { review: { ...review, status: "applied" as const } }
+        : { review: { ...review, status: "dismissed" as const } }
   );
   try {
     await act(async () =>
@@ -78,8 +78,6 @@ it("shows fixed versions and replaced overrides, applies only selected ids, and 
         />
       )
     );
-    expect(container.textContent).toContain("example/a");
-    expect(container.textContent).toContain("example/b");
     await act(async () =>
       container
         .querySelector<HTMLInputElement>('input[type="checkbox"]')!
@@ -95,35 +93,36 @@ it("shows fixed versions and replaced overrides, applies only selected ids, and 
     expect(container.textContent).toContain("2 Conversations in this review");
     expect(container.textContent).toContain("Assignment version 2");
     expect(container.textContent).toContain(
-      "Manual override to replace: User override"
+      "Current source correction: User override"
     );
-    const checkboxes = container.querySelectorAll<HTMLInputElement>(
-      '[aria-label="Reviewed Conversations"] input'
-    );
-    await act(async () => checkboxes[1]!.click());
-    await act(async () => button(container, "Move 1 Conversations").click());
+    expect(
+      container.querySelector('[aria-label="Reviewed Conversations"] input')
+    ).toBeNull();
+    expect(
+      [...container.querySelectorAll("button")].some((node) =>
+        node.textContent?.includes("Move")
+      )
+    ).toBe(false);
+    await act(async () => button(container, "Dismiss").click());
     expect(onReview).toHaveBeenLastCalledWith({
-      operation: "apply",
+      operation: "dismiss",
       localProjectId,
       reviewId: review.id,
-      expectedRevision: 3,
-      sessionIds: [review.sessions[0]!.id]
+      expectedRevision: 3
     });
     expect(changed).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain("selected Conversations moved");
+    expect(container.textContent).toContain(
+      "Recorded source context is unchanged"
+    );
   } finally {
     await act(async () => root.unmount());
   }
 });
-it("allows dismissal without applying and clears a stale review on failure", async () => {
+it("clears a stale review after dismissal fails", async () => {
   const container = document.createElement("div"),
     root = createRoot(container);
   const onReview = vi.fn(async (input: RepositoryReviewCommand) =>
-    input.operation === "list"
-      ? { events: [event] }
-      : input.operation === "preview"
-        ? { review }
-        : { review: { ...review, status: "dismissed" as const } }
+    input.operation === "list" ? { events: [event] } : { review }
   );
   try {
     await act(async () =>
@@ -134,33 +133,13 @@ it("allows dismissal without applying and clears a stale review on failure", asy
         />
       )
     );
-    await act(async () =>
-      container
-        .querySelector<HTMLInputElement>('input[type="checkbox"]')!
-        .click()
-    );
-    await act(async () => button(container, "Preview Conversations").click());
-    await act(async () => button(container, "Dismiss").click());
-    expect(onReview).toHaveBeenLastCalledWith({
-      operation: "dismiss",
-      localProjectId,
-      reviewId: review.id,
-      expectedRevision: 3
-    });
-    expect(
-      onReview.mock.calls.some(([input]) => input.operation === "apply")
-    ).toBe(false);
-    expect(container.textContent).toContain("No Conversations moved");
-    await act(async () =>
-      button(container, "Refresh previous assignments").click()
-    );
     await act(async () => button(container, "Preview Conversations").click());
     onReview.mockRejectedValueOnce(
-      new Error("The session changed. Nothing was reassigned.")
+      new Error("The repository review changed. Inspect it again.")
     );
-    await act(async () => button(container, "Move 2 Conversations").click());
+    await act(async () => button(container, "Dismiss").click());
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Nothing was reassigned"
+      "Inspect it again"
     );
     expect(
       container.querySelector('[aria-label="Reviewed Conversations"]')

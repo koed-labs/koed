@@ -21,7 +21,6 @@ export function RepositoryReviewPanel({
   const [review, setReview] = useState<RepositoryReview | null>(null);
   const [includeOverrides, setIncludeOverrides] = useState(false);
   const [includeUnresolved, setIncludeUnresolved] = useState(false);
-  const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(true),
     [error, setError] = useState("");
   const run = async (operation: () => Promise<void>) => {
@@ -31,7 +30,7 @@ export function RepositoryReviewPanel({
       await operation();
     } catch (error) {
       setReview(null);
-      setSelected([]);
+
       setError(
         error instanceof Error
           ? error.message
@@ -48,7 +47,6 @@ export function RepositoryReviewPanel({
       setEvents(next);
       setEvent(next[0] ?? null);
       setReview(null);
-      setSelected([]);
     });
   useEffect(() => {
     let active = true;
@@ -85,18 +83,15 @@ export function RepositoryReviewPanel({
       });
       if (!result.review) throw new Error("The fixed review is unavailable.");
       setReview(result.review);
-      setSelected(result.review.sessions.map((session) => session.id));
     });
-  const finish = (operation: "apply" | "dismiss") =>
+  const dismiss = () =>
     run(async () => {
       if (!review) return;
       const result = await onReview({
         localProjectId,
         reviewId: review.id,
         expectedRevision: review.event.revision,
-        ...(operation === "apply"
-          ? { operation, sessionIds: selected }
-          : { operation })
+        operation: "dismiss"
       });
       if (!result.review) throw new Error("The review result is unavailable.");
       setReview(result.review);
@@ -115,9 +110,7 @@ export function RepositoryReviewPanel({
       className="personal-repository-review"
     >
       <div className="personal-project-sharing-intro">
-        <p>
-          After a repository change, choose which older Conversations to move.
-        </p>
+        <p>Inspect the Conversations recorded before a repository change.</p>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -149,7 +142,6 @@ export function RepositoryReviewPanel({
                     events.find((entry) => entry.id === e.target.value) ?? null
                   );
                   setReview(null);
-                  setSelected([]);
                 }}
               >
                 {events.map((entry) => (
@@ -167,7 +159,8 @@ export function RepositoryReviewPanel({
             {event.kind === "capture_conflict"
               ? "Capture observed a different repository anchor."
               : "The repository anchor changed."}{" "}
-            Older Conversations stay in their Projects until you move them.
+            Recorded source context stays unchanged until you explicitly correct
+            it.
           </p>
           <details className="personal-project-technical">
             <summary>Repository change details</summary>
@@ -232,27 +225,13 @@ export function RepositoryReviewPanel({
       {review ? (
         <>
           <p>
-            {review.count} Conversations in this review · {selected.length}{" "}
-            selected. New captures do not enter this list.
+            {review.count} Conversations in this review. New captures do not
+            enter this list.
           </p>
           <ul aria-label="Reviewed Conversations">
             {review.sessions.map((session) => (
               <li key={session.id}>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={selected.includes(session.id)}
-                    disabled={busy || review.status !== "reviewed"}
-                    onChange={(e) =>
-                      setSelected((old) =>
-                        e.target.checked
-                          ? [...old, session.id]
-                          : old.filter((id) => id !== session.id)
-                      )
-                    }
-                  />
-                  {session.name}
-                </label>
+                <p>{session.name}</p>
                 <p>
                   Assignment version {session.assignment.version} ·{" "}
                   {session.cwd ?? "No recorded path"}
@@ -268,7 +247,7 @@ export function RepositoryReviewPanel({
                 </p>
                 {session.assignment.override ? (
                   <p>
-                    Manual override to replace:{" "}
+                    Current source correction:{" "}
                     {session.assignment.override.anchorDisplay ??
                       session.assignment.override.key ??
                       "Unresolved"}
@@ -280,24 +259,16 @@ export function RepositoryReviewPanel({
           {review.status === "reviewed" ? (
             <div className="personal-project-card-actions">
               <Button
-                disabled={busy || !selected.length}
-                onClick={() => void finish("apply")}
-              >
-                Move {selected.length} Conversations
-              </Button>
-              <Button
                 variant="outline"
                 disabled={busy}
-                onClick={() => void finish("dismiss")}
+                onClick={() => void dismiss()}
               >
                 Dismiss
               </Button>
             </div>
           ) : (
             <p role="status">
-              {review.status === "applied"
-                ? "The selected Conversations moved."
-                : "Review dismissed. No Conversations moved."}
+              Review dismissed. Recorded source context is unchanged.
             </p>
           )}
         </>

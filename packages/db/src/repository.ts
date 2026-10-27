@@ -9,7 +9,6 @@ import {
   effectiveProjectPathSql,
   effectiveProjectNameSql
 } from "./project-scope-sql.js";
-import { createProjectRoutingRepository } from "./project-routing-repository.js";
 import {
   repositoryIdentitySchema,
   repositoryScopeId,
@@ -4115,7 +4114,6 @@ export const createMemorySourceRepository = (
     ...createPersonalProjectBatchRepository(pool),
     ...createPersonalProjectExclusionRepository(pool),
     ...createPersonalSourceCorrectionRepository(pool),
-    ...createProjectRoutingRepository(),
     ...createConversationItemRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       resolveCapturePolicy: (actor, input, client) =>

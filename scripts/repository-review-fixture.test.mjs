@@ -20,7 +20,7 @@ const teamSnapshot = (snapshot) =>
     )
   );
 
-test("Personal bulk repository assignment preserves materialized Team snapshots and fixture authorization", async (t) => {
+test("Personal source correction preserves materialized Team snapshots and fixture authorization", async (t) => {
   const databaseUrl =
     process.env.KOED_REPOSITORY_REVIEW_FIXTURE_DATABASE_URL?.trim();
   if (!databaseUrl)
@@ -36,23 +36,25 @@ test("Personal bulk repository assignment preserves materialized Team snapshots 
   const memory = fixtureMemoryRows.find(
     (row) => row.key === "bob-electron-timeline"
   );
-  let original;
+  let transactionStarted = false;
   try {
     await runDbMigrations(pool);
     // Use the repo-owned, three-provider synthetic fixture lineage, without real runtime keys.
-    const runtime = await createFixtureRuntime(pool, { environment: {} });
-    await seedFixture(client, runtime);
-    await validateFixture(client, runtime);
-    const repo = createMemorySourceRepository(pool, {
+    const seedRuntime = await createFixtureRuntime(pool, { environment: {} });
+    await seedFixture(client, seedRuntime);
+    await validateFixture(client, seedRuntime);
+    await client.query("begin");
+    transactionStarted = true;
+    const { createSavepointPool } =
+      await import("../packages/db/dist/savepoint-pool.js");
+    const testPool = createSavepointPool(client, "source_correction_fixture");
+    // Team reads retain their production read-only transaction on a separate connection.
+    // normalizedFixtureSnapshot compares all pending table writes through client as well.
+    const runtime = seedRuntime;
+    const repo = createMemorySourceRepository(testPool, {
       envelopeEncryptionProvider: runtime.personalProvider
     });
     const actor = { userId: fixtureUsers.bob.id };
-    original = (
-      await client.query(
-        "select repository_assignment_state,repository_assignment_version,repository_automatic_identity,repository_override_identity from sessions where id=$1",
-        [memory.sessionId]
-      )
-    ).rows[0];
     const a = {
       kind: "portable_repository",
       key: "gr_fixture_electron",
@@ -96,11 +98,27 @@ test("Personal bulk repository assignment preserves materialized Team snapshots 
       review.sessions.map((session) => session.id),
       [memory.sessionId]
     );
-    await repo.executeRepositoryAssignmentReview(actor, review.id, {
-      action: "apply",
-      expectedRevision: event.revision,
-      sessionIds: [memory.sessionId]
+    // Current corrections select owned recorded context, not a caller-invented anchor.
+    await repo.createCapturedSession(actor, {
+      externalSessionId: randomUUID(),
+      repositoryIdentity: b
     });
+    const correction = await repo.previewPersonalSourceCorrection(
+      actor,
+      memory.sessionId,
+      {
+        axis: "git",
+        action: "set",
+        repository: b,
+        expectedVersion: 1
+      }
+    );
+    await repo.applyPersonalSourceCorrection(
+      actor,
+      memory.sessionId,
+      correction.preview.reviewId,
+      { expectedVersion: 1 }
+    );
     assert.equal(
       (await repo.getCapturedSession(actor, memory.sessionId))
         .repositoryAssignment.effective.key,
@@ -112,7 +130,21 @@ test("Personal bulk repository assignment preserves materialized Team snapshots 
     );
     // This rechecks positive, private, revoked, removed-member, and retained-knowledge truth-sheet outcomes.
     await validateFixture(client, runtime);
-    await repo.resetCapturedSessionProject(actor, memory.sessionId, 2);
+    const reset = await repo.previewPersonalSourceCorrection(
+      actor,
+      memory.sessionId,
+      {
+        axis: "git",
+        action: "reset",
+        expectedVersion: 2
+      }
+    );
+    await repo.applyPersonalSourceCorrection(
+      actor,
+      memory.sessionId,
+      reset.preview.reviewId,
+      { expectedVersion: 2 }
+    );
     assert.equal(
       (await repo.getCapturedSession(actor, memory.sessionId))
         .repositoryAssignment.effective.key,
@@ -123,25 +155,11 @@ test("Personal bulk repository assignment preserves materialized Team snapshots 
       before
     );
   } finally {
-    if (original)
-      await client.query(
-        "update sessions set repository_assignment_state=$2,repository_assignment_version=$3,repository_automatic_identity=$4,repository_override_identity=$5,project_override_id=null,project_override_name=null,project_override_path=null,project_override_at=null,project_override_by_user_id=null where id=$1",
-        [
-          memory.sessionId,
-          original.repository_assignment_state,
-          original.repository_assignment_version,
-          original.repository_automatic_identity,
-          original.repository_override_identity
-        ]
-      );
-    await client.query(
-      "delete from repository_assignment_reviews where event_id=$1",
-      [eventId]
-    );
-    await client.query("delete from repository_change_events where id=$1", [
-      eventId
-    ]);
-    client.release();
-    await pool.end();
+    try {
+      if (transactionStarted) await client.query("rollback");
+    } finally {
+      client.release();
+      await pool.end();
+    }
   }
 });
