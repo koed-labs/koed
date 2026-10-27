@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
@@ -50,10 +50,8 @@ test("reviewed identity comes from immutable build artifacts, not candidate draf
   const publication = jobs["publish-release"].steps.find((step) =>
     step.run?.includes("node scripts/release-promotion-adapter.mjs")
   );
-  assert.equal(
-    publication.env.KOED_RELEASE_PROMOTION_APPROVED,
-    "${{ vars.KOED_RELEASE_PROMOTION_APPROVED }}"
-  );
+  assert.equal(jobs["publish-release"].environment, "production");
+  assert.equal(publication.env.KOED_RELEASE_PROMOTION_APPROVED, undefined);
   assert.equal(
     publication.env.KOED_NPM_PUBLICATION_AUTHORIZED,
     "${{ vars.KOED_NPM_PUBLICATION_AUTHORIZED }}"
@@ -89,6 +87,28 @@ test("reviewed identity comes from immutable build artifacts, not candidate draf
   );
 });
 
+test("desktop recovery is absent or fails closed until its source is authenticated", () => {
+  const path = resolve(root, ".github/workflows/release-desktop-assets.yml");
+  if (!existsSync(path)) return;
+  const { jobs } = parse(readFileSync(path, "utf8"));
+  assert.equal(
+    jobs["recover-desktop-assets"].if,
+    "${{ github.event_name == 'desktop-recovery-disabled' }}"
+  );
+});
+
+test("production uses an npm version that supports OIDC dist-tag promotion", () => {
+  const { jobs } = parse(release);
+  const steps = jobs["publish-release"].steps;
+  const provision = steps.findIndex((step) =>
+    step.run?.includes("npm install --global npm@11.21.0")
+  );
+  const publish = steps.findIndex((step) =>
+    step.run?.includes("scripts/release-promotion-adapter.mjs")
+  );
+  assert.ok(provision >= 0 && provision < publish);
+});
+
 test("protected identity downloads flatten artifact-ID layout to expected CLI path", () => {
   const { jobs } = parse(release);
   for (const jobName of ["verify-release-candidate", "publish-release"]) {
@@ -115,6 +135,16 @@ test("protected identity downloads flatten artifact-ID layout to expected CLI pa
   }
 });
 
+test("production gate precedes dependency installation", () => {
+  const workflow = parse(release);
+  const steps = workflow.jobs["publish-release"].steps;
+  const gate = steps.findIndex((step) =>
+    step.run?.includes("scripts/release-approval.mjs")
+  );
+  const install = steps.findIndex((step) => step.run?.includes("pnpm install"));
+  assert.ok(gate >= 0 && install > gate);
+});
+
 test("asset jobs only run for absent releases or resumable drafts", () => {
   assert.match(
     release,
@@ -132,10 +162,7 @@ test("release retries verify existing asset bytes and never clobber", () => {
 });
 
 test("official promotion invokes pin-only adapter behind publication and approval gates", () => {
-  for (const key of [
-    "KOED_NPM_PUBLICATION_AUTHORIZED",
-    "KOED_RELEASE_PROMOTION_APPROVED"
-  ])
+  for (const key of ["KOED_NPM_PUBLICATION_AUTHORIZED"])
     assert.ok(release.includes(key), `missing release gate ${key}`);
   assert.match(release, /node scripts\/release-promotion-adapter\.mjs/);
   const adapter = readFileSync(
