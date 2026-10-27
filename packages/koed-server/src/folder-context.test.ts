@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -90,7 +91,7 @@ describe("source-time exact Folder identity", () => {
       expect(
         readAvailablePersonalFolders(paths.koedHome, environment)
       ).toMatchObject([{ identity: first.identity }]);
-      rmSync(directory, { recursive: true });
+      renameSync(directory, `${directory}-previous`);
       mkdirSync(directory);
       expect(readAvailablePersonalFolders(paths.koedHome, environment)).toEqual(
         []
@@ -117,7 +118,7 @@ describe("source-time exact Folder identity", () => {
     expect(
       (await observeCaptureFolder(paths, child, env))?.identity.folderId
     ).not.toBe(first!.identity.folderId);
-    rmSync(directory, { recursive: true });
+    renameSync(directory, `${directory}-previous`);
     mkdirSync(directory);
     const replacement = await observeCaptureFolder(paths, directory, env);
     expect(replacement!.identity.directoryIncarnationId).not.toBe(
@@ -202,7 +203,7 @@ describe("source-time exact Folder identity", () => {
       { identity: first.identity, normalizedPath: first.normalizedPath }
     ]);
     expect(readFileSync(registry, "utf8")).toBe(before);
-    rmSync(directory, { recursive: true });
+    renameSync(directory, `${directory}-previous`);
     mkdirSync(directory);
     expect(readAvailablePersonalFolders(paths.koedHome, environment)).toEqual(
       []

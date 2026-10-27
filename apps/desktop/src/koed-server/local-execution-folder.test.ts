@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync
+} from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -72,7 +78,8 @@ describe("first-launch native Folder preparation", () => {
         )
       ).identity
     ).toEqual(first.identity);
-    rmSync(directory, { recursive: true });
+    // Retain the original inode so a fast filesystem cannot recycle its identity.
+    renameSync(directory, `${directory}-previous`);
     mkdirSync(directory);
     git(directory, "init", "-q");
     git(
