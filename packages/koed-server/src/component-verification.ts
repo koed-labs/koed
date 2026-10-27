@@ -26,13 +26,6 @@ import {
   type ManifestPinCatalog
 } from "./component-manifest-catalog.js";
 
-export const componentManifestSigningBytes = (
-  canonicalManifestBytes: Buffer
-): Buffer =>
-  Buffer.concat([
-    Buffer.from("koed-component-manifest-sha256-v2\n", "utf8"),
-    createHash("sha256").update(canonicalManifestBytes).digest()
-  ]);
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024;

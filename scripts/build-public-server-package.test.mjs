@@ -72,6 +72,7 @@ test("assembled public package has only koed bin and self-contained control plan
     assert.deepEqual(manifest.engines, { node: ">=24 <25" });
     assert.deepEqual(manifest.dependencies ?? {}, {});
     assert.equal(manifest.scripts, undefined);
+    assert.ok(!manifest.files.includes("dist/component-trust-roots.js"));
     assert.ok(readFileSync(resolve(packageDir, "LICENSE"), "utf8").length > 0);
     assert.ok(
       readFileSync(resolve(packageDir, "third-party-notices.json"), "utf8")
@@ -141,10 +142,10 @@ test("assembled public package has only koed bin and self-contained control plan
     }).split("\n");
     assert.ok(packedFiles.some((file) => file.endsWith("/bin/koed.js")));
     for (const helper of [
+      "README.md",
       "vendor/cli.js",
       "vendor/privacy-service-bootstrap.js",
-      "vendor/component-manifest-catalog.js",
-      "dist/component-trust-roots.js"
+      "vendor/component-manifest-catalog.js"
     ]) {
       assert.ok(
         packedFiles.includes(`package/${helper}`),
@@ -155,6 +156,9 @@ test("assembled public package has only koed bin and self-contained control plan
       packedFiles.some((file) => file.endsWith("/vendor/control-plane.js"))
     );
     assert.ok(packedFiles.every((file) => !file.includes("node_modules/")));
+    assert.ok(
+      packedFiles.every((file) => !file.includes("component-trust-roots"))
+    );
     const inspectTree = (directory) => {
       for (const entry of readdirSync(directory)) {
         const path = resolve(directory, entry);

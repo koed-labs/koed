@@ -105,13 +105,26 @@ const main = async () => {
   mkdirSync(binRoot, { recursive: true });
   const launcher = resolve(binRoot, "koed.js");
   writeControlPlaneLauncher(launcher, "../vendor/control-plane.js");
-  const distRoot = resolve(packageRoot, "dist");
-  mkdirSync(distRoot, { recursive: true });
-  copyFileSync(
-    resolve(repoRoot, "packages/koed-server/dist/component-trust-roots.js"),
-    resolve(distRoot, "component-trust-roots.js")
-  );
   copyFileSync(resolve(repoRoot, "LICENSE"), resolve(packageRoot, "LICENSE"));
+  writeFileSync(
+    resolve(packageRoot, "README.md"),
+    [
+      "# @koed-labs/server",
+      "",
+      "Koed Self-Hosted control plane. Requires Node.js >=24 <25.",
+      "",
+      "Base and Privacy components are admitted by canonical manifest SHA-256 pins embedded in this control-plane version. Archive bytes are verified against the pinned manifest. Component signing keys and detached signature sidecars are not required.",
+      "",
+      "Install an offline Base component for the matching product version and target (Linux x64 example):",
+      "",
+      "```sh",
+      `koed components install --component base --archive /path/to/koed-base-${sourceManifest.version}-linux-x64.tar.gz --manifest /path/to/koed-base-${sourceManifest.version}-linux-x64.tar.gz.manifest.json --json`,
+      "```",
+      "",
+      "Use the original release archive filename. Online installation accepts --archive-url and --manifest-url over HTTPS instead of local paths.",
+      ""
+    ].join("\n")
+  );
   buildNotices(
     built.metafile,
     resolve(packageRoot, "third-party-notices.json")
@@ -130,7 +143,7 @@ const main = async () => {
     files: [
       "bin/koed.js",
       "vendor/**/*",
-      "dist/component-trust-roots.js",
+      "README.md",
       "LICENSE",
       "third-party-notices.json"
     ]

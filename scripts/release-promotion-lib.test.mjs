@@ -18,11 +18,7 @@ const expected = {
     ]
   }
 };
-const authorized = {
-  publish: true,
-  signerReady: true,
-  trustRootsReady: true
-};
+const authorized = { publish: true };
 const remoteDraft = {
   npm: null,
   github: {
@@ -32,7 +28,7 @@ const remoteDraft = {
   }
 };
 
-test("partial draft only uploads missing assets; signer absence blocks publication", () => {
+test("partial pin-only draft uploads missing assets; publication approval remains required", () => {
   const plan = planReleasePromotion(expected, remoteDraft, authorized);
   assert.equal(plan.status, "ready");
   assert.deepEqual(plan.actions, [
@@ -40,7 +36,7 @@ test("partial draft only uploads missing assets; signer absence blocks publicati
   ]);
   const blocked = planReleasePromotion(expected, remoteDraft, {
     ...authorized,
-    signerReady: false
+    publish: false
   });
   assert.equal(blocked.status, "blocked");
   assert.ok(

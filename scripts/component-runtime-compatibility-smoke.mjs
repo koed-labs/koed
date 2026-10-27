@@ -199,8 +199,7 @@ try {
               {
                 name: artifact.archive,
                 sha256: artifact.archiveSha256,
-                manifestSha256: artifact.manifestSha256,
-                signatureStatus: artifact.signatureStatus
+                manifestSha256: artifact.manifestSha256
               }
             ]
           )

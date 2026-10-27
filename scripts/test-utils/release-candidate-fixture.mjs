@@ -121,10 +121,6 @@ export const candidateFixture = ({
     "../vendor/control-plane.js"
   );
   writeFileSync(
-    resolve(packageRoot, "dist/component-trust-roots.js"),
-    "export const productionComponentTrustRoots = new Map(Object.entries({}));"
-  );
-  writeFileSync(
     resolve(packageRoot, "vendor/control-plane.js"),
     `throw new Error('CANDIDATE_EXECUTED');
 export const productionComponentManifestCatalog = ${JSON.stringify(catalog)};

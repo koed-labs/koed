@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   cpSync,
@@ -12,12 +11,19 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  statSync,
   symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { verifyHeadlessLifecycle } from "./headless-lifecycle.mjs";
+import {
+  buildComponentManifestCatalog,
+  componentCatalogKey,
+  requiredComponentIdentities
+} from "./component-manifest-catalog.mjs";
+import { canonicalComponentManifestBytes } from "./koed-server-package-lib.mjs";
 import {
   PINNED_PRIVACY_MODEL_FILES,
   PINNED_PRIVACY_MODEL_ID,
@@ -58,9 +64,10 @@ for (const flag of requiredInputs) {
   if (!flags.get(flag) || !existsSync(resolve(flags.get(flag))))
     throw new Error(`Provide existing ${flag}`);
 }
+mkdirSync(resolve(repoRoot, "scratch"), { recursive: true });
 let scratch = flags.has("--out-dir")
   ? resolve(flags.get("--out-dir"))
-  : mkdtempSync(resolve(tmpdir(), "koed headless signed flow "));
+  : mkdtempSync(resolve(repoRoot, "scratch", "koed headless pin flow "));
 if (flags.has("--out-dir") && existsSync(scratch))
   throw new Error("Smoke output directory must not already exist.");
 mkdirSync(scratch, { recursive: true });
@@ -89,44 +96,57 @@ const run = (name, args, options = {}, allowNonzeroExit = false) => {
     );
   return result.stdout;
 };
-const keys = generateKeyPairSync("ed25519");
-const keyId = "headless-smoke-test-only";
-const pem = keys.publicKey.export({ type: "spki", format: "pem" });
-const keyFile = resolve(scratch, "test-only-private-key.pem");
-writeFileSync(
-  keyFile,
-  keys.privateKey.export({ type: "pkcs8", format: "pem" }),
-  { mode: 0o600 }
-);
 const release = resolve(scratch, "components");
-run(
-  process.execPath,
-  [
+const builtRelease = JSON.parse(
+  run(process.execPath, [
     resolve(repoRoot, "scripts/build-koed-component-release.mjs"),
     "--out-dir",
     release,
     "--json"
-  ],
-  {
-    env: {
-      ...process.env,
-      KOED_COMPONENT_SIGNING_KEY_ID: keyId,
-      KOED_COMPONENT_SIGNING_PRIVATE_KEY_FILE: keyFile
-    }
-  }
+  ])
 );
+const manifest = JSON.parse(
+  readFileSync(builtRelease.distributionManifest, "utf8")
+);
+const fixturePins = buildComponentManifestCatalog({
+  version: manifest.version,
+  manifests: Object.values(manifest.components).map((entry) =>
+    readFileSync(resolve(release, entry.manifest))
+  ),
+  required: ["base", "privacy"].map((component) => ({
+    component,
+    target: manifest.target
+  }))
+});
+// Other targets are deliberately unusable fixture entries, not release evidence.
+const catalog = {
+  ...fixturePins,
+  entries: requiredComponentIdentities.map(
+    (identity) =>
+      fixturePins.entries.find(
+        (entry) => componentCatalogKey(entry) === componentCatalogKey(identity)
+      ) ?? { ...identity, manifestSha256: "0".repeat(64) }
+  )
+};
+const catalogPath = resolve(scratch, "fixture-catalog.json");
+writeFileSync(catalogPath, canonicalComponentManifestBytes(catalog));
 // Build a fixture control plane from copied compiled output. Production source roots are never edited.
 const fixtureRoot = resolve(scratch, "fixture");
 mkdirSync(resolve(fixtureRoot, "scripts"), { recursive: true });
 mkdirSync(resolve(fixtureRoot, "packages/koed-server"), { recursive: true });
-for (const file of [
-  "build-public-server-package.mjs",
-  "package-release-identity.mjs"
-])
-  copyFileSync(
-    resolve(repoRoot, "scripts", file),
-    resolve(fixtureRoot, "scripts", file)
-  );
+cpSync(resolve(repoRoot, "scripts"), resolve(fixtureRoot, "scripts"), {
+  recursive: true,
+  filter: (path) =>
+    statSync(path).isDirectory() ||
+    (path.endsWith(".mjs") && !path.endsWith(".test.mjs"))
+});
+mkdirSync(resolve(fixtureRoot, "packages/koed-server/src"), {
+  recursive: true
+});
+copyFileSync(
+  resolve(repoRoot, "packages/koed-server/src/artifact-canonical-json.mjs"),
+  resolve(fixtureRoot, "packages/koed-server/src/artifact-canonical-json.mjs")
+);
 copyFileSync(resolve(repoRoot, "LICENSE"), resolve(fixtureRoot, "LICENSE"));
 copyFileSync(
   resolve(repoRoot, "packages/koed-server/package.json"),
@@ -147,16 +167,16 @@ symlinkSync(
   resolve(fixtureRoot, "packages/koed-server/node_modules"),
   "dir"
 );
-writeFileSync(
-  resolve(fixtureRoot, "packages/koed-server/dist/component-trust-roots.js"),
-  `export const productionComponentTrustRoots = new Map([[${JSON.stringify(keyId)}, ${JSON.stringify(pem)}]]);\n`
-);
 const publicOutput = resolve(scratch, "public");
-run(process.execPath, [
-  resolve(fixtureRoot, "scripts/build-public-server-package.mjs"),
-  "--out-dir",
-  publicOutput
-]);
+run(
+  process.execPath,
+  [
+    resolve(fixtureRoot, "scripts/build-public-server-package.mjs"),
+    "--out-dir",
+    publicOutput
+  ],
+  { env: { ...process.env, KOED_COMPONENT_MANIFEST_CATALOG: catalogPath } }
+);
 const prefix = resolve(scratch, "npm prefix");
 const outside = resolve(scratch, "outside checkout");
 mkdirSync(outside, { recursive: true });
@@ -225,53 +245,168 @@ const env = {
 // explicit core checks below rather than promoting diagnostics into requirements.
 const koed = (args) =>
   run(executable, args, { cwd: outside, env }, args[0] === "doctor");
-const manifest = JSON.parse(
-  readFileSync(
-    resolve(
-      release,
-      `koed-distribution-${JSON.parse(readFileSync(resolve(repoRoot, "packages/koed-server/package.json"))).version}-${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}.json`
-    )
-  )
-);
 const base = manifest.components.base;
-const productionOutput = resolve(scratch, "production-public");
-run(process.execPath, [
-  resolve(repoRoot, "scripts/build-public-server-package.mjs"),
-  "--out-dir",
-  productionOutput
+const tamperedManifest = JSON.parse(
+  readFileSync(resolve(release, base.manifest), "utf8")
+);
+tamperedManifest.files[0].sha256 = "0".repeat(64);
+const tamperedManifestPath = resolve(scratch, "tampered.manifest.json");
+writeFileSync(
+  tamperedManifestPath,
+  canonicalComponentManifestBytes(tamperedManifest)
+);
+const tamperedArchiveRoot = resolve(scratch, "tampered-archive");
+mkdirSync(tamperedArchiveRoot);
+const tamperedArchivePath = resolve(tamperedArchiveRoot, base.archive);
+const archiveBytes = readFileSync(resolve(release, base.archive));
+archiveBytes[archiveBytes.length - 1] ^= 1;
+writeFileSync(tamperedArchivePath, archiveBytes);
+for (const [kind, archive, componentManifest, errorPattern] of [
+  [
+    "manifest",
+    resolve(release, base.archive),
+    tamperedManifestPath,
+    /component manifest pin mismatch/
+  ],
+  [
+    "archive",
+    tamperedArchivePath,
+    resolve(release, base.manifest),
+    /component archive SHA-256 mismatch/
+  ]
+]) {
+  const denialHome = resolve(scratch, `${kind}-denial-home`);
+  const denied = spawnSync(
+    executable,
+    [
+      "components",
+      "install",
+      "--component",
+      "base",
+      "--archive",
+      archive,
+      "--manifest",
+      componentManifest,
+      "--json"
+    ],
+    { cwd: outside, env: { ...env, KOED_HOME: denialHome }, encoding: "utf8" }
+  );
+  if (denied.error) throw denied.error;
+  assert.equal(denied.status, 1);
+  assert.match(denied.stdout + denied.stderr, errorPattern);
+  assert.equal(
+    existsSync(resolve(denialHome, "runtime/components/current.json")),
+    false
+  );
+}
+assert.match(koed(["--help"]), /Usage: koed /);
+// TLS credentials authenticate only this loopback fixture server, never components.
+const tlsKey = resolve(scratch, "fixture-tls-key.pem");
+const tlsCertificate = resolve(scratch, "fixture-tls-cert.pem");
+run("openssl", [
+  "req",
+  "-x509",
+  "-newkey",
+  "rsa:2048",
+  "-nodes",
+  "-days",
+  "1",
+  "-subj",
+  "/CN=localhost",
+  "-addext",
+  "subjectAltName=DNS:localhost",
+  "-keyout",
+  tlsKey,
+  "-out",
+  tlsCertificate
 ]);
-const denied = spawnSync(
+const artifactServer = spawn(
   process.execPath,
   [
-    resolve(productionOutput, "package/bin/koed.js"),
-    "components",
-    "install",
-    "--component",
-    "base",
-    "--archive",
-    resolve(release, base.archive),
-    "--manifest",
-    resolve(release, base.manifest),
-    "--signature",
-    resolve(release, base.signature),
-    "--json"
+    "--input-type=module",
+    "-e",
+    `
+  import { createServer } from "node:https";
+  import { createReadStream, readFileSync, statSync } from "node:fs";
+  import { resolve } from "node:path";
+  const files = new Map(${JSON.stringify(
+    Object.values(manifest.components)
+      .flatMap((entry) => [entry.archive, entry.manifest])
+      .map((name) => [`/${name}`, resolve(release, name)])
+  )});
+  const server = createServer({ key: readFileSync(${JSON.stringify(tlsKey)}), cert: readFileSync(${JSON.stringify(tlsCertificate)}) }, (request, response) => {
+    const file = files.get(request.url);
+    if (!file) { response.writeHead(404); response.end(); return; }
+    response.writeHead(200, { "content-length": statSync(file).size });
+    createReadStream(file).pipe(response);
+  });
+  server.listen(0, "127.0.0.1", () => process.send(server.address().port));
+`
   ],
-  {
-    cwd: outside,
-    env: { ...env, KOED_HOME: resolve(scratch, "production-denial-home") },
-    encoding: "utf8"
+  { stdio: ["ignore", "ignore", "inherit", "ipc"] }
+);
+try {
+  const port = await new Promise((resolvePort, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Fixture HTTPS server startup timed out.")),
+      10_000
+    );
+    artifactServer.once("message", (port) => {
+      clearTimeout(timeout);
+      resolvePort(port);
+    });
+    artifactServer.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    artifactServer.once("exit", (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`Fixture HTTPS server exited (${code}).`));
+    });
+  });
+  const onlineHome = resolve(scratch, "online-home");
+  for (const component of ["base", "privacy"]) {
+    const artifact = manifest.components[component];
+    run(
+      executable,
+      [
+        "components",
+        "install",
+        "--component",
+        component,
+        "--archive-url",
+        `https://localhost:${port}/${artifact.archive}`,
+        "--manifest-url",
+        `https://localhost:${port}/${artifact.manifest}`,
+        "--json"
+      ],
+      {
+        cwd: outside,
+        env: {
+          ...env,
+          KOED_HOME: onlineHome,
+          NODE_EXTRA_CA_CERTS: tlsCertificate,
+          KOED_TEAM_COLLABORATION_ENABLED:
+            component === "privacy" ? "true" : "false"
+        }
+      }
+    );
   }
-);
-if (denied.error) throw denied.error;
-assert.equal(denied.status, 1);
-assert.match(denied.stdout, /untrusted|unknown.*key|trust/i);
-assert.equal(
-  existsSync(
-    resolve(scratch, "production-denial-home/runtime/components/current.json")
-  ),
-  false
-);
-assert.match(koed(["--help"]), /Usage: koed /);
+  const online = JSON.parse(
+    run(executable, ["components", "status", "--json"], {
+      cwd: outside,
+      env: {
+        ...env,
+        KOED_HOME: onlineHome,
+        KOED_TEAM_COLLABORATION_ENABLED: "true"
+      }
+    })
+  );
+  assert.equal(online.components.base, "active");
+  assert.equal(online.components.privacy, "active");
+} finally {
+  artifactServer.kill();
+}
 for (const component of ["base", "privacy"]) {
   const artifact = manifest.components[component];
   run(
@@ -285,8 +420,6 @@ for (const component of ["base", "privacy"]) {
       resolve(release, artifact.archive),
       "--manifest",
       resolve(release, artifact.manifest),
-      "--signature",
-      resolve(release, artifact.signature),
       "--json"
     ],
     {
@@ -386,7 +519,12 @@ const result = {
   architecture: process.arch,
   nodeVersion: process.version,
   runtime: process.execPath,
-  testKeyId: keyId,
+  fixtureOnlyCatalog: true,
+  manifestPins: fixturePins.entries,
+  onlineInstallation: true,
+  offlineInstallation: true,
+  manifestTamperRejected: true,
+  archiveTamperRejected: true,
   productionPublicationEnabled: false,
   freshModelInstall: flags.has("--install-models"),
   scratch,
@@ -394,8 +532,7 @@ const result = {
   doctor: true,
   restart: true,
   shutdown: true,
-  supervisors: cycles,
-  productionTestKeyRejected: true
+  supervisors: cycles
 };
 writeFileSync(
   resolve(scratch, "result.json"),

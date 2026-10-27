@@ -48,7 +48,7 @@ test("planner blocks latest downgrade between hyphenated prereleases", () => {
         assets: expected.github.assets
       }
     },
-    { publish: true, signerReady: true, trustRootsReady: true }
+    { publish: true }
   );
   assert.equal(plan.status, "blocked");
   assert.match(plan.reasons.join(" "), /downgrade/);

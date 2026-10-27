@@ -1,93 +1,29 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
 import test from "node:test";
-import { componentManifestSigningBytes } from "./component-signature-format.mjs";
 import {
   setupCandidate,
-  verificationArgs,
-  hash
+  verificationArgs
 } from "./test-utils/release-candidate-fixture.mjs";
-import { writeDeterministicTarGz } from "./deterministic-tar-gzip.mjs";
-import { createPackageReleaseIdentity } from "./package-release-identity.mjs";
 import {
-  canonicalReleaseJson,
   runReleasePromotion,
-  verifyReleaseSignatures,
   verifyNpmCandidate,
   parseArgs
 } from "./release-promotion-adapter.mjs";
 
-test("canonical Ed25519 verification retains production v2 domain and trusted key checks", async () => {
-  const f = await setupCandidate();
-  try {
-    const keys = generateKeyPairSync("ed25519");
-    const name = "koed-base-1.2.3-linux-x64.tar.gz.manifest.json";
-    const bytes = f.contents.get(name);
-    const manifest = resolve(f.root, "manifest.json");
-    const signature = resolve(f.root, "signature.json");
-    writeFileSync(manifest, bytes);
-    const roots = {
-      schemaVersion: 1,
-      keys: { prod: keys.publicKey.export({ type: "spki", format: "pem" }) }
-    };
-    const artifacts = [
-      {
-        manifest,
-        signature,
-        component: "base",
-        version: "1.2.3",
-        target: "linux-x64"
-      }
-    ];
-    const envelope = {
-      schemaVersion: 2,
-      algorithm: "ed25519",
-      keyId: "prod",
-      signature: sign(
-        null,
-        componentManifestSigningBytes(bytes),
-        keys.privateKey
-      ).toString("base64")
-    };
-    writeFileSync(signature, JSON.stringify(envelope));
-    assert.equal(verifyReleaseSignatures(artifacts, roots).length, 1);
-    assert.throws(
-      () =>
-        verifyReleaseSignatures(
-          [{ ...artifacts[0], target: "darwin-arm64" }],
-          roots
-        ),
-      /target mismatch/
-    );
-    writeFileSync(signature, JSON.stringify({ ...envelope, schemaVersion: 1 }));
-    assert.throws(
-      () => verifyReleaseSignatures(artifacts, roots),
-      /signature or trusted key is invalid/
-    );
-    writeFileSync(
-      signature,
-      JSON.stringify({
-        ...envelope,
-        signature: sign(
-          null,
-          Buffer.concat([Buffer.from("koed-component-manifest-v1\n"), bytes]),
-          keys.privateKey
-        ).toString("base64")
-      })
-    );
-    assert.throws(
-      () => verifyReleaseSignatures(artifacts, roots),
-      /manifest signature is invalid/
-    );
-  } finally {
-    f.cleanup();
-  }
-});
+for (const flag of [
+  "--trust-roots",
+  "--trust-roots-sha256",
+  "--controlplane-trust-roots-sha256",
+  "--signer-url",
+  "--signer-key-id"
+])
+  test(`removed signing option rejects: ${flag}`, () => {
+    assert.throws(() => parseArgs([flag, "unused"]), /Unknown option/);
+  });
 
-test("verify-only ignores mutation/signer capabilities; publication rejects without separate approval before any I/O", async () => {
+test("verify-only ignores mutation capabilities; publication rejects without separate approval before any I/O", async () => {
   const f = await setupCandidate({ desktop: true });
   try {
     const args = verificationArgs(f);
@@ -99,9 +35,7 @@ test("verify-only ignores mutation/signer capabilities; publication rejects with
     const adapters = {
       readers: f.readers,
       run: forbidden,
-      fetchImpl: forbidden,
-      fetchRegistry: forbidden,
-      signerToken: "unused"
+      fetchRegistry: forbidden
     };
     const receipt = await runReleasePromotion(
       { ...args, verifyOnly: true },
@@ -138,7 +72,11 @@ test("candidate failures block all publication adapters even with independent ap
         Buffer.from("substituted Desktop")
       ),
     (f) => {
-      f.expected.commit = "f".repeat(40);
+      const getWorkflowRun = f.readers.getWorkflowRun;
+      f.readers.getWorkflowRun = async () => ({
+        ...(await getWorkflowRun()),
+        head_sha: "f".repeat(40)
+      });
     },
     (f) => {
       f.expected.npm.integrity = `sha512-${"a".repeat(88)}`;
@@ -159,16 +97,14 @@ test("candidate failures block all publication adapters even with independent ap
       let calls = 0;
       const forbidden = () => {
         calls++;
-        throw new Error("mutation/signing touched");
+        throw new Error("mutation touched");
       };
       await assert.rejects(
         runReleasePromotion(verificationArgs(f), {
           publicationApproved: true,
           readers: f.readers,
           run: forbidden,
-          fetchRegistry: forbidden,
-          fetchImpl: forbidden,
-          signerToken: "must-not-use"
+          fetchRegistry: forbidden
         })
       );
       assert.equal(calls, 0);
@@ -178,87 +114,42 @@ test("candidate failures block all publication adapters even with independent ap
   }
 });
 
-for (const downloadDrift of [false, true, "tarball"])
-  test(`production promotion binds signatures before mocked mutation (download drift: ${downloadDrift})`, async () => {
+for (const downloadDrift of [
+  false,
+  "manifest",
+  "archive",
+  "catalog",
+  "tarball",
+  "identity",
+  "recheck"
+])
+  test(`pin-only promotion verifies frozen assets before mutation (download drift: ${downloadDrift})`, async () => {
     const f = await setupCandidate({ desktop: true });
     try {
-      const keys = generateKeyPairSync("ed25519");
-      const roots = {
-        schemaVersion: 1,
-        keys: { prod: keys.publicKey.export({ type: "spki", format: "pem" }) }
-      };
-      const rootsPath = resolve(f.root, "roots.json");
-      writeFileSync(rootsPath, canonicalReleaseJson(roots));
-      writeFileSync(
-        resolve(f.packageRoot, "dist/component-trust-roots.js"),
-        `export const productionComponentTrustRoots = new Map(${JSON.stringify(Object.entries(roots.keys))});`
+      assert.ok(
+        ![...f.contents.keys()].some((name) => name.endsWith(".signature.json"))
       );
-      const tarball = resolve(f.assetsDir, "koed-labs-server.tgz");
-      writeDeterministicTarGz({
-        sourceDir: f.packageRoot,
-        tarPath: tarball,
-        rootName: "package"
-      });
-      f.contents.set("koed-labs-server.tgz", readFileSync(tarball));
-      const identity = createPackageReleaseIdentity({
-        packageRoot: f.packageRoot,
-        tarball,
-        version: "1.2.3"
-      });
-      f.contents.set(
-        "koed-labs-server-release-identity.json",
-        Buffer.from(JSON.stringify(identity))
-      );
-      f.expected.npm = identity.npm;
-      for (const [name, bytes] of [...f.contents])
-        if (name.endsWith(".manifest.json")) {
-          const signature = {
-            schemaVersion: 2,
-            algorithm: "ed25519",
-            keyId: "prod",
-            signature: sign(
-              null,
-              componentManifestSigningBytes(bytes),
-              keys.privateKey
-            ).toString("base64")
-          };
-          const signatureName = name.replace(
-            /\.manifest\.json$/,
-            ".signature.json"
-          );
-          f.contents.set(signatureName, Buffer.from(JSON.stringify(signature)));
-          if (!f.release.assets.some((asset) => asset.name === signatureName))
-            f.release.assets.push({
-              id: f.release.assets.length + 10,
-              name: signatureName
-            });
-        }
-      f.expected.assets = [...f.contents].map(([name, bytes]) => ({
-        name,
-        sha256: hash(bytes)
-      }));
-      const args = {
-        ...verificationArgs(f),
-        trustRoots: rootsPath,
-        trustRootsSha256: hash(readFileSync(rootsPath)),
-        controlplaneTrustRootsSha256: hash(canonicalReleaseJson(roots.keys)),
-        signerUrl: "https://signer.invalid",
-        signerKeyId: "prod"
-      };
+      const args = verificationArgs(f);
       let published = false;
       const mutations = [];
+      const downloads = [];
       const tarCalls = [];
-      let signatures = 0;
       const metadata = {
         name: "@koed-labs/server",
         version: "1.2.3",
-        dist: { integrity: identity.npm.integrity }
+        dist: { integrity: f.identity.npm.integrity }
       };
       f.readers.getRegistryVersion = async (_name, version) =>
         version === "latest" || !published ? null : metadata;
+      const driftNames = {
+        manifest: "koed-base-1.2.3-linux-x64.tar.gz.manifest.json",
+        archive: "koed-base-1.2.3-linux-x64.tar.gz",
+        catalog: "component-manifest-hashes.json",
+        tarball: "koed-labs-server.tgz",
+        identity: "koed-labs-server-release-identity.json"
+      };
       const adapters = {
         publicationApproved: true,
-        signerToken: "mock-oidc",
         readers: f.readers,
         run: (command, argv, options = {}) => {
           if (command === "tar") {
@@ -271,16 +162,17 @@ for (const downloadDrift of [false, true, "tarball"])
               const asset = f.release.assets.find(
                 (item) => item.id === assetId
               );
+              downloads.push(asset.name);
               const bytes = f.contents.get(asset.name);
               writeFileSync(
                 options.stdio[1],
-                (downloadDrift === true &&
-                  asset.name.endsWith(".signature.json")) ||
-                  (downloadDrift === "tarball" &&
-                    asset.name === "koed-labs-server.tgz")
-                  ? Buffer.concat([bytes, Buffer.from("\n")])
+                asset.name === driftNames[downloadDrift]
+                  ? downloadDrift === "catalog"
+                    ? Buffer.from("not JSON")
+                    : Buffer.concat([bytes, Buffer.from("\n")])
                   : bytes
               );
+              if (downloadDrift === "recheck") f.release.draft = false;
               return "";
             }
             return JSON.stringify(f.release);
@@ -290,38 +182,33 @@ for (const downloadDrift of [false, true, "tarball"])
           return "";
         },
         fetchRegistry: async (_name, version) =>
-          version === "latest" || !published ? null : metadata,
-        fetchImpl: async (_url, options) => {
-          assert.equal(options.headers.authorization, "Bearer mock-oidc");
-          signatures++;
-          return { ok: true, json: async () => ({ verified: true }) };
-        }
+          version === "latest" || !published ? null : metadata
       };
-      await assert.rejects(
-        runReleasePromotion(args, { ...adapters, signerToken: undefined }),
-        /signer authorization/
-      );
       if (downloadDrift) {
         await assert.rejects(
           runReleasePromotion(args, adapters),
-          /Release asset differs from protected build/
+          downloadDrift === "catalog"
+            ? /Release asset differs from protected build/
+            : /protected build|Frozen component|not canonical|draft|Candidate changed/
         );
         assert.equal(
           mutations.length,
           0,
-          "download drift must reject before any npm/GitHub mutation"
+          "drift must reject before npm/GitHub mutation"
         );
-        if (downloadDrift === "tarball")
+        if (["tarball", "identity"].includes(downloadDrift))
           assert.equal(
             tarCalls.length,
             0,
-            "unreviewed tarball bytes must not reach tar"
+            "unreviewed package bytes must not reach tar"
           );
         return;
       }
       const result = await runReleasePromotion(args, adapters);
       assert.equal(result.ok, true);
-      assert.equal(signatures, 4);
+      assert.equal(result.verifiedComponents, 4);
+      assert.equal(downloads.length, 11);
+      assert.ok(!downloads.some((name) => name.endsWith(".signature.json")));
       assert.equal(
         mutations.filter(
           ([cmd, action]) => cmd === "npm" && action === "publish"
@@ -354,20 +241,22 @@ test("registry package/version/SRI must match exact candidate", async () => {
     version: "1.0.0",
     integrity: "sha512-YWJj"
   };
-  assert.deepEqual(
-    await verifyNpmCandidate(expected, async () => ({
-      name: expected.packageName,
-      version: expected.version,
-      dist: { integrity: expected.integrity }
-    })),
-    { verified: true }
-  );
-  await assert.rejects(
-    verifyNpmCandidate(expected, async () => ({
-      name: expected.packageName,
-      version: expected.version,
-      dist: { integrity: "sha512-d3Jvbmc=" }
-    })),
-    /registry integrity mismatch/
-  );
+  const metadata = {
+    name: expected.packageName,
+    version: expected.version,
+    dist: { integrity: expected.integrity }
+  };
+  assert.deepEqual(await verifyNpmCandidate(expected, async () => metadata), {
+    verified: true
+  });
+  for (const actual of [
+    null,
+    { ...metadata, name: "wrong" },
+    { ...metadata, version: "2.0.0" },
+    { ...metadata, dist: { integrity: "sha512-d3Jvbmc=" } }
+  ])
+    await assert.rejects(
+      verifyNpmCandidate(expected, async () => actual),
+      /missing|mismatch/
+    );
 });

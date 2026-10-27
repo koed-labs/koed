@@ -27,7 +27,7 @@ This handoff records approved direction and remaining engineering work. It is no
 User authorized reasonable assumptions for Node support and artifact authentication:
 
 - Target **Node 24 LTS** for npm/headless use; declare an appropriate Node 24 engine range after checking dependencies and CI. Existing release CI uses Node 24.13.1. Do not claim other Node majors supported without validation.
-- Authenticate artifact metadata binding component, version, platform/architecture, and SHA-256; fail closed on verification failure. Prefer existing trusted-signature/provenance machinery. Key provisioning and CI signing design still need validation; no credentials are authorized by this handoff.
+- Authenticate component metadata binding component, version, platform/architecture, and SHA-256; fail closed on verification failure. ADR-0057 supersedes the original component-signing assumption: use complete canonical version-matched manifest pins embedded in trusted npm/Desktop control planes. Require component pin-only before merge; no component signer provisioning or staged retention. Legacy app-runtime provenance and Apple Developer ID signing/notarization remain separate and unchanged; no credentials or live cloud changes are authorized by this handoff.
 - Desktop's bundled Electron Node runtime needs separate compatibility validation; npm's Node assumption does not establish Electron compatibility.
 
 ## Audit baseline and evidence limits
