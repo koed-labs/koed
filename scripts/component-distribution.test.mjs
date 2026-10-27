@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -53,27 +52,30 @@ for (const check of [
           runtimeIdentities
         });
         assert.equal(catalog.entries.length, 4);
-        await verifyComponent({
-          manifestBytes,
-          archivePath: archive,
-          expectedComponent: "base",
-          expectedVersion: "1.2.3",
-          target,
-          runtime,
-          manifestCatalog: {
-            schemaVersion: 1,
-            productVersion: "1.2.3",
-            entries: [
-              {
-                component: "base",
-                target,
-                manifestSha256: createHash("sha256")
-                  .update(manifestBytes)
-                  .digest("hex")
-              }
-            ]
-          }
-        });
+        for (const identity of runtimeIdentities.filter(
+          (item) => item.kind === "node"
+        )) {
+          const entry = catalog.entries.find(
+            (item) =>
+              item.component === "base" &&
+              item.target.platform === identity.platform &&
+              item.target.architecture === identity.architecture
+          );
+          assert.ok(entry);
+          const candidateArchive = resolve(
+            f.assetsDir,
+            `koed-base-1.2.3-${identity.platform}-${identity.architecture}.tar.gz`
+          );
+          await verifyComponent({
+            manifestBytes: readFileSync(`${candidateArchive}.manifest.json`),
+            archivePath: candidateArchive,
+            expectedComponent: "base",
+            expectedVersion: "1.2.3",
+            target: entry.target,
+            runtime: identity,
+            manifestCatalog: catalog
+          });
+        }
       }
     } finally {
       f.cleanup();
