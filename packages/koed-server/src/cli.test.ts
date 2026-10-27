@@ -211,29 +211,32 @@ describe("explicit component provisioning CLI", () => {
     });
   });
 
-  it("rejects the removed signature artifact argument", async () => {
-    const stdout = writer();
-    const exitCode = await runKoedServerCli(
-      [
-        "components",
-        "install",
-        "--component",
-        "base",
-        "--archive",
-        "/tmp/base.tar.gz",
-        "--manifest",
-        "/tmp/base.manifest.json",
-        "--signature",
-        "/tmp/base.signature.json",
-        "--json"
-      ],
-      { stdout: stdout.stream }
-    );
-    expect(exitCode).toBe(1);
-    expect(JSON.parse(stdout.text())).toMatchObject({
-      error: "Unsupported components option: --signature"
-    });
-  });
+  it.each(["--signature", "--signature-url"])(
+    "rejects removed artifact argument %s",
+    async (argument) => {
+      const stdout = writer();
+      const exitCode = await runKoedServerCli(
+        [
+          "components",
+          "install",
+          "--component",
+          "base",
+          "--archive",
+          "/tmp/base.tar.gz",
+          "--manifest",
+          "/tmp/base.manifest.json",
+          argument,
+          "/tmp/base.signature.json",
+          "--json"
+        ],
+        { stdout: stdout.stream }
+      );
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(stdout.text())).toMatchObject({
+        error: `Unsupported components option: ${argument}`
+      });
+    }
+  );
 
   it("does not accept public trust-root or owner overrides", async () => {
     const stdout = writer();

@@ -1,6 +1,4 @@
-import { componentManifestSigningBytes } from "./component-signature-format.mjs";
 import assert from "node:assert/strict";
-import { generateKeyPairSync, verify as cryptoVerify } from "node:crypto";
 import {
   readFileSync,
   chmodSync,
@@ -24,7 +22,6 @@ import {
   pruneStandalonePackageMetadata,
   prunePnpmWorkspaceVirtualStorePaths,
   sha256File,
-  signComponentManifest,
   validatePackageRoot,
   writePackageManifest
 } from "./koed-server-package-lib.mjs";
@@ -115,7 +112,7 @@ test("validates a standalone koed-server package root", () => {
   );
 });
 
-test("builds canonical signed component manifests with interoperable Ed25519 domain", () => {
+test("builds canonical component manifests binding archive and payload metadata", () => {
   const root = tempDir();
   const componentRoot = resolve(root, "component");
   writeFile(resolve(componentRoot, "entry.js"), "export {}\n");
@@ -138,29 +135,20 @@ test("builds canonical signed component manifests with interoperable Ed25519 dom
     ],
     requiredFiles: ["entry.js"]
   });
-  const pair = generateKeyPairSync("ed25519");
-  const signed = signComponentManifest({
-    manifest,
-    keyId: "package-builder-test",
-    privateKey: pair.privateKey.export({ type: "pkcs8", format: "pem" })
+  const manifestBytes = canonicalComponentManifestBytes(manifest);
+  assert.deepEqual(JSON.parse(manifestBytes.toString("utf8")), manifest);
+  assert.deepEqual(manifest.archive, {
+    name: "base.tar.gz",
+    bytes: 16,
+    sha256: "b82d14bd3717287c78a2e1351107a49a925192cae59c0f844437eed8a0d6caef"
   });
-
-  assert.deepEqual(JSON.parse(signed.manifestBytes.toString("utf8")), manifest);
-  assert.deepEqual(
-    signed.manifestBytes,
-    canonicalComponentManifestBytes(manifest)
-  );
-  assert.equal(signed.signature.algorithm, "ed25519");
-  assert.equal(signed.signature.keyId, "package-builder-test");
-  assert.equal(
-    cryptoVerify(
-      null,
-      componentManifestSigningBytes(signed.manifestBytes),
-      pair.publicKey,
-      Buffer.from(signed.signature.signature, "base64")
-    ),
-    true
-  );
+  assert.deepEqual(manifest.requiredFiles, ["entry.js"]);
+  assert.deepEqual(manifest.files, [
+    {
+      path: "entry.js",
+      sha256: "7992a39d6cde5e050eb78461a8bf9ad986175a94826e835c110b3967290bd249"
+    }
+  ]);
 });
 
 test("validates a previously released archive with the legacy launcher", () => {

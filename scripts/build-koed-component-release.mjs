@@ -100,15 +100,6 @@ const main = async () => {
     platform: options.platform,
     architecture: options.architecture
   });
-  const pem =
-    process.env.KOED_COMPONENT_SIGNING_PRIVATE_KEY_PEM ??
-    (process.env.KOED_COMPONENT_SIGNING_PRIVATE_KEY_FILE
-      ? readFileSync(
-          resolve(process.env.KOED_COMPONENT_SIGNING_PRIVATE_KEY_FILE),
-          "utf8"
-        )
-      : undefined);
-  const keyId = process.env.KOED_COMPONENT_SIGNING_KEY_ID;
   const result = buildComponentReleaseSet({
     componentsRoot,
     outDir: options.outDir,
@@ -127,8 +118,7 @@ const main = async () => {
     requiredFiles: {
       base: staged.baseRequired,
       privacy: staged.privacyRequired
-    },
-    signing: pem || keyId ? { keyId, privateKey: pem } : undefined
+    }
   });
   console.log(JSON.stringify({ ok: true, ...result }, null, 2));
 };

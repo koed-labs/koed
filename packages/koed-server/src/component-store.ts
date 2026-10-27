@@ -52,6 +52,7 @@ import {
 } from "./component-manifest-catalog.js";
 import {
   verifyComponent,
+  validateComponentManifest,
   verifyComponentManifestPin,
   verifyExtractedComponent
 } from "./component-verification.js";
@@ -1165,19 +1166,184 @@ export async function stageDesktopPrivacyGeneration(
   );
 }
 
-export async function readStagedGeneration(
+export interface GenerationOrderingEvidence {
+  readonly kind: "generation-ordering-evidence";
+  readonly id: string;
+  readonly productVersion: string;
+  readonly owner: Readonly<RuntimeOwner>;
+}
+
+export function readGenerationRecord(
   paths: KoedServerPaths,
   id: string
-): Promise<VerifiedGeneration> {
+): unknown {
   if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("generation id is invalid");
   assertDirectoryChain(paths.koedHome, paths.generationsDir);
   const root = resolve(paths.generationsDir, id);
   assertDirectoryChain(paths.generationsDir, root);
-  const record = parseJsonFile(
+  return parseJsonFile(
     resolve(root, "generation.json"),
     MAX_GENERATION_RECORD_BYTES,
     true
   );
+}
+
+function assertOrderingStoreMetadata(
+  root: string,
+  manifest: ComponentManifest,
+  digest: string
+): void {
+  const stored = readComponentRecord(componentRecordPath(root));
+  if (
+    stored.manifestDigest !== digest ||
+    canonicalJson(stored.manifest) !== canonicalJson(manifest) ||
+    stored.archivePath !== resolve(root, manifest.archive.name)
+  )
+    throw new Error("generation component metadata differs from store");
+}
+
+function readOrderingComponent(
+  paths: KoedServerPaths,
+  component: ComponentId,
+  version: string,
+  reference: unknown,
+  embedded: unknown
+): ComponentManifest {
+  if (
+    !isPlainRecord(reference) ||
+    !exactKeys(reference, ["root", "manifestDigest"]) ||
+    typeof reference.root !== "string" ||
+    !isPlainRecord(embedded) ||
+    !exactKeys(embedded, ["manifest", "manifestDigest"])
+  )
+    throw new Error("stored generation component reference is invalid");
+  validateComponentManifest(embedded.manifest);
+  const manifest = embedded.manifest;
+  const digest = hash(canonicalJson(manifest));
+  if (
+    manifest.component !== component ||
+    manifest.productVersion !== version ||
+    reference.manifestDigest !== digest ||
+    embedded.manifestDigest !== digest
+  )
+    throw new Error("generation component identity mismatch");
+  const componentRoot = resolve(
+    paths.componentsDir,
+    component,
+    version,
+    digest
+  );
+  const payload = componentPayloadPath(componentRoot);
+  assertInside(paths.koedHome, componentRoot);
+  if (reference.root !== relative(paths.koedHome, payload))
+    throw new Error("stored generation root is invalid");
+  assertDirectoryChain(paths.koedHome, payload);
+  assertOrderingStoreMetadata(componentRoot, manifest, digest);
+  return manifest;
+}
+
+function parseOrderingRecord(
+  record: unknown,
+  id: string
+): Record<string, unknown> & {
+  productVersion: string;
+  owner: RuntimeOwner;
+  components: Record<string, unknown>;
+} {
+  if (
+    !isPlainRecord(record) ||
+    !exactKeys(record, [
+      "schemaVersion",
+      "productVersion",
+      "owner",
+      "base",
+      "components",
+      "id",
+      ...(Object.hasOwn(record, "privacy") ? ["privacy"] : [])
+    ]) ||
+    record.schemaVersion !== 1 ||
+    record.id !== id ||
+    typeof record.productVersion !== "string" ||
+    !isPlainRecord(record.components) ||
+    !exactKeys(record.components, [
+      "base",
+      ...(Object.hasOwn(record, "privacy") ? ["privacy"] : [])
+    ])
+  )
+    throw new Error("stored generation record is invalid");
+  validateOwner(record.owner);
+  return {
+    ...record,
+    productVersion: record.productVersion,
+    owner: record.owner,
+    components: record.components
+  };
+}
+
+function readConsistentOrderingRecord(paths: KoedServerPaths, id: string) {
+  const record = parseOrderingRecord(readGenerationRecord(paths, id), id);
+  const base = readOrderingComponent(
+    paths,
+    "base",
+    record.productVersion,
+    record.base,
+    record.components.base
+  );
+  if (Object.hasOwn(record, "privacy")) {
+    const privacy = readOrderingComponent(
+      paths,
+      "privacy",
+      record.productVersion,
+      record.privacy,
+      record.components.privacy
+    );
+    if (canonicalJson(privacy.target) !== canonicalJson(base.target))
+      throw new Error("generation component target mismatch");
+  }
+  const identity = {
+    schemaVersion: 1,
+    productVersion: record.productVersion,
+    owner: record.owner,
+    base: record.base,
+    ...(Object.hasOwn(record, "privacy") ? { privacy: record.privacy } : {})
+  };
+  if (hash(canonicalJson(identity)) !== id)
+    throw new Error("generation digest mismatch");
+  return record;
+}
+
+// Diagnostic presence only; never returns runnable payloads or publisher authority.
+export function readGenerationComponentPresence(
+  paths: KoedServerPaths,
+  id: string
+): readonly ComponentId[] {
+  const record = readConsistentOrderingRecord(paths, id);
+  return Object.freeze(
+    Object.hasOwn(record, "privacy")
+      ? (["base", "privacy"] as const)
+      : (["base"] as const)
+  );
+}
+
+// Local consistency only: never grants authority to execute historical payloads.
+export function readGenerationOrderingEvidence(
+  paths: KoedServerPaths,
+  id: string
+): GenerationOrderingEvidence {
+  const record = readConsistentOrderingRecord(paths, id);
+  return Object.freeze({
+    kind: "generation-ordering-evidence",
+    id,
+    productVersion: record.productVersion,
+    owner: Object.freeze({ ...record.owner })
+  });
+}
+
+export async function readStagedGeneration(
+  paths: KoedServerPaths,
+  id: string
+): Promise<VerifiedGeneration> {
+  const record = readGenerationRecord(paths, id);
   if (isPlainRecord(record) && record.kind === "desktop-bundle-with-privacy")
     return readDesktopPrivacyGeneration(paths, id, record);
   if (

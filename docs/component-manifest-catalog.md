@@ -39,6 +39,25 @@ Use the actual product version and existing frozen component directory; commands
 
 Internal CI/native-runtime testing may explicitly build a standalone artifact with `--catalogless-development`. This mode embeds no catalog authority, rejects a simultaneous release catalog build input, and cannot install components. Public npm packaging has no such mode. It does not provide release-candidate component-admission acceptance.
 
+## Prior-generation ordering and upgrades
+
+Install each new version using its version-matched trusted control plane and new Base/Privacy components. Never compose a new generation from old-version components. Status may describe an owned previous-version selection as incompatible without authenticating its payloads; it does not grant permission to start that selection.
+
+Activation fully verifies the candidate against current compiled pins. Under the existing lifecycle/store locks it then reads bounded, canonical, no-follow metadata for the prior ordinary selection to establish owner and version ordering only. This evidence checks strict schema, contained normalized references, stored/embedded manifest digests and identity agreement, target agreement and recomputed generation identity. It exposes no component roots or runnable generation and does not authenticate historical publisher identity. Malformed prior metadata fails closed; neither old payload reuse nor ignoring corrupt state is an upgrade fallback.
+
+A stopped, same-owner selection can advance to a newer verified generation; genuine downgrades remain rejected and same-version recovery remains supported. Active runtime pins prevent replacement. Failures preserve the selected pointer and release locks. Start and payload reuse still require full verification under current pins.
+
+Desktop ownership discovery and changed-bundle status use a separate bounded,
+no-follow journal reader, not full verification of the overwritten application's
+old resources or old Privacy pins. A validated private Desktop capability must
+match journal ownership and installation resources before replacement; this
+journal cannot authorize payload execution. Privacy journals also bind their
+canonical generation identity. The matching-owner ordinary-generation fallback
+remains available without admitting its payloads through Desktop journal evidence.
+Unchanged bundle reuse still requires full verification, and replacement verifies
+the new bundled Base and rejects version downgrades under lifecycle/store locks.
+Old Privacy is reported incompatible, never attached to the replacement bundle.
+
 ## Stopped Desktop management ordering
 
 Within one Desktop manager, stopped Privacy management, setup/doctor authority,
@@ -59,8 +78,19 @@ unknown/remote throttling, other failures, a
 stopped supervisor, or a failed final doctor remain failures. This bounded harness
 recovery does not validate or fix runtime status-polling amplification.
 
-## Migration gate
+## Merge and acceptance gates
 
-This is a staged migration. Existing component signing and external signer checks remain in official release/promotion workflows until packaged install/reuse and promotion negative-path acceptance is complete. Their presence is not a runtime pin fallback: component admission uses the trusted control plane's pins. Do not infer KMS retirement or cloud configuration changes from code changes.
+The stack must be component pin-only before merge: remove component KMS, hosted
+signer, signer roots, signature sidecars and component-signing OIDC dependencies.
+Do not retain obsolete source/configuration pending acceptance. Protected,
+independently reviewed build identity, read-only candidate verification,
+publication approval, npm authentication/provenance, immutable assets and SRI remain.
+Source cleanup neither authorizes nor requires live cloud or repository-variable changes.
 
-Required release evidence still includes native Linux and macOS component installation/reuse, packaged managed lifecycle and Desktop boundary checks, npm promotion negatives, signed Desktop acceptance, and separate native-runtime/model coverage. A local fixture smoke or workflow-schema test is not equivalent to those target-specific results. Retire signing-only code and operational inputs only after that evidence and separately authorized cloud retirement.
+Required acceptance evidence still includes actual native Linux and macOS
+Personal/Team component installation/reuse, packaged managed lifecycle and Desktop
+boundary checks, npm promotion negatives, signed/notarized clean-Mac Desktop
+acceptance, and separate native-runtime/model coverage. A local fixture smoke or
+workflow-schema test is not equivalent to those target-specific results. Apple
+Developer ID signing/notarization, unrelated hosted/encryption KMS and legacy
+app-runtime provenance remain unchanged.

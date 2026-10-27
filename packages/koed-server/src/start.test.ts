@@ -104,7 +104,9 @@ const writeDesktopBundleOwner = (
   paths: ReturnType<typeof resolveKoedServerPaths>,
   owner: RuntimeOwner
 ): void => {
-  const generationId = "c".repeat(64);
+  const generationId = createHash("sha256")
+    .update(`${owner.installationId}\n${"e".repeat(64)}`)
+    .digest("hex");
   const generationPath = resolve(paths.generationsDir, generationId);
   mkdirSync(paths.componentsDir, { recursive: true, mode: 0o700 });
   mkdirSync(generationPath, { recursive: true, mode: 0o700 });

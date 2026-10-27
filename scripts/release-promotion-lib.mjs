@@ -34,21 +34,22 @@ const validateExpected = (expected) => {
       typeof asset.name !== "string" ||
       !asset.name ||
       names.has(asset.name) ||
-      !sha256Pattern.test(asset.sha256 ?? "") ||
-      typeof asset.signature !== "string" ||
-      !asset.signature
+      !sha256Pattern.test(asset.sha256 ?? "")
     )
       throw new Error(
-        "Expected release assets require unique names, SHA-256, and signatures."
+        "Expected release assets require unique names and SHA-256."
       );
     names.add(asset.name);
   }
 };
 
 const blocked = (reasons) => ({ status: "blocked", reasons, actions: [] });
-const compareVersions = (left, right) => {
+export const compareVersions = (left, right) => {
   const parse = (version) => {
-    const [core, prerelease] = version.split("-");
+    const separator = version.indexOf("-");
+    const core = separator === -1 ? version : version.slice(0, separator);
+    const prerelease =
+      separator === -1 ? undefined : version.slice(separator + 1);
     return { core: core.split(".").map(Number), prerelease };
   };
   const a = parse(left);
@@ -59,7 +60,19 @@ const compareVersions = (left, right) => {
   if (a.prerelease === b.prerelease) return 0;
   if (!a.prerelease) return 1;
   if (!b.prerelease) return -1;
-  return a.prerelease.localeCompare(b.prerelease);
+  const aa = a.prerelease.split(".");
+  const bb = b.prerelease.split(".");
+  for (let i = 0; i < Math.max(aa.length, bb.length); i++) {
+    if (aa[i] === bb[i]) continue;
+    if (aa[i] === undefined) return -1;
+    if (bb[i] === undefined) return 1;
+    const numericA = /^\d+$/.test(aa[i]);
+    const numericB = /^\d+$/.test(bb[i]);
+    if (numericA && numericB) return BigInt(aa[i]) < BigInt(bb[i]) ? -1 : 1;
+    if (numericA !== numericB) return numericA ? -1 : 1;
+    return aa[i] < bb[i] ? -1 : 1;
+  }
+  return 0;
 };
 
 export const planReleasePromotion = (expected, remote, authorization) => {
@@ -67,12 +80,10 @@ export const planReleasePromotion = (expected, remote, authorization) => {
   if (!isRecord(remote) || !isRecord(authorization))
     throw new Error("Remote release state and authorization must be records.");
   const reasons = [];
-  if (!authorization.publish)
+  if (authorization.publish !== true)
     reasons.push("Independent publication authorization is unavailable.");
-  if (!authorization.signerReady)
-    reasons.push("Production signer is unavailable.");
-  if (!authorization.trustRootsReady)
-    reasons.push("Approved production trust roots are unavailable.");
+  if (expected.catalogVerified !== true)
+    reasons.push("Verified catalog and artifact evidence is unavailable.");
   if (reasons.length) return blocked(reasons);
 
   const github = remote.github;

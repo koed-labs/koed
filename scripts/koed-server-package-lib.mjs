@@ -1,4 +1,3 @@
-import { componentManifestSigningBytes } from "./component-signature-format.mjs";
 import { canonicalArtifactBytes } from "../packages/koed-server/src/artifact-canonical-json.mjs";
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import {
@@ -238,19 +237,6 @@ export const buildComponentManifest = ({
     },
     requiredFiles: [...requiredFiles],
     files
-  };
-};
-
-export const signComponentManifest = ({ manifest, keyId, privateKey }) => {
-  const manifestBytes = canonicalComponentManifestBytes(manifest);
-  const signature = sign(
-    null,
-    componentManifestSigningBytes(manifestBytes),
-    createPrivateKey(privateKey)
-  ).toString("base64");
-  return {
-    manifestBytes,
-    signature: { schemaVersion: 2, keyId, algorithm: "ed25519", signature }
   };
 };
 

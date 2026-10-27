@@ -1,382 +1,262 @@
-import { componentManifestSigningBytes } from "./component-signature-format.mjs";
-import { buildComponentManifestCatalog } from "./component-manifest-catalog.mjs";
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync
-} from "node:fs";
+import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
 import test from "node:test";
 import {
-  canonicalReleaseJson,
+  setupCandidate,
+  verificationArgs
+} from "./test-utils/release-candidate-fixture.mjs";
+import {
   runReleasePromotion,
-  verifyReleaseSignatures,
-  verifyNpmCandidate
+  verifyNpmCandidate,
+  parseArgs
 } from "./release-promotion-adapter.mjs";
 
-const temporary = () => mkdtempSync(resolve(tmpdir(), "koed-promotion-test-"));
-const sha256 = "a".repeat(64);
+for (const flag of [
+  "--trust-roots",
+  "--trust-roots-sha256",
+  "--controlplane-trust-roots-sha256",
+  "--signer-url",
+  "--signer-key-id"
+])
+  test(`removed signing option rejects: ${flag}`, () => {
+    assert.throws(() => parseArgs([flag, "unused"]), /Unknown option/);
+  });
 
-test("verifies canonical Ed25519 component signatures against explicit digest-pinned roots", () => {
-  const root = temporary();
+test("verify-only ignores mutation capabilities; publication rejects without separate approval before any I/O", async () => {
+  const f = await setupCandidate({ desktop: true });
   try {
-    const keys = generateKeyPairSync("ed25519");
-    const manifest = {
-      archive: { name: "koed-base-1.0.0-linux-x64.tar.gz", bytes: 1, sha256 },
-      component: "base",
-      productVersion: "1.0.0",
-      schemaVersion: 1,
-      target: { platform: "linux", architecture: "x64" }
+    const args = verificationArgs(f);
+    let calls = 0;
+    const forbidden = () => {
+      calls++;
+      throw new Error("mutation capability touched");
     };
-    const signature = sign(
-      null,
-      componentManifestSigningBytes(
-        Buffer.from(canonicalReleaseJson(manifest))
-      ),
-      keys.privateKey
-    ).toString("base64");
-    const files = {
-      manifest: resolve(root, "manifest.json"),
-      signature: resolve(root, "signature.json")
+    const adapters = {
+      readers: f.readers,
+      run: forbidden,
+      fetchRegistry: forbidden
     };
-    writeFileSync(files.manifest, canonicalReleaseJson(manifest));
-    writeFileSync(
-      files.signature,
-      `${JSON.stringify({ schemaVersion: 2, algorithm: "ed25519", keyId: "prod", signature })}\n`
+    const receipt = await runReleasePromotion(
+      { ...args, verifyOnly: true },
+      adapters
     );
-    const publicKeyPem = keys.publicKey.export({ type: "spki", format: "pem" });
-    const roots = { schemaVersion: 1, keys: { prod: publicKeyPem } };
-    assert.equal(
-      verifyReleaseSignatures(
-        [
-          { ...files, component: "base", version: "1.0.0", target: "linux-x64" }
-        ],
-        roots
-      ).length,
-      1
+    assert.equal(receipt.kind, "verified-release-candidate");
+    await assert.rejects(
+      runReleasePromotion(args, {
+        ...adapters,
+        readers: new Proxy({}, { get: forbidden })
+      }),
+      /Independent publication approval/
     );
+    assert.equal(calls, 0);
+    assert.equal(parseArgs(["--verify-only"]).verifyOnly, true);
     assert.throws(
-      () =>
-        verifyReleaseSignatures(
-          [
-            {
-              ...files,
-              component: "base",
-              version: "1.0.0",
-              target: "darwin-arm64"
-            }
-          ],
-          roots
-        ),
-      /target mismatch/
-    );
-    const artifacts = [
-      { ...files, component: "base", version: "1.0.0", target: "linux-x64" }
-    ];
-    writeFileSync(
-      files.signature,
-      JSON.stringify({
-        schemaVersion: 1,
-        algorithm: "ed25519",
-        keyId: "prod",
-        signature
-      })
-    );
-    assert.throws(
-      () => verifyReleaseSignatures(artifacts, roots),
-      /signature or trusted key is invalid/
-    );
-    const legacySignature = sign(
-      null,
-      Buffer.concat([
-        Buffer.from("koed-component-manifest-v1\n"),
-        Buffer.from(canonicalReleaseJson(manifest))
-      ]),
-      keys.privateKey
-    ).toString("base64");
-    writeFileSync(
-      files.signature,
-      JSON.stringify({
-        schemaVersion: 2,
-        algorithm: "ed25519",
-        keyId: "prod",
-        signature: legacySignature
-      })
-    );
-    assert.throws(
-      () => verifyReleaseSignatures(artifacts, roots),
-      /manifest signature is invalid/
+      () => parseArgs(["--expected-build", "--verify-only"]),
+      /Missing or duplicate/
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    f.cleanup();
   }
 });
 
-test("promotes draft through mocked GitHub, signer, and npm adapters after real signature checks", async () => {
-  const root = temporary();
-  try {
-    const keys = generateKeyPairSync("ed25519");
-    const publicKeyPem = keys.publicKey.export({ type: "spki", format: "pem" });
-    const roots = { schemaVersion: 1, keys: { prod: publicKeyPem } };
-    const rootBytes = Buffer.from(`${JSON.stringify(roots)}\n`);
-    const rootsPath = resolve(root, "roots.json");
-    writeFileSync(rootsPath, rootBytes);
-    const version = "1.0.0";
-    const packedRoot = resolve(root, "packed");
-    mkdirSync(resolve(packedRoot, "package/dist"), { recursive: true });
-    writeFileSync(
-      resolve(packedRoot, "package/dist/component-trust-roots.js"),
-      `throw new Error("CANDIDATE_TRUST_ROOTS_EXECUTED"); export const productionComponentTrustRoots = new Map([["prod", ${JSON.stringify(publicKeyPem)}]]);`
-    );
-    const assets = [];
-    const contents = new Map();
-    for (const [component, platform, architecture] of [
-      ["base", "linux", "x64"],
-      ["privacy", "linux", "x64"],
-      ["base", "macos", "arm64"],
-      ["privacy", "macos", "arm64"]
-    ]) {
-      const archiveName = `koed-${component}-${version}-${platform}-${architecture}.tar.gz`;
-      const archive = Buffer.alloc(
-        2 * 1024 * 1024,
-        `${component}-${platform}-${architecture}`
-      );
-      const manifest = {
-        archive: {
-          name: archiveName,
-          bytes: archive.length,
-          sha256: createHash("sha256").update(archive).digest("hex")
-        },
-        component,
-        productVersion: version,
-        schemaVersion: 1,
-        target: {
-          platform,
-          architecture,
-          ...(platform === "linux"
-            ? { libc: { family: "glibc", minimumVersion: "2.35" } }
-            : {})
-        },
-        runtimes: [
-          {
-            kind: "node",
-            runtimeRange: ">=24 <25",
-            nodeRange: ">=24 <25",
-            modulesAbi: "137"
-          }
-        ],
-        requiredFiles: ["main.js"],
-        files: [{ path: "main.js", sha256 }]
+test("candidate failures block all publication adapters even with independent approval", async () => {
+  const cases = [
+    (f) => f.contents.delete("component-manifest-hashes.json"),
+    (f) => f.contents.set("component-manifest-hashes.json", Buffer.from("{}")),
+    (f) =>
+      f.contents.set("koed-labs-server.tgz", Buffer.from("substituted npm")),
+    (f) =>
+      f.contents.set(
+        f.expected.desktop.asset,
+        Buffer.from("substituted Desktop")
+      ),
+    (f) => {
+      const getWorkflowRun = f.readers.getWorkflowRun;
+      f.readers.getWorkflowRun = async () => ({
+        ...(await getWorkflowRun()),
+        head_sha: "f".repeat(40)
+      });
+    },
+    (f) => {
+      f.expected.npm.integrity = `sha512-${"a".repeat(88)}`;
+    },
+    (f) => {
+      f.release.draft = false;
+    },
+    (f) => {
+      f.readers.getAsset = async () => {
+        throw new Error("unavailable candidate");
       };
-      const manifestName = `${archiveName}.manifest.json`;
-      const signatureName = `${archiveName}.signature.json`;
-      const signature = sign(
-        null,
-        componentManifestSigningBytes(
-          Buffer.from(canonicalReleaseJson(manifest))
-        ),
-        keys.privateKey
-      ).toString("base64");
-      contents.set(manifestName, Buffer.from(canonicalReleaseJson(manifest)));
-      contents.set(
-        signatureName,
-        Buffer.from(
-          JSON.stringify({
-            schemaVersion: 2,
-            algorithm: "ed25519",
-            keyId: "prod",
-            signature
-          })
-        )
-      );
-      contents.set(archiveName, archive);
-      for (const name of [archiveName, manifestName, signatureName])
-        assets.push({ name, id: assets.length + 1 });
     }
-    const catalog = buildComponentManifestCatalog({
-      version,
-      manifests: [...contents.entries()]
-        .filter(([name]) => name.endsWith(".manifest.json"))
-        .map(([, bytes]) => bytes)
-    });
-    contents.set(
-      "component-manifest-hashes.json",
-      Buffer.from(canonicalReleaseJson(catalog))
-    );
-    assets.push({
-      name: "component-manifest-hashes.json",
-      id: assets.length + 1
-    });
-    mkdirSync(resolve(packedRoot, "package/vendor"), { recursive: true });
-    writeFileSync(
-      resolve(packedRoot, "package/package.json"),
-      '{"type":"module"}'
-    );
-    writeFileSync(
-      resolve(packedRoot, "package/vendor/control-plane.js"),
-      `export const productionComponentManifestCatalog = ${JSON.stringify(catalog)};`
-    );
-    const packedPath = resolve(root, "server.tgz");
-    execFileSync("tar", ["-czf", packedPath, "-C", packedRoot, "package"]);
-    const packageTarball = readFileSync(packedPath);
-    const packageIntegrity = `sha512-${createHash("sha512").update(packageTarball).digest("base64")}`;
-    const identity = {
-      packageName: "@koed-labs/server",
-      version,
-      npm: { integrity: packageIntegrity, inventorySha256: "b".repeat(64) }
-    };
-    contents.set(
-      "koed-labs-server-release-identity.json",
-      Buffer.from(JSON.stringify(identity))
-    );
-    contents.set("koed-labs-server.tgz", packageTarball);
-    assets.push(
-      { name: "koed-labs-server-release-identity.json", id: assets.length + 1 },
-      { name: "koed-labs-server.tgz", id: assets.length + 2 }
-    );
-    const calls = [];
-    const result = await runReleasePromotion(
-      {
-        trustRoots: rootsPath,
-        trustRootsSha256: createHash("sha256").update(rootBytes).digest("hex"),
-        controlplaneTrustRootsSha256: createHash("sha256")
-          .update(canonicalReleaseJson(roots.keys))
-          .digest("hex"),
-        signerUrl: "https://signer.invalid",
-        signerKeyId: "prod",
-        repository: "org/repo",
-        releaseId: "42",
-        version
-      },
-      {
-        run: (name, args, options = {}) => {
-          calls.push([name, args]);
-          if (name === "gh" && args[0] === "api" && args.length === 2)
-            return JSON.stringify({ tag_name: "v1.0.0", draft: true, assets });
-          if (name === "gh" && args[0] === "api" && args[1] === "--header") {
-            const asset = assets.find((asset) =>
-              args.at(-1).endsWith(`/${asset.id}`)
-            );
-            const fixturePath = resolve(root, asset.name);
-            writeFileSync(fixturePath, contents.get(asset.name));
-            return execFileSync(
-              process.execPath,
-              [
-                "-e",
-                "process.stdout.write(require('node:fs').readFileSync(process.argv[1]))",
-                fixturePath
-              ],
-              {
-                encoding: "utf8",
-                stdio: ["ignore", "pipe", "inherit"],
-                ...options
-              }
-            );
+  ];
+  for (const alter of cases) {
+    const f = await setupCandidate({ desktop: true });
+    try {
+      alter(f);
+      let calls = 0;
+      const forbidden = () => {
+        calls++;
+        throw new Error("mutation touched");
+      };
+      await assert.rejects(
+        runReleasePromotion(verificationArgs(f), {
+          publicationApproved: true,
+          readers: f.readers,
+          run: forbidden,
+          fetchRegistry: forbidden
+        })
+      );
+      assert.equal(calls, 0);
+    } finally {
+      f.cleanup();
+    }
+  }
+});
+
+for (const downloadDrift of [
+  false,
+  "manifest",
+  "archive",
+  "catalog",
+  "tarball",
+  "identity",
+  "recheck"
+])
+  test(`pin-only promotion verifies frozen assets before mutation (download drift: ${downloadDrift})`, async () => {
+    const f = await setupCandidate({ desktop: true });
+    try {
+      assert.ok(
+        ![...f.contents.keys()].some((name) => name.endsWith(".signature.json"))
+      );
+      const args = verificationArgs(f);
+      let published = false;
+      const mutations = [];
+      const downloads = [];
+      const tarCalls = [];
+      const metadata = {
+        name: "@koed-labs/server",
+        version: "1.2.3",
+        dist: { integrity: f.identity.npm.integrity }
+      };
+      f.readers.getRegistryVersion = async (_name, version) =>
+        version === "latest" || !published ? null : metadata;
+      const driftNames = {
+        manifest: "koed-base-1.2.3-linux-x64.tar.gz.manifest.json",
+        archive: "koed-base-1.2.3-linux-x64.tar.gz",
+        catalog: "component-manifest-hashes.json",
+        tarball: "koed-labs-server.tgz",
+        identity: "koed-labs-server-release-identity.json"
+      };
+      const adapters = {
+        publicationApproved: true,
+        readers: f.readers,
+        run: (command, argv, options = {}) => {
+          if (command === "tar") {
+            tarCalls.push(argv);
+            return execFileSync(command, argv, { encoding: "utf8" });
           }
-          if (name === "tar")
-            return execFileSync(name, args, { encoding: "utf8", ...options });
+          if (command === "gh" && !argv.includes("PATCH")) {
+            const assetId = Number(argv.at(-1).split("/").at(-1));
+            if (argv.includes("Accept: application/octet-stream")) {
+              const asset = f.release.assets.find(
+                (item) => item.id === assetId
+              );
+              downloads.push(asset.name);
+              const bytes = f.contents.get(asset.name);
+              writeFileSync(
+                options.stdio[1],
+                asset.name === driftNames[downloadDrift]
+                  ? downloadDrift === "catalog"
+                    ? Buffer.from("not JSON")
+                    : Buffer.concat([bytes, Buffer.from("\n")])
+                  : bytes
+              );
+              if (downloadDrift === "recheck") f.release.draft = false;
+              return "";
+            }
+            return JSON.stringify(f.release);
+          }
+          mutations.push([command, ...argv]);
+          if (command === "npm" && argv[0] === "publish") published = true;
           return "";
         },
-        signerToken: "fixture-oidc-token",
-        fetchRegistry: async (_name, requestedVersion) =>
-          requestedVersion === "latest"
-            ? { name: "@koed-labs/server", version: "0.9.0" }
-            : {
-                name: identity.packageName,
-                version,
-                dist: { integrity: packageIntegrity }
-              },
-        fetchImpl: async (_url, options) => {
+        fetchRegistry: async (_name, version) =>
+          version === "latest" || !published ? null : metadata
+      };
+      if (downloadDrift) {
+        await assert.rejects(
+          runReleasePromotion(args, adapters),
+          downloadDrift === "catalog"
+            ? /Release asset differs from protected build/
+            : /protected build|Frozen component|not canonical|draft|Candidate changed/
+        );
+        assert.equal(
+          mutations.length,
+          0,
+          "drift must reject before npm/GitHub mutation"
+        );
+        if (["tarball", "identity"].includes(downloadDrift))
           assert.equal(
-            options.headers.authorization,
-            "Bearer fixture-oidc-token"
+            tarCalls.length,
+            0,
+            "unreviewed package bytes must not reach tar"
           );
-          return { ok: true, json: async () => ({ verified: true }) };
-        }
+        return;
       }
-    );
-    assert.equal(result.ok, true);
-    assert.equal(result.verifiedSignatures, 4);
-    assert.ok(
-      calls.some(
-        ([name, args]) => name === "gh" && args.includes("draft=false")
-      )
-    );
-    assert.ok(
-      calls.some(([name, args]) => name === "npm" && args.at(-1) === "latest")
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+      const result = await runReleasePromotion(args, adapters);
+      assert.equal(result.ok, true);
+      assert.equal(result.verifiedComponents, 4);
+      assert.equal(downloads.length, 11);
+      assert.ok(!downloads.some((name) => name.endsWith(".signature.json")));
+      assert.equal(
+        mutations.filter(
+          ([cmd, action]) => cmd === "npm" && action === "publish"
+        ).length,
+        1
+      );
+      assert.ok(
+        mutations.some(([cmd, , , , tag]) => cmd === "npm" && tag === "latest")
+      );
+      assert.ok(
+        mutations.some(
+          ([cmd, ...argv]) => cmd === "gh" && argv.includes("PATCH")
+        )
+      );
+      mutations.length = 0;
+      f.contents.set(
+        "component-manifest-hashes.json",
+        Buffer.from("substituted")
+      );
+      await assert.rejects(runReleasePromotion(args, adapters), /digest/);
+      assert.equal(mutations.length, 0);
+    } finally {
+      f.cleanup();
+    }
+  });
 
-test("missing complete catalog blocks promotion before publication or signer calls", async () => {
-  const root = temporary();
-  try {
-    const rootsPath = resolve(root, "roots.json");
-    const rootsBytes = Buffer.from(
-      JSON.stringify({ schemaVersion: 1, keys: {} })
-    );
-    writeFileSync(rootsPath, rootsBytes);
-    const calls = [];
-    await assert.rejects(
-      runReleasePromotion(
-        {
-          trustRoots: rootsPath,
-          trustRootsSha256: createHash("sha256")
-            .update(rootsBytes)
-            .digest("hex"),
-          controlplaneTrustRootsSha256: sha256,
-          version: "1.0.0",
-          repository: "org/repo",
-          releaseId: "42"
-        },
-        {
-          signerToken: "fixture",
-          run: (name, args) => {
-            calls.push([name, args]);
-            return JSON.stringify({
-              tag_name: "v1.0.0",
-              draft: true,
-              assets: []
-            });
-          }
-        }
-      ),
-      /complete component catalog.*missing/i
-    );
-    assert.equal(calls.length, 1);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("checks candidate registry metadata for exact package, version, and sha512 integrity", async () => {
+test("registry package/version/SRI must match exact candidate", async () => {
   const expected = {
     packageName: "@koed-labs/server",
     version: "1.0.0",
     integrity: "sha512-YWJj"
   };
-  assert.deepEqual(
-    await verifyNpmCandidate(expected, async () => ({
-      name: expected.packageName,
-      version: expected.version,
-      dist: { integrity: expected.integrity }
-    })),
-    { verified: true }
-  );
-  await assert.rejects(
-    verifyNpmCandidate(expected, async () => ({
-      name: expected.packageName,
-      version: expected.version,
-      dist: { integrity: "sha512-d3Jvbmc=" }
-    })),
-    /registry integrity mismatch/
-  );
+  const metadata = {
+    name: expected.packageName,
+    version: expected.version,
+    dist: { integrity: expected.integrity }
+  };
+  assert.deepEqual(await verifyNpmCandidate(expected, async () => metadata), {
+    verified: true
+  });
+  for (const actual of [
+    null,
+    { ...metadata, name: "wrong" },
+    { ...metadata, version: "2.0.0" },
+    { ...metadata, dist: { integrity: "sha512-d3Jvbmc=" } }
+  ])
+    await assert.rejects(
+      verifyNpmCandidate(expected, async () => actual),
+      /missing|mismatch/
+    );
 });

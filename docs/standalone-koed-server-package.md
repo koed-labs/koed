@@ -390,9 +390,7 @@ Signature/provenance rules:
   or Desktop configuration opts into stricter policy.
 - Native runtime archives keep their own manifest/SHA-256 verification.
 
-Component bundle manifests use canonical JSON and an Ed25519 signature over
-`koed-component-manifest-sha256-v2\n` plus the raw 32-byte SHA-256 digest of canonical UTF-8 manifest bytes. The signed
-fields bind product/component identity, target, Node/Electron and Node ABI or
+Component bundle manifests use canonical JSON authenticated by expected SHA-256 hashes embedded in the trusted version-matched control plane. Downloaded manifests and catalog sidecars are not independent trust anchors. The pinned fields bind product/component identity, target, Node/Electron and Node ABI or
 N-API compatibility, optional Linux glibc minimum, required files, archive size
 and SHA-256, and every archived file hash. Archive verification streams gzip/tar
 content under compressed, expanded, per-file, and entry-count limits; requires
@@ -403,9 +401,7 @@ depth, directory, file-count, aggregate-byte, and per-file limits; no-follow
 file-descriptor reads verify inode identity before and after hashing, and extra,
 missing, linked, and special files are rejected.
 
-When installation integration is added, it must create a fresh exclusive
-staging root under the private `KOED_HOME` runtime directory and verify/extract
-only within that root. These checks detect ordinary link and replacement races;
+Installation creates a fresh exclusive staging root under the private `KOED_HOME` runtime directory and verifies/extracts only within that root. These checks detect ordinary link and replacement races;
 they do not claim defense against a same-UID attacker with arbitrary ability to
 mutate the verifier process or its staging files.
 
@@ -419,27 +415,19 @@ without an absolute transfer deadline. Caller cancellation and byte limits still
 apply throughout acquisition and publication.
 
 Component verification is wired into explicit component provisioning and cached
-runtime selection. The current build includes the approved
-`koed-components-2026-01` public key in `component-trust-roots.ts`; a missing trust
-root still fails closed. Repository configuration does not prove that the remote
-signer is authorized or publication approvals are enabled. The planned manifest-pin
-replacement and its release gates are recorded in
-[ADR 0057](adr/0057-versioned-component-manifest-pins.md). Runtime ranges intentionally use
+runtime selection. Missing compiled pins fail closed, including catalog-less development builds. Runtime admission does not consume component signing roots or signature sidecars. The stack must be component pin-only before merge, without component KMS, hosted signer, roots, sidecars or component-signing OIDC. Protected independently reviewed build identity, read-only candidate verification, publication approval, npm authentication/provenance, immutability and SRI remain mandatory. Actual native Personal/Team and signed/notarized clean-Mac acceptance remain gates, not reasons to retain obsolete source. Source cleanup does not authorize live cloud or repository-variable changes. Apple Developer ID signing/notarization, unrelated hosted/encryption KMS and legacy app-runtime provenance remain unchanged. The implemented pin boundary and remaining release gates are recorded in [ADR 0057](adr/0057-versioned-component-manifest-pins.md). Runtime ranges intentionally use
 restricted numeric SemVer syntax: one to three decimal components with optional
 `>=`, `>`, `<=`, `<`, or `=` comparisons, whitespace-conjoined; exact runtime
 versions use two or three components. Leading zeroes, prerelease/build labels,
-wildcards, caret, and tilde ranges are rejected. This matches current signed
+wildcards, caret, and tilde ranges are rejected. This matches current pinned
 component contracts without introducing an undeclared production SemVer
-dependency; all numeric components must be safe integers. Fixture keys exist only in test
-source and are excluded from the built package. No component-key environment,
-CLI, or per-user override exists. An internal trusted runtime-identity adapter is available in
+dependency; all numeric components must be safe integers. No component-pin environment, CLI, or per-user override exists. An internal trusted runtime-identity adapter is available in
 `component-runtime-identity.ts`; it derives Node/Electron versions, platform,
 architecture, ABI, N-API, and Linux glibc version from the running process.
 Unknown platforms, architectures, runtime fields, or Linux libc fail closed.
-Future public activation integration must consume this adapter; verifier inputs
-remain injectable only for internal tests. This component trust gate is distinct from
+Provisioning uses this adapter; verifier inputs remain injectable only for internal tests. This component trust gate is distinct from
 existing standalone package provenance trust-policy options above; those options
-do not populate component trust roots.
+do not supply component manifest pins.
 
 Downgrade and rollback rules:
 

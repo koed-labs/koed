@@ -33,8 +33,12 @@ standalone component, native runtime, Desktop, and release-metadata builders.
 GitHub draft assets are immutable: retries verify existing bytes and only add
 missing assets. npm versions are immutable; candidate publication, registry
 verification, `latest` promotion, and GitHub publication must run in that order.
-Empty production signer/trust-root configuration, missing npm trusted-publishing
-authorization, or absent independent promotion approval blocks publication.
+Missing or mismatched complete version-matched manifest pins, protected independently
+reviewed build identity, read-only candidate verification, npm trusted-publishing
+authentication/provenance, SRI, or independent promotion approval blocks publication.
+Component KMS/signing configuration is not required; the stack must be pin-only
+before merge. Actual native Personal/Team and signed/notarized clean-Mac acceptance
+remain gates.
 
 Artifact metadata generation rejects a tag or packaged component whose version
 does not match the product release. Desktop package verification compares the
