@@ -43,8 +43,9 @@ uncertain supervisor ownership, activation, and cleanup remain blocked. Lifecycl
 and component-store locks still protect generation selection and retention.
 Personal/Base smoke requires embedding,
 not Privacy assets. A separate Team launch verifies startup fails closed without
-verified Privacy assets; empty production signer trust roots block positive Team
-provisioning. Supervisor output is written to `KOED_HOME/logs/supervisor.log`. The live log is capped at 8 MiB. If the supervisor exits before readiness, the smoke fails immediately, prints the supervisor, Postgres, runtime-state, and final-status diagnostics, and creates a uniquely named, smoke-owned child under the configured diagnostics directory for the short-lived workflow artifact. The caller-provided parent is never removed or replaced, copied service logs contain only their final 64 KiB, and secret-bearing configuration files are excluded.
+verified Privacy assets. Positive Team provisioning requires the trusted Desktop
+control plane's matching Privacy manifest pin and actual native lifecycle acceptance;
+negative coverage is not positive Team proof. Supervisor output is written to `KOED_HOME/logs/supervisor.log`. The live log is capped at 8 MiB. If the supervisor exits before readiness, the smoke fails immediately, prints the supervisor, Postgres, runtime-state, and final-status diagnostics, and creates a uniquely named, smoke-owned child under the configured diagnostics directory for the short-lived workflow artifact. The caller-provided parent is never removed or replaced, copied service logs contain only their final 64 KiB, and secret-bearing configuration files are excluded.
 
 These GitHub Release assets are still unsigned and not notarized until the signing/notarization follow-up is complete.
 

@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -10,10 +10,7 @@ import type {
 } from "./component-contract.js";
 import type { ManifestPinCatalog } from "./component-manifest-catalog.js";
 import type { ComponentVerificationInput } from "./component-verification.js";
-import {
-  componentManifestSigningBytes,
-  canonicalComponentManifestBytes
-} from "./component-verification.js";
+import { canonicalComponentManifestBytes } from "./component-verification.js";
 
 // Fixed pre-serializer-change archive; zlib output varies across Node versions.
 export const goldenComponentArchive = Buffer.from(
@@ -94,7 +91,6 @@ const tarFile = (path: string, content: Buffer, type = "0") => {
 
 export interface ComponentFixture {
   input: ComponentVerificationInput;
-  historicalSignature: { keyId: string; signature: string; publicKey: string };
   root: string;
   dispose(): void;
 }
@@ -164,15 +160,6 @@ function createComponentFixture(
   mkdirSync(dirname(archivePath), { recursive: true });
   writeFileSync(archivePath, archive);
   const manifestBytes = canonicalComponentManifestBytes(manifest);
-  const pair = generateKeyPairSync("ed25519");
-  const keyId = hash(
-    pair.publicKey.export({ type: "spki", format: "der" })
-  ).slice(0, 32);
-  const signature = sign(
-    null,
-    componentManifestSigningBytes(manifestBytes),
-    pair.privateKey
-  ).toString("base64");
   const expectedComponent: ComponentId = overrides.component ?? "base";
   const expectedVersion = overrides.productVersion ?? "0.8.1";
   const target: ArtifactTarget = overrides.target ?? {
@@ -211,13 +198,6 @@ function createComponentFixture(
   };
   return {
     input,
-    historicalSignature: {
-      keyId,
-      signature,
-      publicKey: pair.publicKey
-        .export({ type: "spki", format: "pem" })
-        .toString()
-    },
     root,
     dispose: () => rmSync(directory, { recursive: true, force: true })
   };

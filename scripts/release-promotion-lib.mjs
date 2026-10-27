@@ -84,10 +84,6 @@ export const planReleasePromotion = (expected, remote, authorization) => {
     reasons.push("Independent publication authorization is unavailable.");
   if (expected.catalogVerified !== true)
     reasons.push("Verified catalog and artifact evidence is unavailable.");
-  if (!authorization.signerReady)
-    reasons.push("Production signer is unavailable.");
-  if (!authorization.trustRootsReady)
-    reasons.push("Approved production trust roots are unavailable.");
   if (reasons.length) return blocked(reasons);
 
   const github = remote.github;

@@ -184,7 +184,7 @@ packaging, signing, runtime distribution, or packaged smoke support.
   manager retains sole supervisor authority; environment flags do not grant it.
   Personal/Base smoke installs only embedding assets. A separate Team launch
   proves missing verified Privacy assets fail closed; positive Team provisioning
-  remains blocked while production signer trust roots are empty.
+  remains a release gate until pin-verified Privacy assets pass packaged Team validation.
   The focused `--missing-assets` mode checks
   packaged-CLI status and actionable `doctor --json` output without launching
   Electron services. Add `--mask-native-assets` to temporarily hide and then
@@ -227,9 +227,9 @@ packaging, signing, runtime distribution, or packaged smoke support.
 ### Privacy asset management before startup
 
 The private stopped management child supports Privacy status and first installation
-before Team services are ready. It verifies the Base bundle and signed Privacy assets;
+before Team services are ready. It verifies the Base bundle and hash-pinned Privacy assets;
 it never grants authority through renderer arguments or environment flags. Running
 installations stage assets, stop services, activate, and restart with rollback on failure.
 Claude Code/Pi setup and repair also use private IPC, including while services are stopped.
-Production trust roots, compatible Electron artifacts and positive packaged Team validation
-remain release/acceptance gates; this flow does not enable publication.
+Complete version-matched manifest pins, compatible Electron artifacts and positive packaged
+Team validation remain release/acceptance gates; this flow does not enable publication.

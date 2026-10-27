@@ -1,6 +1,9 @@
 # Release Stack Remediation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Historical implementation plan, updated for the explicit pin-only-before-merge
+> requirement. Earlier staged signer-retention instructions are superseded.
+> Current documentation task permits only `docs/**` and `TODO.md` edits; no commits,
+> pushes, cloud mutations or repository-variable changes are authorized.
 
 **Goal:** Prepare #421 → #428 → #432 for re-review, treating the supplied response as the expected agreement, without implementing the review's deferred redesigns.
 
@@ -12,11 +15,22 @@
 
 ## Local execution checkpoint
 
-Local implementation was subsequently approved, with a pause before pushing.
+Developer subsequently confirmed the minor changeset and authorized stack pushes.
+Core fixes were ported to #421, signing integration merged into #428, and shared
+lifecycle adaptations merged into #432. History was preserved. Current PR checks
+are authoritative for pushed heads; actual platform acceptance remains open.
+Component signer source/configuration removal is required before merge, not gated
+on acceptance or cloud retirement. Preserve protected independently reviewed build
+identity, read-only candidate verification, publication approval, npm authentication/
+provenance, immutability and SRI. Preserve Apple Developer ID signing/notarization,
+unrelated hosted/encryption KMS and legacy app-runtime provenance.
+
+Earlier checkpoint: local implementation was subsequently approved, with a pause before pushing.
 The external standalone launcher extension was separately approved. Task 1 has
 two local commits; Tasks 2–4 have local implementation and test coverage, but
 actual candidate/platform acceptance items remain open. Task 5 is only partially
-satisfied; Task 6 signer removal remains blocked on that acceptance. No stack
+satisfied. Task 6 source/configuration cleanup is required before merge;
+acceptance remains a separate gate. No stack
 push, live operational change, publication or re-review readiness is claimed.
 See [local evidence and unresolved gates](../../release-stack-remediation-evidence.md).
 Unchecked acceptance items below must not be inferred complete from unit tests.
@@ -62,8 +76,8 @@ Checkout matches #432. “Stack 429” is a review label, not an existing PR. Ex
 - [ ] Add failing activation tests: same-version Base-only → Base+Privacy generation switch succeeds; newer → older generation activation rejects; rejection leaves current-pointer bytes unchanged and a subsequent valid activation succeeds. Use same Base digest, since store rejects conflicting content at one identity.
 - [ ] Run focused generation tests and confirm new assertions fail for the missing behavior/error contract.
 - [ ] In `activateGeneration(paths, id, requester, capability?)`, retain downgrade protection but use generation-specific wording without `--allow-downgrade`. Do not weaken the separate package-install downgrade/migration guard, whose CLI really supports that option.
-- [ ] Correct docs: activation's synthetic package manifests carry no migration metadata; this is version rejection, not database compatibility validation. Correct stale claim that production roots are empty while the KMS path still exists; final docs switch to pins in Task 6.
-- [ ] Obtain read-only operational evidence whether deployed signer has `KOED_SIGNER_REHEARSAL_SHA` set. Review reports authorization was revoked; do not infer live state from repository code. Remove rehearsal exception before merge or document exact restricted reason/expiry while signer remains needed. Record unavailable cloud access as an unresolved gate.
+- [ ] Correct docs: activation's synthetic package manifests carry no migration metadata; this is version rejection, not database compatibility validation. Use pin-only requirements throughout active documentation.
+- [ ] Remove obsolete component signer configuration/instructions from source before merge. Do not infer deployed state or require cloud inspection/retirement for this cleanup; operational changes require separate authorization.
 - [ ] Rerun generation/package-runtime tests; commit narrow correction independently.
 
 **Deliverable:** Accurate existing-path behavior/docs, explicit trust decision, direct activation tests. This task does not assert pin implementation readiness.
@@ -95,7 +109,7 @@ Checkout matches #432. “Stack 429” is a review label, not an existing PR. Ex
 - [ ] Remove signature requirements from CLI/IPC source contracts and file picker; replace signer-availability status with exact required catalog-entry availability. Preserve nonce/authorization and request-key constraints, cancellation/progress, and pre-start Privacy installation.
 - [ ] Rename signature-specific types/status discriminants truthfully; avoid “signed” claims for hash-pinned components.
 - [ ] Version stored-record format and fail closed with actionable reinstall guidance for pre-pin test stores. Confirm no published installations before relying on no migration requirement; otherwise return for explicit compatibility policy. Never silently trust old stored metadata.
-- [ ] Run component, generation, IPC, bundle-tamper, filesystem/race and Desktop lifecycle regressions. Commit functional pin admission while retaining KMS infrastructure until replacement acceptance is proven.
+- [ ] Run component, generation, IPC, bundle-tamper, filesystem/race and Desktop lifecycle regressions. Require functional pin admission and remove obsolete component signer source/configuration before merge; actual acceptance remains mandatory.
 
 **Deliverable:** Actual installer and runtime-reuse paths enforce pins without weakening downstream checks.
 
@@ -121,7 +135,7 @@ reviewed SHA/version → target components frozen → complete catalog
 - [ ] Run actual pre-promotion verification on release candidate without granting public publication. Demonstrate both good install and tamper rejection through this gate, not only mocked adapter tests.
 - [ ] Commit workflow/promotion integration separately; carry #428-specific signing integration on #428 after #421 boundary stabilizes.
 
-## Task 5 — Acceptance before retiring KMS verification
+## Task 5 — Actual pin-only acceptance
 
 **Files:** Existing component/package/packaged smoke tests and CI validation configuration; evidence record under docs with sanitized artifact hashes and run links.
 
@@ -133,17 +147,20 @@ reviewed SHA/version → target components frozen → complete catalog
 - [ ] Run applicable Linux x64 checks if Linux artifacts remain in catalog/promotion matrix. Parked validation must become explicit unresolved support/release gate, not a blanket pass. CUDA acceptance remains separate when required by native release matrix.
 - [ ] Investigate material startup/status regressions attributable to pins/build changes; no broad benchmark project and no skipped integrity passes.
 
-**Gate:** Do not remove KMS verification until pin tests and actual install/promotion candidate checks pass. Report outstanding acceptance honestly before requesting re-review.
+**Gate:** Pin-only source/configuration is required before merge independently of
+acceptance. Actual native Personal/Team, install/promotion candidate and signed/
+notarized clean-Mac checks remain gates. Report outstanding acceptance honestly;
+source cleanup is not acceptance evidence.
 
 ## Task 6 — Remove obsolete signing path and reconcile documentation
 
 **Files:** `packages/koed-server/src/component-trust-roots.ts`; component signature helpers/consumers; `infra/component-signer/`; `scripts/release-signing-adapter.mjs`, `scripts/component-signing-rehearsal.mjs`, signer-only tests; workflows; `docs/standalone-koed-server-package.md`, `docs/running-koed.md`, `docs/release-promotion.md`, `docs/desktop-notarization.md`, `docs/ci-validation.md`, configuration references, `TODO.md`.
 
-- [ ] After Task 5 gate, delete unused component signatures, roots, signer implementation/adapters/rehearsal and signing-only workflow inputs/assets. Replace trust gates with catalog completeness/consistency gates, not unconditional success.
+- [ ] Before merge, delete unused component signatures, roots, signer implementation/adapters/rehearsal and signing-only workflow inputs/assets without waiting for Task 5 acceptance. Replace trust gates with catalog completeness/consistency and protected reviewed-build verification, not unconditional success.
 - [ ] Search for all signer-specific variables, signature suffixes, help/errors and stale rollback claims. Preserve npm OIDC/provenance, Apple credentials, unrelated KMS use, and separate legacy app-runtime provenance behavior.
 - [ ] Document exact trust model, release ordering, missing-pin failure, test-store reinstall, version matching and rollback limits. Record deferred database framework, CLI IPC replacement, filesystem simplification, precomputed bundle identity and broad benchmark work in `TODO.md`, not `CONTEXT.md`.
-- [ ] Inventory live signer consumers and drafts. After separately authorized operational change, revoke temporary rehearsal access, stop callers, retire signer URL/root configuration, disable service/key reversibly and retain evidence. Do not destroy key as part of code cleanup; no live-state claim without verification.
-- [ ] Release-note decision before adding or omitting changesets: recommend **minor**, because trust/configuration/release pipeline behavior changes materially. Ask developer confirmation; check whether existing approved minor changesets already cover scope. No changeset decision assumed here.
+- [ ] Remove obsolete component service provisioning instructions with the source. No live cloud deletion, disablement or repository-variable change is authorized or required; make no live-state claim.
+- [ ] Preserve the existing developer-approved **minor** changeset for the material trust/configuration/release pipeline behavior change; this cleanup does not add or modify changesets.
 - [ ] Rerun retained tests after deletions; commit cleanup separately.
 
 ## Task 7 — Repair stack and prepare re-review packet
@@ -166,8 +183,14 @@ reviewed SHA/version → target components frozen → complete catalog
 | F: Precomputed bundle digest   | Deferred; inventory verification and `bundleDigest` retained                                                |
 | G: Benchmarks                  | Broad project deferred; introduced regressions investigated                                                 |
 | Stale trust-root documentation | Task 1 interim correction; Task 6 final pin docs                                                            |
-| Rehearsal authorization        | Read-only evidence plus bounded removal/retirement gate                                                     |
+| Component signer cleanup       | Pin-only source/configuration before merge; no live cloud or variable changes                               |
 | Publication approvals          | Existing gates retained; explicitly decide per-publication environment approval before first public release |
+
+## Prior verification checkpoint
+
+Server **970**, Desktop **967**, root scripts **503** tests passed at the latest
+prior checkpoint. Pin-only cleanup verification pending; these are not fresh
+results or native acceptance. Preserve the existing approved minor changeset.
 
 ## Verification commands
 

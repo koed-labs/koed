@@ -81,12 +81,16 @@ flags remain unable to authenticate a Desktop-owned generation.
 
 The same full smoke separately rejects Team startup without authenticated Privacy
 assets. Masked-native-assets diagnostics pass and restore the assets. Positive
-Team provisioning remains blocked by empty production signer trust roots; negative
-Team coverage does not waive that gate. Homebrew Node 24 still lacks
+Team provisioning was blocked by the historical signed-path prerequisites. This
+record is not pin-only acceptance and imposes no signer retention requirement;
+negative Team coverage does not prove positive native Team acceptance. Homebrew Node 24 still lacks
 `libsimdjson.30.dylib`; local checks used the explicit npm-provided Node 24 binary
 instead. Full-smoke evidence: `/tmp/pr404-status-smoke-final.log` (exit 0);
 masked-assets evidence: `/tmp/pr404-status-masked-final.log` (exit 0). No commit,
 push, signing authorization, or trust-root changes were performed.
+
+The following test-signed payload results are historical, not pin-only acceptance.
+They impose no active component-signer configuration or retention requirement.
 
 The component release builder declares Node `>=24 <25` with the build runtime’s
 measured modules ABI (tested with Node `24.14.0`, ABI 137, N-API 10) and
@@ -163,9 +167,9 @@ daemon starts. Personal/Base smoke does not install or require Privacy assets.
 It launches the real packaged Desktop manager and exercises start, status, stop,
 and restart through private inherited IPC. Only the manager creates the private
 supervisor channel; smoke environment flags do not grant authority. A separate
-Team launch must reject startup without verified Privacy assets. Production
-signer trust roots remain empty, so positive Team provisioning is blocked, not
-waived or substituted with unsigned assets. A second focused mode temporarily
+Team launch must reject startup without verified Privacy assets. Positive Team
+provisioning requires the trusted control plane's complete matching-version pins
+and actual native acceptance; it is not waived by negative startup coverage. A second focused mode temporarily
 masks the packaged `postgres`
 and `llama.cpp` directories, runs only packaged-CLI `package status`,
 `runtime status`, and `doctor --json` assertions, and restores the directories.

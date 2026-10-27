@@ -4,7 +4,6 @@ import type {
   ComponentManifest,
   RuntimeCompatibility
 } from "../packages/koed-server/src/component-contract.js";
-import type { KeyObject } from "node:crypto";
 
 export function canonicalComponentManifestBytes(
   manifest: ComponentManifest
@@ -19,17 +18,3 @@ export function buildComponentManifest(input: {
   runtimes: readonly RuntimeCompatibility[];
   requiredFiles: readonly string[];
 }): ComponentManifest;
-
-export function signComponentManifest(input: {
-  manifest: ComponentManifest;
-  keyId: string;
-  privateKey: string | Buffer | KeyObject;
-}): {
-  manifestBytes: Buffer;
-  signature: {
-    schemaVersion: 2;
-    keyId: string;
-    algorithm: "ed25519";
-    signature: string;
-  };
-};

@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 import { runReleaseVerification } from "./release-candidate-readers.mjs";
-import { inspectPackagedTrustRoots } from "./static-packaged-trust-roots.mjs";
-import { componentManifestSigningBytes } from "./component-signature-format.mjs";
 import { verifyFrozenComponentAssets } from "./verify-frozen-component-assets.mjs";
 import { verifyPackagedControlPlaneCatalog } from "./verify-packaged-control-plane-catalog.mjs";
-import { createHash, createPublicKey, verify } from "node:crypto";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   closeSync,
@@ -24,67 +22,6 @@ import {
 import { canonicalArtifactJson } from "../packages/koed-server/src/artifact-canonical-json.mjs";
 
 export const canonicalReleaseJson = canonicalArtifactJson;
-
-export const verifyReleaseSignatures = (artifacts, trustRoots) => {
-  if (
-    trustRoots?.schemaVersion !== 1 ||
-    !trustRoots.keys ||
-    !Object.keys(trustRoots.keys).length
-  )
-    throw new Error("Production component trust roots are missing.");
-  return artifacts.map(
-    ({
-      manifest: manifestPath,
-      signature: signaturePath,
-      component,
-      version,
-      target
-    }) => {
-      const manifestBytes = readFileSync(manifestPath);
-      const manifest = JSON.parse(manifestBytes.toString("utf8"));
-      const signature = JSON.parse(readFileSync(signaturePath, "utf8"));
-      if (
-        manifest.productVersion !== version ||
-        manifest.component !== component ||
-        `${manifest.target?.platform}-${manifest.target?.architecture}` !==
-          target
-      )
-        throw new Error(
-          `Component manifest identity or target mismatch: ${manifestPath}`
-        );
-      if (manifestBytes.toString("utf8") !== canonicalReleaseJson(manifest))
-        throw new Error(`Component manifest is not canonical: ${manifestPath}`);
-      const rawKey = trustRoots.keys[signature.keyId];
-      if (
-        signature.schemaVersion !== 2 ||
-        signature.algorithm !== "ed25519" ||
-        typeof rawKey !== "string" ||
-        typeof signature.signature !== "string"
-      )
-        throw new Error(
-          `Component signature or trusted key is invalid: ${signaturePath}`
-        );
-      const publicKey = createPublicKey(rawKey);
-      const bytes = Buffer.from(signature.signature, "base64");
-      const valid =
-        bytes.length === 64 &&
-        bytes.toString("base64") === signature.signature &&
-        verify(
-          null,
-          componentManifestSigningBytes(
-            Buffer.from(canonicalReleaseJson(manifest))
-          ),
-          publicKey,
-          bytes
-        );
-      if (!valid)
-        throw new Error(
-          `Component manifest signature is invalid: ${signaturePath}`
-        );
-      return { component, version, target, keyId: signature.keyId };
-    }
-  );
-};
 
 export const verifyNpmCandidate = async (expected, loadRegistryVersion) => {
   const actual = await loadRegistryVersion(
@@ -106,11 +43,6 @@ export const verifyNpmCandidate = async (expected, loadRegistryVersion) => {
 export const parseArgs = (argv) => {
   const args = {};
   const flags = new Map([
-    ["--trust-roots", "trustRoots"],
-    ["--trust-roots-sha256", "trustRootsSha256"],
-    ["--controlplane-trust-roots-sha256", "controlplaneTrustRootsSha256"],
-    ["--signer-url", "signerUrl"],
-    ["--signer-key-id", "signerKeyId"],
     ["--repository", "repository"],
     ["--release-id", "releaseId"],
     ["--version", "version"],
@@ -169,27 +101,14 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     throw new Error(
       "Full release promotion requires effective Desktop verification."
     );
-  const {
-    run = command,
-    fetchRegistry = registryVersion,
-    fetchImpl = fetch,
-    signerToken
-  } = adapters;
-  if (typeof signerToken !== "string" || !signerToken)
-    throw new Error("GitHub signer authorization is required");
-  const rootsBytes = readFileSync(resolve(args.trustRoots));
-  const rootsDigest = createHash("sha256").update(rootsBytes).digest("hex");
-  if (
-    !/^[a-f0-9]{64}$/.test(args.trustRootsSha256 ?? "") ||
-    !/^[a-f0-9]{64}$/.test(args.controlplaneTrustRootsSha256 ?? "") ||
-    rootsDigest !== args.trustRootsSha256
-  )
-    throw new Error(
-      "Trust roots do not match configured and control-plane digests."
-    );
-  const roots = JSON.parse(rootsBytes.toString("utf8"));
+  const { run = command, fetchRegistry = registryVersion } = adapters;
   const temp = mkdtempSync(resolve(tmpdir(), "koed-release-promotion-"));
   const download = (asset, path) => {
+    const reviewed = candidate.assets.find((item) => item.name === asset.name);
+    if (!reviewed)
+      throw new Error(
+        `Release asset differs from protected build: ${asset.name}`
+      );
     const fd = openSync(path, "wx", 0o600);
     try {
       run(
@@ -205,6 +124,14 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     } finally {
       closeSync(fd);
     }
+    // Authenticate each second download before any catalog/archive parsing.
+    const digest = createHash("sha256")
+      .update(readFileSync(path))
+      .digest("hex");
+    if (digest !== reviewed.sha256)
+      throw new Error(
+        `Release asset differs from protected build: ${asset.name}`
+      );
   };
   try {
     const release = JSON.parse(
@@ -227,74 +154,18 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     );
     if (manifests.length !== 4)
       throw new Error("Expected four component target manifests.");
-    const verified = [];
     for (const manifestName of manifests) {
-      const signatureName = manifestName.replace(
-        /\.manifest\.json$/,
-        ".signature.json"
-      );
       const archiveName = manifestName.replace(/\.manifest\.json$/, "");
-      if (!assets.has(signatureName) || !assets.has(archiveName))
+      if (!assets.has(archiveName))
         throw new Error(`Component release set is incomplete: ${manifestName}`);
-      const manifestPath = resolve(temp, manifestName);
-      const signaturePath = resolve(temp, signatureName);
-      const archivePath = resolve(temp, archiveName);
-      download(assets.get(manifestName), manifestPath);
-      download(assets.get(signatureName), signaturePath);
-      download(assets.get(archiveName), archivePath);
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-      const archiveBytes = readFileSync(archivePath);
-      if (
-        manifest.archive?.name !== archiveName ||
-        manifest.archive.bytes !== archiveBytes.length ||
-        manifest.archive.sha256 !==
-          createHash("sha256").update(archiveBytes).digest("hex")
-      )
-        throw new Error(
-          `Component archive does not match signed manifest: ${archiveName}`
-        );
-      const target = `${manifest.target?.platform}-${manifest.target?.architecture}`;
-      const result = verifyReleaseSignatures(
-        [
-          {
-            manifest: manifestPath,
-            signature: signaturePath,
-            component: manifest.component,
-            version: args.version,
-            target
-          }
-        ],
-        roots
-      );
-      if (result[0].keyId !== args.signerKeyId)
-        throw new Error(
-          `Component signature uses unexpected key ID: ${manifestName}`
-        );
-      const external = await fetchImpl(
-        `${args.signerUrl.replace(/\/$/, "")}/v1/verify`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            authorization: `Bearer ${signerToken}`
-          },
-          body: JSON.stringify({
-            keyId: args.signerKeyId,
-            manifest,
-            signature: JSON.parse(readFileSync(signaturePath, "utf8"))
-          })
-        }
-      );
-      if (!external.ok || (await external.json()).verified !== true)
-        throw new Error(
-          `External signer rejected component signature: ${manifestName}`
-        );
-      verified.push(...result);
+      download(assets.get(manifestName), resolve(temp, manifestName));
+      download(assets.get(archiveName), resolve(temp, archiveName));
     }
     await verifyFrozenComponentAssets({
       assetsDir: temp,
       catalogPath,
-      version: args.version
+      version: args.version,
+      runtimeIdentities: candidate.runtimeIdentities
     });
     const identityName = "koed-labs-server-release-identity.json";
     const tarballName = "koed-labs-server.tgz";
@@ -304,19 +175,6 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     const tarballPath = resolve(temp, tarballName);
     download(assets.get(identityName), identityPath);
     download(assets.get(tarballName), tarballPath);
-    // Bind downloaded bytes to the protected build before tar or JSON parsing
-    // touches them; the full asset check below stays as the pre-mutation gate.
-    for (const [name, path] of [
-      [identityName, identityPath],
-      [tarballName, tarballPath]
-    ]) {
-      const reviewed = candidate.assets.find((asset) => asset.name === name);
-      const digest = createHash("sha256")
-        .update(readFileSync(path))
-        .digest("hex");
-      if (!reviewed || reviewed.sha256 !== digest)
-        throw new Error(`Release asset differs from protected build: ${name}`);
-    }
     const identity = JSON.parse(readFileSync(identityPath, "utf8"));
     const expected = {
       packageName: "@koed-labs/server",
@@ -324,19 +182,6 @@ export const runReleasePromotion = async (args, adapters = {}) => {
       integrity: identity.npm?.integrity
     };
     const integrity = `sha512-${createHash("sha512").update(readFileSync(tarballPath)).digest("base64")}`;
-    const builtRoots = inspectPackagedTrustRoots(
-      run("tar", ["-xOf", tarballPath, "package/dist/component-trust-roots.js"])
-    );
-    const builtRootsDigest = createHash("sha256")
-      .update(canonicalReleaseJson(builtRoots))
-      .digest("hex");
-    if (
-      builtRootsDigest !== args.controlplaneTrustRootsSha256 ||
-      canonicalReleaseJson(builtRoots) !== canonicalReleaseJson(roots.keys)
-    )
-      throw new Error(
-        "Configured trust roots do not match trusted roots embedded in the published control-plane package."
-      );
     if (
       identity.packageName !== expected.packageName ||
       identity.version !== expected.version ||
@@ -359,7 +204,6 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     const immutableAssets = [
       ...manifests.flatMap((name) => [
         name,
-        name.replace(/\.manifest\.json$/, ".signature.json"),
         name.replace(/\.manifest\.json$/, "")
       ]),
       catalogName,
@@ -381,8 +225,8 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         throw new Error(`Release asset differs from protected build: ${name}`);
       return { name, sha256: digest };
     });
-    // Every consumed immutable asset, including retained signature envelopes,
-    // must match protected build bytes before any irreversible mutation.
+    // Every consumed immutable asset must match protected build bytes before
+    // any irreversible mutation.
     let published = await fetchRegistry(expected.packageName, expected.version);
     if (!published) {
       run("npm", [
@@ -428,7 +272,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         },
         latestVersion: latest?.version
       },
-      { publish: true, signerReady: true, trustRootsReady: true }
+      { publish: true }
     );
     if (plan.status !== "ready")
       throw new Error(
@@ -455,7 +299,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     }
     return {
       ok: true,
-      verifiedSignatures: verified.length,
+      verifiedComponents: manifests.length,
       npmIntegrity: expected.integrity,
       tag: release.tag_name,
       actions: plan.actions
@@ -492,40 +336,11 @@ const main = async () => {
     throw new Error(
       "Independent publication approval is required before promotion."
     );
-  for (const field of [
-    "trustRoots",
-    "trustRootsSha256",
-    "controlplaneTrustRootsSha256",
-    "signerUrl",
-    "signerKeyId",
-    "repository",
-    "releaseId",
-    "version"
-  ])
-    if (!args[field])
-      throw new Error(`Missing required promotion option: ${field}`);
-  const requestUrl = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
-  requestUrl.searchParams.set("audience", "koed-component-signer");
-  const tokenResponse = await fetch(requestUrl, {
-    headers: {
-      authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`
-    }
-  });
-  if (!tokenResponse.ok)
-    throw new Error(
-      `GitHub OIDC token request failed: HTTP ${tokenResponse.status}.`
-    );
-  const { value: signerToken } = await tokenResponse.json();
-  if (typeof signerToken !== "string" || !signerToken)
-    throw new Error("Missing GitHub signing token");
-  const result = await runReleasePromotion(args, {
-    signerToken,
-    publicationApproved
-  });
+  const result = await runReleasePromotion(args, { publicationApproved });
   console.log(
     args.json
       ? JSON.stringify(result)
-      : `Promoted ${result.tag} after verifying ${result.verifiedSignatures} signatures.`
+      : `Promoted ${result.tag} after verifying ${result.verifiedComponents} pinned components.`
   );
 };
 

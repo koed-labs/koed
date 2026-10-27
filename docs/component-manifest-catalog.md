@@ -78,8 +78,19 @@ unknown/remote throttling, other failures, a
 stopped supervisor, or a failed final doctor remain failures. This bounded harness
 recovery does not validate or fix runtime status-polling amplification.
 
-## Migration gate
+## Merge and acceptance gates
 
-This is a staged migration. Existing component signing and external signer checks remain in official release/promotion workflows until packaged install/reuse and promotion negative-path acceptance is complete. Their presence is not a runtime pin fallback: component admission uses the trusted control plane's pins. Do not infer KMS retirement or cloud configuration changes from code changes.
+The stack must be component pin-only before merge: remove component KMS, hosted
+signer, signer roots, signature sidecars and component-signing OIDC dependencies.
+Do not retain obsolete source/configuration pending acceptance. Protected,
+independently reviewed build identity, read-only candidate verification,
+publication approval, npm authentication/provenance, immutable assets and SRI remain.
+Source cleanup neither authorizes nor requires live cloud or repository-variable changes.
 
-Required release evidence still includes native Linux and macOS component installation/reuse, packaged managed lifecycle and Desktop boundary checks, npm promotion negatives, signed Desktop acceptance, and separate native-runtime/model coverage. A local fixture smoke or workflow-schema test is not equivalent to those target-specific results. Retire signing-only code and operational inputs only after that evidence and separately authorized cloud retirement.
+Required acceptance evidence still includes actual native Linux and macOS
+Personal/Team component installation/reuse, packaged managed lifecycle and Desktop
+boundary checks, npm promotion negatives, signed/notarized clean-Mac Desktop
+acceptance, and separate native-runtime/model coverage. A local fixture smoke or
+workflow-schema test is not equivalent to those target-specific results. Apple
+Developer ID signing/notarization, unrelated hosted/encryption KMS and legacy
+app-runtime provenance remain unchanged.

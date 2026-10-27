@@ -15,7 +15,6 @@ import {
   componentFixture
 } from "./component-test-fixtures.js";
 import {
-  componentManifestSigningBytes,
   canonicalComponentManifestBytes,
   verifyComponent,
   verifyExtractedComponent,
@@ -60,13 +59,24 @@ const testCatalog = (
 
 describe("component manifest pin verification", () => {
   it("rejects a historically signed manifest when catalog is absent", async () => {
-    const sample = await fixture();
+    const sample = await componentFixture({}, undefined, {
+      bytes: goldenComponentArchive
+    });
+    fixtures.push(sample);
+    // Fixed legacy signature proves signing never substitutes for a compiled pin.
+    const legacyMessage = Buffer.concat([
+      Buffer.from("koed-component-manifest-sha256-v2\n"),
+      createHash("sha256").update(sample.input.manifestBytes).digest()
+    ]);
     expect(
       cryptoVerify(
         null,
-        componentManifestSigningBytes(sample.input.manifestBytes),
-        sample.historicalSignature.publicKey,
-        Buffer.from(sample.historicalSignature.signature, "base64")
+        legacyMessage,
+        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAIkWBFG39HNtiazIrCwHn97s8hlX2MIb9zFe8f1F68n8=\n-----END PUBLIC KEY-----\n",
+        Buffer.from(
+          "+Brv/lpNY98g2hFE6+NKmod69ZezkPlnVTBji8NobALJWZgAG8Z3g5MllfK1v8shscL6CKCCrRUkR9BjkbAYAg==",
+          "base64"
+        )
       )
     ).toBe(true);
     await expect(
@@ -182,21 +192,6 @@ describe("component verification", () => {
     expect(releaseManifestBytes(manifest)).toEqual(golden);
     await expect(verifyComponent(sample.input)).resolves.toEqual(manifest);
   });
-  it("uses a bounded domain-separated SHA-256 message matching release tooling", async () => {
-    const sample = await fixture();
-    const { componentManifestSigningBytes: releaseBytes } =
-      await import("../../../scripts/component-signature-format.mjs");
-    const large = Buffer.alloc(2 * 1024 * 1024, 97);
-    const bytes = componentManifestSigningBytes(large);
-    expect(bytes).toEqual(releaseBytes(large));
-    expect(bytes.subarray(0, -32).toString()).toBe(
-      "koed-component-manifest-sha256-v2\n"
-    );
-    expect(bytes.subarray(-32).toString("hex")).toBe(digest(large));
-    expect(bytes.length).toBeLessThan(100);
-    await expect(verifyComponent(sample.input)).resolves.toBeDefined();
-  });
-
   it.each([
     [
       "version",

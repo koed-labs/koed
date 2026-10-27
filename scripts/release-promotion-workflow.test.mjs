@@ -52,7 +52,7 @@ test("reviewed identity comes from immutable build artifacts, not candidate draf
     )
   );
   const publication = jobs["publish-release"].steps.find((step) =>
-    step.run?.includes("--trust-roots ")
+    step.run?.includes("node scripts/release-promotion-adapter.mjs")
   );
   assert.equal(
     publication.env.KOED_RELEASE_PROMOTION_APPROVED,
@@ -137,11 +137,8 @@ test("release retries verify existing asset bytes and never clobber", () => {
   assert.match(recovery, /scripts\/ensure-release-assets\.mjs/);
 });
 
-test("official promotion invokes configured adapter behind signer and approval gates", () => {
+test("official promotion invokes pin-only adapter behind publication and approval gates", () => {
   for (const key of [
-    "KOED_COMPONENT_SIGNER_URL",
-    "KOED_COMPONENT_SIGNER_KEY_ID",
-    "KOED_COMPONENT_TRUST_ROOTS_SHA256",
     "KOED_NPM_PUBLICATION_AUTHORIZED",
     "KOED_RELEASE_PROMOTION_APPROVED"
   ])
@@ -151,7 +148,7 @@ test("official promotion invokes configured adapter behind signer and approval g
     resolve(root, "scripts/release-promotion-adapter.mjs"),
     "utf8"
   );
-  assert.match(adapter, /Missing required promotion option: \$\{field\}/);
+  assert.match(adapter, /Missing required verification option: \$\{field\}/);
   assert.match(adapter, /main\(\)\.catch\([\s\S]*process\.exitCode = 1/);
   assert.doesNotMatch(adapter, /process\.exit\(0\)/);
   assert.doesNotMatch(release, /draft=false|npm publish|npm dist-tag/);
