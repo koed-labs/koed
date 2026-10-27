@@ -28,6 +28,8 @@ import {
   activateGeneration,
   cleanupGenerations,
   readCurrentDesktopGeneration,
+  readCurrentDesktopGenerationOrderingEvidence,
+  type DesktopGenerationOrderingEvidence,
   readCurrentGenerationOrderingEvidence,
   readCurrentGeneration
 } from "./generation-lifecycle.js";
@@ -140,19 +142,31 @@ const storedGenerations = async (
 
 const readOwnedCurrentGeneration = async (
   context: ComponentCommandContext
-): Promise<VerifiedGeneration | GenerationOrderingEvidence | null> => {
+): Promise<
+  | VerifiedGeneration
+  | GenerationOrderingEvidence
+  | DesktopGenerationOrderingEvidence
+  | null
+> => {
   try {
     const evidence = context.desktopRuntimeCapability
-      ? null
-      : readCurrentGenerationOrderingEvidence(context.paths);
-    const generation = context.desktopRuntimeCapability
-      ? await readCurrentDesktopGeneration(
+      ? readCurrentDesktopGenerationOrderingEvidence(
           context.paths,
           context.desktopRuntimeCapability
         )
-      : evidence!.productVersion === context.controlPlaneVersion
-        ? await readCurrentGeneration(context.paths)
-        : evidence!;
+      : readCurrentGenerationOrderingEvidence(context.paths);
+    const currentBundle =
+      evidence.kind !== "desktop-generation-ordering-evidence" ||
+      evidence.bundleDigest === context.desktopRuntimeCapability?.bundleDigest;
+    const generation =
+      evidence.productVersion !== context.controlPlaneVersion || !currentBundle
+        ? evidence
+        : context.desktopRuntimeCapability
+          ? await readCurrentDesktopGeneration(
+              context.paths,
+              context.desktopRuntimeCapability
+            )
+          : await readCurrentGeneration(context.paths);
     return generation.owner.kind === context.owner.kind &&
       generation.owner.installationId === context.owner.installationId
       ? generation
@@ -174,7 +188,9 @@ export async function runComponentStatus(
   const active = await readOwnedCurrentGeneration(context);
   const priorPresence =
     active && "kind" in active
-      ? readGenerationComponentPresence(context.paths, active.id)
+      ? active.kind === "desktop-generation-ordering-evidence"
+        ? active.components
+        : readGenerationComponentPresence(context.paths, active.id)
       : [];
   const generations = await storedGenerations(context);
   const installed = await readStoredComponents(context.paths, context.runtime);
@@ -203,9 +219,14 @@ export async function runComponentStatus(
       ? "staged"
       : stored.length > 0
         ? "incompatible"
-        : installed.some((entry) => entry.manifest.component === component)
+        : installed.some(
+              (entry) =>
+                entry.manifest.component === component &&
+                entry.manifest.productVersion === context.controlPlaneVersion
+            )
           ? "installed"
-          : priorPresence.includes(component)
+          : priorPresence.includes(component) ||
+              installed.some((entry) => entry.manifest.component === component)
             ? "incompatible"
             : "missing";
   }

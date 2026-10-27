@@ -1,6 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   existsSync,
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -21,6 +26,7 @@ import {
 import type { KoedServerPaths } from "./paths.js";
 import {
   readGenerationOrderingEvidence,
+  readGenerationRecord,
   readStagedGeneration
 } from "./component-store.js";
 import {
@@ -34,6 +40,7 @@ import {
 import { isVersionDowngrade } from "./package-runtime.js";
 import { renameAtomically } from "./generation-lifecycle-filesystem.js";
 import { acquireDirectoryLock } from "./directory-lock.js";
+import { canonicalArtifactJson } from "./artifact-canonical-json.mjs";
 
 interface LifecycleLockRecord {
   pid: number;
@@ -386,6 +393,185 @@ export async function readCurrentGenerationForOwner(
   return generation;
 }
 
+export interface DesktopGenerationOrderingEvidence {
+  readonly kind: "desktop-generation-ordering-evidence";
+  readonly id: string;
+  readonly productVersion: string;
+  readonly owner: Readonly<RuntimeOwner>;
+  readonly bundleDigest: string;
+  readonly resourcesPath: string;
+  readonly components: readonly ("base" | "privacy")[];
+}
+
+const readOrderingJournalFile = (path: string): string => {
+  if (constants.O_NOFOLLOW === undefined)
+    throw new Error("component metadata no-follow access is unavailable");
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  );
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > 1024 * 1024)
+      throw new Error("generation journal is not a bounded regular file");
+    const bytes = Buffer.alloc(stat.size + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync(
+        descriptor,
+        bytes,
+        length,
+        bytes.length - length,
+        null
+      );
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > stat.size)
+      throw new Error("generation journal changed while reading");
+    return bytes.subarray(0, length).toString("utf8");
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+const readDesktopOrderingJournal = (
+  paths: KoedServerPaths,
+  id: string
+): DesktopGenerationOrderingEvidence | null => {
+  const bundlePath = desktopBundleRecordPath(paths, id);
+  const hasBundle = existsSync(bundlePath);
+  if (hasBundle) assertDirectoryChain(paths.koedHome, dirname(bundlePath));
+  const record: unknown = hasBundle
+    ? JSON.parse(readOrderingJournalFile(bundlePath))
+    : readGenerationRecord(paths, id);
+  if (!isRecord(record)) throw new Error("generation record is invalid");
+  if (
+    record.kind !== "desktop-bundle" &&
+    record.kind !== "desktop-bundle-with-privacy"
+  )
+    return null;
+  validateDesktopOrderingJournal(record, id);
+  return Object.freeze({
+    kind: "desktop-generation-ordering-evidence",
+    id,
+    productVersion: record.productVersion,
+    owner: Object.freeze({ ...record.owner }),
+    bundleDigest: record.bundleDigest,
+    resourcesPath: record.resourcesPath,
+    components: Object.freeze(
+      record.kind === "desktop-bundle"
+        ? (["base"] as const)
+        : (["base", "privacy"] as const)
+    )
+  });
+};
+
+function validateDesktopOrderingJournal(
+  record: Record<string, unknown>,
+  id: string
+): asserts record is Record<string, unknown> & {
+  productVersion: string;
+  owner: RuntimeOwner;
+  bundleDigest: string;
+  resourcesPath: string;
+} {
+  const privacy = record.kind === "desktop-bundle-with-privacy";
+  const keys = [
+    "schemaVersion",
+    "kind",
+    "id",
+    "productVersion",
+    "owner",
+    "bundleDigest",
+    "resourcesPath",
+    ...(privacy ? ["privacy"] : [])
+  ];
+  if (
+    Object.keys(record).length !== keys.length ||
+    !keys.every((key) => Object.hasOwn(record, key)) ||
+    record.schemaVersion !== 1 ||
+    record.id !== id ||
+    typeof record.productVersion !== "string" ||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(record.productVersion) ||
+    !isRuntimeOwnerRecord(record.owner) ||
+    record.owner.kind !== "desktop" ||
+    typeof record.resourcesPath !== "string" ||
+    !isAbsolute(record.resourcesPath) ||
+    typeof record.bundleDigest !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.bundleDigest)
+  )
+    throw new Error("private Desktop bundle generation record is invalid");
+  if (privacy) validateDesktopPrivacyJournal(record, id);
+  else if (
+    createHash("sha256")
+      .update(`${record.owner.installationId}\n${record.bundleDigest}`)
+      .digest("hex") !== id
+  )
+    throw new Error("Desktop bundle generation identity mismatch");
+}
+
+function validateDesktopPrivacyJournal(
+  record: Record<string, unknown>,
+  id: string
+): void {
+  if (
+    !isRecord(record.privacy) ||
+    Object.keys(record.privacy).length !== 2 ||
+    typeof record.privacy.root !== "string" ||
+    isAbsolute(record.privacy.root) ||
+    record.privacy.root.split(/[\\/]/).includes("..") ||
+    typeof record.privacy.manifestDigest !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.privacy.manifestDigest)
+  )
+    throw new Error("private Desktop privacy journal is invalid");
+  const identity = { ...record };
+  delete identity.id;
+  if (
+    createHash("sha256")
+      .update(canonicalArtifactJson(identity))
+      .digest("hex") !== id
+  )
+    throw new Error("Desktop privacy generation digest mismatch");
+}
+
+export function readCurrentDesktopGenerationOrderingEvidence(
+  paths: KoedServerPaths,
+  capability: DesktopRuntimeCapability
+):
+  | DesktopGenerationOrderingEvidence
+  | ReturnType<typeof readGenerationOrderingEvidence> {
+  if (!validateDesktopRuntimeCapability(capability))
+    throw new Error("validated private Desktop runtime capability is required");
+  const id = readCurrentId(paths);
+  if (!id) throw new Error("no active runtime generation");
+  const evidence =
+    readDesktopOrderingJournal(paths, id) ??
+    readGenerationOrderingEvidence(paths, id);
+  if (
+    evidence.kind === "desktop-generation-ordering-evidence" &&
+    evidence.resourcesPath !== capability.resourcesPath
+  )
+    throw new Error("runtime owner mismatch");
+  assertOwner(evidence, resolveDesktopRuntimeOwner(capability, paths.koedHome));
+  return evidence;
+}
+
+export async function readCurrentRuntimeOwner(
+  paths: KoedServerPaths
+): Promise<RuntimeOwner | null> {
+  if (!existsSync(resolve(paths.componentsDir, "current.json"))) return null;
+  const id = readCurrentId(paths);
+  if (!id) return null;
+  // Ownership discovery is not admission to execute historical payloads.
+  return (
+    await Promise.resolve(
+      readDesktopOrderingJournal(paths, id) ??
+        readGenerationOrderingEvidence(paths, id)
+    )
+  ).owner;
+}
+
 const persistPinState = (
   paths: KoedServerPaths,
   generation: VerifiedGeneration,
@@ -474,41 +660,17 @@ export async function pinDesktopBundleGenerationForStart(
       const activeId = readCurrentId(paths);
       let active: VerifiedGeneration | null = null;
       if (activeId) {
-        const priorBundlePath = desktopBundleRecordPath(paths, activeId);
-        const priorPrivacyPath = resolve(
-          paths.generationsDir,
-          activeId,
-          "generation.json"
+        const prior = readCurrentDesktopGenerationOrderingEvidence(
+          paths,
+          capability
         );
-        const journalPath = existsSync(priorBundlePath)
-          ? priorBundlePath
-          : priorPrivacyPath;
-        const prior: unknown =
-          activeId !== bundled.id && existsSync(journalPath)
-            ? JSON.parse(readRegularFile(journalPath))
-            : null;
+        if (isVersionDowngrade(prior.productVersion, bundled.productVersion))
+          throw new Error("Desktop generation downgrades are not supported.");
         if (
-          isRecord(prior) &&
-          (prior.kind === "desktop-bundle" ||
-            prior.kind === "desktop-bundle-with-privacy") &&
-          prior.bundleDigest !== capability.bundleDigest
+          prior.kind === "desktop-generation-ordering-evidence"
+            ? prior.bundleDigest === capability.bundleDigest
+            : prior.productVersion === bundled.productVersion
         ) {
-          // An older verified bundle is only an ownership journal here. Never execute it
-          // through the new capability or require a manifest-pinned store record for it.
-          const previous = prior;
-          if (
-            !isRecord(previous) ||
-            previous.schemaVersion !== 1 ||
-            (previous.kind !== "desktop-bundle" &&
-              previous.kind !== "desktop-bundle-with-privacy") ||
-            previous.id !== activeId ||
-            previous.resourcesPath !== capability.resourcesPath ||
-            !isRecord(previous.owner) ||
-            previous.owner.kind !== requester.kind ||
-            previous.owner.installationId !== requester.installationId
-          )
-            throw new Error("runtime owner mismatch");
-        } else {
           active = await readDesktopGenerationForCapability(
             paths,
             activeId,

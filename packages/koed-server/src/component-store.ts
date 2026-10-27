@@ -1173,7 +1173,10 @@ export interface GenerationOrderingEvidence {
   readonly owner: Readonly<RuntimeOwner>;
 }
 
-function readGenerationRecord(paths: KoedServerPaths, id: string): unknown {
+export function readGenerationRecord(
+  paths: KoedServerPaths,
+  id: string
+): unknown {
   if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("generation id is invalid");
   assertDirectoryChain(paths.koedHome, paths.generationsDir);
   const root = resolve(paths.generationsDir, id);
