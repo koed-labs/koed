@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* global AbortSignal, URL, clearTimeout, console, process, setTimeout */
 import { listPackage } from "@electron/asar";
+import { assertPackagedNoticeState } from "./desktop-update-notice-smoke.mjs";
 import {
   cpSync,
   readdirSync,
@@ -1079,6 +1080,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   finishPhase(timings, "required model verification or install", phaseStarted);
 
   const desktop = options.desktop;
+  assertPackagedNoticeState(await desktop.invoke("update_state"));
   const managerCommand = async (command) => {
     const payload = await desktop.invoke(command);
     assertNoSourceCheckoutResolution(`manager ${command}`, payload);

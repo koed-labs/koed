@@ -41,6 +41,8 @@ import { AiClientStatusDialog } from "./AiClientStatusDialog.js";
 import { EmbeddingStateDetails } from "./EmbeddingStateDetails.js";
 import { LocalAiClientSettingsSection } from "./LocalAiClientSettingsSection.js";
 import { CliInstallSettingsSection } from "./CliInstallSettingsSection.js";
+import { DesktopUpdatePanel } from "../../update/DesktopUpdate.js";
+import type { DesktopUpdateController } from "../../update/use-desktop-update.js";
 import { useDesktopStatus } from "../../state/use-status.js";
 import "../ai-client-card.css";
 import "./preferences.css";
@@ -86,6 +88,7 @@ export type PreferencesViewProps = {
   teamCollaborationEnabled?: boolean;
   theme: DesktopThemePreference;
   version: string;
+  update?: DesktopUpdateController;
 };
 
 const sections: readonly {
@@ -576,8 +579,9 @@ function AboutSection({
     "React and Electron — open-source software",
     "Base UI and Lucide — open-source interface components"
   ],
-  version
-}: Pick<PreferencesViewProps, "acknowledgements" | "version">) {
+  version,
+  update
+}: Pick<PreferencesViewProps, "acknowledgements" | "version" | "update">) {
   return (
     <div className="koed-preference-section">
       <dl className="koed-about-list">
@@ -590,6 +594,7 @@ function AboutSection({
           <dd>Apache License 2.0</dd>
         </div>
       </dl>
+      {update ? <DesktopUpdatePanel update={update} /> : null}
       <section aria-labelledby="koed-acknowledgements-title">
         <h2 id="koed-acknowledgements-title">Acknowledgements</h2>
         <ul>
@@ -1251,7 +1256,8 @@ export function PreferencesView({
   statusStore,
   teamCollaborationEnabled = true,
   theme,
-  version
+  version,
+  update
 }: PreferencesViewProps) {
   const visibleInitialSection = visiblePreferencesSection(
     initialSection,
@@ -1324,7 +1330,7 @@ export function PreferencesView({
           />
         ) : null}
         {section === "about" ? (
-          <AboutSection acknowledgements={acknowledgements} version={version} />
+          <AboutSection acknowledgements={acknowledgements} version={version} update={update} />
         ) : null}
         {section === "advanced" ? (
           <AdvancedSection statusStore={statusStore} />

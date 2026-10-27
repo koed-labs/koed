@@ -170,6 +170,16 @@ environments. The Windows-compatible registration and tray code is covered by
 platform-injected tests, but this repository still does not ship native Windows
 packaging, signing, runtime distribution, or packaged smoke support.
 
+## Update notices
+
+Packaged macOS arm64 builds show eligible stable updates in **Preferences → About**
+and a small **Update available** indicator. **View release** opens the official
+manual download path; Desktop does not download binaries, install on quit or stop
+runtimes for an update. Other platforms/development/private smoke do not check
+public metadata. Closing Desktop alone may leave an adopted CLI runtime running.
+Follow [Desktop update instructions](../../docs/desktop-updates.md) before replacing
+the app. Signed manual-install validation remains a public-release gate.
+
 ## Notes
 
 - `desktop:start` builds the app and launches Electron in source-checkout mode.

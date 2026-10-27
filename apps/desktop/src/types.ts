@@ -16,6 +16,7 @@ import type {
 import type { DesktopFeatureFlags } from "./ipc/desktop-feature-flags.js";
 import type { ManagedProjectDesktopApi } from "./ipc/managed-project-protocol.js";
 import type { CliInstallApi } from "./cli-install/protocol.js";
+import type { DesktopUpdateApi } from "@koed/shared/desktop-update-contract";
 
 export type ComponentState =
   | "not_configured"
@@ -188,6 +189,7 @@ export interface DesktopApi {
     reset: (flowKey: LocalAiClientFlowKey) => Promise<LocalAiClientResponse>;
   };
   managedProject?: ManagedProjectDesktopApi;
+  updates?: DesktopUpdateApi;
   clipboard?: {
     writeText: (value: string) => Promise<void>;
   };

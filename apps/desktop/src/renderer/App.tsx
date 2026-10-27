@@ -1,3 +1,5 @@
+import { DesktopUpdateIndicator } from "./update/DesktopUpdate.js";
+import { useDesktopUpdate } from "./update/use-desktop-update.js";
 import {
   TEAM_ACTIVITY_WRITE_THROTTLE_MS,
   type CollaborationDurableSend,
@@ -567,6 +569,7 @@ export function App({
   statusStoreOverride,
   teamCollaborationEnabled = true
 }: AppProps = {}) {
+  const desktopUpdate = useDesktopUpdate(window.koedDesktop?.updates);
   const askAvailable = Boolean(personalMemoryApi && managedConversations);
   const activeStatusStore = statusStoreOverride ?? statusStore;
   const [navigation, dispatch] = useReducer(
@@ -1944,7 +1947,8 @@ export function App({
         statusStore={activeStatusStore}
         teamCollaborationEnabled={teamCollaborationEnabled}
         theme={theme.preference}
-        version={__KOED_DESKTOP_VERSION__}
+        version={desktopUpdate.state?.installedVersion ?? "Unavailable"}
+        update={desktopUpdate}
       />
     );
   } else if (snapshot) {
@@ -2000,6 +2004,7 @@ export function App({
   return (
     <ToastProvider>
       <AppShell
+        updateControl={<DesktopUpdateIndicator update={desktopUpdate} onOpen={() => openPreferences("about")} />}
         activeScope={activeScope}
         canGoBack={navigation.index > 0}
         canGoForward={navigation.index < navigation.entries.length - 1}

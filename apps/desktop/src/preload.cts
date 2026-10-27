@@ -9,6 +9,7 @@ import {
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema
 } from "@koed/shared/collaboration";
+import { createDesktopUpdatePreloadApi } from "./ipc/update-preload.js";
 import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js";
 import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-preload.js";
 import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js";
@@ -45,6 +46,13 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     }
     return ipcRenderer.invoke(invokeChannel, command, args);
   },
+  updates: createDesktopUpdatePreloadApi(
+    (channel, value) => ipcRenderer.invoke(channel, value),
+    {
+      on: (channel, listener) => ipcRenderer.on(channel, listener),
+      removeListener: (channel, listener) => ipcRenderer.removeListener(channel, listener)
+    }
+  ),
   personalMemory: createPersonalMemoryPreloadApi(
     (channel, value) => ipcRenderer.invoke(channel, value),
     {

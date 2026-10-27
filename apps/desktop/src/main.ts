@@ -18,6 +18,8 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
+import { createUpdateDiscovery, updateNoticeEligible } from "./main/update-discovery.js";
+import { registerDesktopUpdateIpc } from "./ipc/update.js";
 import { attachPackagedSmokeHarness } from "./packaged-smoke-harness.js";
 import type { DesktopCommandName } from "./ipc/protocol.js";
 import {
@@ -370,8 +372,20 @@ async function showPairingDeepLink(value: string): Promise<void> {
   }
 }
 
+let disposeUpdateNotice: (() => void) | undefined;
+
 const bootstrap = async () => {
   await app.whenReady();
+  const updateDiscovery = createUpdateDiscovery({
+    installedVersion: app.getVersion(),
+    eligible: updateNoticeEligible({ packaged: app.isPackaged, platform: process.platform, arch: process.arch, argv: process.argv })
+  });
+  const removeUpdateIpc = registerDesktopUpdateIpc({
+    ipcMain, discovery: updateDiscovery, getMainWindow: () => mainWindow,
+    allowedRendererOrigins, openExternal: (url) => shell.openExternal(url)
+  });
+  disposeUpdateNotice = () => { removeUpdateIpc(); updateDiscovery.dispose(); };
+  updateDiscovery.start();
   const launchAtStartup = createLaunchAtStartupController({
     appDataPath: app.getPath("appData"),
     appIsPackaged: app.isPackaged,
@@ -640,6 +654,7 @@ const bootstrap = async () => {
         channel: process,
         send: (message) => process.send?.(message),
         invoke: async (command) => {
+          if (command === "update_state") return updateDiscovery.current();
           if (command === "privacy_status")
             return server.privacyInstall.getStatus();
           if (command === "privacy_install") {
@@ -707,6 +722,7 @@ app.on("before-quit", (event) => {
     return;
   }
   event.preventDefault();
+  disposeUpdateNotice?.();
   void (async () => {
     await managedPreviewController.close();
     await koedServer?.shutdown();

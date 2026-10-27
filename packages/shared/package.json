@@ -11,6 +11,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./desktop-update-contract": {
+      "types": "./dist/desktop-update-contract.d.ts",
+      "import": "./dist/desktop-update-contract.js"
+    },
     "./collaboration": {
       "types": "./dist/collaboration-contract.d.ts",
       "import": "./dist/collaboration-contract.js"

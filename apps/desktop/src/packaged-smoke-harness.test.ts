@@ -40,6 +40,16 @@ const fixture = (packaged = true, connected = true) => {
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("private packaged smoke harness", () => {
+  it("permits notice state diagnostics but no update installer command", async () => {
+    const f = fixture();
+    f.attach();
+    f.request("update_state", "notice");
+    f.request("update_download", "download");
+    f.request("update_install", "install");
+    await tick();
+    expect(f.calls).toEqual(["update_state"]);
+    expect(f.messages.filter((value) => typeof value === "object" && value !== null && "error" in value)).toHaveLength(2);
+  });
   it("requires packaged main and inherited connected IPC, not flag alone", () => {
     for (const [packaged, connected] of [
       [false, true],

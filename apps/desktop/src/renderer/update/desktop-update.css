@@ -1,0 +1,25 @@
+.desktop-update-panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.desktop-update-summary {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.desktop-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.desktop-update-panel ol {
+  padding-inline-start: 1.5rem;
+}
+
+.desktop-update-panel li + li {
+  margin-top: 0.5rem;
+}
