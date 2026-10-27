@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveLocalProjectId,
-  mergeGitRemoteAliases,
   normalizeGitRemoteUrl,
   safeProjectMetadataForRemote,
   type ProjectMetadataV1
@@ -46,34 +45,6 @@ describe("Project metadata helpers", () => {
     expect([ssh.fingerprint, upstream.fingerprint]).toContain(
       https.fingerprint
     );
-  });
-
-  it("retains unique portable remotes as historical matching aliases", () => {
-    const origin = normalizeGitRemoteUrl(
-      "git@github.com:koed-labs/koed.git",
-      "origin"
-    );
-    const renamedOrigin = normalizeGitRemoteUrl(
-      "https://github.com/koed-labs/koed",
-      "upstream"
-    );
-    const fork = normalizeGitRemoteUrl(
-      "https://github.com/alice/koed",
-      "origin"
-    );
-    const local = normalizeGitRemoteUrl("file:///Users/alice/code/koed.git");
-
-    expect(
-      mergeGitRemoteAliases([origin], [renamedOrigin, fork, local])
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ fingerprint: origin.fingerprint }),
-        expect.objectContaining({ fingerprint: fork.fingerprint })
-      ])
-    );
-    expect(
-      mergeGitRemoteAliases([origin], [renamedOrigin, fork, local])
-    ).toHaveLength(2);
   });
 
   it("keeps local file remotes opaque", () => {
@@ -157,9 +128,6 @@ describe("Project metadata helpers", () => {
     const localRemote = normalizeGitRemoteUrl(
       "file:///Users/jedd/private/koed.git"
     );
-    const historicalRemote = normalizeGitRemoteUrl(
-      "https://github.com/koed-labs/koed"
-    );
     const metadata: ProjectMetadataV1 = {
       schemaVersion: 1,
       discoveredAt: "2026-01-01T00:00:00.000Z",
@@ -174,9 +142,7 @@ describe("Project metadata helpers", () => {
       },
       git: {
         rootHash: "hmac_sha256:root",
-        commonDirHash: "hmac_sha256:common",
         remotes: [localRemote],
-        remoteAliases: [localRemote, historicalRemote],
         branch: "main",
         headCommit: "abcdef",
         isWorktree: false,
@@ -189,7 +155,5 @@ describe("Project metadata helpers", () => {
     expect(serialized).not.toContain("/Users/jedd/agents/koed");
     expect(serialized).not.toContain("/Users/jedd/private");
     expect(serialized).not.toContain(localRemote.fingerprint);
-    expect(serialized).not.toContain(historicalRemote.fingerprint);
-    expect(serialized).not.toContain("hmac_sha256:common");
   });
 });

@@ -117,7 +117,7 @@ describe("Project metadata discovery", () => {
         git: {
           branch: "feature/koe-219",
           headCommit: "abcdef1234567890",
-          remoteAliases: [
+          remotes: [
             expect.objectContaining({
               display: "github.com/koed-labs/koed"
             })
@@ -141,7 +141,7 @@ describe("Project metadata discovery", () => {
     expect(listProjectMetadata(paths).projects).toHaveLength(0);
   });
 
-  it("migrates legacy source identities and unsafe remote aliases", () => {
+  it("removes obsolete identity fields and unsafe remotes from cached metadata", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-project-"));
     const paths = pathsFor(directory);
     fs.mkdirSync(paths.configDir, { recursive: true });
@@ -167,6 +167,8 @@ describe("Project metadata discovery", () => {
             },
             git: {
               rootHash: "hmac_sha256:root",
+              commonDirHash: "hmac_sha256:obsolete",
+              remoteAliases: [{ display: "obsolete.example/project" }],
               remotes: [
                 {
                   name: "origin",
@@ -205,22 +207,19 @@ describe("Project metadata discovery", () => {
     const migrated = JSON.parse(
       fs.readFileSync(paths.projectMetadataPath, "utf8")
     ) as Record<string, unknown>;
-    expect(project?.git).toMatchObject({
-      commonDirHash: null,
-      remoteAliases: [
-        expect.objectContaining({ display: "github.com/koed-labs/koed" })
-      ]
-    });
+    expect(project?.git).not.toHaveProperty("commonDirHash");
+    expect(project?.git).not.toHaveProperty("remoteAliases");
     expect(migrated.schemaVersion).toBe(3);
     expect(JSON.stringify(migrated)).not.toMatch(
-      /sourceProjectId|remoteSetFingerprint|"owner"/
+      /sourceProjectId|remoteSetFingerprint|remoteAliases|commonDirHash|"owner"/
     );
   });
 
-  it("retains historical portable remote aliases across discovery", async () => {
+  it("replaces old remotes with current discovery and updates the selected repository", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-project-"));
     const repo = path.join(directory, "repo");
     fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.join(repo, ".git"));
     const paths = pathsFor(directory);
     let remoteOutput = "origin\thttps://github.com/koed-labs/koed.git (fetch)";
     const execFile = ((
@@ -248,20 +247,24 @@ describe("Project metadata discovery", () => {
 
     expect(second.project?.localProjectId).toBe(first.project?.localProjectId);
     expect(second.project?.git?.remotes).toHaveLength(1);
-    expect(second.project?.git?.remoteAliases).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ display: "github.com/koed-labs/koed" }),
-        expect.objectContaining({ display: "github.com/alice/koed" })
-      ])
+    expect(second.project?.git?.remotes[0]?.display).toBe(
+      "github.com/alice/koed"
     );
+    expect(second.project?.repository?.key).not.toBe(
+      first.project?.repository?.key
+    );
+    expect(second.project?.git).not.toHaveProperty("remoteAliases");
   });
 
-  it("groups worktrees by a device-local Git common-directory signal", async () => {
+  it("shares the selected repository identity across distinct worktree checkouts", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-project-"));
     const main = path.join(directory, "main");
     const worktree = path.join(directory, "worktree");
     fs.mkdirSync(main, { recursive: true });
     fs.mkdirSync(worktree, { recursive: true });
+    fs.mkdirSync(path.join(main, ".git", "worktrees", "worktree"), {
+      recursive: true
+    });
     const paths = pathsFor(directory);
     const execFile = ((
       _file: string,
@@ -301,8 +304,8 @@ describe("Project metadata discovery", () => {
     expect(worktreeProject.project?.localProjectId).not.toBe(
       mainProject.project?.localProjectId
     );
-    expect(worktreeProject.project?.git?.commonDirHash).toBe(
-      mainProject.project?.git?.commonDirHash
+    expect(worktreeProject.project?.repository?.key).toBe(
+      mainProject.project?.repository?.key
     );
     expect(mainProject.project?.git?.isWorktree).toBe(false);
     expect(worktreeProject.project?.git?.isWorktree).toBe(true);

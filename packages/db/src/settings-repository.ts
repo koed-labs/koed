@@ -1,8 +1,4 @@
-import {
-  readPersonalCaptureTarget,
-  captureTargetFromChoice,
-  type CaptureTargetChoice
-} from "./personal-capture-target-state.js";
+import { readPersonalCaptureTarget } from "./personal-capture-target-state.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { auditEventValues } from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
@@ -173,10 +169,7 @@ const capturePolicyAuditMetadata = (policy: CapturePolicyRecord) => ({
   pauseUntil: policy.pauseUntil
 });
 
-export const createSettingsRepository = (
-  db: KoedDb,
-  previewTarget?: { sessionId: string; choice: CaptureTargetChoice }
-) => ({
+export const createSettingsRepository = (db: KoedDb) => ({
   async listAiClientInstances(
     actor: ActorContext
   ): Promise<AiClientInstanceRecord[]> {
@@ -455,13 +448,7 @@ export const createSettingsRepository = (
     const captureTarget = session
       ? await readPersonalCaptureTarget(db, actor.userId, session)
       : null;
-    const fallbackTarget =
-      session && previewTarget?.sessionId === session.id
-        ? captureTargetFromChoice(session, previewTarget.choice)
-        : (captureTarget?.targetId ?? null);
-    // Explicit caller targets retain their existing priority. A User repair
-    // changes only the fallback chosen from this actual Captured Session.
-    const projectId = input.projectId ?? fallbackTarget;
+    const projectId = input.projectId ?? captureTarget?.targetId ?? null;
 
     const policyConditions = [
       eq(capturePolicies.targetType, "global"),

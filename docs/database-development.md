@@ -55,6 +55,13 @@ Migration startup serializes concurrent upgrades. Workers wait for every expecte
 migration hash before they use the schema. The migration tests cover populated
 main upgrades, transaction rollback, repeated runs, and the reset diagnostic.
 
+Application repositories require the complete migrated schema. Retired Project
+move, reset, and assignment-review writes return `410 personal_legacy_write_retired`
+directly; route inspection returns no route. Capture uses the current source
+context and preserves existing Capture Target bindings. Historical cutover tests
+seed their earlier schema directly instead of enabling old write behavior in
+application repositories.
+
 Do not add new migrations under `packages/db/src/migrations/`; that directory
 was replaced by the Drizzle migration folder.
 

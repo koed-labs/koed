@@ -144,6 +144,11 @@ read–modify–write operation. Each writer reads the latest state while holdin
 lock and replaces the file through a unique temporary file. A busy lock fails
 within five seconds rather than overwriting another process's changes.
 
+Discovery stores the current remote list and selected repository identity.
+Historical remote aliases and the redundant common-directory hash are removed
+from cached metadata when it is read. Repository matching continues to use the
+selected identity, including its checkout provenance.
+
 Git probes and Personal API lookups run outside the lock. Discovery then locks
 and re-reads the catalog, checks the profile and checkout incarnation, and applies
 its observation to the current configuration. New named Projects and local

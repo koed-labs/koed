@@ -40,9 +40,7 @@ const project: ProjectMetadataV1 = {
   },
   git: {
     rootHash: "hash",
-    commonDirHash: "hash",
     remotes: [remote],
-    remoteAliases: [remote],
     branch: "main",
     headCommit: null,
     isWorktree: false,

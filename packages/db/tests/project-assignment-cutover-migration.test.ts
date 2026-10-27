@@ -137,6 +137,12 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
         const current = after.find((row) => row.id === old.id)!.row;
         expect(current).toEqual({
           ...old.row,
+          folder_assignment: {
+            revision: 1,
+            original: { state: "unresolved", reason: "historical_unresolved" },
+            correction: { state: "original" }
+          },
+          repository_assignment_revision_id: null,
           repository_assignment_state: "historical_unresolved",
           repository_automatic_identity: null,
           repository_override_identity: null,

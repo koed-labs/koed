@@ -31,9 +31,7 @@ export interface ProjectMetadataV1 {
   };
   git?: {
     rootHash: string;
-    commonDirHash: string | null;
     remotes: NormalizedGitRemote[];
-    remoteAliases: NormalizedGitRemote[];
     branch: string | null;
     headCommit: string | null;
     isWorktree: boolean;
@@ -165,20 +163,6 @@ export const normalizeGitRemoteUrl = (
 
 export const isPortableGitRemote = (remote: NormalizedGitRemote): boolean =>
   Boolean(remote.host && remote.namespace && remote.repo);
-
-export const mergeGitRemoteAliases = (
-  ...remoteSets: NormalizedGitRemote[][]
-): NormalizedGitRemote[] => {
-  const byFingerprint = new Map<string, NormalizedGitRemote>();
-  for (const remote of remoteSets.flat()) {
-    if (isPortableGitRemote(remote)) {
-      byFingerprint.set(remote.fingerprint, remote);
-    }
-  }
-  return [...byFingerprint.values()].sort((left, right) =>
-    left.fingerprint.localeCompare(right.fingerprint)
-  );
-};
 
 export const deriveLocalProjectId = (input: {
   salt: string;

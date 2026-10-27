@@ -1,7 +1,4 @@
-import {
-  personalModelSchemaInstalled,
-  assertPersonalLegacyWriteSupported
-} from "./personal-model-boundary.js";
+import { personalLegacyWriteRetired } from "./personal-model-boundary.js";
 import { preserveRoutedCaptureTarget } from "./personal-capture-target-routing.js";
 import {
   personalSourceSelectionSql,
@@ -14,10 +11,6 @@ import {
   effectiveProjectPathSql,
   effectiveProjectNameSql
 } from "./project-scope-sql.js";
-import {
-  lockProjectRouting,
-  moveProjectConversations
-} from "./project-routing-repository.js";
 import {
   repositoryAssignmentSchema,
   type PersonalFolderAssignment,
@@ -606,8 +599,6 @@ export const createCapturedSessionRepository = (
       if (ownsTransaction) {
         await client.query("begin");
       }
-      await lockProjectRouting(client, actor.userId, true);
-      const modelInstalled = await personalModelSchemaInstalled(client);
       if (input.externalSessionId && !options.verifiedSourceIdentityOnly) {
         await client.query(
           "select pg_advisory_xact_lock(hashtextextended($1, 0))",
@@ -627,7 +618,6 @@ export const createCapturedSessionRepository = (
         ? repositoryIdentitySchema.parse(input.repositoryIdentity)
         : undefined;
       if (
-        modelInstalled &&
         !options.verifiedSourceIdentityOnly &&
         repositoryIdentity?.kind === "local_project"
       )
@@ -804,18 +794,13 @@ export const createCapturedSessionRepository = (
           return mapCapturedSession(convergedRow);
         }
       }
-      if (
-        modelInstalled &&
-        input.externalSessionId &&
-        !options.verifiedSourceIdentityOnly
-      ) {
+      if (input.externalSessionId && !options.verifiedSourceIdentityOnly) {
         // Legacy native replacement can retain recorded source facts, but it
         // must not revive a deletion or guess how an independent Capture Target
         // transfers to a new Session. Its implicit policy key must also remain
         // exact, and a Session-bound policy cannot be dropped on replacement.
-        // Serialize a legacy replacement with policy edits without taking a
-        // global policy lock for ordinary fresh captures. Routing precedes the
-        // policy lock, preserving routing-before-policy lock order.
+        // Serialize replacement with policy edits without taking a policy lock
+        // for ordinary fresh captures.
         await client.query(
           `select pg_advisory_xact_lock(hashtextextended($1,0)) where exists (
             select 1 from sessions where owner_user_id=$2 and external_session_id=$3
@@ -1085,29 +1070,7 @@ export const createCapturedSessionRepository = (
         !row.repository_assignment_inherited &&
         !replicatedAssignment
       ) {
-        if (modelInstalled) {
-          await preserveRoutedCaptureTarget(client, actor.userId, row.id);
-        } else {
-          // Staged legacy data is seeded before migration 69. This branch is
-          // unreachable after a migrated server passes its startup gate.
-          const routed = await client.query<CapturedSessionRow>(
-            `
-          update sessions s set repository_override_identity=r.target_identity,
-            repository_assignment_version=s.repository_assignment_version+1,repository_assignment_revision_id=null,
-            project_override_id=r.target_project_id,project_override_name=r.target_name,project_override_path=r.target_path,
-            project_override_at=now(),project_override_by_user_id=$2,updated_at=now()
-          from personal_project_routes r where s.id=$1 and s.owner_user_id=$2
-            and r.owner_user_id=s.owner_user_id and r.source_project_id=repository_scope_id(s.repository_automatic_identity)
-            and s.repository_assignment_state='recorded' and s.repository_override_identity is null
-          returning ${capturedSessionColumns
-            .split(",")
-            .map((column) => `s.${column.trim()}`)
-            .join(",")}
-        `,
-            [row.id, actor.userId]
-          );
-          if (routed.rows[0]) Object.assign(row, routed.rows[0]);
-        }
+        await preserveRoutedCaptureTarget(client, actor.userId, row.id);
       }
       await ensureCapturedSessionLogicalMemory(client, actor.userId, row.id);
       if (ownsTransaction) {
@@ -1152,94 +1115,16 @@ export const createCapturedSessionRepository = (
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
 
-  async moveCapturedSessionToProject(actor, sessionId, input) {
-    await assertPersonalLegacyWriteSupported(pool);
-    if (
-      !input.repositoryIdentity ||
-      !Number.isSafeInteger(input.expectedAssignmentVersion) ||
-      input.expectedAssignmentVersion! < 1
-    )
-      throw Object.assign(
-        new Error("Repository assignment and expected version are required"),
-        { statusCode: 400 }
-      );
-    const identity = repositoryIdentitySchema.parse(input.repositoryIdentity);
-    const project = normalizedProjectReference(input);
-    if (!project) return null;
-    const result = await pool.query<CapturedSessionRow>(
-      `
-        update sessions
-        set
-          repository_override_identity = $6::jsonb,
-          repository_assignment_version = repository_assignment_version + 1,repository_assignment_revision_id=null,
-          project_override_id = $3,
-          project_override_name = $4,
-          project_override_path = $5,
-          project_override_at = now(),
-          project_override_by_user_id = $1,
-          updated_at = now()
-        where id = $2
-          and owner_user_id = $1
-          and visibility = 'personal'
-          and invalidated_at is null
-          and personal_deleted_at is null
-          and repository_assignment_version = $7
-        returning ${capturedSessionColumns}
-      `,
-      [
-        actor.userId,
-        sessionId,
-        project.id,
-        project.name,
-        project.path,
-        identity,
-        input.expectedAssignmentVersion
-      ]
-    );
-    return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+  moveCapturedSessionToProject() {
+    return Promise.reject(personalLegacyWriteRetired());
   },
 
-  moveProjectConversations(actor, input) {
-    return moveProjectConversations(pool, actor.userId, input);
+  moveProjectConversations() {
+    return Promise.reject(personalLegacyWriteRetired());
   },
 
-  async resetCapturedSessionProject(
-    actor,
-    sessionId,
-    expectedAssignmentVersion
-  ) {
-    await assertPersonalLegacyWriteSupported(pool);
-    if (
-      !Number.isSafeInteger(expectedAssignmentVersion) ||
-      expectedAssignmentVersion! < 1
-    )
-      throw Object.assign(
-        new Error("Expected repository assignment version is required"),
-        { statusCode: 400 }
-      );
-    const result = await pool.query<CapturedSessionRow>(
-      `
-        update sessions
-        set
-          repository_override_identity = null,
-          repository_assignment_version = repository_assignment_version + 1,repository_assignment_revision_id=null,
-          project_override_id = null,
-          project_override_name = null,
-          project_override_path = null,
-          project_override_at = null,
-          project_override_by_user_id = null,
-          updated_at = now()
-        where id = $2
-          and owner_user_id = $1
-          and visibility = 'personal'
-          and invalidated_at is null
-          and personal_deleted_at is null
-          and repository_assignment_version = $3
-        returning ${capturedSessionColumns}
-      `,
-      [actor.userId, sessionId, expectedAssignmentVersion]
-    );
-    return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+  resetCapturedSessionProject() {
+    return Promise.reject(personalLegacyWriteRetired());
   },
 
   async getCapturedSession(actor, sessionId, input = {}) {

@@ -184,8 +184,6 @@ describe("shared Git Project probe", () => {
     expect(ids).toBe(2);
     expect(first.project?.localProjectId).toBe(second.project?.localProjectId);
     const rediscovered = await discoverProjectMetadata(paths, { cwd: root });
-    expect(rediscovered.project?.git?.commonDirHash).toBe(
-      first.project?.git?.commonDirHash
-    );
+    expect(rediscovered.project?.repository).toEqual(first.project?.repository);
   });
 });

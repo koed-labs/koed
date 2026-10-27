@@ -4111,7 +4111,7 @@ export const createMemorySourceRepository = (
     ...createPersonalProjectRuleRepository(pool),
     ...createPersonalProjectExclusionRepository(pool),
     ...createPersonalSourceCorrectionRepository(pool),
-    ...createProjectRoutingRepository(pool),
+    ...createProjectRoutingRepository(),
     ...createConversationItemRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       resolveCapturePolicy: (actor, input, client) =>

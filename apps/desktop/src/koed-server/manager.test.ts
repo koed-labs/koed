@@ -1045,12 +1045,10 @@ describe("Koed server desktop manager", () => {
             },
             git: {
               rootHash: "hmac_sha256:root",
-              commonDirHash: null,
               branch: "main",
               headCommit: "deadbeef",
               isWorktree: false,
               worktreeHash: null,
-              remoteAliases: [],
               remotes: [
                 {
                   name: "origin",
