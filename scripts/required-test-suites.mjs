@@ -81,7 +81,7 @@ const suites = [
           "apps/desktop/src/renderer/views/personal/PersonalMemoryViews.test.tsx"
         ],
         testNamePattern:
-          "loads the normalized Project index and restores focus through drilldown"
+          "opens a normalized source deep link and focuses its Conversation list"
       }
     ]
   }
