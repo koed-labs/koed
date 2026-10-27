@@ -15,6 +15,7 @@ import {
 } from "electron";
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
@@ -97,6 +98,11 @@ import {
 import { pairingLinkFromDeepLink } from "./personal-device-pairing-link.js";
 import { createPersonalDevicePairingInbox } from "./personal-device-pairing-inbox.js";
 import {
+  createPhoneGateway,
+  type PhoneGateway
+} from "./phone-gateway/index.js";
+import { phoneGatewayChangedChannel } from "./ipc/phone-gateway-protocol.js";
+import {
   createDesktopMenuBar,
   menuBarIconFilename,
   type DesktopMenuBar
@@ -140,6 +146,7 @@ let hqSidebarPreferences: HqSidebarPreferences = {
 };
 let koedServer: KoedServerManager | null = null;
 let mainWindow: BrowserWindow | null = null;
+let phoneGateway: PhoneGateway | null = null;
 let desktopMenuBar: DesktopMenuBar | null = null;
 let backgroundLaunchPending = false;
 const pairingLinkInbox = createPersonalDevicePairingInbox();
@@ -443,6 +450,41 @@ const bootstrap = async () => {
     personalDevicePairingStore
   );
   const server = koedServer;
+  // Phone access (Settings › Phone): off until the person turns it on. It
+  // keeps paired phones in the encrypted secret store, so it needs one.
+  phoneGateway = personalDevicePairingStore
+    ? createPhoneGateway({
+        deps: {
+          macName: () =>
+            hostname()
+              .replace(/\.local$/u, "")
+              .slice(0, 80) || "Mac",
+          agents: server.agents,
+          managedConversation: server.managedConversation,
+          personalMemory: server.personalMemory,
+          scheduledJobs: server.scheduledJobs,
+          localAiClients: server.localAiClients,
+          ensureIndependentProject: async () => {
+            const result =
+              (await server.handlers.ensure_independent_project()) as {
+                project?: { localProjectId?: unknown };
+              };
+            const localProjectId = result?.project?.localProjectId;
+            if (typeof localProjectId !== "string")
+              throw new Error("The Chats project isn't available.");
+            return { localProjectId };
+          }
+        },
+        secrets: personalDevicePairingStore,
+        subscribePersonalMemory: (listener, signal) =>
+          server.subscribePersonalMemory(listener, signal),
+        onStatusChange: (status) => {
+          if (mainWindow && !mainWindow.isDestroyed())
+            mainWindow.webContents.send(phoneGatewayChangedChannel, status);
+        }
+      })
+    : null;
+  const gateway = phoneGateway;
   const desktopIcon = getDesktopIcon();
   if (desktopIcon && process.platform === "darwin") {
     app.dock?.setIcon(desktopIcon);
@@ -646,6 +688,20 @@ const bootstrap = async () => {
     agents: server.agents,
     sharing: server.sharing,
     scheduledJobs: server.scheduledJobs,
+    phoneGateway: async (request) => {
+      if (!gateway)
+        throw new Error(
+          "Phone access needs this Mac's secure storage, which isn't available."
+        );
+      if (request.operation === "enable")
+        return gateway.setEnabled(request.enabled);
+      if (request.operation === "pair") return gateway.beginPairing();
+      if (request.operation === "cancelPairing") return gateway.cancelPairing();
+      if (request.operation === "revoke")
+        return gateway.revoke(request.phoneId);
+      if (request.operation === "restart") return gateway.restart();
+      return gateway.status();
+    },
     managedConversation: server.managedConversation,
     managedProject: server.managedProject,
     managedPreview: managedPreviewController,
@@ -904,6 +960,7 @@ const bootstrap = async () => {
         );
       }
       const result = await server.resume();
+      void phoneGateway?.start().catch(() => undefined);
       if (shouldRefreshLocalAiClientsAfterResume(result)) {
         void server
           .localAiClients({ operation: "refresh" })
@@ -957,6 +1014,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   void (async () => {
     await managedPreviewController.close();
+    await phoneGateway?.stop().catch(() => undefined);
     await koedServer?.stop();
     desktopMenuBar?.dispose();
     desktopMenuBar = null;

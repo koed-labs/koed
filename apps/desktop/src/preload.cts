@@ -18,6 +18,7 @@ import { createCuratedMemoryPreloadApi } from "./ipc/curated-memory-preload.js";
 import { createAgentsPreloadApi } from "./ipc/agents-preload.js";
 import { createSharingPreloadApi } from "./ipc/sharing-preload.js";
 import { createScheduledJobsPreloadApi } from "./ipc/scheduled-jobs-preload.js";
+import { createPhoneGatewayPreloadApi } from "./ipc/phone-gateway-preload.js";
 import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-preload.js";
 import { createProjectHqConversationPreloadApi } from "./ipc/project-hq-conversation-preload.js";
 import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js";
@@ -83,6 +84,14 @@ contextBridge.exposeInMainWorld("koedDesktop", {
   ),
   scheduledJobs: createScheduledJobsPreloadApi((channel, request) =>
     ipcRenderer.invoke(channel, request)
+  ),
+  phoneGateway: createPhoneGatewayPreloadApi(
+    (channel, request) => ipcRenderer.invoke(channel, request),
+    {
+      on: (channel, listener) => ipcRenderer.on(channel, listener),
+      removeListener: (channel, listener) =>
+        ipcRenderer.removeListener(channel, listener)
+    }
   ),
   managedConversations: createManagedConversationPreloadApi((channel, value) =>
     ipcRenderer.invoke(channel, value)

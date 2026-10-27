@@ -25,6 +25,7 @@ import type { CuratedMemoryDesktopApi } from "./ipc/curated-memory-protocol.js";
 import type { AgentsDesktopApi } from "./ipc/agents-protocol.js";
 import type { SharingDesktopApi } from "./ipc/sharing-protocol.js";
 import type { ScheduledJobsDesktopApi } from "./ipc/scheduled-jobs-protocol.js";
+import type { PhoneGatewayDesktopApi } from "./ipc/phone-gateway-protocol.js";
 import type { HqLayoutPreferencesApi } from "./ipc/hq-layout-preferences-protocol.js";
 import type { HqSidebarPreferencesApi } from "./ipc/hq-sidebar-preferences-protocol.js";
 
@@ -183,6 +184,7 @@ export interface DesktopApi {
   agents?: AgentsDesktopApi;
   sharing?: SharingDesktopApi;
   scheduledJobs?: ScheduledJobsDesktopApi;
+  phoneGateway?: PhoneGatewayDesktopApi;
   managedConversations?: ManagedConversationDesktopApi;
   projectHqConversation?: ProjectHqConversationDesktopApi;
   localAiClients?: {

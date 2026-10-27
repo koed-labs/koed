@@ -520,3 +520,18 @@ div:has(+ div > .hq-settings-dialog) {
   background: var(--hq-surface);
   cursor: pointer;
 }
+
+.hq-settings__phone-pairing {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.hq-settings__phone-pairing img {
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.hq-settings__phone-pairing p {
+  margin: 0 0 10px;
+}

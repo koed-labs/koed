@@ -12,12 +12,14 @@ import { HqSettingsAgents } from "./HqSettingsAgents.js";
 import { HqRolePreferenceSettings } from "../onboarding/HqRolePreferenceSettings.js";
 import { HqSettingsServices } from "./HqSettingsServices.js";
 import { HqSettingsDeleted } from "./HqSettingsDeleted.js";
+import { HqSettingsPhone } from "./HqSettingsPhone.js";
 import "./hq-settings.css";
 
 export type HqSettingsSection =
   | "general"
   | "agents"
   | "teams"
+  | "phone"
   | "services"
   | "deleted"
   | "about";
@@ -32,6 +34,7 @@ export type HqSettingsProps = {
   launchAtStartup?: DesktopApi["launchAtStartup"];
   hardwareAcceleration?: DesktopApi["hardwareAcceleration"];
   localAiClients?: DesktopApi["localAiClients"];
+  phoneGateway?: DesktopApi["phoneGateway"];
   collaborationClient?: CollaborationRendererClient;
   collaborationSnapshot?: CollaborationSnapshot | null;
   teamCollaborationEnabled?: boolean;
@@ -45,6 +48,7 @@ const sections: readonly HqSettingsSection[] = [
   "general",
   "agents",
   "teams",
+  "phone",
   "services",
   "deleted",
   "about"
@@ -96,6 +100,7 @@ export function HqSettings(props: HqSettingsProps) {
         <nav aria-label="Settings sections">
           {sections
             .filter((id) => id !== "teams" || teamCollaborationEnabled)
+            .filter((id) => id !== "phone" || Boolean(props.phoneGateway))
             .map((id) => (
               <button
                 key={id}
@@ -187,6 +192,9 @@ export function HqSettings(props: HqSettingsProps) {
               snapshot={props.collaborationSnapshot}
             />
           </>
+        ) : null}
+        {section === "phone" ? (
+          <HqSettingsPhone api={props.phoneGateway} />
         ) : null}
         {section === "services" ? (
           <HqSettingsServices statusStore={props.statusStore} />

@@ -56,6 +56,13 @@ import {
   type ScheduledJobsResult
 } from "./scheduled-jobs-protocol.js";
 import {
+  phoneGatewayChannel,
+  phoneGatewayRequestSchema,
+  phoneGatewayStatusSchema,
+  type PhoneGatewayRequest,
+  type PhoneGatewayStatusView
+} from "./phone-gateway-protocol.js";
+import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationDesktopRendererEventSchema,
@@ -295,6 +302,9 @@ export const registerDesktopCommandHandlers = (
     scheduledJobs?: (
       request: ScheduledJobsRequest
     ) => Promise<ScheduledJobsResult>;
+    phoneGateway?: (
+      request: PhoneGatewayRequest
+    ) => Promise<PhoneGatewayStatusView>;
     managedConversation: (
       request: ManagedConversationRequest
     ) => Promise<ManagedConversationResult>;
@@ -840,6 +850,14 @@ export const registerDesktopCommandHandlers = (
       throw new Error("Sharing is unavailable.");
     sharingRequestSchema.parse(value);
     return sharingResultSchema.parse(await options.sharing());
+  });
+  ipcMain.handle(phoneGatewayChannel, async (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (!options.phoneGateway) throw new Error("Phone access is unavailable.");
+    return phoneGatewayStatusSchema.parse(
+      await options.phoneGateway(phoneGatewayRequestSchema.parse(value))
+    );
   });
   ipcMain.handle(scheduledJobsChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins))
