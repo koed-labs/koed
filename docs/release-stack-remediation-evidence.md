@@ -20,7 +20,9 @@ KMS responses establish publisher trust or actual replacement acceptance.
 ### Follow-up local verification
 
 Node **24.13.1**, pnpm **11.1.2**, macOS arm64, isolated worktree with a fresh
-frozen-lockfile offline dependency installation:
+frozen-lockfile offline dependency installation. These counts apply to the
+#432-derived follow-up; independently restaged #421/#428 checks belong in their
+own PR evidence:
 
 - Server: **71 files, 970 tests passed**. Includes old Privacy selection ownership
   discovery/status before Desktop bundle replacement, ordinary Desktop fallback,

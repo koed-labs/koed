@@ -54,6 +54,12 @@ const lockPath = (paths: KoedServerPaths): string =>
   resolve(paths.runDir, "generation-lifecycle.lock");
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+const isRuntimeOwnerRecord = (value: unknown): value is RuntimeOwner =>
+  isRecord(value) &&
+  Object.keys(value).length === 2 &&
+  ["cli", "desktop", "standalone"].includes(String(value.kind)) &&
+  typeof value.installationId === "string" &&
+  /^[A-Za-z0-9._-]{1,128}$/.test(value.installationId);
 const readRegularFile = (path: string): string => {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink())
