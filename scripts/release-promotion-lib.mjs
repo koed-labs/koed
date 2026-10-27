@@ -46,7 +46,10 @@ const validateExpected = (expected) => {
 const blocked = (reasons) => ({ status: "blocked", reasons, actions: [] });
 export const compareVersions = (left, right) => {
   const parse = (version) => {
-    const [core, prerelease] = version.split("-");
+    const separator = version.indexOf("-");
+    const core = separator === -1 ? version : version.slice(0, separator);
+    const prerelease =
+      separator === -1 ? undefined : version.slice(separator + 1);
     return { core: core.split(".").map(Number), prerelease };
   };
   const a = parse(left);
@@ -65,7 +68,7 @@ export const compareVersions = (left, right) => {
     if (bb[i] === undefined) return 1;
     const numericA = /^\d+$/.test(aa[i]);
     const numericB = /^\d+$/.test(bb[i]);
-    if (numericA && numericB) return Number(aa[i]) - Number(bb[i]);
+    if (numericA && numericB) return BigInt(aa[i]) < BigInt(bb[i]) ? -1 : 1;
     if (numericA !== numericB) return numericA ? -1 : 1;
     return aa[i] < bb[i] ? -1 : 1;
   }
