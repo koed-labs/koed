@@ -15,6 +15,8 @@ export {
 export { createRemoteMcpOAuthRepository } from "./remote-mcp-oauth-repository.js";
 export type {
   RemoteMcpOAuthStore,
+  ExternalAgentGrantBinding,
+  RemoteMcpConnection,
   RemoteMcpOAuthRequest,
   RemoteMcpOAuthGrant,
   RemoteMcpOAuthCredential

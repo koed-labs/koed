@@ -9,6 +9,7 @@ import {
   type TeamAccessRepository
 } from "@koed/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { actorForAuthenticatedRequest } from "../auth/session.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { createOpaqueSecret, publicUser } from "../auth/index.js";
@@ -494,9 +495,9 @@ export const registerTeamRoutes = (
     async (request) => {
       const user = await authenticateTeamRead(request);
       return {
-        workspaces: await requireRepository().listTeamWorkspaceContexts({
-          userId: user.id
-        })
+        workspaces: await requireRepository().listTeamWorkspaceContexts(
+          await actorForAuthenticatedRequest(context.auth, request, user.id)
+        )
       };
     }
   );
@@ -1182,7 +1183,7 @@ export const registerTeamRoutes = (
       );
       const workspaceContext =
         await requireRepository().getTeamWorkspaceContext(
-          { userId: user.id },
+          await actorForAuthenticatedRequest(context.auth, request, user.id),
           teamWorkspaceId
         );
       if (!workspaceContext) throw forbidden("Team Workspace cannot be viewed");

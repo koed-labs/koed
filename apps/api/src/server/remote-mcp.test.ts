@@ -51,6 +51,10 @@ const fixture = (teamEnabled = false) => {
     resolveDelegatedPrincipal: resolvePrincipal
   });
   const apiCalls = vi.fn();
+  const apiPeers: string[] = [];
+  app.addHook("onRequest", async (request) => {
+    if (request.url.startsWith("/v1/")) apiPeers.push(request.ip);
+  });
   const taskRequests = vi.fn();
   let acceptedTask: MemoryAnswerTask | undefined;
   app.get("/v1/capabilities", async (request, reply) => {
@@ -130,6 +134,7 @@ const fixture = (teamEnabled = false) => {
     app.inject({
       method: "POST",
       url: "/mcp",
+      remoteAddress: "192.0.2.25",
       headers: {
         host: "memory.test",
         authorization: `Bearer ${token}`,
@@ -148,6 +153,7 @@ const fixture = (teamEnabled = false) => {
     app,
     request,
     apiCalls,
+    apiPeers,
     taskRequests,
     resolvePrincipal,
     revoke: () => {
@@ -170,6 +176,8 @@ describe("API remote MCP bridge", () => {
     );
     expect(response.statusCode, response.body).toBe(200);
     expect(f.taskRequests).toHaveBeenCalledOnce();
+    expect(f.apiPeers.length).toBeGreaterThan(0);
+    expect(f.apiPeers.every((peer) => peer === "192.0.2.25")).toBe(true);
     const accepted = f.taskRequests.mock.calls[0]![0] as {
       request: { input: Record<string, unknown> };
     };

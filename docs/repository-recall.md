@@ -76,7 +76,7 @@ tickets; repository identity never chooses or authorizes a Workspace.
 
 ## One-time historical assignment transition
 
-Migration `0046_project_scoped_recall` marks every existing Personal Session
+Migration `0047_project_scoped_recall` marks every existing Personal Session
 as `historical_unresolved`. This includes Sessions captured during additive
 preparation, invalidated rows, and Personal Device Sync replicas. The migration
 clears automatic and User override assignments and increments assignment versions.

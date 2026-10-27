@@ -335,7 +335,7 @@ P1-04 validation executed on 19 October 2026:
 
 ## Named Projects and direct membership
 
-P1-05 implements the direct membership slice. Migration `0047_personal_project_model` adds the
+P1-05 implements the direct membership slice. Migration `0048_personal_project_model` adds the
 owner-scoped Project catalog, direct inclusions, and a retained local revision
 journal. Names do not establish identity. Each Project has a stable UUID,
 metadata revision head, and a version used to reject stale organization writes.
@@ -385,7 +385,7 @@ not reuse earlier answer text as current membership evidence. Every retrieval
 search and expansion carries the accepted Project snapshot, including if a worker
 asks for a wider query domain. Trusted durable Project requests also keep that
 snapshot and do not rediscover a checkout or route through ambient Team settings.
-Migration `0047_personal_project_model` adds Project scope to Desktop Ask records.
+Migration `0048_personal_project_model` adds Project scope to Desktop Ask records.
 The general public recall-target adapter activation remains assigned to P1-17.
 
 The named inventory endpoint currently uses the Desktop view's limit of 5,000
@@ -437,7 +437,7 @@ disk state. The Pi Local AI Runtime endpoint accepts authenticated source contex
 observations without exposing a new agent-facing tool. Unrecognized Pi start
 reasons remain unresolved. Native historical import reads recorded evidence only.
 
-Migration `0047_personal_project_model` gives existing Sessions an unresolved
+Migration `0048_personal_project_model` gives existing Sessions an unresolved
 historical Folder assignment. Registration binds new source-time evidence to the
 authenticated owner, pins it once, and inherits the earliest assignment when a
 logical Conversation receives a new physical Session row. Repeated capture stores
@@ -475,7 +475,7 @@ assigned to the later tickets and are not claimed by these focused results.
 ## Git Anchor inclusion rules
 
 P1-07 adds an independent, retained rule for one selected Git Anchor.
-Migration `0047_personal_project_model` creates `personal_project_rules` and
+Migration `0048_personal_project_model` creates `personal_project_rules` and
 extends the owner journal with repository inclusion revisions. Each rule stores
 its own identity, target, version, revision head, and removal timestamp. The
 canonical scope key is constrained to the recorded Git target. Adding the same
@@ -532,7 +532,7 @@ checks do not replace the final sync, Team, migration, or native package gates.
 ## Exact Folder inclusion rules
 
 P1-08 extends the retained rule model with one exact originating Folder target.
-Migration `0047_personal_project_model` adds recorded Folder display context and
+Migration `0048_personal_project_model` adds recorded Folder display context and
 allows Folder inclusion revisions in the owner journal. The rule's scope key
 contains the owner, originating deployment, device, profile, directory incarnation,
 and Folder identity. A database check binds that scope and any display reference

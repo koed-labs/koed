@@ -11,7 +11,9 @@ import { reconcileProjectBranchMigrations } from "../src/project-migration-recon
 import {
   unreleasedProjectMigrationHistory,
   unreleasedProjectSchemaFingerprint,
-  consolidatedProjectSchemaFingerprint
+  consolidatedProjectSchemaFingerprint,
+  preMainConsolidatedProjectMigrationHistory,
+  preMainConsolidatedProjectSchemaFingerprint
 } from "../src/project-migration-history.js";
 
 const databaseUrl = process.env.MERGED_MIGRATIONS_TEST_DATABASE_URL;
@@ -20,6 +22,7 @@ describe.skipIf(!databaseUrl)(
   () => {
     it.each([
       "preserve",
+      "preserve consolidated",
       "unknown history",
       "retained upgrade",
       "unpreserved route",
@@ -43,15 +46,29 @@ describe.skipIf(!databaseUrl)(
         try {
           await admin.query(`create database "${name}"`);
           await runDbMigrations(pool);
-          await pool.query(
-            await readFile(
-              new URL(
-                "./fixtures/unreleased-project-schema.sql",
-                import.meta.url
-              ),
-              "utf8"
-            )
-          );
+          if (scenario !== "preserve consolidated")
+            await pool.query(
+              await readFile(
+                new URL(
+                  "./fixtures/unreleased-project-schema.sql",
+                  import.meta.url
+                ),
+                "utf8"
+              )
+            );
+          await pool.query(`alter table remote_mcp_oauth_grants
+            drop constraint remote_mcp_external_registration_unique,
+            drop constraint remote_mcp_grant_binding_check,
+            drop constraint remote_mcp_grant_version_check,
+            drop column provider_issuer, drop column provider_environment,
+            drop column provider_registration_id, drop column provider_user_id,
+            drop column provider_organization_id, drop column team_boundary_id,
+            drop column authorization_version,
+            alter column client_id set not null`);
+          const oldHistory =
+            scenario === "preserve consolidated"
+              ? preMainConsolidatedProjectMigrationHistory
+              : unreleasedProjectMigrationHistory;
           const canonical = (
             await pool.query<{ id: number }>(
               "select id from drizzle.__drizzle_migrations order by id"
@@ -59,11 +76,9 @@ describe.skipIf(!databaseUrl)(
           ).rows;
           await pool.query(
             "delete from drizzle.__drizzle_migrations where id=any($1::int[])",
-            [canonical.slice(47).map((row) => row.id)]
+            [canonical.slice(46).map((row) => row.id)]
           );
-          for (const [hash, when] of unreleasedProjectMigrationHistory.slice(
-            47
-          ))
+          for (const [hash, when] of oldHistory.slice(46))
             await pool.query(
               "insert into drizzle.__drizzle_migrations(hash,created_at) values($1,$2)",
               [hash, when]
@@ -78,7 +93,11 @@ describe.skipIf(!databaseUrl)(
               client.release();
             }
           };
-          expect(await fingerprint()).toBe(unreleasedProjectSchemaFingerprint);
+          expect(await fingerprint()).toBe(
+            scenario === "preserve consolidated"
+              ? preMainConsolidatedProjectSchemaFingerprint
+              : unreleasedProjectSchemaFingerprint
+          );
           const owner = randomUUID();
           await pool.query("insert into users(id,email) values($1,$2)", [
             owner,
@@ -176,7 +195,7 @@ describe.skipIf(!databaseUrl)(
                 ? join(folder, "missing.dump")
                 : backupPath
           };
-          if (scenario === "preserve") {
+          if (scenario === "preserve" || scenario === "preserve consolidated") {
             await expect(runDbMigrations(pool)).rejects.toThrow(
               "Preserve the database"
             );
@@ -197,12 +216,12 @@ describe.skipIf(!databaseUrl)(
                 )
               ).rows
             ).toEqual(beforeRoutes);
-            expect((await ledger()).slice(0, 47)).toEqual(
-              beforeLedger.slice(0, 47)
+            expect((await ledger()).slice(0, 46)).toEqual(
+              beforeLedger.slice(0, 46)
             );
             await runDbMigrations(pool);
             const after = await ledger();
-            expect(after).toHaveLength(49);
+            expect(after).toHaveLength(50);
             expect(
               await reconcileProjectBranchMigrations(pool, options)
             ).toEqual({ reconciled: false });

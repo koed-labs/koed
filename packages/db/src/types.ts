@@ -134,6 +134,8 @@ export type LocalMemoryAgentSettingsFlowKey =
 
 export interface ActorContext {
   userId: string;
+  /** Undefined preserves User-wide authority; null denies all Team access. */
+  teamBoundaryId?: string | null;
 }
 
 export interface CreateUserInput {
@@ -2120,6 +2122,11 @@ export interface MemorySourceRepository
     providerEnvironment?: string;
     providerUserId: string;
   }): Promise<ExternalAuthIdentityRecord | null>;
+  getExternalAuthOrganization(input: {
+    provider: ExternalAuthProvider;
+    providerEnvironment?: string;
+    providerOrganizationId: string;
+  }): Promise<ExternalAuthOrganizationRecord | null>;
   getVerifiedExternalAuthIdentityForUser(
     userId: string
   ): Promise<ExternalAuthIdentityRecord | null>;

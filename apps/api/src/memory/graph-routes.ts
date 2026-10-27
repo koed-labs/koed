@@ -8,6 +8,7 @@ import type { FastifyInstance } from "fastify";
 import { createEncryptedJsonPackage } from "@koed/shared";
 import { ConversationPresentationVersionConflictError } from "@koed/db";
 import { z } from "zod";
+import { actorForAuthenticatedRequest } from "../auth/session.js";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   canonicalEvidenceSourceIdentity,
@@ -573,7 +574,7 @@ export const registerGraphRoutes = (
             })
           : undefined;
         const expansion = await repo.expandAuthorizedSharedMemorySemanticItem(
-          { userId: user.id },
+          await actorForAuthenticatedRequest(context.auth, request, user.id),
           {
             teamWorkspaceId: query.team_workspace_id,
             candidateId: params.nodeId,

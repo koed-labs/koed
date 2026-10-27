@@ -11840,7 +11840,7 @@ describeDb("Shared Memory repository", () => {
         source.localSessionId
       ]);
       const recallMigration = await readFile(
-        new URL("../drizzle/0046_project_scoped_recall.sql", import.meta.url),
+        new URL("../drizzle/0047_project_scoped_recall.sql", import.meta.url),
         "utf8"
       );
       // Exercise the one-time data transition against existing Share Grants.

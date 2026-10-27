@@ -31,7 +31,8 @@ class RequestBoundMemoryApiClient extends MemoryApiClient {
     private readonly app: FastifyInstance,
     private readonly authorization: string,
     resourceUrl: string,
-    private readonly captureAllowed: boolean
+    private readonly captureAllowed: boolean,
+    private readonly callerIp: string
   ) {
     super({ apiUrl: new URL(resourceUrl).origin });
   }
@@ -48,6 +49,7 @@ class RequestBoundMemoryApiClient extends MemoryApiClient {
     const response = await this.app.inject({
       method,
       url: pathname,
+      remoteAddress: this.callerIp,
       headers: { authorization: this.authorization },
       ...(body === undefined
         ? {}
@@ -128,7 +130,8 @@ export const registerRemoteMcpRoutes = (
         app,
         authorization,
         options.resourceUrl.href,
-        principal.scopes.includes("koed:capture")
+        principal.scopes.includes("koed:capture"),
+        context.ip
       );
       const teamAllowed =
         options.teamCollaborationEnabled &&

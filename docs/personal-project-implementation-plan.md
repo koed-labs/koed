@@ -162,20 +162,14 @@ repair inventory, or interactive activation is required. The former P1-14 and
 upgrade-specific parts of P1-15 are superseded by the User's decision on
 20 October 2026.
 
-Committed migration history through `0046_project_scoped_recall` remains unchanged.
-The unreleased branch migrations formerly numbered 0047–0069 are consolidated in
-`0047_personal_project_model`, with their ordered statements, backfills, and guards
-preserved. Existing pre-branch databases upgrade through this single migration.
-Databases that applied the temporary branch history require a separate reset or
-reconciliation; this cleanup does not modify them or relax checksum verification.
-Historical upgrade tables are unused; there is no application workflow for
-populating them. Normal startup installs the current schema before serving Project
-requests.
-
-Source facts, logical Memory identity, signed sync packages, and existing Team
-grants retain their independent boundaries. Project membership never changes
-Capture Policy or removes a Capture Pause. Current source correction and capture
-controls do not depend on a Project upgrade.
+Main history through `0046_external_agent_grants` remains unchanged. The branch
+contains `0047_project_scoped_recall`, `0048_personal_project_model` and
+`0049_continuous_sharing`. Their SQL bodies are unchanged by the main merge.
+Fresh and main databases upgrade normally. Existing verified alpha branch heads
+use the guarded backup-and-reconciliation procedure in
+[Database Development](database-development.md#unreleased-project-migration-consolidation).
+Unused upgrade staging is removed; startup rejects an incompatible ledger before
+serving Project requests.
 
 ## Personal Device Sync
 

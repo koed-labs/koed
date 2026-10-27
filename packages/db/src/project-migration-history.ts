@@ -312,7 +312,7 @@ export const unreleasedProjectMigrationHistory = [
 
 export const unreleasedProjectSchemaFingerprint =
   "571ad4de8f7426bc334649d789f6a1db80227db5ef90d131a80d157647e1784a";
-export const consolidatedProjectSchemaFingerprint =
+export const preMainConsolidatedProjectSchemaFingerprint =
   "4d818e9579f449fd2a2b369e09f84ce606c17aa8c1151fc40d699624e210f386";
 export const retiredProjectUpgradeTables = [
   "personal_project_upgrades",
@@ -329,3 +329,19 @@ export const retiredProjectFunctions = [
   "personal_model_activation_guard",
   "personal_legacy_route_write_guard"
 ] as const;
+
+/** The verified 49-entry cleanup head before main added external agent grants. */
+export const preMainConsolidatedProjectMigrationHistory = [
+  ...unreleasedProjectMigrationHistory.slice(0, 47),
+  [
+    "ae676879dd602683694247b06e708313cef8d2f38262e77c90943bae7bfd8feb",
+    "1793102000000"
+  ],
+  [
+    "938a9d1b1d7d37a13ea1dcf8aa788e6e884ec3273ef7d59ec21aa38a3b3b95b4",
+    "1793102000001"
+  ]
+] as const;
+
+export const consolidatedProjectSchemaFingerprint =
+  "c81c8071fb4a8f589841b4590244c88ec577ea182ba93e0cf32ed0e950f5b7a1";

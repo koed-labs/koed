@@ -1,5 +1,6 @@
 import { planRepositorySearch } from "@koed/shared";
 import { answerMemory, searchMemory } from "@koed/core";
+import { actorForAuthenticatedRequest } from "../auth/session.js";
 import type { SharedMemorySemanticCandidate } from "@koed/db";
 import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
@@ -155,6 +156,11 @@ export const registerRecallRoutes = (
           )
         : await authenticateApiToken(request);
       if (input.team_workspace_id) {
+        const actor = await actorForAuthenticatedRequest(
+          context.auth,
+          request,
+          user.id
+        );
         const retrievalStartedAt = performance.now();
         const authorizationBoundary = input.authorization_boundary
           ? verifyMemoryAnswerAuthorizationBoundary({
@@ -165,14 +171,10 @@ export const registerRecallRoutes = (
               subjectUserId: user.id,
               teamWorkspaceId: input.team_workspace_id
             })
-          : await repo.freezeSharedMemorySemanticRecallBoundary(
-              { userId: user.id },
-              {
-                teamWorkspaceId: input.team_workspace_id,
-                maximumGrantCount:
-                  MEMORY_ANSWER_AUTHORIZATION_BOUNDARY_MAX_GRANTS
-              }
-            );
+          : await repo.freezeSharedMemorySemanticRecallBoundary(actor, {
+              teamWorkspaceId: input.team_workspace_id,
+              maximumGrantCount: MEMORY_ANSWER_AUTHORIZATION_BOUNDARY_MAX_GRANTS
+            });
         const embedding = await embedTeamSemanticQuery(
           input.query,
           context.internalServices.fetch
@@ -200,16 +202,16 @@ export const registerRecallRoutes = (
         const scoreScan = input.retrieval_stage === "score_scan";
         const stageScans = scoreScan
           ? await repo.scanAuthorizedSharedMemorySemanticItems(
-              { userId: user.id },
+              actor,
               semanticInput
             )
           : [];
         const candidates = scoreScan
           ? []
-          : await repo.searchAuthorizedSharedMemorySemanticItems(
-              { userId: user.id },
-              { ...semanticInput, strictLimit: input.strict_limit }
-            );
+          : await repo.searchAuthorizedSharedMemorySemanticItems(actor, {
+              ...semanticInput,
+              strictLimit: input.strict_limit
+            });
         const hits = candidates.map((candidate) =>
           teamHit(candidate, true, input.parent_node_ids)
         );
@@ -353,15 +355,17 @@ export const registerRecallRoutes = (
           )
         : await authenticate(request);
       if (input.team_workspace_id) {
+        const actor = await actorForAuthenticatedRequest(
+          context.auth,
+          request,
+          user.id
+        );
         const retrievalStartedAt = performance.now();
         const authorizationBoundary =
-          await repo.freezeSharedMemorySemanticRecallBoundary(
-            { userId: user.id },
-            {
-              teamWorkspaceId: input.team_workspace_id,
-              maximumGrantCount: MEMORY_ANSWER_AUTHORIZATION_BOUNDARY_MAX_GRANTS
-            }
-          );
+          await repo.freezeSharedMemorySemanticRecallBoundary(actor, {
+            teamWorkspaceId: input.team_workspace_id,
+            maximumGrantCount: MEMORY_ANSWER_AUTHORIZATION_BOUNDARY_MAX_GRANTS
+          });
         const authorizationBoundaryToken =
           issueMemoryAnswerAuthorizationBoundary({
             secret: memoryAnswerAuthorizationBoundarySecret(
@@ -397,16 +401,16 @@ export const registerRecallRoutes = (
         const scoreScan = input.retrieval_stage === "score_scan";
         const stageScans = scoreScan
           ? await repo.scanAuthorizedSharedMemorySemanticItems(
-              { userId: user.id },
+              actor,
               semanticInput
             )
           : [];
         const candidates = scoreScan
           ? []
-          : await repo.searchAuthorizedSharedMemorySemanticItems(
-              { userId: user.id },
-              { ...semanticInput, strictLimit: input.strict_limit }
-            );
+          : await repo.searchAuthorizedSharedMemorySemanticItems(actor, {
+              ...semanticInput,
+              strictLimit: input.strict_limit
+            });
         const evidence = candidates.map((candidate) =>
           teamHit(candidate, true, input.parent_node_ids)
         );

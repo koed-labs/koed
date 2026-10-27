@@ -129,6 +129,33 @@ const findActiveUser = async (
 };
 
 export const createExternalAuthRepository = (db: KoedDb) => ({
+  async getExternalAuthOrganization(input: {
+    provider: "workos_authkit";
+    providerEnvironment?: string;
+    providerOrganizationId: string;
+  }): Promise<ExternalAuthOrganizationRecord | null> {
+    const rows = await db
+      .select()
+      .from(externalAuthOrganizations)
+      .where(
+        and(
+          eq(externalAuthOrganizations.provider, input.provider),
+          eq(
+            externalAuthOrganizations.providerEnvironment,
+            input.providerEnvironment ?? defaultProviderEnvironment
+          ),
+          eq(
+            externalAuthOrganizations.providerOrganizationId,
+            requireProviderId(
+              input.providerOrganizationId,
+              "providerOrganizationId"
+            )
+          )
+        )
+      )
+      .limit(1);
+    return rows[0] ? mapExternalAuthOrganization(rows[0]) : null;
+  },
   async getExternalAuthIdentity(input: {
     provider: "workos_authkit";
     providerEnvironment?: string;

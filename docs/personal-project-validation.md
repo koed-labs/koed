@@ -1,15 +1,17 @@
 # Personal Project validation
 
 > Current history: the 27 October cleanup consolidated the final branch into
-> migrations 0046–0048 and removed unused upgrade staging. Earlier numbered
+> migrations 0047–0049 and removed unused upgrade staging. Earlier numbered
 > migration results below are historical evidence. See
 > [Database Development](database-development.md#unreleased-project-migration-consolidation)
-> for the current 49-entry journal and preservation/reconciliation procedure.
+> for the current 50-entry journal and preservation/reconciliation procedure.
 
 ## Branch cleanup validation — 27 October 2026
 
-The branch history now has three migrations, 0046–0048, instead of 31.
-Migrations 0000–0046 remain byte-for-byte unchanged. The final schema omits six
+The branch history now has three migrations, 0047–0049, instead of 31.
+Main migrations 0000–0046 remain byte-for-byte unchanged. The three Project SQL
+bodies are unchanged by the main merge; only their filenames and snapshot chain
+move after main’s external-agent migration. The final schema omits six
 unused upgrade staging tables and the retired Project routing table; active
 Capture Target records and source-assignment evidence remain.
 
@@ -17,7 +19,7 @@ Validation covered:
 
 - All six migration acceptance scenarios, including concurrent startup,
   transaction rollback and backup/restore with complete schema comparison.
-- Eight reconciliation cases covering exact-history preservation, unknown
+- Nine reconciliation cases covering the original and consolidated alpha heads, exact-history preservation, unknown
   history, retained staging evidence, unmatched routes, changed functions,
   external dependencies, rollback after schema verification failure and missing
   backup. The three merged-migration tests also passed.

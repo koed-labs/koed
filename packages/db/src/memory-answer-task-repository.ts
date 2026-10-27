@@ -53,6 +53,14 @@ export class MemoryAnswerTaskAuthorizationError extends Error {
   }
 }
 
+export class MemoryAnswerTaskTeamBoundaryError extends Error {
+  readonly statusCode = 403;
+  constructor() {
+    super("Memory Answer task is outside the credential's Team boundary");
+    this.name = "MemoryAnswerTaskTeamBoundaryError";
+  }
+}
+
 export class MemoryAnswerTaskQueueFullError extends Error {
   readonly statusCode = 429;
 
@@ -299,6 +307,11 @@ export const createMemoryAnswerTaskRepository = (
         throw new MemoryAnswerTaskAuthorizationError();
       return;
     }
+    if (
+      actor.teamBoundaryId !== undefined &&
+      row.team_authorization?.recallBoundary.teamId !== actor.teamBoundaryId
+    )
+      throw new MemoryAnswerTaskTeamBoundaryError();
     if (!actor.allowTeam) throw new MemoryAnswerTeamAuthorityError();
     if (!row.team_authorization)
       throw new Error("Memory Answer Team authority is missing");
@@ -564,6 +577,7 @@ export const createMemoryAnswerTaskRepository = (
             where owner_user_id = $1 and visibility = 'personal'
               and ((team_workspace_id is null and $3) or (team_workspace_id is not null and $2))
               and ($4::text is null or ($4 = 'personal' and team_workspace_id is null) or ($4 = 'team' and team_workspace_id is not null))
+              and ($5::text is null or team_workspace_id is null or team_authorization->'recallBoundary'->>'teamId'=$5)
               and ((status = 'accepted' and available_at <= now())
                 or (status = 'cancel_requested' and lease_until < now())
                 or (status = 'running' and lease_until < now()
@@ -571,9 +585,12 @@ export const createMemoryAnswerTaskRepository = (
             order by available_at, created_at, id limit 1 for update skip locked`,
             [
               actor.userId,
-              input.allowTeam === true && actor.allowTeam === true,
+              input.allowTeam === true &&
+                actor.allowTeam === true &&
+                actor.teamBoundaryId !== null,
               actor.allowPersonal !== false,
-              input.scopeFilter ?? "personal"
+              input.scopeFilter ?? "personal",
+              actor.teamBoundaryId ?? null
             ]
           );
           const candidate = eligible.rows[0];
@@ -912,11 +929,13 @@ export const createMemoryAnswerTaskRepository = (
               and ((team_workspace_id is null and $3) or (team_workspace_id is not null and $2))
               and status in ('completed', 'failed', 'cancelled')
               and expires_at <= now()
+              and ($4::text is null or team_workspace_id is null or team_authorization->'recallBoundary'->>'teamId'=$4)
           returning id`,
           [
             actor.userId,
-            actor.allowTeam === true,
-            actor.allowPersonal !== false
+            actor.allowTeam === true && actor.teamBoundaryId !== null,
+            actor.allowPersonal !== false,
+            actor.teamBoundaryId ?? null
           ]
         );
         if (tasks.rows.length > 0) {

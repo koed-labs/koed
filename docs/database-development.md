@@ -45,22 +45,22 @@ force-dropped in cleanup, including on failure.
 
 ## Unreleased Project migration consolidation
 
-Main's migrations through `0045_agent_seal_waiting_marker` are unchanged.
-The initial `0046_project_scoped_recall` also remains byte-for-byte unchanged;
+Main's migrations through `0046_external_agent_grants` are unchanged.
+The initial `0047_project_scoped_recall` also remains byte-for-byte unchanged;
 it includes repository identity, sync profile support and the one-time historical
 assignment transition. The later branch migrations are consolidated into:
 
-- `0047_personal_project_model`: Personal membership, source context, Capture
+- `0048_personal_project_model`: Personal membership, source context, Capture
   Target preservation, LCM change observation and default Projects;
-- `0048_continuous_sharing`: final sharing reasons, publications, rule controls,
+- `0049_continuous_sharing`: final sharing reasons, publications, rule controls,
   admissions, deliveries and Workspace exclusions.
 
-The journal now contains 49 entries. Fresh and main databases upgrade normally.
+The journal now contains 50 entries. Fresh and main databases upgrade normally.
 The six unused alpha-upgrade staging tables and retired `personal_project_routes`
 table are absent from the final schema. Existing routes are copied into active
 Capture Target records before the old routing table is removed.
 
-An existing local database at the exact former 77-entry branch head needs explicit
+An existing local database at the exact former 77-entry branch head or the 49-entry cleanup head before the main merge needs explicit
 reconciliation before starting this build. Preserve that database. Use a Local
 Operator Script with its actual `DATABASE_URL` and a new absolute backup path:
 
@@ -74,14 +74,17 @@ Existing backup paths are never overwritten. `PG_DUMP_BIN` and `PG_RESTORE_BIN`
 select matching PostgreSQL tools. For bundled-local operation, use the supervised
 runtime's database connection; the root `.env` can describe a different server.
 
-Reconciliation takes the migration lock and requires the exact ordered old
+Reconciliation takes the migration lock and requires an exact ordered known old
 ledger, the verified old schema including functions/views/triggers, empty unused
 upgrade tables, and an exact retained Capture Target for each old Project route.
-It removes only those retired objects, normalizes the remaining admission primary
-key name, verifies the complete surviving schema, and replaces only the branch
-ledger tail. It never replays sharing backfills. All changes commit together;
-failed checks roll back. Main and the initial repository-cutover ledger entries
-remain unchanged. Repeating the command against the canonical history is a no-op.
+For the 77-entry history it removes only those retired objects and normalizes the
+remaining admission primary key name. Both transitions apply main’s external-agent
+grant migration once, verify the complete surviving schema, and replace the ledger
+tail after the original main prefix through 0045. It never replays sharing backfills.
+All changes commit together; failed checks roll back. The original main ledger
+entries through 0045 remain unchanged; the three Project SQL bodies are unchanged
+and are recorded after main’s new migration. Repeating the command against the
+canonical history is a no-op.
 
 Normal startup continues rejecting unknown migration histories. A different schema,
 nonempty staging table or unmatched route needs explicit data preservation and

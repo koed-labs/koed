@@ -8,6 +8,8 @@ import {
   unreleasedProjectMigrationHistory,
   unreleasedProjectSchemaFingerprint,
   consolidatedProjectSchemaFingerprint,
+  preMainConsolidatedProjectMigrationHistory,
+  preMainConsolidatedProjectSchemaFingerprint,
   retiredProjectUpgradeTables,
   retiredProjectFunctions
 } from "./project-migration-history.js";
@@ -36,9 +38,9 @@ export const reconcileProjectBranchMigrations = async (
   options: { backupPath: string }
 ): Promise<{ reconciled: boolean }> => {
   const migrations = readMigrationFiles({ migrationsFolder });
-  if (migrations.length !== 49)
+  if (migrations.length !== 50)
     throw new Error(
-      "Project reconciliation requires the consolidated build through migration 0048."
+      "Project reconciliation requires the consolidated build through migration 0049."
     );
   const canonical = migrations.map(
     (migration) => [migration.hash, String(migration.folderMillis)] as const
@@ -61,7 +63,14 @@ export const reconcileProjectBranchMigrations = async (
       transaction = false;
       return { reconciled: false };
     }
-    if (!matches(applied, unreleasedProjectMigrationHistory))
+    const retireUpgradeSchema = matches(
+      applied,
+      unreleasedProjectMigrationHistory
+    );
+    if (
+      !retireUpgradeSchema &&
+      !matches(applied, preMainConsolidatedProjectMigrationHistory)
+    )
       throw new Error(
         "Unrecognized migration history. No schema or ledger changes were made."
       );
@@ -76,45 +85,54 @@ export const reconcileProjectBranchMigrations = async (
     } finally {
       await backup.close();
     }
-    const retired = [...retiredProjectUpgradeTables, "personal_project_routes"];
+    const retired = retireUpgradeSchema
+      ? [...retiredProjectUpgradeTables, "personal_project_routes"]
+      : [];
     await client.query(
-      `lock table ${[...retired, "personal_capture_target_routes", "pending_sharing_rule_admissions"].map((table) => `public.${table}`).join(",")} in access exclusive mode`
+      `lock table ${[...retired, "personal_capture_target_routes", "pending_sharing_rule_admissions", "remote_mcp_oauth_grants"].map((table) => `public.${table}`).join(",")} in access exclusive mode`
     );
     if (
       (await migrationSchemaFingerprint(client)) !==
-      unreleasedProjectSchemaFingerprint
+      (retireUpgradeSchema
+        ? unreleasedProjectSchemaFingerprint
+        : preMainConsolidatedProjectSchemaFingerprint)
     )
       throw new Error(
         "The old branch schema differs from the verified history. Preserved data requires inspection."
       );
-    for (const table of retiredProjectUpgradeTables) {
-      if (
-        (await client.query(`select 1 from public.${table} limit 1`)).rowCount
-      )
-        throw new Error(
-          `Retained upgrade evidence in ${table} requires preservation before reconciliation.`
-        );
-    }
-    const unpreserved =
-      await client.query(`select 1 from public.personal_project_routes old
+    if (retireUpgradeSchema) {
+      for (const table of retiredProjectUpgradeTables) {
+        if (
+          (await client.query(`select 1 from public.${table} limit 1`)).rowCount
+        )
+          throw new Error(
+            `Retained upgrade evidence in ${table} requires preservation before reconciliation.`
+          );
+      }
+      const unpreserved =
+        await client.query(`select 1 from public.personal_project_routes old
       left join public.personal_capture_target_routes retained
         on retained.owner_user_id=old.owner_user_id and retained.source_scope=old.source_project_id
       where retained.owner_user_id is null or retained.target_id is distinct from old.target_project_id
         or retained.target_name is distinct from old.target_name or retained.target_path is distinct from old.target_path
         or retained.evidence is distinct from to_jsonb(old) limit 1`);
-    if (unpreserved.rowCount)
-      throw new Error(
-        "A retired Project route lacks its exact preserved Capture Target. No changes were made."
+      if (unpreserved.rowCount)
+        throw new Error(
+          "A retired Project route lacks its exact preserved Capture Target. No changes were made."
+        );
+      await client.query(
+        `drop table ${retired.map((table) => `public.${table}`).join(",")} restrict`
       );
-    await client.query(
-      `drop table ${retired.map((table) => `public.${table}`).join(",")} restrict`
-    );
-    await client.query(
-      `drop function ${retiredProjectFunctions.map((name) => `public.${name}()`).join(",")} restrict`
-    );
-    await client.query(
-      "alter table public.pending_sharing_rule_admissions rename constraint pending_conversation_sharing_rules_pkey to pending_sharing_rule_admissions_pkey"
-    );
+      await client.query(
+        `drop function ${retiredProjectFunctions.map((name) => `public.${name}()`).join(",")} restrict`
+      );
+      await client.query(
+        "alter table public.pending_sharing_rule_admissions rename constraint pending_conversation_sharing_rules_pkey to pending_sharing_rule_admissions_pkey"
+      );
+    }
+    // Main's external-agent migration was not present in either verified branch head.
+    // Apply it once while retaining all Project data and avoiding sharing backfills.
+    for (const statement of migrations[46]!.sql) await client.query(statement);
     if (
       (await migrationSchemaFingerprint(client)) !==
       consolidatedProjectSchemaFingerprint
@@ -122,12 +140,12 @@ export const reconcileProjectBranchMigrations = async (
       throw new Error(
         "Consolidated schema verification failed; reconciliation was rolled back."
       );
-    // Retain main and the initial source cutover exactly. Never replay sharing backfills.
+    // Retain the original main prefix. Reorder the branch ledger after new main history.
     await client.query(
       "delete from drizzle.__drizzle_migrations where id=any($1::int[])",
-      [applied.slice(47).map((row) => row.id)]
+      [applied.slice(46).map((row) => row.id)]
     );
-    for (const [hash, when] of canonical.slice(47))
+    for (const [hash, when] of canonical.slice(46))
       await client.query(
         "insert into drizzle.__drizzle_migrations(hash,created_at) values($1,$2)",
         [hash, when]

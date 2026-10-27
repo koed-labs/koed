@@ -8,7 +8,10 @@ import pg from "pg";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { loadRootEnv } from "../../../scripts/api-token-bootstrap-lib.mjs";
 import { reconcileProjectBranchMigrations } from "../dist/project-migration-reconciliation.js";
-import { unreleasedProjectMigrationHistory } from "../dist/project-migration-history.js";
+import {
+  unreleasedProjectMigrationHistory,
+  preMainConsolidatedProjectMigrationHistory
+} from "../dist/project-migration-history.js";
 import { runPostgresTool } from "./postgres-tool.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -55,7 +58,9 @@ if (args.includes("--help")) {
       }
       if (
         JSON.stringify(actual) !==
-        JSON.stringify(unreleasedProjectMigrationHistory)
+          JSON.stringify(unreleasedProjectMigrationHistory) &&
+        JSON.stringify(actual) !==
+          JSON.stringify(preMainConsolidatedProjectMigrationHistory)
       )
         throw new Error(
           "Unrecognized migration history. No schema or ledger changes were made."

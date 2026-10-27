@@ -23,7 +23,7 @@ describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
       const pool = createDbPool({ connectionString: url.toString() });
       const migrationBaseline = await createMigrationBaseline(
         history === "repository identity"
-          ? "0046_project_scoped_recall"
+          ? "0047_project_scoped_recall"
           : undefined
       );
       const { folder, source, journal, entries: baseline } = migrationBaseline;

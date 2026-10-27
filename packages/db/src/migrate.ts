@@ -73,12 +73,17 @@ export const runDbMigrations = async (
     );
     if (ledger.rows[0]?.present) {
       const applied = await client.query<{ hash: string }>(
-        "select hash from drizzle.__drizzle_migrations"
+        "select hash from drizzle.__drizzle_migrations order by id"
       );
       const knownHashes = new Set(
         migrations.map((migration) => migration.hash)
       );
-      if (applied.rows.some((row) => !knownHashes.has(row.hash))) {
+      if (
+        applied.rows.some(
+          (row, index) =>
+            !knownHashes.has(row.hash) || row.hash !== migrations[index]?.hash
+        )
+      ) {
         throw new Error(
           "Database migration history does not match this build. Preserve the database and reconcile a verified unreleased Project history with the Local Operator Script before retrying."
         );

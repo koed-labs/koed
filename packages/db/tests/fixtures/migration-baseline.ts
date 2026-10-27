@@ -13,7 +13,7 @@ import { expect } from "vitest";
 import { runDbMigrations } from "../../src/migrate.js";
 
 /** Last migration already on main before this branch's Project cutover. */
-export const MAIN_MIGRATION_BASELINE = "0045_agent_seal_waiting_marker";
+export const MAIN_MIGRATION_BASELINE = "0046_external_agent_grants";
 
 export const createMigrationBaseline = async (
   through = MAIN_MIGRATION_BASELINE

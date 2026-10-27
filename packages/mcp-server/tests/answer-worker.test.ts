@@ -114,6 +114,7 @@ const writeFakeDynamicMemoryAnswerAppServer = (
     mode?:
       | "happy"
       | "expandSuccess"
+      | "expandThenSearch"
       | "invalidThenValid"
       | "expandBudget"
       | "emptySearchNotFound"
@@ -220,7 +221,7 @@ lineReader.on("line", (line) => {
       return;
     }
     if (!useTools) {
-      sendFinal(answer);
+      sendFinal(mode === "invalidThenValid" && attempt === 1 ? { ...answer, relevant_memory_found: false } : answer);
       return;
     }
     send({ id: 9001, method: "item/tool/call", params: { threadId, turnId, callId: "call-scan", namespace: "koed_memory", tool: "scan", arguments: { query: "koed docker", search_domain: "project", project_id: "workspace-1" } } });
@@ -240,7 +241,7 @@ lineReader.on("line", (line) => {
       send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-scan-again", namespace: "koed_memory", tool: "scan", arguments: { query: "koed docker again", search_domain: "project", project_id: "workspace-1" } } });
       return;
     }
-    if (mode === "expandBudget" || mode === "expandSuccess") {
+    if (mode === "expandBudget" || mode === "expandSuccess" || mode === "expandThenSearch") {
       send({ id: 9003, method: "item/tool/call", params: { threadId, turnId, callId: "call-expand", namespace: "koed_memory", tool: "expand", arguments: { node_id: "node-1" } } });
       return;
     }
@@ -298,6 +299,11 @@ lineReader.on("line", (line) => {
   }
   if (message.id === 9003) {
     const text = message.result?.contentItems?.[0]?.text ?? "";
+    if (mode === "expandThenSearch") {
+      if (!text.includes("GROUNDED_CHILD_EVIDENCE")) process.exit(70);
+      send({ id: 9004, method: "item/tool/call", params: { threadId, turnId, callId: "later-search", namespace: "koed_memory", tool: "search", arguments: { query: "later search", stage: "leaf_search", limit: 1 } } });
+      return;
+    }
     if (mode === "expandSuccess") {
       if (!text.includes("GROUNDED_CHILD_EVIDENCE")) {
         console.error("expected grounded expanded child, got " + text.slice(0, 200));
@@ -311,6 +317,12 @@ lineReader.on("line", (line) => {
       process.exit(68);
     }
     sendFinal(notFoundAnswer);
+    return;
+  }
+  if (message.id === 9004) {
+    const observation = JSON.parse(message.result?.contentItems?.[0]?.text ?? "{}");
+    if (observation.hits?.[0]?.evidence_index !== 1 || observation.hits?.[0]?.item?.sourceId !== "later-event") process.exit(72);
+    sendFinal(answer);
     return;
   }
 });
@@ -362,7 +374,8 @@ const createPromptBudgetRegressionClient = (): MemoryAnswerRetrievalClient => ({
 const runPromptBudgetRegression = (
   directory: string,
   maxPromptTokens: number,
-  capturePromptsPath: string
+  capturePromptsPath: string,
+  useTools = true
 ) =>
   answerWithMemoryWorker(
     {
@@ -387,6 +400,7 @@ const runPromptBudgetRegression = (
           directory,
           {
             mode: "invalidThenValid",
+            useTools,
             answer: {
               ...answerObject(
                 "Available evidence suggests Docker, but does not confirm the final deployment choice.",
@@ -395,7 +409,7 @@ const runPromptBudgetRegression = (
               relevant_memory_found: true,
               evidence: [
                 {
-                  evidence_index: 0,
+                  evidence_index: useTools ? 0 : 1,
                   relevance: "partial deployment evidence",
                   support: "KOE144_DYNAMIC_TOOL_EVIDENCE"
                 }
@@ -1962,82 +1976,98 @@ process.stdin.once("data", () => {
     }
   });
 
-  it("trims evidence to fit retry validation feedback within remaining prompt budget", async () => {
-    const calibrationDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "koed-answer-budget-calibration-")
-    );
-    const constrainedDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "koed-answer-budget-constrained-")
-    );
-    try {
-      const calibrationPath = path.join(calibrationDirectory, "prompts.jsonl");
-      const calibration = await runPromptBudgetRegression(
-        calibrationDirectory,
-        24_000,
-        calibrationPath
+  it.each([true, false])(
+    "preserves support while shrinking retry context (follow-up retrieval: %s)",
+    async (useTools) => {
+      const calibrationDirectory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-answer-budget-calibration-")
       );
-      expect(calibration.localMemoryWorker.usedFallback).toBe(false);
-      const calibrationPrompts = fs
-        .readFileSync(calibrationPath, "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as string);
-      expect(calibrationPrompts).toHaveLength(2);
+      const constrainedDirectory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-answer-budget-constrained-")
+      );
+      try {
+        const calibrationPath = path.join(
+          calibrationDirectory,
+          "prompts.jsonl"
+        );
+        const calibration = await runPromptBudgetRegression(
+          calibrationDirectory,
+          24_000,
+          calibrationPath,
+          useTools
+        );
+        expect(calibration.localMemoryWorker.usedFallback).toBe(false);
+        const calibrationPrompts = fs
+          .readFileSync(calibrationPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as string);
+        expect(calibrationPrompts).toHaveLength(2);
 
-      const retryPrompt = calibrationPrompts[1] ?? "";
-      const feedbackMarker =
-        "\nThe previous answer failed validation. Correct this before finishing:\n";
-      const feedbackOffset = retryPrompt.indexOf(feedbackMarker);
-      expect(feedbackOffset).toBeGreaterThan(0);
-      const baseRetryPrompt = retryPrompt.slice(0, feedbackOffset);
-      const firstPromptTokens = countTokensForModel(
-        calibrationPrompts[0] ?? "",
-        { model: promptBudgetRegressionModel }
-      ).tokens;
-      const retryTokens = countTokensForModel(retryPrompt, {
-        model: promptBudgetRegressionModel
-      }).tokens;
-      const constrainedBudget = firstPromptTokens + retryTokens - 5;
-      const constrainedPath = path.join(constrainedDirectory, "prompts.jsonl");
-      const constrained = await runPromptBudgetRegression(
-        constrainedDirectory,
-        constrainedBudget,
-        constrainedPath
-      );
+        const retryPrompt = calibrationPrompts[1] ?? "";
+        const feedbackMarker =
+          "\nThe previous answer failed validation. Correct this before finishing:\n";
+        const feedbackOffset = retryPrompt.indexOf(feedbackMarker);
+        expect(feedbackOffset).toBeGreaterThan(0);
+        const baseRetryPrompt = retryPrompt.slice(0, feedbackOffset);
+        const firstPromptTokens = countTokensForModel(
+          calibrationPrompts[0] ?? "",
+          { model: promptBudgetRegressionModel }
+        ).tokens;
+        const retryTokens = countTokensForModel(retryPrompt, {
+          model: promptBudgetRegressionModel
+        }).tokens;
+        const constrainedBudget = firstPromptTokens + retryTokens - 5;
+        const constrainedPath = path.join(
+          constrainedDirectory,
+          "prompts.jsonl"
+        );
+        const constrained = await runPromptBudgetRegression(
+          constrainedDirectory,
+          constrainedBudget,
+          constrainedPath,
+          useTools
+        );
 
-      const constrainedPrompts = fs
-        .readFileSync(constrainedPath, "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as string);
-      const constrainedPromptTokenCounts = constrainedPrompts.map(
-        (prompt) =>
-          countTokensForModel(prompt, { model: promptBudgetRegressionModel })
-            .tokens
-      );
-      expect(
-        constrained.localMemoryWorker.usedFallback,
-        `Worker failure: ${constrained.localMemoryWorker.errorMessage}; prompt token counts: ${constrainedPromptTokenCounts.join(", ")}`
-      ).toBe(false);
-      expect(constrainedPrompts).toHaveLength(2);
-      const remainingPromptTokens =
-        constrainedBudget - (constrainedPromptTokenCounts[0] ?? 0);
-      expect(remainingPromptTokens).toBeLessThan(retryTokens);
-      expect(constrainedPromptTokenCounts[1] ?? 0).toBeLessThanOrEqual(
-        remainingPromptTokens
-      );
-      const constrainedRetry = constrainedPrompts[1] ?? "";
-      const retainedA = constrainedRetry.includes("PROMPT_BUDGET_EVIDENCE_A");
-      const retainedB = constrainedRetry.includes("PROMPT_BUDGET_EVIDENCE_B");
-      expect(retainedA).not.toBe(retainedB);
-      expect(constrainedRetry).toContain(feedbackMarker.trim());
-      expect(baseRetryPrompt).toContain("PROMPT_BUDGET_EVIDENCE_A");
-      expect(baseRetryPrompt).toContain("PROMPT_BUDGET_EVIDENCE_B");
-    } finally {
-      fs.rmSync(calibrationDirectory, { recursive: true, force: true });
-      fs.rmSync(constrainedDirectory, { recursive: true, force: true });
+        const constrainedPrompts = fs
+          .readFileSync(constrainedPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as string);
+        const constrainedPromptTokenCounts = constrainedPrompts.map(
+          (prompt) =>
+            countTokensForModel(prompt, { model: promptBudgetRegressionModel })
+              .tokens
+        );
+        expect(
+          constrained.localMemoryWorker.usedFallback,
+          `Worker failure: ${constrained.localMemoryWorker.errorMessage}; prompt token counts: ${constrainedPromptTokenCounts.join(", ")}`
+        ).toBe(false);
+        expect(constrainedPrompts).toHaveLength(2);
+        const remainingPromptTokens =
+          constrainedBudget - (constrainedPromptTokenCounts[0] ?? 0);
+        expect(remainingPromptTokens).toBeLessThan(retryTokens);
+        expect(constrainedPromptTokenCounts[1] ?? 0).toBeLessThanOrEqual(
+          remainingPromptTokens
+        );
+        const constrainedRetry = constrainedPrompts[1] ?? "";
+        const retainedA = constrainedRetry.includes("PROMPT_BUDGET_EVIDENCE_A");
+        const retainedB = constrainedRetry.includes("PROMPT_BUDGET_EVIDENCE_B");
+        expect(retainedA).not.toBe(retainedB);
+        expect(constrainedRetry).toContain(feedbackMarker.trim());
+        expect(baseRetryPrompt).toContain("PROMPT_BUDGET_EVIDENCE_A");
+        expect(baseRetryPrompt).toContain("PROMPT_BUDGET_EVIDENCE_B");
+        if (!useTools) {
+          expect(constrained.evidence).toEqual([
+            expect.objectContaining({ sourceId: "event-B" })
+          ]);
+        }
+      } finally {
+        fs.rmSync(calibrationDirectory, { recursive: true, force: true });
+        fs.rmSync(constrainedDirectory, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it("retries semantically invalid Claude output with shared validation feedback", async () => {
     const prompts: string[] = [];
@@ -2152,6 +2182,209 @@ process.stdin.once("data", () => {
           }
         }
       });
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      reference: "original source identity",
+      selection: {
+        source_type: "memory_event",
+        source_id: "original-event",
+        source_chunk_index: 0,
+        visibility: "personal"
+      },
+      expected: "original-event"
+    },
+    {
+      reference: "original stable index",
+      selection: { evidence_index: 0 },
+      expected: "original-event"
+    },
+    {
+      reference: "new stable index",
+      selection: { evidence_index: 1 },
+      expected: "later-event"
+    },
+    {
+      reference: "unknown index",
+      selection: { evidence_index: 2 },
+      expected: null
+    },
+    {
+      reference: "conflicting visibility",
+      selection: {
+        source_type: "memory_event",
+        source_id: "original-event",
+        source_chunk_index: 0,
+        visibility: "team"
+      },
+      expected: null
+    }
+  ])(
+    "validates $reference after a later search fills the candidate budget",
+    async ({ selection, expected }) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-answer-stable-reference-")
+      );
+      try {
+        const response = await answerWithMemoryWorker(
+          {
+            evidenceBundle: {
+              query: "Which saved decision applies?",
+              evidence: []
+            }
+          },
+          {
+            client: {
+              async search(input) {
+                return input.query === "later search"
+                  ? {
+                      hits: [
+                        {
+                          sourceType: "memory_event",
+                          sourceId: "later-event",
+                          sourceChunkIndex: 0,
+                          visibility: "personal",
+                          summaryText: "Later candidate"
+                        }
+                      ]
+                    }
+                  : { retrieval: { stages: [] } };
+              },
+              async expand(nodeId) {
+                return {
+                  expanded: {
+                    nodeId,
+                    visibility: "personal",
+                    sourceItems: [
+                      {
+                        sourceId: "original-event",
+                        sourceChunkIndex: 0,
+                        text: "GROUNDED_CHILD_EVIDENCE: the saved decision."
+                      }
+                    ]
+                  }
+                };
+              }
+            },
+            responseDetail: "internal",
+            config: resolveMemoryAnswerWorkerTestConfig(directory, {
+              MEMORY_ANSWER_PROVIDER: "codex",
+              MEMORY_CODEX_APP_SERVER_BINARY:
+                writeFakeDynamicMemoryAnswerAppServer(directory, {
+                  mode: "expandThenSearch",
+                  answer: {
+                    ...answerObject("The saved decision applies."),
+                    evidence: [
+                      {
+                        ...selection,
+                        relevance: "saved decision",
+                        support: "the saved decision"
+                      }
+                    ]
+                  }
+                }),
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              MEMORY_ANSWER_MAX_CANDIDATES: "1",
+              MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "1"
+            })
+          }
+        );
+        if (expected) {
+          expect(
+            response.localMemoryWorker.usedFallback,
+            response.localMemoryWorker.errorMessage
+          ).toBe(false);
+          expect(response.evidence).toEqual([
+            expect.objectContaining({ sourceId: expected })
+          ]);
+          expect(response.localMemoryWorker.candidateCount).toBe(1);
+        } else {
+          expect(response.localMemoryWorker.usedFallback).toBe(true);
+          expect(response.localMemoryWorker.errorMessage).toContain(
+            "without resolvable supporting evidence"
+          );
+        }
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("enforces the final evidence-token budget across earlier observations", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-answer-observed-budget-")
+    );
+    try {
+      const response = await answerWithMemoryWorker(
+        {
+          evidenceBundle: {
+            query: "Which saved decisions apply?",
+            evidence: []
+          }
+        },
+        {
+          client: {
+            async search(input) {
+              return input.query === "later search"
+                ? {
+                    hits: [
+                      {
+                        sourceType: "memory_event",
+                        sourceId: "later-event",
+                        sourceChunkIndex: 0,
+                        visibility: "personal",
+                        summaryText: "beta ".repeat(160)
+                      }
+                    ]
+                  }
+                : { retrieval: { stages: [] } };
+            },
+            async expand(nodeId) {
+              return {
+                expanded: {
+                  nodeId,
+                  visibility: "personal",
+                  sourceItems: [
+                    {
+                      sourceId: "original-event",
+                      sourceChunkIndex: 0,
+                      text: `GROUNDED_CHILD_EVIDENCE ${"alpha ".repeat(160)}`
+                    }
+                  ]
+                }
+              };
+            }
+          },
+          responseDetail: "internal",
+          config: resolveMemoryAnswerWorkerTestConfig(directory, {
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_CODEX_APP_SERVER_BINARY:
+              writeFakeDynamicMemoryAnswerAppServer(directory, {
+                mode: "expandThenSearch",
+                answer: {
+                  ...answerObject("Both decisions apply."),
+                  evidence: [0, 1].map((evidence_index) => ({
+                    evidence_index,
+                    relevance: "saved decision",
+                    support: "the saved decision"
+                  }))
+                }
+              }),
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_CANDIDATES: "2",
+            MEMORY_ANSWER_MAX_EVIDENCE_ITEMS: "2",
+            MEMORY_ANSWER_MAX_EVIDENCE_TOKENS: "256"
+          })
+        }
+      );
+      expect(response.localMemoryWorker.usedFallback).toBe(true);
+      expect(response.localMemoryWorker.errorMessage).toContain(
+        "budget exhausted: evidence_tokens"
+      );
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -3612,6 +3845,19 @@ process.stdin.once("data", () => {
         ).toEqual([original]);
       }
     );
+
+    it("selects the indexed snapshot when the same source is observed again", () => {
+      const updated = { ...original, summaryText: "Updated source content" };
+      for (const evidence_index of [0, 1]) {
+        const observations = [original, updated];
+        expect(
+          evidenceSelectedByAnswer(
+            observations,
+            answer([{ ...selection, evidence_index }])
+          )
+        ).toEqual([observations[evidence_index]]);
+      }
+    });
 
     it("preserves index-only selection and checks supplied partial identity", () => {
       expect(

@@ -188,7 +188,15 @@ import {
   setRequestLogContext
 } from "./logging.js";
 import { registerOperationalRoutes } from "./operational-routes.js";
-import { createRemoteMcpOAuthProvider } from "../auth/remote-mcp-oauth.js";
+import {
+  createRemoteMcpOAuthProvider,
+  DelegatedAuthenticationError
+} from "../auth/remote-mcp-oauth.js";
+import {
+  createWorkosAgentRegistration,
+  isWorkosAgentCredential
+} from "../auth/workos-agent-registration.js";
+import { registerWorkosAgentRoutes } from "../auth/workos-agent-routes.js";
 import { registerRemoteMcpOAuthRoutes } from "../auth/remote-mcp-oauth-routes.js";
 import { registerRemoteMcpRoutes } from "./remote-mcp.js";
 import { supportsWorkos } from "./capabilities.js";
@@ -387,10 +395,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       "Remote MCP requires a configured database-backed OAuth store"
     );
   }
-  const remoteMcpOAuth = config.remoteMcp.enabled
+  const remoteMcpOAuthStore = config.remoteMcp.enabled
+    ? (options.remoteMcpOAuthStore ?? createRemoteMcpOAuthRepository(pool!))
+    : undefined;
+  const remoteMcpOAuth = remoteMcpOAuthStore
     ? createRemoteMcpOAuthProvider({
-        store:
-          options.remoteMcpOAuthStore ?? createRemoteMcpOAuthRepository(pool!),
+        store: remoteMcpOAuthStore,
         resourceUrl: new URL(config.remoteMcp.resourceUrl!)
       })
     : undefined;
@@ -793,10 +803,39 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
     return retentionRepository;
   };
+  const workosAgentRegistration = config.workos.agentRegistration
+    ? createWorkosAgentRegistration({
+        config: config.workos.agentRegistration,
+        resourceUrl: config.remoteMcp.resourceUrl!,
+        apiKey: config.workos.clientSecret!,
+        clientId: config.workos.clientId!,
+        providerEnvironment: config.workos.providerEnvironment,
+        grantStore: remoteMcpOAuthStore!,
+        requireRepository,
+        rateLimitStore,
+        requestFetch: options.fetch
+      })
+    : undefined;
+  if (workosAgentRegistration)
+    app.addHook("onRequest", async (request) => {
+      const bearer = /^Bearer\s+(\S+)$/i.exec(
+        request.headers.authorization?.trim() ?? ""
+      )?.[1];
+      if (bearer && isWorkosAgentCredential(bearer))
+        await workosAgentRegistration.admitCaller(hashSecret(request.ip));
+    });
   const authHelpers = createAuthHelpers(requireRepository, {
     hashSecret,
     cookieSecure: config.cookieSecure,
-    resolveDelegatedPrincipal: remoteMcpOAuth?.resolvePrincipal,
+    resolveDelegatedPrincipal: remoteMcpOAuth
+      ? (token) =>
+          workosAgentRegistration && isWorkosAgentCredential(token)
+            ? workosAgentRegistration.resolvePrincipal(token)
+            : remoteMcpOAuth.resolvePrincipal(token)
+      : undefined,
+    isDelegatedCredential: workosAgentRegistration
+      ? isWorkosAgentCredential
+      : undefined,
     recordAuthContext: (request, authContext) =>
       setRequestLogContext(
         request,
@@ -1856,6 +1895,16 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       request.log.warn(logBindings, "request failed");
     }
 
+    if (
+      error instanceof DelegatedAuthenticationError &&
+      error.retryAfterMs !== undefined &&
+      Number.isFinite(error.retryAfterMs) &&
+      error.retryAfterMs > 0
+    )
+      reply.header(
+        "retry-after",
+        String(Math.max(1, Math.ceil(error.retryAfterMs / 1000)))
+      );
     reply.status(statusCode).send({
       error: statusCode === 500 ? "Internal Server Error" : message,
       ...(errorCode ? { code: errorCode } : {})
@@ -1899,8 +1948,18 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       workosAvailable:
         config.workos.authkitEnabled &&
         supportsWorkos(config.deploymentProfile),
-      publicOrigin: resourceUrl.origin
+      publicOrigin: resourceUrl.origin,
+      browserPublicUrl: config.browserPublicUrl,
+      additionalAuthorizationServers: config.workos.agentRegistration
+        ? [config.workos.agentRegistration.issuer]
+        : undefined
     });
+    if (config.workos.agentRegistration)
+      registerWorkosAgentRoutes(app, {
+        config: config.workos.agentRegistration,
+        resourceUrl: resourceUrl.href,
+        rateLimit: rateLimitHandlers.auth
+      });
     registerRemoteMcpRoutes(app, {
       resourceUrl,
       auth: authHelpers,
