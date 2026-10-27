@@ -274,6 +274,11 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     let method: "PATCH" | "POST" | "DELETE";
     const body: Record<string, unknown> = { expectedVersion };
     switch (input.action) {
+      case "apply_sources":
+        method = "POST";
+        path = `${base}/sources`;
+        body.changes = input.changes;
+        break;
       case "explain_session":
         method = "POST";
         path = `${base}/memberships/explain`;
@@ -345,21 +350,12 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     return personalProjectCommandResultSchema.parse(payload);
   };
 
-  const rejectLegacyProjectAssignment = async (
-    input: unknown
-  ): Promise<never> => {
-    void input;
-    throw new PersonalMemoryBoundaryError("unsupported_operation", false);
-  };
-
   return {
     review: repositoryReviewCommand,
     create: createPersonalProject,
     manage: managePersonalProject,
     manageSourceContext,
     manageMembershipSync,
-    move: rejectLegacyProjectAssignment,
-    assign: rejectLegacyProjectAssignment,
     lookupAssociatedSelection,
     selection: createProjectSelectionCommand({
       paths: deps.paths,

@@ -1,6 +1,7 @@
 import { personalSharingToolMetadata } from "./personal-sharing-tool-metadata.js";
 import { personalOwnerIdSchema } from "@koed/shared";
 import { createPersonalSelectionConsumerRepository } from "./personal-selection-consumer-repository.js";
+import { createPersonalProjectDefaultRepository } from "./personal-project-default-repository.js";
 import { createPersonalMembershipReviewRepository } from "./personal-membership-review-repository.js";
 import { createPersonalConfigurationRepository } from "./personal-configuration-repository.js";
 import { createPersonalSourceCorrectionRepository } from "./personal-source-correction-repository.js";
@@ -50,6 +51,7 @@ import {
 } from "./approval-activity-sql.js";
 import { createPersonalMembershipRepository } from "./personal-membership-repository.js";
 import { createPersonalProjectExclusionRepository } from "./personal-project-exclusion-repository.js";
+import { createPersonalProjectBatchRepository } from "./personal-project-batch-repository.js";
 import { createPersonalProjectRuleRepository } from "./personal-project-rule-repository.js";
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
 import { checkDatabase, createDb } from "./connection.js";
@@ -4106,9 +4108,11 @@ export const createMemorySourceRepository = (
     }),
     ...createCapturedSessionRepository(pool),
     ...createPersonalMembershipRepository(pool),
+    ...createPersonalProjectDefaultRepository(pool),
     ...createPersonalMembershipReviewRepository(pool),
     ...createPersonalSelectionConsumerRepository(pool),
     ...createPersonalProjectRuleRepository(pool),
+    ...createPersonalProjectBatchRepository(pool),
     ...createPersonalProjectExclusionRepository(pool),
     ...createPersonalSourceCorrectionRepository(pool),
     ...createProjectRoutingRepository(),
@@ -8051,7 +8055,14 @@ export const createMemorySourceRepository = (
             coalesce((array_agg(content order by order_at desc, source_sequence desc nulls last, id desc) filter (where content is not null))[1], '') as sample
           from visible_thread_rows
           group by project_id, thread_id, case when $9::boolean then session_id end
-          order by coalesce(
+          having (not $11::boolean or $12::text is null or
+            (project_id collate "C", thread_id collate "C", coalesce((array_agg(session_id order by id))[1]::text,'')) >
+            ($12::text collate "C", $13::text collate "C", $14::text))
+          order by
+          case when $11::boolean then project_id end collate "C",
+          case when $11::boolean then thread_id end collate "C",
+          case when $11::boolean then coalesce((array_agg(session_id order by id))[1]::text,'') end,
+          coalesce(
             max(event_order_at) filter (where row_kind = 'event'),
             max(order_at)
           ) desc, thread_id desc, (array_agg(session_id order by id))[1] desc nulls last
@@ -8090,7 +8101,11 @@ export const createMemorySourceRepository = (
         left join local_captured_session_logical_memories local_memory
           on local_memory.local_session_id=ranked_threads.session_id
           and local_memory.owner_user_id=$1
-        order by latest_at desc, thread_id desc, session_id desc nulls last
+        order by
+          case when $11::boolean then project_id end collate "C",
+          case when $11::boolean then thread_id end collate "C",
+          case when $11::boolean then coalesce(session_id::text,'') end,
+          latest_at desc, thread_id desc, session_id desc nulls last
       `,
         [
           actor.userId,
@@ -8102,7 +8117,11 @@ export const createMemorySourceRepository = (
           offset,
           JSON.stringify(projected.selection),
           input.groupBySession ?? false,
-          sessionIds
+          sessionIds,
+          input.inventoryOrder ?? false,
+          input.inventoryAfter?.projectId ?? null,
+          input.inventoryAfter?.threadId ?? null,
+          input.inventoryAfter?.sessionId ?? null
         ]
       );
 

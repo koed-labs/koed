@@ -1,3 +1,8 @@
+import { personalProjectDefaultIdentity } from "./personal-project-default.js";
+import {
+  personalProjectSourceTargetSchema,
+  personalProjectSourceSelectorKey
+} from "./personal-project-source-target.js";
 import { z } from "zod";
 import {
   personalFolderReferenceSchema,
@@ -36,6 +41,20 @@ export const personalMembershipRevisionSchema = z
     entityId: personalIdentifierSchema,
     revisionId: personalIdentifierSchema,
     authorDeviceId: personalIdentifierSchema,
+    automaticDefault: z
+      .object({
+        sourceKey: z.string().regex(/^source_default_[a-f0-9]{64}$/),
+        target: personalProjectSourceTargetSchema
+      })
+      .strict()
+      .optional(),
+    automaticRetirement: z
+      .object({
+        sourceKey: z.string().regex(/^source_default_[a-f0-9]{64}$/),
+        target: personalProjectSourceTargetSchema
+      })
+      .strict()
+      .optional(),
     replaces: z.array(personalIdentifierSchema).max(1024),
     operation: z.discriminatedUnion("kind", [
       z
@@ -72,6 +91,28 @@ export const personalMembershipRevisionSchema = z
         message: "Invalid reviewed revision frontier"
       });
     const op = value.operation;
+    if (value.automaticDefault) {
+      const initial = value.automaticDefault,
+        identity = personalProjectDefaultIdentity(initial.target);
+      if (
+        value.replaces.length ||
+        (op.kind !== "set_project" && op.kind !== "include") ||
+        identity.sourceKey !== initial.sourceKey ||
+        identity.projectIdentity !== value.project.projectId ||
+        (initial.target.kind === "folder" &&
+          initial.target.folder.ownerUserId !== value.project.ownerUserId) ||
+        (op.kind === "include" &&
+          (op.selector.kind === "session" ||
+            personalProjectSourceSelectorKey(op.selector) !==
+              personalProjectSourceSelectorKey(initial.target)))
+      )
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "Automatic default provenance must identify an initial Project or seed rule for the same canonical source"
+        });
+    }
+
     if (
       (op.kind === "delete_project" ||
         op.kind === "remove_inclusion" ||
@@ -90,6 +131,24 @@ export const personalMembershipRevisionSchema = z
         code: "custom",
         message: "Project revision must address its Project identity"
       });
+    if (value.automaticRetirement) {
+      const source = value.automaticRetirement,
+        identity = personalProjectDefaultIdentity(source.target);
+      if (
+        value.automaticDefault ||
+        !value.replaces.length ||
+        op.kind !== "delete_project" ||
+        identity.sourceKey !== source.sourceKey ||
+        identity.projectIdentity !== value.project.projectId ||
+        (source.target.kind === "folder" &&
+          source.target.folder.ownerUserId !== value.project.ownerUserId)
+      )
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "Automatic retirement must retain a reviewed default Project source"
+        });
+    }
     const reference =
       op.kind === "exclude"
         ? op.source
@@ -135,6 +194,32 @@ export const personalSourceBindingSchema = z.discriminatedUnion("state", [
 export type PersonalMembershipRevision = z.infer<
   typeof personalMembershipRevisionSchema
 >;
+/** User-authored heads supersede unobserved automatic roots. Real concurrent User
+ * heads still conflict. Every original revision and causal head remains retained. */
+export const selectPersonalMembershipHead = (
+  heads: PersonalMembershipRevision[]
+): PersonalMembershipRevision | null => {
+  if (!heads.length) return null;
+  const userHeads = heads.filter(
+    (head) => !head.automaticDefault && !head.automaticRetirement
+  );
+  if (userHeads.length) return userHeads.length === 1 ? userHeads[0]! : null;
+  const sourceKey = (heads[0]!.automaticDefault ??
+    heads[0]!.automaticRetirement)!.sourceKey;
+  if (
+    heads.some(
+      (head) =>
+        (head.automaticDefault ?? head.automaticRetirement)?.sourceKey !==
+        sourceKey
+    )
+  )
+    return null;
+  const retired = heads.filter((head) => head.automaticRetirement);
+  return [...(retired.length ? retired : heads)].sort((a, b) =>
+    a.revisionId < b.revisionId ? -1 : a.revisionId > b.revisionId ? 1 : 0
+  )[0]!;
+};
+
 export type PersonalMembershipReason = z.infer<
   typeof personalMembershipReasonSchema
 >;

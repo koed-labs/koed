@@ -526,6 +526,20 @@
       "when": 1792630900476,
       "tag": "0074_yellow_nightmare",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1793102000000,
+      "tag": "0075_project_source_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1793102000001,
+      "tag": "0076_project_default_configuration",
+      "breakpoints": true
     }
   ]
 }

@@ -1,3 +1,8 @@
+export { selectPersonalMembershipHead } from "./personal-membership-contract.js";
+export * from "./personal-inventory.js";
+export * from "./personal-inventory-classification.js";
+export { personalFolderExecutionId } from "./personal-folder-execution-id.js";
+export { repositoryScopeId } from "./repository-recall.js";
 import {
   personalMembershipSyncCommandSchema,
   personalMembershipSyncCommandResultSchema
@@ -26,6 +31,8 @@ import {
 import {
   personalFolderScopeId,
   personalFolderContextSchema,
+  personalFolderObservationSchema,
+  personalGitContextSchema,
   personalFolderReferenceSchema,
   personalProjectReferenceSchema
 } from "./personal-source-contract.js";
@@ -39,7 +46,7 @@ import { repositoryAssignmentSchema } from "./repository-assignment.js";
 import { repositoryIdentitySchema } from "./repository-identity.js";
 import { conversationPresentationDecisionSchema } from "./conversation-presentation-policy.js";
 
-export const PERSONAL_DESKTOP_CONTRACT_VERSION = 24;
+export const PERSONAL_DESKTOP_CONTRACT_VERSION = 27;
 export const PERSONAL_DESKTOP_INITIAL_EVENT_LIMIT = 50;
 export const PERSONAL_DESKTOP_OLDER_EVENT_LIMIT = 500;
 export const PERSONAL_CONVERSATION_SETTLE_AFTER_DAYS = 3;
@@ -305,6 +312,7 @@ export const personalDesktopProjectThreadSchema = z
 
 export const personalDesktopProjectSchema = z
   .object({
+    ownerUserId: z.uuid().optional(),
     namedProject: personalNamedProjectSchema.optional(),
     projectReference: personalProjectReferenceSchema.optional(),
     inclusionRules: z.array(personalProjectRuleSchema).optional(),
@@ -537,27 +545,6 @@ export const personalDesktopEventPageInputSchema = z
     }
   });
 
-export const personalDesktopSessionProjectInputSchema = z.discriminatedUnion(
-  "action",
-  [
-    z
-      .object({
-        action: z.literal("move"),
-        sessionId: z.uuid(),
-        targetProjectId: identifierSchema,
-        expectedVersion: z.number().int().positive()
-      })
-      .strict(),
-    z
-      .object({
-        action: z.literal("reset"),
-        sessionId: z.uuid(),
-        expectedVersion: z.number().int().positive()
-      })
-      .strict()
-  ]
-);
-
 export const personalDesktopSessionTitleInputSchema = z
   .object({
     sessionId: z.uuid(),
@@ -568,17 +555,6 @@ export const personalDesktopSessionTitleInputSchema = z
 export const personalDesktopProjectCreateInputSchema = z
   .object({ name: z.string().trim().min(1).max(160) })
   .strict();
-
-export const personalDesktopProjectMoveInputSchema = z
-  .object({
-    sourceProjectId: identifierSchema,
-    targetProjectId: identifierSchema
-  })
-  .strict()
-  .refine(
-    (input) => input.sourceProjectId !== input.targetProjectId,
-    "Choose a different Project"
-  );
 
 export const personalDesktopAskTurnSchema = z
   .object({
@@ -620,11 +596,21 @@ export const personalDesktopAskSubmitInputSchema = z
   .object({
     namedProjectId: z.uuid().optional(),
     folderSelection: personalFolderReferenceSchema.optional(),
+    repositorySelection: personalGitContextSchema.optional(),
     askThreadId: z.uuid().optional(),
     idempotencyKey: z.string().trim().min(1).max(500),
     query: z.string().trim().min(1).max(32_000)
   })
-  .strict();
+  .strict()
+  .refine(
+    (input) =>
+      [
+        input.namedProjectId,
+        input.folderSelection,
+        input.repositorySelection
+      ].filter(Boolean).length <= 1,
+    { message: "Ask requires one explicit target" }
+  );
 
 export const personalDesktopNoteSummarySchema = z
   .object({
@@ -703,7 +689,34 @@ export const personalDesktopSessionPresentationInputSchema = z
     { message: "At least one presentation change is required" }
   );
 
+export const personalDesktopLocalFolderPrepareInputSchema = z
+  .object({
+    localProjectId: z.string().trim().min(1).max(2048)
+  })
+  .strict();
+
 export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.projects.status"),
+      input: z.object({}).strict()
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.folders.local.list"),
+      input: z.object({}).strict()
+    })
+    .strict(),
+  z
+    .object({
+      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
+      operation: z.literal("personal.folders.local.prepare"),
+      input: personalDesktopLocalFolderPrepareInputSchema
+    })
+    .strict(),
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
@@ -735,8 +748,8 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
-      operation: z.literal("personal.projects.move"),
-      input: personalDesktopProjectMoveInputSchema
+      operation: z.literal("personal.projects.named.list"),
+      input: z.object({}).strict()
     })
     .strict(),
   z
@@ -765,13 +778,6 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
       contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
       operation: z.literal("personal.events.load_page"),
       input: personalDesktopEventPageInputSchema
-    })
-    .strict(),
-  z
-    .object({
-      contractVersion: z.literal(PERSONAL_DESKTOP_CONTRACT_VERSION),
-      operation: z.literal("personal.sessions.assign_project"),
-      input: personalDesktopSessionProjectInputSchema
     })
     .strict(),
   z
@@ -848,9 +854,9 @@ export const personalDesktopRequestSchema = z.discriminatedUnion("operation", [
 
 export const personalDesktopProjectsDataSchema = z
   .object({
-    // The API graph contains at most 500 groups; the local named catalog adds
-    // up to 500 empty destinations without adding any Conversation payloads.
-    projects: z.array(personalDesktopProjectSchema).max(1000)
+    // Inventory pages are bounded in transport; source enumeration must not
+    // silently truncate a catalog because it exceeds one graph page.
+    projects: z.array(personalDesktopProjectSchema)
   })
   .strict();
 
@@ -867,22 +873,13 @@ export const personalDesktopProjectMetadataDataSchema = z
   })
   .strict();
 
+export const personalDesktopLocalFoldersDataSchema = z
+  .object({ folders: z.array(personalFolderObservationSchema) })
+  .strict();
+
 export const personalDesktopEventsDataSchema = z
   .object({
     events: z.array(personalDesktopConversationEventSchema).max(500)
-  })
-  .strict();
-
-export const personalDesktopSessionProjectDataSchema = z
-  .object({
-    projectId: identifierSchema.nullable()
-  })
-  .strict();
-
-export const personalDesktopProjectMoveDataSchema = z
-  .object({
-    projectId: identifierSchema,
-    movedCount: z.number().int().safe().positive()
   })
   .strict();
 
@@ -965,6 +962,33 @@ export const personalDesktopResultSchema = z.union([
   z
     .object({
       ...resultBase,
+      operation: z.literal("personal.projects.status"),
+      ok: z.literal(true),
+      data: z.object({ reconciliationPending: z.boolean() }).strict()
+    })
+    .strict(),
+  failedResult("personal.projects.status"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.folders.local.list"),
+      ok: z.literal(true),
+      data: personalDesktopLocalFoldersDataSchema
+    })
+    .strict(),
+  failedResult("personal.folders.local.list"),
+  z
+    .object({
+      ...resultBase,
+      operation: z.literal("personal.folders.local.prepare"),
+      ok: z.literal(true),
+      data: z.object({ folder: personalFolderObservationSchema }).strict()
+    })
+    .strict(),
+  failedResult("personal.folders.local.prepare"),
+  z
+    .object({
+      ...resultBase,
       operation: z.literal("personal.projects.sync"),
       ok: z.literal(true),
       data: personalMembershipSyncCommandResultSchema
@@ -1001,12 +1025,12 @@ export const personalDesktopResultSchema = z.union([
   z
     .object({
       ...resultBase,
-      operation: z.literal("personal.projects.move"),
+      operation: z.literal("personal.projects.named.list"),
       ok: z.literal(true),
-      data: personalDesktopProjectMoveDataSchema
+      data: personalDesktopProjectsDataSchema
     })
     .strict(),
-  failedResult("personal.projects.move"),
+  failedResult("personal.projects.named.list"),
   z
     .object({
       ...resultBase,
@@ -1043,15 +1067,6 @@ export const personalDesktopResultSchema = z.union([
     })
     .strict(),
   failedResult("personal.events.load_page"),
-  z
-    .object({
-      ...resultBase,
-      operation: z.literal("personal.sessions.assign_project"),
-      ok: z.literal(true),
-      data: personalDesktopSessionProjectDataSchema
-    })
-    .strict(),
-  failedResult("personal.sessions.assign_project"),
   z
     .object({
       ...resultBase,
@@ -1177,9 +1192,6 @@ export type PersonalDesktopConversationCursor = z.infer<
 export type PersonalDesktopChange = z.infer<typeof personalDesktopChangeSchema>;
 export type PersonalDesktopEventPageInput = z.infer<
   typeof personalDesktopEventPageInputSchema
->;
-export type PersonalDesktopSessionProjectInput = z.infer<
-  typeof personalDesktopSessionProjectInputSchema
 >;
 export type PersonalDesktopSessionTitleInput = z.infer<
   typeof personalDesktopSessionTitleInputSchema
@@ -1307,10 +1319,15 @@ export interface PersonalDesktopApi {
   createProject?: (
     input: z.infer<typeof personalDesktopProjectCreateInputSchema>
   ) => Promise<z.infer<typeof personalDesktopProjectCreateDataSchema>>;
-  moveProject?: (
-    input: z.infer<typeof personalDesktopProjectMoveInputSchema>
-  ) => Promise<z.infer<typeof personalDesktopProjectMoveDataSchema>>;
   listProjects: () => Promise<PersonalDesktopProject[]>;
+  listNamedProjects?: () => Promise<PersonalDesktopProject[]>;
+  projectStatus?: () => Promise<{ reconciliationPending: boolean }>;
+  listLocalFolders?: () => Promise<
+    z.infer<typeof personalFolderObservationSchema>[]
+  >;
+  prepareLocalFolder?: (
+    input: z.infer<typeof personalDesktopLocalFolderPrepareInputSchema>
+  ) => Promise<z.infer<typeof personalFolderObservationSchema>>;
   listRecentConversations?: (
     input: PersonalDesktopConversationRecentListInput
   ) => Promise<{
@@ -1321,9 +1338,6 @@ export interface PersonalDesktopApi {
   loadEventPage: (
     input: PersonalDesktopEventPageInput
   ) => Promise<PersonalDesktopConversationEvent[]>;
-  assignSessionProject: (
-    input: PersonalDesktopSessionProjectInput
-  ) => Promise<{ projectId: string | null }>;
   updateSessionTitle: (
     input: PersonalDesktopSessionTitleInput
   ) => Promise<{ title: string }>;

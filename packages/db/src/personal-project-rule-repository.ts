@@ -1,4 +1,5 @@
 import { assertPersonalMembershipMutationReady } from "./personal-membership-mutation-guard.js";
+import { suppressPersonalProjectDefault } from "./personal-project-default-suppression.js";
 import { findPersonalFolderContext } from "./personal-folder-context-lookup.js";
 import { personalDirectMembershipReadySql } from "./personal-membership-selection-sql.js";
 import { randomUUID } from "node:crypto";
@@ -27,6 +28,8 @@ import {
 } from "./personal-selection-sql.js";
 import type { ActorContext } from "./types.js";
 import {
+  personalMembershipTransactionRunner,
+  type PersonalMembershipTransaction,
   withPersonalMembershipTransaction,
   lockPersonalNamedProject,
   mapPersonalNamedProject,
@@ -161,16 +164,21 @@ const addRule = (
   actor: ActorContext,
   projectId: string,
   expectedVersion: number,
-  target: PersonalProjectRule["target"]
+  target: PersonalProjectRule["target"],
+  transaction?: PersonalMembershipTransaction
 ) =>
-  withPersonalMembershipTransaction(pool, actor, (client) =>
-    addPersonalProjectRuleWithClient(
-      client,
-      actor,
-      projectId,
-      expectedVersion,
-      target
-    )
+  withPersonalMembershipTransaction(
+    pool,
+    actor,
+    (client) =>
+      addPersonalProjectRuleWithClient(
+        client,
+        actor,
+        projectId,
+        expectedVersion,
+        target
+      ),
+    { transaction }
   );
 
 /** Shared native and synced inclusion explanations, bounded by the caller. */
@@ -226,139 +234,165 @@ export const listPersonalProjectMembershipReasonsWithClient = async (
   }));
 };
 
-export const createPersonalProjectRuleRepository = (pool: pg.Pool) => ({
-  async addPersonalProjectRepositoryRule(
-    actor: ActorContext,
-    rawProjectId: string,
-    raw: {
-      expectedVersion: number;
-      repository: PersonalGitContext;
-    }
-  ): Promise<{ project: PersonalNamedProject; rule: PersonalProjectRule }> {
-    const projectId = personalOwnerIdSchema.parse(rawProjectId),
-      input = personalProjectRepositoryRuleInputSchema.parse(raw);
-    return addRule(pool, actor, projectId, input.expectedVersion, {
-      kind: "repository",
-      repository: input.repository
-    });
-  },
-  async addPersonalProjectFolderRule(
-    actor: ActorContext,
-    rawProjectId: string,
-    raw: { expectedVersion: number; folder: PersonalFolderReference }
-  ): Promise<{ project: PersonalNamedProject; rule: PersonalProjectRule }> {
-    const projectId = personalOwnerIdSchema.parse(rawProjectId),
-      input = personalProjectFolderRuleInputSchema.parse(raw);
-    return addRule(pool, actor, projectId, input.expectedVersion, {
-      kind: "folder",
-      folder: input.folder
-    });
-  },
-  async getPersonalProjectFolderRuleContext(
-    actor: ActorContext,
-    rawProjectId: string,
-    rawFolder: PersonalFolderReference
-  ): Promise<PersonalFolderContext | null> {
-    const projectId = personalOwnerIdSchema.parse(rawProjectId),
-      folder = personalFolderReferenceSchema.parse(rawFolder);
-    assertFolderOwner(actor, folder);
-    const project = await pool.query(
-      `select p.project_id from personal_named_projects p join users u on u.id=p.owner_user_id and u.disabled_at is null and u.deleted_at is null
-      where p.owner_user_id=$1 and p.project_id=$2 and p.deleted_at is null`,
-      [actor.userId, projectId]
-    );
-    if (!project.rows.length)
-      throw Object.assign(new Error("Personal Project not found"), {
-        statusCode: 404
-      });
-    return (
-      (await findPersonalFolderContext(pool, actor, projectId, folder)) ?? null
-    );
-  },
-  async listPersonalProjectMembershipReasons(
-    actor: ActorContext,
-    projectId: string,
-    sessionIds: string[]
-  ) {
-    return listPersonalProjectMembershipReasonsWithClient(
-      pool,
-      actor,
-      projectId,
-      sessionIds
-    );
-  },
-  async removePersonalProjectRule(
-    actor: ActorContext,
-    rawProjectId: string,
-    rawInclusionId: string,
-    raw: { expectedVersion: number }
-  ): Promise<{ project: PersonalNamedProject; rule: PersonalProjectRule }> {
-    const projectId = personalOwnerIdSchema.parse(rawProjectId),
-      inclusionId = personalOwnerIdSchema.parse(rawInclusionId),
-      input = personalProjectVersionSchema.parse(raw);
-    return withPersonalMembershipTransaction(pool, actor, async (client) => {
-      const project = await lockPersonalNamedProject(
-        client,
+export const createPersonalProjectRuleRepository = (
+  pool: pg.Pool,
+  transaction?: PersonalMembershipTransaction
+) => {
+  const transact = personalMembershipTransactionRunner(pool, transaction);
+  return {
+    async addPersonalProjectRepositoryRule(
+      actor: ActorContext,
+      rawProjectId: string,
+      raw: {
+        expectedVersion: number;
+        repository: PersonalGitContext;
+      }
+    ): Promise<{ project: PersonalNamedProject; rule: PersonalProjectRule }> {
+      const projectId = personalOwnerIdSchema.parse(rawProjectId),
+        input = personalProjectRepositoryRuleInputSchema.parse(raw);
+      return addRule(
+        pool,
         actor,
         projectId,
-        input.expectedVersion
+        input.expectedVersion,
+        {
+          kind: "repository",
+          repository: input.repository
+        },
+        transaction
       );
-      const current = await client.query<RuleRow>(
-        "select * from personal_project_rules where owner_user_id=$1 and project_id=$2 and inclusion_id=$3 for update",
-        [actor.userId, projectId, inclusionId]
+    },
+    async addPersonalProjectFolderRule(
+      actor: ActorContext,
+      rawProjectId: string,
+      raw: { expectedVersion: number; folder: PersonalFolderReference }
+    ): Promise<{ project: PersonalNamedProject; rule: PersonalProjectRule }> {
+      const projectId = personalOwnerIdSchema.parse(rawProjectId),
+        input = personalProjectFolderRuleInputSchema.parse(raw);
+      return addRule(
+        pool,
+        actor,
+        projectId,
+        input.expectedVersion,
+        {
+          kind: "folder",
+          folder: input.folder
+        },
+        transaction
       );
-      const previous = current.rows[0];
-      if (!previous)
-        throw Object.assign(new Error("Project inclusion rule not found"), {
+    },
+    async getPersonalProjectFolderRuleContext(
+      actor: ActorContext,
+      rawProjectId: string,
+      rawFolder: PersonalFolderReference
+    ): Promise<PersonalFolderContext | null> {
+      const projectId = personalOwnerIdSchema.parse(rawProjectId),
+        folder = personalFolderReferenceSchema.parse(rawFolder);
+      assertFolderOwner(actor, folder);
+      const project = await pool.query(
+        `select p.project_id from personal_named_projects p join users u on u.id=p.owner_user_id and u.disabled_at is null and u.deleted_at is null
+      where p.owner_user_id=$1 and p.project_id=$2 and p.deleted_at is null`,
+        [actor.userId, projectId]
+      );
+      if (!project.rows.length)
+        throw Object.assign(new Error("Personal Project not found"), {
           statusCode: 404
         });
-      await assertPersonalMembershipMutationReady(client, {
-        ownerUserId: actor.userId,
-        projectId,
-        entityKind: "rule",
-        localEntityId: previous.inclusion_id
-      });
-      if (previous.removed_at)
-        return {
-          project: mapPersonalNamedProject(project),
-          rule: mapRule(previous)
-        };
-      const revisionId = randomUUID();
-      const result = await client.query<RuleRow>(
-        "update personal_project_rules set removed_at=now(),version=version+1,head_revision_id=$4,updated_at=now() where owner_user_id=$1 and project_id=$2 and inclusion_id=$3 returning *",
-        [actor.userId, projectId, inclusionId, revisionId]
+      return (
+        (await findPersonalFolderContext(pool, actor, projectId, folder)) ??
+        null
       );
-      await appendPersonalMembershipRevision(
-        client,
+    },
+    async listPersonalProjectMembershipReasons(
+      actor: ActorContext,
+      projectId: string,
+      sessionIds: string[]
+    ) {
+      return listPersonalProjectMembershipReasonsWithClient(
+        pool,
         actor,
         projectId,
-        inclusionId,
-        revisionId,
-        [previous.head_revision_id],
-        "remove_inclusion",
-        {}
+        sessionIds
       );
-      return {
-        project: await advanceProject(client, actor, projectId),
-        rule: mapRule(result.rows[0]!)
-      };
-    });
-  },
-  async listPersonalProjectRules(
-    actor: ActorContext,
-    rawProjectId: string
-  ): Promise<PersonalProjectRule[]> {
-    const projectId = personalOwnerIdSchema.parse(rawProjectId);
-    const result = await pool.query<RuleRow>(
-      `select r.* from personal_project_rules r
+    },
+    async removePersonalProjectRule(
+      actor: ActorContext,
+      rawProjectId: string,
+      rawInclusionId: string,
+      raw: { expectedVersion: number }
+    ): Promise<{ project: PersonalNamedProject; rule: PersonalProjectRule }> {
+      const projectId = personalOwnerIdSchema.parse(rawProjectId),
+        inclusionId = personalOwnerIdSchema.parse(rawInclusionId),
+        input = personalProjectVersionSchema.parse(raw);
+      return transact(actor, async (client) => {
+        const project = await lockPersonalNamedProject(
+          client,
+          actor,
+          projectId,
+          input.expectedVersion
+        );
+        const current = await client.query<RuleRow>(
+          "select * from personal_project_rules where owner_user_id=$1 and project_id=$2 and inclusion_id=$3 for update",
+          [actor.userId, projectId, inclusionId]
+        );
+        const previous = current.rows[0];
+        if (!previous)
+          throw Object.assign(new Error("Project inclusion rule not found"), {
+            statusCode: 404
+          });
+        await assertPersonalMembershipMutationReady(client, {
+          ownerUserId: actor.userId,
+          projectId,
+          entityKind: "rule",
+          localEntityId: previous.inclusion_id
+        });
+        if (previous.removed_at)
+          return {
+            project: mapPersonalNamedProject(project),
+            rule: mapRule(previous)
+          };
+        const revisionId = randomUUID();
+        await suppressPersonalProjectDefault(
+          client,
+          actor.userId,
+          previous.target
+        );
+        const result = await client.query<RuleRow>(
+          "update personal_project_rules set removed_at=now(),version=version+1,head_revision_id=$4,updated_at=now() where owner_user_id=$1 and project_id=$2 and inclusion_id=$3 returning *",
+          [actor.userId, projectId, inclusionId, revisionId]
+        );
+        await appendPersonalMembershipRevision(
+          client,
+          actor,
+          projectId,
+          inclusionId,
+          revisionId,
+          [previous.head_revision_id],
+          "remove_inclusion",
+          {}
+        );
+        return {
+          project: await advanceProject(client, actor, projectId),
+          rule: mapRule(result.rows[0]!)
+        };
+      });
+    },
+    async listPersonalProjectRules(
+      actor: ActorContext,
+      rawProjectId: string
+    ): Promise<PersonalProjectRule[]> {
+      const projectId = personalOwnerIdSchema.parse(rawProjectId);
+      const result = await pool.query<RuleRow>(
+        `select r.* from personal_project_rules r
       join personal_named_projects p on p.owner_user_id=r.owner_user_id and p.project_id=r.project_id and p.deleted_at is null
       join users u on u.id=p.owner_user_id and u.disabled_at is null and u.deleted_at is null
       where r.owner_user_id=$1 and r.project_id=$2 and r.removed_at is null order by r.created_at,r.inclusion_id`,
-      [actor.userId, projectId]
-    );
-    return result.rows.map(mapRule);
-  }
-});
+        [actor.userId, projectId]
+      );
+      return result.rows.map(mapRule);
+    }
+  };
+};
 export type PersonalProjectRuleRepository = ReturnType<
   typeof createPersonalProjectRuleRepository
 >;

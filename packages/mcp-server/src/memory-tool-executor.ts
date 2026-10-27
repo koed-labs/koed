@@ -9,6 +9,8 @@ import {
   authorizedPersonalSelectionSnapshot,
   snapshotPinnedPersonalSelection,
   personalFolderScopeId,
+  repositoryScopeId,
+  personalDesktopAskSubmitInputSchema,
   type PersonalSelectionSnapshot
 } from "@koed/shared";
 import {
@@ -109,6 +111,7 @@ export interface TrustedMemoryAnswerExecutionOptions {
 export interface DesktopAskExecutionInput {
   namedProjectId?: string;
   folderSelection?: import("@koed/shared").PersonalFolderReference;
+  repositorySelection?: import("@koed/shared").PersonalGitContext;
   askThreadId?: string;
   idempotencyKey: string;
   query: string;
@@ -229,11 +232,16 @@ export class MemoryToolExecutor {
     caller: LocalRuntimeCallerContext,
     signal?: AbortSignal
   ): Promise<Record<string, unknown>> {
+    input = personalDesktopAskSubmitInputSchema.parse(input);
+    const targeted = Boolean(
+      input.namedProjectId || input.folderSelection || input.repositorySelection
+    );
     const pending = desktopAskQuestionFromResponse(
       await this.client.createPendingDesktopAsk({
         ask_thread_id: input.askThreadId,
         named_project_id: input.namedProjectId,
         folder_selection: input.folderSelection,
+        repository_selection: input.repositorySelection,
         idempotency_key: input.idempotencyKey,
         query: input.query
       })
@@ -242,27 +250,28 @@ export class MemoryToolExecutor {
       return { question: displaySafeDesktopAskQuestion(pending) };
     }
     const conversationContext =
-      !input.namedProjectId && !input.folderSelection && input.askThreadId
+      !targeted && input.askThreadId
         ? boundedDesktopAskConversationContext(
             await this.client.getDesktopAskThread(pending.askThreadId)
           )
         : [];
     try {
-      const ownerUserId =
-        input.namedProjectId || input.folderSelection
-          ? (await this.client.accessCheck()).user.id
-          : undefined;
+      const ownerUserId = targeted
+        ? (await this.client.accessCheck()).user.id
+        : undefined;
       const personalSelection: PersonalSelectionSnapshot | undefined =
-        (input.namedProjectId || input.folderSelection) && ownerUserId
+        targeted && ownerUserId
           ? {
               version: 1,
               ownerUserId,
-              target: input.folderSelection
-                ? { kind: "folder", folder: input.folderSelection }
-                : {
-                    kind: "project",
-                    project: { ownerUserId, projectId: input.namedProjectId! }
-                  },
+              target: input.repositorySelection
+                ? { kind: "repository", repository: input.repositorySelection }
+                : input.folderSelection
+                  ? { kind: "folder", folder: input.folderSelection }
+                  : {
+                      kind: "project",
+                      project: { ownerUserId, projectId: input.namedProjectId! }
+                    },
               callerRepositoryContext: null
             }
           : undefined;
@@ -273,16 +282,15 @@ export class MemoryToolExecutor {
           query: pending.query,
           response_detail: "answer_only",
           retrieval_hints: {},
-          search_domain:
-            input.namedProjectId || input.folderSelection
-              ? "project"
-              : "global",
-          ...(input.namedProjectId || input.folderSelection
+          search_domain: targeted ? "project" : "global",
+          ...(targeted
             ? {
-                project_id: input.folderSelection
-                  ? personalFolderScopeId(input.folderSelection)
-                  : input.namedProjectId,
-                repository_context: null
+                project_id: input.repositorySelection
+                  ? repositoryScopeId(input.repositorySelection)
+                  : input.folderSelection
+                    ? personalFolderScopeId(input.folderSelection)
+                    : input.namedProjectId,
+                repository_context: input.repositorySelection ?? null
               }
             : {})
         },
@@ -500,12 +508,15 @@ export class MemoryToolExecutor {
       acceptedSelection?.version === 1 &&
       (acceptedSelection.target.kind === "project" ||
         acceptedSelection.target.kind === "folder");
+    const desktopSelection =
+      execution.origin === "desktop_ask" && acceptedSelection?.version === 1;
     if (
       taskAuthority?.scope !== "team" &&
       (input.team_workspace_id ||
         input.team_backend_id ||
         (!taskAuthority &&
           !nonRepositorySelection &&
+          !desktopSelection &&
           resolveProjectTeamWorkspaceRoute({
             projectRoot:
               input.search_domain === "project"
@@ -525,6 +536,7 @@ export class MemoryToolExecutor {
     }
     if (
       !nonRepositorySelection &&
+      !desktopSelection &&
       !input.team_workspace_id &&
       taskAuthority?.scope !== "team" &&
       (input.search_domain === "project" || input.search_domain === "global")
@@ -589,6 +601,7 @@ export class MemoryToolExecutor {
       cwd:
         execution.taskContext ||
         nonRepositorySelection ||
+        desktopSelection ||
         this.environment.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1"
           ? config.cwd
           : caller.cwd

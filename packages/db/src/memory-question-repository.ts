@@ -1,6 +1,8 @@
 import {
   personalFolderReferenceSchema,
-  personalFolderScopeId
+  personalFolderScopeId,
+  personalGitContextSchema,
+  repositoryScopeId
 } from "@koed/shared";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -53,6 +55,7 @@ export interface MemoryQuestionRepository {
     input: {
       namedProjectId?: string;
       folderSelection?: import("@koed/shared").PersonalFolderReference;
+      repositorySelection?: import("@koed/shared").PersonalGitContext;
       askThreadId?: string;
       idempotencyKey: string;
       query: string;
@@ -505,6 +508,19 @@ export const createMemoryQuestionRepository = (
 
   const repository: MemoryQuestionRepository = {
     async createPendingDesktopAsk(actor, input) {
+      if (
+        [
+          input.namedProjectId,
+          input.folderSelection,
+          input.repositorySelection
+        ].filter(Boolean).length > 1
+      )
+        throw Object.assign(new Error("Ask requires one explicit target"), {
+          statusCode: 400
+        });
+      const repositorySelection = input.repositorySelection
+        ? personalGitContextSchema.parse(input.repositorySelection)
+        : undefined;
       const folder = input.folderSelection
         ? personalFolderReferenceSchema.parse(input.folderSelection)
         : undefined;
@@ -515,9 +531,11 @@ export const createMemoryQuestionRepository = (
         throw Object.assign(new Error("Invalid Personal Folder selection"), {
           statusCode: 403
         });
-      const selectedId = folder
-        ? personalFolderScopeId(folder)
-        : (input.namedProjectId ?? null);
+      const selectedId = repositorySelection
+        ? repositoryScopeId(repositorySelection)
+        : folder
+          ? personalFolderScopeId(folder)
+          : (input.namedProjectId ?? null);
       const suppressPlaintextPayload =
         memoryQuestionSensitiveFieldsRequireEncryption();
       if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {

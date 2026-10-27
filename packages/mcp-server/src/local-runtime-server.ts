@@ -11,7 +11,7 @@ import {
 import http from "node:http";
 import path from "node:path";
 import {
-  personalFolderReferenceSchema,
+  personalDesktopAskSubmitInputSchema,
   watchKoedLocalWork
 } from "@koed/shared";
 import { z } from "zod";
@@ -210,15 +210,7 @@ const toolRequestSchema = z
 
 const desktopAskRequestSchema = z
   .object({
-    input: z
-      .object({
-        namedProjectId: z.uuid().optional(),
-        folderSelection: personalFolderReferenceSchema.optional(),
-        askThreadId: z.string().uuid().optional(),
-        idempotencyKey: z.string().trim().min(1).max(500),
-        query: z.string().trim().min(1).max(32_000)
-      })
-      .strict(),
+    input: personalDesktopAskSubmitInputSchema,
     caller: callerSchema
   })
   .strict();

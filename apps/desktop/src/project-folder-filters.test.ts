@@ -1,13 +1,23 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
 import {
   readProjectFolderFilter,
   writeProjectFolderFilter
 } from "./project-folder-filters.js";
 it("remembers hidden folders per Project and removes a restored default", () => {
-  const home = mkdtempSync(join(tmpdir(), "koed-folder-filter-"));
+  const base = resolve(
+    import.meta.dirname,
+    "../../../scratch/restore-project-filter"
+  );
+  mkdirSync(base, { recursive: true });
+  const home = mkdtempSync(join(base, "preferences-"));
   try {
     expect(readProjectFolderFilter(home, "a").hiddenFolderIds).toEqual([]);
     writeProjectFolderFilter(home, {
@@ -32,7 +42,12 @@ it("remembers hidden folders per Project and removes a restored default", () => 
   }
 });
 it("does not overwrite malformed preferences", () => {
-  const home = mkdtempSync(join(tmpdir(), "koed-folder-filter-"));
+  const base = resolve(
+    import.meta.dirname,
+    "../../../scratch/restore-project-filter"
+  );
+  mkdirSync(base, { recursive: true });
+  const home = mkdtempSync(join(base, "preferences-"));
   try {
     writeProjectFolderFilter(home, {
       projectId: "a",

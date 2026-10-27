@@ -325,3 +325,96 @@
   font-size: 12px;
   color: var(--muted-foreground);
 }
+
+/* New Conversation keeps the native Folder choice inside the composer toolbar. */
+.conversation-input-footer--with-folder {
+  flex-wrap: wrap;
+}
+.conversation-input-footer--with-folder > .conversation-settings {
+  display: contents;
+}
+.conversation-input-footer--with-folder .conversation-model-controls {
+  margin-left: auto;
+}
+.conversation-folder-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(180px, 100%);
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 8px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.conversation-folder-trigger span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-folder-trigger svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.conversation-folder-trigger svg:last-child {
+  width: 10px;
+}
+.conversation-folder-trigger.is-selected,
+.conversation-folder-trigger:hover:not(:disabled),
+.conversation-folder-trigger[data-popup-open] {
+  background: var(--accent);
+  color: var(--foreground);
+}
+.conversation-folder-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.conversation-folder-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.conversation-folder-popup {
+  width: 310px;
+  max-width: calc(100vw - 24px);
+  max-height: min(360px, var(--available-height));
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 12px;
+}
+.conversation-folder-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px;
+}
+.conversation-folder-option > svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+}
+.conversation-folder-option > span {
+  flex: 1;
+  min-width: 0;
+}
+.conversation-folder-option strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+}
+.conversation-folder-option small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 480px) {
+  .conversation-folder-trigger {
+    max-width: 150px;
+  }
+}

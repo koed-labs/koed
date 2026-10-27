@@ -1,3 +1,8 @@
+import {
+  personalFolderRegistrySchema,
+  readPersonalFolderDirectoryMarker,
+  findPersonalFolderDirectory
+} from "@koed/shared/personal-local-folders";
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -5,39 +10,18 @@ import {
   readFileSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync
 } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import {
   normalizeRecordedProjectDirectory,
-  personalIdentifierSchema,
   personalFolderObservationSchema,
   type PersonalFolderObservation
 } from "@koed/shared";
 import { inspectDeviceIdentityStatus } from "./device-identity.js";
 import { withProjectMetadataLock } from "./project-metadata-lock.js";
 import type { KoedServerPaths } from "./paths.js";
-
-const registrySchema = z
-  .object({
-    version: z.literal(1),
-    profileId: personalIdentifierSchema,
-    directories: z.array(
-      z
-        .object({
-          deploymentId: personalIdentifierSchema,
-          deviceId: personalIdentifierSchema,
-          normalizedPath: z.string(),
-          marker: z.string(),
-          folderId: personalIdentifierSchema,
-          incarnationId: personalIdentifierSchema
-        })
-        .strict()
-    )
-  })
-  .strict();
 
 /** Observe a live source directory only. Historical import must never call this. */
 export const observeCaptureFolder = async (
@@ -54,38 +38,50 @@ export const observeCaptureFolder = async (
     !device.deviceInstanceId
   )
     return undefined;
-  let marker: string;
+  let currentMarker: ReturnType<typeof readPersonalFolderDirectoryMarker>;
   try {
-    const directory = statSync(normalizedPath, { bigint: true });
-    if (!directory.isDirectory() || directory.birthtimeNs <= 0n)
-      return undefined;
-    marker = JSON.stringify([
-      directory.dev.toString(),
-      directory.ino.toString(),
-      directory.birthtimeNs.toString()
-    ]);
+    currentMarker = readPersonalFolderDirectoryMarker(normalizedPath);
+    if (!currentMarker) return undefined;
   } catch {
     return undefined;
   }
   const deploymentId = device.deploymentId;
   const deviceId = device.deviceInstanceId;
+  const marker = currentMarker.marker;
   mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
   const registryPath = join(paths.configDir, "folder-contexts.json");
   return withProjectMetadataLock(registryPath, () => {
     const registry = existsSync(registryPath)
-      ? registrySchema.parse(JSON.parse(readFileSync(registryPath, "utf8")))
+      ? personalFolderRegistrySchema.parse(
+          JSON.parse(readFileSync(registryPath, "utf8"))
+        )
       : {
           version: 1 as const,
           profileId: randomUUID(),
-          directories: [] as z.infer<typeof registrySchema>["directories"]
+          directories: [] as z.infer<
+            typeof personalFolderRegistrySchema
+          >["directories"]
         };
-    let directory = registry.directories.find(
-      (entry) =>
-        entry.deploymentId === deploymentId &&
-        entry.deviceId === deviceId &&
-        entry.normalizedPath === normalizedPath &&
-        entry.marker === marker
+    let directory = findPersonalFolderDirectory(
+      registry.directories,
+      normalizedPath,
+      deploymentId,
+      deviceId,
+      currentMarker
     );
+    if (
+      !directory &&
+      currentMarker.marker === currentMarker.deviceMarker &&
+      registry.directories.some(
+        (entry) =>
+          entry.deploymentId === deploymentId &&
+          entry.deviceId === deviceId &&
+          entry.normalizedPath === normalizedPath &&
+          entry.marker.startsWith('["volume:')
+      )
+    )
+      return undefined;
+    let changed = false;
     if (!directory) {
       directory = {
         deploymentId,
@@ -96,6 +92,12 @@ export const observeCaptureFolder = async (
         incarnationId: randomUUID()
       };
       registry.directories.push(directory);
+      changed = true;
+    } else if (directory.marker !== marker) {
+      directory.marker = marker;
+      changed = true;
+    }
+    if (changed) {
       const temporary = `${registryPath}.${randomUUID()}.tmp`;
       try {
         writeFileSync(temporary, `${JSON.stringify(registry, null, 2)}\n`, {

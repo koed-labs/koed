@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   Button,
   Dialog,
@@ -35,6 +35,9 @@ export function NamedProjectActions({
 }) {
   const [localOpen, setLocalOpen] = useState(false),
     [name, setName] = useState(project.name),
+    [expectedVersion, setExpectedVersion] = useState(
+      project.namedProject?.version ?? 1
+    ),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const open = controlledOpen ?? localOpen;
@@ -42,12 +45,15 @@ export function NamedProjectActions({
     setLocalOpen(next);
     onOpenChange?.(next);
   };
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (controlledOpen) {
+    if (open && !wasOpen.current) {
       setName(project.name);
+      setExpectedVersion(project.namedProject?.version ?? 1);
       setError("");
     }
-  }, [controlledOpen, project.name]);
+    wasOpen.current = open;
+  }, [open, project.name, project.namedProject?.version]);
   if (!project.namedProject) return null;
   const save = async (action: "rename" | "delete") => {
     setBusy(true);
@@ -58,13 +64,13 @@ export function NamedProjectActions({
           ? {
               action,
               projectId: project.id,
-              expectedVersion: project.namedProject!.version,
+              expectedVersion,
               name: name.trim()
             }
           : {
               action,
               projectId: project.id,
-              expectedVersion: project.namedProject!.version
+              expectedVersion
             }
       );
       const result = await store.loadProjects({ silent: true });

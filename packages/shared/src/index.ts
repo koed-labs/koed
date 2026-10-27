@@ -1,3 +1,7 @@
+export * from "./personal-project-default-contract.js";
+export * from "./personal-inventory.js";
+export * from "./personal-inventory-classification.js";
+export * from "./personal-folder-execution-id.js";
 export { PRIVACY_CLASSIFICATION_STREAM_TYPE } from "./privacy-classification-transport.js";
 export {
   readPiToolProvenance,
@@ -487,18 +491,15 @@ export {
   personalDesktopNoteSummarySchema,
   personalDesktopNotesDataSchema,
   personalDesktopProjectMetadataDataSchema,
+  personalDesktopLocalFoldersDataSchema,
   personalDesktopProjectMetadataSchema,
   personalDesktopProjectSchema,
   personalDesktopProjectsDataSchema,
   personalDesktopProjectThreadSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
-  personalDesktopSessionProjectDataSchema,
-  personalDesktopProjectMoveDataSchema,
-  personalDesktopProjectMoveInputSchema,
   personalDesktopProjectCreateDataSchema,
   personalDesktopProjectCreateInputSchema,
-  personalDesktopSessionProjectInputSchema,
   personalDesktopSessionTitleDataSchema,
   personalDesktopSessionTitleInputSchema,
   personalDesktopSessionPresentationDataSchema,
@@ -545,7 +546,6 @@ export type {
   PersonalDesktopProjectThread,
   PersonalDesktopRequest,
   PersonalDesktopResult,
-  PersonalDesktopSessionProjectInput,
   PersonalDesktopSessionTitleInput,
   PersonalDesktopSessionPresentationInput,
   PersonalConversationPresentation

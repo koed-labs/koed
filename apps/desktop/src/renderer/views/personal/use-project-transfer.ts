@@ -7,8 +7,8 @@ import type { TransferMutation } from "./project-transfer-model.js";
 
 type Manage = NonNullable<PersonalDesktopApi["manageProject"]>;
 
-/** Batch UI actions remain individual versioned writes. Stop at the first
- * conflict; never retry a partial batch against a newly discovered version. */
+/** Validate the complete draft at its reviewed version, then commit it atomically.
+ * A conflict requires a new review. Never rebase or retry it against a new version. */
 export function useProjectTransfer(
   project: DesktopProject,
   manage: Manage,
@@ -30,8 +30,8 @@ export function useProjectTransfer(
     setBusy(true);
     setError("");
     setAnnouncement("");
-    let version = expectedVersion;
-    let completed = 0;
+    const version = expectedVersion;
+    let confirmed = false;
     try {
       for (const command of commands) {
         if (
@@ -100,32 +100,30 @@ export function useProjectTransfer(
               "This Conversation is excluded. Review its Project membership to add it back."
             );
         }
-        const result = await manage({
-          ...command,
-          projectId: project.id,
-          expectedVersion: version
-        });
-        if (
-          result.project.projectId !== project.id ||
-          result.project.version < version
-        )
-          throw new Error(
-            "The Project response could not be verified. Reload before continuing."
-          );
-        version = result.project.version;
-        completed++;
       }
+      const result = await manage({
+        action: "apply_sources",
+        projectId: project.id,
+        expectedVersion,
+        changes: commands
+      });
+      if (
+        result.project.projectId !== project.id ||
+        result.project.version < expectedVersion
+      )
+        throw new Error(
+          "The Project response could not be verified. Reload before continuing."
+        );
+      confirmed = true;
       const refreshed = await store.loadProjects({ silent: true });
       if (refreshed.error) throw new Error(refreshed.error);
-      setAnnouncement(`${completed} changes saved.`);
+      setAnnouncement(`${commands.length} changes saved.`);
       return true;
     } catch (cause) {
       setFailed(true);
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(
-        completed
-          ? `${completed} ${completed === 1 ? "change was" : "changes were"} saved before stopping. ${message} Close and reopen setup before making further changes.`
-          : `${message} Close and reopen setup before making further changes.`
+        `${confirmed ? "Changes were saved. " : ""}${message} Close and reopen Sources before making further changes.`
       );
       await store.loadProjects({ silent: true });
       return false;

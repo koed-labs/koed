@@ -17,6 +17,7 @@
 The independent Project configuration contract is described in
 [Personal Project association and selection records](personal-project-selection.md).
 It uses a separate signed plaintext profile; it is not a Session checkpoint.
+Named Project membership and automatic source decisions use the encrypted configuration channel described in [Personal inventory](personal-inventory.md#personal-device-convergence).
 
 Status: Normative V1 profile for [ADR 0012](adr/0012-symmetric-replicated-personal-memory.md).
 

@@ -1,3 +1,4 @@
+import { pdsPersonalProjectDefaultDecisionSchema } from "./personal-project-default-contract.js";
 import {
   decodePdsPersonalMembershipEntitySnapshot,
   pdsPersonalMembershipEntitySnapshotSchema
@@ -28,6 +29,12 @@ export const personalConfigurationPayloadSchema = z
   .discriminatedUnion("kind", [
     z
       .object({
+        kind: z.literal("project_default"),
+        snapshot: pdsPersonalProjectDefaultDecisionSchema
+      })
+      .strict(),
+    z
+      .object({
         kind: z.literal("source_context"),
         snapshot: pdsPersonalSourceContextSnapshotSchema
       })
@@ -43,7 +50,8 @@ export const personalConfigurationPayloadSchema = z
     try {
       if (payload.kind === "source_context")
         decodePdsPersonalSourceContextSnapshot(payload.snapshot);
-      else decodePdsPersonalMembershipEntitySnapshot(payload.snapshot);
+      else if (payload.kind === "project_membership")
+        decodePdsPersonalMembershipEntitySnapshot(payload.snapshot);
     } catch {
       ctx.addIssue({
         code: "custom",

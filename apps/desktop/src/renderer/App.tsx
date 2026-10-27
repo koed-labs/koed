@@ -1,3 +1,4 @@
+import { systemConversationProjects } from "../project-source-navigation.js";
 import {
   TEAM_ACTIVITY_WRITE_THROTTLE_MS,
   type CollaborationDurableSend,
@@ -188,17 +189,11 @@ const defaultClient = createCollaborationRendererClient(
 );
 const statusStore = new DesktopStatusStore();
 const themeStore = new ThemeStore();
-const initialEntry = (
-  onboardingComplete: boolean,
-  askAvailable: boolean
-): NavigationEntry => ({
+const initialEntry = (onboardingComplete: boolean): NavigationEntry => ({
   authority: { backendId: null, principalId: "local-personal" },
-  route:
-    onboardingComplete && askAvailable
-      ? { kind: "personal-memory-ask" }
-      : onboardingComplete
-        ? { kind: "personal-memory-projects" }
-        : { kind: "onboarding" }
+  route: onboardingComplete
+    ? { kind: "personal-memory-projects" }
+    : { kind: "onboarding" }
 });
 
 type SharesRouteStatus =
@@ -517,16 +512,28 @@ const entryAuthorized = (
 
 const personalMemoryRoute = (route: DesktopRoute): PersonalMemoryRoute => {
   if (route.kind === "personal-memory-project") {
-    return { kind: "project", projectId: route.projectId };
+    return {
+      kind: "project",
+      projectId: route.projectId,
+      sourceFilter: route.sourceFilter,
+      browse: route.browse
+    };
   }
   if (route.kind === "personal-memory-session") {
     return {
       kind: "session",
       projectId: route.projectId,
-      sessionId: route.sessionId
+      sessionId: route.sessionId,
+      sourceFilter: route.sourceFilter,
+      browse: route.browse
     };
   }
-  return { kind: "projects" };
+  return {
+    kind: "projects",
+    ...(route.kind === "personal-memory-projects"
+      ? { browse: route.browse }
+      : {})
+  };
 };
 
 const threadReference = (
@@ -586,7 +593,7 @@ export function App({
       return createNavigationState(
         allowedInitialSelection && initialSnapshot
           ? selectionEntry(initialSnapshot, allowedInitialSelection)
-          : initialEntry(onboardingComplete, askAvailable)
+          : initialEntry(onboardingComplete)
       );
     }
   );
@@ -647,10 +654,6 @@ export function App({
     if (!project)
       throw new Error("The Project could not be loaded. Try again.");
     return project;
-  };
-  const openPersonalProject = async () => {
-    const metadata = await platform.selectProjectDirectory();
-    return metadata ? refreshLocalProject(metadata.localProjectId) : null;
   };
   const subscribePersonalMemory = useCallback(
     (listener: () => void) =>
@@ -1064,9 +1067,7 @@ export function App({
           backendId: null,
           principalId: snapshot.navigation.personalOwner.id
         },
-        route: askAvailable
-          ? { kind: "personal-memory-ask" }
-          : { kind: "personal-memory-projects" }
+        route: { kind: "personal-memory-projects" }
       }
     });
     if (inspector && !personalMemoryStore) {
@@ -1153,9 +1154,7 @@ export function App({
               principalId:
                 snapshot?.navigation.personalOwner.id ?? "local-personal"
             },
-            route: askAvailable
-              ? { kind: "personal-memory-ask" }
-              : { kind: "personal-memory-projects" }
+            route: { kind: "personal-memory-projects" }
           });
         }}
         statusStore={activeStatusStore}
@@ -1418,7 +1417,12 @@ export function App({
     }
     const selectedProject =
       "projectId" in route
-        ? personalMemorySnapshot?.projectsById.get(route.projectId)
+        ? (personalMemorySnapshot?.projectsById.get(route.projectId) ??
+          (personalMemorySnapshot && route.projectId.startsWith("system:")
+            ? systemConversationProjects(personalMemorySnapshot.inventory).find(
+                (project) => project.id === route.projectId
+              )
+            : null))
         : null;
     const selectedThread =
       route.kind === "personal-memory-session"
@@ -1649,18 +1653,12 @@ export function App({
               route: { kind: "personal-memory-ask" }
             })
           }
-          onOpenProject={openPersonalProject}
+          inventory={personalMemorySnapshot?.inventory}
           onResolveIndependent={async () => {
             const metadata = await platform.ensureIndependentProject();
             return refreshLocalProject(metadata.localProjectId);
           }}
-          projects={
-            personalMemorySnapshot?.projectOrder.flatMap((projectId) => {
-              const project =
-                personalMemorySnapshot.projectsById.get(projectId);
-              return project ? [project] : [];
-            }) ?? []
-          }
+          projects={personalMemorySnapshot?.inventory.projects ?? []}
           selectedThreadId={route.askThreadId}
         />
       ) : (
@@ -1881,15 +1879,19 @@ export function App({
             onNavigate={(next) => {
               const nextRoute: DesktopRoute =
                 next.kind === "projects"
-                  ? { kind: "personal-memory-projects" }
+                  ? { kind: "personal-memory-projects", browse: next.browse }
                   : next.kind === "project"
                     ? {
                         kind: "personal-memory-project",
-                        projectId: next.projectId
+                        projectId: next.projectId,
+                        sourceFilter: next.sourceFilter,
+                        browse: next.browse
                       }
                     : {
                         kind: "personal-memory-session",
                         projectId: next.projectId,
+                        sourceFilter: next.sourceFilter,
+                        browse: next.browse,
                         sessionId: next.sessionId
                       };
               navigate({
@@ -1899,18 +1901,6 @@ export function App({
                     snapshot?.navigation.personalOwner.id ?? "local-personal"
                 },
                 route: nextRoute
-              });
-            }}
-            onSessionProjectAssigned={({ projectId, sessionId }) => {
-              scheduleConversationRecentsRefresh();
-              navigate({
-                authority: currentNavigationEntry(navigationRef.current)
-                  .authority,
-                route: {
-                  kind: "personal-memory-session",
-                  projectId: projectId ?? "unassigned",
-                  sessionId
-                }
               });
             }}
             onShareToWorkspace={({ source }) => {
@@ -2108,7 +2098,7 @@ export function App({
               principalId:
                 snapshot?.navigation.personalOwner.id ?? "local-personal"
             },
-            route: { kind: "personal-memory-ask" }
+            route: { kind: "personal-memory-projects" }
           })
         }
         onActivateTeam={(teamId) => choose({ kind: "team_people", teamId })}

@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import {
   Ellipsis,
   Pencil,
+  Plus,
   RefreshCw,
   Share2,
   SlidersHorizontal,
@@ -23,12 +24,23 @@ import {
 import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
+import {
+  ProjectHeader,
+  type ProjectFolderFilterControl
+} from "./ProjectHeader.js";
 import { NamedProjectActions } from "./ProjectMembershipActions.js";
 import { ProjectSyncDetails } from "./ProjectSyncDetails.js";
 import { ProjectTransferCard } from "./ProjectTransferCard.js";
 
+export type ProjectNewConversationAction = {
+  disabled: boolean;
+  onSelect: () => void;
+};
+
 type Props = {
   project: DesktopProject;
+  folderFilter?: ProjectFolderFilterControl;
+  newConversation?: ProjectNewConversationAction;
   projects: readonly DesktopProject[];
   manage: NonNullable<PersonalDesktopApi["manageProject"]>;
   sync?: PersonalDesktopApi["manageMembershipSync"];
@@ -38,6 +50,8 @@ type Props = {
 };
 export function ProjectOrganization({
   project,
+  folderFilter,
+  newConversation,
   projects,
   manage,
   sync,
@@ -51,18 +65,7 @@ export function ProjectOrganization({
   const menuTrigger = useRef<HTMLButtonElement>(null);
   return (
     <>
-      <header className="personal-project-header personal-named-project-header">
-        <span className="personal-project-monogram" aria-hidden="true">
-          {Array.from(project.name)[0]?.toLocaleUpperCase() ?? "P"}
-        </span>
-        <div className="personal-project-detail-heading">
-          <h2 data-personal-route-focus="project" tabIndex={-1}>
-            {project.name}
-          </h2>
-          <div className="personal-project-header-meta">
-            <span>{project.threads.length} Conversations</span>
-          </div>
-        </div>
+      <ProjectHeader project={project} folderFilter={folderFilter}>
         <div className="personal-named-project-actions">
           <Dialog
             open={setupOpen}
@@ -75,8 +78,8 @@ export function ProjectOrganization({
                 <Button
                   variant="ghost"
                   size="icon"
-                  aria-label="Set up Project"
-                  title="Set up Project"
+                  aria-label="Manage Project sources"
+                  title="Manage Project sources"
                 />
               }
             >
@@ -100,7 +103,7 @@ export function ProjectOrganization({
                 onConfirmed={() => setSetupOpen(false)}
                 heading={(id) => (
                   <DialogTitle id={id} className="personal-transfer-sr">
-                    Set up Project
+                    Project sources
                   </DialogTitle>
                 )}
                 closeControl={
@@ -109,7 +112,7 @@ export function ProjectOrganization({
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        aria-label="Close Project setup"
+                        aria-label="Close Project sources"
                         disabled={setupBusy}
                       />
                     }
@@ -135,6 +138,20 @@ export function ProjectOrganization({
               <Ellipsis aria-hidden="true" />
             </DropdownMenuTrigger>
             <DropdownMenuPopup align="end" aria-label="Project actions">
+              {newConversation ? (
+                <DropdownMenuItem
+                  disabled={newConversation.disabled}
+                  onClick={newConversation.onSelect}
+                  title={
+                    newConversation.disabled
+                      ? "An available local Folder and a ready AI Client are required."
+                      : undefined
+                  }
+                >
+                  <Plus aria-hidden="true" />
+                  New Conversation
+                </DropdownMenuItem>
+              ) : null}
               {onReviewSharing ? (
                 <DropdownMenuItem onClick={onReviewSharing}>
                   <Share2 aria-hidden="true" />
@@ -143,7 +160,7 @@ export function ProjectOrganization({
               ) : null}
               <DropdownMenuItem onClick={() => setAction("rename")}>
                 <Pencil aria-hidden="true" />
-                Edit
+                Rename
               </DropdownMenuItem>
               {sync ? (
                 <DropdownMenuItem onClick={() => setAction("sync")}>
@@ -154,7 +171,7 @@ export function ProjectOrganization({
             </DropdownMenuPopup>
           </DropdownMenu>
         </div>
-      </header>
+      </ProjectHeader>
       <NamedProjectActions
         project={project}
         manage={manage}

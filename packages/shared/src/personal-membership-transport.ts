@@ -1,3 +1,5 @@
+import { personalProjectSourceSelectorKey } from "./personal-project-source-target.js";
+import { selectPersonalMembershipHead } from "./personal-membership-contract.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -12,7 +14,6 @@ import {
   personalFolderReferenceSchema,
   personalFolderScopeId
 } from "./personal-source-contract.js";
-import { repositoryScopeId } from "./repository-recall.js";
 import {
   canonicalizePdsJson,
   parseCanonicalPdsJson
@@ -43,22 +44,7 @@ export const personalMembershipSelectorKey = (
       kind: "session",
       source: sourceIdentity(selector.source)
     });
-  if (selector.kind === "repository")
-    return canonicalizePdsJson({
-      kind: "repository",
-      scope: repositoryScopeId(selector.repository)
-    });
-  const folder = selector.folder;
-  return canonicalizePdsJson({
-    kind: "folder",
-    reference: {
-      folderId: folder.folderId,
-      originatingDeploymentId: folder.originatingDeploymentId,
-      originatingDeviceId: folder.originatingDeviceId,
-      originatingProfileId: folder.originatingProfileId,
-      directoryIncarnationId: folder.directoryIncarnationId
-    }
-  });
+  return personalProjectSourceSelectorKey(selector);
 };
 /** Decode only a canonical source selector, with the authenticated local owner supplied separately. */
 export const personalMembershipSourceFromSelectorKey = (
@@ -290,8 +276,11 @@ export const evaluatePersonalMembershipRevisions = (
   const heads = [...records.keys()].filter((id) => !children.has(id)).sort();
   if (missing || !heads.length)
     return { state: "pending", heads, revision: null };
-  if (heads.length !== 1) return { state: "conflict", heads, revision: null };
-  return { state: "available", heads, revision: records.get(heads[0]!)! };
+  const revision = selectPersonalMembershipHead(
+    heads.map((id) => records.get(id)!)
+  );
+  if (!revision) return { state: "conflict", heads, revision: null };
+  return { state: "available", heads, revision };
 };
 
 // Personal transport canonical JSON forbids numeric values. Domain version 1

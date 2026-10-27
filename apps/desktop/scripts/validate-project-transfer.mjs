@@ -25,11 +25,11 @@ runBrowserValidation(
       "document.querySelector('[data-transfer-underlay]').getBoundingClientRect().top"
     );
     const actionSizes = await evaluate(
-      "['Set up Project','Project actions'].map(label=>{const rect=document.querySelector('button[aria-label=\"'+label+'\"]').getBoundingClientRect();return [rect.width,rect.height]})"
+      "['Manage Project sources','Project actions'].map(label=>{const rect=document.querySelector('button[aria-label=\"'+label+'\"]').getBoundingClientRect();return [rect.width,rect.height]})"
     );
     assert.deepEqual(actionSizes[0], actionSizes[1]);
     await capture("closed");
-    await click('[aria-label="Set up Project"]');
+    await click('[aria-label="Manage Project sources"]');
     await waitFor("!!document.querySelector('.personal-project-transfer')");
     assert.equal(
       await evaluate(
@@ -183,12 +183,12 @@ runBrowserValidation(
     await waitFor("!document.querySelector('[role=\"dialog\"]')");
     assert.equal(
       await evaluate("document.activeElement?.getAttribute('aria-label')"),
-      "Set up Project"
+      "Manage Project sources"
     );
     await click('[aria-label="Project actions"]');
     await waitFor("!!document.querySelector('[role=\"menuitem\"]')");
     await evaluate(
-      "[...document.querySelectorAll('[role=\"menuitem\"]')].find(node=>node.textContent==='Edit').click()"
+      "[...document.querySelectorAll('[role=\"menuitem\"]')].find(node=>node.textContent==='Rename').click()"
     );
     await waitFor(
       "document.querySelector('[data-slot=\"dialog-title\"]')?.textContent==='Edit Project'"

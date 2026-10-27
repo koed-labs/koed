@@ -1,3 +1,4 @@
+import { suppressPersonalProjectDefault } from "./personal-project-default-suppression.js";
 import { isDeepStrictEqual } from "node:util";
 import type pg from "pg";
 import {
@@ -70,6 +71,29 @@ export const projectPersonalMembershipRule = async (
       ]
     );
     if (!proof.rowCount) throw personalMembershipBridgeRequired();
+  }
+  if (
+    entity.state === "available" &&
+    entity.current_revision?.operation.kind === "remove_inclusion"
+  ) {
+    const initial =
+      current?.target ??
+      (
+        await client.query<{ target: unknown }>(
+          "select revision->'operation'->'selector' as target from personal_membership_revisions where owner_user_id=$1 and project_identity=$2 and entity_identity=$3 and revision->'operation'->>'kind'='include' order by revision_id limit 1",
+          [
+            entity.owner_user_id,
+            entity.project_identity,
+            entity.entity_identity
+          ]
+        )
+      ).rows[0]?.target;
+    if (initial)
+      await suppressPersonalProjectDefault(
+        client,
+        entity.owner_user_id,
+        initial
+      );
   }
   if (!current && !target) return false;
   const inclusionId =

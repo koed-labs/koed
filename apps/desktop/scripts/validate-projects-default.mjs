@@ -1,0 +1,460 @@
+import console from "node:console";
+import process from "node:process";
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { app, BrowserWindow } from "electron";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const output = resolve(root, "scratch/pv-07/native-ui");
+const page = resolve(
+  root,
+  "apps/desktop/dist-validation/browser-validation.html"
+);
+const check = async (window, source, label) => {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (await window.webContents.executeJavaScript(source)) return;
+    await delay(40);
+  }
+  throw new Error(`Failed: ${label}`);
+};
+const newItem =
+  "[...document.querySelectorAll('[role=menuitem]')].find(item => item.textContent.trim() === 'New Conversation')";
+mkdirSync(output, { recursive: true });
+rmSync(resolve(output, "result.json"), { force: true });
+const profile = mkdtempSync(resolve(output, "profile-"));
+app.setPath("userData", profile);
+const preview = process.argv.includes("--preview");
+let keepOpen = false;
+void app.whenReady().then(async () => {
+  let window;
+  try {
+    await mkdir(output, { recursive: true });
+    window = new BrowserWindow({
+      width: 1380,
+      height: 900,
+      show: true,
+      opacity: 0,
+      skipTaskbar: true,
+      webPreferences: { contextIsolation: true, nodeIntegration: false }
+    });
+    const faults = [];
+    window.webContents.on("render-process-gone", (_event, detail) =>
+      faults.push(JSON.stringify(detail))
+    );
+    window.webContents.on("console-message", (event) => {
+      if (event.level === "error") faults.push(event.message);
+    });
+    const capture = async (name) =>
+      writeFile(
+        resolve(output, name),
+        (await window.webContents.capturePage()).toPNG()
+      );
+    await window.loadFile(page, { query: { view: "projects-default" } });
+    await check(
+      window,
+      "document.querySelectorAll('[data-session-id]').length === 4",
+      "four distinct Project members"
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        "document.querySelectorAll('[data-project-id]').length"
+      ),
+      1
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        "document.querySelectorAll('.personal-project-sources,.personal-project-recall,.personal-source-browser-toggle,.personal-new-conversation').length"
+      ),
+      0
+    );
+    await capture("project.png");
+
+    await window.webContents.executeJavaScript(
+      "document.querySelector('[aria-label=\"Project actions\"]').click()"
+    );
+    await check(
+      window,
+      `Boolean(${newItem}) && ${newItem}.getAttribute('aria-disabled') !== 'true'`,
+      "Project actions opens with New Conversation"
+    );
+    await window.webContents
+      .executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))).then(async () => {
+      const menu = [...document.querySelectorAll('[role="menuitem"]')].find(item => item.textContent.trim() === 'New Conversation').closest('[role="menu"]');
+      await Promise.all(menu.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => undefined)));
+    })`);
+    assert.equal(
+      await window.webContents.executeJavaScript(`(() => {
+      const item = ${newItem};
+      const menu = item.closest('[role="menu"]');
+      return item.getBoundingClientRect().height > 0 && getComputedStyle(menu).visibility === 'visible' && Number(getComputedStyle(menu).opacity) > 0.9;
+    })()`),
+      true
+    );
+    await capture("project-menu.png");
+    await window.webContents.executeJavaScript(`${newItem}.click()`);
+    const folderChip = '[aria-label^="Execution Folder:"]';
+    await check(
+      window,
+      `!!document.querySelector('${folderChip}')`,
+      "local Folder toolbar chip"
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `document.querySelector('${folderChip}').textContent.includes('Choose Folder') && !document.querySelector('.personal-execution-folder')`
+      ),
+      true
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        "document.querySelector('[aria-label=\"Start Conversation\"]').disabled"
+      ),
+      true
+    );
+    const draft = "Keep this draft when changing Folders.";
+    await window.webContents.executeJavaScript(`(() => {
+      window.folderDraftInput = document.querySelector('textarea');
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(window.folderDraftInput, ${JSON.stringify(draft)});
+      window.folderDraftInput.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    for (const path of ["/local/koed", "/local/notes"]) {
+      await window.webContents.executeJavaScript(
+        `document.querySelector('${folderChip}').click()`
+      );
+      const option = `[role="menuitemradio"][title="${path}"]`;
+      await check(
+        window,
+        `!!document.querySelector('${option}')`,
+        "Folder menu opens"
+      );
+      await window.webContents
+        .executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))).then(async () => {
+        const menu = document.querySelector('${option}').closest('[role="menu"]');
+        await Promise.all(menu.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => undefined)));
+      })`);
+      await capture("execution-folder-picker.png");
+      await window.webContents.executeJavaScript(
+        `document.querySelector('${option}').click()`
+      );
+      await check(
+        window,
+        `document.querySelector('${folderChip}').getAttribute('aria-label') === 'Execution Folder: ${path}'`,
+        "selected Folder appears in toolbar"
+      );
+      await check(
+        window,
+        `!document.querySelector('${option}')`,
+        "Folder menu closes after choosing"
+      );
+      assert.equal(
+        await window.webContents.executeJavaScript(
+          `document.querySelector('textarea') === window.folderDraftInput && window.folderDraftInput.value === ${JSON.stringify(draft)}`
+        ),
+        true
+      );
+    }
+    await check(
+      window,
+      "!document.querySelector('[aria-label=\"Start Conversation\"]').disabled",
+      "selected Folder enables launch"
+    );
+    await capture("execution-folder.png");
+    await window.webContents.executeJavaScript(
+      "document.querySelector('[aria-label=\"Start Conversation\"]').click()"
+    );
+    await check(
+      window,
+      "window.projectsDefaultValidationTrace.some(item => item.type === 'start')",
+      "New Conversation launch"
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        "window.projectsDefaultValidationTrace.find(item => item.type === 'start').input.projectId === window.projectsDefaultValidationIds.notesExecutionId"
+      ),
+      true
+    );
+
+    await window.loadFile(page, {
+      query: { view: "projects-default", headers: "1" }
+    });
+    await check(
+      window,
+      "document.querySelectorAll('[data-project-id]').length === 2 && document.querySelectorAll('.personal-project-header').length === 1",
+      "managed Project headers"
+    );
+    const ids = await window.webContents.executeJavaScript(
+      "window.projectsDefaultValidationIds"
+    );
+    for (const [id, name] of [
+      [ids.secondProjectId, "Second Project"],
+      [ids.projectId, "Koed"],
+      [ids.secondProjectId, "Second Project"],
+      [ids.projectId, "Koed"]
+    ]) {
+      await window.webContents.executeJavaScript(
+        `document.querySelector('[data-project-id="${id}"]').click()`
+      );
+      await check(
+        window,
+        `document.querySelector('.personal-project-header h2')?.textContent === ${JSON.stringify(name)}`,
+        "selected Project replaces header"
+      );
+      assert.equal(
+        await window.webContents.executeJavaScript(
+          "document.querySelectorAll('.personal-project-header').length"
+        ),
+        1
+      );
+      assert.equal(
+        await window.webContents.executeJavaScript(
+          "document.querySelectorAll('.personal-project-sources,.personal-project-recall,.personal-source-browser-toggle,.personal-new-conversation').length"
+        ),
+        0
+      );
+    }
+    await capture("project-switching.png");
+    await window.webContents.executeJavaScript(
+      "document.querySelector('[aria-label=\"Project actions\"]').click()"
+    );
+    await check(
+      window,
+      `Boolean(${newItem})`,
+      "management menu includes New Conversation"
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `${newItem}.getAttribute('aria-disabled') === 'true'`
+      ),
+      false
+    );
+    window.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+    window.webContents.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+    await check(window, `!(${newItem})`, "management menu closes");
+
+    await window.webContents.executeJavaScript(
+      "document.querySelector('.personal-project-details-trigger').click()"
+    );
+    await check(
+      window,
+      "!!document.querySelector('[aria-label=\"Select all folders\"]')",
+      "Folder filter dropdown"
+    );
+    await window.webContents.executeJavaScript(`(() => {
+      const label = [...document.querySelectorAll('.personal-project-folder-checkbox')].find(item => item.textContent.includes('Show Conversations from /local/koed'));
+      label.querySelector('input').click();
+    })()`);
+    await check(
+      window,
+      "document.querySelectorAll('[data-session-id]').length === 2",
+      "Folder checkbox filters named Project"
+    );
+    await window.webContents.executeJavaScript(
+      "document.querySelector('[aria-label=\"Select all folders\"]').click()"
+    );
+    await check(
+      window,
+      "document.querySelectorAll('[data-session-id]').length === 4",
+      "Select all restores Conversations"
+    );
+    await window.webContents.executeJavaScript(
+      "document.querySelector('[aria-label=\"Select all folders\"]').click()"
+    );
+    await check(
+      window,
+      "document.querySelectorAll('[data-session-id]').length === 0",
+      "deselect all Folders"
+    );
+    await capture("folder-dropdown.png");
+    await window.webContents.executeJavaScript(
+      "document.querySelector('[aria-label=\"Select all folders\"]').click()"
+    );
+    await check(
+      window,
+      "document.querySelectorAll('[data-session-id]').length === 4",
+      "Folder dropdown restores full list"
+    );
+    await window.webContents.executeJavaScript(
+      "document.querySelector('[aria-label=\"Close Project details\"]').click()"
+    );
+    await window.loadFile(page, {
+      query: { view: "projects-default", ask: "1" }
+    });
+    await check(
+      window,
+      "!!document.querySelector('.personal-agent-start textarea')",
+      "Ask input"
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        "document.querySelectorAll('.personal-agent-projects [data-project-id]').length === 1 && document.querySelector('.personal-agent-projects [data-project-id]').dataset.groupKind === 'project'"
+      ),
+      true
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        "document.querySelector('.conversation-folder-trigger').textContent.includes('Automatic Folder') && document.querySelector('.conversation-folder-trigger').disabled"
+      ),
+      true
+    );
+    await window.webContents.executeJavaScript(
+      "document.querySelector('.personal-agent-open-project').click()"
+    );
+    await check(
+      window,
+      "!!document.querySelector('.personal-agent-project-option')",
+      "Ask Project picker"
+    );
+    await window.webContents
+      .executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))).then(async () => {
+      const menu = document.querySelector('.personal-agent-project-option').closest('[role="menu"]');
+      await Promise.all(menu.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => undefined)));
+    })`);
+    await capture("ask-project-picker.png");
+    await window.webContents.executeJavaScript(
+      "document.querySelector('.personal-agent-project-option').click()"
+    );
+    await check(
+      window,
+      "!document.querySelector('.personal-agent-project-option')",
+      "Ask Project picker closes"
+    );
+    const askDraft = "Keep this Ask draft when changing Folders.";
+    await window.webContents.executeJavaScript(`(() => {
+      window.askDraftInput = document.querySelector('textarea');
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(window.askDraftInput, ${JSON.stringify(askDraft)});
+      window.askDraftInput.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    for (const path of ["/local/koed", "/local/notes"]) {
+      await window.webContents.executeJavaScript(
+        `document.querySelector('${folderChip}').click()`
+      );
+      const option = `[role="menuitemradio"][title="${path}"]`;
+      await check(
+        window,
+        `!!document.querySelector('${option}')`,
+        "Ask Folder menu"
+      );
+      await window.webContents.executeJavaScript(
+        `document.querySelector('${option}').click()`
+      );
+      await check(
+        window,
+        `!document.querySelector('${option}')`,
+        "Ask Folder menu closes"
+      );
+      assert.equal(
+        await window.webContents.executeJavaScript(
+          `document.querySelector('textarea') === window.askDraftInput && window.askDraftInput.value === ${JSON.stringify(askDraft)}`
+        ),
+        true
+      );
+    }
+    await check(
+      window,
+      "!document.querySelector('[aria-label=\"Start Conversation\"]').disabled",
+      "Ask selected Folder enables launch"
+    );
+    await capture("ask-folder-chip.png");
+    window.setSize(620, 900);
+    await check(window, "window.innerWidth === 620", "narrow Ask viewport");
+    await window.webContents.executeJavaScript(
+      "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(`(() => {
+        const input = document.querySelector('.conversation-input').getBoundingClientRect();
+        const send = document.querySelector('[aria-label="Start Conversation"]').getBoundingClientRect();
+        return document.documentElement.scrollWidth <= window.innerWidth && send.right <= input.right && send.bottom <= input.bottom;
+      })()`),
+      true
+    );
+    await capture("ask-folder-chip-narrow.png");
+    window.setSize(1380, 900);
+
+    await window.webContents.executeJavaScript(
+      "document.querySelector('[aria-label=\"Start Conversation\"]').click()"
+    );
+    await check(
+      window,
+      "window.askValidationTrace.sends.length === 1",
+      "Ask first prompt"
+    );
+    assert.equal(
+      await window.webContents.executeJavaScript(
+        `window.askValidationTrace.starts[0].projectId === window.projectsDefaultValidationIds.notesExecutionId && window.askValidationTrace.sends[0].prompt === ${JSON.stringify(askDraft)}`
+      ),
+      true
+    );
+    assert.deepEqual(faults, []);
+    await writeFile(
+      resolve(output, "result.json"),
+      JSON.stringify(
+        {
+          status: "passed",
+          automated: true,
+          manual: false,
+          fixture: "synthetic",
+          checks: [
+            "named-only Project list",
+            "four logical members",
+            "clean Project header",
+            "New Conversation in Project actions",
+            "Project actions menu opens",
+            "explicit native Folder choice and launch",
+            "Folder toolbar changes preserve the draft input",
+            "Project switching replaces header",
+            "Folder filter dropdown",
+            "Ask named Projects and shared Folder chip",
+            "Ask Folder changes retain the draft and selected execution target"
+          ],
+          faults
+        },
+        null,
+        2
+      )
+    );
+    console.log(
+      `Projects navigation acceptance passed. Screenshots: ${output}`
+    );
+    if (preview) {
+      await window.loadFile(page, {
+        query: { view: "projects-default", headers: "1" }
+      });
+      window.setOpacity(1);
+      window.setSkipTaskbar(false);
+      window.show();
+      window.focus();
+      keepOpen = true;
+      window.on("closed", () => {
+        rmSync(profile, { recursive: true, force: true });
+        app.quit();
+      });
+      console.log(
+        "Synthetic Project preview is open. Close the window to finish."
+      );
+    }
+  } catch (error) {
+    console.error(error);
+    if (window) {
+      console.error(
+        await window.webContents.executeJavaScript(
+          `({body:document.body.innerText, menus:[...document.querySelectorAll('[data-slot="dropdown-menu-popup"]')].map(menu=>({label:menu.getAttribute('aria-label'),opacity:getComputedStyle(menu).opacity,visibility:getComputedStyle(menu).visibility,rect:JSON.stringify(menu.getBoundingClientRect())}))})`
+        )
+      );
+      await writeFile(
+        resolve(output, "failure.png"),
+        (await window.webContents.capturePage()).toPNG()
+      );
+    }
+    app.exit(1);
+  } finally {
+    if (!keepOpen) {
+      window?.destroy();
+      rmSync(profile, { recursive: true, force: true });
+      app.quit();
+    }
+  }
+});

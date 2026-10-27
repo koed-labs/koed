@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { createManagedConversationValidationApi } from "./managed-conversation-validation-api.js";
+
 import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
@@ -1262,7 +1264,6 @@ const createPersonalMemoryApi = (): PersonalDesktopApi => {
   const initial = testNote(1, "Check the Shared Memory split view.");
   stored.set(initial.noteId, initial);
   return {
-    assignSessionProject: vi.fn(async () => ({ projectId: null })),
     updateSessionPresentation: vi.fn(async () => {
       throw new Error("Unexpected presentation update in this fixture");
     }),
@@ -1518,9 +1519,6 @@ describe("CollaborationApp", () => {
           : []
       }
     ];
-    api.assignSessionProject = vi.fn(async () => {
-      throw new Error("Retired operation");
-    });
     api.manageProject = vi.fn(async (input) => {
       expect(input.expectedVersion).toBe(destination.version);
       if (input.action === "add_session") included = true;
@@ -1539,32 +1537,38 @@ describe("CollaborationApp", () => {
         }
       };
     });
-    await render(createClient(), api);
+    api.listRecentConversations = async () => ({
+      conversations: [
+        {
+          id: history.sessionId!,
+          title: history.name,
+          sessionId: history.sessionId!,
+          projectId: "unassigned",
+          projectName: "Unresolved history",
+          latestAt: history.latestAt
+        }
+      ],
+      nextCursor: null
+    });
+    await act(async () => {
+      await import("./renderer/views/personal/PersonalMemoryViews.js");
+    });
     await act(async () =>
-      [...container.querySelectorAll("button")]
-        .find((button) => button.textContent?.trim() === "Projects")
-        ?.click()
+      root.render(
+        <App
+          collaborationClient={createClient()}
+          onboardingComplete
+          statusReadyOverride
+          personalMemoryApi={api}
+          managedConversations={createManagedConversationValidationApi().api}
+        />
+      )
     );
-    await vi.waitFor(
-      () =>
-        expect(
-          container.querySelector('[data-project-id="unassigned"]')
-        ).not.toBeNull(),
-      { timeout: 5_000 }
-    );
-    await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>('[data-project-id="unassigned"]')!
-        .click()
-    );
-    await act(async () =>
-      [
-        ...container.querySelectorAll<HTMLButtonElement>(
-          ".personal-session-row-select"
-        )
-      ]
-        .find((button) => button.textContent?.includes("History A"))!
-        .click()
+    await click(container, "History A");
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector(".personal-session-detail h2")?.textContent
+      ).toBe("History A")
     );
     await click(container, "Conversation actions");
     await click(container, "Add to Project");
@@ -1616,7 +1620,6 @@ describe("CollaborationApp", () => {
       container.querySelector(".personal-session-detail h2")?.textContent
     ).toBe("History A");
     expect(history.repositoryAssignment?.effective).toBeNull();
-    expect(api.assignSessionProject).not.toHaveBeenCalled();
   });
 
   it("reloads both recent lists when the Personal owner changes with the same API", async () => {
@@ -1715,7 +1718,6 @@ describe("CollaborationApp", () => {
     };
     const listProjects = vi.fn(async () => []);
     const personalMemoryApi: PersonalDesktopApi = {
-      assignSessionProject: vi.fn(async () => ({ projectId: null })),
       updateSessionPresentation: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -1873,7 +1875,6 @@ describe("CollaborationApp", () => {
     });
     const client = createClient(snapshot);
     const personalMemoryApi: PersonalDesktopApi = {
-      assignSessionProject: vi.fn(async () => ({ projectId: null })),
       updateSessionPresentation: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -2685,7 +2686,6 @@ describe("CollaborationApp", () => {
       revokedAt: at
     });
     const personalMemoryApi: PersonalDesktopApi = {
-      assignSessionProject: vi.fn(async () => ({ projectId: null })),
       updateSessionPresentation: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -5064,11 +5064,17 @@ describe("CollaborationApp", () => {
     expect(document.body.textContent).not.toContain("Team · Direct message");
   });
 
-  it("opens Ask from the Personal Home rail button", async () => {
+  it("opens Projects from the Personal Home rail button and keeps Ask explicit", async () => {
     await render();
     await click(container, "Inbox");
     await click(container, "Personal");
 
+    await vi.waitFor(() =>
+      expect(
+        document.body.querySelector('[aria-label="Breadcrumb"]')?.textContent
+      ).toContain("Personal/Projects")
+    );
+    await click(container, "Ask");
     await vi.waitFor(() =>
       expect(
         document.body.querySelector('[aria-label="Breadcrumb: Personal / Ask"]')

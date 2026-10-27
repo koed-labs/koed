@@ -1,3 +1,4 @@
+import { createPersonalConfigurationProjectDefaultRepository } from "./personal-configuration-project-defaults.js";
 import { createPersonalConfigurationRuleRepository } from "./personal-configuration-rule-repository.js";
 import { createPersonalConfigurationMembershipRepository } from "./personal-configuration-membership-repository.js";
 import type pg from "pg";
@@ -7,6 +8,7 @@ import { createPersonalConfigurationSourceRepository } from "./personal-configur
 
 export const createPersonalConfigurationRepository = (pool: pg.Pool) => ({
   ...createPersonalConfigurationRecordRepository(pool),
+  ...createPersonalConfigurationProjectDefaultRepository(pool),
   ...createPersonalConfigurationDeliveryRepository(pool),
   ...createPersonalConfigurationSourceRepository(pool),
   ...createPersonalConfigurationMembershipRepository(pool),

@@ -1,3 +1,4 @@
+import { applyVerifiedConfigurationProjectDefault } from "./personal-configuration-project-defaults.js";
 import { retainPersonalMembershipLocalDevice } from "./personal-membership-local-device.js";
 import {
   applyVerifiedConfigurationMembership,
@@ -52,7 +53,7 @@ export const createPersonalConfigurationRecordRepository = (pool: pg.Pool) => ({
         record
       });
       if (
-        record.revision.payload.kind === "project_membership" &&
+        record.revision.payload.kind !== "source_context" &&
         input.localDevice
       ) {
         const local = await client.query(
@@ -71,7 +72,7 @@ export const createPersonalConfigurationRecordRepository = (pool: pg.Pool) => ({
           );
       }
       if (
-        record.revision.payload.kind === "project_membership" &&
+        record.revision.payload.kind !== "source_context" &&
         input.localDevice
       )
         await retainPersonalMembershipLocalDevice(
@@ -113,7 +114,9 @@ export const createPersonalConfigurationRecordRepository = (pool: pg.Pool) => ({
         const apply =
           record.revision.payload.kind === "source_context"
             ? applyVerifiedConfigurationSourceContext
-            : applyVerifiedConfigurationMembership;
+            : record.revision.payload.kind === "project_membership"
+              ? applyVerifiedConfigurationMembership
+              : applyVerifiedConfigurationProjectDefault;
         const result = await apply(client, {
           ownerUserId: userId,
           record,
@@ -186,7 +189,7 @@ export const createPersonalConfigurationRecordRepository = (pool: pg.Pool) => ({
        left join sessions s on s.id=b.local_session_id and s.owner_user_id=r.owner_user_id and s.visibility='personal' and s.invalidated_at is null and s.personal_deleted_at is null
        join personal_device_group_members m on m.group_id=g.id and m.device_id=r.author_device_id and m.signing_key_id=r.author_signing_key_id and m.status='active'
        where r.owner_user_id=$1 and i.owner_user_id=$1 and g.group_id=$2 and g.state='active'
-         and (r.payload_kind='project_membership' or (r.payload_kind='source_context' and s.id is not null))
+         and (r.payload_kind in ('project_membership','project_default') or (r.payload_kind='source_context' and s.id is not null))
          and r.application_state='pending' and r.retry_at<=now() and ($3::uuid is null or r.id>$3)
        order by r.id limit $4`,
       [

@@ -718,7 +718,12 @@ describe("MemoryToolExecutor", () => {
     });
   });
 
-  it.each([undefined, "00000000-0000-4000-8000-000000000095", "folder"])(
+  it.each([
+    undefined,
+    "00000000-0000-4000-8000-000000000095",
+    "folder",
+    "repository"
+  ])(
     "creates a pinned Desktop Ask turn (%s) before synthesis and returns display-safe detail",
     async (selectionKey) => {
       const folderSelection =
@@ -733,19 +738,32 @@ describe("MemoryToolExecutor", () => {
             }
           : undefined;
       const namedProjectId =
-        selectionKey === "folder" ? undefined : selectionKey;
-      const target = folderSelection
-        ? { kind: "folder", folder: folderSelection }
-        : {
-            kind: "project",
-            project: {
-              ownerUserId: "00000000-0000-4000-8000-000000000001",
-              projectId: namedProjectId
-            }
-          };
-      const expectedId = folderSelection
-        ? personalFolderScopeId(folderSelection)
-        : namedProjectId;
+        selectionKey === "folder" || selectionKey === "repository"
+          ? undefined
+          : selectionKey;
+      const repositorySelection =
+        selectionKey === "repository"
+          ? (repositoryContext("/recorded/checkout") as Extract<
+              RepositoryIdentity,
+              { kind: "portable_repository" }
+            >)
+          : undefined;
+      const target = repositorySelection
+        ? { kind: "repository", repository: repositorySelection }
+        : folderSelection
+          ? { kind: "folder", folder: folderSelection }
+          : {
+              kind: "project",
+              project: {
+                ownerUserId: "00000000-0000-4000-8000-000000000001",
+                projectId: namedProjectId
+              }
+            };
+      const expectedId = repositorySelection
+        ? repositoryScopeId(repositorySelection)
+        : folderSelection
+          ? personalFolderScopeId(folderSelection)
+          : namedProjectId;
       const callOrder: string[] = [];
       const question = {
         id: "11111111-1111-4111-8111-111111111111",
@@ -799,7 +817,7 @@ describe("MemoryToolExecutor", () => {
       const answerWithMemoryWorker: NonNullable<
         MemoryToolExecutorServices["answerWithMemoryWorker"]
       > = async (payload, worker) => {
-        if (namedProjectId || folderSelection) {
+        if (namedProjectId || folderSelection || repositorySelection) {
           if (!worker?.client)
             throw new Error("Scoped retrieval client is required");
           expect(worker.config?.cwd).not.toBe("/work");
@@ -854,6 +872,7 @@ describe("MemoryToolExecutor", () => {
           idempotencyKey: "desktop-ask-request-1",
           namedProjectId,
           folderSelection,
+          repositorySelection,
           query: question.query
         },
         { cwd: "/work" }
@@ -878,6 +897,7 @@ describe("MemoryToolExecutor", () => {
         ask_thread_id: undefined,
         named_project_id: namedProjectId,
         folder_selection: folderSelection,
+        repository_selection: repositorySelection,
         idempotency_key: "desktop-ask-request-1",
         query: question.query
       });

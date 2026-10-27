@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import {
+  deduplicatePersonalInventoryConversations,
   personalFolderScopeId,
   type PersonalSelectionSnapshot
 } from "@koed/shared";
@@ -52,16 +53,8 @@ export const registerPersonalFolderRoutes = (
             )
           ).map((row) => [row.sessionId, row])
         );
-        projects.push({
-          id,
-          name,
-          folder,
-          path: folder.normalizedPath,
-          eventCount: threads.reduce(
-            (total, thread) => total + thread.eventCount,
-            0
-          ),
-          threads: threads.map((thread) => {
+        const projected = deduplicatePersonalInventoryConversations(
+          threads.map((thread) => {
             const logicalId = thread.sessionId
               ? logicalBySession.get(thread.sessionId)
               : undefined;
@@ -69,26 +62,24 @@ export const registerPersonalFolderRoutes = (
               throw new Error(
                 "Folder Conversation source binding is unavailable"
               );
+            const row = thread.sessionId
+              ? presentations.get(thread.sessionId)
+              : undefined;
             return {
               ...thread,
               id: logicalId,
               sourceThreadId: thread.id,
               folderSelection: folder.reference,
-              presentation: (() => {
-                const row = thread.sessionId
-                  ? presentations.get(thread.sessionId)
-                  : undefined;
-                return row
-                  ? {
-                      pinnedAt: row.pinnedAt,
-                      displayMode: row.displayMode,
-                      snoozedAt: row.snoozedAt,
-                      snoozedUntil: row.snoozedUntil,
-                      version: row.version,
-                      updatedAt: row.updatedAt
-                    }
-                  : null;
-              })(),
+              presentation: row
+                ? {
+                    pinnedAt: row.pinnedAt,
+                    displayMode: row.displayMode,
+                    snoozedAt: row.snoozedAt,
+                    snoozedUntil: row.snoozedUntil,
+                    version: row.version,
+                    updatedAt: row.updatedAt
+                  }
+                : null,
               sourceProject: {
                 id: thread.projectId,
                 name: thread.projectName,
@@ -103,6 +94,17 @@ export const registerPersonalFolderRoutes = (
                 : thread.parentThreadId
             };
           })
+        );
+        projects.push({
+          id,
+          name,
+          folder,
+          path: folder.normalizedPath,
+          eventCount: projected.reduce(
+            (total, thread) => total + thread.eventCount,
+            0
+          ),
+          threads: projected
         });
       }
       return graphThreadIndexResponseSchema.parse({ projects });

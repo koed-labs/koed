@@ -297,6 +297,11 @@ Adding or removing membership leaves recorded source context, Capture Policy,
 and Team snapshots intact. Named Project inventory and Ask requests carry the
 selected Project identity separately from recorded Git context.
 
+The [Personal inventory boundary](personal-inventory.md) separates named Projects,
+Git sources, exact Folders, and local checkout metadata. Source enumeration uses
+stable identifier pages and reaches sources beyond the first 500 Conversations.
+Inventory loading does not discover checkouts or change Project membership.
+
 Review membership shows every direct, Git Anchor, and Folder inclusion reason.
 Removing a direct inclusion preserves matching rules. Exclude blocks all inclusion
 reasons in that Project. Git, Folder, Global, and other Project selections remain

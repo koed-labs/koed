@@ -1,5 +1,7 @@
 import {
   personalFolderScopeId,
+  personalInventoryConversationKey,
+  deduplicatePersonalInventoryConversations,
   personalRecallTargetsEqual
 } from "@koed/shared/personal-desktop";
 import { repositoryScopeId } from "@koed/shared/repository-recall";
@@ -42,22 +44,19 @@ const logicalId = (thread: Thread) =>
 const sessionIds = (threads: Thread[]) =>
   new Set(
     threads.flatMap((thread) => [
+      personalInventoryConversationKey(thread),
       ...(thread.sessionId ? [thread.sessionId] : []),
       ...(thread.sourceReferences?.map((ref) => ref.sessionId) ?? [])
     ])
   );
 const overlaps = (thread: Thread, ids: Set<string>) =>
+  ids.has(personalInventoryConversationKey(thread)) ||
   (thread.sessionId !== null && ids.has(thread.sessionId)) ||
   thread.sourceReferences?.some((ref) => ids.has(ref.sessionId));
-const uniqueThreads = (threads: Thread[]) => {
-  const result = new Map<string, Thread>();
-  for (const thread of threads) {
-    if (!thread.sessionId) continue;
-    const key = logicalId(thread) ?? thread.sessionId;
-    if (!result.has(key)) result.set(key, thread);
-  }
-  return [...result.values()];
-};
+const uniqueThreads = (threads: Thread[]) =>
+  deduplicatePersonalInventoryConversations(
+    threads.filter((thread) => thread.sessionId)
+  );
 const byName = (a: TransferSource, b: TransferSource) =>
   a.name.localeCompare(b.name) || a.detail.localeCompare(b.detail);
 const conversation = (thread: Thread): TransferSource => ({
@@ -218,19 +217,6 @@ export function projectTransferInclusions(
       threads: source?.threads ?? [],
       logicalSessionId: membership.logicalSessionId
     });
-  }
-  // Older inventory fixtures expose active reasons on selected Conversations.
-  for (const thread of project.threads) {
-    for (const reason of thread.membershipReasons ?? []) {
-      if (reason.kind !== "session" || directs.has(reason.inclusionId))
-        continue;
-      directs.set(reason.inclusionId, {
-        ...conversation(thread),
-        id: `direct:${reason.inclusionId}`,
-        inclusionId: reason.inclusionId,
-        removal: "remove_inclusion"
-      });
-    }
   }
   return [...rules, ...directs.values()];
 }

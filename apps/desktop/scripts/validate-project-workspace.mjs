@@ -295,6 +295,10 @@ const run = async () => {
     );
     await window.loadFile(pagePath);
     await waitForReady(window);
+    await window.webContents.executeJavaScript(`
+      [...document.querySelectorAll('.desktop-sidebar-nav-item')]
+        .find(button => button.querySelector('.desktop-sidebar-nav-label')?.textContent?.trim() === 'Ask')?.click()
+    `);
     await waitFor(
       window,
       `Boolean(document.querySelector('.personal-agent-start textarea'))`,
@@ -313,7 +317,7 @@ const run = async () => {
         projectVisible: projectCard?.textContent?.includes('Koed Desktop browser validation') ?? false,
         projectContextVisible: Boolean(projectCard?.querySelector('.personal-agent-project-context')),
         projectTextGap: name && count ? Math.round(count.top - name.bottom) : null,
-        openProjectVisible: document.querySelector('.personal-agent-open-project')?.textContent?.includes('Open a project') ?? false,
+        openProjectVisible: document.querySelector('.personal-agent-open-project')?.textContent?.includes('Choose a Project') ?? false,
         forbiddenCopyVisible: /CHOOSE YOUR CONTEXT|Explore an idea|Working in/u.test(document.body.innerText),
         composerVisible: Boolean(document.querySelector('.personal-agent-start textarea')),
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
@@ -322,8 +326,8 @@ const run = async () => {
     assert.equal(askLight.heading, "Where shall we start?");
     assert.equal(askLight.independentFirst, true);
     assert.equal(askLight.projectVisible, true);
-    assert.equal(askLight.projectContextVisible, true);
-    assert.equal(askLight.projectTextGap, 4);
+    assert.equal(askLight.projectContextVisible, false);
+    assert.equal(askLight.projectTextGap, null);
     assert.equal(askLight.openProjectVisible, true);
     assert.equal(askLight.forbiddenCopyVisible, false);
     assert.equal(askLight.composerVisible, true);
@@ -343,6 +347,10 @@ const run = async () => {
     );
     await window.loadFile(pagePath);
     await waitForReady(window);
+    await window.webContents.executeJavaScript(`
+      [...document.querySelectorAll('.desktop-sidebar-nav-item')]
+        .find(button => button.querySelector('.desktop-sidebar-nav-label')?.textContent?.trim() === 'Ask')?.click()
+    `);
     await waitFor(
       window,
       `Boolean(document.querySelector('.personal-agent-start textarea'))`,
@@ -366,6 +374,10 @@ const run = async () => {
     );
     await window.loadFile(pagePath);
     await waitForReady(window);
+    await window.webContents.executeJavaScript(`
+      [...document.querySelectorAll('.desktop-sidebar-nav-item')]
+        .find(button => button.querySelector('.desktop-sidebar-nav-label')?.textContent?.trim() === 'Ask')?.click()
+    `);
     await waitFor(
       window,
       `Boolean(document.querySelector('.personal-agent-start textarea'))`,
@@ -548,7 +560,7 @@ const run = async () => {
     assert.equal(createdProject.visible, true);
     assert.equal(createdProject.enabled, true);
     await window.webContents.executeJavaScript(
-      `document.querySelector('[data-project-id="browser-project"]')?.click()`
+      `document.querySelector('[data-project-id="00000000-0000-4000-8000-000000000500"]')?.click()`
     );
     await delay(50);
 
@@ -559,13 +571,13 @@ const run = async () => {
       return {
         height: header.getBoundingClientRect().height,
         retiredMoveVisible: Boolean(move),
-        newHeight: create.getBoundingClientRect().height,
+        newHeight: create?.getBoundingClientRect().height ?? 0,
         pathsExposed: header.textContent.includes('/private/operator/')
       };
     })()`);
     assert.equal(projectHeader.height, 96, JSON.stringify(projectHeader));
     assert.equal(projectHeader.retiredMoveVisible, false);
-    assert.ok(projectHeader.newHeight > 0);
+    assert.equal(projectHeader.newHeight, 0);
     assert.equal(
       projectHeader.pathsExposed,
       false,
@@ -1062,7 +1074,7 @@ const run = async () => {
 
     await setEmulatedViewport(window, 1440, 900);
     await window.webContents.executeJavaScript(
-      `document.querySelector('[data-project-id="browser-project"]')?.click()`
+      `document.querySelector('[data-project-id="00000000-0000-4000-8000-000000000500"]')?.click()`
     );
     assert.equal(
       await window.webContents.executeJavaScript(
@@ -1127,7 +1139,7 @@ const run = async () => {
       "Only the selected Conversation was included"
     );
     await window.webContents.executeJavaScript(
-      `document.querySelector('[data-project-id="browser-project"]')?.click()`
+      `document.querySelector('[data-project-id="00000000-0000-4000-8000-000000000500"]')?.click()`
     );
     await waitFor(
       window,

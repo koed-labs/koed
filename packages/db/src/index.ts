@@ -465,6 +465,10 @@ export { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repos
 export { presentMemoryText } from "./presentation.js";
 export * as schema from "./schema.js";
 export * from "./types.js";
+export {
+  createPersonalProjectDefaultRepository,
+  type PersonalProjectDefaultRepository
+} from "./personal-project-default-repository.js";
 export * from "./memory-answer-team-authority.js";
 
 export {

@@ -13,6 +13,7 @@ import { createMemoryEngine } from "@koed/core";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   repositoryScopeId,
+  personalFolderScopeId,
   type PersonalSelectionSnapshot,
   type RepositoryIdentity
 } from "@koed/shared";
@@ -785,6 +786,91 @@ describe.skipIf(!databaseUrl)(
         ).rowCount
       ).toBe(1);
     });
+
+    it.each(["repository", "folder"] as const)(
+      "pins exact %s Ask scope through idempotency and thread reuse without accepting compound targets",
+      async (kind) => {
+        const repo = createMemorySourceRepository(pool, options),
+          actor = await user(),
+          other = await user();
+        const context = git(randomUUID());
+        const folder = {
+          ownerUserId: actor.userId,
+          folderId: randomUUID(),
+          originatingDeploymentId: "ask_deployment",
+          originatingDeviceId: "ask_device",
+          originatingProfileId: "ask_profile",
+          directoryIncarnationId: randomUUID()
+        };
+        const { ownerUserId, ...identity } = folder;
+        void ownerUserId;
+        await repo.createCapturedSession(actor, {
+          externalSessionId: randomUUID(),
+          repositoryIdentity: context,
+          folderObservation: {
+            identity,
+            normalizedPath: "/ask/exact",
+            capturedPath: "/ask/exact",
+            observedAt: new Date().toISOString()
+          }
+        });
+        const target =
+          kind === "repository"
+            ? { repositorySelection: context }
+            : { folderSelection: folder };
+        const idempotencyKey = randomUUID();
+        const ask = await repo.createPendingDesktopAsk(actor, {
+          ...target,
+          idempotencyKey,
+          query: "Which exact source recorded the decision?"
+        });
+        expect(ask).toMatchObject({
+          searchDomain: "project",
+          projectId:
+            kind === "repository"
+              ? repositoryScopeId(context)
+              : personalFolderScopeId(folder)
+        });
+        expect(
+          (
+            await repo.createPendingDesktopAsk(actor, {
+              ...target,
+              idempotencyKey,
+              query: "Retry"
+            })
+          ).id
+        ).toBe(ask.id);
+        await expect(
+          repo.createPendingDesktopAsk(actor, {
+            idempotencyKey,
+            query: "Global retry"
+          })
+        ).rejects.toMatchObject({ statusCode: 409 });
+        await expect(
+          repo.createPendingDesktopAsk(actor, {
+            askThreadId: ask.askThreadId!,
+            idempotencyKey: randomUUID(),
+            query: "Global follow-up"
+          })
+        ).rejects.toMatchObject({ statusCode: 409 });
+        await expect(
+          repo.createPendingDesktopAsk(actor, {
+            repositorySelection: context,
+            folderSelection: folder,
+            idempotencyKey: randomUUID(),
+            query: "Unsupported compound target"
+          })
+        ).rejects.toMatchObject({ statusCode: 400 });
+        await expect(
+          repo.createPendingDesktopAsk(other, {
+            folderSelection: folder,
+            idempotencyKey: randomUUID(),
+            query: "Foreign Folder"
+          })
+        ).rejects.toMatchObject({ statusCode: 403 });
+        expect(await repo.getMemoryQuestion(other, ask.id)).toBeNull();
+      }
+    );
 
     it("pins named Project Ask scope and rejects retry or thread scope changes", async () => {
       const repo = createMemorySourceRepository(pool, options),

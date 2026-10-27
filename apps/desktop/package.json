@@ -30,8 +30,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "pnpm --filter @koed/shared build && pnpm --filter @koed/ui build && pnpm --filter @koed-labs/server build",
     "test": "node --test scripts/desktop-artifact-report-lib.test.mjs scripts/smoke-packaged-renderer-faults.test.mjs && vitest run --passWithNoTests",
-    "test:browser": "pnpm build && pnpm build:validation && electron scripts/validate-project-workspace.mjs && electron scripts/validate-project-folders.mjs && electron scripts/validate-project-transfer.mjs && electron scripts/validate-conversation-cards.mjs && electron scripts/validate-collaboration-interactions.mjs && electron scripts/validate-managed-preview.mjs",
-    "build:validation": "vite build --mode validation"
+    "test:browser": "pnpm build && pnpm build:validation && electron scripts/validate-project-workspace.mjs && electron scripts/validate-projects-default.mjs && electron scripts/validate-project-transfer.mjs && electron scripts/validate-conversation-cards.mjs && electron scripts/validate-collaboration-interactions.mjs && electron scripts/validate-managed-preview.mjs",
+    "build:validation": "vite build --mode validation",
+    "demo:projects": "pnpm build:validation && electron scripts/validate-projects-default.mjs --preview"
   },
   "dependencies": {
     "@koed-labs/server": "workspace:*",

@@ -1,9 +1,11 @@
 import type { PersonalSelectionConsumerRepository } from "./personal-selection-consumer-repository.js";
+import type { PersonalProjectDefaultRepository } from "./personal-project-default-repository.js";
 import type { PersonalMembershipReviewRepository } from "./personal-membership-review-repository.js";
 import type { PersonalConfigurationRepository } from "./personal-configuration-repository.js";
 import type { PersonalSourceCorrectionRepository } from "./personal-source-correction-repository.js";
 import type { PersonalProjectExclusionRepository } from "./personal-project-exclusion-repository.js";
 import type { PersonalMembershipRepository } from "./personal-membership-repository.js";
+import type { PersonalProjectBatchRepository } from "./personal-project-batch-repository.js";
 import type { PersonalProjectRuleRepository } from "./personal-project-rule-repository.js";
 import type { RepositoryReviewRepository } from "./repository-review-repository.js";
 import type {
@@ -1975,7 +1977,9 @@ export interface MemorySourceRepository
     PersonalMembershipRepository,
     PersonalMembershipReviewRepository,
     PersonalSelectionConsumerRepository,
+    PersonalProjectDefaultRepository,
     PersonalProjectRuleRepository,
+    PersonalProjectBatchRepository,
     PersonalProjectExclusionRepository,
     PersonalSourceCorrectionRepository,
     CollaborationRepository,
@@ -2665,6 +2669,13 @@ export interface MemorySourceRepository
       limit?: number;
       offset?: number;
       groupBySession?: boolean;
+      /** Inventory keyset order is independent of Conversation activity. */
+      inventoryOrder?: boolean;
+      inventoryAfter?: {
+        projectId: string;
+        threadId: string;
+        sessionId: string;
+      };
     }
   ): Promise<LcmGraphProjectThreads[]>;
   getLcmGraphEvent(

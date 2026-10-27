@@ -52,7 +52,7 @@
   border-radius: 0.5rem;
   display: flex;
   flex-direction: column;
-  height: min(22.5rem, calc(100dvh - 12rem));
+  height: min(22.5rem, calc(100dvh - 16rem));
   min-inline-size: 0;
   overflow: hidden;
 }
@@ -223,7 +223,7 @@
     grid-template-columns: minmax(0, 1fr);
   }
   .personal-transfer-pane {
-    height: min(18rem, calc((100dvh - 14rem) / 2));
+    height: min(18rem, calc((100dvh - 20rem) / 2));
   }
   .personal-transfer-arrows {
     flex-direction: row;
@@ -237,7 +237,7 @@
     grid-template-columns: minmax(0, 1fr);
   }
   .personal-transfer-pane {
-    height: min(18rem, calc((100dvh - 14rem) / 2));
+    height: min(18rem, calc((100dvh - 20rem) / 2));
   }
   .personal-transfer-arrows {
     flex-direction: row;
@@ -262,4 +262,10 @@
   justify-content: flex-end;
   gap: 0.5rem;
   padding: 0 0.75rem 0.75rem;
+}
+
+.personal-transfer-preview {
+  padding: 0 0.75rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
 }

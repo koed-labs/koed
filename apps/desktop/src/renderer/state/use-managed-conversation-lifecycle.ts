@@ -253,6 +253,12 @@ export function useManagedConversationLifecycle({
         id: conversation.threadId,
         name: provisionalConversationTitle(initialPrompt?.prompt),
         sessionId: conversation.capturedSessionId,
+        ...(project.namedProject
+          ? {
+              namedProjectId: project.namedProject.projectId,
+              sourceThreadId: conversation.threadId
+            }
+          : {}),
         sourceAiClient:
           launchInput.aiClientDriverId === "claude"
             ? "claude-code"

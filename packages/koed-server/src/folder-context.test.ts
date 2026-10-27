@@ -1,4 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  readAvailablePersonalFolders,
+  readPersonalFolderDirectoryMarker,
+  personalFolderRegistrySchema
+} from "@koed/shared/personal-local-folders";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -38,6 +49,57 @@ afterEach(() => {
 });
 
 describe("source-time exact Folder identity", () => {
+  it.runIf(process.platform === "darwin")(
+    "adopts an existing registration after a macOS mount-number change without replacing its identity",
+    async () => {
+      const { root, env, paths } = await fixture();
+      const directory = resolve(root, "remounted");
+      mkdirSync(directory);
+      const first = (await observeCaptureFolder(paths, directory, env))!;
+      const current = readPersonalFolderDirectoryMarker(directory)!;
+      expect(current.marker).toMatch(/^\["volume:/);
+      const registryPath = resolve(paths.configDir, "folder-contexts.json");
+      const registry = personalFolderRegistrySchema.parse(
+        JSON.parse(readFileSync(registryPath, "utf8"))
+      );
+      const numeric = JSON.parse(current.deviceMarker) as [
+        string,
+        string,
+        string
+      ];
+      numeric[0] = (BigInt(numeric[0]) + 2n).toString();
+      registry.directories[0]!.marker = JSON.stringify(numeric);
+      writeFileSync(registryPath, JSON.stringify(registry));
+      const before = readFileSync(registryPath, "utf8");
+      const environment = {
+        ...env,
+        KOED_DEVICE_PROOF_DIR: resolve(`${paths.koedHome}-proof-root`, "proof")
+      };
+      expect(
+        readAvailablePersonalFolders(paths.koedHome, environment)
+      ).toMatchObject([{ identity: first.identity }]);
+      expect(readFileSync(registryPath, "utf8")).toBe(before);
+      expect(
+        (await observeCaptureFolder(paths, directory, env))!.identity
+      ).toEqual(first.identity);
+      const updated = personalFolderRegistrySchema.parse(
+        JSON.parse(readFileSync(registryPath, "utf8"))
+      );
+      expect(updated.directories).toHaveLength(1);
+      expect(updated.directories[0]!.marker).toBe(current.marker);
+      expect(
+        readAvailablePersonalFolders(paths.koedHome, environment)
+      ).toMatchObject([{ identity: first.identity }]);
+      rmSync(directory, { recursive: true });
+      mkdirSync(directory);
+      expect(readAvailablePersonalFolders(paths.koedHome, environment)).toEqual(
+        []
+      );
+      expect(
+        (await observeCaptureFolder(paths, directory, env))!.identity.folderId
+      ).not.toBe(first.identity.folderId);
+    }
+  );
   it("distinguishes exact directories, replacement incarnations, profiles and devices", async () => {
     const { root, env, paths } = await fixture();
     const directory = resolve(root, "checkout"),
@@ -121,6 +183,41 @@ describe("source-time exact Folder identity", () => {
     expect(
       readSourceFolderObservation(paths, { ...key, sourceKind: "claude-code" })
     ).toBeUndefined();
+  });
+
+  it("lists only live host-bound execution Folders without changing recorded identity", async () => {
+    const { root, env, paths } = await fixture();
+    const directory = resolve(root, "execution");
+    mkdirSync(directory);
+    const first = (await observeCaptureFolder(paths, directory, env))!;
+    const environment = {
+      ...env,
+      KOED_DEVICE_PROOF_DIR: resolve(`${paths.koedHome}-proof-root`, "proof")
+    };
+    const registry = resolve(paths.koedHome, "config", "folder-contexts.json");
+    const before = readFileSync(registry, "utf8");
+    expect(
+      readAvailablePersonalFolders(paths.koedHome, environment)
+    ).toMatchObject([
+      { identity: first.identity, normalizedPath: first.normalizedPath }
+    ]);
+    expect(readFileSync(registry, "utf8")).toBe(before);
+    rmSync(directory, { recursive: true });
+    mkdirSync(directory);
+    expect(readAvailablePersonalFolders(paths.koedHome, environment)).toEqual(
+      []
+    );
+    await observeCaptureFolder(paths, directory, env);
+    expect(
+      readAvailablePersonalFolders(paths.koedHome, environment)
+    ).toHaveLength(1);
+    await rotateDeviceIdentity(paths, {
+      dependencies: { environment: env },
+      invalidateRemoteReferences: () => undefined
+    });
+    expect(readAvailablePersonalFolders(paths.koedHome, environment)).toEqual(
+      []
+    );
   });
 
   it("normalizes recorded POSIX and Windows evidence without the importing worker's cwd", () => {

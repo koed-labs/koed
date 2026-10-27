@@ -1,10 +1,9 @@
 // @vitest-environment happy-dom
 import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
-  type PersonalDesktopApi,
-  type PersonalDesktopProjectThread
+  personalFolderExecutionId,
+  type PersonalDesktopApi
 } from "@koed/shared/personal-desktop";
-import type { RepositoryIdentity } from "@koed/shared";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +15,8 @@ import {
   type LocalAiClientResponse
 } from "../../../ipc/local-ai-client-protocol.js";
 import type { DesktopProject } from "../../../project-memory-ui.js";
+import { createProjectSourceFixture } from "../../../project-source-fixture.js";
+import { createManagedConversationValidationApi } from "../../../managed-conversation-validation-api.js";
 
 const adapters = { openExternal: vi.fn(), writeClipboard: vi.fn() };
 (
@@ -55,7 +56,6 @@ const enterText = async (element: HTMLTextAreaElement, value: string) => {
 describe("Personal Ask", () => {
   it.each([false, true])("starts a Project (rootless=%s)", async (rootless) => {
     const api: PersonalDesktopApi = {
-      assignSessionProject: vi.fn(async () => ({ projectId: null })),
       updateSessionPresentation: vi.fn(async () => {
         throw new Error("Unexpected presentation update in this fixture");
       }),
@@ -65,40 +65,22 @@ describe("Personal Ask", () => {
       subscribe: vi.fn(() => () => undefined),
       loadAskThread: vi.fn(async () => [])
     };
-    const project = {
-      id: "project-research",
+    const fixture = createProjectSourceFixture();
+    const project: DesktopProject = {
+      ...fixture.project,
       name: "Research",
-      path: rootless ? null : "/tmp/research",
-      repository: rootless
-        ? {
-            kind: "local_project" as const,
-            key: "project-research",
-            root: null,
-            branch: null,
-            checkoutId: null,
-            originatingDeviceId: "local",
-            reason: "manual" as const,
-            selectedRemote: null,
-            anchorDisplay: null
-          }
-        : undefined,
-      eventCount: 0,
-      threads: [],
-      catalogued: true,
-      discoveredAt: "2026-08-17T12:00:00.000Z",
-      lastSeenAt: "2026-08-17T12:00:00.000Z",
-      localProjectId: "lp_research_checkout",
-      branch: null,
-      remoteDisplay: null,
-      isWorktree: false
-    } satisfies DesktopProject;
-    const independent = {
+      path: rootless ? null : "/display-only/research"
+    };
+    const independent: DesktopProject = {
       ...project,
       id: "project-independent",
-      name: "Independent",
+      name: "Chats",
+      namedProject: undefined,
+      projectReference: undefined,
+      contextKind: "independent",
       path: "/tmp/koed/Independent",
       localProjectId: "project-independent"
-    } satisfies DesktopProject;
+    };
     const start = vi.fn(async () => ({
       operation: "start" as const,
       status: "starting" as const,
@@ -109,7 +91,7 @@ describe("Personal Ask", () => {
       status: "queued" as const,
       conversation: {
         executionId: "11111111-1111-4111-8111-111111111111",
-        projectId: project.localProjectId,
+        projectId: personalFolderExecutionId(fixture.first.reference),
         capturedSessionId: "11111111-1111-4111-8111-111111111111",
         threadId: "11111111-1111-4111-8111-111111111111"
       },
@@ -241,9 +223,6 @@ describe("Personal Ask", () => {
       resolveProject = resolve;
     });
     const onConversationStarted = vi.fn();
-    const onOpenProject = vi.fn(async () => {
-      throw new Error("The selected folder is not accessible.");
-    });
     await act(async () => {
       root.render(
         <PersonalAskView
@@ -253,7 +232,7 @@ describe("Personal Ask", () => {
           markdownAdapters={adapters}
           onConversationStarted={onConversationStarted}
           onNew={vi.fn()}
-          onOpenProject={onOpenProject}
+          inventory={fixture.inventory}
           onResolveIndependent={vi
             .fn(() => pendingProject)
             .mockRejectedValueOnce(new Error("Projects starting"))}
@@ -270,7 +249,7 @@ describe("Personal Ask", () => {
     expect(container.textContent).not.toContain("Send your first message");
     expect(container.querySelector(".conversation-new-device")).toBeNull();
     expect(container.textContent).toContain("Research");
-    expect(container.textContent).toContain("Open a project");
+    expect(container.textContent).toContain("Choose a Project");
     expect(container.textContent).not.toContain("CHOOSE YOUR CONTEXT");
     expect(container.textContent).not.toContain("Working in");
 
@@ -297,21 +276,21 @@ describe("Personal Ask", () => {
 
     await click(
       [...container.querySelectorAll("button")].find((button) =>
-        button.textContent?.includes("Open a project")
-      ) ?? null
-    );
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain(
-        "The selected folder is not accessible."
-      )
-    );
-    expect(textarea.value).toBe("Investigate the generic task");
-    await click(
-      [...container.querySelectorAll("button")].find((button) =>
         button.textContent?.includes("Research")
       ) ?? null
     );
     expect(textarea.value).toBe("Investigate the generic task");
+    expect(submit.disabled).toBe(true);
+    await click(
+      container.querySelector('[aria-label="Execution Folder: Choose Folder"]')
+    );
+    expect(document.querySelector('[title="/remote/koed"]')).toBeNull();
+    await click(
+      document.querySelector('[role="menuitemradio"][title="/local/koed"]')
+    );
+    expect(container.querySelector("textarea")).toBe(textarea);
+    expect(textarea.value).toBe("Investigate the generic task");
+
     await click(
       container.querySelector('button[aria-label="Start Conversation"]')
     );
@@ -320,7 +299,7 @@ describe("Personal Ask", () => {
     );
     expect(start).toHaveBeenCalledWith(
       expect.objectContaining({
-        projectId: project.localProjectId,
+        projectId: personalFolderExecutionId(fixture.first.reference),
         contextKind: "project",
         aiClientInstanceId: "codex-preferred",
         model: "preferred-model",
@@ -332,78 +311,22 @@ describe("Personal Ask", () => {
     );
   });
 
-  it("uses the same source icons and mixed context as the Projects list without Conversation counts", async () => {
-    const manual: RepositoryIdentity = {
-      kind: "local_project",
-      key: "manual",
-      root: null,
-      branch: null,
-      checkoutId: null,
-      originatingDeviceId: "local",
-      reason: "manual",
-      selectedRemote: null,
-      anchorDisplay: null
-    };
-    const git: RepositoryIdentity = {
-      ...manual,
-      kind: "portable_repository",
-      key: "git",
-      root: "/code/koed",
-      checkoutId: "checkout",
-      reason: "origin",
-      anchorDisplay: "github.com/koed-labs/koed"
-    };
-    const source = (
-      id: string,
-      automatic: RepositoryIdentity | null
-    ): PersonalDesktopProjectThread => ({
+  it("shows named Projects, including empty and remote Projects, instead of source Folders", async () => {
+    const fixture = createProjectSourceFixture();
+    const base = fixture.project;
+    const named = (id: string, name: string): DesktopProject => ({
+      ...base,
       id,
-      sessionId: null,
-      name: id,
-      projectId: "manual",
-      projectName: "Manual",
-      projectPath: null,
-      capturedCwd: automatic?.root ?? "/notes",
-      sourceAiClient: "codex",
-      projectAssignmentSource: "user_override",
-      eventCount: 999,
-      invalidatedCount: 0,
-      latestAt: new Date().toISOString(),
-      sample: "",
-      presentation: null,
-      repositoryAssignment: {
-        state: "recorded",
-        version: 2,
-        automatic,
-        override: manual,
-        effective: manual
-      }
+      name,
+      threads: [],
+      inclusionRules: [],
+      namedProject: { ...base.namedProject!, projectId: id, name },
+      projectReference: { ...base.projectReference!, projectId: id }
     });
-    const base: DesktopProject = {
-      id: "manual",
-      name: "Manual",
-      repository: manual,
-      path: null,
-      eventCount: 2997,
-      catalogued: false,
-      discoveredAt: null,
-      lastSeenAt: null,
-      localProjectId: null,
-      branch: null,
-      remoteDisplay: null,
-      isWorktree: false,
-      threads: [
-        source("git-thread", git),
-        source("plain-thread", null),
-        {
-          ...source("agent", null),
-          capturedCwd: null,
-          threadKind: "subagent",
-          parentThreadId: "git-thread"
-        }
-      ]
-    };
-    await act(async () => {
+    const empty = named("empty", "Empty Project");
+    const remote = named("remote", "Remote Project");
+    const fourth = named("zz-fourth", "Fourth Project");
+    await act(async () =>
       root.render(
         <PersonalAskView
           api={
@@ -413,88 +336,190 @@ describe("Personal Ask", () => {
           }
           markdownAdapters={adapters}
           onNew={vi.fn()}
+          inventory={fixture.inventory}
           projects={[
+            ...fixture.inventory.gitSources,
+            ...fixture.inventory.folders,
+            ...fixture.inventory.unresolved,
             base,
-            {
-              ...base,
-              id: "git",
-              name: "Git",
-              path: git.root,
-              repository: git,
-              threads: []
-            },
-            {
-              ...base,
-              id: "folder",
-              name: "Folder",
-              path: "/notes",
-              repository: {
-                ...git,
-                kind: "non_git_project",
-                reason: "non_git",
-                anchorDisplay: null
-              },
-              threads: []
-            }
+            empty,
+            remote,
+            fourth
           ]}
         />
-      );
-    });
-    const manualChoice = container.querySelector<HTMLElement>(
-      '[data-project-id="manual"]'
-    )!;
+      )
+    );
+    const cards = [
+      ...container.querySelectorAll<HTMLElement>("[data-project-id]")
+    ];
+    expect(cards).toHaveLength(3);
+    expect(cards.map((card) => card.dataset.projectId)).toEqual([
+      base.id,
+      empty.id,
+      remote.id
+    ]);
+    expect(cards.every((card) => card.dataset.groupKind === "project")).toBe(
+      true
+    );
     expect(
-      manualChoice.querySelector(".personal-project-source-icon .lucide-layers")
-    ).not.toBeNull();
-    expect(
-      manualChoice.querySelector(".personal-agent-project-context")?.textContent
-    ).toBe("koed-labs/koed · 1 folder");
+      container.querySelector(".personal-project-source-icon .lucide-folder")
+    ).toBeNull();
     expect(
       container.querySelector(".personal-project-conversation-count")
     ).toBeNull();
-    expect(container.querySelector(".lucide-messages-square")).toBeNull();
-    expect(manualChoice.getAttribute("aria-label")).toBe(
-      "Manual, Manual Project, koed-labs/koed · 1 folder"
+    const textarea = container.querySelector("textarea")!;
+    await enterText(
+      textarea,
+      "Keep the Ask draft across Projects and Folders."
+    );
+    await click(container.querySelector(".personal-agent-open-project"));
+    const choices = [...document.querySelectorAll('[role="menuitemradio"]')];
+    expect(choices.map((choice) => choice.textContent)).toEqual([
+      base.name,
+      empty.name,
+      remote.name,
+      fourth.name
+    ]);
+    await click(
+      choices.find((choice) => choice.textContent === fourth.name) ?? null
     );
     expect(
-      container.querySelector(
-        '[data-group-kind="git"] .personal-project-source-icon .lucide-git-fork'
-      )
-    ).not.toBeNull();
-    expect(
-      container.querySelector(
-        '[data-group-kind="folder"] .personal-project-source-icon .lucide-folder'
-      )
-    ).not.toBeNull();
-    expect(container.querySelector(".lucide-brain")).toBeNull();
-    expect(manualChoice.textContent).not.toContain("2997");
-    await click(manualChoice);
-    expect(manualChoice.getAttribute("aria-pressed")).toBe("true");
-    expect(container.querySelector("textarea")?.placeholder).toBe(
-      "Ask about Manual…"
+      container
+        .querySelector(`[data-project-id="${fourth.id}"]`)
+        ?.getAttribute("aria-pressed")
+    ).toBe("true");
+    expect(container.querySelector("textarea")).toBe(textarea);
+    expect(textarea.value).toBe(
+      "Keep the Ask draft across Projects and Folders."
     );
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label="Start Conversation"]'
+      )?.disabled
+    ).toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(".conversation-folder-trigger")
+        ?.disabled
+    ).toBe(true);
+  });
+
+  it("preserves an Ask draft across Folder changes and an unavailable native Folder", async () => {
+    const fixture = createProjectSourceFixture();
+    const { api: managed, trace } = createManagedConversationValidationApi();
+    let inventory = fixture.inventory;
+    const render = () =>
+      act(async () =>
+        root.render(
+          <PersonalAskView
+            api={
+              {
+                loadAskThread: vi.fn(async () => [])
+              } as unknown as PersonalDesktopApi
+            }
+            managedConversations={managed}
+            markdownAdapters={adapters}
+            inventory={inventory}
+            projects={inventory.projects}
+            onNew={vi.fn()}
+          />
+        )
+      );
+    await render();
+    const textarea = container.querySelector("textarea")!;
+    const draft = "Keep the Ask draft and execute in my selected Folder.";
+    await enterText(textarea, draft);
+    await click(
+      container.querySelector(`[data-project-id="${fixture.projectId}"]`)
+    );
+    const choose = async (path: string) => {
+      await click(container.querySelector(".conversation-folder-trigger"));
+      await click(
+        document.querySelector(`[role="menuitemradio"][title="${path}"]`)
+      );
+    };
+    await choose("/local/koed");
+    await choose("/local/notes");
+    expect(container.querySelector("textarea")).toBe(textarea);
+    expect(textarea.value).toBe(draft);
+    inventory = {
+      ...inventory,
+      localFolders: fixture.localFolders.filter(
+        (folder) => folder.normalizedPath !== "/local/notes"
+      )
+    };
+    await render();
+    expect(container.querySelector("textarea")).toBe(textarea);
+    expect(textarea.value).toBe(draft);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label="Start Conversation"]'
+      )!.disabled
+    ).toBe(true);
+    await choose("/local/koed");
+    await click(container.querySelector('[aria-label="Start Conversation"]'));
+    expect(trace.starts).toEqual([
+      expect.objectContaining({
+        projectId: personalFolderExecutionId(fixture.first.reference),
+        contextKind: "project"
+      })
+    ]);
+    expect(trace.sends).toEqual([expect.objectContaining({ prompt: draft })]);
+  });
+
+  it("keeps Chat independent and shows its automatic Folder in the shared input", async () => {
+    const { api: managed, trace } = createManagedConversationValidationApi();
+    const independent: DesktopProject = {
+      ...createProjectSourceFixture().project,
+      id: "chats",
+      namedProject: undefined,
+      contextKind: "independent",
+      localProjectId: "lp_chats"
+    };
+    await act(async () =>
+      root.render(
+        <PersonalAskView
+          api={
+            {
+              loadAskThread: vi.fn(async () => [])
+            } as unknown as PersonalDesktopApi
+          }
+          managedConversations={managed}
+          markdownAdapters={adapters}
+          onResolveIndependent={async () => independent}
+          onNew={vi.fn()}
+        />
+      )
+    );
+    const chip = container.querySelector<HTMLButtonElement>(
+      ".conversation-input-footer .conversation-folder-trigger"
+    )!;
+    expect(chip.textContent).toContain("Automatic Folder");
+    expect(chip.disabled).toBe(true);
+    await enterText(container.querySelector("textarea")!, "Start a Chat.");
+    await click(container.querySelector('[aria-label="Start Conversation"]'));
+    expect(trace.starts).toEqual([
+      expect.objectContaining({
+        projectId: "lp_chats",
+        contextKind: "independent"
+      })
+    ]);
+    expect(trace.sends).toEqual([
+      expect.objectContaining({ prompt: "Start a Chat." })
+    ]);
   });
 
   it("shows an ordinary Project named Independent while excluding the verified Chats Project", async () => {
     const ordinary: DesktopProject = {
-      id: "ordinary",
-      name: "Independent",
-      path: "/work/projects/Independent",
-      eventCount: 0,
-      threads: [],
-      catalogued: true,
-      discoveredAt: null,
-      lastSeenAt: null,
-      localProjectId: "ordinary",
-      branch: null,
-      remoteDisplay: null,
-      isWorktree: false
+      ...createProjectSourceFixture().project,
+      name: "Independent"
     };
     const chats: DesktopProject = {
       ...ordinary,
       id: "chats",
       name: "Reserved Chats",
       contextKind: "independent",
+      namedProject: undefined,
+      projectReference: undefined,
       path: "/koed/projects/Independent",
       localProjectId: "chats"
     };
@@ -596,7 +621,6 @@ describe("Personal Ask", () => {
       }
     );
     const api: PersonalDesktopApi = {
-      assignSessionProject: vi.fn(async () => ({ projectId: null })),
       updateSessionPresentation: vi.fn(async () => {
         throw new Error("Unexpected presentation update in this fixture");
       }),
@@ -663,7 +687,6 @@ describe("Personal Notes", () => {
     const api: PersonalDesktopApi = {
       listProjects: vi.fn(async () => []),
       loadEventPage: vi.fn(async () => []),
-      assignSessionProject: vi.fn(async () => ({ projectId: null })),
       updateSessionPresentation: vi.fn(async () => {
         throw new Error("Unexpected presentation update in this fixture");
       }),
@@ -738,7 +761,6 @@ describe("Personal Notes", () => {
     const api: PersonalDesktopApi = {
       listProjects: vi.fn(async () => []),
       loadEventPage: vi.fn(async () => []),
-      assignSessionProject: vi.fn(async () => ({ projectId: null })),
       updateSessionPresentation: vi.fn(async () => {
         throw new Error("Unexpected presentation update in this fixture");
       }),

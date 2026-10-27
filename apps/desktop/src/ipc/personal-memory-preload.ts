@@ -1,11 +1,11 @@
 import {
   PERSONAL_DESKTOP_CONTRACT_VERSION,
   personalDesktopChangeSchema,
+  personalDesktopLocalFolderPrepareInputSchema,
   personalDesktopProjectCreateInputSchema,
   personalProjectCommandSchema,
   personalMembershipSyncCommandSchema,
   personalSourceContextCommandSchema,
-  personalDesktopProjectMoveInputSchema,
   personalDesktopAskListInputSchema,
   personalDesktopAskSubmitInputSchema,
   personalDesktopAskThreadInputSchema,
@@ -18,7 +18,6 @@ import {
   personalDesktopNoteUpdateInputSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
-  personalDesktopSessionProjectInputSchema,
   personalDesktopSessionTitleInputSchema,
   personalDesktopSessionPresentationInputSchema,
   type PersonalDesktopApi,
@@ -64,6 +63,46 @@ export const createPersonalMemoryPreloadApi = (
   events: { on: On; removeListener: RemoveListener }
 ): PersonalDesktopApi =>
   Object.freeze({
+    projectStatus: async () => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.status",
+          input: {}
+        })
+      );
+      if (result.operation !== "personal.projects.status")
+        throw new Error("Invalid Project status result.");
+      return result.data;
+    },
+    listLocalFolders: async () => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.folders.local.list",
+          input: {}
+        })
+      );
+      if (result.operation !== "personal.folders.local.list")
+        throw new Error("Invalid local Folder result.");
+      return result.data.folders;
+    },
+    prepareLocalFolder: async (
+      value: Parameters<
+        NonNullable<PersonalDesktopApi["prepareLocalFolder"]>
+      >[0]
+    ) => {
+      const result = requireSuccess(
+        await invokePersonalMemory(invoke, {
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.folders.local.prepare",
+          input: personalDesktopLocalFolderPrepareInputSchema.parse(value)
+        })
+      );
+      if (result.operation !== "personal.folders.local.prepare")
+        throw new Error("Invalid prepared Folder result.");
+      return result.data.folder;
+    },
     manageMembershipSync: async (
       value: Parameters<
         NonNullable<PersonalDesktopApi["manageMembershipSync"]>
@@ -275,20 +314,17 @@ export const createPersonalMemoryPreloadApi = (
         throw new Error("Invalid Project creation result.");
       return result.data;
     },
-    moveProject: async (
-      value: Parameters<NonNullable<PersonalDesktopApi["moveProject"]>>[0]
-    ) => {
-      const input = personalDesktopProjectMoveInputSchema.parse(value);
+    listNamedProjects: async () => {
       const result = requireSuccess(
         await invokePersonalMemory(invoke, {
           contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-          operation: "personal.projects.move",
-          input
+          operation: "personal.projects.named.list",
+          input: {}
         })
       );
-      if (result.operation !== "personal.projects.move")
-        throw new Error("Invalid Project move result.");
-      return result.data;
+      if (result.operation !== "personal.projects.named.list")
+        throw new Error("Invalid named Project inventory result.");
+      return result.data.projects;
     },
     listProjects: async () => {
       const result = requireSuccess(
@@ -331,22 +367,6 @@ export const createPersonalMemoryPreloadApi = (
         throw new Error("Invalid Personal Memory Events result.");
       }
       return result.data.events;
-    },
-    assignSessionProject: async (
-      value: Parameters<PersonalDesktopApi["assignSessionProject"]>[0]
-    ) => {
-      const input = personalDesktopSessionProjectInputSchema.parse(value);
-      const result = requireSuccess(
-        await invokePersonalMemory(invoke, {
-          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-          operation: "personal.sessions.assign_project",
-          input
-        })
-      );
-      if (result.operation !== "personal.sessions.assign_project") {
-        throw new Error("Invalid Personal Memory assignment result.");
-      }
-      return result.data;
     },
     updateSessionTitle: async (
       value: Parameters<PersonalDesktopApi["updateSessionTitle"]>[0]

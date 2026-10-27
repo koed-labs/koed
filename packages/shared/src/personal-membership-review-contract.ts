@@ -3,7 +3,10 @@ import {
   personalIdentifierSchema,
   personalSourceReferenceSchema
 } from "./personal-source-contract.js";
-import { personalMembershipRevisionSchema } from "./personal-membership-contract.js";
+import {
+  personalMembershipRevisionSchema,
+  selectPersonalMembershipHead
+} from "./personal-membership-contract.js";
 import { personalNamedProjectSchema } from "./personal-project-contract.js";
 
 export const personalMembershipSyncEntitySchema = z
@@ -28,8 +31,11 @@ export const personalMembershipSyncEntitySchema = z
   .strict()
   .superRefine((entity, ctx) => {
     if (
-      (entity.state === "available" && entity.heads.length !== 1) ||
-      (entity.state === "conflict" && entity.heads.length < 2) ||
+      (entity.state === "available" &&
+        !selectPersonalMembershipHead(entity.heads)) ||
+      (entity.state === "conflict" &&
+        (entity.heads.length < 2 ||
+          selectPersonalMembershipHead(entity.heads))) ||
       new Set(entity.heads.map((head) => head.revisionId)).size !==
         entity.heads.length ||
       entity.heads.some((head) => head.entityId !== entity.entityId)

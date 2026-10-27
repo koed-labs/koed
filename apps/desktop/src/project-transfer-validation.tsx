@@ -117,7 +117,6 @@ const api: PersonalDesktopApi = {
   listProjects: async () => catalog,
   loadEventPage: async () => [],
   subscribe: () => () => undefined,
-  assignSessionProject: async () => ({ projectId: null }),
   updateSessionTitle: async ({ title }) => ({ title }),
   updateSessionPresentation: async () => {
     throw new Error("Read-only layout fixture");

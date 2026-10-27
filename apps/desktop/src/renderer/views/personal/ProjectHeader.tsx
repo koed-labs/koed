@@ -26,21 +26,23 @@ import {
   type ProjectFolderPage
 } from "./ProjectFolderDetails.js";
 
+export type ProjectFolderFilterControl = {
+  folders: ProjectConversationFolder[];
+  hiddenFolderIds: string[];
+  loading: boolean;
+  onChange: (hiddenFolderIds: string[]) => void;
+};
+
 type ProjectHeaderProps = ProjectRepositoryActions & {
   project: DesktopProject;
-  folderFilter?: {
-    folders: ProjectConversationFolder[];
-    hiddenFolderIds: string[];
-    loading: boolean;
-    onChange: (hiddenFolderIds: string[]) => void;
-  };
+  folderFilter?: ProjectFolderFilterControl;
   children: ReactNode;
   onOpenRepository?: (url: string) => void;
   onRevealLocalProject?: (localProjectId: string) => void;
 };
 
 const folderLabel = (folder: ProjectConversationFolder) =>
-  `${folderName(folder.path ?? "")}${folder.historical ? " · Historical · device unknown" : ""}`;
+  `${folderName(folder.path ?? "")}${folder.historical ? " · Historical" : ""}`;
 
 export function ProjectHeader({
   project,

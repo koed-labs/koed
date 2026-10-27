@@ -148,120 +148,135 @@ function fixture({
   }
   let sequence = 100,
     writes = 0;
-  const manage = vi.fn<NonNullable<PersonalDesktopApi["manageProject"]>>(
-    async (input) => {
-      const project = catalog.at(-1)!;
-      if (
-        input.projectId !== project.id ||
-        input.expectedVersion !== project.namedProject!.version
-      )
-        throw new Error("Project changed. Reload it and try again.");
-      if (
-        input.action === "preview_repository" ||
-        input.action === "preview_folder"
-      )
-        return {
-          project: project.namedProject!,
-          preview: {
-            target: wrongPreview
-              ? {
-                  kind: "repository",
-                  repository: { ...repository, key: "gr_wrong" }
-                }
-              : input.action === "preview_repository"
-                ? { kind: "repository", repository: input.repository }
-                : { kind: "folder", folder: input.folder },
-            conversations: threads.map((t) => ({
-              sessionId: t.sessionId!,
-              logicalSessionId: t.sourceReferences![0]!.logicalSessionId,
-              name: t.name
-            }))
-          }
-        };
-      if (input.action === "explain_session")
-        return {
-          project: project.namedProject!,
-          explanation: {
-            sessionId: input.sessionId,
-            logicalSessionId: uuid(11),
-            included: project.threads.some(
-              (thread) => thread.sessionId === input.sessionId
-            ),
-            reasons: [],
-            exclusion: blocked
-              ? {
-                  exclusionId: uuid(800),
-                  projectId: project.id,
-                  logicalSessionId: uuid(11),
-                  sourceReference: null,
-                  version: 1,
-                  headRevisionId: uuid(801),
-                  clearedAt: null
-                }
-              : null
-          }
-        };
-      writes++;
-      if (failSecond && writes === 2) throw new Error("Simulated conflict");
-      const updated = {
-        ...project,
-        namedProject: {
-          ...project.namedProject!,
-          version: project.namedProject!.version + 1
-        },
-        inclusionRules: [...project.inclusionRules!],
-        directInclusions: [...project.directInclusions!]
-      };
-      let rule: PersonalProjectRule | undefined;
-      if (input.action === "add_repository" || input.action === "add_folder") {
-        rule = {
-          inclusionId: uuid(sequence++),
-          projectId: project.id,
-          target:
-            input.action === "add_repository"
+  const execute: NonNullable<PersonalDesktopApi["manageProject"]> = async (
+    input
+  ) => {
+    const project = catalog.at(-1)!;
+    if (
+      input.projectId !== project.id ||
+      input.expectedVersion !== project.namedProject!.version
+    )
+      throw new Error("Project changed. Reload it and try again.");
+    if (
+      input.action === "preview_repository" ||
+      input.action === "preview_folder"
+    )
+      return {
+        project: project.namedProject!,
+        preview: {
+          target: wrongPreview
+            ? {
+                kind: "repository",
+                repository: { ...repository, key: "gr_wrong" }
+              }
+            : input.action === "preview_repository"
               ? { kind: "repository", repository: input.repository }
               : { kind: "folder", folder: input.folder },
-          version: 1,
-          headRevisionId: uuid(sequence++),
-          removedAt: null
-        };
-        updated.inclusionRules.push(rule);
-      } else if (input.action === "add_session") {
-        updated.directInclusions.push({
-          inclusionId: uuid(sequence++),
-          projectId: project.id,
-          logicalSessionId: threads.find(
-            (t) => t.sessionId === input.sessionId
-          )!.sourceReferences![0]!.logicalSessionId,
-          sourceReference: null,
-          version: 1,
-          headRevisionId: uuid(sequence++),
-          removedAt: null
-        });
-      } else if (input.action === "remove_rule")
-        updated.inclusionRules = updated.inclusionRules.filter(
-          (r) => r.inclusionId !== input.inclusionId
-        );
-      else if (input.action === "remove_inclusion")
-        updated.directInclusions = updated.directInclusions.filter(
-          (r) => r.inclusionId !== input.inclusionId
-        );
-      else if (input.action === "exclude_session")
-        updated.threads = updated.threads.filter(
-          (thread) => thread.sessionId !== input.sessionId
-        );
-      else throw new Error("Unexpected fixture command");
-      catalog = [...catalog.slice(0, -1), updated];
-      return {
-        project: updated.namedProject,
-        rule,
-        membership:
-          input.action === "add_session"
-            ? updated.directInclusions.at(-1)
-            : undefined
+          conversations: threads.map((t) => ({
+            sessionId: t.sessionId!,
+            logicalSessionId: t.sourceReferences![0]!.logicalSessionId,
+            name: t.name
+          }))
+        }
       };
+    if (input.action === "explain_session")
+      return {
+        project: project.namedProject!,
+        explanation: {
+          sessionId: input.sessionId,
+          logicalSessionId: uuid(11),
+          included: project.threads.some(
+            (thread) => thread.sessionId === input.sessionId
+          ),
+          reasons: [],
+          exclusion: blocked
+            ? {
+                exclusionId: uuid(800),
+                projectId: project.id,
+                logicalSessionId: uuid(11),
+                sourceReference: null,
+                version: 1,
+                headRevisionId: uuid(801),
+                clearedAt: null
+              }
+            : null
+        }
+      };
+    if (input.action === "apply_sources") {
+      const before = catalog;
+      try {
+        for (const change of input.changes)
+          await execute({
+            ...change,
+            projectId: input.projectId,
+            expectedVersion: catalog.at(-1)!.namedProject!.version
+          });
+        return { project: catalog.at(-1)!.namedProject! };
+      } catch (error) {
+        catalog = before;
+        throw error;
+      }
     }
-  );
+    writes++;
+    if (failSecond && writes === 2) throw new Error("Simulated conflict");
+    const updated = {
+      ...project,
+      namedProject: {
+        ...project.namedProject!,
+        version: project.namedProject!.version + 1
+      },
+      inclusionRules: [...project.inclusionRules!],
+      directInclusions: [...project.directInclusions!]
+    };
+    let rule: PersonalProjectRule | undefined;
+    if (input.action === "add_repository" || input.action === "add_folder") {
+      rule = {
+        inclusionId: uuid(sequence++),
+        projectId: project.id,
+        target:
+          input.action === "add_repository"
+            ? { kind: "repository", repository: input.repository }
+            : { kind: "folder", folder: input.folder },
+        version: 1,
+        headRevisionId: uuid(sequence++),
+        removedAt: null
+      };
+      updated.inclusionRules.push(rule);
+    } else if (input.action === "add_session") {
+      updated.directInclusions.push({
+        inclusionId: uuid(sequence++),
+        projectId: project.id,
+        logicalSessionId: threads.find((t) => t.sessionId === input.sessionId)!
+          .sourceReferences![0]!.logicalSessionId,
+        sourceReference: null,
+        version: 1,
+        headRevisionId: uuid(sequence++),
+        removedAt: null
+      });
+    } else if (input.action === "remove_rule")
+      updated.inclusionRules = updated.inclusionRules.filter(
+        (r) => r.inclusionId !== input.inclusionId
+      );
+    else if (input.action === "remove_inclusion")
+      updated.directInclusions = updated.directInclusions.filter(
+        (r) => r.inclusionId !== input.inclusionId
+      );
+    else if (input.action === "exclude_session")
+      updated.threads = updated.threads.filter(
+        (thread) => thread.sessionId !== input.sessionId
+      );
+    else throw new Error("Unexpected fixture command");
+    catalog = [...catalog.slice(0, -1), updated];
+    return {
+      project: updated.namedProject,
+      rule,
+      membership:
+        input.action === "add_session"
+          ? updated.directInclusions.at(-1)
+          : undefined
+    };
+  };
+  const manage = vi.fn(execute);
   if (included) {
     named.threads = blocked ? [threads[1]!] : [...threads];
     named.inclusionRules = [
@@ -290,7 +305,6 @@ function fixture({
     listProjects: async () => catalog,
     loadEventPage: async () => [],
     subscribe: () => () => undefined,
-    assignSessionProject: async () => ({ projectId: null }),
     updateSessionTitle: async ({ title }) => ({ title }),
     updateSessionPresentation: async () => {
       throw new Error("Not used");
@@ -373,7 +387,7 @@ describe("Project header and transfer card", () => {
       await f.store.loadProjects();
       root.render(<f.Host />);
     });
-    await click("Set up Project");
+    await click("Manage Project sources");
     return f;
   };
   it("lists historical folders and stages their existing Conversations without a future rule", async () => {
@@ -398,9 +412,8 @@ describe("Project header and transfer card", () => {
     await click("Confirm");
     expect(f.manage.mock.calls.map(([command]) => command.action)).toEqual([
       "explain_session",
-      "add_session",
       "explain_session",
-      "add_session"
+      "apply_sources"
     ]);
     expect(f.project().directInclusions).toHaveLength(2);
     expect(f.project().inclusionRules).toHaveLength(0);
@@ -426,14 +439,14 @@ describe("Project header and transfer card", () => {
       root.render(<f.Host />);
     });
     expect(document.querySelector(".personal-project-transfer")).toBeNull();
-    expect(button("Set up Project").textContent).toBe("");
-    expect(button("Set up Project").className).toBe(
+    expect(button("Manage Project sources").textContent).toBe("");
+    expect(button("Manage Project sources").className).toBe(
       button("Project actions").className
     );
     await click("Project actions");
     await act(async () => {
       [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-        .find((node) => node.textContent === "Edit")!
+        .find((node) => node.textContent === "Rename")!
         .click();
     });
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
@@ -462,7 +475,7 @@ describe("Project header and transfer card", () => {
   it("keeps source drill-down separate from selection and transfers an exact Folder", async () => {
     const f = await mount();
     expect(button("Project actions")).toBeTruthy();
-    expect(button("Close Project setup").textContent).toBe("");
+    expect(button("Close Project sources").textContent).toBe("");
     expect(container.textContent).not.toContain("Git Anchor inclusions");
     await click("Browse Folders in koed");
     expect(f.manage).not.toHaveBeenCalled();
@@ -487,14 +500,18 @@ describe("Project header and transfer card", () => {
     await click("Confirm");
     expect(f.project().inclusionRules).toHaveLength(1);
     expect(f.project().directInclusions).toHaveLength(1);
-    expect(f.manage.mock.calls[1]![0]).toMatchObject({
+    expect(f.manage.mock.calls[0]![0]).toMatchObject({
+      action: "preview_folder",
       folder: folder.reference,
       expectedVersion: 1
     });
     expect(f.manage.mock.calls.at(-1)![0]).toMatchObject({
-      action: "add_session",
-      sessionId: uuid(1),
-      expectedVersion: 2
+      action: "apply_sources",
+      expectedVersion: 1,
+      changes: [
+        { action: "add_folder", folder: folder.reference },
+        { action: "add_session", sessionId: uuid(1) }
+      ]
     });
     expect(container.textContent).not.toContain("Already included");
   });
@@ -507,7 +524,9 @@ describe("Project header and transfer card", () => {
     await click("Confirm");
     expect(f.project().inclusionRules).toHaveLength(0);
     expect(f.project().directInclusions).toHaveLength(1);
-    expect(f.manage.mock.calls.map(([c]) => c.action)).toEqual(["remove_rule"]);
+    expect(f.manage.mock.calls.map(([c]) => c.action)).toEqual([
+      "apply_sources"
+    ]);
   });
   it("discards staged edits on Cancel and reopens a fresh draft", async () => {
     const f = await mount();
@@ -517,7 +536,7 @@ describe("Project header and transfer card", () => {
     await vi.waitFor(() =>
       expect(document.querySelector(".personal-project-transfer")).toBeNull()
     );
-    await click("Set up Project");
+    await click("Manage Project sources");
     expect(
       document.querySelector('[aria-label="Project inclusions list"]')
         ?.textContent
@@ -547,10 +566,11 @@ describe("Project header and transfer card", () => {
     await click("Confirm");
     expect(f.manage.mock.calls.map(([c]) => c.action)).toEqual([
       "explain_session",
-      "exclude_session"
+      "apply_sources"
     ]);
     expect(f.manage.mock.calls[1]![0]).toMatchObject({
-      sessionId: uuid(1),
+      action: "apply_sources",
+      changes: [{ action: "exclude_session", sessionId: uuid(1) }],
       expectedVersion: 1
     });
     expect(f.project().inclusionRules).toHaveLength(1);
@@ -591,7 +611,7 @@ describe("Project header and transfer card", () => {
     ).toContain("Conversation 1");
     expect(f.manage).not.toHaveBeenCalled();
   });
-  it("stops a partial batch at a conflict and never replays saved writes", async () => {
+  it("rolls back a multi-source confirmation at a conflict and requires a new review", async () => {
     const f = await mount({ failSecond: true });
     await select("Select koed");
     await select("Select Website");
@@ -600,12 +620,12 @@ describe("Project header and transfer card", () => {
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(
       "Simulated conflict"
     );
-    expect(f.project().inclusionRules).toHaveLength(1);
-    expect(
-      f.manage.mock.calls
-        .filter(([command]) => command.action === "add_repository")
-        .map(([command]) => command.expectedVersion)
-    ).toEqual([1, 2]);
+    expect(f.project().inclusionRules).toHaveLength(0);
+    expect(f.manage.mock.calls.at(-1)![0]).toMatchObject({
+      action: "apply_sources",
+      expectedVersion: 1,
+      changes: [{ action: "add_repository" }, { action: "add_repository" }]
+    });
     expect(button("Confirm").disabled).toBe(true);
     const calls = f.manage.mock.calls.length;
     await click("Confirm");

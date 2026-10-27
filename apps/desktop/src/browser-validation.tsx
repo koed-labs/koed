@@ -1,3 +1,4 @@
+import { createManagedConversationValidationApi } from "./managed-conversation-validation-api.js";
 import {
   COLLABORATION_CONTRACT_VERSION,
   COLLABORATION_DEFAULT_LIMITS,
@@ -27,12 +28,7 @@ import { Profiler, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 
 import { createCollaborationRendererClient } from "./collaboration/renderer-client.js";
-import type {
-  ManagedConversationDesktopApi,
-  ManagedConversationIdentity
-} from "./ipc/managed-conversation-protocol.js";
 import { App } from "./renderer/App.js";
-import { ProjectFolderValidation } from "./project-folder-validation.js";
 import { ConversationCardsValidation } from "./conversation-cards-validation.js";
 import { ProjectTransferValidation } from "./project-transfer-validation.js";
 import "./renderer/index.css";
@@ -59,7 +55,7 @@ const personalThread: PersonalDesktopProjectThread = {
   name: "Captured Session title deliberately long enough to verify overflow handling",
   sessionId: uuid(1),
   sourceAiClient: "codex-cli",
-  projectId: "browser-project",
+  projectId: uuid(500),
   projectName: "Koed Desktop browser validation",
   projectPath: "/private/operator/koed",
   projectAssignmentSource: "detected",
@@ -126,9 +122,40 @@ const snoozedPresentationThread = presentationThread(
   }
 );
 
+const browserFolderIdentity = {
+  folderId: "browser_folder",
+  originatingDeploymentId: "browser_deployment",
+  originatingDeviceId: "browser_device",
+  originatingProfileId: "browser_profile",
+  directoryIncarnationId: "browser_directory"
+};
+const browserFolder = { ownerUserId: uuid(501), ...browserFolderIdentity };
 const personalProject: PersonalDesktopProject = {
-  id: "browser-project",
+  id: uuid(500),
   name: "Koed Desktop browser validation",
+  namedProject: {
+    projectId: uuid(500),
+    name: "Koed Desktop browser validation",
+    version: 1,
+    headRevisionId: uuid(502),
+    deletedAt: null,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  },
+  projectReference: {
+    ownerUserId: browserFolder.ownerUserId,
+    projectId: uuid(500)
+  },
+  inclusionRules: [
+    {
+      inclusionId: uuid(503),
+      projectId: uuid(500),
+      version: 1,
+      headRevisionId: uuid(504),
+      removedAt: null,
+      target: { kind: "folder", folder: browserFolder }
+    }
+  ],
   path: "/private/operator/koed",
   eventCount: 10_000,
   threads: [
@@ -409,12 +436,6 @@ const personalMemoryApi: PersonalDesktopApi = {
     addedProject = true;
     return { projectId: addedPersonalProject.id };
   },
-  moveProject: async () => {
-    throw new Error("unsupported_operation");
-  },
-  assignSessionProject: async () => {
-    throw new Error("unsupported_operation");
-  },
   manageSourceContext: async (input) => {
     if (input.action !== "get") throw new Error("Unsupported fixture command");
     return {
@@ -491,13 +512,23 @@ const personalMemoryApi: PersonalDesktopApi = {
     personalProject,
     ...(addedProject ? [addedPersonalProject] : [])
   ],
+  listLocalFolders: async () => {
+    return [
+      {
+        identity: browserFolderIdentity,
+        normalizedPath: "/private/operator/koed",
+        capturedPath: "/private/operator/koed",
+        observedAt: timestamp
+      }
+    ];
+  },
   listProjectMetadata: async () => [
     independentProjectMetadata,
     {
       schemaVersion: 1,
       discoveredAt: timestamp,
       lastSeenAt: timestamp,
-      localProjectId: personalProject.id,
+      localProjectId: `lp_${"2".repeat(32)}`,
       displayName: personalProject.name,
       path: { cwd: personalProject.path!, projectRoot: personalProject.path },
       git: {
@@ -512,213 +543,8 @@ const personalMemoryApi: PersonalDesktopApi = {
   subscribe: () => () => undefined
 };
 
-const managedValidationTrace: {
-  sends: Array<{ executionId: string; prompt: string }>;
-  starts: Array<{
-    contextKind: "project" | "independent";
-    executionId: string;
-    projectId: string;
-  }>;
-} = { sends: [], starts: [] };
-const managedValidationConversations = new Map<
-  string,
-  ManagedConversationIdentity
->();
-const managedValidationDrafts = new Map<string, string>();
-const managedValidationLatestCommands = new Map<
-  string,
-  { clientUserMessageId: string; id: string }
->();
-let managedValidationSequence = 100;
-
-const managedDraftKey = (input: {
-  projectId: string;
-  capturedSessionId: string;
-  threadId: string;
-}): string => `${input.projectId}:${input.capturedSessionId}:${input.threadId}`;
-
-const unavailableManagedOperation = async (): Promise<never> => {
-  throw new Error("This browser fixture operation is unavailable.");
-};
-
-const managedConversations: ManagedConversationDesktopApi = {
-  launchOptions: async () => ({
-    operation: "launch_options",
-    options: {
-      runners: [
-        {
-          kind: "local_device",
-          deploymentId: uuid(50),
-          deviceId: uuid(51),
-          displayName: "This device"
-        }
-      ],
-      instances: [
-        {
-          instanceId: "codex.default",
-          driverId: "codex",
-          displayName: "Codex",
-          ready: true,
-          readiness: "ready",
-          models: [
-            {
-              id: "gpt-test",
-              displayName: "GPT Test",
-              isDefault: true,
-              supportedReasoningEfforts: ["medium"],
-              defaultReasoningEffort: "medium"
-            }
-          ],
-          capabilities: {
-            defaultPermissionMode: "supervised",
-            permissionModes: [{ mode: "supervised", support: "supported" }]
-          }
-        }
-      ]
-    }
-  }),
-  start: async (input) => {
-    const executionId = uuid(++managedValidationSequence);
-    const conversation: ManagedConversationIdentity = {
-      executionId,
-      projectId: input.projectId,
-      capturedSessionId: executionId,
-      threadId: executionId,
-      executionOwner: {
-        driverId: input.aiClientDriverId,
-        instanceId: input.aiClientInstanceId
-      }
-    };
-    managedValidationConversations.set(executionId, conversation);
-    managedValidationTrace.starts.push({
-      contextKind: input.contextKind ?? "project",
-      executionId,
-      projectId: input.projectId
-    });
-    return {
-      operation: "start",
-      status: "ready",
-      executionId,
-      conversation
-    };
-  },
-  inspect: async (executionId) => ({
-    operation: "inspect",
-    status: "ready",
-    executionId,
-    conversation: managedValidationConversations.get(executionId)
-  }),
-  send: async (input) => {
-    const conversation = managedValidationConversations.get(input.executionId);
-    if (!conversation) throw new Error("Unknown browser fixture execution.");
-    managedValidationTrace.sends.push({
-      executionId: input.executionId,
-      prompt: input.prompt
-    });
-    managedValidationLatestCommands.set(input.executionId, {
-      clientUserMessageId: input.clientUserMessageId,
-      id: uuid(++managedValidationSequence)
-    });
-    return {
-      operation: "send",
-      status: "queued",
-      conversation,
-      idempotencyKey: input.idempotencyKey,
-      clientUserMessageId: input.clientUserMessageId,
-      turnId: uuid(++managedValidationSequence)
-    };
-  },
-  readDraft: async (input) => ({
-    operation: "draft_read",
-    value: managedValidationDrafts.get(managedDraftKey(input)) ?? ""
-  }),
-  writeDraft: async (input) => {
-    managedValidationDrafts.set(managedDraftKey(input), input.value);
-    return { operation: "draft_write", ok: true };
-  },
-  deleteDraft: async (input) => {
-    managedValidationDrafts.delete(managedDraftKey(input));
-    return { operation: "draft_delete", ok: true };
-  },
-  targets: async () => ({ operation: "targets", devices: [] }),
-  usage: async (executionId) => ({
-    operation: "usage",
-    executionId,
-    provider: "codex",
-    model: "gpt-test",
-    reasoningEffort: "medium",
-    permissionMode: "supervised",
-    usage: null
-  }),
-  runtime: async (executionId) => {
-    const latest = managedValidationLatestCommands.get(executionId);
-    return {
-      operation: "runtime",
-      executionId,
-      executionGeneration: 1,
-      executionStateVersion: 1,
-      executionState: "idle",
-      executionLastErrorCode: null,
-      latestCommand: latest
-        ? {
-            id: latest.id,
-            sequence: managedValidationTrace.sends.length,
-            executionGeneration: 1,
-            commandKind: "prompt",
-            clientUserMessageId: latest.clientUserMessageId,
-            state: "completed",
-            lastErrorCode: null,
-            updatedAt: timestamp
-          }
-        : null,
-      items: []
-    };
-  },
-  respond: async (input) => ({
-    operation: "runtime_respond",
-    accepted: true,
-    itemId: input.itemId
-  }),
-  interrupt: async (input) => ({
-    operation: "interrupt",
-    status: "queued",
-    executionId: input.executionId,
-    commandId: uuid(++managedValidationSequence)
-  }),
-  stop: async (input) => ({
-    operation: "stop",
-    status: "queued",
-    executionId: input.executionId,
-    commandId: uuid(++managedValidationSequence)
-  }),
-  transferStatus: async (executionId) => ({
-    operation: "transfer_status",
-    executionId,
-    handoff: null,
-    fork: null
-  }),
-  handoff: unavailableManagedOperation,
-  fork: unavailableManagedOperation,
-  discoverCommands: unavailableManagedOperation,
-  resume: async (input) => {
-    const conversation = managedValidationConversations.get(
-      input.capturedSessionId
-    );
-    return conversation
-      ? { operation: "resume", status: "ready", conversation }
-      : {
-          operation: "resume",
-          status: "read_only",
-          conversation: {
-            executionId: null,
-            projectId: input.projectId,
-            capturedSessionId: input.capturedSessionId,
-            threadId: input.threadId
-          },
-          message: "This Captured Session is read-only."
-        };
-  }
-};
+const { api: managedConversations, trace: managedValidationTrace } =
+  createManagedConversationValidationApi({ timestamp });
 
 const ValidationApp = () => {
   window.koedDesktop = {
@@ -1320,11 +1146,22 @@ const createInteractionPersonalMemoryApi = (
       sharingRuleValidation
         ? sharingValidationRepositories.map((repository, index) => ({
             ...personalProject,
+            namedProject: undefined,
+            projectReference: undefined,
+            inclusionRules: undefined,
             id: `sharing-project-${index}`,
             repository,
             threads: []
           }))
-        : [{ ...personalProject, repository: interactionReviewGit }],
+        : [
+            {
+              ...personalProject,
+              namedProject: undefined,
+              projectReference: undefined,
+              inclusionRules: undefined,
+              repository: interactionReviewGit
+            }
+          ],
     listProjectMetadata: async () =>
       sharingRuleValidation
         ? []
@@ -3349,8 +3186,6 @@ createRoot(document.querySelector("#root")!).render(
     <ConversationCardsValidation />
   ) : browserValidationView === "project-transfer" ? (
     <ProjectTransferValidation />
-  ) : browserValidationView === "project-folders" ? (
-    <ProjectFolderValidation />
   ) : browserValidationView === "chat" ? (
     <ChatValidationApp />
   ) : browserValidationView === "collaboration-interactions" ? (

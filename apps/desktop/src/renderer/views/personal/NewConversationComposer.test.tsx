@@ -48,6 +48,106 @@ describe("first Conversation prompt retries", () => {
     container.remove();
   });
 
+  it("keeps the draft and pins a pending start when its Folder props change", async () => {
+    let failStart!: (error: Error) => void;
+    const pending = new Promise<never>((_resolve, reject) => {
+      failStart = reject;
+    });
+    const start = vi
+      .fn<ManagedConversationDesktopApi["start"]>()
+      .mockImplementationOnce(() => pending)
+      .mockResolvedValue({
+        operation: "start",
+        status: "starting",
+        executionId: conversation.executionId,
+        conversation
+      });
+    const send = vi.fn(async () => ({
+      operation: "send",
+      status: "queued",
+      conversation
+    }));
+    const api = {
+      start,
+      send,
+      writeDraft: vi.fn(async () => ({ operation: "draft_write", ok: true })),
+      deleteDraft: vi.fn(async () => ({ operation: "draft_delete", ok: true }))
+    } as unknown as ManagedConversationDesktopApi;
+    const onSelect = vi.fn();
+    const render = async (projectId: string) =>
+      act(async () =>
+        root.render(
+          <NewConversationComposer
+            api={api}
+            options={options}
+            projectId={projectId}
+            selection={{
+              instanceId: "codex.default",
+              model: "model",
+              reasoningEffort: "",
+              permissionMode: "supervised"
+            }}
+            folderPicker={{
+              folders: [
+                { id: "project-1", path: "/first/koed" },
+                { id: "project-2", path: "/second/koed" }
+              ],
+              selectedId: projectId,
+              onSelect
+            }}
+            onChange={vi.fn()}
+            onStarted={vi.fn()}
+          />
+        )
+      );
+    await render("project-1");
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      )!.set!.call(textarea, "Preserved draft");
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    });
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Start Conversation"]')!
+        .click()
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label^="Execution Folder:"]'
+      )!.disabled
+    ).toBe(true);
+    await act(async () => failStart(new Error("Start response lost")));
+    expect(textarea.value).toBe("Preserved draft");
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label^="Execution Folder:"]'
+      )!.disabled
+    ).toBe(true);
+    await render("project-2");
+    expect(container.querySelector("textarea")).toBe(textarea);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label="Start Conversation"]'
+      )!.disabled
+    ).toBe(true);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
+    await render("project-1");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Start Conversation"]')!
+        .click()
+    );
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start.mock.calls[1]![0]).toEqual(start.mock.calls[0]![0]);
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "Preserved draft" })
+    );
+  });
+
   it.each(["rejected", "uncertain"] as const)(
     "keeps the launch stable after a %s prompt response",
     async (outcome) => {

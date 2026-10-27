@@ -1,3 +1,4 @@
+import { personalProjectSourceTargetSchema } from "./personal-project-source-target.js";
 import { z } from "zod";
 import {
   personalSourceReferenceSchema,
@@ -106,20 +107,8 @@ export const personalProjectAddBackSchema = personalProjectAddSessionSchema
   })
   .strict();
 
-export const personalProjectRuleTargetSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("repository"),
-      repository: personalGitContextSchema
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("folder"),
-      folder: personalFolderReferenceSchema
-    })
-    .strict()
-]);
+export const personalProjectRuleTargetSchema =
+  personalProjectSourceTargetSchema;
 export const personalProjectRuleSchema = z
   .object({
     inclusionId: z.uuid(),
@@ -184,7 +173,44 @@ const projectCommandBase = {
   projectId: z.uuid(),
   expectedVersion: z.number().int().positive().safe()
 };
+/** One confirmation applies the complete source draft at one reviewed Project version. */
+export const personalProjectBatchChangeSchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("add_repository"),
+      repository: personalGitContextSchema
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("add_folder"),
+      folder: personalFolderReferenceSchema
+    })
+    .strict(),
+  z.object({ action: z.literal("add_session"), sessionId: z.uuid() }).strict(),
+  z
+    .object({ action: z.literal("remove_rule"), inclusionId: z.uuid() })
+    .strict(),
+  z
+    .object({ action: z.literal("remove_inclusion"), inclusionId: z.uuid() })
+    .strict(),
+  z
+    .object({ action: z.literal("exclude_session"), sessionId: z.uuid() })
+    .strict()
+]);
+export const personalProjectBatchInputSchema = personalProjectVersionSchema
+  .extend({
+    changes: z.array(personalProjectBatchChangeSchema).min(1).max(100)
+  })
+  .strict();
+export type PersonalProjectBatchInput = z.infer<
+  typeof personalProjectBatchInputSchema
+>;
+
 export const personalProjectCommandSchema = z.discriminatedUnion("action", [
+  personalProjectBatchInputSchema
+    .extend({ action: z.literal("apply_sources"), projectId: z.uuid() })
+    .strict(),
   z
     .object({
       ...projectCommandBase,

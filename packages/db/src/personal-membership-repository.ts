@@ -1,4 +1,5 @@
 import { retainPersonalMembershipLocalChange } from "./personal-membership-local-change.js";
+import { suppressPersonalProjectDefault } from "./personal-project-default-suppression.js";
 import { freezePersonalMembershipLocalParents } from "./personal-membership-local-parents.js";
 import { assertPersonalMembershipMutationReady } from "./personal-membership-mutation-guard.js";
 import {
@@ -69,12 +70,37 @@ const mapInclusion = (row: InclusionRow): PersonalDirectMembership =>
     removedAt: row.removed_at?.toISOString() ?? null
   });
 
+export type PersonalMembershipTransaction = {
+  ownerUserId: string;
+  client: pg.PoolClient;
+};
+export const personalMembershipTransactionRunner =
+  (pool: pg.Pool, transaction?: PersonalMembershipTransaction) =>
+  <T>(
+    actor: ActorContext,
+    run: (client: pg.PoolClient) => Promise<T>,
+    options: { notify?: boolean; kind?: string } = {}
+  ) =>
+    withPersonalMembershipTransaction(pool, actor, run, {
+      ...options,
+      transaction
+    });
+
 export const withPersonalMembershipTransaction = async <T>(
   pool: pg.Pool,
   actor: ActorContext,
   run: (client: pg.PoolClient) => Promise<T>,
-  options: { notify?: boolean; kind?: string } = {}
+  options: {
+    notify?: boolean;
+    kind?: string;
+    transaction?: PersonalMembershipTransaction;
+  } = {}
 ): Promise<T> => {
+  if (options.transaction) {
+    if (options.transaction.ownerUserId !== actor.userId)
+      throw new TypeError("Personal membership transaction owner differs");
+    return run(options.transaction.client);
+  }
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -342,247 +368,263 @@ export const ensurePersonalDirectInclusionWithClient = async (
   return { membership: mapInclusion(included.rows[0]!), changed: true };
 };
 
-export const createPersonalMembershipRepository = (pool: pg.Pool) => ({
-  async createNamedPersonalProject(
-    actor: ActorContext,
-    raw: { name: string }
-  ): Promise<PersonalNamedProject> {
-    const input = personalProjectCreateSchema.parse(raw);
-    return withPersonalMembershipTransaction(pool, actor, async (client) => {
-      const projectId = randomUUID(),
-        revisionId = randomUUID();
-      const result = await client.query<ProjectRow>(
-        `insert into personal_named_projects(owner_user_id,project_id,name,head_revision_id) values($1,$2,$3,$4) returning *`,
-        [actor.userId, projectId, input.name, revisionId]
+export const createPersonalMembershipRepository = (
+  pool: pg.Pool,
+  transaction?: PersonalMembershipTransaction
+) => {
+  const transact = personalMembershipTransactionRunner(pool, transaction);
+  return {
+    async createNamedPersonalProject(
+      actor: ActorContext,
+      raw: { name: string }
+    ): Promise<PersonalNamedProject> {
+      const input = personalProjectCreateSchema.parse(raw);
+      return transact(actor, async (client) => {
+        const projectId = randomUUID(),
+          revisionId = randomUUID();
+        const result = await client.query<ProjectRow>(
+          `insert into personal_named_projects(owner_user_id,project_id,name,head_revision_id) values($1,$2,$3,$4) returning *`,
+          [actor.userId, projectId, input.name, revisionId]
+        );
+        await appendPersonalMembershipRevision(
+          client,
+          actor,
+          projectId,
+          projectId,
+          revisionId,
+          [],
+          "set_project",
+          { name: input.name }
+        );
+        return mapPersonalNamedProject(result.rows[0]!);
+      });
+    },
+    async listNamedPersonalProjects(
+      actor: ActorContext
+    ): Promise<PersonalNamedProject[]> {
+      const result = await pool.query<ProjectRow>(
+        `select p.* from personal_named_projects p join users u on u.id=p.owner_user_id and u.disabled_at is null and u.deleted_at is null where p.owner_user_id=$1 and p.deleted_at is null order by p.created_at,p.project_id`,
+        [actor.userId]
       );
-      await appendPersonalMembershipRevision(
-        client,
-        actor,
-        projectId,
-        projectId,
-        revisionId,
-        [],
-        "set_project",
-        { name: input.name }
-      );
-      return mapPersonalNamedProject(result.rows[0]!);
-    });
-  },
-  async listNamedPersonalProjects(
-    actor: ActorContext
-  ): Promise<PersonalNamedProject[]> {
-    const result = await pool.query<ProjectRow>(
-      `select p.* from personal_named_projects p join users u on u.id=p.owner_user_id and u.disabled_at is null and u.deleted_at is null where p.owner_user_id=$1 and p.deleted_at is null order by p.created_at,p.project_id`,
-      [actor.userId]
-    );
-    return result.rows.map(mapPersonalNamedProject);
-  },
-  async updateNamedPersonalProject(
-    actor: ActorContext,
-    rawProjectId: string,
-    raw: { name: string; expectedVersion: number }
-  ): Promise<PersonalNamedProject> {
-    const projectId = uuid.parse(rawProjectId),
-      input = personalProjectUpdateSchema.parse(raw);
-    return withPersonalMembershipTransaction(pool, actor, async (client) => {
-      const previous = await lockPersonalNamedProject(
-        client,
-        actor,
-        projectId,
-        input.expectedVersion
-      );
-      if (previous.name === input.name)
-        return mapPersonalNamedProject(previous);
-      const revisionId = randomUUID();
-      const result = await client.query<ProjectRow>(
-        `update personal_named_projects set name=$3,version=version+1,head_revision_id=$4,updated_at=now() where owner_user_id=$1 and project_id=$2 returning *`,
-        [actor.userId, projectId, input.name, revisionId]
-      );
-      await appendPersonalMembershipRevision(
-        client,
-        actor,
-        projectId,
-        projectId,
-        revisionId,
-        [previous.head_revision_id],
-        "set_project",
-        { name: input.name }
-      );
-      return mapPersonalNamedProject(result.rows[0]!);
-    });
-  },
-  async deleteNamedPersonalProject(
-    actor: ActorContext,
-    rawProjectId: string,
-    raw: { expectedVersion: number }
-  ): Promise<PersonalNamedProject> {
-    const projectId = uuid.parse(rawProjectId),
-      input = personalProjectVersionSchema.parse(raw);
-    return withPersonalMembershipTransaction(pool, actor, async (client) => {
-      const previous = await lockPersonalNamedProject(
+      return result.rows.map(mapPersonalNamedProject);
+    },
+    async updateNamedPersonalProject(
+      actor: ActorContext,
+      rawProjectId: string,
+      raw: { name: string; expectedVersion: number }
+    ): Promise<PersonalNamedProject> {
+      const projectId = uuid.parse(rawProjectId),
+        input = personalProjectUpdateSchema.parse(raw);
+      return transact(actor, async (client) => {
+        const previous = await lockPersonalNamedProject(
           client,
           actor,
           projectId,
           input.expectedVersion
-        ),
-        revisionId = randomUUID();
-      const result = await client.query<ProjectRow>(
-        `update personal_named_projects set deleted_at=now(),version=version+1,head_revision_id=$3,updated_at=now() where owner_user_id=$1 and project_id=$2 returning *`,
-        [actor.userId, projectId, revisionId]
-      );
-      await appendPersonalMembershipRevision(
-        client,
-        actor,
-        projectId,
-        projectId,
-        revisionId,
-        [previous.head_revision_id],
-        "delete_project",
-        {}
-      );
-      return mapPersonalNamedProject(result.rows[0]!);
-    });
-  },
-  async addPersonalProjectSession(
-    actor: ActorContext,
-    rawProjectId: string,
-    raw: { sessionId: string; expectedVersion: number }
-  ): Promise<{
-    project: PersonalNamedProject;
-    membership: PersonalDirectMembership;
-  }> {
-    const projectId = uuid.parse(rawProjectId),
-      input = personalProjectAddSessionSchema.parse(raw);
-    return withPersonalMembershipTransaction(pool, actor, async (client) => {
-      const project = await lockPersonalNamedProject(
-        client,
-        actor,
-        projectId,
-        input.expectedVersion
-      );
-      const logicalSessionId = await lockPersonalMembershipSource(
-        client,
-        actor,
-        input.sessionId
-      );
-      await assertPersonalMembershipMutationReady(client, {
-        ownerUserId: actor.userId,
-        projectId,
-        entityKind: "exclusion",
-        logicalSessionId
+        );
+        if (previous.name === input.name)
+          return mapPersonalNamedProject(previous);
+        const revisionId = randomUUID();
+        const result = await client.query<ProjectRow>(
+          `update personal_named_projects set name=$3,version=version+1,head_revision_id=$4,updated_at=now() where owner_user_id=$1 and project_id=$2 returning *`,
+          [actor.userId, projectId, input.name, revisionId]
+        );
+        await appendPersonalMembershipRevision(
+          client,
+          actor,
+          projectId,
+          projectId,
+          revisionId,
+          [previous.head_revision_id],
+          "set_project",
+          { name: input.name }
+        );
+        return mapPersonalNamedProject(result.rows[0]!);
       });
-      const excluded = await client.query(
-        `select 1 from sessions exclusion_candidate where exclusion_candidate.owner_user_id=$1 and exclusion_candidate.id=$4
+    },
+    async deleteNamedPersonalProject(
+      actor: ActorContext,
+      rawProjectId: string,
+      raw: { expectedVersion: number }
+    ): Promise<PersonalNamedProject> {
+      const projectId = uuid.parse(rawProjectId),
+        input = personalProjectVersionSchema.parse(raw);
+      return transact(actor, async (client) => {
+        const previous = await lockPersonalNamedProject(
+            client,
+            actor,
+            projectId,
+            input.expectedVersion
+          ),
+          revisionId = randomUUID();
+        const result = await client.query<ProjectRow>(
+          `update personal_named_projects set deleted_at=now(),version=version+1,head_revision_id=$3,updated_at=now() where owner_user_id=$1 and project_id=$2 returning *`,
+          [actor.userId, projectId, revisionId]
+        );
+        await appendPersonalMembershipRevision(
+          client,
+          actor,
+          projectId,
+          projectId,
+          revisionId,
+          [previous.head_revision_id],
+          "delete_project",
+          {}
+        );
+        const sources = await client.query<{ target: unknown }>(
+          "select target from personal_project_rules where owner_user_id=$1 and project_id=$2",
+          [actor.userId, projectId]
+        );
+        for (const source of sources.rows)
+          await suppressPersonalProjectDefault(
+            client,
+            actor.userId,
+            source.target
+          );
+        return mapPersonalNamedProject(result.rows[0]!);
+      });
+    },
+    async addPersonalProjectSession(
+      actor: ActorContext,
+      rawProjectId: string,
+      raw: { sessionId: string; expectedVersion: number }
+    ): Promise<{
+      project: PersonalNamedProject;
+      membership: PersonalDirectMembership;
+    }> {
+      const projectId = uuid.parse(rawProjectId),
+        input = personalProjectAddSessionSchema.parse(raw);
+      return transact(actor, async (client) => {
+        const project = await lockPersonalNamedProject(
+          client,
+          actor,
+          projectId,
+          input.expectedVersion
+        );
+        const logicalSessionId = await lockPersonalMembershipSource(
+          client,
+          actor,
+          input.sessionId
+        );
+        await assertPersonalMembershipMutationReady(client, {
+          ownerUserId: actor.userId,
+          projectId,
+          entityKind: "exclusion",
+          logicalSessionId
+        });
+        const excluded = await client.query(
+          `select 1 from sessions exclusion_candidate where exclusion_candidate.owner_user_id=$1 and exclusion_candidate.id=$4
          and (exists(select 1 from personal_project_exclusions where owner_user_id=$1 and project_id=$2 and logical_session_id=$3 and cleared_at is null)
           or ${personalGraphExclusionBlocksSql("exclusion_candidate", "$1", "$2")})`,
-        [actor.userId, projectId, logicalSessionId, input.sessionId]
-      );
-      if (excluded.rows.length)
-        throw Object.assign(
-          new Error(
-            "Conversation is excluded. Review its membership and use Add back."
-          ),
-          { statusCode: 409, code: "project_session_excluded" }
+          [actor.userId, projectId, logicalSessionId, input.sessionId]
         );
-      const ensured = await ensurePersonalDirectInclusionWithClient(
-        client,
-        actor,
-        projectId,
-        input.sessionId,
-        logicalSessionId
-      );
-      if (!ensured.changed)
+        if (excluded.rows.length)
+          throw Object.assign(
+            new Error(
+              "Conversation is excluded. Review its membership and use Add back."
+            ),
+            { statusCode: 409, code: "project_session_excluded" }
+          );
+        const ensured = await ensurePersonalDirectInclusionWithClient(
+          client,
+          actor,
+          projectId,
+          input.sessionId,
+          logicalSessionId
+        );
+        if (!ensured.changed)
+          return {
+            project: mapPersonalNamedProject(project),
+            membership: ensured.membership
+          };
+        const updated = await client.query<ProjectRow>(
+          `update personal_named_projects set version=version+1,updated_at=now() where owner_user_id=$1 and project_id=$2 returning *`,
+          [actor.userId, projectId]
+        );
         return {
-          project: mapPersonalNamedProject(project),
+          project: mapPersonalNamedProject(updated.rows[0]!),
           membership: ensured.membership
         };
-      const updated = await client.query<ProjectRow>(
-        `update personal_named_projects set version=version+1,updated_at=now() where owner_user_id=$1 and project_id=$2 returning *`,
-        [actor.userId, projectId]
-      );
-      return {
-        project: mapPersonalNamedProject(updated.rows[0]!),
-        membership: ensured.membership
-      };
-    });
-  },
-  async removePersonalProjectInclusion(
-    actor: ActorContext,
-    rawProjectId: string,
-    rawInclusionId: string,
-    raw: { expectedVersion: number }
-  ): Promise<{
-    project: PersonalNamedProject;
-    membership: PersonalDirectMembership;
-  }> {
-    const projectId = uuid.parse(rawProjectId),
-      inclusionId = uuid.parse(rawInclusionId),
-      input = personalProjectVersionSchema.parse(raw);
-    return withPersonalMembershipTransaction(pool, actor, async (client) => {
-      const project = await lockPersonalNamedProject(
-        client,
-        actor,
-        projectId,
-        input.expectedVersion
-      );
-      const found = await client.query<InclusionRow>(
-        `select * from personal_project_inclusions where inclusion_id=$3 and owner_user_id=$1 and project_id=$2 for update`,
-        [actor.userId, projectId, inclusionId]
-      );
-      const previous = found.rows[0];
-      if (!previous)
-        throw Object.assign(new Error("Project inclusion not found"), {
-          statusCode: 404
-        });
-      await assertPersonalMembershipMutationReady(client, {
-        ownerUserId: actor.userId,
-        projectId,
-        entityKind: "direct",
-        localEntityId: previous.inclusion_id,
-        logicalSessionId: previous.logical_session_id
       });
-      if (previous.removed_at)
+    },
+    async removePersonalProjectInclusion(
+      actor: ActorContext,
+      rawProjectId: string,
+      rawInclusionId: string,
+      raw: { expectedVersion: number }
+    ): Promise<{
+      project: PersonalNamedProject;
+      membership: PersonalDirectMembership;
+    }> {
+      const projectId = uuid.parse(rawProjectId),
+        inclusionId = uuid.parse(rawInclusionId),
+        input = personalProjectVersionSchema.parse(raw);
+      return transact(actor, async (client) => {
+        const project = await lockPersonalNamedProject(
+          client,
+          actor,
+          projectId,
+          input.expectedVersion
+        );
+        const found = await client.query<InclusionRow>(
+          `select * from personal_project_inclusions where inclusion_id=$3 and owner_user_id=$1 and project_id=$2 for update`,
+          [actor.userId, projectId, inclusionId]
+        );
+        const previous = found.rows[0];
+        if (!previous)
+          throw Object.assign(new Error("Project inclusion not found"), {
+            statusCode: 404
+          });
+        await assertPersonalMembershipMutationReady(client, {
+          ownerUserId: actor.userId,
+          projectId,
+          entityKind: "direct",
+          localEntityId: previous.inclusion_id,
+          logicalSessionId: previous.logical_session_id
+        });
+        if (previous.removed_at)
+          return {
+            project: mapPersonalNamedProject(project),
+            membership: mapInclusion(previous)
+          };
+        const revisionId = randomUUID();
+        const removed = await client.query<InclusionRow>(
+          `update personal_project_inclusions set removed_at=now(),version=version+1,head_revision_id=$4,updated_at=now() where inclusion_id=$3 and owner_user_id=$1 and project_id=$2 returning *`,
+          [actor.userId, projectId, inclusionId, revisionId]
+        );
+        await appendPersonalMembershipRevision(
+          client,
+          actor,
+          projectId,
+          inclusionId,
+          revisionId,
+          [previous.head_revision_id],
+          "remove_inclusion",
+          {}
+        );
+        const updated = await client.query<ProjectRow>(
+          `update personal_named_projects set version=version+1,updated_at=now() where owner_user_id=$1 and project_id=$2 returning *`,
+          [actor.userId, projectId]
+        );
         return {
-          project: mapPersonalNamedProject(project),
-          membership: mapInclusion(previous)
+          project: mapPersonalNamedProject(updated.rows[0]!),
+          membership: mapInclusion(removed.rows[0]!)
         };
-      const revisionId = randomUUID();
-      const removed = await client.query<InclusionRow>(
-        `update personal_project_inclusions set removed_at=now(),version=version+1,head_revision_id=$4,updated_at=now() where inclusion_id=$3 and owner_user_id=$1 and project_id=$2 returning *`,
-        [actor.userId, projectId, inclusionId, revisionId]
-      );
-      await appendPersonalMembershipRevision(
-        client,
-        actor,
-        projectId,
-        inclusionId,
-        revisionId,
-        [previous.head_revision_id],
-        "remove_inclusion",
-        {}
-      );
-      const updated = await client.query<ProjectRow>(
-        `update personal_named_projects set version=version+1,updated_at=now() where owner_user_id=$1 and project_id=$2 returning *`,
+      });
+    },
+    async listPersonalProjectMemberships(
+      actor: ActorContext,
+      rawProjectId: string
+    ): Promise<PersonalDirectMembership[]> {
+      const projectId = uuid.parse(rawProjectId);
+      const result = await pool.query<InclusionRow>(
+        `select i.* from personal_project_inclusions i join personal_named_projects p on p.owner_user_id=i.owner_user_id and p.project_id=i.project_id and p.deleted_at is null join users u on u.id=p.owner_user_id and u.disabled_at is null and u.deleted_at is null where i.owner_user_id=$1 and i.project_id=$2 and i.removed_at is null and ${personalDirectMembershipReadySql("i")} order by i.created_at,i.inclusion_id`,
         [actor.userId, projectId]
       );
-      return {
-        project: mapPersonalNamedProject(updated.rows[0]!),
-        membership: mapInclusion(removed.rows[0]!)
-      };
-    });
-  },
-  async listPersonalProjectMemberships(
-    actor: ActorContext,
-    rawProjectId: string
-  ): Promise<PersonalDirectMembership[]> {
-    const projectId = uuid.parse(rawProjectId);
-    const result = await pool.query<InclusionRow>(
-      `select i.* from personal_project_inclusions i join personal_named_projects p on p.owner_user_id=i.owner_user_id and p.project_id=i.project_id and p.deleted_at is null join users u on u.id=p.owner_user_id and u.disabled_at is null and u.deleted_at is null where i.owner_user_id=$1 and i.project_id=$2 and i.removed_at is null and ${personalDirectMembershipReadySql("i")} order by i.created_at,i.inclusion_id`,
-      [actor.userId, projectId]
-    );
-    return result.rows.map(mapInclusion);
-  }
-});
+      return result.rows.map(mapInclusion);
+    }
+  };
+};
 export type PersonalMembershipRepository = ReturnType<
   typeof createPersonalMembershipRepository
 >;

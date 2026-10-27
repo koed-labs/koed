@@ -1,7 +1,4 @@
-import type {
-  PersonalDesktopProjectThread,
-  PersonalDesktopSessionProjectInput
-} from "@koed/shared/personal-desktop";
+import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 import type { PersonalMemoryEntry } from "@koed/shared";
 
 export type PersonalMemorySharingRecord = {
@@ -135,5 +132,3 @@ export const suggestedWorkspaceId = (
     ? suggestedId
     : null;
 };
-
-export type SessionProjectAssignment = PersonalDesktopSessionProjectInput;

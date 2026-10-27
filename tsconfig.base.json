@@ -33,6 +33,12 @@
         "packages/mcp-server/src/runtime-contracts.ts"
       ],
       "@koed/shared": ["packages/shared/src/index.ts"],
+      "@koed/shared/personal-project-default": [
+        "packages/shared/src/personal-project-default.ts"
+      ],
+      "@koed/shared/personal-local-folders": [
+        "packages/shared/src/personal-local-folders.ts"
+      ],
       "@koed/shared/ai-client-contract": [
         "packages/shared/src/ai-client-contract.ts"
       ],

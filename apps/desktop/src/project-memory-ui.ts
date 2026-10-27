@@ -1,4 +1,8 @@
 import { repositoryScopeId } from "@koed/shared/repository-recall";
+import {
+  deduplicatePersonalInventoryConversations,
+  personalInventoryReference
+} from "@koed/shared/personal-desktop";
 import type { RepositoryAssignment, RepositoryIdentity } from "@koed/shared";
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 
@@ -6,6 +10,7 @@ export type DesktopThreadGroup = {
   id: string;
   name: string;
   sessionId?: string | null;
+  logicalMemoryId?: string | null;
   namedProjectId?: string;
   folderSelection?: PersonalDesktopProjectThread["folderSelection"];
   sourceThreadId?: string;
@@ -30,6 +35,7 @@ export type DesktopThreadGroup = {
 };
 
 export type DesktopProjectGroup = {
+  ownerUserId?: string;
   namedProject?: import("@koed/shared").PersonalNamedProject;
   projectReference?: import("@koed/shared").PersonalProjectReference;
   inclusionRules?: import("@koed/shared").PersonalProjectRule[];
@@ -208,6 +214,7 @@ export const mergeProjectSources = (
       ? repositoryScopeId(identity)
       : null;
   for (const source of graphProjects) {
+    const reference = personalInventoryReference(source);
     const identity =
       source.namedProject || source.folder
         ? undefined
@@ -220,7 +227,9 @@ export const mergeProjectSources = (
     const legacyNamedSource = identity?.kind === "local_project";
     const id = legacyNamedSource
       ? "unassigned"
-      : (keyFor(identity) ?? source.id);
+      : reference.kind === "git" || reference.kind === "folder"
+        ? reference.key
+        : (keyFor(identity) ?? source.id);
     const sourceThreads = legacyNamedSource
       ? source.threads.map((thread) => ({
           ...thread,
@@ -241,7 +250,7 @@ export const mergeProjectSources = (
         ...enrichProject(
           {
             ...source,
-            threads: sourceThreads,
+            threads: [...sourceThreads],
             id,
             name: id === "unassigned" ? "Unresolved history" : source.name
           },
@@ -317,12 +326,16 @@ export const mergeProjectSources = (
     if (checkouts.length) project.checkouts = checkouts;
   }
   return sortProjects(
-    [...groups.values()].map((project) => ({
-      ...project,
-      threads: [...project.threads].sort(
-        (a, b) => Date.parse(b.latestAt) - Date.parse(a.latestAt)
-      )
-    }))
+    [...groups.values()].map((project) => {
+      const threads = deduplicatePersonalInventoryConversations(
+        project.threads
+      );
+      return {
+        ...project,
+        threads,
+        eventCount: threads.reduce((sum, thread) => sum + thread.eventCount, 0)
+      };
+    })
   );
 };
 
@@ -379,7 +392,12 @@ export const projectIdForSession = (
 ): string | null =>
   projects.find((project) =>
     project.threads.some(
-      (thread) => sessionSelectionId(thread) === selectedSessionId
+      (thread) =>
+        sessionSelectionId(thread) === selectedSessionId ||
+        thread.id === selectedSessionId ||
+        thread.sourceReferences?.some(
+          (ref) => ref.sessionId === selectedSessionId
+        )
     )
   )?.id ?? null;
 

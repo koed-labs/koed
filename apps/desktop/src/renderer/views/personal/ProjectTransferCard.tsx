@@ -16,6 +16,7 @@ import {
   MessagesSquare
 } from "lucide-react";
 import { Button } from "@koed/ui";
+import { personalInventoryConversationKey } from "@koed/shared/personal-desktop";
 import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { PersonalMemoryStore } from "../../state/personal-memory.js";
@@ -220,6 +221,22 @@ export function ProjectTransferCard({
     setRight(new Set());
   };
 
+  const previewReasons = new Map<string, number>();
+  const excludedKeys = new Set(
+    draft.excluded.flatMap((row) =>
+      row.threads.map(personalInventoryConversationKey)
+    )
+  );
+  for (const row of inclusions)
+    for (const thread of row.threads) {
+      const key = personalInventoryConversationKey(thread);
+      if (excludedKeys.has(key)) continue;
+      previewReasons.set(key, (previewReasons.get(key) ?? 0) + 1);
+    }
+  const overlapping = [...previewReasons.values()].filter(
+    (count) => count > 1
+  ).length;
+
   const confirm = async () => {
     if (
       !draft.commands.length ||
@@ -239,7 +256,7 @@ export function ProjectTransferCard({
           heading(headingId)
         ) : (
           <h3 id={headingId} className="personal-transfer-sr">
-            Set up Project
+            Project sources
           </h3>
         )}
         {closeControl}
@@ -472,6 +489,14 @@ export function ProjectTransferCard({
           {transfer.error}
         </p>
       ) : null}
+      <p
+        className="personal-transfer-preview"
+        aria-label="Source change preview"
+      >
+        {previewReasons.size} distinct recorded source matches · {overlapping}{" "}
+        included by more than one source. Source rules include existing and
+        future matches. Removing one source preserves other inclusion reasons.
+      </p>
       <div className="personal-transfer-footer">
         <Button variant="outline" disabled={transfer.busy} onClick={onCancel}>
           Cancel

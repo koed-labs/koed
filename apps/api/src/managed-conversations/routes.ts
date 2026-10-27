@@ -1,3 +1,4 @@
+import { readAvailablePersonalFolders } from "@koed/shared/personal-local-folders";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { mkdir, readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -25,6 +26,7 @@ import {
   MANAGED_TERMINAL_MAX_FRAME_BYTES,
   readDesktopLocalCredentialAuthorization,
   readLocalEdgeUpstreamRegistry,
+  personalFolderExecutionId,
   upstreamAdvertisesCapability,
   upstreamApiUrl,
   upstreamBackendById,
@@ -360,9 +362,18 @@ const localProjectStoreSchema = z
 
 const localProjectExecutionPath = async (
   koedHome: string | undefined,
-  projectId: string
+  projectId: string,
+  ownerUserId: string
 ): Promise<string | null> => {
   if (!koedHome?.trim()) return null;
+  if (projectId.startsWith("lf_")) {
+    const folder = readAvailablePersonalFolders(koedHome).find(
+      (folder) =>
+        personalFolderExecutionId({ ...folder.identity, ownerUserId }) ===
+        projectId
+    );
+    return folder ? await realpath(folder.normalizedPath) : null;
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(
@@ -1564,7 +1575,8 @@ export const registerManagedConversationRoutes = (
           projectRoot =
             (await localProjectExecutionPath(
               context.config.koedHome,
-              body.projectId
+              body.projectId,
+              user.id
             )) ?? undefined;
         } catch {
           return {
@@ -1940,10 +1952,11 @@ export const registerManagedConversationRoutes = (
         (candidate) => candidate.id === input.projectId
       );
       const projectPath = localExecution
-        ? ((await localProjectExecutionPath(
+        ? await localProjectExecutionPath(
             context.config.koedHome,
-            input.projectId
-          )) ?? project?.path?.trim())
+            input.projectId,
+            user.id
+          )
         : project?.path?.trim();
       if (!localExecution && !deferred && !project) {
         throw Object.assign(

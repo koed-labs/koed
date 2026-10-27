@@ -55,7 +55,7 @@ describe("context navigation", () => {
         ".desktop-sidebar-section:first-of-type .desktop-sidebar-nav-label"
       )
     ].map((item) => item.textContent);
-    expect(memoryItems).toEqual(["Ask", "Projects", "Notes", "Shares"]);
+    expect(memoryItems).toEqual(["Projects", "Ask", "Notes", "Shares"]);
     expect(
       container.querySelector('[aria-current="page"]')?.textContent
     ).toContain("Projects");

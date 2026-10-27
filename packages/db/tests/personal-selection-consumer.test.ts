@@ -588,19 +588,38 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
       project.projectId,
       { sessionId: shared.id, expectedVersion: project.version }
     );
-    const byGit = await repo.addPersonalProjectRepositoryRule(
-      actor,
-      project.projectId,
-      { repository: git, expectedVersion: direct.project.version }
-    );
-    const byFolder = await repo.addPersonalProjectFolderRule(
+    const accessRows = async () =>
+      pool.query<{
+        consents: number;
+        workspace: number;
+        sources: number;
+      }>(`select
+      (select count(*)::int from source_owner_representation_consents) as consents,
+      (select count(*)::int from team_workspace_access_grants) as workspace,
+      (select count(*)::int from team_conversation_source_grants) as sources`);
+    const accessBefore = await accessRows();
+    const grouped = await repo.applyPersonalProjectSources(
       actor,
       project.projectId,
       {
-        folder: { ownerUserId: actor.userId, ...folder.identity },
-        expectedVersion: byGit.project.version
+        expectedVersion: direct.project.version,
+        changes: [
+          { action: "add_repository", repository: git },
+          {
+            action: "add_folder",
+            folder: { ownerUserId: actor.userId, ...folder.identity }
+          }
+        ]
       }
     );
+    const rules = await repo.listPersonalProjectRules(actor, project.projectId);
+    const byGit = {
+      rule: rules.find((rule) => rule.target.kind === "repository")!
+    };
+    const byFolder = {
+      project: grouped.project,
+      rule: rules.find((rule) => rule.target.kind === "folder")!
+    };
     const explicit = await repo.addPersonalProjectSession(
       actor,
       project.projectId,
@@ -730,6 +749,7 @@ describe.skipIf(!databaseUrl)("Bounded Personal selection consumer", () => {
     ]);
     expect(JSON.stringify(removed)).not.toContain(project.name);
     expect(JSON.stringify(removed)).not.toContain(git.root!);
+    expect((await accessRows()).rows).toEqual(accessBefore.rows);
   });
   it("takes a bounded baseline, detects stale pages, reconciles missed source/membership/context edits, and preserves owner checks across restart and expiry", async () => {
     let repo = createMemorySourceRepository(pool, {

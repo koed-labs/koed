@@ -197,7 +197,12 @@ Activation, Capture Target, upgrade, and consumer cases use
 Shared Memory and durable tasks use `SHARED_MEMORY_TEST_DATABASE_URL` and
 `MEMORY_ANSWER_TASK_TEST_DATABASE_URL`. Each signed two-device journey uses its
 own fresh `P1_SOURCE_ORIGIN_DATABASE_URL` and `P1_SOURCE_RECEIVER_DATABASE_URL`.
-The native commands were:
+
+The PV cutover removes the old hidden Folder-filter demonstration.
+Its recorded command below is historical.
+Use [Project cutover validation](projects-default-view-validation.md) for the current native Project and source route.
+
+The native commands for this historical record were:
 
 ```sh
 pnpm --filter @koed/desktop exec electron scripts/validate-project-workspace.mjs

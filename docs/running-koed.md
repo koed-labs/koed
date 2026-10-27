@@ -619,13 +619,19 @@ node packages/koed-server/dist/cli.js project show --cwd "$PWD" --json
 node packages/koed-server/dist/cli.js project list --json
 ```
 
-Project metadata is local matching/display data, not authorization. Discovery
-stores raw local paths only under `KOED_HOME/config/projects.json`, strips
-credentials from Git remotes, derives a device-local Project id, and retains
-individual current and historical network remote aliases as non-authoritative
-matching signals. Remote signals never select or authorize a Team Workspace;
-explicit Project linking is authoritative. The Team Workspace id remains the
-stable Team memory boundary.
+Native Project metadata supplies checkout display and local execution context.
+Named Personal Projects and their membership live in the database.
+Discovery stores local checkout metadata under `KOED_HOME/config/projects.json` and strips credentials from Git remotes.
+The exact Folder registry separately retains the originating device, profile, deployment, and directory lifetime.
+Neither local metadata nor an equal path authorizes access to Memory or a Team Workspace.
+Explicit Workspace association remains authoritative.
+
+Desktop inventory reads do not run discovery or create named Projects.
+After capture or verified source receipt becomes durable, the existing worker reconciles eligible sources in bounded pages.
+It creates one default Project per canonical Git source or proven standalone exact Folder.
+Rename, source removal, and deletion remain durable through refresh and restart.
+The read-only reconciliation status distinguishes pending organization from an empty inventory.
+See [Personal inventory](personal-inventory.md) for source eligibility and retained suppression.
 
 Discovery and inspection use the shared `koed-server` Git Project probe. The
 caller supplies its local profile configuration and persisted device salt;
@@ -640,15 +646,38 @@ are not included in the diagnostic result. These observations grant no access.
 
 Discovery inspects the supplied directory and its enclosing Git repository only;
 it does not recursively discover child repositories, submodules, or monorepo
-packages. Worktrees retain separate local Project ids while a salted Git
-common-directory hash identifies worktrees backed by the same device-local Git
-repository. Local-only repositories have no portable remote signal.
+packages. Worktrees retain separate local checkout identities.
+Only the recorded canonical Git identity can join their Conversations into one default Project.
+Names, paths, and additional remote aliases cannot establish that equality.
+Local-only repositories have no portable remote signal.
 
-Desktop reveals a Project in the platform file browser only through its opaque,
-device-local Project id. Electron main resolves that id against the local
-Project metadata store, requires the stored absolute path to still exist, and
-uses the platform show-in-folder operation. The renderer cannot submit an
-arbitrary local path or fall back to opening a `file://` URL.
+Desktop reveals a checkout in the platform file browser through its opaque native identity.
+Electron main resolves that identity against local metadata and requires the absolute path to exist.
+The renderer cannot submit an arbitrary path or open a `file://` fallback.
+
+Choose New Conversation from the Project header's three-dot actions menu.
+The action requires an available exact local Folder.
+Choose the Folder chip in the input toolbar to select an eligible local Folder.
+A Project with several eligible Folders requires a choice before execution starts.
+Changing Folders retains the draft. A pending launch locks its Folder for retries.
+Electron main checks the current host, profile, and directory lifetime against the native registry.
+On macOS, local Folder checks use a stable volume UUID with the inode and creation time.
+A remount can change the filesystem device number while preserving the Folder identity.
+A replaced directory or different recorded volume cannot reuse the old native registration.
+For a known Git checkout with no Folder registration, Desktop verifies its current Git context and prepares its first execution Folder.
+The Project catalog appears before that background preparation finishes.
+An unavailable existing Folder requires inspection and is not automatically replaced.
+The managed execution API resolves that opaque choice again before it launches the AI Client.
+Remote and historical Folders remain available for browsing and Ask when local execution is unavailable.
+
+On the Ask start page, choose a named Project from its card or the Project selector.
+Use the shared input toolbar chip to choose an eligible local Folder.
+Changing the Project or Folder retains the draft.
+Chat uses its own automatic Conversation Folder.
+
+Run `pnpm --filter @koed/desktop demo:projects` for the isolated synthetic Project demonstration.
+The demonstration uses sample Memory and a simulated AI Client in a disposable Electron profile.
+See [Project cutover validation](projects-default-view-validation.md) for the route and recorded automated results.
 
 ### Managed Conversation permissions
 

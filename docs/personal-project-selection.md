@@ -126,8 +126,8 @@ including when the User opens sharing before pairing devices. Device-group
 inspection and shared configuration changes use the separate local Desktop
 credential. The lookup does not grant authority to change shared configuration.
 
-Accepted quiet checkouts refresh through the local Personal API when Desktop
-loads Projects or inspects an association. Capture and recall discovery look up
+Accepted quiet checkouts refresh through the local Personal API during explicit
+discovery or association inspection. Inventory reads do not run discovery. Capture and recall discovery look up
 the current accepted selection before choosing an anchor. The local catalog stores
 that a checkout requires this lookup; the database remains authoritative for the
 owner's acceptance and current causal state. A failed lookup defers discovery.
@@ -137,8 +137,9 @@ causal history.
 
 ## Local Project storage and command boundaries
 
-The local `projects.json` catalog contains checkout configuration, named Projects,
-and pending repository changes. Desktop, capture, and recall processes use the
+The local `projects.json` store contains native checkout configuration, local associations,
+and pending repository changes. Named Personal Projects and their membership live in the database.
+Native display names do not create or adopt named Personal Projects. Desktop, capture, and recall processes use the
 same cross-process lock for initialization, migration, and each complete
 read–modify–write operation. Each writer reads the latest state while holding the
 lock and replaces the file through a unique temporary file. A busy lock fails
@@ -151,8 +152,8 @@ selected identity, including its checkout provenance.
 
 Git probes and Personal API lookups run outside the lock. Discovery then locks
 and re-reads the catalog, checks the profile and checkout incarnation, and applies
-its observation to the current configuration. New named Projects and local
-anchor edits therefore survive concurrent discovery.
+its observation to the current configuration. Local anchor edits therefore survive concurrent discovery.
+The separate database catalog retains named Project organization.
 
 Desktop Project commands receive separate Personal Memory and device-governance
 clients. The Personal client owns the bounded selection lookup; the governance

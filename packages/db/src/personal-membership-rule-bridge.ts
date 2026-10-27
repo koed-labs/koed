@@ -19,6 +19,9 @@ type NativeRuleChange = {
   replaces: string[];
   operation: "include_repository" | "include_folder" | "remove_inclusion";
   value: {
+    automaticDefault?: NonNullable<
+      PersonalMembershipRevision["automaticDefault"]
+    >;
     target?: unknown;
     portableMembership?: {
       projectIdentity: string;
@@ -127,6 +130,9 @@ export const bridgePersonalMembershipRule = async (
       entityId,
       revisionId: change.revision_id,
       authorDeviceId: input.localDeviceId,
+      ...(change.value.automaticDefault
+        ? { automaticDefault: change.value.automaticDefault }
+        : {}),
       replaces: [...(frozen?.replaces ?? change.replaces)].sort(),
       operation: target
         ? { kind: "include", selector: target }

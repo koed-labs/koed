@@ -11,6 +11,7 @@ import {
   personalConfigurationPackageId,
   encodePdsPersonalSourceContextSnapshot,
   encodePdsPersonalMembershipEntitySnapshot,
+  encodePdsPersonalProjectDefaultDecision,
   type PersonalConfigurationFeature,
   type PersonalConfigurationPayload,
   createPdsEncryptedPayloadPackage,
@@ -69,6 +70,7 @@ export const createPdsConfigurationRuntime = (
   let advertisedAt = 0,
     afterSessionId: string | undefined,
     afterProjectId: string | undefined,
+    afterDefaultSourceKey: string | undefined,
     afterViewProjectIdentity: string | undefined,
     afterInclusionId: string | undefined,
     afterRuleId: string | undefined,
@@ -138,7 +140,8 @@ export const createPdsConfigurationRuntime = (
       .relay()
       .advertiseConfigurationCapabilities([
         "source_context_v1",
-        "project_membership_v1"
+        "project_membership_v1",
+        "project_defaults_v1"
       ]);
     advertisedAt = Date.now();
   };
@@ -276,6 +279,21 @@ export const createPdsConfigurationRuntime = (
             await stage({
               kind: "source_context",
               snapshot: encodePdsPersonalSourceContextSnapshot(snapshot)
+            });
+        }
+        if (supported("project_defaults_v1")) {
+          const defaults =
+            await input.repository.listPersonalConfigurationProjectDefaults({
+              ...scope,
+              afterSourceKey: afterDefaultSourceKey,
+              limit: 50
+            });
+          afterDefaultSourceKey = defaults.nextSourceKey ?? undefined;
+          more ||= Boolean(defaults.nextSourceKey);
+          for (const snapshot of defaults.snapshots)
+            await stage({
+              kind: "project_default",
+              snapshot: encodePdsPersonalProjectDefaultDecision(snapshot)
             });
         }
         if (supported("project_membership_v1")) {
@@ -433,7 +451,9 @@ export const createPdsConfigurationRuntime = (
             requireRecipients(
               record.revision.payload.kind === "source_context"
                 ? "source_context_v1"
-                : "project_membership_v1"
+                : record.revision.payload.kind === "project_membership"
+                  ? "project_membership_v1"
+                  : "project_defaults_v1"
             );
             const committed = await relay.upload(pkg);
             await input.repository.settlePersonalConfigurationDelivery({

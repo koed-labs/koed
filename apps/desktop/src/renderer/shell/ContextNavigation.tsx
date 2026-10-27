@@ -288,11 +288,6 @@ export function PersonalContextNavigation({
       <SidebarHeader eyebrow="Private to you" title="Personal" />
       <Section title="Memory">
         <NavItem
-          icon={<Sparkles aria-hidden="true" />}
-          item={{ id: "ask", label: "Ask", selected: askSelected }}
-          onSelect={onOpenAsk}
-        />
-        <NavItem
           icon={<Folder aria-hidden="true" />}
           item={{
             id: "projects",
@@ -300,6 +295,11 @@ export function PersonalContextNavigation({
             selected: projectsSelected
           }}
           onSelect={onOpenProjects}
+        />
+        <NavItem
+          icon={<Sparkles aria-hidden="true" />}
+          item={{ id: "ask", label: "Ask", selected: askSelected }}
+          onSelect={onOpenAsk}
         />
         <NavItem
           icon={<NotebookPen aria-hidden="true" />}

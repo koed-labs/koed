@@ -1,3 +1,4 @@
+import { suppressPersonalProjectDefault } from "./personal-project-default-suppression.js";
 import type pg from "pg";
 import type { PersonalMembershipEntityRow } from "./personal-membership-causal-history.js";
 import {
@@ -47,6 +48,16 @@ export const projectPersonalMembershipCatalog = async (
   const operation =
     root.state === "available" ? root.current_revision?.operation : null;
   const deleted = operation?.kind === "delete_project";
+  if (deleted) {
+    const sources = await client.query<{ target: unknown }>(
+      `select target from personal_project_rules where owner_user_id=$1 and project_id=$2
+      union all select revision->'automaticDefault'->'target' as target from personal_membership_revisions
+      where owner_user_id=$1 and project_identity=$3 and entity_identity=$3 and revision->'automaticDefault' is not null`,
+      [ownerUserId, projectId, projectIdentity]
+    );
+    for (const source of sources.rows)
+      await suppressPersonalProjectDefault(client, ownerUserId, source.target);
+  }
   const name =
     operation?.kind === "set_project"
       ? operation.name

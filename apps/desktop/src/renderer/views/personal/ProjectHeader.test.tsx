@@ -3,7 +3,6 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mergeProjectSources } from "../../../project-memory-ui.js";
-import { projectConversationFolders } from "../../../project-conversation-folders.js";
 import { ProjectHeader } from "./ProjectHeader.js";
 
 const repository = {
@@ -240,20 +239,9 @@ it("distinguishes same-path history and keeps its filter and checkout actions se
       }
     ]
   };
-  const model = projectConversationFolders(source);
-  const change = vi.fn();
   await act(async () =>
     root.render(
-      <ProjectHeader
-        project={source}
-        folderFilter={{
-          folders: model.folders,
-          hiddenFolderIds: [],
-          loading: false,
-          onChange: change
-        }}
-        onRevealLocalProject={vi.fn()}
-      >
+      <ProjectHeader project={source} onRevealLocalProject={vi.fn()}>
         <button>New</button>
       </ProjectHeader>
     )
@@ -270,21 +258,13 @@ it("distinguishes same-path history and keeps its filter and checkout actions se
   const current = card.querySelector<HTMLButtonElement>(
     '[aria-label="Open /work/first details"]'
   )!;
-  expect(history.textContent).toContain("first · Historical · device unknown");
+  expect(history.textContent).toContain("first · Historical");
   expect(current.textContent).not.toContain("Historical");
-  await act(async () =>
-    history.closest("li")!.querySelector<HTMLInputElement>("input")!.click()
-  );
-  expect(change).toHaveBeenLastCalledWith([model.byThread.get("historical")]);
-  await act(async () =>
-    current.closest("li")!.querySelector<HTMLInputElement>("input")!.click()
-  );
-  expect(change).toHaveBeenLastCalledWith([model.folders[0]!.id]);
   await act(async () => history.click());
   expect(
     card.querySelector('[aria-label="Reveal /work/first in file browser"]')
   ).toBeNull();
-  expect(card.textContent).toContain("Historical · device unknown");
+  expect(card.textContent).toContain("Historical");
   await act(async () =>
     card
       .querySelector<HTMLButtonElement>(

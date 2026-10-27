@@ -59,6 +59,40 @@ export const translatePersonalMembershipSnapshotOwner = (
     revisions: snapshot.revisions.map((revision) => ({
       ...revision,
       project: { ...revision.project, ownerUserId },
+      ...(revision.automaticDefault
+        ? {
+            automaticDefault: {
+              ...revision.automaticDefault,
+              target:
+                revision.automaticDefault.target.kind === "folder"
+                  ? {
+                      ...revision.automaticDefault.target,
+                      folder: {
+                        ...revision.automaticDefault.target.folder,
+                        ownerUserId
+                      }
+                    }
+                  : revision.automaticDefault.target
+            }
+          }
+        : {}),
+      ...(revision.automaticRetirement
+        ? {
+            automaticRetirement: {
+              ...revision.automaticRetirement,
+              target:
+                revision.automaticRetirement.target.kind === "folder"
+                  ? {
+                      ...revision.automaticRetirement.target,
+                      folder: {
+                        ...revision.automaticRetirement.target.folder,
+                        ownerUserId
+                      }
+                    }
+                  : revision.automaticRetirement.target
+            }
+          }
+        : {}),
       operation: translateOperationOwner(revision.operation, ownerUserId)
     }))
   });

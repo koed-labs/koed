@@ -15533,7 +15533,7 @@ export const personalConfigurationRecords = pgTable(
     ),
     check(
       "personal_configuration_record_kind_check",
-      sql`${table.payloadKind} in ('source_context','project_membership')`
+      sql`${table.payloadKind} in ('source_context','project_membership','project_default')`
     ),
     check(
       "personal_configuration_record_bounds_check",
@@ -16293,4 +16293,75 @@ export const teamMemoryWorkspaceExclusionMutations = pgTable(
       sql`${table.resultVersion}>0 and ${table.requestHash} ~ '^[a-f0-9]{64}$'`
     )
   ]
+);
+
+/** Retained automatic initialization decisions. Membership remains in the
+ * existing Project catalog and rule tables. */
+export const personalProjectDefaults = pgTable(
+  "personal_project_defaults",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    sourceKey: text("source_key").notNull(),
+    sourceScope: text("source_scope").notNull(),
+    target: jsonb("target")
+      .$type<import("@koed/shared").PersonalProjectRule["target"]>()
+      .notNull(),
+    state: text("state").notNull(),
+    projectId: uuid("project_id"),
+    seedRuleId: uuid("seed_rule_id"),
+    initialProjectRevisionId: uuid("initial_project_revision_id"),
+    initialRuleRevisionId: uuid("initial_rule_revision_id"),
+    revisionId: uuid("revision_id").notNull().defaultRandom(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({
+      name: "personal_project_defaults_pkey",
+      columns: [table.ownerUserId, table.sourceKey]
+    }),
+    unique("personal_project_defaults_owner_user_id_source_scope_key").on(
+      table.ownerUserId,
+      table.sourceScope
+    ),
+    foreignKey({
+      name: "personal_project_defaults_project_owner_fk",
+      columns: [table.ownerUserId, table.projectId],
+      foreignColumns: [
+        personalNamedProjects.ownerUserId,
+        personalNamedProjects.projectId
+      ]
+    }),
+    check(
+      "personal_project_defaults_state_check",
+      sql`${table.state} in ('initialized','managed','suppressed','retired')`
+    ),
+    check(
+      "personal_project_defaults_target_check",
+      sql`jsonb_typeof(${table.target})='object'`
+    ),
+    check(
+      "personal_project_defaults_initialization_check",
+      sql`${table.state}<>'initialized' or (${table.projectId} is not null and ${table.seedRuleId} is not null and ${table.initialProjectRevisionId} is not null and ${table.initialRuleRevisionId} is not null)`
+    )
+  ]
+);
+
+export const personalProjectDefaultReconciliation = pgTable(
+  "personal_project_default_reconciliation",
+  {
+    ownerUserId: uuid("owner_user_id")
+      .primaryKey()
+      .references(() => users.id),
+    generation: bigint("generation", { mode: "number" }).notNull().default(1),
+    scanGeneration: bigint("scan_generation", { mode: "number" }),
+    afterSessionId: uuid("after_session_id"),
+    pending: boolean("pending").notNull().default(true),
+    retryAt: timestamp("retry_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: updatedNow()
+  }
 );

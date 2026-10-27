@@ -16,6 +16,7 @@ import {
   type PersonalFolderAssignment,
   type PersonalFolderObservation,
   personalFolderContextSchema,
+  personalFolderScopeId,
   type PersonalFolderContext,
   type RepositoryAssignment
 } from "@koed/shared";
@@ -588,9 +589,17 @@ export const createCapturedSessionRepository = (
            then folder_assignment->'correction'->'value' else folder_assignment->'original' end)->>'state'='known'`,
       [actor.userId]
     );
-    return result.rows
+    const contexts = result.rows
       .map((row) => personalFolderContextSchema.parse(row.context))
       .filter((folder) => folder.reference.ownerUserId === actor.userId);
+    const byIdentity = new Map(
+      contexts
+        .sort((a, b) => a.normalizedPath.localeCompare(b.normalizedPath))
+        .map((folder) => [personalFolderScopeId(folder.reference), folder])
+    );
+    return [...byIdentity]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, folder]) => folder);
   },
   async createCapturedSession(actor, input) {
     const ownsTransaction = !options.transactionClient;

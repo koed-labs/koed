@@ -37,6 +37,7 @@ import {
 } from "./queue.js";
 import { createWorkerLogger } from "./logging.js";
 import { createRawProjectionService } from "./raw-projection-service.js";
+import { createPersonalProjectDefaultService } from "./personal-project-default-service.js";
 import { createCrossIdentitySyncService } from "./cross-identity-sync-service.js";
 import { createHistoricalAdmissionHealth } from "./historical-admission-health.js";
 import { createProjectionJobScheduler } from "./projection-job-scheduler.js";
@@ -490,6 +491,13 @@ const managedConversationService =
 const activeBackgroundServices = startWorkerBackgroundServices({
   teamCollaborationEnabled: workerEnv.teamCollaborationEnabled,
   personal: [
+    repository
+      ? createPersonalProjectDefaultService({
+          repository,
+          wakePool: notificationPool!,
+          logger
+        })
+      : null,
     rawProjectionService,
     conversationSourceReplicationService,
     managedConversationService

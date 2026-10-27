@@ -1,3 +1,4 @@
+import { selectPersonalMembershipHead } from "@koed/shared/personal-desktop";
 import { useCallback, useEffect, useState, type RefObject } from "react";
 import {
   Button,
@@ -155,7 +156,8 @@ export function ProjectSyncDetails({
   };
   const catalogReady =
     state?.catalog?.state === "available" &&
-    state.catalog.heads[0]?.operation.kind === "set_project";
+    selectPersonalMembershipHead(state.catalog.heads)?.operation.kind ===
+      "set_project";
   const entityDetails = (entity: Entity) => {
     const source = entity.source;
     const title = source?.localSessionId
@@ -274,7 +276,8 @@ export function ProjectSyncDetails({
         {entity.entityKind === "direct" && entity.state !== "pending" ? (
           <div className="personal-project-sync-actions">
             {entity.state === "conflict" ||
-            entity.heads[0]?.operation.kind === "include" ? (
+            selectPersonalMembershipHead(entity.heads)?.operation.kind ===
+              "include" ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -287,7 +290,8 @@ export function ProjectSyncDetails({
               </Button>
             ) : null}
             {entity.state === "conflict" ||
-            entity.heads[0]?.operation.kind === "remove_inclusion" ? (
+            selectPersonalMembershipHead(entity.heads)?.operation.kind ===
+              "remove_inclusion" ? (
               <Button
                 variant="outline"
                 size="sm"

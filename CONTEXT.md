@@ -206,7 +206,7 @@ _Avoid_: Agent status, read receipt, exact activity log
 **Project**:
 A local AI-client or code context such as a repository, working directory,
 filepath, ref, branch, or cwd, or a named local grouping of Conversations
-created by the User. A named Project does not require a folder. It includes
+created by the User or automatically from recorded sources. A named Project does not require a folder. It includes
 Conversations directly or through Git Anchor and Folder rules. Those rules
 include existing and future matching Conversations. Membership preserves the
 Conversations' Git and Folder context and does not move Memory. A Conversation

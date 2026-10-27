@@ -1,10 +1,4 @@
-import {
-  PersonalMemoryBoundaryError,
-  type PersonalMemoryErrorCode
-} from "./personal-memory-boundary.js";
-import { createProjectCommands } from "./project-commands.js";
-import { projectSelectionLookupResponseSchema } from "@koed/shared/project-selection";
-import { hostname } from "node:os";
+import { prepareLocalExecutionFolder } from "./local-execution-folder.js";
 import {
   readProjectFolderFilter,
   writeProjectFolderFilter
@@ -13,6 +7,19 @@ import {
   projectFolderFilterGetSchema,
   projectFolderFilterSchema
 } from "../ipc/project-folder-filter.js";
+import { readAvailablePersonalFolders } from "@koed/shared/personal-local-folders";
+import {
+  PersonalMemoryBoundaryError,
+  type PersonalMemoryErrorCode
+} from "./personal-memory-boundary.js";
+import {
+  loadPersonalInventory,
+  loadNamedPersonalInventory,
+  personalProjectsData
+} from "./personal-inventory.js";
+import { createProjectCommands } from "./project-commands.js";
+import { projectSelectionLookupResponseSchema } from "@koed/shared/project-selection";
+import { hostname } from "node:os";
 import {
   readPersonalDeviceNames,
   writePersonalDeviceName
@@ -57,7 +64,6 @@ import {
   personalDesktopNoteRenameDataSchema,
   personalDesktopNotesDataSchema,
   personalDesktopProjectMetadataDataSchema,
-  personalDesktopProjectsDataSchema,
   personalDesktopRequestSchema,
   personalDesktopResultSchema,
   personalDesktopSessionTitleDataSchema,
@@ -239,6 +245,7 @@ export interface KoedServerManagerOptions {
       input: {
         namedProjectId?: string;
         folderSelection?: import("@koed/shared").PersonalFolderReference;
+        repositorySelection?: import("@koed/shared").PersonalGitContext;
         askThreadId?: string;
         idempotencyKey: string;
         query: string;
@@ -743,108 +750,6 @@ const localPersonalMemoryOrigin = (value: unknown): string | null => {
   }
 };
 
-const personalProjectsData = (
-  payload: Record<string, unknown>,
-  includeSubagents = false,
-  deviceNames: Record<string, string> = {}
-) => {
-  const projects = Array.isArray(payload.projects) ? payload.projects : null;
-  if (!projects) {
-    throw new PersonalMemoryBoundaryError("invalid_response", false);
-  }
-  return personalDesktopProjectsDataSchema.parse({
-    projects: projects.map((projectValue) => {
-      const project = objectValue(projectValue) ?? {};
-      const threadValues = Array.isArray(project.threads)
-        ? project.threads
-        : [];
-      const threads = threadValues.map((threadValue) => {
-        const thread = objectValue(threadValue) ?? {};
-        const capturedCwd = objectValue(
-          thread.capturedProjectProvenance
-        )?.capturedCwd;
-        return {
-          id: thread.id,
-          name: thread.name,
-          sessionId: thread.sessionId,
-          logicalMemoryId: thread.logicalMemoryId,
-          namedProjectId: thread.namedProjectId,
-          folderSelection: thread.folderSelection,
-          sourceThreadId: thread.sourceThreadId,
-          sourceProject: thread.sourceProject,
-          membershipReasons: thread.membershipReasons,
-          sourceReferences: thread.sourceReferences,
-          sourceAiClient: thread.sourceAiClient,
-          originDevice:
-            typeof thread.originDeviceId === "string"
-              ? {
-                  id: thread.originDeviceId,
-                  name:
-                    deviceNames[thread.originDeviceId] ??
-                    `Device ${thread.originDeviceId.slice(0, 8)}`
-                }
-              : null,
-          projectId: thread.projectId,
-          projectName: thread.projectName,
-          projectPath: thread.projectPath,
-          capturedCwd:
-            typeof capturedCwd === "string" &&
-            capturedCwd.trim().length > 0 &&
-            capturedCwd.length <= 4096
-              ? capturedCwd
-              : null,
-          projectAssignmentSource: thread.projectAssignmentSource,
-          ...(thread.repositoryAssignment
-            ? { repositoryAssignment: thread.repositoryAssignment }
-            : {}),
-          presentation: thread.presentation,
-          eventCount: thread.eventCount,
-          invalidatedCount: thread.invalidatedCount,
-          latestAt: thread.latestAt,
-          sample: thread.sample,
-          threadKind: thread.threadKind,
-          parentThreadId: thread.parentThreadId,
-          parentSessionId: thread.parentSessionId
-        };
-      });
-      const threadIds = new Set(
-        threads.flatMap((thread) =>
-          typeof thread.id === "string" ? [thread.id] : []
-        )
-      );
-      const visibleThreads = threads.filter((thread) => {
-        const parentThreadId =
-          typeof thread.parentThreadId === "string"
-            ? thread.parentThreadId
-            : null;
-        const hasVisibleParent =
-          parentThreadId !== null && threadIds.has(parentThreadId);
-        return (
-          includeSubagents ||
-          !(thread.threadKind === "subagent" && hasVisibleParent)
-        );
-      });
-      return {
-        id: project.id,
-        namedProject: project.namedProject,
-        projectReference: project.projectReference,
-        inclusionRules: project.inclusionRules,
-        directInclusions: project.directInclusions,
-        folder: project.folder,
-        name: project.name,
-        path: project.path,
-        eventCount: visibleThreads.reduce(
-          (total, thread) =>
-            total +
-            (typeof thread.eventCount === "number" ? thread.eventCount : 0),
-          0
-        ),
-        threads: visibleThreads
-      };
-    })
-  });
-};
-
 const personalDesktopEventContentMaxLength = 1_048_576;
 
 const localProjectMetadataData = (environment: NodeJS.ProcessEnv) => {
@@ -881,32 +786,6 @@ const localProjectMetadataData = (environment: NodeJS.ProcessEnv) => {
         : {})
     }))
   });
-};
-
-const localProjectMetadataRefreshMs = 5 * 60 * 1_000;
-
-const localProjectPathsFrom = (
-  projects: Array<{ path: string | null }>
-): Set<string> => {
-  const projectPaths = new Set<string>();
-  for (const project of projects) {
-    if (!project.path?.trim()) continue;
-    const cwd = resolve(project.path);
-    try {
-      if (statSync(cwd).isDirectory()) projectPaths.add(cwd);
-    } catch {
-      // Missing or inaccessible Project paths have no local metadata.
-    }
-  }
-  return projectPaths;
-};
-
-const projectMetadataIsStale = (lastSeenAt: string | undefined): boolean => {
-  const lastSeenMs = lastSeenAt ? Date.parse(lastSeenAt) : Number.NaN;
-  return (
-    !Number.isFinite(lastSeenMs) ||
-    Date.now() - lastSeenMs >= localProjectMetadataRefreshMs
-  );
 };
 
 const personalEventsData = (payload: Record<string, unknown>) => {
@@ -1658,9 +1537,8 @@ export const createKoedServerManager = ({
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
   let enrollmentReconciliation: Promise<void> | null = null;
-  let projectMetadataReconciliation: Promise<void> | null = null;
-  const pendingProjectMetadataPaths = new Set<string>();
   let retainedPersonalApiOrigin: string | null = null;
+  let personalMemoryOriginLookup: Promise<string> | null = null;
   let retainedPersonalApiToken: string | null = null;
   let personalApiTokenProvisioning: Promise<
     { ok: true; apiToken: string } | { ok: false; error: string }
@@ -1693,6 +1571,7 @@ export const createKoedServerManager = ({
     input: {
       namedProjectId?: string;
       folderSelection?: import("@koed/shared").PersonalFolderReference;
+      repositorySelection?: import("@koed/shared").PersonalGitContext;
       askThreadId?: string;
       idempotencyKey: string;
       query: string;
@@ -2073,6 +1952,29 @@ export const createKoedServerManager = ({
     }
   };
 
+  const resolvePersonalMemoryOrigin = async () => {
+    if (retainedPersonalApiOrigin) return retainedPersonalApiOrigin;
+    if (!personalMemoryOriginLookup) {
+      personalMemoryOriginLookup = runJson(
+        ["status"],
+        statusCommandTimeoutMs
+      ).then((current) => {
+        const origin =
+          retainedPersonalApiOrigin ?? localPersonalMemoryOrigin(current);
+        if (!origin) throw new PersonalMemoryBoundaryError("not_ready", true);
+        retainedPersonalApiOrigin = origin;
+        return origin;
+      });
+    }
+    const lookup = personalMemoryOriginLookup;
+    try {
+      return await lookup;
+    } finally {
+      if (personalMemoryOriginLookup === lookup)
+        personalMemoryOriginLookup = null;
+    }
+  };
+
   const personalMemoryAccess = async ({
     refreshOrigin = false,
     refreshToken = false
@@ -2081,16 +1983,7 @@ export const createKoedServerManager = ({
     refreshToken?: boolean;
   } = {}) => {
     if (refreshOrigin) retainedPersonalApiOrigin = null;
-    const current = retainedPersonalApiOrigin
-      ? null
-      : await runJson(["status"], statusCommandTimeoutMs);
-    const apiOrigin =
-      retainedPersonalApiOrigin ??
-      (current ? localPersonalMemoryOrigin(current) : null);
-    if (!apiOrigin) {
-      throw new PersonalMemoryBoundaryError("not_ready", true);
-    }
-    retainedPersonalApiOrigin = apiOrigin;
+    const apiOrigin = await resolvePersonalMemoryOrigin();
     const credential = await provisionLocalAppCredential(refreshToken);
     if (!credential.ok) {
       throw new PersonalMemoryBoundaryError("not_ready", true);
@@ -2924,43 +2817,24 @@ export const createKoedServerManager = ({
     requireAccess: () => personalMemoryAccess()
   });
 
-  const listPersonalProjects = async () => {
-    const projects = personalProjectsData(
-      await authenticatedPersonalMemoryRequest(
-        ({ apiOrigin }) => {
-          const url = new URL("/v1/memory/graph/threads", apiOrigin);
-          url.search = new URLSearchParams({
-            limit: "500",
-            offset: "0",
-            includeInvalidated: "false"
-          }).toString();
-          return { url, init: { method: "GET" } };
-        },
-        16 * 1_024 * 1_024
-      ),
-      false,
+  const requestPersonalInventory = (path: string) =>
+    authenticatedPersonalMemoryRequest(
+      ({ apiOrigin }) => ({
+        url: new URL(path, apiOrigin),
+        init: { method: "GET" }
+      }),
+      16 * 1024 * 1024
+    );
+  const listPersonalProjects = () =>
+    loadPersonalInventory(
+      requestPersonalInventory,
       readPersonalDeviceNames(resolveKoedHome(environment))
     );
-    await reconcileLocalProjectMetadata(projects.projects);
-    const byId = new Map(
-      projects.projects.map((project) => [project.id, project])
-    );
-    const named = personalProjectsData(
-      await repositoryReviewJson("/v1/personal/projects/inventory"),
-      false,
+  const listNamedPersonalProjects = () =>
+    loadNamedPersonalInventory(
+      requestPersonalInventory,
       readPersonalDeviceNames(resolveKoedHome(environment))
     );
-    for (const project of named.projects) byId.set(project.id, project);
-    const folders = personalProjectsData(
-      await repositoryReviewJson("/v1/personal/folders/inventory"),
-      false,
-      readPersonalDeviceNames(resolveKoedHome(environment))
-    );
-    for (const project of folders.projects) byId.set(project.id, project);
-    return personalDesktopProjectsDataSchema.parse({
-      projects: [...byId.values()]
-    });
-  };
 
   const listRecentPersonalConversations = async (input: {
     cursor?: string;
@@ -3055,63 +2929,6 @@ export const createKoedServerManager = ({
       conversations,
       nextCursor
     });
-  };
-
-  const reconcileLocalProjectMetadata = async (
-    projects: Array<{ path: string | null }>
-  ): Promise<void> => {
-    const standaloneRuntimeRoot = resolve(
-      resolveKoedHome(environment),
-      "managed-conversations",
-      "independent"
-    );
-    for (const path of localProjectPathsFrom(projects)) {
-      if (localPathDescendant(standaloneRuntimeRoot, path) !== null) continue;
-      pendingProjectMetadataPaths.add(path);
-    }
-    if (projectMetadataReconciliation) return projectMetadataReconciliation;
-
-    const paths = resolveKoedServerPaths(environment);
-    projectMetadataReconciliation = (async () => {
-      try {
-        while (pendingProjectMetadataPaths.size) {
-          const projectPaths = [...pendingProjectMetadataPaths];
-          pendingProjectMetadataPaths.clear();
-          const metadataByPath = new Map<string, string>();
-          try {
-            for (const project of listProjectMetadata(paths).projects ?? []) {
-              metadataByPath.set(project.path.cwd, project.lastSeenAt);
-              if (project.path.projectRoot) {
-                metadataByPath.set(
-                  project.path.projectRoot,
-                  project.lastSeenAt
-                );
-              }
-            }
-          } catch {
-            // Malformed metadata must not block Personal Memory.
-          }
-          for (const cwd of projectPaths) {
-            if (!projectMetadataIsStale(metadataByPath.get(cwd))) continue;
-            try {
-              await discoverProjectMetadata(
-                paths,
-                { cwd },
-                {
-                  lookupAssociatedSelection:
-                    projectCommands.lookupAssociatedSelection
-                }
-              );
-            } catch {
-              // One unavailable Project must not block Personal Memory.
-            }
-          }
-        }
-      } finally {
-        projectMetadataReconciliation = null;
-      }
-    })();
-    return projectMetadataReconciliation;
   };
 
   const managedExecutionFrom = (
@@ -4766,6 +4583,21 @@ export const createKoedServerManager = ({
 
   const dispatchPersonalMemory = (request: PersonalDesktopRequest) => {
     switch (request.operation) {
+      case "personal.folders.local.list":
+        return {
+          folders: readAvailablePersonalFolders(
+            resolveKoedHome(environment),
+            environment
+          )
+        };
+      case "personal.folders.local.prepare":
+        return prepareLocalExecutionFolder(
+          resolveKoedServerPaths(environment),
+          request.input.localProjectId,
+          environment
+        ).then((folder) => ({ folder }));
+      case "personal.projects.status":
+        return repositoryReviewJson("/v1/personal/projects/reconciliation");
       case "personal.projects.sync":
         return projectCommands.manageMembershipSync(request.input);
       case "personal.sources.manage":
@@ -4774,8 +4606,6 @@ export const createKoedServerManager = ({
         return projectCommands.manage(request.input);
       case "personal.projects.create":
         return projectCommands.create(request.input);
-      case "personal.projects.move":
-        return projectCommands.move(request.input);
       case "personal.ask.threads.list":
         return listPersonalAskThreads(request.input);
       case "personal.ask.thread.load":
@@ -4792,6 +4622,8 @@ export const createKoedServerManager = ({
         return renamePersonalNote(request.input);
       case "personal.notes.update":
         return updatePersonalNote(request.input);
+      case "personal.projects.named.list":
+        return listNamedPersonalProjects();
       case "personal.projects.list":
         return listPersonalProjects();
       case "personal.conversations.recent.list":
@@ -4800,8 +4632,6 @@ export const createKoedServerManager = ({
         return localProjectMetadataData(environment);
       case "personal.events.load_page":
         return loadPersonalEventPage(request.input);
-      case "personal.sessions.assign_project":
-        return projectCommands.assign(request.input);
       case "personal.sessions.update_presentation":
         return updatePersonalSessionPresentation(request.input);
       case "personal.sessions.update_title":

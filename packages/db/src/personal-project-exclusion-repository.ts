@@ -17,7 +17,8 @@ import {
   lockPersonalNamedProject,
   mapPersonalNamedProject,
   resolvePersonalMembershipSourceReference,
-  withPersonalMembershipTransaction
+  personalMembershipTransactionRunner,
+  type PersonalMembershipTransaction
 } from "./personal-membership-repository.js";
 import { listPersonalProjectMembershipReasonsWithClient } from "./personal-project-rule-repository.js";
 
@@ -119,18 +120,55 @@ const advance = async (
 };
 
 /** Exclusion is organization metadata; it never deletes or edits source context. */
-export const createPersonalProjectExclusionRepository = (pool: pg.Pool) => ({
-  async explainPersonalProjectSession(
-    actor: ActorContext,
-    rawProjectId: string,
-    raw: { sessionId: string; expectedVersion: number }
-  ) {
-    const projectId = personalOwnerIdSchema.parse(rawProjectId),
-      input = personalProjectAddSessionSchema.parse(raw);
-    return withPersonalMembershipTransaction(
-      pool,
-      actor,
-      async (client) => {
+export const createPersonalProjectExclusionRepository = (
+  pool: pg.Pool,
+  transaction?: PersonalMembershipTransaction
+) => {
+  const transact = personalMembershipTransactionRunner(pool, transaction);
+  return {
+    async explainPersonalProjectSession(
+      actor: ActorContext,
+      rawProjectId: string,
+      raw: { sessionId: string; expectedVersion: number }
+    ) {
+      const projectId = personalOwnerIdSchema.parse(rawProjectId),
+        input = personalProjectAddSessionSchema.parse(raw);
+      return transact(
+        actor,
+        async (client) => {
+          const project = await lockPersonalNamedProject(
+            client,
+            actor,
+            projectId,
+            input.expectedVersion
+          );
+          const logicalSessionId = await lockPersonalMembershipSource(
+            client,
+            actor,
+            input.sessionId
+          );
+          return {
+            project: mapPersonalNamedProject(project),
+            explanation: await explain(
+              client,
+              actor,
+              projectId,
+              input.sessionId,
+              logicalSessionId
+            )
+          };
+        },
+        { notify: false }
+      );
+    },
+    async excludePersonalProjectSession(
+      actor: ActorContext,
+      rawProjectId: string,
+      raw: { sessionId: string; expectedVersion: number }
+    ) {
+      const projectId = personalOwnerIdSchema.parse(rawProjectId),
+        input = personalProjectAddSessionSchema.parse(raw);
+      return transact(actor, async (client) => {
         const project = await lockPersonalNamedProject(
           client,
           actor,
@@ -142,207 +180,177 @@ export const createPersonalProjectExclusionRepository = (pool: pg.Pool) => ({
           actor,
           input.sessionId
         );
-        return {
-          project: mapPersonalNamedProject(project),
-          explanation: await explain(
-            client,
-            actor,
-            projectId,
-            input.sessionId,
-            logicalSessionId
-          )
-        };
-      },
-      { notify: false }
-    );
-  },
-  async excludePersonalProjectSession(
-    actor: ActorContext,
-    rawProjectId: string,
-    raw: { sessionId: string; expectedVersion: number }
-  ) {
-    const projectId = personalOwnerIdSchema.parse(rawProjectId),
-      input = personalProjectAddSessionSchema.parse(raw);
-    return withPersonalMembershipTransaction(pool, actor, async (client) => {
-      const project = await lockPersonalNamedProject(
-        client,
-        actor,
-        projectId,
-        input.expectedVersion
-      );
-      const logicalSessionId = await lockPersonalMembershipSource(
-        client,
-        actor,
-        input.sessionId
-      );
-      const previous = await readExclusion(
-        client,
-        actor,
-        projectId,
-        logicalSessionId
-      );
-      await assertPersonalMembershipMutationReady(client, {
-        ownerUserId: actor.userId,
-        projectId,
-        entityKind: "exclusion",
-        localEntityId: previous?.exclusion_id,
-        logicalSessionId
-      });
-      if (previous && !previous.cleared_at)
-        return {
-          project: mapPersonalNamedProject(project),
-          explanation: await explain(
-            client,
-            actor,
-            projectId,
-            input.sessionId,
-            logicalSessionId
-          )
-        };
-      const sourceReference = await resolvePersonalMembershipSourceReference(
-        client,
-        actor,
-        input.sessionId,
-        logicalSessionId,
-        previous?.source_reference
-      );
-      const exclusionId = previous?.exclusion_id ?? randomUUID(),
-        revisionId = randomUUID();
-      await client.query(
-        `insert into personal_project_exclusions(exclusion_id,owner_user_id,project_id,logical_session_id,source_reference,head_revision_id) values($1,$2,$3,$4,$5,$6)
-        on conflict(owner_user_id,project_id,logical_session_id) do update set cleared_at=null,version=personal_project_exclusions.version+1,source_reference=excluded.source_reference,head_revision_id=excluded.head_revision_id,updated_at=now()`,
-        [
-          exclusionId,
-          actor.userId,
-          projectId,
-          logicalSessionId,
-          sourceReference,
-          revisionId
-        ]
-      );
-      await appendPersonalMembershipRevision(
-        client,
-        actor,
-        projectId,
-        exclusionId,
-        revisionId,
-        previous ? [previous.head_revision_id] : [],
-        "exclude",
-        { logicalSessionId, sourceReference }
-      );
-      return {
-        project: await advance(client, actor, projectId),
-        explanation: await explain(
+        const previous = await readExclusion(
           client,
           actor,
           projectId,
-          input.sessionId,
           logicalSessionId
-        )
-      };
-    });
-  },
-  async restorePersonalProjectSession(
-    actor: ActorContext,
-    rawProjectId: string,
-    raw: {
-      sessionId: string;
-      expectedVersion: number;
-      exclusionId: string;
-      expectedExclusionRevisionId: string;
-    }
-  ) {
-    const projectId = personalOwnerIdSchema.parse(rawProjectId),
-      input = personalProjectAddBackSchema.parse(raw);
-    return withPersonalMembershipTransaction(pool, actor, async (client) => {
-      const project = await lockPersonalNamedProject(
-        client,
-        actor,
-        projectId,
-        input.expectedVersion
-      );
-      const logicalSessionId = await lockPersonalMembershipSource(
-        client,
-        actor,
-        input.sessionId
-      );
-      const previous = await readExclusion(
-        client,
-        actor,
-        projectId,
-        logicalSessionId
-      );
-      await assertPersonalMembershipMutationReady(client, {
-        ownerUserId: actor.userId,
-        projectId,
-        entityKind: "exclusion",
-        localEntityId: previous?.exclusion_id,
-        logicalSessionId
-      });
-      if (
-        !previous ||
-        previous.exclusion_id !== input.exclusionId ||
-        previous.head_revision_id !== input.expectedExclusionRevisionId
-      )
-        throw Object.assign(
-          new Error("Exclusion changed. Review membership before adding back."),
-          { statusCode: 409 }
         );
-      // Validate retained provenance even if the direct inclusion is already active.
-      const sourceReference = await resolvePersonalMembershipSourceReference(
-        client,
-        actor,
-        input.sessionId,
-        logicalSessionId,
-        previous.source_reference
-      );
-      if (!previous.cleared_at) {
-        const revisionId = randomUUID();
+        await assertPersonalMembershipMutationReady(client, {
+          ownerUserId: actor.userId,
+          projectId,
+          entityKind: "exclusion",
+          localEntityId: previous?.exclusion_id,
+          logicalSessionId
+        });
+        if (previous && !previous.cleared_at)
+          return {
+            project: mapPersonalNamedProject(project),
+            explanation: await explain(
+              client,
+              actor,
+              projectId,
+              input.sessionId,
+              logicalSessionId
+            )
+          };
+        const sourceReference = await resolvePersonalMembershipSourceReference(
+          client,
+          actor,
+          input.sessionId,
+          logicalSessionId,
+          previous?.source_reference
+        );
+        const exclusionId = previous?.exclusion_id ?? randomUUID(),
+          revisionId = randomUUID();
         await client.query(
-          "update personal_project_exclusions set cleared_at=now(),version=version+1,head_revision_id=$4,source_reference=$5,updated_at=now() where owner_user_id=$1 and project_id=$2 and exclusion_id=$3",
+          `insert into personal_project_exclusions(exclusion_id,owner_user_id,project_id,logical_session_id,source_reference,head_revision_id) values($1,$2,$3,$4,$5,$6)
+        on conflict(owner_user_id,project_id,logical_session_id) do update set cleared_at=null,version=personal_project_exclusions.version+1,source_reference=excluded.source_reference,head_revision_id=excluded.head_revision_id,updated_at=now()`,
           [
+            exclusionId,
             actor.userId,
             projectId,
-            input.exclusionId,
-            revisionId,
-            sourceReference
+            logicalSessionId,
+            sourceReference,
+            revisionId
           ]
         );
         await appendPersonalMembershipRevision(
           client,
           actor,
           projectId,
-          input.exclusionId,
+          exclusionId,
           revisionId,
-          [previous.head_revision_id],
-          "clear_exclusion",
+          previous ? [previous.head_revision_id] : [],
+          "exclude",
           { logicalSessionId, sourceReference }
         );
+        return {
+          project: await advance(client, actor, projectId),
+          explanation: await explain(
+            client,
+            actor,
+            projectId,
+            input.sessionId,
+            logicalSessionId
+          )
+        };
+      });
+    },
+    async restorePersonalProjectSession(
+      actor: ActorContext,
+      rawProjectId: string,
+      raw: {
+        sessionId: string;
+        expectedVersion: number;
+        exclusionId: string;
+        expectedExclusionRevisionId: string;
       }
-      const direct = await ensurePersonalDirectInclusionWithClient(
-        client,
-        actor,
-        projectId,
-        input.sessionId,
-        logicalSessionId
-      );
-      return {
-        project:
-          !previous.cleared_at || direct.changed
-            ? await advance(client, actor, projectId)
-            : mapPersonalNamedProject(project),
-        membership: direct.membership,
-        explanation: await explain(
+    ) {
+      const projectId = personalOwnerIdSchema.parse(rawProjectId),
+        input = personalProjectAddBackSchema.parse(raw);
+      return transact(actor, async (client) => {
+        const project = await lockPersonalNamedProject(
+          client,
+          actor,
+          projectId,
+          input.expectedVersion
+        );
+        const logicalSessionId = await lockPersonalMembershipSource(
+          client,
+          actor,
+          input.sessionId
+        );
+        const previous = await readExclusion(
+          client,
+          actor,
+          projectId,
+          logicalSessionId
+        );
+        await assertPersonalMembershipMutationReady(client, {
+          ownerUserId: actor.userId,
+          projectId,
+          entityKind: "exclusion",
+          localEntityId: previous?.exclusion_id,
+          logicalSessionId
+        });
+        if (
+          !previous ||
+          previous.exclusion_id !== input.exclusionId ||
+          previous.head_revision_id !== input.expectedExclusionRevisionId
+        )
+          throw Object.assign(
+            new Error(
+              "Exclusion changed. Review membership before adding back."
+            ),
+            { statusCode: 409 }
+          );
+        // Validate retained provenance even if the direct inclusion is already active.
+        const sourceReference = await resolvePersonalMembershipSourceReference(
+          client,
+          actor,
+          input.sessionId,
+          logicalSessionId,
+          previous.source_reference
+        );
+        if (!previous.cleared_at) {
+          const revisionId = randomUUID();
+          await client.query(
+            "update personal_project_exclusions set cleared_at=now(),version=version+1,head_revision_id=$4,source_reference=$5,updated_at=now() where owner_user_id=$1 and project_id=$2 and exclusion_id=$3",
+            [
+              actor.userId,
+              projectId,
+              input.exclusionId,
+              revisionId,
+              sourceReference
+            ]
+          );
+          await appendPersonalMembershipRevision(
+            client,
+            actor,
+            projectId,
+            input.exclusionId,
+            revisionId,
+            [previous.head_revision_id],
+            "clear_exclusion",
+            { logicalSessionId, sourceReference }
+          );
+        }
+        const direct = await ensurePersonalDirectInclusionWithClient(
           client,
           actor,
           projectId,
           input.sessionId,
           logicalSessionId
-        )
-      };
-    });
-  }
-});
+        );
+        return {
+          project:
+            !previous.cleared_at || direct.changed
+              ? await advance(client, actor, projectId)
+              : mapPersonalNamedProject(project),
+          membership: direct.membership,
+          explanation: await explain(
+            client,
+            actor,
+            projectId,
+            input.sessionId,
+            logicalSessionId
+          )
+        };
+      });
+    }
+  };
+};
 export type PersonalProjectExclusionRepository = ReturnType<
   typeof createPersonalProjectExclusionRepository
 >;

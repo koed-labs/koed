@@ -125,18 +125,6 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
     expect(
       personalDesktopRequestSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-        operation: "personal.sessions.assign_project",
-        input: {
-          action: "move",
-          sessionId,
-          targetProjectId: "project-2",
-          expectedVersion: 1
-        }
-      })
-    ).toMatchObject({ operation: "personal.sessions.assign_project" });
-    expect(
-      personalDesktopRequestSchema.parse({
-        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
         operation: "personal.sessions.update_title",
         input: { sessionId, title: "Release planning" }
       })
@@ -221,19 +209,6 @@ TRANSCRIPT DELTA END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb5596
   });
 
   it("rejects generic assignment targets and credential-bearing results", () => {
-    expect(() =>
-      personalDesktopRequestSchema.parse({
-        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-        operation: "personal.sessions.assign_project",
-        input: {
-          action: "move",
-          sessionId,
-          targetProjectId: "project-2",
-          path: "/work/project-2"
-        }
-      })
-    ).toThrow();
-
     expect(() =>
       personalDesktopResultSchema.parse({
         contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,

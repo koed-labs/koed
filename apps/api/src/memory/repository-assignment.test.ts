@@ -75,6 +75,73 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
     await admin.query(`drop database if exists "${databaseName}" with (force)`);
     await admin.end();
   });
+  it("pages source inventory by stable identity past 500 Conversations without changing organization", async () => {
+    const actor = { userId: ownerId };
+    const identity: RepositoryIdentity = {
+      kind: "portable_repository",
+      key: "gr_inventory_paging",
+      root: "/recorded",
+      branch: "main",
+      checkoutId: "checkout_inventory",
+      originatingDeviceId: "inventory_device",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/inventory",
+      reason: "origin"
+    };
+    const late = { ...identity, key: "gr_inventory_z" };
+    await pool.query(
+      `insert into sessions(owner_user_id,source_runtime,capture_method,external_session_id,metadata,repository_assignment_state,repository_automatic_identity)
+      select $1,'codex','transcript','shared-provider-id',jsonb_build_object('threadName','Inventory ' || n::text),'recorded',case when n=601 then $3::jsonb else $2::jsonb end
+      from generate_series(1,601) n`,
+      [ownerId, JSON.stringify(identity), JSON.stringify(late)]
+    );
+    const before = await repo.listNamedPersonalProjects(actor);
+    const seen = new Set<string>();
+    let after:
+      | { projectId: string; threadId: string; sessionId: string }
+      | undefined;
+    for (;;) {
+      const groups = await repo.listLcmGraphThreads(actor, {
+        inventoryOrder: true,
+        inventoryAfter: after,
+        groupBySession: true,
+        limit: 100
+      });
+      const rows = groups.flatMap((group) => group.threads);
+      if (!rows.length) break;
+      for (const thread of rows) {
+        expect(seen.has(thread.sessionId!)).toBe(false);
+        seen.add(thread.sessionId!);
+      }
+      // Activity changes do not move an already enumerated row across the cursor.
+      await pool.query(
+        "update sessions set created_at=now()+interval '1 day' where id=$1",
+        [rows[0]!.sessionId]
+      );
+      // The repository groups output by source, preserving each ordered page.
+      const last = rows.at(-1)!;
+      after = {
+        projectId: last.projectId,
+        threadId: last.id,
+        sessionId: last.sessionId ?? ""
+      };
+    }
+    expect(seen.size).toBe(601);
+    expect(after?.projectId).toBe(repositoryScopeId(late));
+    expect(await repo.listNamedPersonalProjects(actor)).toEqual(before);
+    expect(
+      (
+        await repo.listLcmGraphThreads(
+          { userId: otherId },
+          { inventoryOrder: true, groupBySession: true, limit: 100 }
+        )
+      ).flatMap((group) => group.threads)
+    ).toEqual([]);
+    await pool.query(
+      "delete from sessions where owner_user_id=$1 and repository_automatic_identity->>'key'=any($2::text[])",
+      [ownerId, [identity.key, late.key]]
+    );
+  });
   it("preserves a legacy logical Memory binding through capture and sharing", async () => {
     const deployment =
       (await repo.getLocalSyncDeployment()) ??

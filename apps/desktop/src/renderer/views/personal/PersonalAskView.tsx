@@ -5,7 +5,18 @@ import type {
   PersonalDesktopApi,
   PersonalDesktopAskTurn
 } from "@koed/shared/personal-desktop";
-import { Folder, LoaderCircle, MessageSquare, Plus } from "lucide-react";
+import { Check, Layers, LoaderCircle, MessageSquare, Plus } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuPopup,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger
+} from "@koed/ui";
+import {
+  projectExecutionFolders,
+  type ProjectSourceInventory
+} from "../../../project-source-navigation.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -50,7 +61,7 @@ export function PersonalAskView({
   markdownAdapters,
   onConversationStarted = () => undefined,
   onNew,
-  onOpenProject,
+  inventory,
   onResolveIndependent,
   projects = [],
   selectedThreadId
@@ -61,7 +72,7 @@ export function PersonalAskView({
   markdownAdapters: MarkdownPlatformAdapters;
   onConversationStarted?: ConversationStarted;
   onNew: () => void;
-  onOpenProject?: () => Promise<DesktopProject | null>;
+  inventory?: ProjectSourceInventory;
   onResolveIndependent?: () => Promise<DesktopProject | null>;
   onSelectThread?: (askThreadId: string) => void;
   projects?: readonly DesktopProject[];
@@ -77,46 +88,70 @@ export function PersonalAskView({
     reasoningEffort: "",
     permissionMode: ""
   });
-  const recentProjects = useMemo(
+  const availableProjects = useMemo(
     () =>
       [...projects]
         .filter(
-          (project) =>
-            (Boolean(project.path) ||
-              project.repository?.kind === "local_project") &&
-            project.contextKind !== "independent"
+          (project) => project.namedProject && !project.namedProject.deletedAt
         )
         .sort(
           (left, right) =>
             Date.parse(projectLatestAt(right) ?? "0") -
               Date.parse(projectLatestAt(left) ?? "0") ||
             left.id.localeCompare(right.id)
-        )
-        .slice(0, 3),
+        ),
     [projects]
   );
   const [launchPending, setLaunchPending] = useState(false);
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
-    null
-  );
-  const [openedProject, setOpenedProject] = useState<DesktopProject | null>(
     null
   );
   const [independentProject, setIndependentProject] =
     useState<DesktopProject | null>(null);
-  const projectChoices = useMemo(
-    () =>
-      openedProject &&
-      !recentProjects.some((project) => project.id === openedProject.id)
-        ? [openedProject, ...recentProjects].slice(0, 3)
-        : recentProjects,
-    [openedProject, recentProjects]
-  );
   const selectedProject =
     selectedProjectId === null
       ? independentProject
-      : (projectChoices.find((project) => project.id === selectedProjectId) ??
-        null);
+      : (availableProjects.find(
+          (project) => project.id === selectedProjectId
+        ) ?? null);
+  const projectChoices = availableProjects.slice(0, 3);
+  if (
+    selectedProjectId &&
+    selectedProject &&
+    !projectChoices.includes(selectedProject)
+  )
+    projectChoices.splice(2, 1, selectedProject);
+  const executionFolders = useMemo(
+    () =>
+      selectedProjectId && selectedProject && inventory
+        ? projectExecutionFolders(selectedProject, inventory)
+        : [],
+    [selectedProjectId, selectedProject, inventory]
+  );
+  const [folderChoices, setFolderChoices] = useState<Record<string, string>>(
+    {}
+  );
+  const executionFolderId = selectedProjectId
+    ? folderChoices[selectedProjectId]
+    : undefined;
+  const executionFolder = executionFolders.find(
+    (folder) => folder.id === executionFolderId
+  );
+  // Pin a sole native choice once it becomes available. Losing a chosen Folder
+  // requires another explicit choice rather than silently redirecting a draft.
+  useEffect(() => {
+    if (
+      !selectedProjectId ||
+      executionFolderId ||
+      executionFolders.length !== 1
+    )
+      return;
+    setFolderChoices((choices) => ({
+      ...choices,
+      [selectedProjectId]: executionFolders[0]!.id
+    }));
+  }, [selectedProjectId, executionFolderId, executionFolders]);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const resolveIndependentRef = useRef(onResolveIndependent);
   resolveIndependentRef.current = onResolveIndependent;
@@ -328,29 +363,53 @@ export function PersonalAskView({
               );
             })}
           </div>
-          <button
-            className="personal-agent-open-project"
-            disabled={launchPending}
-            onClick={() =>
-              void onOpenProject?.()
-                .then((project) => {
-                  if (!project) return;
-                  setOpenedProject(project);
-                  setSelectedProjectId(project.id);
-                  setError(null);
-                })
-                .catch((cause: unknown) =>
-                  setError(
-                    cause instanceof Error
-                      ? cause.message
-                      : "The Project could not be opened."
-                  )
-                )
+          <DropdownMenu
+            open={!launchPending && projectPickerOpen}
+            onOpenChange={(open) =>
+              setProjectPickerOpen(!launchPending && open)
             }
-            type="button"
           >
-            <Folder aria-hidden="true" /> Open a project
-          </button>
+            <DropdownMenuTrigger
+              className="personal-agent-open-project"
+              disabled={launchPending || !availableProjects.length}
+            >
+              <Layers aria-hidden="true" /> Choose a Project
+            </DropdownMenuTrigger>
+            <DropdownMenuPopup
+              side="bottom"
+              align="center"
+              aria-label="Projects"
+              className="personal-agent-project-picker"
+            >
+              <DropdownMenuRadioGroup
+                value={selectedProjectId ?? ""}
+                onValueChange={(id) => {
+                  if (
+                    !launchPending &&
+                    availableProjects.some((project) => project.id === id)
+                  ) {
+                    setSelectedProjectId(id);
+                    setProjectPickerOpen(false);
+                  }
+                }}
+              >
+                {availableProjects.map((project) => (
+                  <DropdownMenuRadioItem
+                    key={project.id}
+                    value={project.id}
+                    className="personal-agent-project-option"
+                    onClick={() => setProjectPickerOpen(false)}
+                  >
+                    <Layers aria-hidden="true" />
+                    <span>{project.name}</span>
+                    {project.id === selectedProjectId ? (
+                      <Check aria-hidden="true" />
+                    ) : null}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuPopup>
+          </DropdownMenu>
           {error ? (
             <p className="personal-agent-project-error" role="alert">
               {error}
@@ -378,16 +437,38 @@ export function PersonalAskView({
                 : `Ask about ${selectedProject?.name ?? "this Project"}…`
             }
             projectId={
-              selectedProject?.localProjectId ?? selectedProject?.id ?? null
+              selectedProjectId === null
+                ? (independentProject?.localProjectId ??
+                  independentProject?.id ??
+                  null)
+                : (executionFolder?.id ?? null)
             }
             projectRoot={
               selectedProjectId === null
                 ? null
-                : (selectedProject?.path ?? null)
+                : (executionFolder?.path ?? null)
             }
             commandProjectId={
-              selectedProjectId === null ? null : (selectedProject?.id ?? null)
+              selectedProjectId === null ? null : (executionFolder?.id ?? null)
             }
+            folderPicker={{
+              folders: executionFolders,
+              selectedId: executionFolder?.id ?? null,
+              onSelect: (id) => {
+                if (selectedProjectId)
+                  setFolderChoices((choices) => ({
+                    ...choices,
+                    [selectedProjectId]: id
+                  }));
+              },
+              ...(selectedProjectId === null
+                ? {
+                    placeholder: "Automatic Folder",
+                    disabledReason:
+                      "Chat uses its own Conversation Folder. Choose a Project to select a local Folder."
+                  }
+                : {})
+            }}
             requirePrompt
             showContextHelp={false}
             selection={selection}

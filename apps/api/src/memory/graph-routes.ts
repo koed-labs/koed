@@ -1,6 +1,7 @@
 import { registerPersonalSelectionConsumerRoutes } from "./personal-selection-consumer-routes.js";
 import { registerPersonalSourceContextRoutes } from "./personal-source-context-routes.js";
 import { registerPersonalFolderRoutes } from "./personal-folder-routes.js";
+import { registerPersonalSourceInventoryRoutes } from "./personal-source-inventory-routes.js";
 import { registerPersonalProjectRoutes } from "./personal-project-routes.js";
 import { registerRepositoryReviewRoutes } from "./repository-review-routes.js";
 import type { FastifyInstance } from "fastify";
@@ -76,6 +77,7 @@ export const registerGraphRoutes = (
   registerPersonalProjectRoutes(app, context);
   registerPersonalSelectionConsumerRoutes(app, context);
   registerPersonalFolderRoutes(app, context);
+  registerPersonalSourceInventoryRoutes(app, context);
   registerPersonalSourceContextRoutes(app, context);
   const {
     requireRepository,

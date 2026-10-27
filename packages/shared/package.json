@@ -78,6 +78,14 @@
     "./repository-review": {
       "types": "./dist/repository-review.d.ts",
       "import": "./dist/repository-review.js"
+    },
+    "./personal-local-folders": {
+      "types": "./dist/personal-local-folders.d.ts",
+      "import": "./dist/personal-local-folders.js"
+    },
+    "./personal-project-default": {
+      "types": "./dist/personal-project-default.d.ts",
+      "import": "./dist/personal-project-default.js"
     }
   },
   "files": [

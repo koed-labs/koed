@@ -7,10 +7,12 @@ import type { PersonalSelectionSnapshot } from "@koed/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
+  deduplicatePersonalInventoryConversations,
   personalIdentifierSchema,
   personalMembershipReviewInputSchema,
   personalMembershipReviewApplySchema,
   personalProjectCreateSchema,
+  personalProjectBatchInputSchema,
   personalProjectUpdateSchema,
   personalProjectVersionSchema,
   personalProjectRuleInputSchema,
@@ -52,6 +54,16 @@ export const registerPersonalProjectRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
 ) => {
+  app.get(
+    "/v1/personal/projects/reconciliation",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      const user = await context.auth.authenticate(request);
+      return context
+        .requireRepository()
+        .personalProjectDefaultStatus({ userId: user.id });
+    }
+  );
   const {
     requireRepository,
     auth: { authenticate },
@@ -250,6 +262,19 @@ export const registerPersonalProjectRoutes = (
     }
   );
   app.post(
+    "/v1/personal/projects/:projectId/sources",
+    { preHandler: write },
+    async (request) => {
+      const user = await authenticate(request),
+        { projectId } = projectParams.parse(request.params);
+      return requireRepository().applyPersonalProjectSources(
+        { userId: user.id },
+        projectId,
+        personalProjectBatchInputSchema.parse(request.body)
+      );
+    }
+  );
+  app.post(
     "/v1/personal/projects/:projectId/rules",
     { preHandler: write },
     async (request) => {
@@ -344,57 +369,59 @@ export const registerPersonalProjectRoutes = (
               logical
             ]);
         }
-        const projected = threads.map((thread) => {
-          const ref = thread.sourceReferences?.find(
-            (ref) => ref.sessionId === thread.sessionId
-          );
-          if (!ref)
-            throw new Error(
-              "Project Conversation source binding is unavailable"
+        const projected = deduplicatePersonalInventoryConversations(
+          threads.map((thread) => {
+            const ref = thread.sourceReferences?.find(
+              (ref) => ref.sessionId === thread.sessionId
             );
-          const presentation = thread.sessionId
-            ? presentations.get(thread.sessionId)
-            : null;
-          const parentFromSession = thread.parentSessionId
-            ? logicalBySession.get(thread.parentSessionId)
-            : undefined;
-          const providerParents = thread.parentThreadId
-            ? logicalByProvider.get(thread.parentThreadId)
-            : undefined;
-          const parentThreadId =
-            parentFromSession ??
-            (providerParents?.length === 1
-              ? providerParents[0]!
-              : thread.parentThreadId);
-          return {
-            ...thread,
-            id: ref.logicalSessionId,
-            sourceThreadId: thread.id,
-            parentThreadId,
-            namedProjectId: project.projectId,
-            sourceProject: {
-              id: thread.projectId,
-              name: thread.projectName,
-              path: thread.projectPath
-            },
-            projectId: project.projectId,
-            projectName: project.name,
-            projectPath: null,
-            membershipReasons: thread.sessionId
-              ? (reasons.get(thread.sessionId) ?? [])
-              : [],
-            presentation: presentation
-              ? {
-                  pinnedAt: presentation.pinnedAt,
-                  displayMode: presentation.displayMode,
-                  snoozedAt: presentation.snoozedAt,
-                  snoozedUntil: presentation.snoozedUntil,
-                  version: presentation.version,
-                  updatedAt: presentation.updatedAt
-                }
-              : null
-          };
-        });
+            if (!ref)
+              throw new Error(
+                "Project Conversation source binding is unavailable"
+              );
+            const presentation = thread.sessionId
+              ? presentations.get(thread.sessionId)
+              : null;
+            const parentFromSession = thread.parentSessionId
+              ? logicalBySession.get(thread.parentSessionId)
+              : undefined;
+            const providerParents = thread.parentThreadId
+              ? logicalByProvider.get(thread.parentThreadId)
+              : undefined;
+            const parentThreadId =
+              parentFromSession ??
+              (providerParents?.length === 1
+                ? providerParents[0]!
+                : thread.parentThreadId);
+            return {
+              ...thread,
+              id: ref.logicalSessionId,
+              sourceThreadId: thread.id,
+              parentThreadId,
+              namedProjectId: project.projectId,
+              sourceProject: {
+                id: thread.projectId,
+                name: thread.projectName,
+                path: thread.projectPath
+              },
+              projectId: project.projectId,
+              projectName: project.name,
+              projectPath: null,
+              membershipReasons: thread.sessionId
+                ? (reasons.get(thread.sessionId) ?? [])
+                : [],
+              presentation: presentation
+                ? {
+                    pinnedAt: presentation.pinnedAt,
+                    displayMode: presentation.displayMode,
+                    snoozedAt: presentation.snoozedAt,
+                    snoozedUntil: presentation.snoozedUntil,
+                    version: presentation.version,
+                    updatedAt: presentation.updatedAt
+                  }
+                : null
+            };
+          })
+        );
         projects.push({
           id: project.projectId,
           name: project.name,

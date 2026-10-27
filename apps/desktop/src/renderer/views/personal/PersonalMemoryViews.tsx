@@ -5,16 +5,32 @@ import {
   DropdownMenuPopup,
   DropdownMenuItem
 } from "@koed/ui";
-import { ProjectOrganization } from "./ProjectOrganization.js";
+import {
+  ProjectOrganization,
+  type ProjectNewConversationAction
+} from "./ProjectOrganization.js";
 import type { GitAnchorSharingReviewInput } from "@koed/shared/collaboration";
 import { SourceContextCorrectionDialog } from "./SourceContextCorrectionDialog.js";
 import { ConversationProjectsDialog } from "./ProjectMembershipActions.js";
-import { projectConversationFolders } from "../../../project-conversation-folders.js";
+import { SourceBrowser } from "./SourceBrowser.js";
+import {
+  projectSourceSearchText,
+  projectSourceOptions,
+  projectExecutionFolders,
+  filterProjectSourceConversations,
+  systemConversationProjects,
+  type ProjectSourceFilter,
+  type ProjectSourceInventory
+} from "../../../project-source-navigation.js";
 import { projectRowPresentation } from "../../../project-row-presentation.js";
 import { ProjectGroupIcon } from "./ProjectGroupIcon.js";
-import { useProjectFolderFilter } from "./use-project-folder-filter.js";
 import { CreateProjectDialog } from "./ProjectActions.js";
-import { ProjectHeader } from "./ProjectHeader.js";
+import {
+  ProjectHeader,
+  type ProjectFolderFilterControl
+} from "./ProjectHeader.js";
+import { projectConversationFolders } from "../../../project-conversation-folders.js";
+import { useProjectFolderFilter } from "./use-project-folder-filter.js";
 import { ProjectRepo } from "./ProjectRepo.js";
 import type { RendererPlatform } from "../../services/platform.js";
 import {
@@ -55,6 +71,7 @@ import {
   Paperclip,
   Pencil,
   Pin,
+  Plus,
   RefreshCw,
   Share2,
   X
@@ -140,9 +157,20 @@ import {
 } from "@koed/shared/ai-client-contract";
 
 export type PersonalMemoryRoute =
-  | { kind: "projects" }
-  | { kind: "project"; projectId: string }
-  | { kind: "session"; projectId: string; sessionId: string };
+  | { kind: "projects"; browse?: "sources" }
+  | {
+      kind: "project";
+      projectId: string;
+      sourceFilter?: ProjectSourceFilter;
+      browse?: "sources";
+    }
+  | {
+      kind: "session";
+      projectId: string;
+      sessionId: string;
+      sourceFilter?: ProjectSourceFilter;
+      browse?: "sources";
+    };
 
 export type PersonalMemoryInspectorEvent = {
   event: PersonalDesktopConversationEvent;
@@ -155,7 +183,6 @@ export type PersonalMemoryWorkspaceProps = {
   manageProject?: PersonalDesktopApi["manageProject"];
   manageSourceContext?: PersonalDesktopApi["manageSourceContext"];
   authorizeManagedConversationTransfer?: CollaborationRendererClient["authorizeManagedConversationTransfer"];
-  assignSessionProject?: PersonalDesktopApi["assignSessionProject"];
   updateSessionPresentation?: PersonalDesktopApi["updateSessionPresentation"];
   managedConversationRevision?: number;
   managedConversationRecoveryRevision?: number;
@@ -168,16 +195,11 @@ export type PersonalMemoryWorkspaceProps = {
   onInspectEvent?: (selection: PersonalMemoryInspectorEvent) => void;
   onNavigate: (route: PersonalMemoryRoute) => void;
   onCreateProject?: (name: string) => Promise<DesktopProject | null>;
-  moveProject?: PersonalDesktopApi["moveProject"];
   openExternal?: (url: string) => Promise<void>;
   revealLocalProject?: (localProjectId: string) => Promise<void>;
   setRepositoryAnchor?: RendererPlatform["setRepositoryAnchor"];
   reviewRepository?: RendererPlatform["reviewRepository"];
   projectAssociation?: RendererPlatform["projectAssociation"];
-  onSessionProjectAssigned?: (input: {
-    projectId: string | null;
-    sessionId: string;
-  }) => void;
   onShareToWorkspace?: (request: ShareToWorkspaceRequest) => void;
   onReviewGitAnchorSharing?: (
     target: GitAnchorSharingReviewInput["target"],
@@ -338,14 +360,19 @@ function AiClientSourceMark({
 function ProjectRow({
   project,
   selected,
-  onSelect
+  onSelect,
+  inventory
 }: {
   project: DesktopProject;
   selected: boolean;
   onSelect: () => void;
+  inventory: ProjectSourceInventory;
 }) {
   const latestAt = projectLatestAt(project);
   const presentation = projectRowPresentation(project);
+  const context = projectSourceOptions(project, inventory)
+    .map((source) => source.label)
+    .join(" · ");
   const ContextIcon = presentation.contextKind === "folder" ? Folder : GitFork;
   const conversationLabel = countLabel(
     presentation.conversationCount,
@@ -354,7 +381,7 @@ function ProjectRow({
   return (
     <button
       aria-current={selected ? "page" : undefined}
-      aria-label={`${project.name}, ${presentation.sourceLabel}, ${conversationLabel}${presentation.context ? `, ${presentation.context}` : ""}`}
+      aria-label={`${project.name}, Project, ${conversationLabel}${context ? `, ${context}` : ""}`}
       className="personal-project-row"
       data-project-id={project.id}
       data-group-kind={presentation.kind}
@@ -380,13 +407,10 @@ function ProjectRow({
           </span>
         </span>
         <span className="personal-project-row-context">
-          {presentation.context ? (
-            <span
-              className="personal-project-context-label"
-              title={presentation.context}
-            >
+          {context ? (
+            <span className="personal-project-context-label" title={context}>
               <ContextIcon aria-hidden="true" />
-              <span>{presentation.context}</span>
+              <span>{context}</span>
             </span>
           ) : null}
           <time dateTime={latestAt ?? undefined}>{relativeTime(latestAt)}</time>
@@ -403,7 +427,8 @@ function ProjectsPane({
   onSelect,
   onCreateProject,
   projects,
-  selectedProjectId
+  selectedProjectId,
+  inventory
 }: {
   error: string | null;
   loading: boolean;
@@ -412,15 +437,16 @@ function ProjectsPane({
   onCreateProject?: PersonalMemoryWorkspaceProps["onCreateProject"];
   projects: readonly DesktopProject[];
   selectedProjectId: string | null;
+  inventory: ProjectSourceInventory;
 }) {
   const [query, setQuery] = useState("");
   const [showInactive, setShowInactive] = useState(false);
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = projects.filter((project) => {
     if (!normalizedQuery) return true;
-    return [project.name, project.path ?? "", project.remoteDisplay ?? ""].some(
-      (value) => value.toLocaleLowerCase().includes(normalizedQuery)
-    );
+    return projectSourceSearchText(project, inventory)
+      .toLocaleLowerCase()
+      .includes(normalizedQuery);
   });
   const active: DesktopProject[] = [];
   const inactive: DesktopProject[] = [];
@@ -471,6 +497,9 @@ function ProjectsPane({
         />
       </label>
       <div className="personal-project-list">
+        {inventory.reconciliationPending ? (
+          <p role="status">Project organization is pending.</p>
+        ) : null}
         {loading && projects.length === 0 ? (
           <div
             aria-label="Loading Projects"
@@ -511,6 +540,7 @@ function ProjectsPane({
                   key={project.id}
                   onSelect={() => onSelect(project.id)}
                   project={project}
+                  inventory={inventory}
                   selected={project.id === selectedProjectId}
                 />
               ))}
@@ -526,12 +556,13 @@ function ProjectsPane({
                   <span id="personal-inactive-projects">Inactive</span>
                   <span>{inactive.length}</span>
                 </button>
-                {showInactive
+                {showInactive || Boolean(normalizedQuery)
                   ? inactive.map((project) => (
                       <ProjectRow
                         key={project.id}
                         onSelect={() => onSelect(project.id)}
                         project={project}
+                        inventory={inventory}
                         selected={project.id === selectedProjectId}
                       />
                     ))
@@ -746,6 +777,9 @@ const launchReady = (
 
 function ProjectDetail({
   organization,
+  executionFolders,
+  filtered,
+  sourceFilteredThreads,
   renderConversationMove,
   localAiClients,
   error,
@@ -795,7 +829,13 @@ function ProjectDetail({
   onRetry: () => void;
   onSelectSession: (sessionId: string) => void;
   project: DesktopProject | null;
-  organization?: ReactNode;
+  organization?: (
+    folderFilter: ProjectFolderFilterControl,
+    newConversation: ProjectNewConversationAction
+  ) => ReactNode;
+  sourceFilteredThreads?: readonly PersonalDesktopProjectThread[];
+  filtered: boolean;
+  executionFolders: ReturnType<typeof projectExecutionFolders>;
   renderConversationMove?: (thread: PersonalDesktopProjectThread) => ReactNode;
 }) {
   const [launchError, setLaunchError] = useState<string | null>(null);
@@ -810,6 +850,25 @@ function ProjectDetail({
   const [openSessionActionsId, setOpenSessionActionsId] = useState<
     string | null
   >(null);
+  const [executionFolderId, setExecutionFolderId] = useState("");
+  const executionFolder =
+    executionFolders.find((folder) => folder.id === executionFolderId) ??
+    (!executionFolderId && executionFolders.length === 1
+      ? executionFolders[0]
+      : undefined);
+  useEffect(() => {
+    let saved = "";
+    try {
+      saved =
+        sessionStorage.getItem(`koed.execution-folder.${project?.id ?? ""}`) ??
+        "";
+    } catch {
+      // Remembering a Folder is optional; current native choices remain authoritative.
+    }
+    setExecutionFolderId(
+      executionFolders.some((folder) => folder.id === saved) ? saved : ""
+    );
+  }, [project?.id]);
   const folderFilter = useProjectFolderFilter(project?.id);
   const folderModel = useMemo(
     () =>
@@ -822,16 +881,20 @@ function ProjectDetail({
   const hasFolderFilter = folderModel.folders.some((folder) =>
     hiddenFolderIds.has(folder.id)
   );
-  const threads = (project?.threads ?? [])
+  const headerFolderFilter: ProjectFolderFilterControl = {
+    folders: folderModel.folders,
+    hiddenFolderIds: folderFilter.hiddenFolderIds,
+    loading: folderFilter.loading,
+    onChange: folderFilter.change
+  };
+  const threads = [...(sourceFilteredThreads ?? project?.threads ?? [])]
     .filter(
       (thread) =>
         !hiddenFolderIds.has(
           folderModel.byThread.get(sessionSelectionId(thread)) ?? ""
         )
     )
-    .sort(
-      (left, right) => Date.parse(right.latestAt) - Date.parse(left.latestAt)
-    );
+    .sort((a, b) => Date.parse(b.latestAt) - Date.parse(a.latestAt));
   const nextDeadline = nextConversationPresentationDeadline(
     threads,
     presentationNow
@@ -1080,11 +1143,24 @@ function ProjectDetail({
           contextKind={project.contextKind}
           key={project.id}
           api={managedConversations}
-          projectId={project.localProjectId ?? project.id}
-          projectRoot={project.contextKind === "project" ? project.path : null}
-          commandProjectId={
-            project.contextKind === "project" ? project.id : null
-          }
+          projectId={executionFolder?.id ?? null}
+          projectRoot={executionFolder?.path ?? null}
+          commandProjectId={executionFolder?.id ?? null}
+          folderPicker={{
+            folders: executionFolders,
+            selectedId: executionFolder?.id ?? null,
+            onSelect: (id) => {
+              setExecutionFolderId(id);
+              try {
+                sessionStorage.setItem(
+                  `koed.execution-folder.${project.id}`,
+                  id
+                );
+              } catch {
+                /* Remembering the Folder is optional. */
+              }
+            }
+          }}
           options={launchOptions}
           selection={launchSelection}
           onChange={setLaunchSelection}
@@ -1096,18 +1172,22 @@ function ProjectDetail({
       </section>
     );
   }
+  const newConversation: ProjectNewConversationAction = {
+    disabled:
+      !managedConversations || !executionFolders.length || !launchOptions,
+    onSelect: () => {
+      if (!executionFolderId && executionFolders.length === 1)
+        setExecutionFolderId(executionFolders[0]!.id);
+      setLaunchOpen(true);
+    }
+  };
   return (
     <section className="personal-project-detail">
-      {organization ?? (
+      {organization?.(headerFolderFilter, newConversation) ?? (
         <ProjectHeader
-          key={project.id}
+          key={`header:${project.id}`}
           project={project}
-          folderFilter={{
-            folders: folderModel.folders,
-            hiddenFolderIds: folderFilter.hiddenFolderIds,
-            loading: folderFilter.loading,
-            onChange: folderFilter.change
-          }}
+          folderFilter={headerFolderFilter}
           onSetAnchor={onSetRepositoryAnchor}
           onReview={onReviewRepository}
           onAssociation={onProjectAssociation}
@@ -1147,17 +1227,34 @@ function ProjectDetail({
                 Share
               </button>
             ) : null}
-            <button
-              className="personal-new-conversation personal-new-conversation-standalone"
-              type="button"
-              disabled={
-                !managedConversations || !project.path || !launchOptions
-              }
-              aria-expanded={launchOpen}
-              onClick={() => setLaunchOpen((open) => !open)}
-            >
-              New
-            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Project actions"
+                    title="Project actions"
+                  />
+                }
+              >
+                <Ellipsis aria-hidden="true" />
+              </DropdownMenuTrigger>
+              <DropdownMenuPopup align="end" aria-label="Project actions">
+                <DropdownMenuItem
+                  disabled={newConversation.disabled}
+                  onClick={newConversation.onSelect}
+                  title={
+                    newConversation.disabled
+                      ? "An available local Folder and a ready AI Client are required."
+                      : undefined
+                  }
+                >
+                  <Plus aria-hidden="true" />
+                  New Conversation
+                </DropdownMenuItem>
+              </DropdownMenuPopup>
+            </DropdownMenu>
           </div>
         </ProjectHeader>
       )}
@@ -1229,22 +1326,26 @@ function ProjectDetail({
             <div>
               <BookText aria-hidden="true" className="personal-empty-icon" />
               <h2>
-                {hasFolderFilter && project.threads.length
+                {hasFolderFilter
                   ? "No Conversations match the folder filter"
-                  : project.namedProject
-                    ? "No Conversations in this Project"
-                    : "No Captured Sessions yet"}
+                  : filtered
+                    ? "No Conversations match this selection"
+                    : project.namedProject
+                      ? "No Conversations in this Project"
+                      : "No Captured Sessions yet"}
               </h2>
               <p>
-                {hasFolderFilter && project.threads.length
-                  ? "Select Show all to restore the list."
-                  : project.namedProject
-                    ? organization
-                      ? "Open Project setup to choose sources and include Conversations here."
-                      : "Open a Conversation and use Add to Project to include it here."
-                    : project.path
-                      ? "Sessions appear after the Supported Capture Hook records activity in this Project."
-                      : "Move existing Conversations or a Project into this Project to get started."}
+                {hasFolderFilter
+                  ? "Select a Folder in the dropdown or choose Show all."
+                  : filtered
+                    ? "Return to Projects and reopen the Project to restore the list."
+                    : project.namedProject
+                      ? organization
+                        ? "Open Manage Project sources to include Conversations here."
+                        : "Open a Conversation and use Add to Project to include it here."
+                      : project.path
+                        ? "Sessions appear after the Supported Capture Hook records activity in this Project."
+                        : "Include a source through Manage Project sources."}
               </p>
             </div>
           </div>
@@ -3421,7 +3522,6 @@ function SessionDetail({
 }: {
   manageProject?: PersonalDesktopApi["manageProject"];
   manageSourceContext?: PersonalDesktopApi["manageSourceContext"];
-  assignSessionProject?: PersonalDesktopApi["assignSessionProject"];
   onCreateProject?: PersonalMemoryWorkspaceProps["onCreateProject"];
   authorizeManagedConversationTransfer?: PersonalMemoryWorkspaceProps["authorizeManagedConversationTransfer"];
   candidates: readonly WorkspaceShareCandidate[];
@@ -3431,7 +3531,6 @@ function SessionDetail({
   managedConversations?: ManagedConversationDesktopApi | null;
   managedProject?: ManagedProjectDesktopApi | null;
   markdownAdapters?: MarkdownPlatformAdapters;
-  onAssigned?: PersonalMemoryWorkspaceProps["onSessionProjectAssigned"];
   onInspectEvent?: PersonalMemoryWorkspaceProps["onInspectEvent"];
   onShare?: PersonalMemoryWorkspaceProps["onShareToWorkspace"];
   onOpenRepository?: (url: string) => void;
@@ -3811,27 +3910,33 @@ export function PersonalMemoryWorkspace({
     [snapshot.projectOrder, snapshot.projectsById]
   );
   const visibleProjects = useMemo(
-    () =>
-      projects.filter(
-        (project) =>
-          Boolean(project.namedProject) ||
-          project.repository?.kind === "local_project" ||
-          project.threads.length > 0 ||
-          project.eventCount > 0
-      ),
+    () => projects.filter((project) => Boolean(project.namedProject)),
     [projects]
+  );
+  const systemProjects = new Map(
+    systemConversationProjects(snapshot.inventory).map((project) => [
+      project.id,
+      project
+    ])
   );
   const selectedProjectId =
     route.kind === "projects"
       ? null
-      : snapshot.projectsById.has(route.projectId)
+      : snapshot.projectsById.has(route.projectId) ||
+          systemProjects.has(route.projectId)
         ? route.projectId
         : route.kind === "session"
           ? projectIdForSession(projects, route.sessionId)
           : route.projectId;
   const selectedProject =
-    (selectedProjectId ? snapshot.projectsById.get(selectedProjectId) : null) ??
-    null;
+    (selectedProjectId
+      ? (snapshot.projectsById.get(selectedProjectId) ??
+        systemProjects.get(selectedProjectId))
+      : null) ?? null;
+  const visibleSourceFilter =
+    route.kind === "projects" || selectedProject?.namedProject
+      ? undefined
+      : route.sourceFilter;
   const selectedManagedDraft =
     route.kind === "session"
       ? (managedDrafts.get(route.sessionId) ??
@@ -3845,7 +3950,12 @@ export function PersonalMemoryWorkspace({
   const selectedThread =
     route.kind === "session" && selectedProject
       ? (selectedProject.threads.find(
-          (thread) => sessionSelectionId(thread) === route.sessionId
+          (thread) =>
+            sessionSelectionId(thread) === route.sessionId ||
+            thread.id === route.sessionId ||
+            thread.sourceReferences?.some(
+              (ref) => ref.sessionId === route.sessionId
+            )
         ) ??
         managedDrafts.get(route.sessionId)?.thread ??
         selectedManagedDraft?.thread ??
@@ -3908,15 +4018,38 @@ export function PersonalMemoryWorkspace({
         ref={workspaceRef}
         tabIndex={-1}
       >
-        <ProjectsPane
-          onCreateProject={onCreateProject}
-          error={snapshot.error}
-          loading={!ready || snapshot.loading}
-          onRetry={() => void store.loadProjects()}
-          onSelect={(projectId) => onNavigate({ kind: "project", projectId })}
-          projects={visibleProjects}
-          selectedProjectId={selectedProject?.id ?? null}
-        />
+        {selectedProject && !selectedProject.namedProject ? (
+          <SourceBrowser
+            selectedFilter={
+              route.kind !== "projects" ? route.sourceFilter : undefined
+            }
+            loading={!ready || snapshot.loading}
+            error={snapshot.error}
+            onRetry={() => void store.loadProjects()}
+            inventory={snapshot.inventory}
+            selectedProjectId={selectedProject?.id ?? null}
+            onProjects={() => onNavigate({ kind: "projects" })}
+            onSelect={(projectId, sourceFilter) =>
+              onNavigate({
+                kind: "project",
+                projectId,
+                sourceFilter,
+                browse: "sources"
+              })
+            }
+          />
+        ) : (
+          <ProjectsPane
+            onCreateProject={onCreateProject}
+            error={snapshot.error}
+            loading={!ready || snapshot.loading}
+            onRetry={() => void store.loadProjects()}
+            onSelect={(projectId) => onNavigate({ kind: "project", projectId })}
+            projects={visibleProjects}
+            inventory={snapshot.inventory}
+            selectedProjectId={selectedProject?.id ?? null}
+          />
+        )}
         <main className="personal-memory-detail-pane">
           {effectiveRoute === "session" && selectedProject && selectedThread ? (
             <SessionDetail
@@ -3960,6 +4093,12 @@ export function PersonalMemoryWorkspace({
             />
           ) : (
             <ProjectDetail
+              filtered={Boolean(visibleSourceFilter)}
+              executionFolders={
+                selectedProject
+                  ? projectExecutionFolders(selectedProject, snapshot.inventory)
+                  : []
+              }
               renderConversationMove={
                 manageProject
                   ? (thread) => (
@@ -3986,30 +4125,34 @@ export function PersonalMemoryWorkspace({
                   : undefined
               }
               organization={
-                selectedProject?.namedProject && manageProject ? (
-                  <ProjectOrganization
-                    key={selectedProject.id}
-                    project={selectedProject}
-                    projects={projects}
-                    manage={manageProject}
-                    sync={manageMembershipSync}
-                    store={store}
-                    onDeleted={() => onNavigate({ kind: "projects" })}
-                    onReviewSharing={
-                      selectedProject.projectReference &&
-                      onReviewGitAnchorSharing
-                        ? () =>
-                            onReviewGitAnchorSharing(
-                              {
-                                kind: "project",
-                                project: selectedProject.projectReference!
-                              },
-                              selectedProject.name
-                            )
-                        : undefined
-                    }
-                  />
-                ) : undefined
+                selectedProject?.namedProject && manageProject
+                  ? (folderFilter, newConversation) => (
+                      <ProjectOrganization
+                        key={`organization:${selectedProject.id}`}
+                        project={selectedProject}
+                        folderFilter={folderFilter}
+                        newConversation={newConversation}
+                        projects={projects}
+                        manage={manageProject}
+                        sync={manageMembershipSync}
+                        store={store}
+                        onDeleted={() => onNavigate({ kind: "projects" })}
+                        onReviewSharing={
+                          selectedProject.projectReference &&
+                          onReviewGitAnchorSharing
+                            ? () =>
+                                onReviewGitAnchorSharing(
+                                  {
+                                    kind: "project",
+                                    project: selectedProject.projectReference!
+                                  },
+                                  selectedProject.name
+                                )
+                            : undefined
+                        }
+                      />
+                    )
+                  : undefined
               }
               localAiClients={localAiClients}
               launchSelection={launchSelection}
@@ -4054,6 +4197,9 @@ export function PersonalMemoryWorkspace({
                 onNavigate({
                   kind: "session",
                   projectId: selectedProject.id,
+                  browse: route.browse,
+                  sourceFilter:
+                    route.kind !== "projects" ? route.sourceFilter : undefined,
                   sessionId: routeId
                 });
               }}
@@ -4085,10 +4231,22 @@ export function PersonalMemoryWorkspace({
                 onNavigate({
                   kind: "session",
                   projectId: selectedProject.id,
+                  browse: route.browse,
+                  sourceFilter:
+                    route.kind !== "projects" ? route.sourceFilter : undefined,
                   sessionId
                 });
               }}
               project={effectiveRoute === "project" ? selectedProject : null}
+              sourceFilteredThreads={
+                selectedProject
+                  ? filterProjectSourceConversations(
+                      selectedProject,
+                      visibleSourceFilter,
+                      snapshot.inventory
+                    )
+                  : undefined
+              }
             />
           )}
         </main>

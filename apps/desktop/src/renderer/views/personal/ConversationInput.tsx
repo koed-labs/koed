@@ -8,6 +8,10 @@ import {
   type ReactNode
 } from "react";
 
+import {
+  ConversationFolderPicker,
+  type ConversationFolderPickerProps
+} from "./ConversationFolderPicker.js";
 import { ConversationSettings } from "./ConversationSettings.js";
 import {
   slashCommandKeypressIsHandled,
@@ -36,6 +40,7 @@ export function ConversationInput({
   attachments,
   autoFocus = false,
   disabled = false,
+  folderPicker,
   label,
   onChange,
   onSubmit,
@@ -52,6 +57,7 @@ export function ConversationInput({
   attachments?: ReactNode;
   autoFocus?: boolean;
   disabled?: boolean;
+  folderPicker?: ConversationFolderPickerProps;
   label: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -255,7 +261,20 @@ export function ConversationInput({
             )}
           </div>
         )}
-        <div className="conversation-input-footer">
+        <div
+          className={`conversation-input-footer${folderPicker ? " conversation-input-footer--with-folder" : ""}`}
+        >
+          {folderPicker ? (
+            <ConversationFolderPicker
+              {...folderPicker}
+              disabledReason={
+                folderPicker.disabledReason ??
+                (disabled
+                  ? "The Conversation input is unavailable."
+                  : undefined)
+              }
+            />
+          ) : null}
           <ConversationSettings {...settings} />
           <button
             aria-label={action.label}

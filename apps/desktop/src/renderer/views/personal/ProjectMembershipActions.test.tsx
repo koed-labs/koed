@@ -126,9 +126,6 @@ describe("Personal Project inclusion controls", () => {
   });
   const fixture = async () => {
     let catalog = [source, named(10, "Release"), named(20, "Research")];
-    const legacyMove = vi.fn<PersonalDesktopApi["assignSessionProject"]>(
-      async () => ({ projectId: null })
-    );
     const manage = vi.fn<NonNullable<PersonalDesktopApi["manageProject"]>>(
       async (input) => {
         const project = catalog.find((row) => row.id === input.projectId)!;
@@ -206,7 +203,6 @@ describe("Personal Project inclusion controls", () => {
       }
     );
     const api: PersonalDesktopApi = {
-      assignSessionProject: legacyMove,
       manageProject: manage,
       listProjects: async () => catalog,
       loadEventPage: async () => [],
@@ -218,10 +214,10 @@ describe("Personal Project inclusion controls", () => {
     };
     const store = new PersonalMemoryStore(api);
     await store.loadProjects();
-    return { store, manage, legacyMove };
+    return { store, manage };
   };
   it("adds one Conversation to two Projects and removes one inclusion without a source move", async () => {
-    const { store, manage, legacyMove } = await fixture();
+    const { store, manage } = await fixture();
     function View() {
       const snapshot = useSyncExternalStore(store.subscribe, store.current);
       return (
@@ -278,7 +274,6 @@ describe("Personal Project inclusion controls", () => {
     expect(checkbox("Release").checked).toBe(false);
     expect(checkbox("Research").checked).toBe(true);
     expect(document.body.textContent).toContain("example.test/source");
-    expect(legacyMove).not.toHaveBeenCalled();
     expect(thread.projectId).toBe(sourceId);
   });
   it("reviews every reason, preserves rules on direct removal, and pins exclusion and Add back to reviewed revisions", async () => {
@@ -547,6 +542,51 @@ describe("Personal Project inclusion controls", () => {
     await click("Confirm");
     expect(manage).toHaveBeenCalledTimes(1);
   });
+  it("retains an open rename draft and rejects its old version after a background refresh", async () => {
+    const { store, manage } = await fixture();
+    function View() {
+      const snapshot = useSyncExternalStore(store.subscribe, store.current);
+      return (
+        <NamedProjectActions
+          project={snapshot.projectsById.get(uuid(10))!}
+          manage={manage}
+          store={store}
+          onDeleted={() => undefined}
+        />
+      );
+    }
+    await act(async () => root.render(<View />));
+    await click("Edit Project");
+    await type(document.querySelector("input")!, "My draft name");
+    await act(async () => {
+      await manage({
+        action: "rename",
+        projectId: uuid(10),
+        expectedVersion: 1,
+        name: "Other device name"
+      });
+      await store.loadProjects();
+    });
+    expect(document.querySelector("input")!.value).toBe("My draft name");
+    await act(async () =>
+      document
+        .querySelector("form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    );
+    expect(manage).toHaveBeenLastCalledWith({
+      action: "rename",
+      projectId: uuid(10),
+      expectedVersion: 1,
+      name: "My draft name"
+    });
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+      "Project changed"
+    );
+    expect(store.current().projectsById.get(uuid(10))?.name).toBe(
+      "Other device name"
+    );
+  });
+
   it("renames and removes a named Project with its current version", async () => {
     const { store, manage } = await fixture(),
       deleted = vi.fn();

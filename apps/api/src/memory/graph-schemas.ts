@@ -29,6 +29,7 @@ export const graphThreadIndexResponseSchema = z.object({
   projects: z.array(
     z.object({
       id: z.string(),
+      ownerUserId: z.uuid().optional(),
       namedProject: personalNamedProjectSchema.optional(),
       projectReference: ownedPersonalProjectReferenceSchema.optional(),
       inclusionRules: z.array(personalProjectRuleSchema).optional(),

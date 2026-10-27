@@ -3167,6 +3167,40 @@ button.personal-project-details-folder:hover {
   width: 0.9rem;
 }
 
+.personal-agent-project-picker {
+  width: 310px;
+  max-width: calc(100vw - 24px);
+  max-height: min(360px, var(--available-height));
+  overflow-y: auto;
+}
+
+.personal-agent-project-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 8px;
+  border-radius: 6px;
+  outline: none;
+}
+
+.personal-agent-project-option[data-highlighted] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.personal-agent-project-option > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.personal-agent-project-option > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .personal-agent-project-error {
   color: var(--destructive);
   font-size: 0.75rem;
@@ -3709,6 +3743,77 @@ button.personal-project-details-folder:hover {
   overflow-wrap: anywhere;
 }
 
+.personal-project-details-folder-row {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}
+.personal-project-details-folder-row .personal-project-details-folder {
+  flex: 1;
+  min-width: 0;
+}
+
+.personal-project-sync-list {
+  max-height: 55vh;
+  overflow: auto;
+}
+
+.personal-project-sync-entity {
+  padding-block: 0.75rem;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.personal-project-sync-entity ul {
+  display: grid;
+  gap: 0.5rem;
+  padding-inline-start: 1.25rem;
+}
+
+.personal-project-sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.personal-source-browser summary {
+  cursor: pointer;
+  padding: 0.3rem 0;
+}
+.personal-source-browser nav {
+  display: grid;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+}
+.personal-source-browser nav button {
+  width: 100%;
+  text-align: left;
+  padding: 0.6rem;
+  border: 1px solid transparent;
+  border-radius: 0.4rem;
+  overflow-wrap: anywhere;
+}
+.personal-source-browser button[aria-current="page"] {
+  border-color: currentColor;
+}
+.personal-source-browser small {
+  display: block;
+  opacity: 0.75;
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
+}
+.personal-source-browser nav {
+  padding: 0.75rem;
+}
+.personal-source-browser h2 {
+  font-size: 0.85rem;
+  margin: 0.75rem 0 0.25rem;
+}
+.personal-source-browser button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 .personal-project-select-all {
   gap: 0.75rem;
   font-size: 0.8125rem;
@@ -3759,27 +3864,4 @@ button.personal-project-details-folder:hover {
 .personal-project-filter-status button:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
-}
-
-.personal-project-sync-list {
-  max-height: 55vh;
-  overflow: auto;
-}
-
-.personal-project-sync-entity {
-  padding-block: 0.75rem;
-  border-bottom: 1px solid var(--border);
-  overflow-wrap: anywhere;
-}
-
-.personal-project-sync-entity ul {
-  display: grid;
-  gap: 0.5rem;
-  padding-inline-start: 1.25rem;
-}
-
-.personal-project-sync-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
 }

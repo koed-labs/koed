@@ -6,6 +6,7 @@ import type {
   ManagedConversationLaunchOptions
 } from "../../../ipc/managed-conversation-protocol.js";
 import type { ConversationSelection } from "./ConversationSettings.js";
+import type { ConversationFolderPickerProps } from "./ConversationFolderPicker.js";
 import { ConversationInput } from "./ConversationInput.js";
 import { useSlashCommandDiscovery } from "./use-slash-command-discovery.js";
 
@@ -21,6 +22,7 @@ export function NewConversationComposer({
   projectId,
   projectRoot,
   commandProjectId,
+  folderPicker,
   options,
   selection,
   onChange,
@@ -35,6 +37,7 @@ export function NewConversationComposer({
   projectId: string | null;
   projectRoot?: string | null;
   commandProjectId?: string | null;
+  folderPicker?: ConversationFolderPickerProps;
   options: ManagedConversationLaunchOptions | null;
   selection: ConversationSelection;
   onChange: (value: ConversationSelection) => void;
@@ -69,6 +72,7 @@ export function NewConversationComposer({
   const available =
     api &&
     projectId &&
+    (!launchRef.current || launchRef.current.projectId === projectId) &&
     instance?.ready &&
     instance.models.some((model) => model.id === selection.model) &&
     selection.permissionMode;
@@ -193,6 +197,18 @@ export function NewConversationComposer({
           disabled: busy || !available || (requirePrompt && !prompt.trim())
         }}
         autoFocus
+        folderPicker={
+          folderPicker
+            ? {
+                ...folderPicker,
+                disabledReason: busy
+                  ? "Starting the Conversation…"
+                  : launchRef.current
+                    ? "Retry the pending start before changing Folder."
+                    : folderPicker.disabledReason
+              }
+            : undefined
+        }
         disabled={busy || initialPromptRef.current?.status === "reconciling"}
         label="First message"
         onChange={setPrompt}
@@ -219,7 +235,9 @@ export function NewConversationComposer({
           <span className="conversation-settings-status">
             {busy
               ? "Starting the AI Client…"
-              : "Send your first message to start the Conversation."}
+              : folderPicker && !projectId
+                ? "Choose a local Folder before sending."
+                : "Send your first message to start the Conversation."}
           </span>
           <span className="conversation-new-device">
             <MonitorSmartphone aria-hidden="true" />

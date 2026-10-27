@@ -1,3 +1,4 @@
+import { createProjectSourceFixture } from "../../project-source-fixture.js";
 import { repositoryScopeId, type RepositoryIdentity } from "@koed/shared";
 import type {
   PersonalDesktopApi,
@@ -63,7 +64,6 @@ const api = (overrides: Partial<PersonalDesktopApi> = {}) =>
   ({
     listProjects: vi.fn(async () => []),
     loadEventPage: vi.fn(async () => []),
-    assignSessionProject: vi.fn(async () => ({ projectId: null })),
     updateSessionTitle: vi.fn(async ({ title }) => ({ title })),
     updateSessionPresentation: vi.fn(async () => {
       throw new Error("not used");
@@ -73,6 +73,206 @@ const api = (overrides: Partial<PersonalDesktopApi> = {}) =>
   }) satisfies PersonalDesktopApi;
 
 describe("PersonalMemoryStore", () => {
+  it("publishes an empty named Project before first-launch preparation and enriches its native Folder afterwards", async () => {
+    const fixture = createProjectSourceFixture();
+    const empty = { ...fixture.project, threads: [], eventCount: 0 };
+    let folders: typeof fixture.localFolders = [];
+    let finish!: (folder: (typeof fixture.localFolders)[number]) => void;
+    const pending = new Promise<(typeof fixture.localFolders)[number]>(
+      (resolve) => {
+        finish = resolve;
+      }
+    );
+    const prepareLocalFolder = vi.fn(async () => {
+      const folder = await pending;
+      folders = [folder];
+      return folder;
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () => [empty],
+        listProjectMetadata: async () => fixture.metadata,
+        listLocalFolders: async () => folders,
+        prepareLocalFolder
+      })
+    );
+    const loading = store.loadProjects();
+    await vi.waitFor(() =>
+      expect(prepareLocalFolder).toHaveBeenCalledWith({
+        localProjectId: "lp_fixture_local"
+      })
+    );
+    expect(store.current().inventory.projects[0]?.id).toBe(empty.id);
+    expect(store.current().loading).toBe(false);
+    expect(store.current().inventory.localFolders).toEqual([]);
+    finish(fixture.localFolders[0]!);
+    await loading;
+    expect(store.current().inventory.localFolders).toEqual([
+      fixture.localFolders[0]
+    ]);
+    expect(store.current().error).toBeNull();
+  });
+
+  it("retains the Project catalog when native first-launch preparation is rejected", async () => {
+    const fixture = createProjectSourceFixture();
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () => fixture.groups,
+        listProjectMetadata: async () => fixture.metadata,
+        listLocalFolders: async () => [],
+        prepareLocalFolder: vi.fn(async () => {
+          throw new Error("Folder replaced");
+        })
+      })
+    );
+    await store.loadProjects();
+    expect(
+      store.current().inventory.projects.map((project) => project.id)
+    ).toContain(fixture.projectId);
+    expect(store.current().inventory.localFolders).toEqual([]);
+    expect(store.current().error).toBeNull();
+  });
+
+  it("publishes named Projects while source enumeration and native enrichment remain pending", async () => {
+    const fixture = createProjectSourceFixture();
+    let finishInventory!: (projects: PersonalDesktopProject[]) => void;
+    let finishMetadata!: (metadata: PersonalDesktopProjectMetadata[]) => void;
+    let finishStatus!: (status: { reconciliationPending: boolean }) => void;
+    const full = new Promise<PersonalDesktopProject[]>((resolve) => {
+      finishInventory = resolve;
+    });
+    const metadata = new Promise<PersonalDesktopProjectMetadata[]>(
+      (resolve) => {
+        finishMetadata = resolve;
+      }
+    );
+    const status = new Promise<{ reconciliationPending: boolean }>(
+      (resolve) => {
+        finishStatus = resolve;
+      }
+    );
+    const initial = fixture.groups.filter((group) => group.namedProject);
+    const initialRead = vi.fn(async () => initial);
+    const metadataRead = vi.fn(() => metadata);
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: () => full,
+        listNamedProjects: initialRead,
+        listProjectMetadata: metadataRead,
+        listLocalFolders: async () => fixture.localFolders,
+        projectStatus: () => status
+      })
+    );
+    const read = store.loadProjects();
+    await vi.waitFor(() =>
+      expect(store.current().inventory.projects.map((p) => p.id)).toEqual([
+        fixture.projectId
+      ])
+    );
+    expect(store.current().loading).toBe(true);
+    expect(store.current().inventory.gitSources).toHaveLength(0);
+    expect(metadataRead).toHaveBeenCalledOnce();
+    finishMetadata(fixture.metadata);
+    finishStatus({ reconciliationPending: false });
+    await vi.waitFor(() =>
+      expect(store.current().inventory.localFolders).toEqual(
+        fixture.localFolders
+      )
+    );
+    expect(store.current().inventory.projects).toHaveLength(1);
+    finishInventory(fixture.groups);
+    const complete = await read;
+    expect(complete.loading).toBe(false);
+    expect(complete.inventory.gitSources).toHaveLength(2);
+    expect(complete.inventory.folders).toHaveLength(3);
+    expect(complete.inventory.projects[0]?.threads).toHaveLength(4);
+    await store.loadProjects();
+    expect(initialRead).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a late initial Project response overwrite a complete inventory", async () => {
+    const fixture = createProjectSourceFixture();
+    let finishInitial!: (projects: PersonalDesktopProject[]) => void;
+    const initial = new Promise<PersonalDesktopProject[]>((resolve) => {
+      finishInitial = resolve;
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () => fixture.groups,
+        listNamedProjects: () => initial
+      })
+    );
+    await store.loadProjects();
+    const complete = store.current();
+    finishInitial([]);
+    await initial;
+    await Promise.resolve();
+    expect(store.current()).toBe(complete);
+    expect(complete.inventory.gitSources).toHaveLength(2);
+  });
+
+  it("retains the named inventory when source browsing fails, and falls back to the complete read if the initial read fails", async () => {
+    const fixture = createProjectSourceFixture();
+    const initial = fixture.groups.filter((group) => group.namedProject);
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () => {
+          throw new Error("Source enumeration failed");
+        },
+        listNamedProjects: async () => initial
+      })
+    );
+    const failed = await store.loadProjects();
+    expect(failed.inventory.projects[0]?.id).toBe(fixture.projectId);
+    expect(failed.loading).toBe(false);
+    expect(failed.error).toBe("Source enumeration failed");
+    const fallback = new PersonalMemoryStore(
+      api({
+        listProjects: async () => fixture.groups,
+        listNamedProjects: async () => {
+          throw new Error("Initial read failed");
+        }
+      })
+    );
+    expect((await fallback.loadProjects()).inventory.projects[0]?.id).toBe(
+      fixture.projectId
+    );
+    expect(fallback.current().error).toBeNull();
+  });
+
+  it("ignores startup responses superseded by a newer inventory load", async () => {
+    const fixture = createProjectSourceFixture();
+    let finishOld!: (projects: PersonalDesktopProject[]) => void;
+    let finishOldInitial!: (projects: PersonalDesktopProject[]) => void;
+    const old = new Promise<PersonalDesktopProject[]>((resolve) => {
+      finishOld = resolve;
+    });
+    const oldInitial = new Promise<PersonalDesktopProject[]>((resolve) => {
+      finishOldInitial = resolve;
+    });
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: vi
+          .fn()
+          .mockReturnValueOnce(old)
+          .mockResolvedValueOnce(fixture.groups),
+        listNamedProjects: vi
+          .fn()
+          .mockReturnValueOnce(oldInitial)
+          .mockResolvedValueOnce(
+            fixture.groups.filter((group) => group.namedProject)
+          )
+      })
+    );
+    const pending = store.loadProjects();
+    await store.loadProjects();
+    const current = store.current();
+    finishOldInitial([]);
+    finishOld([]);
+    await pending;
+    expect(store.current()).toBe(current);
+  });
+
   it("merges local Project metadata into the rendered Project index", async () => {
     // Only a shared repository identity links local metadata to a graph Project.
     const repository: RepositoryIdentity = {
@@ -101,18 +301,13 @@ describe("PersonalMemoryStore", () => {
         remotes: [{ display: "github.com/koed-labs/koed" }]
       }
     };
-    let graphProjectsLoaded = false;
     const store = new PersonalMemoryStore(
       api({
         listProjects: vi.fn(async () => {
           await Promise.resolve();
-          graphProjectsLoaded = true;
           return [source];
         }),
         listProjectMetadata: vi.fn(async () => {
-          if (!graphProjectsLoaded) {
-            throw new Error("Project metadata read before reconciliation");
-          }
           return [metadata];
         })
       })

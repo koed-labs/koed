@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
@@ -99,7 +98,12 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
 
 describe("Koed server desktop manager", () => {
   it("persists validated folder filters per Project without using the API", async () => {
-    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-folder-filter-ipc-"));
+    const base = resolve(
+      import.meta.dirname,
+      "../../../../scratch/restore-project-filter"
+    );
+    mkdirSync(base, { recursive: true });
+    const koedHome = mkdtempSync(resolve(base, "ipc-"));
     const personalMemoryFetch = vi.fn<typeof fetch>();
     const create = () =>
       createKoedServerManager({
@@ -399,6 +403,12 @@ describe("Koed server desktop manager", () => {
               rule: { ...folderRule, version: 2, removedAt: project.updatedAt }
             })
           );
+        if (path === "/v1/personal/sources/inventory")
+          return new Response(
+            JSON.stringify({ gitSources: [], unresolved: [], nextCursor: null })
+          );
+        if (path === "/v1/personal/folders/inventory")
+          return new Response(JSON.stringify({ projects: [] }));
         if (path.endsWith("/inventory"))
           return new Response(
             JSON.stringify({
@@ -471,6 +481,22 @@ describe("Koed server desktop manager", () => {
           input: { name: "  Planning  " }
         })
       ).toMatchObject({ ok: true, data: { projectId: project.projectId } });
+      const beforeInitial = personalMemoryFetch.mock.calls.length;
+      expect(
+        await manager.personalMemory({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.named.list",
+          input: {}
+        })
+      ).toMatchObject({
+        ok: true,
+        data: { projects: [{ id: project.projectId }] }
+      });
+      expect(
+        personalMemoryFetch.mock.calls
+          .slice(beforeInitial)
+          .map(([url]) => new URL(String(url)).pathname)
+      ).toEqual(["/v1/personal/projects/inventory"]);
       expect(
         await manager.personalMemory({
           contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
@@ -704,28 +730,6 @@ describe("Koed server desktop manager", () => {
             init?.method === "DELETE"
         )
       ).toBe(false);
-      expect(
-        await manager.personalMemory({
-          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-          operation: "personal.sessions.assign_project",
-          input: {
-            action: "move",
-            targetProjectId: project.projectId,
-            sessionId,
-            expectedVersion: 1
-          }
-        })
-      ).toMatchObject({ ok: false });
-      expect(
-        await manager.personalMemory({
-          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-          operation: "personal.projects.move",
-          input: {
-            sourceProjectId: "git-source",
-            targetProjectId: project.projectId
-          }
-        })
-      ).toMatchObject({ ok: false });
       expect(
         personalMemoryFetch.mock.calls.some(
           ([url]) =>
@@ -1166,7 +1170,7 @@ describe("Koed server desktop manager", () => {
     }
   });
 
-  it("reconciles graph Project paths into fresh local metadata", async () => {
+  it("loads recorded source paths without discovering or writing local checkout metadata", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-metadata-"));
     const projectPath = mkdtempSync(resolve(tmpdir(), "koed-desktop-project-"));
     execFileSync("git", ["init", projectPath]);
@@ -1212,10 +1216,14 @@ describe("Koed server desktop manager", () => {
         ),
       spawn: () => childProcess() as never,
       openExternal: async () => undefined,
-      personalMemoryFetch: async () =>
-        new Response(
+      personalMemoryFetch: async (url) => {
+        if (new URL(String(url)).pathname !== "/v1/personal/sources/inventory")
+          return new Response(JSON.stringify({ projects: [] }));
+        return new Response(
           JSON.stringify({
-            projects: [
+            gitSources: [],
+            nextCursor: null,
+            unresolved: [
               {
                 id: "project",
                 name: "Koed",
@@ -1256,7 +1264,8 @@ describe("Koed server desktop manager", () => {
             ]
           }),
           { status: 200, headers: { "content-type": "application/json" } }
-        )
+        );
+      }
     });
 
     const listProjectsRequest = {
@@ -1312,14 +1321,14 @@ describe("Koed server desktop manager", () => {
       }
     });
     const metadataPath = resolve(koedHome, "config/projects.json");
-    const firstMetadata = readFileSync(metadataPath, "utf8");
+    expect(existsSync(metadataPath)).toBe(false);
 
     await expect(
       manager.personalMemory(listProjectsRequest)
     ).resolves.toMatchObject({
       ok: true
     });
-    expect(readFileSync(metadataPath, "utf8")).toBe(firstMetadata);
+    expect(existsSync(metadataPath)).toBe(false);
 
     await expect(
       manager.personalMemory({
@@ -1330,12 +1339,7 @@ describe("Koed server desktop manager", () => {
     ).resolves.toMatchObject({
       ok: true,
       data: {
-        projects: [
-          {
-            path: { cwd: projectPath },
-            git: { remotes: [{ display: "github.com/koed-labs/koed" }] }
-          }
-        ]
+        projects: []
       }
     });
   });
@@ -2424,11 +2428,18 @@ describe("Koed server desktop manager", () => {
         return new Response(null, { status: 401 });
       })
       .mockImplementation(
-        async () =>
-          new Response(JSON.stringify({ projects: [] }), {
-            status: 200,
-            headers: { "content-type": "application/json" }
-          })
+        async (url) =>
+          new Response(
+            JSON.stringify(
+              new URL(String(url)).pathname === "/v1/personal/sources/inventory"
+                ? { gitSources: [], unresolved: [], nextCursor: null }
+                : { projects: [] }
+            ),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" }
+            }
+          )
       );
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -2481,10 +2492,12 @@ describe("Koed server desktop manager", () => {
       )
     ).toBe("Bearer stale_token");
     expect(
-      new Headers(personalMemoryFetch.mock.calls[1]?.[1]?.headers).get(
-        "authorization"
+      personalMemoryFetch.mock.calls.some(
+        ([, init]) =>
+          new Headers(init?.headers).get("authorization") ===
+          "Bearer fresh_token"
       )
-    ).toBe("Bearer fresh_token");
+    ).toBe(true);
     expect(JSON.stringify(personalMemoryFetch.mock.results)).not.toContain(
       "fresh_token"
     );
@@ -2527,30 +2540,40 @@ describe("Koed server desktop manager", () => {
       ...overrides
     });
     const personalMemoryFetch = vi.fn<typeof fetch>(async (...args) => {
-      void args;
+      const path = new URL(String(args[0])).pathname;
+      if (
+        path === "/v1/personal/projects/inventory" ||
+        path === "/v1/personal/folders/inventory"
+      )
+        return new Response(JSON.stringify({ projects: [] }));
+      const payload = {
+        projects: [
+          {
+            id: "project-1",
+            name: "koed",
+            path: "/repo",
+            eventCount: 7,
+            threads: [
+              thread({}),
+              thread({
+                id: "019fd173-d3cd-7753-84a4-421d8010f356",
+                name: "019fd173-d3cd-7753-84a4-421d8010f356",
+                sessionId: "00000000-0000-4000-8000-000000000002",
+                eventCount: 4,
+                sample: "Development activity captured in koed.",
+                threadKind: "subagent",
+                parentThreadId
+              })
+            ]
+          }
+        ]
+      };
       return new Response(
-        JSON.stringify({
-          projects: [
-            {
-              id: "project-1",
-              name: "koed",
-              path: "/repo",
-              eventCount: 7,
-              threads: [
-                thread({}),
-                thread({
-                  id: "019fd173-d3cd-7753-84a4-421d8010f356",
-                  name: "019fd173-d3cd-7753-84a4-421d8010f356",
-                  sessionId: "00000000-0000-4000-8000-000000000002",
-                  eventCount: 4,
-                  sample: "Development activity captured in koed.",
-                  threadKind: "subagent",
-                  parentThreadId
-                })
-              ]
-            }
-          ]
-        }),
+        JSON.stringify(
+          path === "/v1/personal/sources/inventory"
+            ? { gitSources: [], unresolved: payload.projects, nextCursor: null }
+            : payload
+        ),
         { status: 200, headers: { "content-type": "application/json" } }
       );
     });
@@ -3017,11 +3040,18 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     );
     let statusCalls = 0;
     const personalMemoryFetch = vi.fn<typeof fetch>().mockImplementation(
-      async () =>
-        new Response(JSON.stringify({ projects: [] }), {
-          status: 200,
-          headers: { "content-type": "application/json" }
-        })
+      async (url) =>
+        new Response(
+          JSON.stringify(
+            new URL(String(url)).pathname === "/v1/personal/sources/inventory"
+              ? { gitSources: [], unresolved: [], nextCursor: null }
+              : { projects: [] }
+          ),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        )
     );
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -3160,11 +3190,18 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error("stale local origin"))
       .mockImplementation(
-        async () =>
-          new Response(JSON.stringify({ projects: [] }), {
-            status: 200,
-            headers: { "content-type": "application/json" }
-          })
+        async (url) =>
+          new Response(
+            JSON.stringify(
+              new URL(String(url)).pathname === "/v1/personal/sources/inventory"
+                ? { gitSources: [], unresolved: [], nextCursor: null }
+                : { projects: [] }
+            ),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" }
+            }
+          )
       );
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -3210,7 +3247,15 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     expect(statusCalls).toBe(2);
     expect(personalMemoryFetch).toHaveBeenCalledTimes(4);
     expect(String(personalMemoryFetch.mock.calls[0]?.[0])).toContain(":4170/");
-    expect(String(personalMemoryFetch.mock.calls[1]?.[0])).toContain(":4180/");
+    expect(
+      personalMemoryFetch.mock.calls.some(([url]) => {
+        const request = new URL(String(url));
+        return (
+          request.port === "4180" &&
+          request.pathname === "/v1/personal/sources/inventory"
+        );
+      })
+    ).toBe(true);
   });
 
   it("rejects a non-loopback API authority before any Personal Memory fetch", async () => {
@@ -3340,68 +3385,6 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
     expect(String(personalMemoryFetch.mock.calls[1]?.[0])).toBe(
       `http://localhost:4170/v1/memory/graph/events/${invalidatedEventId}?includeContent=true&includeRaw=false`
     );
-  });
-
-  it("rejects legacy Project assignments before local discovery or API calls", async () => {
-    const base = fileURLToPath(
-      new URL("../../../../scratch/p1-17/", import.meta.url)
-    );
-    mkdirSync(base, { recursive: true });
-    const koedHome = mkdtempSync(resolve(base, "retired-main-"));
-    const personalMemoryFetch = vi.fn<typeof fetch>();
-    const manager = createKoedServerManager({
-      repoRoot: "/repo",
-      cliPath: "/repo/cli.js",
-      environment: { KOED_HOME: koedHome },
-      createCliInvocation: (args) => ({
-        command: "/node",
-        args: ["/repo/cli.js", ...args],
-        env: { KOED_HOME: koedHome }
-      }),
-      existsSync: () => true,
-      execFile: (_command, _args, _options, callback) => {
-        callback(
-          null,
-          JSON.stringify({
-            ok: true,
-            api: { state: "healthy", url: "http://localhost:4170" }
-          }),
-          ""
-        );
-      },
-      spawn: () => childProcess() as never,
-      openExternal: async () => undefined,
-      personalMemoryFetch
-    });
-    try {
-      for (const request of [
-        {
-          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-          operation: "personal.sessions.assign_project",
-          input: {
-            action: "move",
-            sessionId: "11111111-1111-4111-8111-111111111111",
-            targetProjectId: "retired",
-            expectedVersion: 1
-          }
-        },
-        {
-          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
-          operation: "personal.projects.move",
-          input: { sourceProjectId: "git-source", targetProjectId: "retired" }
-        }
-      ] as const) {
-        const result = await manager.personalMemory(request);
-        expect(result).toMatchObject({
-          ok: false,
-          error: { code: "unsupported_operation", retryable: false }
-        });
-        expect(JSON.stringify(result)).toContain("Use Add to Project");
-      }
-      expect(personalMemoryFetch).not.toHaveBeenCalled();
-    } finally {
-      rmSync(koedHome, { recursive: true, force: true });
-    }
   });
 
   it("updates a Captured Session title through the fixed owner-scoped route", async () => {

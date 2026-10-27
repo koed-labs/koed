@@ -17,6 +17,12 @@ type NativeCatalogChange = {
   replaces: string[];
   operation: "set_project" | "delete_project";
   value: {
+    automaticRetirement?: NonNullable<
+      PersonalMembershipRevision["automaticRetirement"]
+    >;
+    automaticDefault?: NonNullable<
+      PersonalMembershipRevision["automaticDefault"]
+    >;
     name?: string;
     portableMembership?: {
       projectIdentity: string;
@@ -87,6 +93,12 @@ export const bridgePersonalMembershipCatalog = async (
       entityId: projectIdentity,
       revisionId: change.revision_id,
       authorDeviceId: localDeviceId,
+      ...(change.value.automaticRetirement
+        ? { automaticRetirement: change.value.automaticRetirement }
+        : {}),
+      ...(change.value.automaticDefault
+        ? { automaticDefault: change.value.automaticDefault }
+        : {}),
       replaces: [...(frozen?.replaces ?? change.replaces)].sort(),
       operation:
         change.operation === "set_project"

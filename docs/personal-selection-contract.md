@@ -1023,7 +1023,7 @@ exclusion does not promise inclusion: an underlying reason and verified source
 are still required. Direct inclusion previews account for exclusions, and any
 change to the reviewed exclusion state makes apply stale.
 
-The complete receiver advertises `project_membership_v1` alongside
+The complete receiver advertises `project_membership_v1`, `project_defaults_v1`, and
 `source_context_v1`. Outbound publication still requires verified peer support.
 Three focused backend cases pass with the shared advertisement enabled. The
 rule/exclusion journey uses signed encrypted packages across two databases and
@@ -1224,3 +1224,17 @@ Target key must remain equal, and no policy may be bound to the retired Session
 ID. Otherwise replacement could drop a policy or Capture Pause. A deleted source or an
 invalidated source with a retained Capture Target requires a new Conversation;
 capture cannot silently choose a replacement policy key.
+
+## Automatic default Project convergence (PV-06)
+
+The current automatic Project layer extends the existing membership history with explicit initialization and retirement provenance.
+Equivalent automatic roots can resolve to one available view while retaining all original heads and authors.
+Real User operations supersede an unobserved automatic root. Concurrent User operations still require review.
+The database guard checks the selected retained revision and rejects hidden concurrent User intent.
+See [ADR 0063](adr/0063-default-project-identities-and-automatic-provenance.md) and [Personal inventory](personal-inventory.md) for the identity rule and acceptance evidence.
+
+The encrypted configuration payload union also carries `project_default` source decisions.
+The `project_defaults_v1` capability authorizes their publication through the existing transport.
+These managed, retired, and suppressed decisions prevent automatic recreation without editing User membership or source facts.
+Migration 0076 extends the payload check and the membership view guard.
+Owner, witness, device, policy, and source-readiness checks remain the same as other Personal configuration.

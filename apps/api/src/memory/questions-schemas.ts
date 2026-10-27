@@ -1,4 +1,7 @@
-import { personalFolderReferenceSchema } from "@koed/shared";
+import {
+  personalFolderReferenceSchema,
+  personalGitContextSchema
+} from "@koed/shared";
 import { z } from "zod";
 import {
   memoryQuestionRetrievalScopeSchema,
@@ -72,11 +75,21 @@ export const desktopAskCreateSchema = z
   .object({
     named_project_id: z.uuid().optional(),
     folder_selection: personalFolderReferenceSchema.optional(),
+    repository_selection: personalGitContextSchema.optional(),
     ask_thread_id: z.string().uuid().optional(),
     idempotency_key: z.string().trim().min(1).max(500),
     query: z.string().trim().min(1).max(32_000)
   })
-  .strict();
+  .strict()
+  .refine(
+    (input) =>
+      [
+        input.named_project_id,
+        input.folder_selection,
+        input.repository_selection
+      ].filter(Boolean).length <= 1,
+    { message: "Ask requires one explicit target" }
+  );
 
 const desktopAskCompleteBaseSchema = z
   .object({

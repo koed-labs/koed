@@ -13,7 +13,8 @@ export const PDS_CONFIGURATION_CAPABILITY_PATH =
   "/v1/personal-device-sync/relay/configuration-capabilities";
 export const personalConfigurationFeatureSchema = z.enum([
   "source_context_v1",
-  "project_membership_v1"
+  "project_membership_v1",
+  "project_defaults_v1"
 ]);
 export type PersonalConfigurationFeature = z.infer<
   typeof personalConfigurationFeatureSchema
@@ -21,7 +22,7 @@ export type PersonalConfigurationFeature = z.infer<
 export const pdsConfigurationCapabilityAdvertisementSchema = z
   .object({
     protocol: z.literal(PERSONAL_CONFIGURATION_PROTOCOL),
-    features: z.array(personalConfigurationFeatureSchema).min(1).max(2),
+    features: z.array(personalConfigurationFeatureSchema).min(1).max(3),
     advertisedAt: z.iso.datetime({ offset: true }),
     expiresAt: z.iso.datetime({ offset: true })
   })

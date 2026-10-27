@@ -43,6 +43,52 @@ describe("navigationReducer", () => {
     expect(currentNavigationEntry(state)).toEqual(teamChannel);
   });
 
+  it("retains an exact nested source filter and browse context through Conversation back/forward navigation", () => {
+    const entry: NavigationEntry = {
+      ...personal,
+      route: {
+        kind: "personal-memory-project",
+        projectId: "named-project",
+        browse: "sources",
+        sourceFilter: {
+          kind: "folder",
+          key: "full-folder-identity",
+          gitKey: "anchor-identity"
+        }
+      }
+    };
+    const session: NavigationEntry = {
+      ...entry,
+      route: {
+        ...entry.route,
+        kind: "personal-memory-session",
+        projectId: "named-project",
+        sessionId: "logical-session",
+        browse: "sources",
+        sourceFilter: {
+          kind: "folder",
+          key: "full-folder-identity",
+          gitKey: "anchor-identity"
+        }
+      }
+    };
+    let state = navigationReducer(createNavigationState(entry), {
+      type: "push",
+      entry: session
+    });
+    state = navigationReducer(state, { type: "back" });
+    expect(currentNavigationEntry(state)).toEqual(entry);
+    const query = new URLSearchParams(routePath(entry.route).split("?")[1]);
+    expect(JSON.parse(query.get("source")!)).toEqual({
+      kind: "folder",
+      key: "full-folder-identity",
+      gitKey: "anchor-identity"
+    });
+    expect(query.get("browse")).toBe("sources");
+    state = navigationReducer(state, { type: "forward" });
+    expect(currentNavigationEntry(state)).toEqual(session);
+  });
+
   it("drops forward history when a new route is pushed", () => {
     const preferences: NavigationEntry = {
       route: { kind: "preferences", section: "general" },

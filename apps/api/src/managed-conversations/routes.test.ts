@@ -14,13 +14,44 @@ import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import { storeDesktopLocalCredential } from "@koed/shared";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiRouteContext } from "../server/context.js";
 import {
   assertManagedCapability,
   registerManagedConversationRoutes
 } from "./routes.js";
+
+const nativeProfiles: string[] = [];
+const nativeProject = (projectId: string) => {
+  const parent = resolve(
+    import.meta.dirname,
+    "../../../../scratch/pv-04/runtime"
+  );
+  mkdirSync(parent, { recursive: true });
+  const koedHome = mkdtempSync(resolve(parent, "profile-"));
+  nativeProfiles.push(koedHome);
+  const projectPath = resolve(koedHome, "checkout");
+  mkdirSync(projectPath);
+  mkdirSync(resolve(koedHome, "config"));
+  writeFileSync(
+    resolve(koedHome, "config", "projects.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      projects: [
+        {
+          localProjectId: projectId,
+          path: { cwd: projectPath, projectRoot: projectPath }
+        }
+      ]
+    })
+  );
+  return { koedHome, projectPath };
+};
+afterEach(() => {
+  for (const profile of nativeProfiles.splice(0))
+    rmSync(profile, { recursive: true, force: true });
+});
 
 const launchSelection = {
   provider: "codex" as const,
@@ -2203,7 +2234,7 @@ describe("managed Conversation routes", () => {
     const deploymentId = randomUUID();
     const deviceId = randomUUID();
     const projectId = "lp_verified";
-    const projectPath = "/work/verified-project";
+    const { koedHome, projectPath } = nativeProject(projectId);
     const upstreamCalls: Array<{ url: URL; body: unknown }> = [];
     const upsert = vi.fn(async (actor, input) => ({
       ...input,
@@ -2216,7 +2247,7 @@ describe("managed Conversation routes", () => {
     }));
     const app = Fastify({ logger: false });
     registerManagedConversationRoutes(app, {
-      config: { deploymentProfile: "local_personal" },
+      config: { deploymentProfile: "local_personal", koedHome },
       encryption: { envelopeEncryptionProvider: {} },
       auth: {
         authenticate: async () => ({
@@ -2319,87 +2350,100 @@ describe("managed Conversation routes", () => {
     expect(upstreamCalls[1]?.body).toEqual(upstreamCalls[0]?.body);
   });
 
-  it("blocks a local start until the worker verifies its execution checkout", async () => {
-    const userId = randomUUID();
-    const executionId = randomUUID();
-    const commandId = randomUUID();
-    const deploymentId = randomUUID();
-    const deviceId = randomUUID();
-    const projectId = "lp_local_workspace";
-    const projectPath = "/work/local-workspace";
-    const createManagedConversation = vi.fn(async () => ({
-      execution: {
-        id: executionId,
-        ownerUserId: userId,
-        projectId,
-        provider: "codex",
-        state: "starting",
-        executionGeneration: 1
-      },
-      command: { id: commandId, state: "blocked" },
-      fencingToken: ""
-    }));
-    const app = Fastify({ logger: false });
-    registerManagedConversationRoutes(app, {
-      config: { deploymentProfile: "local_personal" },
-      encryption: { envelopeEncryptionProvider: {} },
-      auth: {
-        authenticate: async () => ({
-          id: userId,
-          email: "alice@example.invalid",
-          displayName: "Alice",
-          passwordHash: null
+  it.each([true, false])(
+    "requires native execution metadata before asking the worker to verify its checkout (%s)",
+    async (registered) => {
+      const userId = randomUUID();
+      const executionId = randomUUID();
+      const commandId = randomUUID();
+      const deploymentId = randomUUID();
+      const deviceId = randomUUID();
+      const projectId = "lp_local_workspace";
+      const { koedHome, projectPath } = nativeProject(projectId);
+      const createManagedConversation = vi.fn(async () => ({
+        execution: {
+          id: executionId,
+          ownerUserId: userId,
+          projectId,
+          provider: "codex",
+          state: "starting",
+          executionGeneration: 1
+        },
+        command: { id: commandId, state: "blocked" },
+        fencingToken: ""
+      }));
+      const app = Fastify({ logger: false });
+      registerManagedConversationRoutes(app, {
+        config: {
+          deploymentProfile: "local_personal",
+          koedHome: registered ? koedHome : undefined
+        },
+        encryption: { envelopeEncryptionProvider: {} },
+        auth: {
+          authenticate: async () => ({
+            id: userId,
+            email: "alice@example.invalid",
+            displayName: "Alice",
+            passwordHash: null
+          })
+        },
+        deploymentIdentity: {
+          inspect: () => ({
+            health: "healthy",
+            deploymentId,
+            deviceInstanceId: deviceId
+          })
+        },
+        rateLimit: {
+          memoryRead: async () => undefined,
+          memoryWrite: async () => undefined
+        },
+        localEdge: {
+          upstreamBackendsPath: resolve(
+            mkdtempSync(resolve(tmpdir(), "koed-no-managed-upstream-")),
+            "upstream-backends.json"
+          ),
+          resolveUpstreamAuthorization: () => null,
+          fetch: vi.fn()
+        },
+        requireRepository: () => ({
+          ...launchRepository,
+          listLcmGraphThreads: async () => [
+            { id: projectId, path: projectPath }
+          ],
+          createManagedConversation,
+          upsertManagedConversationRuntimeBinding: vi.fn(async () => ({})),
+          getManagedConversationRuntimeBinding: vi.fn(async () => null)
         })
-      },
-      deploymentIdentity: {
-        inspect: () => ({
-          health: "healthy",
-          deploymentId,
-          deviceInstanceId: deviceId
-        })
-      },
-      rateLimit: {
-        memoryRead: async () => undefined,
-        memoryWrite: async () => undefined
-      },
-      localEdge: {
-        upstreamBackendsPath: resolve(
-          mkdtempSync(resolve(tmpdir(), "koed-no-managed-upstream-")),
-          "upstream-backends.json"
-        ),
-        resolveUpstreamAuthorization: () => null,
-        fetch: vi.fn()
-      },
-      requireRepository: () => ({
-        ...launchRepository,
-        listLcmGraphThreads: async () => [{ id: projectId, path: projectPath }],
-        createManagedConversation,
-        upsertManagedConversationRuntimeBinding: vi.fn(async () => ({})),
-        getManagedConversationRuntimeBinding: vi.fn(async () => null)
-      })
-    } as unknown as ApiRouteContext);
-    await app.ready();
+      } as unknown as ApiRouteContext);
+      await app.ready();
 
-    const response = await app.inject({
-      method: "POST",
-      url: "/v1/managed-conversations",
-      payload: {
-        projectId,
-        ...launchSelection,
-        idempotencyKey: "phase7-local-workspace-start"
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/managed-conversations",
+        payload: {
+          projectId,
+          ...launchSelection,
+          idempotencyKey: "phase7-local-workspace-start"
+        }
+      });
+      await app.close();
+
+      if (!registered) {
+        expect(response.statusCode).toBe(409);
+        expect(createManagedConversation).not.toHaveBeenCalled();
+        return;
       }
-    });
-    await app.close();
-
-    expect(response.statusCode).toBe(202);
-    expect(createManagedConversation).toHaveBeenCalledWith(
-      { userId },
-      expect.objectContaining({
-        projectId,
-        deferUntilRuntimeBinding: true
-      })
-    );
-  });
+      expect(response.statusCode).toBe(202);
+      expect(createManagedConversation).toHaveBeenCalledWith(
+        { userId },
+        expect.objectContaining({
+          projectId,
+          deferUntilRuntimeBinding: true
+        })
+      );
+    }
+  );
 
   it("binds each Independent execution to its own Koed-owned directory", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-independent-"));
@@ -2412,6 +2456,19 @@ describe("managed Conversation routes", () => {
     const projectId = "lp_independent";
     const projectPath = resolve(koedHome, "projects", "Independent");
     mkdirSync(projectPath, { recursive: true });
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config", "projects.json"),
+      JSON.stringify({
+        schemaVersion: 3,
+        projects: [
+          {
+            localProjectId: projectId,
+            path: { cwd: projectPath, projectRoot: projectPath }
+          }
+        ]
+      })
+    );
     const upsertManagedConversationRuntimeBinding = vi.fn(async () => ({}));
     const createManagedConversation = vi
       .fn()
@@ -2559,9 +2616,10 @@ describe("managed Conversation routes", () => {
   it("rejects malformed proxied starts before persisting a local binding", async () => {
     const userId = randomUUID();
     const upsert = vi.fn();
+    const { koedHome } = nativeProject("lp_verified");
     const app = Fastify({ logger: false });
     registerManagedConversationRoutes(app, {
-      config: { deploymentProfile: "local_personal" },
+      config: { deploymentProfile: "local_personal", koedHome },
       encryption: { envelopeEncryptionProvider: {} },
       auth: {
         authenticate: async () => ({

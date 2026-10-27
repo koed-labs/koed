@@ -11,6 +11,14 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: "@koed/shared/personal-project-default",
+        replacement: `${root}packages/shared/src/personal-project-default.ts`
+      },
+      {
+        find: "@koed/shared/personal-local-folders",
+        replacement: `${root}packages/shared/src/personal-local-folders.ts`
+      },
+      {
         find: "@koed/shared/repository-review",
         replacement: `${root}packages/shared/src/repository-review.ts`
       },
