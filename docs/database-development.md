@@ -10,29 +10,32 @@ When changing the schema:
 2. Generate a migration with `pnpm --filter @koed/db migrate:generate`.
 3. Review the generated SQL in `packages/db/drizzle/`.
 4. Check migration metadata with `pnpm db:migrate:check`.
-5. Run the migration acceptance matrix with
+5. Run current-build migration acceptance with
    `pnpm db:migrate:acceptance` (the `pnpm db:migrate:smoke` alias remains
    available).
 
 `pnpm db:migrate:acceptance` uses `DATABASE_URL` to connect to a Postgres
 server and creates a separate disposable database for every acceptance case.
-Current journal head is `0046_project_scoped_recall`. The acceptance matrix
-covers the following upgrade and recovery cases:
+The complete checked-in migration journal determines the current schema; the
+runner does not pin a historical migration number. Acceptance covers:
 
 - a clean run of the full migration journal;
-- the exact populated current-main `0000` through `0012` schema upgraded by the
-  single current `0013`, with Personal Memory and Team/Workspace fixture data
-  retained;
-- transaction rollback and a successful retry after the migration statement is
-  cancelled mid-`0013`;
-- a real `pg_dump` backup before upgrade, `pg_restore` into a fresh database,
-  retained-data verification, and upgrade of the restored database;
+- current column, constraint, index, and security-trigger contracts;
+- concurrent migration startup against the same clean database;
+- transaction rollback after a deliberate statement failure or cancellation,
+  with unchanged schema, data, and ledger, followed by a successful retry;
+- a real current-build `pg_dump` backup, `pg_restore` into a fresh database,
+  exact public-table data and schema comparison, and restart of the restored
+  database;
 - an idempotent migration rerun with unchanged migration ledger, schema, and
   retained data; and
-- executable alpha compatibility boundaries: current collaboration queries are
-  unavailable before `0013`, the discarded experimental Team Chat schema is
-  unavailable after it, and current-main-shaped stable writes remain valid
-  after the forward migration.
+- current schema guards, including the absence of discarded Team Chat objects
+  and removed source-path columns.
+
+The former `--current-schema-only` argument remains accepted and selects the same
+checks. Historical alpha schema layouts are no longer part of this default gate.
+Dedicated Project and sync cutover tests retain their distinct migration evidence.
+SQL migration history is unchanged.
 
 The Postgres user in `DATABASE_URL` must be allowed to create and drop
 databases. The server must have the `vector` extension available. Matching

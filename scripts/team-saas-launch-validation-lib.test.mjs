@@ -146,10 +146,7 @@ test("automated launch commands select only their intended test files", () => {
     (command) => command.id === "shared-memory-workflow-performance"
   );
 
-  assert.deepEqual(migrationCommand?.args, [
-    "db:migrate:acceptance",
-    "--current-schema-only"
-  ]);
+  assert.deepEqual(migrationCommand?.args, ["db:migrate:acceptance"]);
   assert.deepEqual(requiredSuitesCommand?.args, ["test:required-suites"]);
   assert.deepEqual(pdsFixtureCommand?.args, ["pds-fixture:validate"]);
 

@@ -279,7 +279,7 @@ export const automatedLaunchTestCommands = [
   {
     id: "migration-acceptance",
     command: "pnpm",
-    args: ["db:migrate:acceptance", "--current-schema-only"]
+    args: ["db:migrate:acceptance"]
   },
   {
     id: "required-collaboration-suites",
