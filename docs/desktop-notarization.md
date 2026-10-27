@@ -67,7 +67,8 @@ Packaged native smoke and artifact-composition/size policy must then pass before
 SHA-256 checksums and immutable release upload. Outputs are
 `Koed-<version>-arm64.dmg`, `Koed-<version>-arm64.zip`,
 `koed-desktop-macos-arm64.sha256`, and the Desktop size report. Existing server,
-component-signature, metadata, and promotion gates remain required before the
+complete version-matched component-pin catalog, metadata, protected reviewed-build
+identity, read-only candidate verification and approved promotion gates remain required before the
 GitHub draft can become public. Failed or skipped signing blocks publication.
 
 On failure, fix the issue and rerun the normal pipeline. Existing release assets
