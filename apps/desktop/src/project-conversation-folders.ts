@@ -9,6 +9,8 @@ export type ProjectConversationFolder = {
   id: string;
   path: string | null;
   localProjectId: string | null;
+  originatingDeviceId: string;
+  historical: boolean;
   repository?: RepositoryIdentity;
   repositoryRemotes?: DesktopProject["repositoryRemotes"];
   count: number;
@@ -38,11 +40,19 @@ export function projectConversationFolders(project: DesktopProject) {
             }
           ]
         : []
-  ).map((folder) => ({
-    ...folder,
-    id: folderId(folder.path, folder.repository?.originatingDeviceId ?? ""),
-    count: 0
-  }));
+  )
+    .map((folder) => ({
+      ...folder,
+      id: folderId(folder.path, folder.repository?.originatingDeviceId ?? ""),
+      originatingDeviceId: folder.repository?.originatingDeviceId ?? "",
+      historical:
+        folder.repository?.originatingDeviceId === "historical_unknown_device",
+      count: 0
+    }))
+    .filter(
+      (folder, index, entries) =>
+        entries.findIndex((entry) => entry.id === folder.id) === index
+    );
   const byThread = new Map<string, string>();
   const threads = new Map(project.threads.map((thread) => [thread.id, thread]));
   const resolve = (
@@ -75,8 +85,8 @@ export function projectConversationFolders(project: DesktopProject) {
           (candidate) =>
             candidate.path &&
             (!device ||
-              !candidate.repository ||
-              candidate.repository.originatingDeviceId === device) &&
+              !candidate.originatingDeviceId ||
+              candidate.originatingDeviceId === device) &&
             (automatic?.root
               ? path === normalizedPath(candidate.path)
               : within(path, normalizedPath(candidate.path)))
@@ -87,6 +97,8 @@ export function projectConversationFolders(project: DesktopProject) {
           id: folderId(source, device ?? ""),
           path: source,
           localProjectId: null,
+          originatingDeviceId: device ?? "",
+          historical: device === "historical_unknown_device",
           count: 0
         };
         folders.push(folder);
@@ -113,7 +125,14 @@ export function projectConversationFolders(project: DesktopProject) {
     const id = resolve(thread);
     let folder = folders.find((entry) => entry.id === id);
     if (!folder) {
-      folder = { id, path: null, localProjectId: null, count: 0 };
+      folder = {
+        id,
+        path: null,
+        localProjectId: null,
+        originatingDeviceId: "",
+        historical: false,
+        count: 0
+      };
       folders.push(folder);
     }
     folder.count += 1;

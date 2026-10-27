@@ -39,6 +39,9 @@ type ProjectHeaderProps = ProjectRepositoryActions & {
   onRevealLocalProject?: (localProjectId: string) => void;
 };
 
+const folderLabel = (folder: ProjectConversationFolder) =>
+  `${folderName(folder.path ?? "")}${folder.historical ? " · Historical · device unknown" : ""}`;
+
 export function ProjectHeader({
   project,
   folderFilter,
@@ -77,7 +80,9 @@ export function ProjectHeader({
     currentPage === "overview"
       ? project.name
       : currentPage === "folder"
-        ? folderName(folder?.path ?? project.name)
+        ? folder
+          ? folderLabel(folder)
+          : project.name
         : folderPageTitle[currentPage];
   return (
     <Popover.Root
@@ -247,7 +252,7 @@ export function ProjectHeader({
                               />
                               <span className="sr-only">
                                 {entry.path
-                                  ? `Show Conversations from ${entry.path}`
+                                  ? `Show ${entry.historical ? "historical " : ""}Conversations from ${entry.path}`
                                   : "Show other Conversations"}
                               </span>
                             </label>
@@ -256,14 +261,14 @@ export function ProjectHeader({
                             <button
                               type="button"
                               className="personal-project-details-folder"
-                              aria-label={`Open ${entry.path} details`}
+                              aria-label={`Open ${entry.path}${entry.historical ? " historical" : ""} details`}
                               onClick={() => {
                                 setFolderKey(entry.id);
                                 setPage("folder");
                               }}
                             >
                               <span>
-                                <span>{folderName(entry.path)}</span>
+                                <span>{folderLabel(entry)}</span>
                                 <small>{entry.path}</small>
                               </span>
                               <ChevronRight aria-hidden="true" />
