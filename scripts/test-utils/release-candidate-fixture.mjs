@@ -233,6 +233,7 @@ export const setupCandidate = async ({ desktop = false, payload } = {}) => {
     id: 7,
     tag_name: "v1.2.3",
     draft: true,
+    prerelease: false,
     assets: [...contents.keys()].map((name, i) => ({ id: i + 10, name }))
   };
   const readers = {
@@ -262,9 +263,11 @@ export const setupCandidate = async ({ desktop = false, payload } = {}) => {
           },
     getRelease: async () => structuredClone(release),
     getAsset: async (_repo, id) =>
-      Buffer.from(
-        contents.get(release.assets.find((asset) => asset.id === id).name)
-      ),
+      (async function* () {
+        yield Buffer.from(
+          contents.get(release.assets.find((asset) => asset.id === id).name)
+        );
+      })(),
     getRegistryVersion: async (_name, version) =>
       version === "latest"
         ? null

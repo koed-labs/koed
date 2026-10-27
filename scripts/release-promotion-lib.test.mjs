@@ -109,7 +109,7 @@ test("immutable mismatches and incomplete candidates block stable promotion", ()
   assert.match(downgrade.reasons.join(" "), /downgrade/);
 });
 
-test("verified complete candidate promotes latest then GitHub without overwriting", () => {
+test("verified complete candidate publishes GitHub then promotes latest without overwriting", () => {
   const plan = planReleasePromotion(
     expected,
     {
@@ -129,8 +129,8 @@ test("verified complete candidate promotes latest then GitHub without overwritin
     authorized
   );
   assert.deepEqual(plan.actions, [
-    { kind: "promote-latest" },
-    { kind: "publish-github" }
+    { kind: "publish-github" },
+    { kind: "promote-latest" }
   ]);
   const unverified = planReleasePromotion(
     expected,

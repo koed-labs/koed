@@ -5,6 +5,8 @@ import {
   verifyReleaseCandidate
 } from "./release-candidate-verification.mjs";
 
+export const candidateAssetTransferTimeoutMs = 20 * 60 * 1000;
+
 const readBytes = async (response, limit) => {
   if (!response.ok)
     throw new Error(`Candidate reader returned HTTP ${response.status}.`);
@@ -33,13 +35,21 @@ export const createCandidateReaders = ({
           : "application/vnd.github+json",
         ...(token ? { authorization: `Bearer ${token}` } : {})
       },
-      signal: AbortSignal.timeout(120000)
+      signal: AbortSignal.timeout(
+        binary ? candidateAssetTransferTimeoutMs : 120000
+      )
     });
-    const bytes = await readBytes(
-      response,
-      binary ? 4 * 1024 ** 3 : 16 * 1024 ** 2
-    );
-    return binary ? bytes : JSON.parse(bytes.toString("utf8"));
+    if (binary) {
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error(`Candidate reader returned HTTP ${response.status}.`);
+      }
+      if (!response.body)
+        throw new Error("Candidate reader response has no body.");
+      return response.body;
+    }
+    const bytes = await readBytes(response, 16 * 1024 ** 2);
+    return JSON.parse(bytes.toString("utf8"));
   };
   const repo = (value) => {
     if (!/^[\w.-]+\/[\w.-]+$/.test(value))

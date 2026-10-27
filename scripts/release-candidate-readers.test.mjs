@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createCandidateReaders,
+  candidateAssetTransferTimeoutMs,
   runReleaseVerification
 } from "./release-candidate-readers.mjs";
 import {
@@ -64,6 +65,24 @@ test("expected identity file and immutable artifact ID/digest cannot be swapped"
   } finally {
     f.cleanup();
   }
+});
+
+test("large asset transfers have a bounded 20-minute budget", () => {
+  assert.equal(candidateAssetTransferTimeoutMs, 20 * 60 * 1000);
+});
+
+test("asset reader exposes response stream and rejects HTTP errors", async () => {
+  const readers = createCandidateReaders({
+    fetchImpl: async () =>
+      new Response("abcd", { headers: { "content-length": "1" } })
+  });
+  const stream = await readers.getAsset("org/repo", 1);
+  assert.equal(typeof stream.getReader, "function");
+  assert.equal(await new Response(stream).text(), "abcd");
+  const failed = createCandidateReaders({
+    fetchImpl: async () => new Response("error", { status: 403 })
+  });
+  await assert.rejects(failed.getAsset("org/repo", 1), /HTTP 403/);
 });
 
 test("reader surface permits GET only, without generic execution or writes", async () => {

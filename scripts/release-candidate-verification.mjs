@@ -1,13 +1,18 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  closeSync,
+  createWriteStream,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
-  rmSync,
-  writeFileSync
+  readSync,
+  rmSync
 } from "node:fs";
 import { resolve } from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { verifyFrozenComponentAssets } from "./verify-frozen-component-assets.mjs";
 import { inspectReleasePackage } from "./inspect-release-package.mjs";
 import { validateReviewedRuntimeIdentities } from "./reviewed-build-identity-runtimes.mjs";
@@ -16,6 +21,19 @@ import { verifyPackagedDesktopCatalog } from "../apps/desktop/scripts/verify-pac
 
 export const sha256 = (bytes) =>
   createHash("sha256").update(bytes).digest("hex");
+// Chunked so large release assets are never loaded into a single Buffer.
+export const hashFileSync = (path, algorithm = "sha256", encoding = "hex") => {
+  const hash = createHash(algorithm);
+  const chunk = Buffer.allocUnsafe(1024 * 1024);
+  const fd = openSync(path, "r");
+  try {
+    for (let read; (read = readSync(fd, chunk, 0, chunk.length, null)) > 0; )
+      hash.update(chunk.subarray(0, read));
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest(encoding);
+};
 const digestPattern = /^[a-f0-9]{64}$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/;
 const fail = (message) => {
@@ -107,6 +125,51 @@ const verifyBuildOrigin = async (expected, readers) => {
   }
 };
 
+export const writeCandidateAsset = async (
+  stream,
+  path,
+  limit = 4 * 1024 ** 3
+) => {
+  let fd;
+  try {
+    fd = openSync(path, "wx", 0o600);
+  } catch (error) {
+    try {
+      if (typeof stream.cancel === "function") await stream.cancel();
+      else if (typeof stream.destroy === "function") stream.destroy();
+      else if (typeof stream.return === "function") await stream.return();
+    } catch (cancelError) {
+      throw new AggregateError(
+        [error, cancelError],
+        "Asset open and stream cancellation failed.",
+        { cause: cancelError }
+      );
+    }
+    throw error;
+  }
+  let size = 0;
+  try {
+    await pipeline(
+      stream,
+      new Transform({
+        transform(chunk, _encoding, callback) {
+          size += chunk.length;
+          callback(
+            size > limit
+              ? new Error("Candidate reader response exceeds size limit.")
+              : null,
+            chunk
+          );
+        }
+      }),
+      createWriteStream(path, { fd, autoClose: true })
+    );
+  } catch (error) {
+    rmSync(path, { force: true });
+    throw error;
+  }
+};
+
 const downloadCandidate = async (input, expected, readers, root) => {
   const release = await readers.getRelease(
     expected.repository,
@@ -115,6 +178,7 @@ const downloadCandidate = async (input, expected, readers, root) => {
   if (
     String(release.id) !== String(input.releaseId) ||
     release.draft !== true ||
+    release.prerelease !== false ||
     release.tag_name !== `v${expected.version}` ||
     !Array.isArray(release.assets)
   )
@@ -127,16 +191,21 @@ const downloadCandidate = async (input, expected, readers, root) => {
     assets.set(asset.name, asset);
     ids.add(asset.id);
   }
+  if (
+    assets.size !== expected.assets.length ||
+    [...assets.keys()].some(
+      (name) => !expected.assets.some((asset) => asset.name === name)
+    )
+  )
+    fail("Candidate release asset inventory mismatch.");
   for (const asset of expected.assets) {
     const remote = assets.get(asset.name);
     if (!remote) fail(`Missing protected candidate asset: ${asset.name}`);
-    const bytes = await readers.getAsset(expected.repository, remote.id);
-    if (!Buffer.isBuffer(bytes) || sha256(bytes) !== asset.sha256)
+    const stream = await readers.getAsset(expected.repository, remote.id);
+    const path = resolve(root, asset.name);
+    await writeCandidateAsset(stream, path);
+    if (hashFileSync(path) !== asset.sha256)
       fail(`Candidate asset digest mismatch: ${asset.name}`);
-    writeFileSync(resolve(root, asset.name), bytes, {
-      flag: "wx",
-      mode: 0o600
-    });
   }
   // Manifest additions cannot hide outside the protected inventory.
   for (const name of assets.keys())
@@ -158,14 +227,18 @@ const inspectDesktop = (expected, root, catalogPath) => {
   }).split("\n");
   if (listing.filter((name) => name === entry).length !== 1)
     fail("Desktop archive ASAR identity is missing or duplicate.");
-  const asar = execFileSync("unzip", ["-p", archive, entry], {
-    maxBuffer: 1024 * 1024 * 1024
-  });
   const appPath = resolve(root, "desktop/Koed.app");
   mkdirSync(resolve(appPath, "Contents/Resources"), { recursive: true });
-  writeFileSync(resolve(appPath, "Contents/Resources/app.asar"), asar, {
-    flag: "wx"
-  });
+  const asarPath = resolve(appPath, "Contents/Resources/app.asar");
+  // Stream the entry to disk; a buffered read caps at maxBuffer (ENOBUFS).
+  const asarFd = openSync(asarPath, "wx");
+  try {
+    execFileSync("unzip", ["-p", archive, entry], {
+      stdio: ["ignore", asarFd, "inherit"]
+    });
+  } finally {
+    closeSync(asarFd);
+  }
   verifyPackagedDesktopCatalog({
     appPath,
     catalogPath,
@@ -173,7 +246,7 @@ const inspectDesktop = (expected, root, catalogPath) => {
   });
   return {
     asset: expected.desktop.asset,
-    asarSha256: sha256(asar),
+    asarSha256: hashFileSync(asarPath),
     catalogVerified: true
   };
 };

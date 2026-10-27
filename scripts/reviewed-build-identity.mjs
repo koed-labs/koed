@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   sha256,
+  hashFileSync,
   validateReviewedBuildIdentity
 } from "./release-candidate-verification.mjs";
 
@@ -26,7 +27,7 @@ export const collectReviewedAssets = (root) => {
       else {
         if (!entry.isFile())
           throw new Error("Reviewed outputs require regular files.");
-        const digest = sha256(readFileSync(path));
+        const digest = hashFileSync(path);
         if (found.has(entry.name) && found.get(entry.name) !== digest)
           throw new Error(`Conflicting reviewed output: ${entry.name}`);
         found.set(entry.name, digest);
@@ -34,6 +35,33 @@ export const collectReviewedAssets = (root) => {
     }
   };
   walk(resolve(root));
+  return [...found]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, digest]) => ({ name, sha256: digest }));
+};
+
+// The catalog artifact also contains recursively staged component trees; only
+// its catalog is uploaded. All other selected artifacts are release staging dirs.
+export const collectPublicReleaseAssets = (root) => {
+  const found = new Map();
+  for (const source of sourceNames) {
+    const directory = resolve(root, source);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (
+        source === "koed-component-catalog" &&
+        entry.name !== "component-manifest-hashes.json"
+      )
+        continue;
+      if (!entry.isFile())
+        throw new Error(
+          `Unexpected nested release output: ${source}/${entry.name}`
+        );
+      const digest = hashFileSync(resolve(directory, entry.name));
+      if (found.has(entry.name) && found.get(entry.name) !== digest)
+        throw new Error(`Conflicting reviewed output: ${entry.name}`);
+      found.set(entry.name, digest);
+    }
+  }
   return [...found]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, digest]) => ({ name, sha256: digest }));
@@ -61,19 +89,20 @@ export const createReviewedBuildIdentity = ({
     const { id, digest } = matches[0];
     return { id, name, digest };
   });
-  const assets = collectReviewedAssets(root);
+  const assets = collectPublicReleaseAssets(root);
   const find = (name) => {
-    const paths = [];
-    const walk = (dir) => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        const path = resolve(dir, entry.name);
-        if (entry.isDirectory()) walk(path);
-        else if (entry.name === name && entry.isFile()) paths.push(path);
-      }
-    };
-    walk(resolve(root));
-    if (!paths.length) throw new Error(`Missing reviewed output: ${name}`);
-    return readFileSync(paths[0], "utf8");
+    if (!assets.some((asset) => asset.name === name))
+      throw new Error(`Missing reviewed output: ${name}`);
+    const source = sourceNames.find((source) =>
+      readdirSync(resolve(root, source), { withFileTypes: true }).some(
+        (entry) =>
+          entry.isFile() &&
+          entry.name === name &&
+          (source !== "koed-component-catalog" ||
+            name === "component-manifest-hashes.json")
+      )
+    );
+    return readFileSync(resolve(root, source, name), "utf8");
   };
   const identity = JSON.parse(find("koed-labs-server-release-identity.json"));
   if (
