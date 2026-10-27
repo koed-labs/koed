@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runReleaseVerification } from "./release-candidate-readers.mjs";
+import { verifyWorkflowApproval } from "./release-approval.mjs";
 import { hashFileSync } from "./release-candidate-verification.mjs";
 import { verifyFrozenComponentAssets } from "./verify-frozen-component-assets.mjs";
 import { verifyPackagedControlPlaneCatalog } from "./verify-packaged-control-plane-catalog.mjs";
@@ -16,6 +17,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   candidateNpmTag,
+  compareVersions,
   planReleasePromotion
 } from "./release-promotion-lib.mjs";
 
@@ -135,7 +137,11 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     const release = JSON.parse(
       run("gh", ["api", `repos/${args.repository}/releases/${args.releaseId}`])
     );
-    if (release.tag_name !== `v${args.version}` || release.draft !== true)
+    if (
+      release.tag_name !== `v${args.version}` ||
+      release.draft !== true ||
+      release.prerelease !== false
+    )
       throw new Error(
         "Expected matching GitHub draft release before promotion."
       );
@@ -233,17 +239,29 @@ export const runReleasePromotion = async (args, adapters = {}) => {
       if (
         live.tag_name !== `v${args.version}` ||
         live.draft !== false ||
+        live.prerelease !== false ||
         !Array.isArray(live.assets)
       )
         throw new Error("Published GitHub release identity mismatch.");
+      const assetsByName = new Map();
+      const ids = new Set();
+      for (const asset of live.assets) {
+        if (
+          !Number.isSafeInteger(asset.id) ||
+          asset.id <= 0 ||
+          ids.has(asset.id) ||
+          assetsByName.has(asset.name) ||
+          !candidate.assets.some((reviewed) => reviewed.name === asset.name)
+        )
+          throw new Error("Published release asset inventory mismatch.");
+        ids.add(asset.id);
+        assetsByName.set(asset.name, asset);
+      }
       const verifyDir = mkdtempSync(resolve(temp, "published-"));
-      for (const { name } of expectedAssets) {
-        const asset = live.assets.filter((item) => item.name === name);
-        if (asset.length !== 1)
-          throw new Error(
-            `Published release asset missing or duplicate: ${name}`
-          );
-        download(asset[0], resolve(verifyDir, name));
+      for (const { name } of candidate.assets) {
+        const asset = assetsByName.get(name);
+        if (!asset) throw new Error(`Published release asset missing: ${name}`);
+        download(asset, resolve(verifyDir, name));
       }
     };
     // Every consumed immutable asset must match protected build bytes before
@@ -307,6 +325,20 @@ export const runReleasePromotion = async (args, adapters = {}) => {
           throw new Error(
             "Refusing to promote npm latest before the published GitHub release is verified."
           );
+        const currentLatest = await fetchRegistry(
+          expected.packageName,
+          "latest"
+        );
+        if (
+          currentLatest != null &&
+          (typeof currentLatest.version !== "string" ||
+            !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(currentLatest.version) ||
+            compareVersions(currentLatest.version, args.version) > 0)
+        )
+          throw new Error(
+            "Refusing npm latest downgrade or invalid registry version."
+          );
+        // npm dist-tag has no compare-and-swap: an external update can still race this read.
         run("npm", [
           "dist-tag",
           "add",
@@ -314,6 +346,17 @@ export const runReleasePromotion = async (args, adapters = {}) => {
           "latest"
         ]);
       } else if (action.kind === "publish-github") {
+        const beforePatch = await runReleaseVerification(
+          args,
+          adapters.readers
+        );
+        if (
+          canonicalReleaseJson({
+            ...beforePatch,
+            registry: candidate.registry
+          }) !== canonicalReleaseJson(candidate)
+        )
+          throw new Error("Candidate changed before GitHub publication.");
         run("gh", [
           "api",
           "--method",
@@ -359,13 +402,9 @@ const main = async () => {
     console.log(JSON.stringify(await runReleaseVerification(args)));
     return;
   }
-  const publicationApproved =
-    process.env.KOED_RELEASE_PROMOTION_APPROVED === "true" &&
-    process.env.KOED_NPM_PUBLICATION_AUTHORIZED === "true";
-  if (!publicationApproved)
-    throw new Error(
-      "Independent publication approval is required before promotion."
-    );
+  if (process.env.KOED_NPM_PUBLICATION_AUTHORIZED !== "true")
+    throw new Error("npm publication authorization is required.");
+  const publicationApproved = verifyWorkflowApproval(args.version);
   const result = await runReleasePromotion(args, { publicationApproved });
   console.log(
     args.json

@@ -32,7 +32,8 @@ test("pin-only release preserves protected identity, candidate verification and 
     workflow.jobs["publish-release"].needs.includes("reviewed-release-identity")
   );
   assert.match(release, /KOED_NPM_PUBLICATION_AUTHORIZED/);
-  assert.match(release, /KOED_RELEASE_PROMOTION_APPROVED/);
+  assert.equal(workflow.jobs["publish-release"].environment, "production");
+  assert.match(release, /scripts\/release-approval\.mjs/);
   assert.match(release, /verify-frozen-component-assets\.mjs/);
   assert.equal(
     workflow.jobs["publish-release"].permissions["id-token"],

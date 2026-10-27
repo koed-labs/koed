@@ -2,15 +2,17 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   closeSync,
+  createWriteStream,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
   readSync,
-  rmSync,
-  writeFileSync
+  rmSync
 } from "node:fs";
 import { resolve } from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { verifyFrozenComponentAssets } from "./verify-frozen-component-assets.mjs";
 import { inspectReleasePackage } from "./inspect-release-package.mjs";
 import { validateReviewedRuntimeIdentities } from "./reviewed-build-identity-runtimes.mjs";
@@ -123,6 +125,51 @@ const verifyBuildOrigin = async (expected, readers) => {
   }
 };
 
+export const writeCandidateAsset = async (
+  stream,
+  path,
+  limit = 4 * 1024 ** 3
+) => {
+  let fd;
+  try {
+    fd = openSync(path, "wx", 0o600);
+  } catch (error) {
+    try {
+      if (typeof stream.cancel === "function") await stream.cancel();
+      else if (typeof stream.destroy === "function") stream.destroy();
+      else if (typeof stream.return === "function") await stream.return();
+    } catch (cancelError) {
+      throw new AggregateError(
+        [error, cancelError],
+        "Asset open and stream cancellation failed.",
+        { cause: cancelError }
+      );
+    }
+    throw error;
+  }
+  let size = 0;
+  try {
+    await pipeline(
+      stream,
+      new Transform({
+        transform(chunk, _encoding, callback) {
+          size += chunk.length;
+          callback(
+            size > limit
+              ? new Error("Candidate reader response exceeds size limit.")
+              : null,
+            chunk
+          );
+        }
+      }),
+      createWriteStream(path, { fd, autoClose: true })
+    );
+  } catch (error) {
+    rmSync(path, { force: true });
+    throw error;
+  }
+};
+
 const downloadCandidate = async (input, expected, readers, root) => {
   const release = await readers.getRelease(
     expected.repository,
@@ -131,6 +178,7 @@ const downloadCandidate = async (input, expected, readers, root) => {
   if (
     String(release.id) !== String(input.releaseId) ||
     release.draft !== true ||
+    release.prerelease !== false ||
     release.tag_name !== `v${expected.version}` ||
     !Array.isArray(release.assets)
   )
@@ -143,16 +191,21 @@ const downloadCandidate = async (input, expected, readers, root) => {
     assets.set(asset.name, asset);
     ids.add(asset.id);
   }
+  if (
+    assets.size !== expected.assets.length ||
+    [...assets.keys()].some(
+      (name) => !expected.assets.some((asset) => asset.name === name)
+    )
+  )
+    fail("Candidate release asset inventory mismatch.");
   for (const asset of expected.assets) {
     const remote = assets.get(asset.name);
     if (!remote) fail(`Missing protected candidate asset: ${asset.name}`);
-    const bytes = await readers.getAsset(expected.repository, remote.id);
-    if (!Buffer.isBuffer(bytes) || sha256(bytes) !== asset.sha256)
+    const stream = await readers.getAsset(expected.repository, remote.id);
+    const path = resolve(root, asset.name);
+    await writeCandidateAsset(stream, path);
+    if (hashFileSync(path) !== asset.sha256)
       fail(`Candidate asset digest mismatch: ${asset.name}`);
-    writeFileSync(resolve(root, asset.name), bytes, {
-      flag: "wx",
-      mode: 0o600
-    });
   }
   // Manifest additions cannot hide outside the protected inventory.
   for (const name of assets.keys())

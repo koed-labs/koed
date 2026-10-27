@@ -85,6 +85,9 @@ test("candidate failures block all publication adapters even with independent ap
       f.release.draft = false;
     },
     (f) => {
+      f.release.prerelease = true;
+    },
+    (f) => {
       f.readers.getAsset = async () => {
         throw new Error("unavailable candidate");
       };
@@ -224,8 +227,8 @@ for (const downloadDrift of [
       );
       assert.ok(patchAt >= 0 && latestAt > patchAt, "GitHub before npm latest");
       // Published release assets are re-downloaded and re-verified after PATCH.
-      // 11 immutable assets verified before mutation, then again after publish.
-      assert.equal(downloads.length, 22);
+      // 11 consumed assets before mutation; complete inventory after publish.
+      assert.equal(downloads.length, 11 + f.expected.assets.length);
       mutations.length = 0;
       f.release.draft = true;
       f.contents.set(
@@ -238,6 +241,156 @@ for (const downloadDrift of [
       f.cleanup();
     }
   });
+
+test("extra draft asset is rejected before publication mutations", async () => {
+  const f = await setupCandidate({ desktop: true });
+  try {
+    f.release.assets.push({ id: 999, name: "unexpected.json" });
+    const mutations = [];
+    await assert.rejects(
+      runReleasePromotion(verificationArgs(f), {
+        publicationApproved: true,
+        readers: f.readers,
+        run: (...args) => {
+          mutations.push(args);
+          throw new Error("unexpected mutation");
+        },
+        fetchRegistry: async () => null
+      }),
+      /inventory mismatch/i
+    );
+    assert.equal(mutations.length, 0);
+  } finally {
+    f.cleanup();
+  }
+});
+
+for (const drift of ["extra", "bytes", "prerelease"])
+  test(`draft ${drift} drift immediately before PATCH blocks publication`, async () => {
+    const f = await setupCandidate({ desktop: true });
+    try {
+      const mutations = [];
+      const metadata = {
+        name: "@koed-labs/server",
+        version: "1.2.3",
+        dist: { integrity: f.identity.npm.integrity }
+      };
+      const adapters = {
+        publicationApproved: true,
+        readers: f.readers,
+        fetchRegistry: async (_name, version) =>
+          version === "latest" ? null : metadata,
+        run: (command, argv, options = {}) => {
+          if (command === "tar")
+            return execFileSync(command, argv, { encoding: "utf8" });
+          if (command === "gh" && !argv.includes("PATCH")) {
+            if (argv.includes("Accept: application/octet-stream")) {
+              const asset = f.release.assets.find(
+                (item) => item.id === Number(argv.at(-1).split("/").at(-1))
+              );
+              writeFileSync(options.stdio[1], f.contents.get(asset.name));
+              return "";
+            }
+            return JSON.stringify(f.release);
+          }
+          mutations.push([command, ...argv]);
+          if (command === "npm" && argv[0] === "dist-tag") {
+            if (drift === "extra")
+              f.release.assets.push({ id: 999, name: "extra.json" });
+            else if (drift === "bytes")
+              f.contents.set(f.expected.desktop.asset, Buffer.from("changed"));
+            else f.release.prerelease = true;
+          }
+          return "";
+        }
+      };
+      await assert.rejects(
+        runReleasePromotion(verificationArgs(f), adapters),
+        /inventory mismatch|digest mismatch|draft identity/i
+      );
+      assert.ok(
+        !mutations.some(
+          ([command, ...argv]) => command === "gh" && argv.includes("PATCH")
+        )
+      );
+      assert.ok(
+        !mutations.some(
+          ([command, , , , tag]) => command === "npm" && tag === "latest"
+        )
+      );
+    } finally {
+      f.cleanup();
+    }
+  });
+
+for (const drift of [
+  "draft-response",
+  "newer-latest",
+  "invalid-latest",
+  "missing-version-latest"
+]) {
+  test(`${drift} blocks latest promotion`, async () => {
+    const f = await setupCandidate({ desktop: true });
+    try {
+      const mutations = [];
+      let latestReads = 0;
+      const metadata = {
+        name: "@koed-labs/server",
+        version: "1.2.3",
+        dist: { integrity: f.identity.npm.integrity }
+      };
+      const adapters = {
+        publicationApproved: true,
+        readers: f.readers,
+        fetchRegistry: async (_name, version) => {
+          if (version !== "latest") return metadata;
+          latestReads++;
+          if (latestReads === 1) return { version: "1.0.0" };
+          if (drift === "newer-latest") return { version: "2.0.0" };
+          if (drift === "invalid-latest") return { version: "invalid" };
+          return {};
+        },
+        run: (command, argv, options = {}) => {
+          if (command === "tar")
+            return execFileSync(command, argv, { encoding: "utf8" });
+          if (command === "gh" && !argv.includes("PATCH")) {
+            if (argv.includes("Accept: application/octet-stream")) {
+              const asset = f.release.assets.find(
+                (item) => item.id === Number(argv.at(-1).split("/").at(-1))
+              );
+              writeFileSync(options.stdio[1], f.contents.get(asset.name));
+              return "";
+            }
+            return JSON.stringify(
+              drift === "draft-response"
+                ? { ...f.release, prerelease: true }
+                : f.release
+            );
+          }
+          mutations.push([command, ...argv]);
+          if (command === "gh" && argv.includes("PATCH"))
+            f.release.draft = false;
+          return "";
+        }
+      };
+      await assert.rejects(runReleasePromotion(verificationArgs(f), adapters));
+      assert.ok(
+        !mutations.some(([cmd, , , , tag]) => cmd === "npm" && tag === "latest")
+      );
+      if (drift === "draft-response") assert.equal(mutations.length, 0);
+      else {
+        assert.ok(
+          mutations.some(
+            ([cmd, ...argv]) => cmd === "gh" && argv.includes("PATCH")
+          )
+        );
+        assert.equal(latestReads, 2);
+      }
+    } finally {
+      f.cleanup();
+    }
+  });
+}
 
 test("registry package/version/SRI must match exact candidate", async () => {
   const expected = {
@@ -265,7 +418,16 @@ test("registry package/version/SRI must match exact candidate", async () => {
     );
 });
 
-for (const failure of ["patch-fails", "published-bytes-drift"])
+for (const failure of [
+  "patch-fails",
+  "published-bytes-drift",
+  "desktop-removed",
+  "desktop-changed",
+  "extra-asset",
+  "duplicate-name",
+  "duplicate-id",
+  "prerelease"
+])
   test(`npm latest is never promoted when GitHub publication fails verification (${failure})`, async () => {
     const f = await setupCandidate({ desktop: true });
     try {
@@ -291,9 +453,11 @@ for (const failure of ["patch-fails", "published-bytes-drift"])
               const bytes = f.contents.get(asset.name);
               writeFileSync(
                 options.stdio[1],
-                failure === "published-bytes-drift" &&
-                  f.release.draft === false &&
-                  asset.name === "koed-labs-server.tgz"
+                f.release.draft === false &&
+                  ((failure === "published-bytes-drift" &&
+                    asset.name === "koed-labs-server.tgz") ||
+                    (failure === "desktop-changed" &&
+                      asset.name === f.expected.desktop.asset))
                   ? Buffer.concat([bytes, Buffer.from("\n")])
                   : bytes
               );
@@ -306,6 +470,17 @@ for (const failure of ["patch-fails", "published-bytes-drift"])
           if (command === "gh" && argv.includes("PATCH")) {
             if (failure === "patch-fails") throw new Error("PATCH failed");
             f.release.draft = false;
+            if (failure === "prerelease") f.release.prerelease = true;
+            if (failure === "desktop-removed")
+              f.release.assets = f.release.assets.filter(
+                (asset) => asset.name !== f.expected.desktop.asset
+              );
+            if (failure === "extra-asset")
+              f.release.assets.push({ id: 999, name: "extra-metadata.json" });
+            if (failure === "duplicate-name")
+              f.release.assets.push({ ...f.release.assets.at(-1), id: 999 });
+            if (failure === "duplicate-id")
+              f.release.assets[1].id = f.release.assets[0].id;
           }
           return "";
         },
@@ -314,7 +489,7 @@ for (const failure of ["patch-fails", "published-bytes-drift"])
       };
       await assert.rejects(
         runReleasePromotion(verificationArgs(f), adapters),
-        /PATCH failed|differs from protected build/
+        /PATCH failed|differs from protected build|Published release asset|Published GitHub release identity/
       );
       assert.ok(
         !mutations.some(
