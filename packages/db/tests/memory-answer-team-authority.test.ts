@@ -32,6 +32,9 @@ interface FixtureModule {
 
 describe.skipIf(!databaseUrl)(
   "transactional Memory Answer Team authority",
+  // Full-fixture checks revalidate every grant; contention assertions below
+  // retain their separate 100ms database lock deadlines.
+  { timeout: 120_000 },
   () => {
     const admin = new pg.Pool({ connectionString: databaseUrl });
     const name = `team_authority_${randomUUID().replaceAll("-", "")}`;
@@ -90,7 +93,7 @@ describe.skipIf(!databaseUrl)(
       await pool?.end();
       await admin.query(`drop database if exists ${name}`);
       await admin.end();
-    });
+    }, 120_000);
 
     it("holds membership authority through payload use and denies subsequent revocation", async () => {
       const actor = { userId };
@@ -299,6 +302,7 @@ describe.skipIf(!databaseUrl)(
       }
     });
 
+    // This round trip revalidates every fixture grant at each durable-task boundary.
     it("denies a completed Project answer before decrypting it when a Share Grant is revoked", async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
         Buffer.alloc(32, 74).toString("base64url")
@@ -392,7 +396,7 @@ describe.skipIf(!databaseUrl)(
         await client.query("rollback");
         client.release();
       }
-    });
+    }, 120_000);
 
     it("holds grant, source and privacy authority locks through protected work", async () => {
       const client = await pool.connect();
@@ -430,7 +434,7 @@ describe.skipIf(!databaseUrl)(
         const initial = await freezeFixture(client);
         const additionalGrant = initial.recallBoundary.shareGrantIds[0]!;
         await client.query(
-          "update source_owner_representation_consents set state='paused',paused_at=now() where id=(select consent_id from team_memory_share_grants where id=$1)",
+          "update team_memory_share_grants set lifecycle='revoked',revoked_at=now() where id=$1",
           [additionalGrant]
         );
         const authority = await freezeFixture(client);
@@ -438,7 +442,7 @@ describe.skipIf(!databaseUrl)(
           additionalGrant
         );
         await client.query(
-          "update source_owner_representation_consents set state='active',paused_at=null where id=(select consent_id from team_memory_share_grants where id=$1)",
+          "update team_memory_share_grants set lifecycle='active',revoked_at=null where id=$1",
           [additionalGrant]
         );
         await expect(
@@ -448,11 +452,14 @@ describe.skipIf(!databaseUrl)(
             authority
           )
         ).resolves.toBeUndefined();
+        expect(
+          (await freezeFixture(client)).recallBoundary.shareGrantIds
+        ).toContain(additionalGrant);
       } finally {
         await client.query("rollback");
         client.release();
       }
-    });
+    }, 120_000);
 
     it("serializes new privacy scope policies with protected work and denies stale authority afterward", async () => {
       const client = await pool.connect();

@@ -707,6 +707,10 @@ describeDb("PDS cumulative checkpoint receiver", () => {
         await pool.query("delete from sessions where owner_user_id=$1", [
           userId
         ]);
+        await pool.query(
+          "delete from personal_project_default_reconciliation where owner_user_id=$1",
+          [userId]
+        );
         await pool.query("delete from users where id=$1", [userId]);
       }
     }
