@@ -221,6 +221,31 @@ export const runReleasePromotion = async (args, adapters = {}) => {
         throw new Error(`Release asset differs from protected build: ${name}`);
       return { name, sha256: digest };
     });
+    // Re-read the now-published release and re-hash every immutable asset
+    // against protected build bytes before npm `latest` may depend on it.
+    const verifyPublishedRelease = () => {
+      const live = JSON.parse(
+        run("gh", [
+          "api",
+          `repos/${args.repository}/releases/${args.releaseId}`
+        ])
+      );
+      if (
+        live.tag_name !== `v${args.version}` ||
+        live.draft !== false ||
+        !Array.isArray(live.assets)
+      )
+        throw new Error("Published GitHub release identity mismatch.");
+      const verifyDir = mkdtempSync(resolve(temp, "published-"));
+      for (const { name } of expectedAssets) {
+        const asset = live.assets.filter((item) => item.name === name);
+        if (asset.length !== 1)
+          throw new Error(
+            `Published release asset missing or duplicate: ${name}`
+          );
+        download(asset[0], resolve(verifyDir, name));
+      }
+    };
     // Every consumed immutable asset must match protected build bytes before
     // any irreversible mutation.
     let published = await fetchRegistry(expected.packageName, expected.version);
@@ -274,15 +299,21 @@ export const runReleasePromotion = async (args, adapters = {}) => {
       throw new Error(
         `Release planner blocked promotion: ${plan.reasons.join(" ")}`
       );
+    let githubVerified = false;
     for (const action of plan.actions) {
-      if (action.kind === "promote-latest")
+      if (action.kind === "promote-latest") {
+        // npm `latest` must never reference components that are not public.
+        if (!githubVerified)
+          throw new Error(
+            "Refusing to promote npm latest before the published GitHub release is verified."
+          );
         run("npm", [
           "dist-tag",
           "add",
           `${expected.packageName}@${args.version}`,
           "latest"
         ]);
-      else if (action.kind === "publish-github")
+      } else if (action.kind === "publish-github") {
         run("gh", [
           "api",
           "--method",
@@ -291,7 +322,10 @@ export const runReleasePromotion = async (args, adapters = {}) => {
           "--field",
           "draft=false"
         ]);
-      else throw new Error(`Unexpected release planner action: ${action.kind}`);
+        verifyPublishedRelease();
+        githubVerified = true;
+      } else
+        throw new Error(`Unexpected release planner action: ${action.kind}`);
     }
     return {
       ok: true,

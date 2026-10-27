@@ -174,7 +174,9 @@ export const planReleasePromotion = (expected, remote, authorization) => {
     actions.push({ kind: "verify-registry" });
     return { status: "ready", reasons: [], actions };
   }
-  if (npm.tag !== "latest") actions.push({ kind: "promote-latest" });
+  // GitHub components must be public and re-verified before npm `latest`
+  // can reference them; the adapter enforces the verification between steps.
   if (github.draft) actions.push({ kind: "publish-github" });
+  if (npm.tag !== "latest") actions.push({ kind: "promote-latest" });
   return { status: "ready", reasons: [], actions };
 };

@@ -179,6 +179,8 @@ for (const downloadDrift of [
           }
           mutations.push([command, ...argv]);
           if (command === "npm" && argv[0] === "publish") published = true;
+          if (command === "gh" && argv.includes("PATCH"))
+            f.release.draft = false;
           return "";
         },
         fetchRegistry: async (_name, version) =>
@@ -207,7 +209,6 @@ for (const downloadDrift of [
       const result = await runReleasePromotion(args, adapters);
       assert.equal(result.ok, true);
       assert.equal(result.verifiedComponents, 4);
-      assert.equal(downloads.length, 11);
       assert.ok(!downloads.some((name) => name.endsWith(".signature.json")));
       assert.equal(
         mutations.filter(
@@ -215,15 +216,18 @@ for (const downloadDrift of [
         ).length,
         1
       );
-      assert.ok(
-        mutations.some(([cmd, , , , tag]) => cmd === "npm" && tag === "latest")
+      const latestAt = mutations.findIndex(
+        ([cmd, , , , tag]) => cmd === "npm" && tag === "latest"
       );
-      assert.ok(
-        mutations.some(
-          ([cmd, ...argv]) => cmd === "gh" && argv.includes("PATCH")
-        )
+      const patchAt = mutations.findIndex(
+        ([cmd, ...argv]) => cmd === "gh" && argv.includes("PATCH")
       );
+      assert.ok(patchAt >= 0 && latestAt > patchAt, "GitHub before npm latest");
+      // Published release assets are re-downloaded and re-verified after PATCH.
+      // 11 immutable assets verified before mutation, then again after publish.
+      assert.equal(downloads.length, 22);
       mutations.length = 0;
+      f.release.draft = true;
       f.contents.set(
         "component-manifest-hashes.json",
         Buffer.from("substituted")
@@ -260,3 +264,65 @@ test("registry package/version/SRI must match exact candidate", async () => {
       /missing|mismatch/
     );
 });
+
+for (const failure of ["patch-fails", "published-bytes-drift"])
+  test(`npm latest is never promoted when GitHub publication fails verification (${failure})`, async () => {
+    const f = await setupCandidate({ desktop: true });
+    try {
+      let published = false;
+      const mutations = [];
+      const metadata = {
+        name: "@koed-labs/server",
+        version: "1.2.3",
+        dist: { integrity: f.identity.npm.integrity }
+      };
+      const adapters = {
+        publicationApproved: true,
+        readers: f.readers,
+        run: (command, argv, options = {}) => {
+          if (command === "tar")
+            return execFileSync(command, argv, { encoding: "utf8" });
+          if (command === "gh" && !argv.includes("PATCH")) {
+            if (argv.includes("Accept: application/octet-stream")) {
+              const assetId = Number(argv.at(-1).split("/").at(-1));
+              const asset = f.release.assets.find(
+                (item) => item.id === assetId
+              );
+              const bytes = f.contents.get(asset.name);
+              writeFileSync(
+                options.stdio[1],
+                failure === "published-bytes-drift" &&
+                  f.release.draft === false &&
+                  asset.name === "koed-labs-server.tgz"
+                  ? Buffer.concat([bytes, Buffer.from("\n")])
+                  : bytes
+              );
+              return "";
+            }
+            return JSON.stringify(f.release);
+          }
+          mutations.push([command, ...argv]);
+          if (command === "npm" && argv[0] === "publish") published = true;
+          if (command === "gh" && argv.includes("PATCH")) {
+            if (failure === "patch-fails") throw new Error("PATCH failed");
+            f.release.draft = false;
+          }
+          return "";
+        },
+        fetchRegistry: async (_name, version) =>
+          version === "latest" || !published ? null : metadata
+      };
+      await assert.rejects(
+        runReleasePromotion(verificationArgs(f), adapters),
+        /PATCH failed|differs from protected build/
+      );
+      assert.ok(
+        !mutations.some(
+          ([cmd, , , , tag]) => cmd === "npm" && tag === "latest"
+        ),
+        "npm latest must not move"
+      );
+    } finally {
+      f.cleanup();
+    }
+  });
