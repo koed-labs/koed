@@ -80,8 +80,9 @@ On a release runner with verified pinned models already cached, add
 model-host availability. The packaged CLI verifies the pinned embedding hash
 after pre-seeding. Packaged lifecycle smoke uses the real Desktop manager's
 private IPC harness. Team coverage proves missing verified Privacy assets fail
-closed; positive Team provisioning remains blocked while production signer trust
-roots are empty. Do not treat this negative coverage as positive Team proof.
+closed; positive Team provisioning requires complete matching-version pins embedded
+in the trusted control plane and actual native lifecycle acceptance. Component
+signer roots are not prerequisites. Do not treat negative coverage as positive Team proof.
 
 CI must pass the `Check DB migration files`, `Run DB migration acceptance
 matrix`, `Required acceptance suites`, build, and packaged Desktop smoke jobs

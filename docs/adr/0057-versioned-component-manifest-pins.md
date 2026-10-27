@@ -1,6 +1,6 @@
 # Versioned Component Manifest Pins
 
-Status: Accepted direction; runtime pins implemented, release replacement and actual acceptance pending.
+Status: Accepted; component pin-only required before merge, cleanup verification and actual acceptance pending.
 
 Related: [0011 Standalone koed-server Package Boundary](0011-standalone-koed-server-package.md).
 
@@ -51,14 +51,21 @@ update releases. Production promotion repeats verification before its first
 mutation and independently requires publication approval; candidate code must
 not execute in the credential-bearing verifier.
 
-Remove component KMS verification only after replacement negative tests and
-actual component install/candidate verification pass. Retained release-side
-component signing is temporary, not a runtime fallback or a second final trust
-path. This component signer exists only in the unmerged stack: removing its
-source dependency is repository cleanup, not a shipped-service migration or
-mandatory cloud retirement. Any provisioned resources remain owner-controlled;
-cloud inventory, disablement or key deletion is separate work requiring explicit
-authorization. Source cleanup does not authorize or require cloud mutations.
+Require component pin-only before merge. Remove component KMS verification,
+hosted signer, signer roots, signature sidecars, component-signing OIDC and their
+release configuration/documentation without waiting for native acceptance. Actual
+native Personal/Team installation and candidate verification plus signed/notarized
+clean-Mac acceptance remain gates; deleting obsolete signing source does not satisfy
+them. Protected independently reviewed build identity, read-only verification,
+publication approval, npm authentication/provenance, immutable assets and SRI remain.
+
+This component signer exists only in the unmerged stack: source removal is
+repository cleanup, not a shipped-service migration or mandatory cloud retirement.
+Any provisioned resources remain owner-controlled; cloud inventory, disablement,
+key deletion or repository-variable changes require separate explicit authorization.
+Source cleanup does not authorize or require those mutations. Apple Developer ID
+signing/notarization, unrelated hosted/encryption KMS and legacy app-runtime
+provenance remain unchanged.
 
 Retain Desktop private IPC nonce/process-identity/constrained-request checks,
 bundle inventory verification and lifecycle `bundleDigest`, store filesystem

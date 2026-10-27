@@ -1,6 +1,33 @@
 # Manifest-pin remediation: local verification
 
-## Review follow-up: scope and remaining acceptance
+## Pin-only cleanup status
+
+The stack is component pin-only in source. Component KMS, hosted signer,
+roots, sidecars, component-signing OIDC and obsolete configuration/docs have been
+removed before merge; they are not retained pending acceptance. Protected independently reviewed build identity,
+read-only candidate verification, publication approval, npm authentication/provenance,
+immutability and SRI remain mandatory. Actual native Personal/Team and signed/notarized
+clean-Mac acceptance remain gates. No live cloud or repository-variable changes
+are authorized or required. Apple Developer ID signing/notarization, unrelated
+hosted/encryption KMS and legacy app-runtime provenance remain unchanged.
+
+### Pin-only cleanup verification
+
+Node **24.13.1**, pnpm **11.1.2**, macOS arm64, isolated #432-derived worktree.
+These counts describe that worktree; independently restaged #421/#428 checks and
+final-head CI are reported separately in their PRs:
+
+- Server: **71 files, 969 tests passed**; obsolete component-signing helper coverage removed.
+- Desktop: **100 files, 967 tests passed**, plus **77 Node smoke/packaging tests**.
+- Root scripts: **509 passed, one database-dependent skip**. Pin-only promotion succeeds without signer credentials/sidecars; changed manifest, archive, catalog, npm bytes or candidate evidence reject before publication. Every second download is authenticated against the protected build before parsing.
+- Full workspace build, full ESLint/Prettier, root test-source typecheck, Server and Desktop typechecks passed.
+- Independent full cleanup review and final download-boundary review found no actionable P1/P2 findings.
+
+These are local checks, not final-head CI or native/signed release acceptance.
+The existing approved minor changeset is preserved. Prior checkpoint counts
+**970/967/503** below are historical and do not describe this cleanup.
+
+## Prior review follow-up: scope and remaining acceptance
 
 Published #432 `605bf1c3680c361afaea741071d7e24141eb2929` already contains the
 ordinary cross-version activation, install composition, prior-component diagnostic
@@ -12,12 +39,12 @@ upper PR is not proof that its independently mergeable parents contain the fixes
 The next follow-up separates Desktop ownership/version discovery from runnable
 admission, preserves the capability-bound ordinary-generation fallback, bounds
 journal reads, and rejects Desktop replacement downgrades. Release ordering keeps
-complete hyphenated prerelease identifiers. The retained signing rehearsal now
-uses an explicitly synthetic manifest catalog for local payload integrity while
-retaining separate remote signature/tamper checks. Neither fixture pins nor mocked
-KMS responses establish publisher trust or actual replacement acceptance.
+complete hyphenated prerelease identifiers. The historical signing rehearsal
+used an explicitly synthetic manifest catalog for local payload integrity with
+separate remote signature/tamper checks. This is historical signed-path evidence,
+not pin acceptance or a requirement to retain the rehearsal.
 
-### Follow-up local verification
+### Prior follow-up local verification — not cleanup verification
 
 Node **24.13.1**, pnpm **11.1.2**, macOS arm64, isolated worktree with a fresh
 frozen-lockfile offline dependency installation. These counts apply to the
@@ -36,7 +63,7 @@ own PR evidence:
   Electron uses the already installed local binary; it was not downloaded again.
 
 These are local regression checks, not final-head CI or native release acceptance.
-The retained signing rehearsal was exercised with mocked OIDC/KMS only; no cloud
+The historical signing rehearsal was exercised with mocked OIDC/KMS only; no cloud
 resources were modified and no actual KMS rehearsal is claimed.
 
 ### Previously recorded verification
@@ -77,8 +104,8 @@ acceptance; and supported signed/notarized clean-Mac Desktop acceptance. This
 host reported zero valid signing identities. Complete Privacy assets, trusted
 native artifact provenance, Linux-host access and signed artifacts remain
 unestablished. Synthetic fixtures do not waive these gates. Component signer
-cleanup remains gated on actual replacement install/candidate acceptance; no
-cloud resource changes are authorized or required by source cleanup.
+source/configuration cleanup is required before merge independently of acceptance;
+no cloud resource changes are authorized or required by source cleanup.
 
 ## Historical scope and status
 
@@ -156,10 +183,9 @@ reported cases. Static inspection does not replace behavioral acceptance.
 - Signed/notarized packaged Desktop, clean-Mac first launch, relocation,
   helper/fuse, uninstall and the remaining Desktop/CLI lifecycle matrix.
 - Database-required suites against an explicitly configured disposable database.
-- Read-only confirmation of deployed signer rehearsal authorization and existing
-  installations. Repository code is not evidence of live operational state.
-- KMS release-signing/rehearsal infrastructure remains until replacement acceptance
-  is proven. Retirement needs separate operational approval; no key destruction.
+- Existing installation compatibility remains unestablished. Repository code is
+  not evidence of live operational state. No signer inventory, retention or cloud
+  retirement requirement is imposed by this source cleanup.
 - Developer confirmed the minor changeset and authorized stack pushes. Core
   changes landed as incremental commits on #421; #428 and #432 merge upward
   without rewriting history. The changeset bumps the fixed product/Server group;
