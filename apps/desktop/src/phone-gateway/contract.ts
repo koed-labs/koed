@@ -174,6 +174,8 @@ export type PhoneConversationRef = {
   threadId: string;
   sessionId: string | null;
   title: string;
+  /** The AI Client the conversation was captured from ("claude-code", "codex", …), when known. */
+  aiClient: string | null;
 };
 
 export type PhoneWorking = {

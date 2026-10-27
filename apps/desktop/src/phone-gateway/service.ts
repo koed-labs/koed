@@ -336,14 +336,16 @@ export const createPhoneGatewayService = (
         projectId: found.projectId,
         threadId: found.threadId,
         sessionId: found.sessionId,
-        title: found.title
+        title: found.title,
+        aiClient: found.aiClient
       };
     return entry.threadId
       ? {
           projectId: entry.projectId,
           threadId: entry.threadId,
           sessionId: entry.sessionId,
-          title: "Conversation"
+          title: "Conversation",
+          aiClient: null
         }
       : null;
   };
@@ -716,7 +718,8 @@ export const createPhoneGatewayService = (
             projectId: chiefRef.projectId,
             threadId: chiefRef.threadId,
             sessionId: chiefRef.sessionId,
-            title: chiefRef.title
+            title: chiefRef.title,
+            aiClient: null
           }
         : null,
       working: working.filter((entry) => entry.busy),
@@ -823,7 +826,8 @@ export const createPhoneGatewayService = (
         projectId: ref.projectId,
         threadId: ref.threadId,
         sessionId: ref.sessionId,
-        title: ref.title
+        title: ref.title,
+        aiClient: (ref as { aiClient?: string | null }).aiClient ?? null
       },
       execution,
       events,
@@ -911,7 +915,8 @@ export const createPhoneGatewayService = (
             projectId: current.projectId,
             threadId: current.threadId,
             sessionId: current.sessionId,
-            title: current.title
+            title: current.title,
+            aiClient: null
           }
         : null
     };
