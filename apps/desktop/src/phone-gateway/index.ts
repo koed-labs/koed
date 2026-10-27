@@ -222,12 +222,13 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
     }, 1_500);
   });
 
-  let watcher: { stop: () => void } | null = null;
+  let watcher: { stop: () => void; poke: () => void } | null = null;
 
   const startWatcher = () => {
     if (watcher) return;
     const controller = new AbortController();
     let known: Set<string> | null = null;
+    let idleSince = Date.now();
     let lastSignature = "";
     let busyChief = false;
     let lastEvaluated = 0;
@@ -267,13 +268,18 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
       const state = await store.read();
       const listening = [...subscribers.values()].some((set) => set.size > 0);
       const pushable = state.phones.some((phone) => phone.expoPushToken);
-      if (!listening && !pushable) return;
+      if (!listening && !pushable) {
+        // Nobody to tell. When someone is again, what appeared since now is new to them.
+        known = null;
+        idleSince = Date.now();
+        return;
+      }
       try {
         const home = await service.home();
         const ids = new Set(home.needs.map((need) => need.id));
         const fresh = known
           ? home.needs.filter((need) => !known!.has(need.id))
-          : [];
+          : home.needs.filter((need) => Date.parse(need.at) >= idleSince);
         known = ids;
         const signature = JSON.stringify([
           [...ids].sort(),
@@ -318,7 +324,6 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
         // Remember the new state first: a failure below must never count the same reply twice.
         busyChief = chiefBusy;
         if (replied) {
-          await service.countChiefReply();
           lastEvaluated = 0;
           broadcast({ type: "changed", keys: ["chief", "home"] });
           await pushToAbsent([
@@ -338,8 +343,16 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
       }
     };
 
+    let running = false;
     const loop = async () => {
-      await tick();
+      if (running) return;
+      running = true;
+      try {
+        await tick();
+      } finally {
+        running = false;
+      }
+      if (timer) clearTimeout(timer);
       if (!controller.signal.aborted)
         timer = setTimeout(
           () => void loop(),
@@ -367,6 +380,12 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
     }
 
     watcher = {
+      /** Look now (a phone just connected or set up push), not at the next poll. */
+      poke: () => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        void loop();
+      },
       stop: () => {
         controller.abort();
         if (timer) clearTimeout(timer);
@@ -488,6 +507,7 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
               )
             }));
             changed();
+            watcher?.poke();
           },
           unpair: async (phoneId) => {
             await revoke(phoneId);
@@ -497,6 +517,7 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
             set.add(send);
             subscribers.set(phoneId, set);
             startWatcher();
+            watcher?.poke();
             changed();
             return () => {
               set.delete(send);

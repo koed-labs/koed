@@ -5,6 +5,7 @@ import {
   countPhoneAction,
   createGamificationStore,
   evaluateGamification,
+  recordChiefReplies,
   standings,
   wornLook,
   type GamificationFacts,
@@ -44,7 +45,13 @@ const empty = (): GamificationState =>
   evaluateGamification(facts({}), {
     version: 1,
     initialized: false,
-    counters: { unblocks: 0, asks: 0, chiefReplies: [], chiefRepliesTotal: 0 },
+    counters: {
+      unblocks: 0,
+      asks: 0,
+      chiefReplies: [],
+      chiefRepliesTotal: 0,
+      chiefReplyIds: []
+    },
     agents: {},
     editions: {},
     worn: {}
@@ -93,7 +100,8 @@ describe("phone gamification", () => {
         unblocks: 0,
         asks: 0,
         chiefReplies: [],
-        chiefRepliesTotal: 0
+        chiefRepliesTotal: 0,
+        chiefReplyIds: []
       },
       agents: {},
       editions: {},
@@ -119,10 +127,14 @@ describe("phone gamification", () => {
 
   it("counts the Chief's replies and the phone's unblocks and questions", () => {
     let state = empty();
-    state = countPhoneAction(state, "chief_reply", now);
+    state = recordChiefReplies(state, [{ id: "reply-1", at: daysAgo(0) }]);
+    // The same reply seen again doesn't count twice.
+    expect(recordChiefReplies(state, [{ id: "reply-1", at: daysAgo(0) }])).toBe(
+      state
+    );
     for (let index = 0; index < 10; index++)
-      state = countPhoneAction(state, "unblock", now);
-    state = countPhoneAction(state, "ask", now);
+      state = countPhoneAction(state, "unblock");
+    state = countPhoneAction(state, "ask");
     const result = evaluateGamification(facts({}), state);
     expect(result.events).toContainEqual({
       kind: "edition",
@@ -179,7 +191,7 @@ describe("phone gamification", () => {
       delete: async (key) => void values.delete(key)
     });
     expect((await store.read()).initialized).toBe(false);
-    await store.update((state) => countPhoneAction(state, "ask", now));
+    await store.update((state) => countPhoneAction(state, "ask"));
     expect(
       JSON.parse(values.get("koed-phone-gamification.v1")!).counters.asks
     ).toBe(1);

@@ -118,3 +118,12 @@ push service (free); they carry a title, one line and a route in the app.
 ## Checks
 
 `pnpm --filter @koed/desktop exec vitest run src/phone-gateway src/renderer/hq/settings/HqSettingsPhone.test.tsx`
+
+## Tests
+
+`apps/desktop/src/phone-gateway/workflow.test.ts` drives the whole phone API
+over HTTP against `fake-koed.testkit.ts`, a simulated Koed (excluded from the
+build): pairing, the Chief Chat, Codex and Claude Code Chats, approvals,
+scheduled jobs and proposals, memory, ranks and editions, push, unpairing. The
+phone app's end-to-end suite (koed-mobile `e2e/`) uses the same test kit
+behind the real gateway.

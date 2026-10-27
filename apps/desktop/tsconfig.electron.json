@@ -23,5 +23,5 @@
     "src/tray/**/*.ts",
     "src/window/**/*.ts"
   ],
-  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts", "src/**/*.testkit.ts"]
 }

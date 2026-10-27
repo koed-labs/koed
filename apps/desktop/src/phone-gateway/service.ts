@@ -63,6 +63,7 @@ import {
   collectionView,
   countPhoneAction,
   evaluateGamification,
+  recordChiefReplies,
   markEditionSeen,
   standings,
   wornLook,
@@ -717,6 +718,11 @@ export const createPhoneGatewayService = (
         409,
         "This conversation isn't ready to continue yet."
       );
+    // A retried request from the phone never reaches the AI Client twice.
+    if (delivered.has(clientMessageId)) return;
+    delivered.add(clientMessageId);
+    if (delivered.size > 1_000)
+      delivered.delete(delivered.values().next().value!);
     const sent = await conversation({
       operation: "send",
       executionId: identity.executionId,
@@ -727,13 +733,21 @@ export const createPhoneGatewayService = (
       prompt: text,
       fileMentionCommandIds: [],
       terminalContextReferences: []
+    }).catch((error: unknown) => {
+      delivered.delete(clientMessageId);
+      throw error;
     });
-    if (sent.status === "rejected")
+    if (sent.status === "rejected") {
+      delivered.delete(clientMessageId);
       throw new PhoneGatewayError(
         409,
         sent.message ?? "The AI Client didn't accept the message."
       );
+    }
   };
+
+  /** Messages already handed to an AI Client (by the phone's message id), so a retried request isn't sent twice. */
+  const delivered = new Set<string>();
 
   const remember = (key: string, message: PendingMessage) => {
     const list = pending.get(key) ?? [];
@@ -905,10 +919,38 @@ export const createPhoneGatewayService = (
 
   /* ---------- ranks, milestones and editions ---------- */
 
+  let repliesSyncedAt = 0;
+  /** Count the Chief's replies in the phone's Chief Chat from what Koed captured (at most every 5 s). */
+  const syncChiefReplies = async () => {
+    if (!game || now().getTime() - repliesSyncedAt < 5_000) return;
+    repliesSyncedAt = now().getTime();
+    const chief = await readChief();
+    if (!chief) return;
+    const data = await personal("personal.events.load_page", {
+      projectId: chief.projectId,
+      threadId: chief.threadId,
+      limit: 50
+    }).catch(() => null);
+    if (!data) return;
+    const replies = data.events
+      .filter(
+        (event) =>
+          !event.invalidatedAt &&
+          eventRole(event.actor, event.eventType) === "assistant" &&
+          (event.content ?? event.contentPreview).trim().length > 0
+      )
+      .map((event) => ({ id: event.id, at: event.timestamp }));
+    const state = await game.read();
+    if (recordChiefReplies(state, replies) === state) return;
+    await game.update((current) => recordChiefReplies(current, replies));
+    progressed();
+  };
+
   const factsFor = async (agents?: Agent[]): Promise<GamificationFacts> => {
     const [team, jobsInfo] = await Promise.all([
       agents ? Promise.resolve(agents) : listAgents(),
-      jobsAndMissed().catch(() => null)
+      jobsAndMissed().catch(() => null),
+      syncChiefReplies().catch(() => undefined)
     ]);
     if (remembered === null) await threads().catch(() => undefined);
     return {
@@ -955,10 +997,10 @@ export const createPhoneGatewayService = (
   let onProgress: (() => void) | null = null;
   const progressed = () => onProgress?.();
 
-  const count = (action: "unblock" | "ask" | "chief_reply") =>
+  const count = (action: "unblock" | "ask") =>
     game
       ? game
-          .update((state) => countPhoneAction(state, action, now()))
+          .update((state) => countPhoneAction(state, action))
           .then(progressed, () => undefined)
       : Promise.resolve();
 
@@ -1092,7 +1134,15 @@ export const createPhoneGatewayService = (
       return {
         conversation: null,
         execution: null,
-        events: [],
+        // Sent before the Chief's Chat exists: shown while it starts.
+        events: (pending.get(NEW_CHIEF_CHAT) ?? []).map((message) => ({
+          id: `pending:${message.clientMessageId}`,
+          role: "user" as const,
+          text: message.text,
+          at: message.at,
+          providerTurnId: null,
+          toolName: message.failed ? `not-sent:${message.failed}` : "pending"
+        })),
         streaming: null
       };
     const data = await personal("personal.events.load_page", {
@@ -1190,6 +1240,11 @@ export const createPhoneGatewayService = (
     return timelineFor(chief, chief?.executionId);
   };
 
+  /** Messages sent before the Chief's Chat exists are shown under this key until it does. */
+  const NEW_CHIEF_CHAT = "chief:new";
+  /** Chief deliveries run one at a time, in order, so two quick messages never start two Chats. */
+  let chiefQueue: Promise<unknown> = Promise.resolve();
+
   /** Accept a message for the Chief of Staff and deliver it in the background (it may need to start a Chat first). */
   const sendToChief = async (
     text: string,
@@ -1202,10 +1257,23 @@ export const createPhoneGatewayService = (
         409,
         "There's no Chief of Staff yet. Finish setting up Koed on your Mac."
       );
-    let current = await readChief();
-    if (current && current.agentId !== chief.id) current = null;
+    const currentChief = async () => {
+      const value = await readChief();
+      return value && value.agentId === chief.id ? value : null;
+    };
+    const current = await currentChief();
+    const message = {
+      clientMessageId,
+      text,
+      at: now().toISOString(),
+      failed: null
+    };
+    const shownUnder = current
+      ? conversationKey(current.projectId, current.threadId)
+      : NEW_CHIEF_CHAT;
+    remember(shownUnder, message);
     const deliverInBackground = async () => {
-      let ref = current;
+      let ref = await currentChief();
       let identity = ref
         ? await writableExecution(ref).catch(() => null)
         : null;
@@ -1232,30 +1300,26 @@ export const createPhoneGatewayService = (
             : state
         );
       }
-      remember(conversationKey(identity.projectId, identity.threadId), {
-        clientMessageId,
-        text,
-        at: now().toISOString(),
-        failed: null
-      });
+      const key = conversationKey(identity.projectId, identity.threadId);
+      if (key !== shownUnder) {
+        pending.set(
+          shownUnder,
+          (pending.get(shownUnder) ?? []).filter(
+            (entry) => entry.clientMessageId !== clientMessageId
+          )
+        );
+        remember(key, message);
+      }
       await deliver(identity, text, clientMessageId);
       return identity;
     };
-    if (current)
-      remember(conversationKey(current.projectId, current.threadId), {
-        clientMessageId,
-        text,
-        at: now().toISOString(),
-        failed: null
-      });
-    void deliverInBackground().catch((error: unknown) => {
+    const delivery = chiefQueue.then(deliverInBackground);
+    chiefQueue = delivery.catch(() => undefined);
+    void delivery.catch((error: unknown) => {
       const reason = error instanceof Error ? error.message : "Couldn't send.";
-      if (current)
-        markFailed(
-          conversationKey(current.projectId, current.threadId),
-          clientMessageId,
-          reason
-        );
+      for (const list of pending.values())
+        for (const entry of list)
+          if (entry.clientMessageId === clientMessageId) entry.failed = reason;
       onDeliveryFailure?.(reason);
     });
     return {
@@ -1585,8 +1649,6 @@ export const createPhoneGatewayService = (
     onProgress(listener: () => void) {
       onProgress = listener;
     },
-    /** The Chief of Staff finished a reply in the phone's conversation. */
-    countChiefReply: () => count("chief_reply"),
     resolveRun,
     ask,
     askThread,

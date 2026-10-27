@@ -135,7 +135,9 @@ const stateSchema = z
         asks: z.number().int().nonnegative(),
         /** When each Chief of Staff reply finished (newest last, capped). */
         chiefReplies: z.array(z.string()).max(400),
-        chiefRepliesTotal: z.number().int().nonnegative()
+        chiefRepliesTotal: z.number().int().nonnegative(),
+        /** Which Chief replies were counted (event ids), so none counts twice. */
+        chiefReplyIds: z.array(z.string()).max(400).default([])
       })
       .strict(),
     agents: z.record(
@@ -161,7 +163,13 @@ export type GamificationState = z.infer<typeof stateSchema>;
 const emptyState = (): GamificationState => ({
   version: 1,
   initialized: false,
-  counters: { unblocks: 0, asks: 0, chiefReplies: [], chiefRepliesTotal: 0 },
+  counters: {
+    unblocks: 0,
+    asks: 0,
+    chiefReplies: [],
+    chiefRepliesTotal: 0,
+    chiefReplyIds: []
+  },
   agents: {},
   editions: {},
   worn: {}
@@ -517,19 +525,35 @@ export const createGamificationStore = (
 /** Things the phone did that count towards editions. */
 export const countPhoneAction = (
   state: GamificationState,
-  action: "unblock" | "ask" | "chief_reply",
-  at: Date
+  action: "unblock" | "ask"
 ): GamificationState => {
   const next = structuredClone(state);
   if (action === "unblock") next.counters.unblocks++;
-  else if (action === "ask") next.counters.asks++;
-  else {
-    next.counters.chiefReplies = [
-      ...next.counters.chiefReplies,
-      at.toISOString()
-    ].slice(-400);
-    next.counters.chiefRepliesTotal++;
-  }
+  else next.counters.asks++;
+  return next;
+};
+
+/**
+ * Count the Chief of Staff's replies in the phone's Chief Chat (each assistant
+ * message once, by its event id). Returns the state unchanged when nothing is new.
+ */
+export const recordChiefReplies = (
+  state: GamificationState,
+  replies: ReadonlyArray<{ id: string; at: string }>
+): GamificationState => {
+  const seen = new Set(state.counters.chiefReplyIds);
+  const fresh = replies.filter((reply) => !seen.has(reply.id));
+  if (fresh.length === 0) return state;
+  const next = structuredClone(state);
+  next.counters.chiefReplyIds = [
+    ...next.counters.chiefReplyIds,
+    ...fresh.map((reply) => reply.id)
+  ].slice(-400);
+  next.counters.chiefReplies = [
+    ...next.counters.chiefReplies,
+    ...fresh.map((reply) => reply.at)
+  ].slice(-400);
+  next.counters.chiefRepliesTotal += fresh.length;
   return next;
 };
 
