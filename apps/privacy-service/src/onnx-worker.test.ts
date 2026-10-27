@@ -120,7 +120,7 @@ function fixture(mode = "valid") {
         python: "3.11.14"
       })
     );
-    return process as ReturnType<NonNullable<OnnxWorkerOptions["spawnWorker"]>>;
+    return process;
   };
   const worker = new SyntheticAssetsWorker({
     spawnWorker,

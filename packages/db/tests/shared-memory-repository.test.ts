@@ -3148,7 +3148,7 @@ describeDb("Shared Memory repository", () => {
         teamWorkspaceId: fixture.teamWorkspaceId,
         mode: "continuous",
         ...fidelityConsent(allRepresentations),
-        representation: "lcm_leaves",
+        activationRepresentation: "lcm_leaves",
         authority: authority(fixture)
       }
     );

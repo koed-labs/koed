@@ -21,7 +21,12 @@ import type { PrivacyModelExecution } from "./runtime.js";
 
 export const ONNX_WORKER_PROTOCOL = 2;
 const MAX_FRAME_BYTES = 2 * 1024 * 1024;
-type WorkerProcess = ChildProcessByStdio<Writable, Readable, null>;
+type WorkerProcess = Pick<
+  ChildProcessByStdio<Writable, Readable, null>,
+  "stdin" | "stdout" | "kill"
+> & {
+  once(event: "error" | "close", listener: () => void): unknown;
+};
 type Pending = {
   job: string;
   resolve(value: Record<string, unknown>): void;

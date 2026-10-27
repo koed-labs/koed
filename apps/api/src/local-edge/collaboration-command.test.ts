@@ -2189,6 +2189,7 @@ describe("local-edge collaboration command route", () => {
     const dispatches: unknown[] = [];
     const harness = createHarness({
       sharedMemoryControl: {
+        verifyPublisherTakeoverReview: async () => false,
         reconcileRuleDeliveries: async () => ({
           processed: 0,
           acknowledged: 0
@@ -2255,6 +2256,7 @@ describe("local-edge collaboration command route", () => {
     const harness = createHarness({
       backend: null,
       sharedMemoryControl: {
+        verifyPublisherTakeoverReview: async () => false,
         reconcileRuleDeliveries: async () => ({
           processed: 0,
           acknowledged: 0
@@ -3287,6 +3289,7 @@ describe("local-edge collaboration command route", () => {
     const harness = createHarness({
       response: remoteCompositionResponse,
       sharedMemoryControl: {
+        verifyPublisherTakeoverReview: async () => false,
         reconcileRuleDeliveries: async () => ({
           processed: 0,
           acknowledged: 0
@@ -3414,6 +3417,7 @@ describe("local-edge collaboration command route", () => {
     const dispatched: CollaborationRendererCommand[] = [];
     const harness = createHarness({
       sharedMemoryControl: {
+        verifyPublisherTakeoverReview: async () => false,
         reconcileRuleDeliveries: async () => ({
           processed: 0,
           acknowledged: 0
@@ -3477,6 +3481,7 @@ describe("local-edge collaboration command route", () => {
     async (code) => {
       const harness = createHarness({
         sharedMemoryControl: {
+          verifyPublisherTakeoverReview: async () => false,
           reconcileRuleDeliveries: async () => ({
             processed: 0,
             acknowledged: 0
@@ -3536,6 +3541,7 @@ describe("local-edge collaboration command route", () => {
       const harness = createHarness({
         response: remoteCompositionResponse,
         sharedMemoryControl: {
+          verifyPublisherTakeoverReview: async () => false,
           reconcileRuleDeliveries: async () => ({
             processed: 0,
             acknowledged: 0
@@ -3589,6 +3595,7 @@ describe("local-edge collaboration command route", () => {
     const harness = createHarness({
       response: remoteCompositionResponse,
       sharedMemoryControl: {
+        verifyPublisherTakeoverReview: async () => false,
         reconcileRuleDeliveries: async () => ({
           processed: 0,
           acknowledged: 0
