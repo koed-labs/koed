@@ -1,14 +1,47 @@
 # Manifest-pin remediation: local verification
 
-## Review follow-up: current local evidence
+## Review follow-up: scope and remaining acceptance
 
-Core remediation starts from reviewed #421 `b86f39e3257702dfca9d49ca191bab694083a706`.
-Local commits `acd999b33` and `67c11c86c` repair ordinary cross-version activation,
-install composition and prior-component diagnostics. `f1db8ca56` corrects remaining
-component provisioning instructions. These commits have not been pushed or
-propagated into #428/#432; this is not final-stack acceptance.
+Published #432 `605bf1c3680c361afaea741071d7e24141eb2929` already contains the
+ordinary cross-version activation, install composition, prior-component diagnostic
+and provisioning documentation fixes, plus protected candidate verification.
+The earlier statement that those fixes had not reached #432 was stale. Lower-stack
+propagation and final-head CI must be reported separately in each PR; a pushed
+upper PR is not proof that its independently mergeable parents contain the fixes.
 
-Node **24.13.1**, pnpm **11.1.2**, macOS arm64:
+The next follow-up separates Desktop ownership/version discovery from runnable
+admission, preserves the capability-bound ordinary-generation fallback, bounds
+journal reads, and rejects Desktop replacement downgrades. Release ordering keeps
+complete hyphenated prerelease identifiers. The retained signing rehearsal now
+uses an explicitly synthetic manifest catalog for local payload integrity while
+retaining separate remote signature/tamper checks. Neither fixture pins nor mocked
+KMS responses establish publisher trust or actual replacement acceptance.
+
+### Follow-up local verification
+
+Node **24.13.1**, pnpm **11.1.2**, macOS arm64, isolated worktree with a fresh
+frozen-lockfile offline dependency installation:
+
+- Server: **71 files, 970 tests passed**. Includes old Privacy selection ownership
+  discovery/status before Desktop bundle replacement, ordinary Desktop fallback,
+  oversized-journal rejection, journal owner/digest tampering, and downgrade
+  rejection without pointer changes.
+- Desktop: **100 files, 967 tests passed**, plus **77 Node smoke/packaging tests**.
+- Root scripts: **502 passed, one database-dependent skip**. Includes full
+  prerelease ordering through protected candidate verification and the offline
+  signing rehearsal with synthetic manifest/archive tampering.
+- Full workspace build, full ESLint/Prettier and root test-source typecheck passed.
+  Electron uses the already installed local binary; it was not downloaded again.
+
+These are local regression checks, not final-head CI or native release acceptance.
+The retained signing rehearsal was exercised with mocked OIDC/KMS only; no cloud
+resources were modified and no actual KMS rehearsal is claimed.
+
+### Previously recorded verification
+
+The following results were recorded by the prior implementation agent, not newly
+executed native acceptance for this follow-up. Node **24.13.1**, pnpm **11.1.2**,
+macOS arm64:
 
 - Fresh Server build and Server suite: **68 files, 941 tests passed**.
 - Root test-source typecheck (`pnpm exec tsc -p tsconfig.test.json`), Server
