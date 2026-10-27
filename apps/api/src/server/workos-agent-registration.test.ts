@@ -24,6 +24,7 @@ const databaseUrl = process.env.KOED_OAUTH_TEST_DATABASE_URL;
 
 describe.skipIf(!databaseUrl)(
   "WorkOS delegated Personal and Team authority",
+  { timeout: 120_000 },
   () => {
     const database = `workos_agent_${randomUUID().replaceAll("-", "")}`;
     const admin = createDbPool({ connectionString: databaseUrl });

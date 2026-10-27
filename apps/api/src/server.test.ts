@@ -1,6 +1,5 @@
 import { personalSelectionConsumerStartSchema } from "@koed/shared";
 import type {
-  RepositoryIdentity,
   PersonalProjectRule,
   PersonalSelectionConsumerSelection
 } from "@koed/shared";
@@ -93,21 +92,6 @@ import type { BuildServerOptions } from "./server/index.js";
 import type { WorkosAuthKitClient } from "./auth/workos.js";
 
 let isolatedDefaultKoedHome: string | undefined;
-
-const fixtureRepositoryIdentity = (
-  name: string,
-  root: string | null
-): RepositoryIdentity => ({
-  kind: "portable_repository",
-  key: `gr_${name}`,
-  root,
-  branch: "main",
-  reason: "origin",
-  checkoutId: `checkout_${name}`,
-  originatingDeviceId: "fixture_device",
-  selectedRemote: "origin",
-  anchorDisplay: `example.test/team/${name}`
-});
 
 const testProtocolDeploymentId = "00000000-0000-4000-8000-000000000001";
 
@@ -16741,261 +16725,31 @@ describe("account and access flows", () => {
     ).toHaveLength(1);
   });
 
-  it("moves, preserves, resets, and owner-authorizes Personal Project assignment", async () => {
-    const app = await buildServer({
-      repository: createFakeRepository(),
-      runMemoryJobsInlineForTests: true
-    });
-    const owner = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: {
-        email: "project-assignment-owner@example.com",
-        password: "password123"
-      }
-    });
-    const other = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: {
-        email: "project-assignment-other@example.com",
-        password: "password123"
-      }
-    });
-    const ownerCookie = cookieHeader(owner);
-    const ownerToken = await app.inject({
-      method: "POST",
-      url: "/api-tokens",
-      headers: browserSessionHeaders(ownerCookie),
-      payload: { name: "Project assignment capture" }
-    });
-    const otherToken = await app.inject({
-      method: "POST",
-      url: "/api-tokens",
-      headers: browserSessionHeaders(cookieHeader(other)),
-      payload: { name: "Other Project assignment capture" }
-    });
-    const captureHeaders = {
-      authorization: `Bearer ${jsonBody<TokenResponse>(ownerToken).token}`
-    };
-    const otherCaptureHeaders = {
-      authorization: `Bearer ${jsonBody<TokenResponse>(otherToken).token}`
-    };
-    const idempotencyKey = "project-assignment-session";
-    const created = await app.inject({
-      method: "POST",
-      url: "/v1/sessions",
-      headers: captureHeaders,
-      payload: {
-        externalSessionId: "project-assignment-thread",
-        cwd: "/work/automatic-a",
-        idempotencyKey,
-        detectedProjects: [
-          { id: "project-a", name: "Project A", path: "/work/automatic-a" }
-        ]
-      }
-    });
-    const session = jsonBody<SessionResponse>(created).session;
-    const incompleteReplay = await app.inject({
-      method: "POST",
-      url: "/v1/sessions",
-      headers: captureHeaders,
-      payload: {
-        externalSessionId: "project-assignment-thread",
-        idempotencyKey
-      }
-    });
-    const otherOwnerSession = await app.inject({
-      method: "POST",
-      url: "/v1/sessions",
-      headers: otherCaptureHeaders,
-      payload: {
-        externalSessionId: "attacker-thread",
-        cwd: "/work/attacker",
-        idempotencyKey,
-        detectedProjects: [
-          {
-            id: "attacker-project",
-            name: "Attacker Project",
-            path: "/work/attacker"
+  it.each(["move", "reset"])(
+    "does not expose retired Project %s writes",
+    async (action) => {
+      const app = await buildServer({ repository: createFakeRepository() });
+      try {
+        const registered = await app.inject({
+          method: "POST",
+          url: "/auth/register",
+          payload: {
+            email: `retired-${action}@example.test`,
+            password: "password123"
           }
-        ]
+        });
+        const response = await app.inject({
+          method: "PATCH",
+          url: `/v1/memory/graph/sessions/${randomUUID()}/project`,
+          headers: browserSessionHeaders(cookieHeader(registered)),
+          payload: { action, expectedVersion: 1 }
+        });
+        expect(response.statusCode).toBe(404);
+      } finally {
+        await app.close();
       }
-    });
-    await app.inject({
-      method: "POST",
-      url: `/v1/sessions/${session.id}/events`,
-      headers: captureHeaders,
-      payload: {
-        actor: "user",
-        eventType: "user_prompt",
-        content: "Effective Project grouping marker",
-        metadata: { externalSessionId: "project-assignment-thread" }
-      }
-    });
-
-    const moved = await app.inject({
-      method: "PATCH",
-      url: `/v1/memory/graph/sessions/${session.id}/project`,
-      headers: browserSessionHeaders(ownerCookie),
-      payload: {
-        action: "move",
-        expectedVersion: 1,
-        project: {
-          id: "project-b",
-          name: "Project B",
-          path: "/work/manual-b",
-          repositoryIdentity: fixtureRepositoryIdentity("b", "/work/manual-b")
-        }
-      }
-    });
-    const redetected = await app.inject({
-      method: "POST",
-      url: "/v1/sessions",
-      headers: captureHeaders,
-      payload: {
-        externalSessionId: "project-assignment-thread",
-        cwd: "/work/automatic-c",
-        idempotencyKey,
-        detectedProjects: [
-          { id: "project-c", name: "Project C", path: "/work/automatic-c" }
-        ]
-      }
-    });
-    const originalCaptureLookup = await app.inject({
-      method: "GET",
-      url: "/v1/sessions/latest?project_id=project-a",
-      headers: captureHeaders
-    });
-    const organizationalLookup = await app.inject({
-      method: "GET",
-      url: "/v1/sessions/latest?project_id=project-b",
-      headers: captureHeaders
-    });
-    const groupedAfterMove = await app.inject({
-      method: "GET",
-      url: "/v1/memory/graph/threads?projectId=project-b",
-      headers: browserSessionHeaders(ownerCookie)
-    });
-    const rejectedOtherOwner = await app.inject({
-      method: "PATCH",
-      url: `/v1/memory/graph/sessions/${session.id}/project`,
-      headers: browserSessionHeaders(cookieHeader(other)),
-      payload: {
-        action: "move",
-        expectedVersion: 2,
-        project: {
-          id: "project-a",
-          name: "Project A",
-          path: null,
-          repositoryIdentity: fixtureRepositoryIdentity("a", null)
-        }
-      }
-    });
-    const rejectedTeamAuthority = await app.inject({
-      method: "PATCH",
-      url: `/v1/memory/graph/sessions/${session.id}/project`,
-      headers: browserSessionHeaders(ownerCookie),
-      payload: {
-        action: "move",
-        expectedVersion: 2,
-        project: {
-          id: "project-a",
-          name: "Project A",
-          path: null,
-          repositoryIdentity: fixtureRepositoryIdentity("a", null)
-        },
-        teamWorkspaceId: randomUUID()
-      }
-    });
-    const reset = await app.inject({
-      method: "PATCH",
-      url: `/v1/memory/graph/sessions/${session.id}/project`,
-      headers: browserSessionHeaders(ownerCookie),
-      payload: { action: "reset", expectedVersion: 2 }
-    });
-    const ambiguous = await app.inject({
-      method: "POST",
-      url: "/v1/sessions",
-      headers: captureHeaders,
-      payload: {
-        externalSessionId: "ambiguous-project-thread",
-        idempotencyKey: "ambiguous-project-session",
-        detectedProjects: [
-          { id: "project-a", name: "Project A", path: "/work/a" },
-          { id: "project-b", name: "Project B", path: "/work/b" }
-        ]
-      }
-    });
-    const unassigned = await app.inject({
-      method: "GET",
-      url: "/v1/memory/graph/threads?projectId=unassigned",
-      headers: browserSessionHeaders(ownerCookie)
-    });
-    await app.close();
-
-    expect(otherOwnerSession.statusCode).toBe(200);
-    expect(jsonBody<SessionResponse>(otherOwnerSession).session).toMatchObject({
-      ownerUserId: jsonBody<{ user: { id: string } }>(other).user.id,
-      externalSessionId: "attacker-thread",
-      project: { id: "attacker-project" }
-    });
-    expect(jsonBody<SessionResponse>(otherOwnerSession).session.id).not.toBe(
-      session.id
-    );
-    expect(session).toMatchObject({
-      project: { id: "project-a" },
-      projectAssignmentSource: "detected",
-      capturedProjectProvenance: {
-        outcome: "unambiguous",
-        candidates: [{ id: "project-a" }]
-      }
-    });
-    expect(jsonBody<SessionResponse>(incompleteReplay).session).toMatchObject({
-      id: session.id,
-      automaticProject: { id: "project-a" },
-      project: { id: "project-a" },
-      projectAssignmentSource: "detected"
-    });
-    expect(jsonBody<SessionResponse>(moved).session).toMatchObject({
-      project: { id: "project-b" },
-      projectOverride: { id: "project-b" },
-      projectAssignmentSource: "user_override"
-    });
-    expect(jsonBody<SessionResponse>(redetected).session).toMatchObject({
-      id: session.id,
-      automaticProject: { id: "project-c" },
-      project: { id: "project-b" },
-      projectAssignmentSource: "user_override",
-      capturedProjectProvenance: {
-        candidates: [{ id: "project-a" }]
-      }
-    });
-    expect(originalCaptureLookup.statusCode).toBe(404);
-    expect(organizationalLookup.statusCode).toBe(200);
-    expect(jsonBody<SessionResponse>(organizationalLookup).session.id).toBe(
-      session.id
-    );
-    expect(
-      jsonBody<GraphThreadIndexResponse>(groupedAfterMove).projects[0]
-    ).toMatchObject({ id: "project-b", eventCount: 1 });
-    expect(rejectedOtherOwner.statusCode).toBe(404);
-    expect(rejectedTeamAuthority.statusCode).toBe(400);
-    expect(jsonBody<SessionResponse>(reset).session).toMatchObject({
-      automaticProject: { id: "project-c" },
-      projectOverride: null,
-      project: { id: "project-c" },
-      projectAssignmentSource: "detected"
-    });
-    expect(jsonBody<SessionResponse>(ambiguous).session).toMatchObject({
-      project: null,
-      projectAssignmentSource: null,
-      capturedProjectProvenance: { outcome: "ambiguous" }
-    });
-    expect(jsonBody<GraphThreadIndexResponse>(unassigned).projects).toEqual([
-      expect.objectContaining({ id: "unassigned", name: "Unassigned" })
-    ]);
-  });
+    }
+  );
 
   it("keeps Conversation presentation owner-scoped, versioned, and separate from capture", async () => {
     const app = await buildServer({

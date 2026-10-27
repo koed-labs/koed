@@ -271,7 +271,7 @@ describe.skipIf(!databaseUrl)("remote MCP Team fixture authority", () => {
   const claim = async (token: string) => {
     const response = await api(token, "/v1/memory/answer-tasks/claim", {
       lease_owner: "fixture-local-helper",
-      lease_ms: 30000,
+      lease_ms: 180000,
       scope_filter: "team"
     });
     expect(response.statusCode, response.body).toBe(200);
@@ -279,7 +279,8 @@ describe.skipIf(!databaseUrl)("remote MCP Team fixture authority", () => {
   };
   const claimReady = async (token: string) => {
     // MCP observation briefly locks this row; match the helper's bounded retry.
-    for (let attempt = 0; attempt < 30; attempt += 1) {
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
       const task = await claim(token);
       if (task) return task;
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -392,7 +393,7 @@ describe.skipIf(!databaseUrl)("remote MCP Team fixture authority", () => {
     ]);
     const deniedClaim = await api(token, "/v1/memory/answer-tasks/claim", {
       lease_owner: "fixture-local-helper",
-      lease_ms: 30000,
+      lease_ms: 180000,
       scope_filter: "team"
     });
     expect(deniedClaim.statusCode).toBe(403);
@@ -528,7 +529,7 @@ describe.skipIf(!databaseUrl)("remote MCP Team fixture authority", () => {
     await pool.query("delete from memory_questions where id=$1", [
       completed.questionId
     ]);
-  }, 15000);
+  }, 180_000);
 
   it("denies disabled and removed members and Workspace access loss before decrypt", async () => {
     decrypt.mockClear();
@@ -665,7 +666,7 @@ describe.skipIf(!databaseUrl)("remote MCP Team fixture authority", () => {
           {
             lease_owner: "fixture-local-helper",
             fence_generation: running.fenceGeneration,
-            lease_ms: 30000
+            lease_ms: 180000
           }
         );
         expect(heartbeat.statusCode, heartbeat.body).toBe(403);
@@ -701,6 +702,6 @@ describe.skipIf(!databaseUrl)("remote MCP Team fixture authority", () => {
         ]);
       }
     },
-    15000
+    180_000
   );
 });

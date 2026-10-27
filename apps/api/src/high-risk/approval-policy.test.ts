@@ -1,3 +1,4 @@
+import { publisherTakeoverReviewFixture } from "../shared-memory/test-fixtures/publisher-takeover-review.js";
 import {
   noPrivacyLabelsPolicy,
   sharingRuleDetailReviewSchema,
@@ -72,6 +73,19 @@ const matrixCases: Array<{
   intent: HighRiskActionGrantIntent;
   expected: "direct" | "native_review" | "step_up";
 }> = [
+  {
+    intent: {
+      action: "shared_memory.publisher_takeover",
+      mutationId: uuid(31),
+      review: publisherTakeoverReviewFixture({
+        ruleId: uuid(30),
+        teamId: uuid(1),
+        teamWorkspaceId: uuid(2),
+        receivingCredentialId: uuid(32)
+      })
+    },
+    expected: "native_review"
+  },
   {
     intent: {
       action: "shared_memory.rule_detail",
