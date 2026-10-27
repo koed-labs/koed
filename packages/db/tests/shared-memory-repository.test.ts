@@ -964,6 +964,15 @@ describe("Shared Memory cumulative fidelity materialization", () => {
 
 describeDb("Shared Memory repository", () => {
   let pool: pg.Pool;
+  let admin: pg.Pool;
+  const templateDatabase = `shared_template_${randomUUID().replaceAll("-", "")}`;
+  const caseDatabases = new Set<string>();
+  let caseDatabase: string;
+  const databaseConnection = (name: string) => {
+    const url = new URL(databaseUrl!);
+    url.pathname = `/${name}`;
+    return url.toString();
+  };
   let provider: EnvelopeEncryptionProvider;
   let ownerProvider: EnvelopeEncryptionProvider;
   let privacyProvider: EnvelopeEncryptionProvider;
@@ -2293,7 +2302,11 @@ describeDb("Shared Memory repository", () => {
   };
 
   beforeAll(async () => {
-    pool = createDbPool({ connectionString: databaseUrl });
+    admin = createDbPool({ connectionString: databaseUrl });
+    await admin.query(`create database "${templateDatabase}"`);
+    pool = createDbPool({
+      connectionString: databaseConnection(templateDatabase)
+    });
     await runDbMigrations(pool);
     const deployment = await pool.query<{ id: string }>(
       `insert into deployment_identities (
@@ -2324,9 +2337,19 @@ describeDb("Shared Memory repository", () => {
       labels: noPrivacyLabelsPolicy(),
       expectedPreviousVersion: 0
     });
-  });
+    await pool.end();
+  }, 120_000);
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    caseDatabase = `shared_case_${randomUUID().replaceAll("-", "")}`;
+    await admin.query(
+      `create database "${caseDatabase}" template "${templateDatabase}"`
+    );
+    caseDatabases.add(caseDatabase);
+    pool = createDbPool({ connectionString: databaseConnection(caseDatabase) });
+    privacyRepository = createPrivacyClassificationRepository(pool, {
+      fingerprintKey: "shared-memory-privacy-test-fingerprint-key-v1"
+    });
     const base = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 41).toString("base64")
     );
@@ -2369,12 +2392,18 @@ describeDb("Shared Memory repository", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
+    await pool.end();
+    await admin.query(`drop database if exists "${caseDatabase}" with(force)`);
+    caseDatabases.delete(caseDatabase);
   });
 
   afterAll(async () => {
-    await pool.end();
+    await pool?.end().catch(() => undefined);
+    for (const name of [...caseDatabases, templateDatabase])
+      await admin.query(`drop database if exists "${name}" with(force)`);
+    await admin.end();
   });
 
   it.each(["published", "lost_access"])(
@@ -7803,8 +7832,7 @@ describeDb("Shared Memory repository", () => {
             "update memory_nodes set invalidated_at=now() where id=$1",
             [source.leaf.nodeId]
           ),
-        message:
-          "Authoritative Shared Memory source material is empty or invalid"
+        message: "Authoritative Shared Memory source material is not ready"
       },
       {
         representation: "lcm_leaves",
@@ -10340,33 +10368,39 @@ describeDb("Shared Memory repository", () => {
       actor(fixture.ownerUserId),
       { kind: "grant", id: snapshot.shareGrantId }
     );
-    expect(ownerView?.summary.sharingReasons).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "direct",
-          rule: null,
-          consentId: snapshot.consentId,
-          mode: "snapshot",
-          updateState: "fixed_snapshot"
-        }),
-        expect.objectContaining({
-          kind: "rule",
-          rule: {
-            id: input.ruleId,
-            selectorKind: "captured_session",
-            authorityVersion: 1,
-            publisherFence: 1,
-            state: "active",
-            catchUpState: "queued",
-            failureCode: null
-          },
-          consentId: continuous.consentId,
-          mode: "continuous",
-          updateState: "pending",
-          publishedRepresentations: []
-        })
-      ])
-    );
+    expect(
+      ownerView?.summary.sharingReasons.find(
+        (reason) => reason.kind === "direct"
+      )
+    ).toMatchObject({
+      kind: "direct",
+      rule: null,
+      consentId: snapshot.consentId,
+      mode: "snapshot",
+      updateState: "fixed_snapshot"
+    });
+    expect(
+      ownerView?.summary.sharingReasons.find((reason) => reason.kind === "rule")
+    ).toMatchObject({
+      kind: "rule",
+      rule: {
+        id: input.ruleId,
+        selectorKind: "captured_session",
+        authorityVersion: 1,
+        publisherFence: 1,
+        state: "active",
+        catchUpState: "queued",
+        failureCode: null,
+        publisher: {
+          available: true,
+          credentialId: fixture.deviceCredentialId
+        }
+      },
+      consentId: continuous.consentId,
+      mode: "continuous",
+      updateState: "pending",
+      publishedRepresentations: []
+    });
     await expect(
       repository.readGrantRepresentation(actor(fixture.readerUserId), {
         shareGrantId: snapshot.shareGrantId,
@@ -14864,7 +14898,14 @@ describeDb("Shared Memory repository", () => {
       materializeRetry()
     ]);
     expect(new Set(representations.map((item) => item.id)).size).toBe(1);
-    expect(encryptSpy.mock.calls.length - encryptionsBeforeMaterialize).toBe(1);
+    expect(
+      encryptSpy.mock.calls
+        .slice(encryptionsBeforeMaterialize)
+        .filter(
+          ([input]) =>
+            input.provenance.rowFamily === "team_memory_representation_chunk"
+        )
+    ).toHaveLength(1);
     const rows = await pool.query<{ count: string }>(
       `select count(*)::text as count from team_memory_representations
        where share_grant_id = $1 and state = 'available'`,
@@ -16644,8 +16685,16 @@ describeDb("Shared Memory repository", () => {
       );
       expect(await repository.processPendingShares()).toMatchObject({
         failed: 0,
-        waiting: 1
+        activated: 0
       });
+      expect(
+        (
+          await pool.query(
+            "select state,stage from pending_share_operations where id=$1",
+            [pending.id]
+          )
+        ).rows
+      ).toEqual([{ state: "preparing", stage: "privacy_filtering" }]);
       return pending;
     };
     const retained = await createRule("lcm_rollups");

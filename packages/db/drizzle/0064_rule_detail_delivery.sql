@@ -1,4 +1,0 @@
-ALTER TABLE "collaboration_sharing_rule_deliveries" DROP CONSTRAINT "csm_rule_delivery_destination_check";--> statement-breakpoint
-ALTER TABLE "collaboration_sharing_rule_deliveries" ADD CONSTRAINT "csm_rule_delivery_destination_check" CHECK (("collaboration_sharing_rule_deliveries"."operation_kind"='control' and "collaboration_sharing_rule_deliveries"."share_grant_id" is not null and "collaboration_sharing_rule_deliveries"."logical_grant_id" is null)
-        or ("collaboration_sharing_rule_deliveries"."operation_kind"='conversation_create' and "collaboration_sharing_rule_deliveries"."share_grant_id" is null and "collaboration_sharing_rule_deliveries"."logical_grant_id" is not null)
-        or ("collaboration_sharing_rule_deliveries"."operation_kind" in ('repository_create','repository_control','detail') and "collaboration_sharing_rule_deliveries"."share_grant_id" is null and "collaboration_sharing_rule_deliveries"."logical_grant_id" is null));

@@ -66,7 +66,7 @@ describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
         );
         if (history === "discarded recall") {
           await expect(runDbMigrations(pool)).rejects.toThrow(
-            "Reset disposable databases"
+            "Preserve the database"
           );
           expect(
             (

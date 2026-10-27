@@ -268,7 +268,8 @@ export function RepositoryReviewPanel({
             </div>
           ) : (
             <p role="status">
-              Review dismissed. Recorded source context is unchanged.
+              Review complete. Recorded source context is unchanged by this
+              inspection.
             </p>
           )}
         </>

@@ -1,5 +1,5 @@
 {
-  "id": "8d5945c8-41de-4a74-a4eb-ae75219195c0",
+  "id": "177c138c-4ecd-4087-8496-f6dc445ca3b1",
   "prevId": "bc0a9ab7-678f-474c-8542-3d1dc406144a",
   "version": "7",
   "dialect": "postgresql",
@@ -25750,7 +25750,7 @@
         },
         "personal_configuration_record_kind_check": {
           "name": "personal_configuration_record_kind_check",
-          "value": "\"personal_configuration_records\".\"payload_kind\" in ('source_context','project_membership')"
+          "value": "\"personal_configuration_records\".\"payload_kind\" in ('source_context','project_membership','project_default')"
         },
         "personal_configuration_record_bounds_check": {
           "name": "personal_configuration_record_bounds_check",
@@ -26869,102 +26869,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.personal_legacy_project_aliases": {
-      "name": "personal_legacy_project_aliases",
-      "schema": "",
-      "columns": {
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "profile_identity": {
-          "name": "profile_identity",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "legacy_alias": {
-          "name": "legacy_alias",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "upgrade_id": {
-          "name": "upgrade_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "personal_legacy_alias_project_idx": {
-          "name": "personal_legacy_alias_project_idx",
-          "columns": [
-            {
-              "expression": "owner_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "personal_legacy_alias_owned_project_fk": {
-          "name": "personal_legacy_alias_owned_project_fk",
-          "tableFrom": "personal_legacy_project_aliases",
-          "tableTo": "personal_named_projects",
-          "columnsFrom": ["owner_user_id", "project_id"],
-          "columnsTo": ["owner_user_id", "project_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "personal_legacy_alias_owned_upgrade_fk": {
-          "name": "personal_legacy_alias_owned_upgrade_fk",
-          "tableFrom": "personal_legacy_project_aliases",
-          "tableTo": "personal_project_upgrades",
-          "columnsFrom": ["owner_user_id", "upgrade_id"],
-          "columnsTo": ["owner_user_id", "upgrade_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "personal_legacy_project_aliases_pk": {
-          "name": "personal_legacy_project_aliases_pk",
-          "columns": ["owner_user_id", "profile_identity", "legacy_alias"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.personal_legacy_source_assignments": {
       "name": "personal_legacy_source_assignments",
       "schema": "",
@@ -27672,68 +27576,6 @@
         "personal_membership_revisions_bounds_check": {
           "name": "personal_membership_revisions_bounds_check",
           "value": "length(\"personal_membership_revisions\".\"revision_id\") between 1 and 128 and length(\"personal_membership_revisions\".\"witness_device_id\") between 1 and 128 and cardinality(\"personal_membership_revisions\".\"replaces\")<=1024"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.personal_model_activations": {
-      "name": "personal_model_activations",
-      "schema": "",
-      "columns": {
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "upgrade_id": {
-          "name": "upgrade_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "contract_version": {
-          "name": "contract_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "activated_at": {
-          "name": "activated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "personal_model_activations_owner_user_id_users_id_fk": {
-          "name": "personal_model_activations_owner_user_id_users_id_fk",
-          "tableFrom": "personal_model_activations",
-          "tableTo": "users",
-          "columnsFrom": ["owner_user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "personal_model_activation_owned_upgrade_fk": {
-          "name": "personal_model_activation_owned_upgrade_fk",
-          "tableFrom": "personal_model_activations",
-          "tableTo": "personal_project_upgrades",
-          "columnsFrom": ["owner_user_id", "upgrade_id"],
-          "columnsTo": ["owner_user_id", "upgrade_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "personal_model_activation_version_check": {
-          "name": "personal_model_activation_version_check",
-          "value": "\"personal_model_activations\".\"contract_version\">0"
         }
       },
       "isRLSEnabled": false
@@ -28685,131 +28527,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.personal_project_profile_owners": {
-      "name": "personal_project_profile_owners",
-      "schema": "",
-      "columns": {
-        "profile_identity": {
-          "name": "profile_identity",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "personal_project_profile_owners_owner_user_id_users_id_fk": {
-          "name": "personal_project_profile_owners_owner_user_id_users_id_fk",
-          "tableFrom": "personal_project_profile_owners",
-          "tableTo": "users",
-          "columnsFrom": ["owner_user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.personal_project_routes": {
-      "name": "personal_project_routes",
-      "schema": "",
-      "columns": {
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_project_id": {
-          "name": "source_project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "target_project_id": {
-          "name": "target_project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "target_name": {
-          "name": "target_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "target_path": {
-          "name": "target_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "target_identity": {
-          "name": "target_identity",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "personal_project_routes_owner_user_id_users_id_fk": {
-          "name": "personal_project_routes_owner_user_id_users_id_fk",
-          "tableFrom": "personal_project_routes",
-          "tableTo": "users",
-          "columnsFrom": ["owner_user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "personal_project_routes_owner_user_id_source_project_id_pk": {
-          "name": "personal_project_routes_owner_user_id_source_project_id_pk",
-          "columns": ["owner_user_id", "source_project_id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "personal_project_routes_distinct_check": {
-          "name": "personal_project_routes_distinct_check",
-          "value": "\"personal_project_routes\".\"source_project_id\" <> \"personal_project_routes\".\"target_project_id\" and \"personal_project_routes\".\"source_project_id\" <> 'unassigned'"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.personal_project_rules": {
       "name": "personal_project_rules",
       "schema": "",
@@ -28942,390 +28659,6 @@
         "personal_project_rules_target_check": {
           "name": "personal_project_rules_target_check",
           "value": "coalesce((\n        \"personal_project_rules\".\"target\"->>'kind'='repository' and \"personal_project_rules\".\"target\"->'repository'->>'kind' in ('portable_repository','device_local_repository')\n        and repository_scope_id(\"personal_project_rules\".\"target\"->'repository') is not null and \"personal_project_rules\".\"target_scope\"=repository_scope_id(\"personal_project_rules\".\"target\"->'repository') and \"personal_project_rules\".\"folder_context\" is null\n      ) or (\n        \"personal_project_rules\".\"target\"->>'kind'='folder' and \"personal_project_rules\".\"target\"->'folder'->>'ownerUserId'=\"personal_project_rules\".\"owner_user_id\"::text\n        and \"personal_project_rules\".\"target_scope\"=('folder:' || (\"personal_project_rules\".\"target\"->'folder'->>'ownerUserId') || ':' || (\"personal_project_rules\".\"target\"->'folder'->>'originatingDeploymentId')\n          || ':' || (\"personal_project_rules\".\"target\"->'folder'->>'originatingDeviceId') || ':' || (\"personal_project_rules\".\"target\"->'folder'->>'originatingProfileId')\n          || ':' || (\"personal_project_rules\".\"target\"->'folder'->>'directoryIncarnationId') || ':' || (\"personal_project_rules\".\"target\"->'folder'->>'folderId'))\n        and (\"personal_project_rules\".\"folder_context\" is null or \"personal_project_rules\".\"folder_context\"->'reference'=\"personal_project_rules\".\"target\"->'folder')\n      ),false)"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.personal_project_upgrade_items": {
-      "name": "personal_project_upgrade_items",
-      "schema": "",
-      "columns": {
-        "item_id": {
-          "name": "item_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "upgrade_id": {
-          "name": "upgrade_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "legacy_key": {
-          "name": "legacy_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "evidence": {
-          "name": "evidence",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "proposal": {
-          "name": "proposal",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "local_session_id": {
-          "name": "local_session_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'prepared'"
-        },
-        "issues": {
-          "name": "issues",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "applied_revision_id": {
-          "name": "applied_revision_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "personal_upgrade_items_owner_page_idx": {
-          "name": "personal_upgrade_items_owner_page_idx",
-          "columns": [
-            {
-              "expression": "owner_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "upgrade_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "item_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "personal_upgrade_items_owned_job_fk": {
-          "name": "personal_upgrade_items_owned_job_fk",
-          "tableFrom": "personal_project_upgrade_items",
-          "tableTo": "personal_project_upgrades",
-          "columnsFrom": ["owner_user_id", "upgrade_id"],
-          "columnsTo": ["owner_user_id", "upgrade_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "personal_upgrade_items_owned_id_unique": {
-          "name": "personal_upgrade_items_owned_id_unique",
-          "nullsNotDistinct": false,
-          "columns": ["owner_user_id", "upgrade_id", "item_id"]
-        },
-        "personal_upgrade_items_source_unique": {
-          "name": "personal_upgrade_items_source_unique",
-          "nullsNotDistinct": false,
-          "columns": ["upgrade_id", "kind", "legacy_key"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "personal_upgrade_items_kind_check": {
-          "name": "personal_upgrade_items_kind_check",
-          "value": "\"personal_project_upgrade_items\".\"kind\" in ('catalog','direct','rule','source_repair')"
-        },
-        "personal_upgrade_items_state_check": {
-          "name": "personal_upgrade_items_state_check",
-          "value": "\"personal_project_upgrade_items\".\"state\" in ('prepared','needs_repair','applied','skipped')"
-        },
-        "personal_upgrade_items_version_check": {
-          "name": "personal_upgrade_items_version_check",
-          "value": "\"personal_project_upgrade_items\".\"version\">0"
-        },
-        "personal_upgrade_items_issues_check": {
-          "name": "personal_upgrade_items_issues_check",
-          "value": "jsonb_typeof(\"personal_project_upgrade_items\".\"issues\")='array'"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.personal_project_upgrade_reviews": {
-      "name": "personal_project_upgrade_reviews",
-      "schema": "",
-      "columns": {
-        "review_id": {
-          "name": "review_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "upgrade_id": {
-          "name": "upgrade_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "item_id": {
-          "name": "item_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_state": {
-          "name": "expected_state",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "decision": {
-          "name": "decision",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "preview": {
-          "name": "preview",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "applied_at": {
-          "name": "applied_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "personal_upgrade_reviews_owner_job_idx": {
-          "name": "personal_upgrade_reviews_owner_job_idx",
-          "columns": [
-            {
-              "expression": "owner_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "upgrade_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "personal_upgrade_reviews_owned_item_fk": {
-          "name": "personal_upgrade_reviews_owned_item_fk",
-          "tableFrom": "personal_project_upgrade_reviews",
-          "tableTo": "personal_project_upgrade_items",
-          "columnsFrom": ["owner_user_id", "upgrade_id", "item_id"],
-          "columnsTo": ["owner_user_id", "upgrade_id", "item_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.personal_project_upgrades": {
-      "name": "personal_project_upgrades",
-      "schema": "",
-      "columns": {
-        "upgrade_id": {
-          "name": "upgrade_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "profile_identity": {
-          "name": "profile_identity",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "catalog_hash": {
-          "name": "catalog_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "catalog": {
-          "name": "catalog",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'prepared'"
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "ownership_confirmed_at": {
-          "name": "ownership_confirmed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "personal_project_upgrades_owner_user_id_users_id_fk": {
-          "name": "personal_project_upgrades_owner_user_id_users_id_fk",
-          "tableFrom": "personal_project_upgrades",
-          "tableTo": "users",
-          "columnsFrom": ["owner_user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "personal_project_upgrades_manifest_unique": {
-          "name": "personal_project_upgrades_manifest_unique",
-          "nullsNotDistinct": false,
-          "columns": ["owner_user_id", "profile_identity", "catalog_hash"]
-        },
-        "personal_project_upgrades_owner_id_unique": {
-          "name": "personal_project_upgrades_owner_id_unique",
-          "nullsNotDistinct": false,
-          "columns": ["owner_user_id", "upgrade_id"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "personal_project_upgrades_state_check": {
-          "name": "personal_project_upgrades_state_check",
-          "value": "\"personal_project_upgrades\".\"state\" in ('prepared','applying','needs_repair','ready_for_activation','complete')"
-        },
-        "personal_project_upgrades_version_check": {
-          "name": "personal_project_upgrades_version_check",
-          "value": "\"personal_project_upgrades\".\"version\">0"
         }
       },
       "isRLSEnabled": false
@@ -45097,6 +44430,206 @@
           "value": "\"pds_relay_transports\".\"chunk_count\" ~ '^(0|[1-9][0-9]*)$' and \"pds_relay_transports\".\"plaintext_byte_count\" ~ '^(0|[1-9][0-9]*)$' and \"pds_relay_transports\".\"ciphertext_bytes\" ~ '^(0|[1-9][0-9]*)$'"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.personal_project_defaults": {
+      "name": "personal_project_defaults",
+      "schema": "",
+      "columns": {
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_key": {
+          "name": "source_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_scope": {
+          "name": "source_scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target": {
+          "name": "target",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "seed_rule_id": {
+          "name": "seed_rule_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "initial_project_revision_id": {
+          "name": "initial_project_revision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "initial_rule_revision_id": {
+          "name": "initial_rule_revision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revision_id": {
+          "name": "revision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "personal_project_defaults_owner_user_id_users_id_fk": {
+          "name": "personal_project_defaults_owner_user_id_users_id_fk",
+          "tableFrom": "personal_project_defaults",
+          "tableTo": "users",
+          "columnsFrom": ["owner_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "personal_project_defaults_project_owner_fk": {
+          "name": "personal_project_defaults_project_owner_fk",
+          "tableFrom": "personal_project_defaults",
+          "tableTo": "personal_named_projects",
+          "columnsFrom": ["owner_user_id", "project_id"],
+          "columnsTo": ["owner_user_id", "project_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "personal_project_defaults_pkey": {
+          "name": "personal_project_defaults_pkey",
+          "columns": ["owner_user_id", "source_key"]
+        }
+      },
+      "uniqueConstraints": {
+        "personal_project_defaults_owner_user_id_source_scope_key": {
+          "name": "personal_project_defaults_owner_user_id_source_scope_key",
+          "nullsNotDistinct": false,
+          "columns": ["owner_user_id", "source_scope"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "personal_project_defaults_state_check": {
+          "name": "personal_project_defaults_state_check",
+          "value": "\"personal_project_defaults\".\"state\" in ('initialized','managed','suppressed','retired')"
+        },
+        "personal_project_defaults_target_check": {
+          "name": "personal_project_defaults_target_check",
+          "value": "jsonb_typeof(\"personal_project_defaults\".\"target\")='object'"
+        },
+        "personal_project_defaults_initialization_check": {
+          "name": "personal_project_defaults_initialization_check",
+          "value": "\"personal_project_defaults\".\"state\"<>'initialized' or (\"personal_project_defaults\".\"project_id\" is not null and \"personal_project_defaults\".\"seed_rule_id\" is not null and \"personal_project_defaults\".\"initial_project_revision_id\" is not null and \"personal_project_defaults\".\"initial_rule_revision_id\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.personal_project_default_reconciliation": {
+      "name": "personal_project_default_reconciliation",
+      "schema": "",
+      "columns": {
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "scan_generation": {
+          "name": "scan_generation",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_session_id": {
+          "name": "after_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pending": {
+          "name": "pending",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "retry_at": {
+          "name": "retry_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "personal_project_default_reconciliation_owner_user_id_users_id_fk": {
+          "name": "personal_project_default_reconciliation_owner_user_id_users_id_fk",
+          "tableFrom": "personal_project_default_reconciliation",
+          "tableTo": "users",
+          "columnsFrom": ["owner_user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },

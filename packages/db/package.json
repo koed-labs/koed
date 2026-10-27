@@ -33,7 +33,8 @@
     "approval-activity:correct": "pnpm run build && node scripts/approval-activity-remediation.mjs correct --apply",
     "test": "vitest run --passWithNoTests --no-file-parallelism",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "migrate:format": "prettier --write drizzle/meta/*.json"
+    "migrate:format": "prettier --write drizzle/meta/*.json",
+    "migrate:reconcile-projects": "pnpm run build && node scripts/reconcile-project-migrations.mjs"
   },
   "dependencies": {
     "@koed/core": "workspace:*",

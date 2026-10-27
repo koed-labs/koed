@@ -80,7 +80,7 @@ export const runDbMigrations = async (
       );
       if (applied.rows.some((row) => !knownHashes.has(row.hash))) {
         throw new Error(
-          "Database migration history does not match this build. Reset disposable databases that used the unreleased Project recall migrations before retrying."
+          "Database migration history does not match this build. Preserve the database and reconcile a verified unreleased Project history with the Local Operator Script before retrying."
         );
       }
     }

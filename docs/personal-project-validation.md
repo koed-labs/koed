@@ -1,5 +1,48 @@
 # Personal Project validation
 
+> Current history: the 27 October cleanup consolidated the final branch into
+> migrations 0046–0048 and removed unused upgrade staging. Earlier numbered
+> migration results below are historical evidence. See
+> [Database Development](database-development.md#unreleased-project-migration-consolidation)
+> for the current 49-entry journal and preservation/reconciliation procedure.
+
+## Branch cleanup validation — 27 October 2026
+
+The branch history now has three migrations, 0046–0048, instead of 31.
+Migrations 0000–0046 remain byte-for-byte unchanged. The final schema omits six
+unused upgrade staging tables and the retired Project routing table; active
+Capture Target records and source-assignment evidence remain.
+
+Validation covered:
+
+- All six migration acceptance scenarios, including concurrent startup,
+  transaction rollback and backup/restore with complete schema comparison.
+- Eight reconciliation cases covering exact-history preservation, unknown
+  history, retained staging evidence, unmatched routes, changed functions,
+  external dependencies, rollback after schema verification failure and missing
+  backup. The three merged-migration tests also passed.
+- A populated main-schema upgrade using the synthetic Team fixture. All foreign
+  keys validated; protected source data remained identical, and existing grants
+  produced the expected consent-bound sharing reasons and publications.
+- A backup/restore rehearsal of an existing branch database. Every row in every
+  surviving table remained identical after reconciliation, and the resulting
+  schema matched a fresh database.
+- All 173 Shared Memory scenarios across an isolated full run and focused
+  rechecks. The full run passed 172 cases; the remaining case passed after its
+  encryption assertion was restricted to representation content. The focused
+  recheck also covered Privacy failure isolation. Each case now uses a fresh
+  database cloned from a migrated template while retaining real concurrent
+  connections.
+- Personal membership/default/cutover suites, default Project API checks, the
+  maintained Team authorization fixture, encrypted configuration transport,
+  Directed Sync cutovers, Desktop navigation tests and six browser journeys.
+  Production artifacts excluded validation fixtures.
+
+Repository lint, formatting, workspace and test typechecks, migration metadata
+and ADR numbering checks also passed. See
+[Database Development](database-development.md) for the local reconciliation
+command and Shared Memory test prerequisites.
+
 ## Package 1 verification fixes
 
 On 20 October 2026, review of local commit `6d7ce920` identified two gaps:

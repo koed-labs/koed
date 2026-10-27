@@ -1,6 +1,6 @@
 #!/usr/bin/env node
+import { runPostgresTool } from "./postgres-tool.mjs";
 import { createHash, randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { loadRootEnv } from "../../../scripts/api-token-bootstrap-lib.mjs";
 import { runDbMigrations } from "../dist/migrate.js";
+import { migrationSchemaFingerprint } from "../dist/migration-schema.js";
+import { retiredProjectUpgradeTables } from "../dist/project-migration-history.js";
 
 const { Client, Pool } = pg;
 
@@ -103,6 +105,12 @@ const assertMigrationLedger = async (pool, expectedRecords) => {
 };
 
 const assertSchemaContracts = async (pool) => {
+  const retired = await pool.query(
+    "select table_name from information_schema.tables where table_schema='public' and table_name=any($1::text[])",
+    [[...retiredProjectUpgradeTables, "personal_project_routes"]]
+  );
+  if (retired.rowCount)
+    throw new Error("Retired Project schema remains in the current build.");
   const columnsByTable = {
     pending_sharing_rule_admissions: [
       ["existing_source_readmission", "jsonb", "YES"]
@@ -112,11 +120,11 @@ const assertSchemaContracts = async (pool) => {
       ["operation_kind", "text", "NO"]
     ],
     team_memory_workspace_exclusions: [["version", "integer", "NO"]],
-    personal_model_activations: [
-      ["owner_user_id", "uuid", "NO"],
-      ["upgrade_id", "uuid", "NO"],
-      ["contract_version", "integer", "NO"]
+    personal_project_defaults: [
+      ["source_key", "text", "NO"],
+      ["revision_id", "uuid", "NO"]
     ],
+    personal_project_default_reconciliation: [["generation", "bigint", "NO"]],
     personal_capture_target_routes: [
       ["owner_user_id", "uuid", "NO"],
       ["source_scope", "text", "NO"],
@@ -405,54 +413,18 @@ const assertCurrentSchema = async (pool) => {
   }
 };
 
-// Dumps preserve logical order, but compact dropped-column gaps and fractional enum slots.
 const schemaFingerprint = async (pool) => {
-  const [columns, constraints, indexes, triggers, enums] = await Promise.all([
-    pool.query(
-      `select table_name, row_number() over (partition by table_name order by ordinal_position)::int as ordinal_position, column_name, data_type, udt_name,
-              is_nullable, coalesce(column_default, '') as column_default
-         from information_schema.columns
-        where table_schema = 'public'
-        order by table_name, ordinal_position`
-    ),
-    pool.query(
-      `select c.conname, c.contype, pg_get_constraintdef(c.oid, true) as definition
-         from pg_constraint c
-         join pg_namespace n on n.oid = c.connamespace
-        where n.nspname = 'public'
-        order by c.conname`
-    ),
-    pool.query(
-      `select tablename, indexname, indexdef
-         from pg_indexes
-        where schemaname = 'public'
-        order by tablename, indexname`
-    ),
-    pool.query(
-      `select c.relname as table_name, t.tgname,
-              pg_get_triggerdef(t.oid, true) as definition
-         from pg_trigger t
-         join pg_class c on c.oid = t.tgrelid
-         join pg_namespace n on n.oid = c.relnamespace
-        where n.nspname = 'public' and not t.tgisinternal
-        order by c.relname, t.tgname`
-    ),
-    pool.query(
-      `select t.typname, row_number() over (partition by t.typname order by e.enumsortorder)::int as enumsortorder, e.enumlabel
-         from pg_type t
-         join pg_enum e on e.enumtypid = t.oid
-         join pg_namespace n on n.oid = t.typnamespace
-        where n.nspname = 'public'
-        order by t.typname, e.enumsortorder`
-    )
-  ]);
-  return sha256(
-    JSON.stringify(
-      [columns, constraints, indexes, triggers, enums].map(
-        (result) => result.rows
-      )
-    )
-  );
+  const client = await pool.connect();
+  try {
+    await client.query("begin read only");
+    return await migrationSchemaFingerprint(client);
+  } finally {
+    try {
+      await client.query("rollback");
+    } finally {
+      client.release();
+    }
+  }
 };
 
 const seedCurrentFixture = async (pool, ownerUserId) => {
@@ -488,49 +460,6 @@ const seedCurrentFixture = async (pool, ownerUserId) => {
   );
   return { ownerId, teamId, membershipId, workspaceId };
 };
-
-const runPostgresTool = (command, args, connectionString) =>
-  new Promise((resolvePromise, reject) => {
-    const connection = new URL(connectionString);
-    const postgresEnvironment = {
-      PGHOST: connection.hostname,
-      PGPORT: connection.port || "5432",
-      PGUSER: decodeURIComponent(connection.username),
-      PGPASSWORD: decodeURIComponent(connection.password),
-      PGDATABASE: decodeURIComponent(connection.pathname.slice(1))
-    };
-    const sslMode = connection.searchParams.get("sslmode");
-    if (sslMode) {
-      postgresEnvironment.PGSSLMODE = sslMode;
-    }
-    const child = spawn(command, args, {
-      cwd: rootDir,
-      env: { ...process.env, ...postgresEnvironment },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error) => {
-      reject(
-        new Error(`${command} could not start: ${error.message}`, {
-          cause: error
-        })
-      );
-    });
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolvePromise();
-      } else {
-        reject(
-          new Error(
-            `${command} failed closed with exit ${code}: ${stderr.trim()}`
-          )
-        );
-      }
-    });
-  });
 
 const waitForInterruptProbe = async (
   admin,
@@ -783,7 +712,8 @@ try {
     await runPostgresTool(
       process.env.PG_DUMP_BIN ?? "pg_dump",
       ["--format=custom", "--no-owner", "--no-privileges", "--file", backup],
-      current.url
+      current.url,
+      rootDir
     );
     const restored = await createDisposableDatabase("restored");
     await runPostgresTool(
@@ -797,7 +727,8 @@ try {
         restored.database,
         backup
       ],
-      restored.url
+      restored.url,
+      rootDir
     );
     await withPool(restored.url, async (pool) => {
       await assertMigrationLedger(pool, records);

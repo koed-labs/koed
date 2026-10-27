@@ -232,14 +232,6 @@ describe.skipIf(!databaseUrl)(
         { expectedVersion: p.version }
       );
       expect(await repo.listCapturePolicies(actor)).toEqual(policiesBefore);
-      expect(
-        (
-          await pool.query(
-            "select 1 from personal_project_routes where owner_user_id=$1",
-            [actor.userId]
-          )
-        ).rowCount
-      ).toBe(0);
       expect(deleted.deletedAt).not.toBeNull();
       expect(
         (await repo.listNamedPersonalProjects(actor)).map(

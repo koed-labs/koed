@@ -51,11 +51,9 @@ describe.skipIf(!databaseUrl)("owner repository assignment API", () => {
         error instanceof ZodError
           ? 400
           : ((error as { statusCode?: number }).statusCode ?? 500);
-      return reply
-        .status(statusCode)
-        .send({
-          error: error instanceof Error ? error.message : "Request failed"
-        });
+      return reply.status(statusCode).send({
+        error: error instanceof Error ? error.message : "Request failed"
+      });
     });
     registerGraphRoutes(app, {
       requireRepository: () => repo,

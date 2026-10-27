@@ -1,6 +1,0 @@
-DROP INDEX "csm_rule_delivery_pending_rule_unique";--> statement-breakpoint
-ALTER TABLE "collaboration_sharing_rule_deliveries" ALTER COLUMN "share_grant_id" DROP NOT NULL;--> statement-breakpoint
-ALTER TABLE "collaboration_sharing_rule_deliveries" ADD COLUMN "logical_grant_id" uuid;--> statement-breakpoint
-CREATE UNIQUE INDEX "csm_rule_delivery_pending_creation_unique" ON "collaboration_sharing_rule_deliveries" USING btree ("enrollment_id","rule_id") WHERE "collaboration_sharing_rule_deliveries"."state"='queued' and "collaboration_sharing_rule_deliveries"."share_grant_id" is null;--> statement-breakpoint
-CREATE UNIQUE INDEX "csm_rule_delivery_pending_rule_unique" ON "collaboration_sharing_rule_deliveries" USING btree ("enrollment_id","rule_id") WHERE "collaboration_sharing_rule_deliveries"."state"='queued' and "collaboration_sharing_rule_deliveries"."share_grant_id" is not null;--> statement-breakpoint
-ALTER TABLE "collaboration_sharing_rule_deliveries" ADD CONSTRAINT "csm_rule_delivery_destination_check" CHECK (num_nonnulls("collaboration_sharing_rule_deliveries"."share_grant_id","collaboration_sharing_rule_deliveries"."logical_grant_id")=1);

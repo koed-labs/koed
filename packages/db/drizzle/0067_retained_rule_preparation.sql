@@ -1,2 +1,0 @@
-ALTER TABLE "team_memory_reason_preparations" ADD COLUMN "retained_representation_id" uuid;--> statement-breakpoint
-ALTER TABLE "team_memory_reason_preparations" ADD CONSTRAINT "team_memory_reason_preparations_retained_fk" FOREIGN KEY ("retained_representation_id","share_grant_id","consent_id") REFERENCES "public"."team_memory_representations"("id","share_grant_id","consent_id") ON DELETE restrict ON UPDATE no action;

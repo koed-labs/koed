@@ -1,2 +1,0 @@
-ALTER TABLE "pending_sharing_rule_admissions" ADD COLUMN "snapshot_conversion" jsonb;--> statement-breakpoint
-ALTER TABLE "pending_sharing_rule_admissions" ADD CONSTRAINT "pending_snapshot_conversion_check" CHECK ("pending_sharing_rule_admissions"."snapshot_conversion" is null or ("pending_sharing_rule_admissions"."admission_kind"='conversation_create' and jsonb_typeof("pending_sharing_rule_admissions"."snapshot_conversion")='object'));

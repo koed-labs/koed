@@ -529,7 +529,7 @@ CREATE TABLE "personal_configuration_records" (
 	CONSTRAINT "personal_configuration_record_identity_unique" UNIQUE("group_id","author_device_id","record_id"),
 	CONSTRAINT "personal_configuration_record_direction_check" CHECK ("personal_configuration_records"."direction" in ('local','inbound')),
 	CONSTRAINT "personal_configuration_record_application_check" CHECK ("personal_configuration_records"."application_state" in ('pending','applied')),
-	CONSTRAINT "personal_configuration_record_kind_check" CHECK ("personal_configuration_records"."payload_kind" in ('source_context')),
+	CONSTRAINT "personal_configuration_record_kind_check" CHECK ("personal_configuration_records"."payload_kind" in ('source_context','project_membership','project_default')),
 	CONSTRAINT "personal_configuration_record_bounds_check" CHECK (length("personal_configuration_records"."record_id")=43 and length("personal_configuration_records"."record_hash")=43 and length("personal_configuration_records"."author_device_id") between 1 and 128 and length("personal_configuration_records"."author_signing_key_id") between 1 and 128)
 );
 --> statement-breakpoint
@@ -629,6 +629,11 @@ CREATE UNIQUE INDEX "personal_membership_entities_native_catalog_unique" ON "per
 CREATE INDEX "personal_membership_resolution_reviews_owner_idx" ON "personal_membership_resolution_reviews" USING btree ("owner_user_id","project_identity","entity_identity");
 --> statement-breakpoint
 CREATE FUNCTION guard_personal_membership_entity() RETURNS trigger AS $$
+DECLARE
+  retained_head_count integer;
+  user_head_count integer;
+  automatic_source_count integer;
+  selected_revision_id text;
 BEGIN
   IF TG_OP='UPDATE' AND (
     NEW.owner_user_id IS DISTINCT FROM OLD.owner_user_id
@@ -640,7 +645,7 @@ BEGIN
     OR (OLD.local_entity_id IS NOT NULL AND NEW.local_entity_id IS NOT NULL AND NEW.local_entity_id IS DISTINCT FROM OLD.local_entity_id)
     OR (OLD.source_binding_id IS NOT NULL AND NEW.source_binding_id IS NOT NULL AND NEW.source_binding_id IS DISTINCT FROM OLD.source_binding_id)
   ) THEN RAISE EXCEPTION 'Portable membership identity and selector are immutable'; END IF;
-  IF (NEW.state='available' AND (cardinality(NEW.heads)<>1 OR NEW.current_revision IS NULL))
+  IF (NEW.state='available' AND (cardinality(NEW.heads)<1 OR NEW.current_revision IS NULL))
     OR (NEW.state<>'available' AND NEW.current_revision IS NOT NULL)
     OR (NEW.state='conflict' AND cardinality(NEW.heads)<2) THEN
     RAISE EXCEPTION 'Membership state does not match its causal frontier';
@@ -648,8 +653,25 @@ BEGIN
   IF NEW.state='available' AND NOT EXISTS (
     SELECT 1 FROM personal_membership_revisions r WHERE r.owner_user_id=NEW.owner_user_id
       AND r.project_identity=NEW.project_identity AND r.entity_identity=NEW.entity_identity
-      AND r.revision_id=NEW.heads[1] AND r.revision=NEW.current_revision
+      AND r.revision_id=ANY(NEW.heads) AND r.revision=NEW.current_revision
   ) THEN RAISE EXCEPTION 'Membership view requires its retained causal revision'; END IF;
+  IF NEW.state='available' AND cardinality(NEW.heads)>1 THEN
+    SELECT count(*),count(*) FILTER(WHERE NOT (r.revision ? 'automaticDefault') AND NOT (r.revision ? 'automaticRetirement')),
+      count(DISTINCT coalesce(r.revision->'automaticDefault'->>'sourceKey',r.revision->'automaticRetirement'->>'sourceKey'))
+      INTO retained_head_count,user_head_count,automatic_source_count
+      FROM personal_membership_revisions r WHERE r.owner_user_id=NEW.owner_user_id
+      AND r.project_identity=NEW.project_identity AND r.entity_identity=NEW.entity_identity AND r.revision_id=ANY(NEW.heads);
+    IF retained_head_count<>cardinality(NEW.heads) OR user_head_count>1 OR automatic_source_count<>1 THEN
+      RAISE EXCEPTION 'Available membership cannot hide concurrent User intent';
+    END IF;
+    SELECT r.revision_id INTO selected_revision_id FROM personal_membership_revisions r
+      WHERE r.owner_user_id=NEW.owner_user_id AND r.project_identity=NEW.project_identity AND r.entity_identity=NEW.entity_identity AND r.revision_id=ANY(NEW.heads)
+      ORDER BY CASE WHEN NOT (r.revision ? 'automaticDefault') AND NOT (r.revision ? 'automaticRetirement') THEN 0
+        WHEN r.revision ? 'automaticRetirement' THEN 1 ELSE 2 END, r.revision_id COLLATE "C" LIMIT 1;
+    IF NEW.current_revision->>'revisionId' IS DISTINCT FROM selected_revision_id THEN
+      RAISE EXCEPTION 'Membership automatic frontier must use its deterministic retained revision';
+    END IF;
+  END IF;
   IF NEW.local_project_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM personal_named_projects p WHERE p.owner_user_id=NEW.owner_user_id AND p.project_id=NEW.local_project_id
   ) THEN RAISE EXCEPTION 'Native membership Project belongs to another owner or is unavailable'; END IF;
@@ -713,8 +735,6 @@ BEFORE UPDATE ON personal_membership_resolution_reviews FOR EACH ROW EXECUTE FUN
 --> statement-breakpoint
 
 -- Membership configuration delivery.
-ALTER TABLE "personal_configuration_records" DROP CONSTRAINT "personal_configuration_record_kind_check";--> statement-breakpoint
-ALTER TABLE "personal_configuration_records" ADD CONSTRAINT "personal_configuration_record_kind_check" CHECK ("personal_configuration_records"."payload_kind" in ('source_context','project_membership'));
 --> statement-breakpoint
 
 -- Membership local devices.
@@ -755,185 +775,6 @@ $$ LANGUAGE plpgsql;
 --> statement-breakpoint
 CREATE TRIGGER personal_membership_revisions_review_proof_guard
 BEFORE INSERT OR UPDATE ON personal_membership_revisions FOR EACH ROW EXECUTE FUNCTION guard_personal_membership_review_proof();
---> statement-breakpoint
-
--- Historical Project upgrade records.
-CREATE TABLE "personal_legacy_project_aliases" (
-	"owner_user_id" uuid NOT NULL,
-	"profile_identity" text NOT NULL,
-	"legacy_alias" text NOT NULL,
-	"project_id" uuid NOT NULL,
-	"upgrade_id" uuid NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "personal_legacy_project_aliases_pk" PRIMARY KEY("owner_user_id","profile_identity","legacy_alias")
-);
---> statement-breakpoint
-CREATE TABLE "personal_project_upgrade_items" (
-	"item_id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"owner_user_id" uuid NOT NULL,
-	"upgrade_id" uuid NOT NULL,
-	"kind" text NOT NULL,
-	"legacy_key" text NOT NULL,
-	"evidence" jsonb NOT NULL,
-	"proposal" jsonb NOT NULL,
-	"project_id" uuid,
-	"local_session_id" uuid,
-	"state" text DEFAULT 'prepared' NOT NULL,
-	"issues" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"version" integer DEFAULT 1 NOT NULL,
-	"applied_revision_id" uuid,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "personal_upgrade_items_source_unique" UNIQUE("upgrade_id","kind","legacy_key"),
-	CONSTRAINT "personal_upgrade_items_kind_check" CHECK ("personal_project_upgrade_items"."kind" in ('catalog','direct','rule','source_repair')),
-	CONSTRAINT "personal_upgrade_items_state_check" CHECK ("personal_project_upgrade_items"."state" in ('prepared','needs_repair','applied','skipped')),
-	CONSTRAINT "personal_upgrade_items_version_check" CHECK ("personal_project_upgrade_items"."version">0),
-	CONSTRAINT "personal_upgrade_items_issues_check" CHECK (jsonb_typeof("personal_project_upgrade_items"."issues")='array')
-);
---> statement-breakpoint
-CREATE TABLE "personal_project_upgrades" (
-	"upgrade_id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"owner_user_id" uuid NOT NULL,
-	"profile_identity" text NOT NULL,
-	"catalog_hash" text NOT NULL,
-	"catalog" jsonb NOT NULL,
-	"state" text DEFAULT 'prepared' NOT NULL,
-	"version" integer DEFAULT 1 NOT NULL,
-	"ownership_confirmed_at" timestamp with time zone,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "personal_project_upgrades_manifest_unique" UNIQUE("owner_user_id","profile_identity","catalog_hash"),
-	CONSTRAINT "personal_project_upgrades_owner_id_unique" UNIQUE("owner_user_id","upgrade_id"),
-	CONSTRAINT "personal_project_upgrades_state_check" CHECK ("personal_project_upgrades"."state" in ('prepared','applying','needs_repair','ready_for_activation','complete')),
-	CONSTRAINT "personal_project_upgrades_version_check" CHECK ("personal_project_upgrades"."version">0)
-);
---> statement-breakpoint
-ALTER TABLE "personal_legacy_project_aliases" ADD CONSTRAINT "personal_legacy_alias_owned_project_fk" FOREIGN KEY ("owner_user_id","project_id") REFERENCES "public"."personal_named_projects"("owner_user_id","project_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "personal_legacy_project_aliases" ADD CONSTRAINT "personal_legacy_alias_owned_upgrade_fk" FOREIGN KEY ("owner_user_id","upgrade_id") REFERENCES "public"."personal_project_upgrades"("owner_user_id","upgrade_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "personal_project_upgrade_items" ADD CONSTRAINT "personal_upgrade_items_owned_job_fk" FOREIGN KEY ("owner_user_id","upgrade_id") REFERENCES "public"."personal_project_upgrades"("owner_user_id","upgrade_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "personal_project_upgrades" ADD CONSTRAINT "personal_project_upgrades_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "personal_legacy_alias_project_idx" ON "personal_legacy_project_aliases" USING btree ("owner_user_id","project_id");--> statement-breakpoint
-CREATE INDEX "personal_upgrade_items_owner_page_idx" ON "personal_project_upgrade_items" USING btree ("owner_user_id","upgrade_id","item_id");--> statement-breakpoint
--- A resumed import may advance status, but cannot rewrite the evidence it reviewed.
-CREATE FUNCTION personal_project_upgrade_evidence_immutable() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-  IF TG_TABLE_NAME = 'personal_project_upgrades' THEN
-    IF ROW(NEW.upgrade_id,NEW.owner_user_id,NEW.profile_identity,NEW.catalog_hash,NEW.catalog)
-      IS DISTINCT FROM ROW(OLD.upgrade_id,OLD.owner_user_id,OLD.profile_identity,OLD.catalog_hash,OLD.catalog) THEN
-      RAISE EXCEPTION 'Personal Project upgrade catalog evidence is immutable';
-    END IF;
-    IF OLD.ownership_confirmed_at IS NOT NULL AND NEW.ownership_confirmed_at IS DISTINCT FROM OLD.ownership_confirmed_at THEN
-      RAISE EXCEPTION 'Personal Project upgrade owner confirmation is immutable';
-    END IF;
-  ELSE
-    IF ROW(NEW.item_id,NEW.owner_user_id,NEW.upgrade_id,NEW.kind,NEW.legacy_key,NEW.evidence,NEW.proposal)
-      IS DISTINCT FROM ROW(OLD.item_id,OLD.owner_user_id,OLD.upgrade_id,OLD.kind,OLD.legacy_key,OLD.evidence,OLD.proposal) THEN
-      RAISE EXCEPTION 'Personal Project upgrade item evidence is immutable';
-    END IF;
-    IF OLD.state IN ('applied','skipped') AND NEW IS DISTINCT FROM OLD THEN
-      RAISE EXCEPTION 'Settled Personal Project upgrade items are immutable';
-    END IF;
-  END IF;
-  RETURN NEW;
-END;
-$$;
---> statement-breakpoint
-CREATE TRIGGER personal_project_upgrade_catalog_immutable
-BEFORE UPDATE ON personal_project_upgrades
-FOR EACH ROW EXECUTE FUNCTION personal_project_upgrade_evidence_immutable();
---> statement-breakpoint
-CREATE TRIGGER personal_project_upgrade_item_immutable
-BEFORE UPDATE ON personal_project_upgrade_items
-FOR EACH ROW EXECUTE FUNCTION personal_project_upgrade_evidence_immutable();
---> statement-breakpoint
-CREATE TRIGGER personal_legacy_project_alias_immutable
-BEFORE UPDATE ON personal_legacy_project_aliases
-FOR EACH ROW EXECUTE FUNCTION personal_membership_change_immutable();
---> statement-breakpoint
-
--- Historical Project upgrade reviews.
-CREATE TABLE "personal_project_upgrade_reviews" (
-	"review_id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"owner_user_id" uuid NOT NULL,
-	"upgrade_id" uuid NOT NULL,
-	"item_id" uuid NOT NULL,
-	"expected_state" jsonb NOT NULL,
-	"decision" jsonb NOT NULL,
-	"preview" jsonb NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"applied_at" timestamp with time zone
-);
---> statement-breakpoint
-ALTER TABLE "personal_project_upgrade_items" ADD CONSTRAINT "personal_upgrade_items_owned_id_unique" UNIQUE("owner_user_id","upgrade_id","item_id");
---> statement-breakpoint
-ALTER TABLE "personal_project_upgrade_reviews" ADD CONSTRAINT "personal_upgrade_reviews_owned_item_fk" FOREIGN KEY ("owner_user_id","upgrade_id","item_id") REFERENCES "public"."personal_project_upgrade_items"("owner_user_id","upgrade_id","item_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "personal_upgrade_reviews_owner_job_idx" ON "personal_project_upgrade_reviews" USING btree ("owner_user_id","upgrade_id");--> statement-breakpoint
--- Review evidence remains immutable after apply; only the first apply timestamp may change.
-CREATE FUNCTION personal_project_upgrade_review_immutable() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-  IF ROW(NEW.review_id,NEW.owner_user_id,NEW.upgrade_id,NEW.item_id,NEW.expected_state,NEW.decision,NEW.preview,NEW.created_at)
-    IS DISTINCT FROM ROW(OLD.review_id,OLD.owner_user_id,OLD.upgrade_id,OLD.item_id,OLD.expected_state,OLD.decision,OLD.preview,OLD.created_at)
-    OR (OLD.applied_at IS NOT NULL AND NEW.applied_at IS DISTINCT FROM OLD.applied_at) THEN
-    RAISE EXCEPTION 'Personal Project upgrade review evidence is immutable';
-  END IF;
-  RETURN NEW;
-END;
-$$;
---> statement-breakpoint
-CREATE TRIGGER personal_project_upgrade_review_immutable_update
-BEFORE UPDATE ON personal_project_upgrade_reviews
-FOR EACH ROW EXECUTE FUNCTION personal_project_upgrade_review_immutable();
---> statement-breakpoint
-CREATE INDEX personal_upgrade_session_evidence_idx ON personal_project_upgrade_items
-  (owner_user_id,upgrade_id,(evidence->>'sessionId'),(evidence->>'assignmentVersion')) WHERE kind='direct';
---> statement-breakpoint
-CREATE INDEX personal_upgrade_route_evidence_idx ON personal_project_upgrade_items
-  (owner_user_id,upgrade_id,(evidence->'route'->>'sourceProjectId')) WHERE kind='rule';
---> statement-breakpoint
-
--- Historical Project profile ownership.
-CREATE TABLE "personal_project_profile_owners" (
-	"profile_identity" text PRIMARY KEY NOT NULL,
-	"owner_user_id" uuid NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-ALTER TABLE "personal_project_profile_owners" ADD CONSTRAINT "personal_project_profile_owners_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
--- Existing confirmations must agree; a migration cannot choose an account by age.
-DO $$
-BEGIN
-  IF EXISTS(SELECT 1 FROM personal_project_upgrades WHERE ownership_confirmed_at IS NOT NULL
-    GROUP BY profile_identity HAVING count(DISTINCT owner_user_id)>1) THEN
-    RAISE EXCEPTION 'Legacy Project profile has conflicting confirmed owners; explicit repair is required';
-  END IF;
-END;
-$$;
---> statement-breakpoint
-INSERT INTO personal_project_profile_owners(profile_identity,owner_user_id)
-SELECT profile_identity,min(owner_user_id::text)::uuid FROM personal_project_upgrades
-WHERE ownership_confirmed_at IS NOT NULL GROUP BY profile_identity;
---> statement-breakpoint
-CREATE FUNCTION personal_project_upgrade_profile_owner_check() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-  IF NEW.ownership_confirmed_at IS NOT NULL AND NOT EXISTS(
-    SELECT 1 FROM personal_project_profile_owners p WHERE p.profile_identity=NEW.profile_identity AND p.owner_user_id=NEW.owner_user_id
-  ) THEN
-    RAISE EXCEPTION 'Legacy Project profile owner is not confirmed';
-  END IF;
-  RETURN NEW;
-END;
-$$;
---> statement-breakpoint
-CREATE TRIGGER personal_project_upgrade_profile_owner_check
-BEFORE INSERT OR UPDATE ON personal_project_upgrades
-FOR EACH ROW EXECUTE FUNCTION personal_project_upgrade_profile_owner_check();
---> statement-breakpoint
-CREATE TRIGGER personal_project_profile_owner_immutable
-BEFORE UPDATE ON personal_project_profile_owners
-FOR EACH ROW EXECUTE FUNCTION personal_membership_change_immutable();
 --> statement-breakpoint
 
 -- Capture Targets.
@@ -1261,21 +1102,11 @@ CREATE TABLE "personal_legacy_source_assignments" (
 	CONSTRAINT "personal_legacy_source_assignments_pk" PRIMARY KEY("owner_user_id","session_id")
 );
 --> statement-breakpoint
-CREATE TABLE "personal_model_activations" (
-	"owner_user_id" uuid PRIMARY KEY NOT NULL,
-	"upgrade_id" uuid NOT NULL,
-	"contract_version" integer NOT NULL,
-	"activated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "personal_model_activation_version_check" CHECK ("personal_model_activations"."contract_version">0)
-);
---> statement-breakpoint
 ALTER TABLE "personal_capture_target_bindings" ADD COLUMN "origin" text DEFAULT 'legacy_session' NOT NULL;--> statement-breakpoint
 ALTER TABLE "personal_capture_target_bindings" ADD COLUMN "route_source_scope" text;--> statement-breakpoint
 ALTER TABLE "personal_capture_target_routes" ADD CONSTRAINT "personal_capture_target_routes_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_legacy_source_assignments" ADD CONSTRAINT "personal_legacy_source_assignments_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_legacy_source_assignments" ADD CONSTRAINT "personal_legacy_source_assignments_session_id_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "personal_model_activations" ADD CONSTRAINT "personal_model_activations_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "personal_model_activations" ADD CONSTRAINT "personal_model_activation_owned_upgrade_fk" FOREIGN KEY ("owner_user_id","upgrade_id") REFERENCES "public"."personal_project_upgrades"("owner_user_id","upgrade_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_capture_target_bindings" ADD CONSTRAINT "personal_capture_target_origin_check" CHECK (("personal_capture_target_bindings"."origin"='legacy_session' and "personal_capture_target_bindings"."route_source_scope" is null) or ("personal_capture_target_bindings"."origin"='legacy_route' and "personal_capture_target_bindings"."route_source_scope" is not null));--> statement-breakpoint
 -- Routing is no longer source attribution. Retain its exact Capture Target
 -- keys before native capture stops writing named source overrides.
@@ -1283,13 +1114,12 @@ INSERT INTO personal_capture_target_routes(owner_user_id,source_scope,target_id,
 SELECT owner_user_id,source_project_id,target_project_id,target_name,target_path,to_jsonb(r)
 FROM personal_project_routes r;
 --> statement-breakpoint
+DROP TABLE personal_project_routes;
+--> statement-breakpoint
 CREATE TRIGGER personal_capture_target_route_immutable BEFORE UPDATE ON personal_capture_target_routes
 FOR EACH ROW EXECUTE FUNCTION personal_membership_change_immutable();
 --> statement-breakpoint
 CREATE TRIGGER personal_legacy_source_assignment_immutable BEFORE UPDATE ON personal_legacy_source_assignments
-FOR EACH ROW EXECUTE FUNCTION personal_membership_change_immutable();
---> statement-breakpoint
-CREATE TRIGGER personal_model_activation_immutable BEFORE UPDATE ON personal_model_activations
 FOR EACH ROW EXECUTE FUNCTION personal_membership_change_immutable();
 --> statement-breakpoint
 CREATE FUNCTION personal_legacy_source_evidence(s sessions) RETURNS jsonb
@@ -1410,28 +1240,59 @@ DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
 WHEN (OLD.project_override_id IS NOT NULL AND NEW.project_override_id IS NULL)
 EXECUTE FUNCTION personal_legacy_capture_detachment_guard();
 --> statement-breakpoint
-CREATE FUNCTION personal_legacy_route_write_guard() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-  IF TG_OP='DELETE' AND NOT EXISTS(SELECT 1 FROM users WHERE id=OLD.owner_user_id) THEN RETURN OLD; END IF;
-  RAISE EXCEPTION 'Legacy Project routing writes are retired; use Project inclusion rules';
-END;
-$$;
+
 --> statement-breakpoint
-CREATE TRIGGER personal_legacy_route_write_guard BEFORE INSERT OR UPDATE OR DELETE ON personal_project_routes
-FOR EACH ROW EXECUTE FUNCTION personal_legacy_route_write_guard();
+-- A completed or edited LCM Summary can change shareable evidence after the
+-- captured source's last turn. Observe the node itself; title generation is
+-- conditional and cannot serve as a reliable source-change notification.
+CREATE TRIGGER personal_selection_observe AFTER INSERT OR UPDATE OR DELETE ON memory_nodes
+FOR EACH ROW EXECUTE FUNCTION personal_selection_observe('source','owner','session_id');
+
 --> statement-breakpoint
-CREATE FUNCTION personal_model_activation_guard() RETURNS trigger
-LANGUAGE plpgsql AS $$
+CREATE TABLE personal_project_defaults (
+  owner_user_id uuid NOT NULL CONSTRAINT personal_project_defaults_owner_user_id_users_id_fk REFERENCES users(id),
+  source_key text NOT NULL,
+  source_scope text NOT NULL,
+  target jsonb NOT NULL,
+  state text NOT NULL CONSTRAINT personal_project_defaults_state_check CHECK(state IN ('initialized','managed','suppressed','retired')),
+  project_id uuid,
+  seed_rule_id uuid,
+  initial_project_revision_id uuid,
+  initial_rule_revision_id uuid,
+  revision_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT personal_project_defaults_pkey PRIMARY KEY(owner_user_id,source_key),
+  UNIQUE(owner_user_id,source_scope),
+  CONSTRAINT personal_project_defaults_project_owner_fk FOREIGN KEY(owner_user_id,project_id) REFERENCES personal_named_projects(owner_user_id,project_id),
+  CONSTRAINT personal_project_defaults_target_check CHECK(jsonb_typeof(target)='object'),
+  CONSTRAINT personal_project_defaults_initialization_check CHECK(state<>'initialized' OR (project_id IS NOT NULL AND seed_rule_id IS NOT NULL AND initial_project_revision_id IS NOT NULL AND initial_rule_revision_id IS NOT NULL))
+);
+--> statement-breakpoint
+CREATE TABLE personal_project_default_reconciliation (
+  owner_user_id uuid PRIMARY KEY CONSTRAINT personal_project_default_reconciliation_owner_user_id_users_id_fk REFERENCES users(id),
+  generation bigint NOT NULL DEFAULT 1,
+  scan_generation bigint,
+  after_session_id uuid,
+  pending boolean NOT NULL DEFAULT true,
+  retry_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+--> statement-breakpoint
+CREATE FUNCTION schedule_personal_project_defaults() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF NOT EXISTS(SELECT 1 FROM personal_project_upgrades u WHERE u.owner_user_id=NEW.owner_user_id
-    AND u.upgrade_id=NEW.upgrade_id AND u.state='complete' AND u.ownership_confirmed_at IS NOT NULL)
-    OR EXISTS(SELECT 1 FROM sessions s WHERE s.owner_user_id=NEW.owner_user_id AND s.visibility='personal' AND s.project_override_id IS NOT NULL) THEN
-    RAISE EXCEPTION 'Personal activation requires a completed owned upgrade and retired source roles';
+  IF NEW.owner_user_id IS NOT NULL THEN
+    INSERT INTO personal_project_default_reconciliation(owner_user_id) VALUES(NEW.owner_user_id)
+    ON CONFLICT(owner_user_id) DO UPDATE SET generation=personal_project_default_reconciliation.generation+1,pending=true,retry_at=now(),updated_at=now();
+    PERFORM pg_notify('koed_project_defaults','source_changed');
   END IF;
   RETURN NEW;
-END;
-$$;
+END $$;
 --> statement-breakpoint
-CREATE TRIGGER personal_model_activation_guard BEFORE INSERT ON personal_model_activations
-FOR EACH ROW EXECUTE FUNCTION personal_model_activation_guard();
+CREATE TRIGGER personal_project_defaults_capture AFTER INSERT OR UPDATE OF repository_automatic_identity,repository_override_identity,folder_assignment ON sessions FOR EACH ROW EXECUTE FUNCTION schedule_personal_project_defaults();
+--> statement-breakpoint
+CREATE TRIGGER personal_project_defaults_binding AFTER INSERT OR UPDATE OF availability ON personal_source_bindings FOR EACH ROW EXECUTE FUNCTION schedule_personal_project_defaults();
+--> statement-breakpoint
+CREATE TRIGGER personal_project_defaults_replica AFTER INSERT OR UPDATE OF materialization_state ON pds_logical_replicas FOR EACH ROW EXECUTE FUNCTION schedule_personal_project_defaults();
+--> statement-breakpoint
+INSERT INTO personal_project_default_reconciliation(owner_user_id) SELECT DISTINCT s.owner_user_id FROM sessions s JOIN users u ON u.id=s.owner_user_id WHERE u.disabled_at IS NULL AND u.deleted_at IS NULL;
