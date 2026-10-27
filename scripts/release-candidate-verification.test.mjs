@@ -9,6 +9,7 @@ import { writeDeterministicTarGz } from "./deterministic-tar-gzip.mjs";
 import { createPackageReleaseIdentity } from "./package-release-identity.mjs";
 import { canonicalComponentManifestBytes } from "./koed-server-package-lib.mjs";
 import { buildComponentManifestCatalog } from "./component-manifest-catalog.mjs";
+import { buildComponentReleaseSet } from "./component-release-lib.mjs";
 import {
   setupCandidate as setup,
   addDesktopFixture,
@@ -127,6 +128,87 @@ for (const damage of [
     }
   });
 }
+
+const preparePrereleaseAssets = (f, version) => {
+  const manifests = [...f.contents]
+    .filter(([name]) => name.endsWith(".manifest.json"))
+    .map(([, bytes]) => JSON.parse(bytes));
+  f.contents.clear();
+  for (const manifest of manifests.filter((m) => m.component === "base"))
+    buildComponentReleaseSet({
+      componentsRoot: resolve(f.root, "components"),
+      outDir: f.assetsDir,
+      version,
+      target: manifest.target,
+      runtimes: manifest.runtimes,
+      requiredFiles: { base: ["main.js"], privacy: ["main.js"] }
+    });
+  for (const name of readdirSync(f.assetsDir))
+    if (name.includes(version))
+      f.contents.set(name, readFileSync(resolve(f.assetsDir, name)));
+  const catalog = buildComponentManifestCatalog({
+    version,
+    manifests: [...f.contents]
+      .filter(([name]) => name.endsWith(".manifest.json"))
+      .map(([, bytes]) => bytes)
+  });
+  f.contents.set(
+    "component-manifest-hashes.json",
+    canonicalComponentManifestBytes(catalog)
+  );
+  const packagePath = resolve(f.packageRoot, "package.json");
+  const manifest = JSON.parse(readFileSync(packagePath));
+  manifest.version = version;
+  writeFileSync(packagePath, JSON.stringify(manifest));
+  const entry = resolve(f.packageRoot, "vendor/control-plane.js");
+  writeFileSync(
+    entry,
+    readFileSync(entry, "utf8").replace(
+      JSON.stringify(f.catalog),
+      JSON.stringify(catalog)
+    )
+  );
+};
+
+test("verifier blocks latest downgrade between hyphenated prereleases", async () => {
+  const f = await setup();
+  const version = "1.2.3-rc-1";
+  try {
+    preparePrereleaseAssets(f, version);
+    f.input.version = f.expected.version = version;
+    f.release.tag_name = `v${version}`;
+    const tarball = resolve(f.assetsDir, "koed-labs-server.tgz");
+    writeDeterministicTarGz({
+      sourceDir: f.packageRoot,
+      tarPath: tarball,
+      rootName: "package"
+    });
+    const identity = createPackageReleaseIdentity({
+      packageRoot: f.packageRoot,
+      tarball,
+      version
+    });
+    f.expected.npm = identity.npm;
+    f.contents.set("koed-labs-server.tgz", readFileSync(tarball));
+    f.contents.set(
+      "koed-labs-server-release-identity.json",
+      Buffer.from(JSON.stringify(identity))
+    );
+    f.release.assets = [...f.contents.keys()].map((name, i) => ({
+      id: i + 10,
+      name
+    }));
+    rehash(f);
+    f.readers.getRegistryVersion = async (_name, tag) =>
+      tag === "latest" ? { version: "1.2.3-rc-2" } : null;
+    await assert.rejects(
+      candidate.verifyReleaseCandidate(f.input, f.readers),
+      /Refusing npm latest downgrade/
+    );
+  } finally {
+    f.cleanup();
+  }
+});
 
 test("coherent valid catalog/manifest/archive/npm substitution cannot replace reviewed build", async () => {
   const reviewed = await setup();
