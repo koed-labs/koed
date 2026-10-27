@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -133,7 +133,9 @@ describe("native Folder directory lifetime", () => {
       new Map([[statSync(path, { bigint: true }).dev, volume]])
     )!;
     expect(first.marker).toContain(`"volume:${volume}"`);
-    rmSync(path, { recursive: true });
+    // Keep the old inode allocated: Linux can reuse an unlinked inode within
+    // the same filesystem timestamp tick when this directory is recreated.
+    renameSync(path, resolve(root, "previous-checkout"));
     mkdirSync(path);
     const replacement = readPersonalFolderDirectoryMarker(
       path,
