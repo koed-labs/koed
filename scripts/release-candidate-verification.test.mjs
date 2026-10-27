@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import ts from "typescript";
 import { bundleControlPlane } from "./control-plane-bundle.mjs";
 import { resolve } from "node:path";
@@ -17,6 +26,65 @@ import {
   hash
 } from "./test-utils/release-candidate-fixture.mjs";
 import * as candidate from "./release-candidate-verification.mjs";
+
+test("asset stream enforces actual size, private mode and cleans partial files", async () => {
+  mkdirSync("scratch", { recursive: true });
+  const root = mkdtempSync(resolve("scratch/asset-stream-test-"));
+  const path = resolve(root, "asset");
+  try {
+    await candidate.writeCandidateAsset(
+      (async function* () {
+        yield Buffer.from("ab");
+        yield Buffer.from("cd");
+      })(),
+      path,
+      4
+    );
+    assert.equal(readFileSync(path, "utf8"), "abcd");
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    rmSync(path);
+    await assert.rejects(
+      candidate.writeCandidateAsset(
+        (async function* () {
+          yield Buffer.from("ab");
+          yield Buffer.from("cde");
+        })(),
+        path,
+        4
+      ),
+      /size limit/
+    );
+    assert.equal(existsSync(path), false);
+    await assert.rejects(
+      candidate.writeCandidateAsset(
+        (async function* () {
+          yield Buffer.from("a");
+          throw new Error("stream failed");
+        })(),
+        path,
+        4
+      ),
+      /stream failed/
+    );
+    assert.equal(existsSync(path), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("asset stream is cancelled when destination cannot be created", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream({
+    cancel() {
+      cancelled = true;
+    }
+  });
+  await assert.rejects(
+    candidate.writeCandidateAsset(stream, "scratch/missing-dir/asset"),
+    /ENOENT/
+  );
+  assert.equal(cancelled, true);
+});
 
 const rehash = (f) => {
   f.expected.assets = [...f.contents].map(([name, bytes]) => ({
@@ -82,6 +150,8 @@ for (const damage of [
   "artifact",
   "changed-input",
   "latest",
+  "prerelease",
+  "missing-prerelease",
   "run-origin"
 ]) {
   test(`${damage} rejects before any mutation capability exists`, async () => {
@@ -106,6 +176,8 @@ for (const damage of [
       if (damage === "latest")
         f.readers.getRegistryVersion = async (_name, version) =>
           version === "latest" ? { version: "9.0.0" } : null;
+      if (damage === "prerelease") f.release.prerelease = true;
+      if (damage === "missing-prerelease") delete f.release.prerelease;
       if (damage === "run-origin")
         f.readers.getWorkflowRun = async () => ({
           id: 42,

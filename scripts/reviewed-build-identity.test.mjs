@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
 import * as identity from "./reviewed-build-identity.mjs";
 import {
@@ -30,6 +37,68 @@ test("reviewed identity hashes independent build output and rejects colliding ou
   }
 });
 
+test("public inventory excludes nested catalog components and includes staged sidecars", () => {
+  mkdirSync("scratch", { recursive: true });
+  const root = mkdtempSync(resolve("scratch/public-inventory-"));
+  try {
+    for (const name of [
+      "koed-component-catalog",
+      "koed-server-app-runtime-linux-x64",
+      "koed-server-app-runtime-macos-arm64",
+      "koed-desktop-final-assets",
+      "koed-native-runtime-linux-x64",
+      "koed-release-metadata"
+    ])
+      mkdirSync(resolve(root, name), { recursive: true });
+    mkdirSync(
+      resolve(root, "koed-component-catalog/components/base/node_modules/pkg"),
+      { recursive: true }
+    );
+    writeFileSync(
+      resolve(
+        root,
+        "koed-component-catalog/components/base/node_modules/pkg/private.js"
+      ),
+      "private"
+    );
+    writeFileSync(
+      resolve(root, "koed-component-catalog/component-manifest-hashes.json"),
+      "catalog"
+    );
+    for (const name of [
+      "koed-distribution-1.2.3-linux-x64.json",
+      "koed-server-app-runtime-1.2.3-linux-x64.provenance.json.sig",
+      "koed-server-app-runtime-linux-x64-artifact-size-report.json"
+    ])
+      writeFileSync(
+        resolve(root, "koed-server-app-runtime-linux-x64", name),
+        name
+      );
+    writeFileSync(
+      resolve(
+        root,
+        "koed-desktop-final-assets/desktop-artifact-size-report.json"
+      ),
+      "report"
+    );
+    const names = identity
+      .collectPublicReleaseAssets(root)
+      .map((asset) => asset.name);
+    assert.deepEqual(
+      names.sort(),
+      [
+        "component-manifest-hashes.json",
+        "desktop-artifact-size-report.json",
+        "koed-distribution-1.2.3-linux-x64.json",
+        "koed-server-app-runtime-1.2.3-linux-x64.provenance.json.sig",
+        "koed-server-app-runtime-linux-x64-artifact-size-report.json"
+      ].sort()
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 const approvedNames = [
   "koed-component-catalog",
   "koed-server-app-runtime-linux-x64",
@@ -39,7 +108,7 @@ const approvedNames = [
   "koed-release-metadata"
 ];
 const buildInput = (fixture) => ({
-  root: fixture.assetsDir,
+  root: resolve(fixture.root, "reviewed"),
   repository: "org/repo",
   commit: "a".repeat(40),
   runId: 42,
@@ -54,6 +123,22 @@ const buildInput = (fixture) => ({
   }))
 });
 
+const createIdentity = (fixture, input) => {
+  for (const name of approvedNames)
+    mkdirSync(resolve(input.root, name), { recursive: true });
+  for (const name of readdirSync(fixture.assetsDir)) {
+    const source =
+      name === "component-manifest-hashes.json"
+        ? "koed-component-catalog"
+        : "koed-server-app-runtime-linux-x64";
+    copyFileSync(
+      resolve(fixture.assetsDir, name),
+      resolve(input.root, source, name)
+    );
+  }
+  return identity.createReviewedBuildIdentity(input);
+};
+
 test("createReviewedBuildIdentity binds approved build outputs and independent runtime matrix", () => {
   const f = candidateFixture();
   try {
@@ -61,7 +146,7 @@ test("createReviewedBuildIdentity binds approved build outputs and independent r
       resolve(f.assetsDir, "Koed-1.2.3-arm64.zip"),
       "protected zip"
     );
-    const result = identity.createReviewedBuildIdentity(buildInput(f));
+    const result = createIdentity(f, buildInput(f));
     assert.deepEqual(result.runtimeIdentities, runtimeIdentities);
     assert.equal(result.artifacts.length, 6);
     assert.deepEqual(result.npm, f.identity.npm);
@@ -122,10 +207,7 @@ for (const damage of [
           JSON.stringify(value)
         );
       }
-      assert.throws(
-        () => identity.createReviewedBuildIdentity(input),
-        /identity|artifact|ZIP/i
-      );
+      assert.throws(() => createIdentity(f, input), /identity|artifact|ZIP/i);
     } finally {
       f.cleanup();
     }
