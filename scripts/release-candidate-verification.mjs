@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  closeSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -16,6 +19,19 @@ import { verifyPackagedDesktopCatalog } from "../apps/desktop/scripts/verify-pac
 
 export const sha256 = (bytes) =>
   createHash("sha256").update(bytes).digest("hex");
+// Chunked so large release assets are never loaded into a single Buffer.
+export const hashFileSync = (path, algorithm = "sha256", encoding = "hex") => {
+  const hash = createHash(algorithm);
+  const chunk = Buffer.allocUnsafe(1024 * 1024);
+  const fd = openSync(path, "r");
+  try {
+    for (let read; (read = readSync(fd, chunk, 0, chunk.length, null)) > 0; )
+      hash.update(chunk.subarray(0, read));
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest(encoding);
+};
 const digestPattern = /^[a-f0-9]{64}$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/;
 const fail = (message) => {
@@ -158,14 +174,18 @@ const inspectDesktop = (expected, root, catalogPath) => {
   }).split("\n");
   if (listing.filter((name) => name === entry).length !== 1)
     fail("Desktop archive ASAR identity is missing or duplicate.");
-  const asar = execFileSync("unzip", ["-p", archive, entry], {
-    maxBuffer: 1024 * 1024 * 1024
-  });
   const appPath = resolve(root, "desktop/Koed.app");
   mkdirSync(resolve(appPath, "Contents/Resources"), { recursive: true });
-  writeFileSync(resolve(appPath, "Contents/Resources/app.asar"), asar, {
-    flag: "wx"
-  });
+  const asarPath = resolve(appPath, "Contents/Resources/app.asar");
+  // Stream the entry to disk; a buffered read caps at maxBuffer (ENOBUFS).
+  const asarFd = openSync(asarPath, "wx");
+  try {
+    execFileSync("unzip", ["-p", archive, entry], {
+      stdio: ["ignore", asarFd, "inherit"]
+    });
+  } finally {
+    closeSync(asarFd);
+  }
   verifyPackagedDesktopCatalog({
     appPath,
     catalogPath,
@@ -173,7 +193,7 @@ const inspectDesktop = (expected, root, catalogPath) => {
   });
   return {
     asset: expected.desktop.asset,
-    asarSha256: sha256(asar),
+    asarSha256: hashFileSync(asarPath),
     catalogVerified: true
   };
 };

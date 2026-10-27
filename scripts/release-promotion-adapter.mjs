@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { runReleaseVerification } from "./release-candidate-readers.mjs";
+import { hashFileSync } from "./release-candidate-verification.mjs";
 import { verifyFrozenComponentAssets } from "./verify-frozen-component-assets.mjs";
 import { verifyPackagedControlPlaneCatalog } from "./verify-packaged-control-plane-catalog.mjs";
-import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   closeSync,
@@ -125,9 +125,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
       closeSync(fd);
     }
     // Authenticate each second download before any catalog/archive parsing.
-    const digest = createHash("sha256")
-      .update(readFileSync(path))
-      .digest("hex");
+    const digest = hashFileSync(path);
     if (digest !== reviewed.sha256)
       throw new Error(
         `Release asset differs from protected build: ${asset.name}`
@@ -181,7 +179,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
       version: args.version,
       integrity: identity.npm?.integrity
     };
-    const integrity = `sha512-${createHash("sha512").update(readFileSync(tarballPath)).digest("base64")}`;
+    const integrity = `sha512-${hashFileSync(tarballPath, "sha512", "base64")}`;
     if (
       identity.packageName !== expected.packageName ||
       identity.version !== expected.version ||
@@ -217,9 +215,7 @@ export const runReleasePromotion = async (args, adapters = {}) => {
           : name === tarballName
             ? tarballPath
             : resolve(temp, name);
-      const digest = createHash("sha256")
-        .update(readFileSync(path))
-        .digest("hex");
+      const digest = hashFileSync(path);
       const reviewed = candidate.assets.find((asset) => asset.name === name);
       if (!reviewed || reviewed.sha256 !== digest)
         throw new Error(`Release asset differs from protected build: ${name}`);
