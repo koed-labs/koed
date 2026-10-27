@@ -8,6 +8,7 @@ import {
 import { writeDeterministicTarGz } from "./deterministic-tar-gzip.mjs";
 import { verifyComponent } from "../packages/koed-server/dist/component-verification.js";
 import { productionComponentTrustRoots } from "../packages/koed-server/dist/component-trust-roots.js";
+import { createSyntheticManifestCatalog } from "./component-signing-rehearsal-fixture.mjs";
 const url = process.env.KOED_COMPONENT_SIGNER_URL;
 const keyId = process.env.KOED_COMPONENT_SIGNER_KEY_ID;
 if (
@@ -88,16 +89,17 @@ try {
         throw new Error(`Signer ${path} failed (${response.status})`);
       return response.json();
     };
+    const manifestCatalog = createSyntheticManifestCatalog(manifestBytes);
     const { signature } = await request("/v1/sign", { keyId, manifest });
+    // Local payload integrity uses fixture-only pins, not the KMS signature.
     await verifyComponent({
       manifestBytes,
-      signature,
+      manifestCatalog,
       archivePath,
       expectedComponent: component,
       expectedVersion: "0.8.1",
       target: manifest.target,
-      runtime,
-      trustedKeys: productionComponentTrustRoots
+      runtime
     });
     const verified = await request("/v1/verify", {
       keyId,
@@ -118,13 +120,24 @@ try {
       manifestBytes: manifestBytes.length,
       keyId,
       signatureSchema: signature.schemaVersion,
-      archiveVerified: true,
-      remoteVerified: true,
-      tamperingRejected: true
+      syntheticPayloadVerified: true,
+      remoteSignatureVerified: true,
+      remoteManifestTamperingRejected: true
     });
   }
   console.log(
-    JSON.stringify({ ok: true, publication: false, report }, null, 2)
+    JSON.stringify(
+      {
+        ok: true,
+        evidence: "synthetic-fixture-only",
+        publication: false,
+        nativeAcceptance: false,
+        publisherTrust: false,
+        report
+      },
+      null,
+      2
+    )
   );
 } finally {
   rmSync(root, { recursive: true, force: true });
