@@ -1,6 +1,89 @@
 # Manifest-pin remediation: local verification
 
-## Scope and status
+## Review follow-up: scope and remaining acceptance
+
+Published #432 `605bf1c3680c361afaea741071d7e24141eb2929` already contains the
+ordinary cross-version activation, install composition, prior-component diagnostic
+and provisioning documentation fixes, plus protected candidate verification.
+The earlier statement that those fixes had not reached #432 was stale. Lower-stack
+propagation and final-head CI must be reported separately in each PR; a pushed
+upper PR is not proof that its independently mergeable parents contain the fixes.
+
+The next follow-up separates Desktop ownership/version discovery from runnable
+admission, preserves the capability-bound ordinary-generation fallback, bounds
+journal reads, and rejects Desktop replacement downgrades. Release ordering keeps
+complete hyphenated prerelease identifiers. The retained signing rehearsal now
+uses an explicitly synthetic manifest catalog for local payload integrity while
+retaining separate remote signature/tamper checks. Neither fixture pins nor mocked
+KMS responses establish publisher trust or actual replacement acceptance.
+
+### Follow-up local verification
+
+Node **24.13.1**, pnpm **11.1.2**, macOS arm64, isolated worktree with a fresh
+frozen-lockfile offline dependency installation. These counts apply to the
+#432-derived follow-up; independently restaged #421/#428 checks belong in their
+own PR evidence:
+
+- Server: **71 files, 970 tests passed**. Includes old Privacy selection ownership
+  discovery/status before Desktop bundle replacement, ordinary Desktop fallback,
+  oversized-journal rejection, journal owner/digest tampering, and downgrade
+  rejection without pointer changes.
+- Desktop: **100 files, 967 tests passed**, plus **77 Node smoke/packaging tests**.
+- Root scripts: **502 passed, one database-dependent skip**. Includes full
+  prerelease ordering through protected candidate verification and the offline
+  signing rehearsal with synthetic manifest/archive tampering.
+- Full workspace build, full ESLint/Prettier and root test-source typecheck passed.
+  Electron uses the already installed local binary; it was not downloaded again.
+
+These are local regression checks, not final-head CI or native release acceptance.
+The retained signing rehearsal was exercised with mocked OIDC/KMS only; no cloud
+resources were modified and no actual KMS rehearsal is claimed.
+
+### Previously recorded verification
+
+The following results were recorded by the prior implementation agent, not newly
+executed native acceptance for this follow-up. Node **24.13.1**, pnpm **11.1.2**,
+macOS arm64:
+
+- Fresh Server build and Server suite: **68 files, 941 tests passed**.
+- Root test-source typecheck (`pnpm exec tsc -p tsconfig.test.json`), Server
+  typecheck, and targeted ESLint/Prettier checks passed for the additional runtime
+  fixes. This is not a fresh full-stack lint or final-head CI claim.
+- Actual globally installed packed npm fixture admission/tamper smoke passed:
+  **1 test**. It uses synthetic components, blocks checkout imports and guards
+  fetch calls. It does **not** establish native startup, two-version installed
+  command acceptance, or operating-system-level offline isolation.
+- Provisioning documentation regressions: **2 tests passed**, following a
+  reproduced failure on obsolete signature-sidecar instructions.
+- Independent read-only runtime review found no actionable issues in the added
+  diagnostic-presence and cross-version authority/liveness regressions.
+- `pnpm test:required-suites` passed against a new isolated PostgreSQL **17.10**
+  cluster with explicit UTF8 encoding: **289 Vitest tests plus 59 Node tests**.
+  Database, API, authorization, realtime, IPC, Electron UI, accessibility and
+  runtime-component assembly tiers executed. The disposable server was stopped
+  afterwards. No existing Personal Memory or database was used. These suites do
+  not establish installed native or signed Desktop acceptance.
+
+Fresh remote inspection found default/required checks green on the reviewed
+stack heads; native/full-candidate/KMS tiers were skipped. The historical local
+missing-database result below is not a current CI failure. The fresh local
+required-suite result above supersedes that environment blocker, not the native
+or signed acceptance gates.
+
+**Open merge gates:** actual frozen Base/Privacy on both supported targets;
+assembled-candidate verification without publication; installed online/offline
+Personal and Team startup, lifecycle and cross-version flows; Linux native
+acceptance; and supported signed/notarized clean-Mac Desktop acceptance. This
+host reported zero valid signing identities. Complete Privacy assets, trusted
+native artifact provenance, Linux-host access and signed artifacts remain
+unestablished. Synthetic fixtures do not waive these gates. Component signer
+cleanup remains gated on actual replacement install/candidate acceptance; no
+cloud resource changes are authorized or required by source cleanup.
+
+## Historical scope and status
+
+The remaining sections record the earlier remediation snapshot, not current
+working-tree state, final-head results or additional acceptance.
 
 Local remediation for #421 → #428 → #432 implements ADR-0057 and the approved
 external standalone control-plane boundary. This is **not** release-candidate
@@ -34,7 +117,7 @@ No push, cloud mutation, signing rehearsal or publication was performed.
   call inside the asar's component store. Comment strings and unused catalog
   imports do not satisfy the check. Reinspection clears the asar header cache.
 
-## Verification
+## Historical verification
 
 Runtime: Node **24.13.1**, macOS arm64. Node 26 is outside standalone support.
 Commands below assume supported Node 24 appears first on `PATH`.

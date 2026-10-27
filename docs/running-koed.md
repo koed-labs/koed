@@ -82,14 +82,14 @@ koed components status --json
 ```
 
 Service components, native runtime dependencies, and models remain separate,
-explicit installs. Component archives require verified signed metadata; offline
-setup supplies archive, manifest, and signature paths to `koed components
-install`. Do not rely on `koed start`, help, or status to download or provision
+explicit installs. Component archives require canonical manifests matching hashes
+compiled into the trusted version-matched control plane; offline setup supplies
+archive and manifest paths to `koed components install`. Do not rely on `koed start`, help, or status to download or provision
 runtime artifacts. Then install the native runtime and required models explicitly
 with `koed runtime install --provider homebrew --dependency-mode bundled-local
 --json` and `koed models install --kind embedding --json` as applicable. See
 [Explicit component provisioning](#explicit-component-provisioning) for upgrade,
-staging, activation, and rollback rules.
+staging, activation, and downgrade rejection rules.
 
 `pnpm desktop:start` opens Koed Desktop, which auto-starts `koed-server`, runs
 mandatory core setup when needed, and keeps the startup screen visible until
@@ -196,11 +196,7 @@ paths. Source-checkout development retains source paths. Desktop-owned
 activation remains fail-closed until Desktop uses its validated private
 supervisor channel; environment flags cannot assert Desktop ownership.
 
-This build includes the approved component public key; missing roots still fail
-closed. Remote signer authorization is independent of that configuration. The
-planned move to versioned manifest pins is described in
-[ADR 0057](adr/0057-versioned-component-manifest-pins.md). Staging a verified
-generation does not activate it.
+Trusted version-matched control planes embed expected canonical-manifest SHA-256 hashes. Downloaded manifests or sidecars cannot supply that authority. Missing catalog pins fail closed; see [ADR 0057](adr/0057-versioned-component-manifest-pins.md). Staging a verified generation does not activate it.
 
 ### Explicit component provisioning
 
@@ -210,44 +206,33 @@ native/model status commands do not import the service runtime. `koed start`
 never downloads or installs components, native runtimes, or models; provisioning
 must be requested explicitly.
 
-Install one signed component from either a complete offline artifact set:
+Install a component matching the invoked control plane's product version from an offline archive/manifest pair:
 
 ```bash
 koed components install --component base \
   --archive /path/to/base.tar.gz \
-  --manifest /path/to/base.manifest.json \
-  --signature /path/to/base.signature.json --json
+  --manifest /path/to/base.manifest.json --json
 ```
 
-or exact-version artifact URLs:
+or exact-version artifact URLs (example requires trusted control plane version `1.2.3`):
 
 ```bash
 koed components install --component base \
   --version 1.2.3 \
   --archive-url https://artifacts.example/base.tar.gz \
-  --manifest-url https://artifacts.example/base.manifest.json \
-  --signature-url https://artifacts.example/base.signature.json --json
+  --manifest-url https://artifacts.example/base.manifest.json --json
 ```
 
-The manifest signature is checked against Koed's built-in component trust
-roots, and artifact target/runtime compatibility is checked against the actual
-process. CLI flags cannot replace trust roots, assert Desktop ownership, or
-select another installation owner. Network inputs are explicit; status, help,
-and start perform no downloads. An install for another product version, an
-incomplete required component set, or a running service stages verified
-components only. Install any other required component at the same version, stop
-Koed, and use `koed components activate --version <version> --json` to activate
-a complete generation. Activation requires the invoked control plane to match
-the selected version. A matching older control plane does not authorize a
+Canonical manifest bytes must match the expected hash compiled into the trusted version-matched control plane. Archive/file hashes and actual-process target/runtime compatibility remain mandatory. CLI flags cannot replace pins, assert Desktop ownership, or select another installation owner; removed `--signature` and `--signature-url` options are rejected. Network inputs are explicit; status, help and start perform no downloads. Another product version is rejected rather than staged under current pins. An incomplete required component set, `--stage-only`, or a running service leaves verified components staged.
+
+For an upgrade, stop services through their current owner, invoke the new version's trusted control plane, and install the complete matching-version Base/Privacy set required by configuration. Old-version components are never reused. Installation may activate a complete stopped generation automatically; use `--stage-only` to defer activation, then `koed components activate --version <version> --json`. Verify startup and health afterwards. Prior selection metadata establishes owner/version ordering only, not runnable authority or historical publisher authentication; malformed metadata fails closed. Status identifies an incompatible old selection without starting it. Activation requires the invoked control plane to match the selected version. A matching older control plane does not authorize a
 generation downgrade or establish compatibility with newer database state.
 Same-version recovery may switch between verified generations, such as Base-only
 and Base with Privacy. `koed components cleanup --json` removes only verified inactive
 generations and retains the two newest eligible generations. Cleanup never
 removes User data or models.
 
-Production trust roots may be empty in development builds. In that case signed
-component installation fails closed until a trusted release is configured; do
-not bypass verification or supply an ad hoc key through CLI/environment flags.
+Development builds may lack a compiled catalog. Component installation then fails closed; use the matching trusted release instead of bypassing verification or supplying ad hoc CLI/environment trust inputs.
 
 Task 7 focused evidence (Node `v24.13.1`):
 
@@ -1226,8 +1211,10 @@ Team-enabled Desktop onboarding exposes the same consent-gated Privacy Filter
 installer used in Preferences before local services are ready. If Privacy Filter
 assets are missing, install them there before selecting **Set up Koed** or
 **Retry setup**. Installation requires its own explicit consent; opening onboarding
-never downloads these assets. Offline installation uses the signed archive,
-manifest, and signature files through the same verified installer bridge. Missing
+never downloads these assets. Offline installation supplies archive and manifest
+files through the same verified installer bridge. The trusted version-matched
+Desktop control plane supplies expected manifest hashes; downloaded sidecars
+cannot replace those pins. Missing
 bridges and installation failures remain visible in onboarding, with retry
 controls; installation does not complete onboarding or bypass service and final
 verification. Start or retry setup explicitly after installation. Personal-only
