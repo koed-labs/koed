@@ -1862,6 +1862,8 @@ describe("CollaborationApp", () => {
 
   it("opens sharing for a local Captured Session before collaboration convergence", async () => {
     const localSessionId = uuid(307);
+    const projectId = uuid(309);
+    const createdAt = new Date().toISOString();
     const current = baseSnapshot();
     const snapshot = collaborationSnapshotSchema.parse({
       ...current,
@@ -1880,8 +1882,17 @@ describe("CollaborationApp", () => {
       }),
       listProjects: vi.fn<PersonalDesktopApi["listProjects"]>(async () => [
         {
-          id: "koed-project",
+          id: projectId,
           name: "koed",
+          namedProject: {
+            projectId,
+            name: "koed",
+            version: 1,
+            headRevisionId: uuid(310),
+            deletedAt: null,
+            createdAt,
+            updatedAt: createdAt
+          },
           path: "/workspace/koed",
           eventCount: 2,
           threads: [
@@ -1891,7 +1902,7 @@ describe("CollaborationApp", () => {
               sessionId: localSessionId,
               logicalMemoryId: uuid(308),
               sourceAiClient: "codex-cli",
-              projectId: "koed-project",
+              projectId,
               projectName: "koed",
               projectPath: "/workspace/koed",
               projectAssignmentSource: "detected",
