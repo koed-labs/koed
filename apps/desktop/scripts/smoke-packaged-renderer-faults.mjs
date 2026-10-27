@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { loadRendererValidation } from "./renderer-validation-assets.mjs";
 
 const delay = (ms) =>
   new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
@@ -256,6 +257,7 @@ export const smokePackagedRendererFaults = async ({
     childExit = { code, signal };
   });
   let cdp;
+  let validationAssets;
   try {
     const target = await waitForRendererTarget({
       debuggingPort,
@@ -332,9 +334,10 @@ export const smokePackagedRendererFaults = async ({
         `message channel${suffix}`
       );
     };
-    const validationUrl =
-      "koed://app/browser-validation.html?view=collaboration-interactions&actor=alice";
-    await cdp.call("Page.navigate", { url: validationUrl });
+    validationAssets = await loadRendererValidation(cdp, {
+      view: "collaboration-interactions",
+      actor: "alice"
+    });
     console.error("[packaged-renderer] collaboration fixture started");
     await waitFor(
       evaluate,
@@ -648,6 +651,7 @@ export const smokePackagedRendererFaults = async ({
       ]
     };
   } finally {
+    await validationAssets?.dispose().catch(() => {});
     cdp?.close();
     await terminateChild(child);
     // Electron's own helper/GPU processes can briefly outlive the main

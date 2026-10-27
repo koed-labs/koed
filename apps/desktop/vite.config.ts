@@ -24,7 +24,7 @@ const releaseVersionAsset = (): Plugin => ({
   }
 });
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [releaseVersionAsset(), react(), tailwindcss()],
   define: {
     __KOED_DESKTOP_VERSION__: JSON.stringify(desktopVersion)
@@ -32,16 +32,18 @@ export default defineConfig({
   base: "./",
   root: ".",
   build: {
-    outDir: "dist",
+    outDir: mode === "validation" ? "dist-validation" : "dist",
     emptyOutDir: true,
     rollupOptions: {
-      input: {
-        app: resolve(import.meta.dirname, "index.html"),
-        browserValidation: resolve(
-          import.meta.dirname,
-          "browser-validation.html"
-        )
-      }
+      input:
+        mode === "validation"
+          ? {
+              browserValidation: resolve(
+                import.meta.dirname,
+                "browser-validation.html"
+              )
+            }
+          : { app: resolve(import.meta.dirname, "index.html") }
     }
   },
   test: {
@@ -54,4 +56,4 @@ export default defineConfig({
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     testTimeout: 15_000
   }
-});
+}));

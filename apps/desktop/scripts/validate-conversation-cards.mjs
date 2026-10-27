@@ -1,71 +1,30 @@
 import assert from "node:assert/strict";
 import console from "node:console";
-import process from "node:process";
-import { writeFile } from "node:fs/promises";
-import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath, URL } from "node:url";
-import { app, BrowserWindow } from "electron";
-async function run() {
-  await app.whenReady();
-  const window = new BrowserWindow({
-    show: true,
-    opacity: 0,
-    skipTaskbar: true,
-    width: 1100,
-    height: 900
-  });
-  const errors = [];
-  window.webContents.on("console-message", (event) => {
-    if (event.level === "error") errors.push(event.message);
-  });
-  const ev = (code) => window.webContents.executeJavaScript(code);
-  const wait = async (code) => {
-    for (let i = 0; i < 100; i++) {
-      if (await ev(code)) return;
-      await delay(50);
-    }
-    throw Error(`Timed out: ${code}; ${errors.join("; ")}`);
-  };
-  const click = (label) =>
-    ev(
-      `[...document.querySelectorAll('button')].find(node=>node.textContent===${JSON.stringify(label)}).click()`
-    );
-  const capture = async (name) => {
-    await ev(
-      "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
-    );
-    if (process.env.KOED_BROWSER_VALIDATION_SCREENSHOT)
-      await writeFile(
-        process.env.KOED_BROWSER_VALIDATION_SCREENSHOT.replace(
-          /\.png$/i,
-          `-${name}.png`
-        ),
-        (await window.webContents.capturePage()).toPNG()
+import { runBrowserValidation } from "./browser-validation-runner.mjs";
+
+runBrowserValidation(
+  { width: 1100, height: 900, view: "conversation-cards" },
+  async ({ evaluate: ev, waitFor: wait, errors, capture, setViewport }) => {
+    const click = (label) =>
+      ev(
+        `[...document.querySelectorAll('button')].find(node=>node.textContent===${JSON.stringify(label)}).click()`
       );
-  };
-  const layout = async () => {
-    await ev(
-      "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))"
-    );
-    const result = await ev(
-      `(()=>{const popup=document.querySelector('.personal-conversation-card'),r=popup.getBoundingClientRect(),footer=popup.querySelector('footer').getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,outerScroll:popup.scrollHeight>popup.clientHeight,center:Math.abs(r.x+r.width/2-innerWidth/2),top:r.y,bottom:r.bottom,footer:footer.bottom,height:innerHeight}})()`
-    );
-    assert.equal(result.overflow, false);
-    assert.equal(result.outerScroll, false);
-    assert.ok(result.center < 2);
-    assert.ok(
-      result.top >= 0 &&
-        result.bottom <= result.height &&
-        result.footer <= result.bottom
-    );
-  };
-  try {
-    await window.loadFile(
-      fileURLToPath(
-        new URL("../dist/browser-validation.html", import.meta.url)
-      ),
-      { query: { view: "conversation-cards" } }
-    );
+    const layout = async () => {
+      await ev(
+        "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))"
+      );
+      const result = await ev(
+        `(()=>{const popup=document.querySelector('.personal-conversation-card'),r=popup.getBoundingClientRect(),footer=popup.querySelector('footer').getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,outerScroll:popup.scrollHeight>popup.clientHeight,center:Math.abs(r.x+r.width/2-innerWidth/2),top:r.y,bottom:r.bottom,footer:footer.bottom,height:innerHeight}})()`
+      );
+      assert.equal(result.overflow, false);
+      assert.equal(result.outerScroll, false);
+      assert.ok(result.center < 2);
+      assert.ok(
+        result.top >= 0 &&
+          result.bottom <= result.height &&
+          result.footer <= result.bottom
+      );
+    };
     await wait(
       "!![...document.querySelectorAll('button')].find(node=>node.textContent==='Add to Project')"
     );
@@ -79,14 +38,10 @@ async function run() {
       assert.equal(row.icons, 1);
     }
     await capture("conversation-menu");
-    window.webContents.debugger.attach("1.3");
     await click("Add to Project");
     await wait("document.querySelectorAll('input[type=checkbox]').length===16");
     for (const width of [1100, 620, 360]) {
-      await window.webContents.debugger.sendCommand(
-        "Emulation.setDeviceMetricsOverride",
-        { width, height: 600, deviceScaleFactor: 1, mobile: false }
-      );
+      await setViewport(width, 600);
       await layout();
       await capture(`checklist-${width}`);
     }
@@ -130,10 +85,7 @@ async function run() {
     await click("Correct source context");
     await wait("!!document.querySelector('.personal-source-comparison')");
     for (const width of [1100, 620, 360]) {
-      await window.webContents.debugger.sendCommand(
-        "Emulation.setDeviceMetricsOverride",
-        { width, height: 600, deviceScaleFactor: 1, mobile: false }
-      );
+      await setViewport(width, 600);
       await layout();
       await capture(`compare-${width}`);
     }
@@ -166,14 +118,5 @@ async function run() {
     console.log(
       "Passed: Checklist and Compare at three widths, constrained height, Cancel/reopen and reviewed Confirm."
     );
-  } finally {
-    if (window.webContents.debugger.isAttached())
-      window.webContents.debugger.detach();
-    window.destroy();
-    app.quit();
   }
-}
-run().catch((error) => {
-  console.error(error);
-  app.exit(1);
-});
+);

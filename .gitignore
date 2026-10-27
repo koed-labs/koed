@@ -11,6 +11,7 @@ __pycache__/
 
 # Build output and caches
 dist/
+dist-validation/
 *.tsbuildinfo
 coverage/
 .cache/native-runtime/

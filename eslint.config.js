@@ -12,6 +12,7 @@ export default tseslint.config(
     ignores: [
       "**/.venv/**",
       "**/dist/**",
+      "**/dist-validation/**",
       "apps/desktop/dist-electron/**",
       "apps/desktop/dist-types/**",
       "apps/desktop/release/**",

@@ -7,7 +7,10 @@ import process from "node:process";
 import { app, BrowserWindow } from "electron";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const pagePath = resolve(scriptDir, "../dist/browser-validation.html");
+const pagePath = resolve(
+  scriptDir,
+  "../dist-validation/browser-validation.html"
+);
 
 const inspectWorkspace = async (window) =>
   window.webContents.executeJavaScript(`(() => {

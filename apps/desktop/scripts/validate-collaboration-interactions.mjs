@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 import { app, BrowserWindow } from "electron";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const pagePath = resolve(scriptDir, "../dist/browser-validation.html");
+const pagePath = resolve(
+  scriptDir,
+  "../dist-validation/browser-validation.html"
+);
 const uuid = (suffix) =>
   `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
 const ids = {
@@ -194,6 +197,8 @@ const trustedKey = async (window, keyCode) => {
 const bodyIncludes = (text) =>
   `(document.body?.innerText?.includes(${JSON.stringify(text)}) ?? false)`;
 const bodyExcludes = (text) => `!(${bodyIncludes(text)})`;
+const publishedRevisionIs = (revision) =>
+  `[...document.querySelectorAll('.collab-manage-share-modal .collab-sharing-row')].some(row => row.firstElementChild?.textContent?.trim() === 'Latest published revision' && row.lastElementChild?.textContent?.trim() === ${JSON.stringify(String(revision))})`;
 
 const commands = (window) =>
   evaluate(window, `window.__koedCollaborationInteractions.commands()`);
@@ -921,7 +926,7 @@ const run = async () => {
     await openShareDiagnostics(alice);
     await waitFor(
       alice,
-      `${bodyIncludes("Latest published revision1")} && ${bodyExcludes("Two independent reviewers are required.")} && ${bodyExcludes("Privacy-safe replacement content.")}`,
+      `${publishedRevisionIs(1)} && ${bodyExcludes("Two independent reviewers are required.")} && ${bodyExcludes("Privacy-safe replacement content.")}`,
       "last authorized Note revision while update is preparing"
     );
     await evaluate(
@@ -930,7 +935,7 @@ const run = async () => {
     );
     await waitFor(
       alice,
-      `${bodyIncludes("Continuous browser revision two")} && ${bodyIncludes("Latest published revision2")} && ${bodyExcludes("Privacy-safe replacement content.")}`,
+      `${bodyIncludes("Continuous browser revision two")} && ${publishedRevisionIs(2)} && ${bodyExcludes("Privacy-safe replacement content.")}`,
       "atomically published Continuous Note revision two"
     );
     await trustedClick(alice, `${byText("button", "Pause updates")}`);
@@ -990,7 +995,7 @@ const run = async () => {
     await openShareDiagnostics(alice);
     await waitFor(
       alice,
-      `${bodyIncludes("Updates paused")} && ${bodyIncludes("Latest published revision2")} && ${bodyExcludes("Privacy-safe replacement content.")} && ${bodyExcludes("Catch up only after updates resume.")}`,
+      `${bodyIncludes("Updates paused")} && ${publishedRevisionIs(2)} && ${bodyExcludes("Privacy-safe replacement content.")} && ${bodyExcludes("Catch up only after updates resume.")}`,
       "paused Note Share retains its last authorized revision"
     );
     await trustedClick(alice, `${byText("button", "Resume updates")}`);
@@ -1019,7 +1024,7 @@ const run = async () => {
     await openShareDiagnostics(alice);
     await waitFor(
       alice,
-      `${bodyIncludes("Continuous browser revision three")} && ${bodyIncludes("Latest published revision3")} && ${bodyExcludes("Catch up only after updates resume.")}`,
+      `${bodyIncludes("Continuous browser revision three")} && ${publishedRevisionIs(3)} && ${bodyExcludes("Catch up only after updates resume.")}`,
       "resumed Continuous Note catches up to revision three"
     );
 

@@ -8,6 +8,7 @@ scratch/
 
 # Build output and caches
 dist
+dist-validation
 coverage
 .turbo
 apps/desktop/dist-electron

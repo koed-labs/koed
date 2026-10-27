@@ -61,6 +61,20 @@ a check that cannot run.
 
 ## App-only packaged smoke
 
+Normal Desktop builds emit only the application into `apps/desktop/dist`.
+`pnpm --filter @koed/desktop build:validation` builds synthetic browser fixtures
+separately into `dist-validation`, which is excluded from release packages.
+`test:browser` builds both outputs and runs its Electron journeys against the
+validation output. The Folder, Project transfer, and Conversation card journeys
+share window setup, polling, screenshots, viewport emulation, and cleanup.
+
+The packaged renderer fault smoke builds the same separate validation output.
+Its debugger connection replaces only the test document, preserving the trusted
+package origin and preload bridge, and loads fixture assets from a temporary
+loopback server. CSP bypass is confined to the smoke renderer's debugger session.
+The packaged application remains unmodified, and the synthetic failure and
+redelivery scenarios continue to exercise its renderer and native bridge.
+
 Relevant pull requests restore a macOS arm64 native payload using a key that
 includes the pinned sources, native build and validation scripts, platform,
 architecture, and Xcode fingerprint. The workflow validates that trusted

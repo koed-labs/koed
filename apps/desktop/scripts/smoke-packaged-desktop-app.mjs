@@ -1233,14 +1233,22 @@ const run = async () => {
     const rendererFaults = await measurePhase(
       timings,
       "renderer fault checks",
-      async () =>
-        smokePackagedRendererFaults({
+      async () => {
+        const validationBuild = spawnSync("pnpm", ["build:validation"], {
+          cwd: desktopRoot,
+          stdio: "inherit"
+        });
+        if (validationBuild.error) throw validationBuild.error;
+        if (validationBuild.status !== 0)
+          throw new Error("Renderer validation build failed");
+        return smokePackagedRendererFaults({
           executable: layout.executable,
           env: createSmokeEnv(layout, koedHome, {
             ELECTRON_RUN_AS_NODE: undefined
           }),
           koedHome
-        })
+        });
+      }
     );
     const result = await smokeHealthyDaemon(layout, koedHome, {
       ...options,

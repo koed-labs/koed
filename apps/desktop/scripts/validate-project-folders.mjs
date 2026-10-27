@@ -1,40 +1,19 @@
 import assert from "node:assert/strict";
 import console from "node:console";
-import process from "node:process";
-import { writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath, URL } from "node:url";
-import { app, BrowserWindow } from "electron";
+import { runBrowserValidation } from "./browser-validation-runner.mjs";
 
-async function run() {
-  await app.whenReady();
-  const window = new BrowserWindow({
-    show: true,
-    opacity: 0,
-    skipTaskbar: true,
-    width: 1440,
-    height: 900
-  });
-  const errors = [];
-  window.webContents.on("console-message", (event) => {
-    if (event.level === "error") errors.push(event.message);
-  });
-  const evaluate = (code) => window.webContents.executeJavaScript(code);
-  const waitFor = async (code) => {
-    for (let i = 0; i < 100; i++) {
-      if (await evaluate(code)) return;
-      await delay(50);
-    }
-    throw new Error(`Timed out: ${code}`);
-  };
-  const click = (selector) =>
-    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-  const action = (text) =>
-    evaluate(
-      `[...document.querySelectorAll('.personal-project-details-card button')].find(button=>button.textContent.trim().startsWith(${JSON.stringify(text)})).click()`
-    );
-  const layout = () =>
-    evaluate(`(() => {
+runBrowserValidation(
+  { width: 1440, height: 900, view: "project-folders" },
+  async ({ evaluate, waitFor, errors, capture, setViewport }) => {
+    const click = (selector) =>
+      evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    const action = (text) =>
+      evaluate(
+        `[...document.querySelectorAll('.personal-project-details-card button')].find(button=>button.textContent.trim().startsWith(${JSON.stringify(text)})).click()`
+      );
+    const layout = () =>
+      evaluate(`(() => {
     const card=document.querySelector('.personal-project-details-card'),rect=card.getBoundingClientRect();
     const header=document.querySelector('.personal-project-header'),move=header.querySelector('[aria-label="Move Project"]'),create=header.querySelector('.personal-new-conversation');
     return {width:innerWidth,headerHeight:header.getBoundingClientRect().height,retiredMoveVisible:!!move,newHeight:create.getBoundingClientRect().height,
@@ -42,37 +21,13 @@ async function run() {
       fits:rect.left>=0&&rect.right<=innerWidth&&rect.top>=0&&rect.bottom<=innerHeight,
       folderSelector:!!card.querySelector('[aria-label="Repository checkout"]')};
   })()`);
-  const layouts = [];
-  const capture = async (name) => {
-    await evaluate(
-      `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`
-    );
-    if (process.env.KOED_BROWSER_VALIDATION_SCREENSHOT)
-      await writeFile(
-        process.env.KOED_BROWSER_VALIDATION_SCREENSHOT.replace(
-          /\.png$/i,
-          `-${name}.png`
-        ),
-        (await window.webContents.capturePage()).toPNG()
-      );
-  };
-  try {
-    await window.loadFile(
-      fileURLToPath(
-        new URL("../dist/browser-validation.html", import.meta.url)
-      ),
-      { query: { view: "project-folders" } }
-    );
+    const layouts = [];
     await waitFor(
       `document.documentElement.dataset.browserValidationReady==='true'`
     );
     await waitFor(`!!document.querySelector('.personal-project-header')`);
-    window.webContents.debugger.attach("1.3");
     for (const width of [1440, 620, 360]) {
-      await window.webContents.debugger.sendCommand(
-        "Emulation.setDeviceMetricsOverride",
-        { width, height: 900, deviceScaleFactor: 1, mobile: false }
-      );
+      await setViewport(width, 900);
       await click(".personal-project-details-trigger");
       await waitFor(
         `!!document.querySelector('.personal-project-details-card')`
@@ -251,14 +206,5 @@ async function run() {
     );
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ status: "passed", layouts }));
-  } finally {
-    if (window.webContents.debugger.isAttached())
-      window.webContents.debugger.detach();
-    window.destroy();
-    app.quit();
   }
-}
-run().catch((error) => {
-  console.error(error);
-  app.exit(1);
-});
+);

@@ -1,63 +1,19 @@
 import assert from "node:assert/strict";
 import console from "node:console";
-import process from "node:process";
-import { writeFile } from "node:fs/promises";
-import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath, URL } from "node:url";
-import { app, BrowserWindow } from "electron";
+import { runBrowserValidation } from "./browser-validation-runner.mjs";
 
-async function run() {
-  await app.whenReady();
-  const window = new BrowserWindow({
-    show: true,
-    opacity: 0,
-    skipTaskbar: true,
-    width: 1100,
-    height: 1000
-  });
-  const errors = [];
-  window.webContents.on("console-message", (event) => {
-    if (event.level === "error") errors.push(event.message);
-  });
-  const evaluate = (code) => window.webContents.executeJavaScript(code);
-  const waitFor = async (code) => {
-    for (let i = 0; i < 100; i++) {
-      if (await evaluate(code)) return;
-      await delay(50);
-    }
-    throw new Error(
-      `Timed out: ${code}; errors: ${errors.join("; ")}; body: ${await evaluate("document.body.innerText.slice(0,2000)")}`
-    );
-  };
-  const click = (selector) =>
-    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-  const layout = () =>
-    evaluate(`(() => {
+runBrowserValidation(
+  { width: 1100, height: 1000, view: "project-transfer" },
+  async ({ evaluate, waitFor, errors, capture, setViewport }) => {
+    const click = (selector) =>
+      evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    const layout = () =>
+      evaluate(`(() => {
     const board=document.querySelector('.personal-transfer-board'),panes=[...document.querySelectorAll('.personal-transfer-pane')],lists=[...document.querySelectorAll('.personal-transfer-list')];
     return {width:innerWidth,card:board.getBoundingClientRect().height,panes:panes.map(p=>p.getBoundingClientRect().height),scrollable:lists.map(p=>getComputedStyle(p).overflowY),overflow:document.documentElement.scrollWidth>innerWidth,
       rowOverflow:[...document.querySelectorAll('.personal-transfer-row')].some(row=>row.scrollWidth>row.clientWidth)};
   })()`);
-  const capture = async (name) => {
-    await evaluate(
-      "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
-    );
-    if (process.env.KOED_BROWSER_VALIDATION_SCREENSHOT)
-      await writeFile(
-        process.env.KOED_BROWSER_VALIDATION_SCREENSHOT.replace(
-          /\.png$/i,
-          `-${name}.png`
-        ),
-        (await window.webContents.capturePage()).toPNG()
-      );
-  };
-  const layouts = [];
-  try {
-    await window.loadFile(
-      fileURLToPath(
-        new URL("../dist/browser-validation.html", import.meta.url)
-      ),
-      { query: { view: "project-transfer" } }
-    );
+    const layouts = [];
     await waitFor(
       `document.documentElement.dataset.browserValidationReady==='true'&&!!document.querySelector('.personal-project-header')`
     );
@@ -97,12 +53,8 @@ async function run() {
       ),
       "0px"
     );
-    window.webContents.debugger.attach("1.3");
     for (const width of [1100, 736, 620, 360]) {
-      await window.webContents.debugger.sendCommand(
-        "Emulation.setDeviceMetricsOverride",
-        { width, height: 1100, deviceScaleFactor: 1, mobile: false }
-      );
+      await setViewport(width, 1100);
       await evaluate(
         "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))"
       );
@@ -201,10 +153,7 @@ async function run() {
       await capture(`sources-${width}`);
     }
     for (const width of [1100, 360]) {
-      await window.webContents.debugger.sendCommand(
-        "Emulation.setDeviceMetricsOverride",
-        { width, height: 600, deviceScaleFactor: 1, mobile: false }
-      );
+      await setViewport(width, 600);
       await evaluate(
         "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
       );
@@ -217,10 +166,7 @@ async function run() {
       await capture(`short-${width}`);
     }
     // Setup stays centered on the window, independent of the detail column.
-    await window.webContents.debugger.sendCommand(
-      "Emulation.setDeviceMetricsOverride",
-      { width: 1100, height: 1100, deviceScaleFactor: 1, mobile: false }
-    );
+    await setViewport(1100, 1100);
     await evaluate("document.querySelector('main').style.maxWidth='500px'");
     await evaluate(
       "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
@@ -265,14 +211,5 @@ async function run() {
     await capture("sync");
     assert.equal(errors.length, 0, errors.join("\n"));
     console.log(JSON.stringify({ status: "passed", layouts }));
-  } finally {
-    if (window.webContents.debugger.isAttached())
-      window.webContents.debugger.detach();
-    window.destroy();
-    app.quit();
   }
-}
-run().catch((error) => {
-  console.error(error);
-  app.exit(1);
-});
+);
