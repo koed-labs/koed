@@ -59,23 +59,34 @@ test("reviewed identity comes from immutable build artifacts, not candidate draf
     "${{ vars.KOED_NPM_PUBLICATION_AUTHORIZED }}"
   );
   assert.match(publication.run, /--expected-build-sha256/);
-  const desktop = jobs["signed-desktop-release-assets"].steps;
+  const signed = jobs["signed-desktop-release-assets"];
+  const desktop = (signed ?? jobs["unsigned-desktop-release-assets"]).steps;
   const retained = desktop.findIndex(
     (step) => step.with?.name === "koed-desktop-final-assets"
   );
-  assert.ok(retained >= 0, "signed Desktop job retains final bytes");
+  assert.ok(retained >= 0, "Desktop job retains final bytes");
   // Retain only after signing/notarization/sealing, integrity and composition
   // checks, so the protected identity binds the bytes that are published.
-  for (const marker of [
-    "desktop:package:release",
-    "verify-macos-package",
-    "inspect-desktop-artifact"
-  ])
+  for (const marker of signed
+    ? [
+        "desktop:package:release",
+        "verify-macos-package",
+        "inspect-desktop-artifact"
+      ]
+    : ["verify-packaged-component-catalog", "inspect-desktop-artifact"]) {
+    const index = desktop.findIndex((step) => step.run?.includes(marker));
+    assert.ok(index >= 0, `missing Desktop check: ${marker}`);
     assert.ok(
-      retained > desktop.findIndex((step) => step.run?.includes(marker)),
+      retained > index,
       `final Desktop bytes retained before ${marker}`
     );
-  assert.match(desktop[retained].with.path, /koed-desktop-macos-arm64\.sha256/);
+  }
+  assert.match(
+    desktop[retained].with.path,
+    signed
+      ? /koed-desktop-macos-arm64\.sha256/
+      : /koed-desktop-macos-arm64-unsigned\.sha256/
+  );
 });
 
 test("protected identity downloads flatten artifact-ID layout to expected CLI path", () => {

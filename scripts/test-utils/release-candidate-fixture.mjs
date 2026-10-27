@@ -18,6 +18,7 @@ import {
 } from "../component-manifest-catalog.mjs";
 import { writeDeterministicTarGz } from "../deterministic-tar-gzip.mjs";
 import { createPackageReleaseIdentity } from "../package-release-identity.mjs";
+import { createAsarFixture } from "./create-asar-fixture.mjs";
 import { writeControlPlaneLauncher } from "../control-plane-bundle.mjs";
 
 export const runtimeIdentities = [
@@ -184,7 +185,11 @@ export const addDesktopFixture = async (
     "desktop/Koed.app/Contents/Resources"
   );
   mkdirSync(resources, { recursive: true });
-  await createPackage(source, resolve(resources, "app.asar"));
+  await createAsarFixture(
+    createPackage,
+    source,
+    resolve(resources, "app.asar")
+  );
   const asset = "Koed-1.2.3-arm64.zip";
   rmSync(resolve(fixture.assetsDir, asset), { force: true });
   execFileSync("zip", ["-qr", resolve(fixture.assetsDir, asset), "Koed.app"], {
