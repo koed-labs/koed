@@ -15,7 +15,9 @@ import type {
   PersonalDesktopRequest,
   PersonalDesktopResult
 } from "@koed/shared/personal-desktop";
+import type { KoedTextActionProjection } from "@koed/shared/koed-text-action-contract";
 import { nextScheduledJobOccurrence } from "@koed/shared/scheduled-job-calendar";
+import { scheduledJobScheduleSchema } from "@koed/shared/scheduled-job-contract";
 import type { AgentsRequest, AgentsResult } from "../ipc/agents-protocol.js";
 import type {
   LocalAiClientCommand,
@@ -28,12 +30,20 @@ import type {
   ManagedConversationRuntimeItem
 } from "../ipc/managed-conversation-protocol.js";
 import type {
+  ManagedTextActionRequest,
+  ManagedTextActionResult
+} from "../ipc/managed-text-action-protocol.js";
+import type {
   ScheduledJobsRequest,
   ScheduledJobsResult
 } from "../ipc/scheduled-jobs-protocol.js";
 import type {
   PhoneAgent,
   PhoneAskTurn,
+  PhoneCollection,
+  PhoneJobEditRequest,
+  PhoneProposalRespondRequest,
+  PhoneStanding,
   PhoneComputer,
   PhoneConversationRef,
   PhoneEvent,
@@ -48,6 +58,18 @@ import type {
   PhoneUpcoming,
   PhoneWorking
 } from "./contract.js";
+import {
+  assignEdition as giveEdition,
+  collectionView,
+  countPhoneAction,
+  evaluateGamification,
+  markEditionSeen,
+  standings,
+  wornLook,
+  type GamificationEvent,
+  type GamificationFacts,
+  type GamificationStore
+} from "./gamification.js";
 import type { PhoneChiefConversation, PhoneGatewayStore } from "./store.js";
 
 /** What the gateway needs from the Koed Server manager. */
@@ -67,6 +89,10 @@ export type PhoneGatewayDeps = {
     request: LocalAiClientCommand
   ) => Promise<LocalAiClientResponse>;
   ensureIndependentProject: () => Promise<{ localProjectId: string }>;
+  /** Koed actions an AI Client asked for (here: scheduling and pausing jobs), reviewed by the person. */
+  managedTextActions?: (
+    request: ManagedTextActionRequest
+  ) => Promise<ManagedTextActionResult>;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
 };
@@ -195,17 +221,72 @@ export const needFromRuntimeItem = (
 
 const agentFor = (
   agent: Agent,
-  instanceNames: ReadonlyMap<string, string>
-): PhoneAgent => ({
-  id: agent.id,
-  name: agent.name,
-  role: agent.role,
-  look: agent.look as Record<string, unknown>,
-  aiClientInstanceId: agent.aiClientInstanceId,
-  aiClientName: instanceNames.get(agent.aiClientInstanceId) ?? null,
-  defaultModel: agent.defaultModel,
-  isChiefOfStaff: agent.isChiefOfStaff
-});
+  instanceNames: ReadonlyMap<string, string>,
+  standing: PhoneStanding | null = null
+): PhoneAgent => {
+  const own = (agent.look ?? {}) as Record<string, unknown>;
+  const editionId = standing?.editionId ?? null;
+  return {
+    id: agent.id,
+    name: agent.name,
+    role: agent.role,
+    look: wornLook(own, editionId),
+    aiClientInstanceId: agent.aiClientInstanceId,
+    aiClientName: instanceNames.get(agent.aiClientInstanceId) ?? null,
+    defaultModel: agent.defaultModel,
+    isChiefOfStaff: agent.isChiefOfStaff,
+    createdAt: agent.createdAt,
+    standing: standing ? { ...standing, ownLook: editionId ? own : null } : null
+  };
+};
+
+const JOB_ACTIONS = new Set(["koed_job_create", "koed_job_pause"]);
+
+/** A job an AI Client asked Koed to schedule (or pause), waiting for the person. */
+export const proposalFromTextAction = (
+  action: KoedTextActionProjection,
+  conversation: PhoneConversationRef | null
+): PhoneNeed | null => {
+  if (!JOB_ACTIONS.has(action.name)) return null;
+  const waiting =
+    action.reviewKind === "ask_first" &&
+    (action.state === "awaiting_review" || action.state === "ready");
+  if (!waiting) return null;
+  const args = action.arguments;
+  const snapshot = action.snapshot;
+  const title = textOf(args.title, 160) ?? "A scheduled job";
+  if (action.name === "koed_job_create") {
+    const schedule = scheduledJobScheduleSchema.safeParse(args.schedule);
+    return {
+      kind: "job_proposal",
+      id: `action:${action.executionId}:${action.id}`,
+      executionId: action.executionId,
+      actionId: action.id,
+      action: "create",
+      title,
+      instruction: textOf(args.instruction, 2_000),
+      schedule: schedule.success ? schedule.data : null,
+      jobId: null,
+      agentId: textOf(snapshot.agentId, 64),
+      conversation,
+      at: action.createdAt
+    };
+  }
+  return {
+    kind: "job_proposal",
+    id: `action:${action.executionId}:${action.id}`,
+    executionId: action.executionId,
+    actionId: action.id,
+    action: args.paused === false ? "resume" : "pause",
+    title,
+    instruction: null,
+    schedule: null,
+    jobId: textOf(snapshot.jobId, 64),
+    agentId: null,
+    conversation,
+    at: action.createdAt
+  };
+};
 
 const eventRole = (
   actor: string | null,
@@ -229,7 +310,8 @@ export type PhoneGatewayService = ReturnType<typeof createPhoneGatewayService>;
 
 export const createPhoneGatewayService = (
   deps: PhoneGatewayDeps,
-  store: PhoneGatewayStore
+  store: PhoneGatewayStore,
+  game: GamificationStore | null = null
 ) => {
   const now = deps.now ?? (() => new Date());
   const sleep =
@@ -295,10 +377,16 @@ export const createPhoneGatewayService = (
     >;
   } | null = null;
   /** Every captured Chat by session, with the thread it lives in (cached for 15 s). */
+  /** Events Koed's memory holds across your Chats (from the last projects read). */
+  let remembered: number | null = null;
   const threads = async (fresh = false) => {
     if (!fresh && threadsCache && now().getTime() - threadsCache.at < 15_000)
       return threadsCache.value;
     const data = await personal("personal.projects.list", {});
+    remembered = data.projects.reduce(
+      (sum, project) => sum + (project.eventCount ?? 0),
+      0
+    );
     const value = new Map<
       string,
       PhoneConversationRef & { latestAt: string; aiClient: string | null }
@@ -400,8 +488,13 @@ export const createPhoneGatewayService = (
 
   /* ---------- jobs (cached for 30 s; they change rarely) ---------- */
 
-  let jobsCache: { at: number; jobs: PhoneJob[]; missed: PhoneNeed[] } | null =
-    null;
+  let jobsCache: {
+    at: number;
+    jobs: PhoneJob[];
+    missed: PhoneNeed[];
+    /** When each finished run finished, by the job's Agent (for ranks). */
+    finished: Map<string, string[]>;
+  } | null = null;
 
   const jobOf = (
     job: Extract<ScheduledJobsResult, { operation: "get" }>["job"]
@@ -453,14 +546,21 @@ export const createPhoneGatewayService = (
       throw new PhoneGatewayError(502, "Koed answered a different request.");
     const jobs = listed.jobs.map(jobOf);
     const missed: PhoneNeed[] = [];
+    const finished = new Map<string, string[]>();
     // A missed run is something to decide (run it now, or skip it); look at the recent runs of each job.
-    for (const job of listed.jobs.slice(0, 12)) {
+    for (const job of listed.jobs.slice(0, 50)) {
       try {
         const runs = await deps.scheduledJobs({
           operation: "runs",
           jobId: job.id
         });
         if (runs.operation !== "runs") continue;
+        for (const run of runs.runs) {
+          if (run.status !== "ok") continue;
+          const list = finished.get(job.agentId) ?? [];
+          list.push(run.finishedAt ?? run.startedAt ?? run.scheduledFor);
+          finished.set(job.agentId, list);
+        }
         for (const run of runs.runs.slice(0, 5)) {
           if (run.status !== "missed") continue;
           missed.push({
@@ -478,7 +578,7 @@ export const createPhoneGatewayService = (
         /* one job's history failing doesn't hide the others */
       }
     }
-    jobsCache = { at: now().getTime(), jobs, missed };
+    jobsCache = { at: now().getTime(), jobs, missed, finished };
     return jobsCache;
   };
 
@@ -651,6 +751,244 @@ export const createPhoneGatewayService = (
     if (entry) entry.failed = reason;
   };
 
+  /* ---------- jobs an AI Client proposed (Koed actions waiting for the person) ---------- */
+
+  const applying = new Set<string>();
+
+  /** Pending job actions in one execution. Approved-by-policy ones in the Chief's Chat are applied here. */
+  const jobActionsOf = async (
+    executionId: string,
+    chiefExecutionId: string | null
+  ): Promise<KoedTextActionProjection[]> => {
+    if (!deps.managedTextActions) return [];
+    try {
+      const listed = await deps.managedTextActions({
+        operation: "list",
+        executionId
+      });
+      if (listed.operation !== "list") return [];
+      const actions = listed.actions.filter((action) =>
+        JOB_ACTIONS.has(action.name)
+      );
+      // Full access: Koed needs no review. Nobody may have this Chat open on the
+      // Mac, so the gateway applies the job itself, exactly once (claim fences it).
+      if (executionId === chiefExecutionId)
+        for (const action of actions)
+          if (action.state === "ready" && action.reviewKind === "none")
+            void applyJobAction(action).catch(() => undefined);
+      return actions;
+    } catch {
+      return [];
+    }
+  };
+
+  const textActions = () => {
+    if (!deps.managedTextActions)
+      throw new PhoneGatewayError(
+        503,
+        "This version of Koed can't take job proposals from the phone."
+      );
+    return deps.managedTextActions;
+  };
+
+  const applyJobAction = async (action: KoedTextActionProjection) => {
+    if (applying.has(action.id)) return;
+    applying.add(action.id);
+    const api = textActions();
+    try {
+      const claimed = await api({
+        operation: "claim",
+        executionId: action.executionId,
+        actionId: action.id,
+        expectedRevision: action.revision
+      });
+      if (claimed.operation !== "claim")
+        throw new PhoneGatewayError(502, "Koed answered a different request.");
+      const job = claimed.action;
+      const args = job.arguments;
+      const snapshot = job.snapshot;
+      try {
+        if (job.name === "koed_job_create") {
+          if (
+            typeof snapshot.agentId !== "string" ||
+            typeof snapshot.conversationSessionId !== "string"
+          )
+            throw new PhoneGatewayError(
+              409,
+              "This job proposal is incomplete."
+            );
+          await deps.scheduledJobs({
+            operation: "create",
+            value: {
+              requestId: job.id,
+              textActionId: job.id,
+              agentId: snapshot.agentId,
+              conversationSessionId: snapshot.conversationSessionId,
+              projectId:
+                typeof snapshot.projectId === "string"
+                  ? snapshot.projectId
+                  : null,
+              title: String(args.title),
+              instruction: String(args.instruction),
+              schedule: scheduledJobScheduleSchema.parse(args.schedule)
+            }
+          });
+        } else {
+          if (
+            typeof snapshot.jobId !== "string" ||
+            typeof snapshot.jobVersion !== "number" ||
+            typeof args.paused !== "boolean"
+          )
+            throw new PhoneGatewayError(409, "This job change is incomplete.");
+          await deps.scheduledJobs({
+            operation: "pause",
+            jobId: snapshot.jobId,
+            expectedVersion: snapshot.jobVersion,
+            paused: args.paused,
+            textActionId: job.id
+          });
+        }
+      } finally {
+        // Both job actions leave a durable receipt: completing reads it and never repeats the effect.
+        await api({
+          operation: "complete",
+          executionId: job.executionId,
+          actionId: job.id,
+          expectedRevision: job.revision
+        }).catch(() => undefined);
+        jobsCache = null;
+      }
+    } finally {
+      applying.delete(action.id);
+    }
+  };
+
+  const resolveProposal = async (request: PhoneProposalRespondRequest) => {
+    const api = textActions();
+    const got = await api({
+      operation: "get",
+      executionId: request.executionId,
+      actionId: request.actionId
+    });
+    if (got.operation !== "get" || !JOB_ACTIONS.has(got.action.name))
+      throw new PhoneGatewayError(404, "That proposal isn't here any more.");
+    let action = got.action;
+    if (action.state === "applied" || action.state === "declined")
+      return { accepted: true as const, state: action.state };
+    if (action.state === "awaiting_review") {
+      if (action.reviewKind !== "ask_first")
+        throw new PhoneGatewayError(
+          409,
+          "Review this one in Koed on your Mac."
+        );
+      const reviewed = await api({
+        operation: "review",
+        executionId: action.executionId,
+        actionId: action.id,
+        expectedRevision: action.revision,
+        decision: request.decision
+      });
+      if (reviewed.operation !== "review")
+        throw new PhoneGatewayError(502, "Koed answered a different request.");
+      action = reviewed.action;
+      if (request.decision === "decline")
+        return { accepted: true as const, state: action.state };
+    } else if (request.decision === "decline") {
+      throw new PhoneGatewayError(409, "That was already approved.");
+    }
+    if (action.state !== "ready")
+      throw new PhoneGatewayError(409, "That proposal changed. Look again.");
+    await applyJobAction(action);
+    progressed();
+    return { accepted: true as const, state: "applied" as const };
+  };
+
+  /* ---------- ranks, milestones and editions ---------- */
+
+  const factsFor = async (agents?: Agent[]): Promise<GamificationFacts> => {
+    const [team, jobsInfo] = await Promise.all([
+      agents ? Promise.resolve(agents) : listAgents(),
+      jobsAndMissed().catch(() => null)
+    ]);
+    if (remembered === null) await threads().catch(() => undefined);
+    return {
+      now: now(),
+      agents: team.map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        isChiefOfStaff: agent.isChiefOfStaff,
+        createdAt: agent.createdAt
+      })),
+      finishedRuns: jobsInfo?.finished ?? new Map(),
+      scheduledJobs: jobsInfo?.jobs.length ?? 0,
+      remembered
+    };
+  };
+
+  const standingsOf = async (
+    agents: Agent[]
+  ): Promise<Map<string, PhoneStanding>> => {
+    if (!game) return new Map();
+    return standings(await factsFor(agents), await game.read());
+  };
+
+  /** Record what was newly earned; returns it so the gateway can tell the phone. */
+  const evaluate = async (): Promise<GamificationEvent[]> => {
+    if (!game) return [];
+    const facts = await factsFor();
+    const current = await game.read();
+    // Most checks change nothing: don't rewrite the secret store for them.
+    if (
+      JSON.stringify(evaluateGamification(facts, current).state) ===
+      JSON.stringify(current)
+    )
+      return [];
+    let events: GamificationEvent[] = [];
+    await game.update((state) => {
+      const result = evaluateGamification(facts, state);
+      events = result.events;
+      return result.state;
+    });
+    return events;
+  };
+
+  let onProgress: (() => void) | null = null;
+  const progressed = () => onProgress?.();
+
+  const count = (action: "unblock" | "ask" | "chief_reply") =>
+    game
+      ? game
+          .update((state) => countPhoneAction(state, action, now()))
+          .then(progressed, () => undefined)
+      : Promise.resolve();
+
+  const collection = async (): Promise<PhoneCollection> => {
+    if (!game)
+      throw new PhoneGatewayError(503, "Ranks and editions aren't on yet.");
+    await evaluate().catch(() => []);
+    return collectionView(await factsFor(), await game.read());
+  };
+
+  const assignEdition = async (editionId: string, agentId: string | null) => {
+    if (!game)
+      throw new PhoneGatewayError(503, "Ranks and editions aren't on yet.");
+    if (agentId && !(await listAgents()).some((agent) => agent.id === agentId))
+      throw new PhoneGatewayError(404, "That agent isn't here any more.");
+    try {
+      await game.update((state) => giveEdition(state, editionId, agentId));
+    } catch (error) {
+      if (error instanceof Error && /isn't earned/u.test(error.message))
+        throw new PhoneGatewayError(409, error.message);
+      throw error;
+    }
+    return { accepted: true as const };
+  };
+
+  const markSeen = async (editionId: string) => {
+    if (game) await game.update((state) => markEditionSeen(state, editionId));
+    return { accepted: true as const };
+  };
+
   /* ---------- operations ---------- */
 
   const home = async (): Promise<PhoneHome> => {
@@ -672,13 +1010,22 @@ export const createPhoneGatewayService = (
     );
     const working: PhoneWorking[] = [];
     const needs: PhoneNeed[] = [];
-    for (const { entry, runtime } of runtimes) {
+    const proposals = await Promise.all(
+      inspectable.map((entry) =>
+        jobActionsOf(entry.executionId, chiefRef?.executionId ?? null)
+      )
+    );
+    for (const [index, { entry, runtime }] of runtimes.entries()) {
       const ref = refForExecution(entry, refs);
       if (runtime) {
         for (const item of runtime.items) {
           const need = needFromRuntimeItem(entry.executionId, item, ref);
           if (need) needs.push(need);
         }
+      }
+      for (const action of proposals[index] ?? []) {
+        const need = proposalFromTextAction(action, ref);
+        if (need) needs.push(need);
       }
       working.push({
         executionId: entry.executionId,
@@ -707,12 +1054,15 @@ export const createPhoneGatewayService = (
     }
     needs.sort((left, right) => left.at.localeCompare(right.at));
     const chief = agents.find((agent) => agent.isChiefOfStaff) ?? null;
+    const standing = await standingsOf(agents).catch(() => new Map());
     return {
       mac: { name: deps.macName() },
-      chief: chief ? agentFor(chief, names) : null,
+      chief: chief
+        ? agentFor(chief, names, standing.get(chief.id) ?? null)
+        : null,
       agents: agents
         .filter((agent) => !agent.isChiefOfStaff)
-        .map((agent) => agentFor(agent, names)),
+        .map((agent) => agentFor(agent, names, standing.get(agent.id) ?? null)),
       chiefConversation: chiefRef
         ? {
             projectId: chiefRef.projectId,
@@ -1040,6 +1390,8 @@ export const createPhoneGatewayService = (
       ...(request.decision ? { decision: request.decision } : {}),
       ...(request.answers ? { answers: request.answers } : {})
     });
+    if (request.decision !== "decline" && request.decision !== "cancel")
+      await count("unblock");
     return { accepted: true as const };
   };
 
@@ -1085,6 +1437,22 @@ export const createPhoneGatewayService = (
     return { accepted: true as const };
   };
 
+  const editJob = async (jobId: string, edit: PhoneJobEditRequest) => {
+    const current = await currentJob(jobId);
+    await deps.scheduledJobs({
+      operation: "edit",
+      jobId,
+      expectedVersion: current.version,
+      ...(edit.title !== undefined ? { title: edit.title } : {}),
+      ...(edit.instruction !== undefined
+        ? { instruction: edit.instruction }
+        : {}),
+      ...(edit.schedule !== undefined ? { schedule: edit.schedule } : {})
+    });
+    jobsCache = null;
+    return { accepted: true as const };
+  };
+
   const runJobNow = async (jobId: string) => {
     const current = await currentJob(jobId);
     await deps.scheduledJobs({
@@ -1123,6 +1491,7 @@ export const createPhoneGatewayService = (
       query,
       ...(askThreadId ? { askThreadId } : {})
     });
+    await count("ask");
     const turn = data.question;
     return {
       id: turn.id,
@@ -1205,7 +1574,19 @@ export const createPhoneGatewayService = (
     jobs,
     job,
     pauseJob,
+    editJob,
     runJobNow,
+    resolveProposal,
+    collection,
+    assignEdition,
+    markSeen,
+    evaluateGamification: evaluate,
+    /** Called when something the phone did may have earned a rank, milestone or edition. */
+    onProgress(listener: () => void) {
+      onProgress = listener;
+    },
+    /** The Chief of Staff finished a reply in the phone's conversation. */
+    countChiefReply: () => count("chief_reply"),
     resolveRun,
     ask,
     askThread,

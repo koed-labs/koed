@@ -97,6 +97,23 @@ export const createScheduledJobsClient =
           job: scheduledJobSchema.parse(await json("POST", "", request.value))
         };
         break;
+      case "edit":
+        result = {
+          operation: "edit",
+          job: scheduledJobSchema.parse(
+            await json("PATCH", "", {
+              expectedVersion: request.expectedVersion,
+              ...(request.title !== undefined ? { title: request.title } : {}),
+              ...(request.instruction !== undefined
+                ? { instruction: request.instruction }
+                : {}),
+              ...(request.schedule !== undefined
+                ? { schedule: request.schedule }
+                : {})
+            })
+          )
+        };
+        break;
       case "pause":
         result = {
           operation: "pause",

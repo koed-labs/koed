@@ -154,4 +154,72 @@ describe("phone gateway listener", () => {
     expect(text).toContain('"keys":["chief"]');
     controller.abort();
   });
+
+  it("routes job edits, proposals and editions with validated bodies", async () => {
+    const seen: unknown[] = [];
+    const { base } = await start({
+      service: {
+        editJob: async (jobId: string, edit: unknown) => {
+          seen.push(["edit", jobId, edit]);
+          return { accepted: true };
+        },
+        resolveProposal: async (request: unknown) => {
+          seen.push(["proposal", request]);
+          return { accepted: true, state: "applied" };
+        },
+        assignEdition: async (editionId: string, agentId: string | null) => {
+          seen.push(["edition", editionId, agentId]);
+          return { accepted: true };
+        }
+      } as unknown as PhoneGatewayService
+    });
+    const send = (method: string, path: string, body: unknown) =>
+      fetch(`${base}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+    expect(
+      (
+        await send("POST", "/jobs/job-1/edit", {
+          schedule: { kind: "weekdays", at: "09:15", tz: "Europe/Oslo" }
+        })
+      ).status
+    ).toBe(200);
+    expect(
+      (await send("POST", "/jobs/job-1/edit", { schedule: { kind: "hourly" } }))
+        .status
+    ).toBe(400);
+    expect(
+      (
+        await send("POST", "/proposals/respond", {
+          executionId: "99999999-9999-4999-8999-999999999999",
+          actionId: "88888888-8888-4888-8888-888888888888",
+          decision: "approve"
+        })
+      ).status
+    ).toBe(200);
+    expect(
+      (await send("PUT", "/editions/graphite", { agentId: null })).status
+    ).toBe(200);
+    expect(seen).toEqual([
+      [
+        "edit",
+        "job-1",
+        { schedule: { kind: "weekdays", at: "09:15", tz: "Europe/Oslo" } }
+      ],
+      [
+        "proposal",
+        {
+          executionId: "99999999-9999-4999-8999-999999999999",
+          actionId: "88888888-8888-4888-8888-888888888888",
+          decision: "approve"
+        }
+      ],
+      ["edition", "graphite", null]
+    ]);
+  });
 });

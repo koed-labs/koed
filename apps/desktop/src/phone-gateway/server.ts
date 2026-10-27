@@ -24,10 +24,13 @@ import {
   PHONE_API_VERSION,
   phoneAskRequestSchema,
   phoneControlRequestSchema,
+  phoneEditionAssignSchema,
+  phoneJobEditRequestSchema,
   phoneJobPauseRequestSchema,
   phoneJobRunActionSchema,
   phoneMessageRequestSchema,
   phonePairRequestSchema,
+  phoneProposalRespondSchema,
   phonePushRequestSchema,
   phoneRespondRequestSchema,
   type PhoneLiveEvent,
@@ -173,6 +176,32 @@ export const routePhoneRequest = async (
           body: await service.respond(phoneRespondRequestSchema.parse(body))
         };
       break;
+    case "POST proposals":
+      if (b === "respond" && !c)
+        return {
+          status: 200,
+          body: await service.resolveProposal(
+            phoneProposalRespondSchema.parse(body)
+          )
+        };
+      break;
+    case "GET collection":
+      if (!b) return { status: 200, body: await service.collection() };
+      break;
+    case "PUT editions":
+      if (b && !c)
+        return {
+          status: 200,
+          body: await service.assignEdition(
+            segment(b),
+            phoneEditionAssignSchema.parse(body).agentId
+          )
+        };
+      break;
+    case "POST editions":
+      if (b && c === "seen" && !d)
+        return { status: 200, body: await service.markSeen(segment(b)) };
+      break;
     case "GET jobs":
       if (!b) return { status: 200, body: { jobs: await service.jobs() } };
       if (!c) return { status: 200, body: await service.job(segment(b)) };
@@ -184,6 +213,14 @@ export const routePhoneRequest = async (
           body: await service.pauseJob(
             segment(b),
             phoneJobPauseRequestSchema.parse(body).paused
+          )
+        };
+      if (b && c === "edit" && !d)
+        return {
+          status: 200,
+          body: await service.editJob(
+            segment(b),
+            phoneJobEditRequestSchema.parse(body)
           )
         };
       if (b && c === "run-now" && !d)

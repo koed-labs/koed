@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   createScheduledJobSchema,
   scheduledJobRunSchema,
+  scheduledJobScheduleSchema,
   scheduledJobSchema
 } from "@koed/shared/scheduled-job-contract";
 
@@ -23,6 +24,23 @@ export const scheduledJobsRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({ operation: z.literal("create"), value: createScheduledJobSchema })
     .strict(),
+  z
+    .object({
+      operation: z.literal("edit"),
+      jobId: id,
+      expectedVersion: version,
+      title: z.string().trim().min(1).max(160).optional(),
+      instruction: z.string().trim().min(1).max(20_000).optional(),
+      schedule: scheduledJobScheduleSchema.optional()
+    })
+    .strict()
+    .refine(
+      (value) =>
+        value.title !== undefined ||
+        value.instruction !== undefined ||
+        value.schedule !== undefined,
+      "Nothing to change"
+    ),
   z
     .object({
       operation: z.literal("pause"),
@@ -77,6 +95,7 @@ export const scheduledJobsResultSchema = z.discriminatedUnion("operation", [
   z
     .object({ operation: z.literal("create"), job: scheduledJobSchema })
     .strict(),
+  z.object({ operation: z.literal("edit"), job: scheduledJobSchema }).strict(),
   z.object({ operation: z.literal("pause"), job: scheduledJobSchema }).strict(),
   z
     .object({ operation: z.literal("runNow"), run: scheduledJobRunSchema })

@@ -29,6 +29,11 @@ import {
   type PhoneGatewayListener
 } from "./server.js";
 import {
+  createGamificationStore,
+  type GamificationEvent,
+  type GamificationStore
+} from "./gamification.js";
+import {
   createPhoneGatewayService,
   PhoneGatewayError,
   type PhoneGatewayDeps
@@ -76,13 +81,18 @@ export type PhoneGatewayOptions = {
     signal: AbortSignal
   ) => Promise<void>;
   store?: PhoneGatewayStore;
+  gamification?: GamificationStore;
 };
 
 export type PhoneGateway = ReturnType<typeof createPhoneGateway>;
 
 export const createPhoneGateway = (options: PhoneGatewayOptions) => {
   const store = options.store ?? createPhoneGatewayStore(options.secrets);
-  const service = createPhoneGatewayService(options.deps, store);
+  const service = createPhoneGatewayService(
+    options.deps,
+    store,
+    options.gamification ?? createGamificationStore(options.secrets)
+  );
   const pairing = createPhonePairing();
   const pushSender = options.push ?? createExpoPushSender();
   const hosts =
@@ -151,10 +161,66 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
       .flatMap((phone) =>
         pushes.map((push) => ({ ...push, to: phone.expoPushToken! }))
       );
-    await pushSender(messages).catch((cause: unknown) =>
-      options.onError?.(cause)
-    );
+    if (messages.length === 0) return;
+    try {
+      await pushSender(messages);
+    } catch (cause) {
+      options.onError?.(cause);
+    }
   };
+
+  /** Ranks, milestones and editions newly earned: tell the phone, once. */
+  const reward = async (events: GamificationEvent[]) => {
+    if (events.length === 0) return;
+    const pushes: Array<Omit<PhonePush, "to">> = [];
+    for (const event of events) {
+      const notification =
+        event.kind === "edition"
+          ? {
+              title: `You earned ${event.name}`,
+              body: "A limited edition. Give it to one of your agents.",
+              route: "/collection"
+            }
+          : event.kind === "rank"
+            ? {
+                title: `${event.agentName} is now ${event.rank === "Getting acquainted" ? event.rank.toLowerCase() : `${/^[AEIOU]/u.test(event.rank) ? "an" : "a"} ${event.rank}`}`,
+                body: `${event.jobs} job${event.jobs === 1 ? "" : "s"} finished together.`,
+                route: "/collection"
+              }
+            : {
+                title: `${event.agentName} reached a milestone`,
+                body: event.title,
+                route: "/collection"
+              };
+      broadcast({
+        type: "notification",
+        notification: {
+          id: randomUUID(),
+          kind: "reward",
+          ...notification,
+          ...(event.kind === "edition" ? {} : { agentId: event.agentId })
+        }
+      });
+      if (event.kind === "edition")
+        broadcast({ type: "unlock", editionId: event.editionId });
+      pushes.push(notification);
+    }
+    broadcast({ type: "changed", keys: ["collection", "home", "chief"] });
+    await pushToAbsent(pushes);
+  };
+
+  // Something the phone did may have earned a rank, milestone or edition: look soon, once.
+  let rewardTimer: ReturnType<typeof setTimeout> | null = null;
+  service.onProgress(() => {
+    if (rewardTimer) return;
+    rewardTimer = setTimeout(() => {
+      rewardTimer = null;
+      void service
+        .evaluateGamification()
+        .then(reward)
+        .catch((cause: unknown) => options.onError?.(cause));
+    }, 1_500);
+  });
 
   let watcher: { stop: () => void } | null = null;
 
@@ -164,26 +230,38 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
     let known: Set<string> | null = null;
     let lastSignature = "";
     let busyChief = false;
+    let lastEvaluated = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const describe = (need: PhoneNeed): Omit<PhonePush, "to"> =>
-      need.kind === "missed"
+      need.kind === "job_proposal"
         ? {
-            title: "A job didn't run",
-            body: `${need.jobTitle} was due while your Mac was asleep.`,
+            title:
+              need.action === "create"
+                ? "Schedule a job?"
+                : need.action === "pause"
+                  ? "Pause a job?"
+                  : "Turn a job back on?",
+            body: need.title,
             route: "/notifications"
           }
-        : need.kind === "question"
+        : need.kind === "missed"
           ? {
-              title: "A question for you",
-              body: need.title,
+              title: "A job didn't run",
+              body: `${need.jobTitle} was due while your Mac was asleep.`,
               route: "/notifications"
             }
-          : {
-              title: need.risky ? "Needs your OK (Face ID)" : "Needs your OK",
-              body: need.command ?? need.title,
-              route: "/notifications"
-            };
+          : need.kind === "question"
+            ? {
+                title: "A question for you",
+                body: need.title,
+                route: "/notifications"
+              }
+            : {
+                title: need.risky ? "Needs your OK (Face ID)" : "Needs your OK",
+                body: need.command ?? need.title,
+                route: "/notifications"
+              };
 
     const tick = async () => {
       const state = await store.read();
@@ -214,7 +292,12 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
             type: "notification",
             notification: {
               id: need.id,
-              kind: need.kind === "missed" ? "missed" : need.kind,
+              kind:
+                need.kind === "job_proposal"
+                  ? "approval"
+                  : need.kind === "missed"
+                    ? "missed"
+                    : need.kind,
               title: push.title,
               body: push.body,
               route: push.route
@@ -231,7 +314,12 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
               entry.busy && entry.conversation?.threadId === chiefRef.threadId
           )
         );
-        if (busyChief && !chiefBusy) {
+        const replied = busyChief && !chiefBusy;
+        // Remember the new state first: a failure below must never count the same reply twice.
+        busyChief = chiefBusy;
+        if (replied) {
+          await service.countChiefReply();
+          lastEvaluated = 0;
           broadcast({ type: "changed", keys: ["chief", "home"] });
           await pushToAbsent([
             {
@@ -241,7 +329,10 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
             }
           ]);
         }
-        busyChief = chiefBusy;
+        if (Date.now() - lastEvaluated > 30_000) {
+          lastEvaluated = Date.now();
+          await reward(await service.evaluateGamification());
+        }
       } catch (cause) {
         options.onError?.(cause);
       }

@@ -51,6 +51,16 @@ The Desktop main process hosts a **phone gateway**:
   service: a title, one line and a route in the app, never commands, file
   contents or memory.
 
+- **Jobs proposed in a Chat are approved where the person is.** Pending
+  `koed_job_create` and `koed_job_pause` Koed actions appear on the phone's
+  bell; approving runs the same review, claim, apply, complete sequence as the
+  HQ card, fenced by the claim. Changing a job's time uses the Scheduled Jobs
+  `edit` (PATCH) the API already had.
+- **Gamification is computed, not stored upstream.** Ranks, milestones and
+  limited editions come from Agents, finished Scheduled Job runs and what the
+  phone itself did, evaluated in the gateway and kept in the Desktop secret
+  store. Nothing is added to the Koed API or database for it.
+
 ## Consequences
 
 - No hosted relay, account, or paid service. The phone works when it can reach
@@ -65,3 +75,8 @@ The Desktop main process hosts a **phone gateway**:
 - The gateway polls the bounded Managed Conversation list and runtime items
   while a phone is connected (every 3 s; every 15 s when only push is
   registered), the same inventory the HQ Now view reads.
+- Ranks count Scheduled Job runs fully, but the Chief's conversational work
+  only while the gateway watches (a phone connected or push registered).
+  Counting every finished turn needs Agent attribution on Managed
+  Conversations, which Koed doesn't record yet.
+- Limited editions recolour Agents on the phone only.

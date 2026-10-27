@@ -8,6 +8,7 @@
  * responses are shaped for the phone and carry no credentials, paths outside
  * a conversation, or Team data.
  */
+import { scheduledJobScheduleSchema } from "@koed/shared/scheduled-job-contract";
 import { z } from "zod";
 
 export const PHONE_API_VERSION = 1;
@@ -88,6 +89,36 @@ export const phoneJobPauseRequestSchema = z
   .object({ paused: z.boolean() })
   .strict();
 
+/** Change a Scheduled Job from the phone: its time, name or instruction. */
+export const phoneJobEditRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).max(160).optional(),
+    instruction: z.string().trim().min(1).max(20_000).optional(),
+    schedule: scheduledJobScheduleSchema.optional()
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.title !== undefined ||
+      value.instruction !== undefined ||
+      value.schedule !== undefined,
+    "Nothing to change"
+  );
+
+/** Approve or decline a job your Chief of Staff (or another AI Client) proposed. */
+export const phoneProposalRespondSchema = z
+  .object({
+    executionId: uuid,
+    actionId: uuid,
+    decision: z.enum(["approve", "decline"])
+  })
+  .strict();
+
+/** Give a limited edition to an agent, or take it back (agentId null). */
+export const phoneEditionAssignSchema = z
+  .object({ agentId: uuid.nullable() })
+  .strict();
+
 export const phoneAskRequestSchema = z
   .object({
     query: z.string().trim().min(1).max(32_000),
@@ -110,6 +141,10 @@ export type PhonePairRequest = z.infer<typeof phonePairRequestSchema>;
 export type PhoneMessageRequest = z.infer<typeof phoneMessageRequestSchema>;
 export type PhoneRespondRequest = z.infer<typeof phoneRespondRequestSchema>;
 export type PhoneAskRequest = z.infer<typeof phoneAskRequestSchema>;
+export type PhoneJobEditRequest = z.infer<typeof phoneJobEditRequestSchema>;
+export type PhoneProposalRespondRequest = z.infer<
+  typeof phoneProposalRespondSchema
+>;
 
 /* ---------- responses ---------- */
 
@@ -123,6 +158,64 @@ export type PhoneAgent = {
   aiClientName: string | null;
   defaultModel: string | null;
   isChiefOfStaff: boolean;
+  createdAt: string;
+  /** Rank, milestones and what the agent has done with you (computed on this Mac). */
+  standing: PhoneStanding | null;
+};
+
+export type PhoneRank =
+  | "New recruit"
+  | "Getting acquainted"
+  | "Trusted hand"
+  | "Old hand";
+
+export type PhoneMilestone = {
+  id: "first-job" | "ten-jobs" | "one-month";
+  title: string;
+  earnedAt: string | null;
+  /** When not earned yet: "4 to go", "in 12 days". */
+  remaining: string | null;
+};
+
+export type PhoneStanding = {
+  rank: PhoneRank;
+  nextRank: PhoneRank | null;
+  /** "3 more jobs to Trusted hand", "Top rank". */
+  toNext: string;
+  /** 0..1 towards the next rank. */
+  progress: number;
+  jobsFinished: number;
+  /** Finished in the last 7 days. */
+  jobsThisWeek: number;
+  daysTogether: number;
+  milestones: PhoneMilestone[];
+  /** The limited edition it wears, if any. Its own look is then in ownLook. */
+  editionId: string | null;
+  ownLook: Record<string, unknown> | null;
+};
+
+export type PhoneEdition = {
+  id: string;
+  name: string;
+  /** A Pixelkin Lab look to preview the edition (its own seed). */
+  look: Record<string, unknown>;
+  rule: string;
+  earned: boolean;
+  earnedAt: string | null;
+  /** True until the phone has shown the unlock moment. */
+  isNew: boolean;
+  wornByAgentId: string | null;
+  progress: { current: number; target: number } | null;
+  /** Earned through Koed's memory. */
+  memory: boolean;
+};
+
+export type PhoneCollection = {
+  editions: PhoneEdition[];
+  /** The Chief of Staff first, then the team. */
+  agents: Array<{ agentId: string; name: string } & PhoneStanding>;
+  /** Things Koed remembers across your Chats. */
+  remembered: number | null;
 };
 
 export type PhoneQuestion = {
@@ -155,6 +248,21 @@ export type PhoneNeed =
       supportsSessionApproval: boolean;
       /** Risky actions need Face ID on the phone and are never in "Allow all safe". */
       risky: boolean;
+      conversation: PhoneConversationRef | null;
+      at: string;
+    }
+  | {
+      /** An AI Client asked Koed to schedule (or pause) a job; Koed waits for your OK. */
+      kind: "job_proposal";
+      id: string;
+      executionId: string;
+      actionId: string;
+      action: "create" | "pause" | "resume";
+      title: string;
+      instruction: string | null;
+      schedule: PhoneJob["schedule"] | null;
+      jobId: string | null;
+      agentId: string | null;
       conversation: PhoneConversationRef | null;
       at: string;
     }
@@ -303,9 +411,13 @@ export type PhoneLiveEvent =
       type: "notification";
       notification: {
         id: string;
-        kind: "approval" | "question" | "missed" | "result";
+        kind: "approval" | "question" | "missed" | "result" | "reward";
         title: string;
         body: string;
         route: string;
+        /** Whose pixelkin to show. */
+        agentId?: string;
       };
-    };
+    }
+  /** A limited edition was just earned: the phone shows the unlock moment. */
+  | { type: "unlock"; editionId: string };

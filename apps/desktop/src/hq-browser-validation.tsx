@@ -2069,6 +2069,17 @@ const hq603ScheduledJobs = {
       hq603Runs = [run, ...hq603Runs];
       return { operation: "runNow", run: structuredClone(run) };
     }
+    if (request.operation === "edit") {
+      const job = hq603Jobs.find((row) => row.id === request.jobId);
+      if (!job) throw new Error("Unknown fixture job");
+      Object.assign(job, {
+        ...(request.title ? { title: request.title } : {}),
+        ...(request.instruction ? { instruction: request.instruction } : {}),
+        ...(request.schedule ? { schedule: request.schedule } : {}),
+        version: job.version + 1
+      });
+      return { operation: "edit", job: structuredClone(job) };
+    }
     const run = hq603Runs.find(
       (row) => row.id === request.runId && row.jobId === request.jobId
     );

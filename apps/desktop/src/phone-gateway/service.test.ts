@@ -9,6 +9,7 @@ import {
   isRiskyApproval,
   type PhoneGatewayDeps
 } from "./service.js";
+import { createGamificationStore } from "./gamification.js";
 import { createPhoneGatewayStore } from "./store.js";
 
 const chief: Agent = {
@@ -62,7 +63,10 @@ const memorySecrets = () => {
   };
 };
 
-const setup = (runtimeItems: ManagedConversationRuntimeItem[] = []) => {
+const setup = (
+  runtimeItems: ManagedConversationRuntimeItem[] = [],
+  overrides: Partial<PhoneGatewayDeps> = {}
+) => {
   const calls: ManagedConversationRequest[] = [];
   const managedConversation = vi.fn(
     async (request: ManagedConversationRequest) => {
@@ -317,7 +321,8 @@ const setup = (runtimeItems: ManagedConversationRuntimeItem[] = []) => {
       }) as never,
     ensureIndependentProject: async () => ({ localProjectId: "lp_chats" }),
     now: () => new Date("2026-10-27T10:00:30.000Z"),
-    sleep: async () => undefined
+    sleep: async () => undefined,
+    ...overrides
   };
   const store = createPhoneGatewayStore(memorySecrets());
   return { service: createPhoneGatewayService(deps, store), store, calls };
@@ -463,5 +468,224 @@ describe("phone gateway service", () => {
     ]);
     expect(timeline.execution?.busy).toBe(true);
     expect(timeline.streaming).toBe("Checking the retries");
+  });
+
+  it("shows a job the Chief proposed, and schedules it exactly once on approval", async () => {
+    const actionId = "88888888-8888-4888-8888-888888888888";
+    let state: "awaiting_review" | "ready" | "claimed" | "applied" =
+      "awaiting_review";
+    let revision = 1;
+    const projection = () => ({
+      id: actionId,
+      ownerUserId: chief.ownerUserId,
+      logicalSessionId: "44444444-4444-4444-8444-444444444444",
+      executionId: "99999999-9999-4999-8999-999999999999",
+      commandId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      executionGeneration: 1,
+      providerTurnId: "turn-1",
+      toolCallId: "call-1",
+      name: "koed_job_create" as const,
+      arguments: {
+        title: "Issue digest",
+        instruction: "Summarise the open Koed GitHub issues",
+        schedule: { kind: "weekly", at: "08:00", tz: "Europe/Oslo", dow: [1] }
+      },
+      snapshot: {
+        agentId: chief.id,
+        conversationSessionId: "44444444-4444-4444-8444-444444444444",
+        projectId: null
+      },
+      state,
+      revision,
+      reviewKind: "ask_first" as const,
+      effectKey: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      createdAt: "2026-10-27T10:00:00.000Z",
+      decidedAt: null
+    });
+    const textCalls: string[] = [];
+    const managedTextActions = vi.fn(async (request: { operation: string }) => {
+      textCalls.push(request.operation);
+      if (request.operation === "list")
+        return {
+          operation: "list",
+          executionId: projection().executionId,
+          actions: [projection()]
+        };
+      if (request.operation === "review") {
+        state = "ready";
+        revision++;
+      } else if (request.operation === "claim") {
+        state = "claimed";
+        revision++;
+      } else if (request.operation === "complete") {
+        state = "applied";
+        revision++;
+      }
+      return {
+        operation: request.operation,
+        executionId: projection().executionId,
+        action: projection()
+      };
+    });
+    const jobCalls: Array<{ operation: string; value?: unknown }> = [];
+    const { service } = setup([], {
+      managedTextActions: managedTextActions as never,
+      managedConversation: (async (request: { operation: string }) => {
+        if (request.operation === "list")
+          return {
+            operation: "list",
+            complete: true,
+            executions: [
+              {
+                executionId: "99999999-9999-4999-8999-999999999999",
+                projectId: "lp_chats",
+                sessionId: "sess-new",
+                threadId: "thread-new",
+                state: "running"
+              }
+            ]
+          };
+        return {
+          operation: "runtime",
+          executionId: "99999999-9999-4999-8999-999999999999",
+          executionGeneration: 1,
+          executionStateVersion: 1,
+          executionState: "running",
+          executionLastErrorCode: null,
+          latestCommand: null,
+          items: []
+        };
+      }) as never,
+      scheduledJobs: (async (request: {
+        operation: string;
+        value?: unknown;
+      }) => {
+        jobCalls.push(request);
+        if (request.operation === "list")
+          return { operation: "list", jobs: [], nextCursor: null };
+        return { operation: request.operation, job: {} };
+      }) as never
+    });
+    const home = await service.home();
+    const proposal = home.needs.find((need) => need.kind === "job_proposal");
+    expect(proposal).toMatchObject({
+      action: "create",
+      title: "Issue digest",
+      schedule: { kind: "weekly", dow: [1], at: "08:00" }
+    });
+    await service.resolveProposal({
+      executionId: "99999999-9999-4999-8999-999999999999",
+      actionId,
+      decision: "approve"
+    });
+    expect(textCalls).toEqual(["list", "get", "review", "claim", "complete"]);
+    expect(jobCalls.filter((call) => call.operation === "create")).toEqual([
+      {
+        operation: "create",
+        value: {
+          requestId: actionId,
+          textActionId: actionId,
+          agentId: chief.id,
+          conversationSessionId: "44444444-4444-4444-8444-444444444444",
+          projectId: null,
+          title: "Issue digest",
+          instruction: "Summarise the open Koed GitHub issues",
+          schedule: {
+            kind: "weekly",
+            at: "08:00",
+            tz: "Europe/Oslo",
+            dow: [1]
+          }
+        }
+      }
+    ]);
+  });
+
+  it("changes a job's time with the current version", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const job = {
+      id: "33333333-3333-4333-8333-333333333333",
+      ownerUserId: chief.ownerUserId,
+      projectId: null,
+      agentId: chief.id,
+      conversationSessionId: "44444444-4444-4444-8444-444444444444",
+      title: "Morning brief",
+      instruction: "Summarise",
+      schedule: { kind: "daily", at: "07:30", tz: "Europe/Oslo" },
+      paused: false,
+      pausedReason: null,
+      runnerDeviceId: "55555555-5555-4555-8555-555555555555",
+      version: 7,
+      createdAt: "",
+      updatedAt: ""
+    };
+    const { service } = setup([], {
+      scheduledJobs: (async (request: Record<string, unknown>) => {
+        calls.push(request);
+        return { operation: request.operation, job };
+      }) as never
+    });
+    await service.editJob(job.id, {
+      schedule: { kind: "weekdays", at: "09:15", tz: "Europe/Oslo" }
+    });
+    expect(calls.at(-1)).toEqual({
+      operation: "edit",
+      jobId: job.id,
+      expectedVersion: 7,
+      schedule: { kind: "weekdays", at: "09:15", tz: "Europe/Oslo" }
+    });
+  });
+
+  it("counts unblocks from the phone towards an edition", async () => {
+    const values = new Map<string, string>();
+    const game = createGamificationStore({
+      get: async (key) => values.get(key) ?? null,
+      put: async (key, value) => void values.set(key, value),
+      delete: async (key) => void values.delete(key)
+    });
+    const store = createPhoneGatewayStore({
+      get: async () => null,
+      put: async () => undefined,
+      delete: async () => undefined
+    });
+    const service = createPhoneGatewayService(
+      {
+        macName: () => "Studio",
+        agents: (async () => ({ operation: "list", agents: [chief] })) as never,
+        managedConversation: (async () => ({
+          operation: "runtime_respond",
+          accepted: true
+        })) as never,
+        personalMemory: (async () => ({ ok: false })) as never,
+        scheduledJobs: (async () => ({
+          operation: "list",
+          jobs: [],
+          nextCursor: null
+        })) as never,
+        localAiClients: (async () => ({
+          operation: "list",
+          readModel: { instances: [] }
+        })) as never,
+        ensureIndependentProject: async () => ({ localProjectId: "lp" })
+      },
+      store,
+      game
+    );
+    await service.respond({
+      executionId: "exec-1",
+      itemId: "item-1",
+      executionGeneration: 3,
+      itemKind: "command_approval",
+      decision: "accept"
+    });
+    expect((await game.read()).counters.unblocks).toBe(1);
+    const collection = await service.collection();
+    expect(collection.agents[0]).toMatchObject({
+      agentId: chief.id,
+      rank: "New recruit"
+    });
+    expect(
+      collection.editions.find((edition) => edition.id === "glass")?.progress
+    ).toEqual({ current: 1, target: 10 });
   });
 });

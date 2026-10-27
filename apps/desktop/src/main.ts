@@ -464,6 +464,7 @@ const bootstrap = async () => {
           personalMemory: server.personalMemory,
           scheduledJobs: server.scheduledJobs,
           localAiClients: server.localAiClients,
+          managedTextActions: server.managedTextActions,
           ensureIndependentProject: async () => {
             const result =
               (await server.handlers.ensure_independent_project()) as {
