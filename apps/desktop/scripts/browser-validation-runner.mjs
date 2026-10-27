@@ -11,7 +11,10 @@ export const browserValidationPagePath = fileURLToPath(
   new URL("../dist-validation/browser-validation.html", import.meta.url)
 );
 
-export function runBrowserValidation({ width, height, view }, verify) {
+export function runBrowserValidation(
+  { width, height, view, screenshotDirectory },
+  verify
+) {
   const run = async () => {
     const scratch = fileURLToPath(
       new URL("../../../scratch/", import.meta.url)
@@ -28,29 +31,38 @@ export function runBrowserValidation({ width, height, view }, verify) {
       height
     });
     const errors = [];
+    window.webContents.on("render-process-gone", (_event, detail) =>
+      errors.push(JSON.stringify(detail))
+    );
     window.webContents.on("console-message", (event) => {
       if (event.level === "error") errors.push(event.message);
     });
     const evaluate = (code) => window.webContents.executeJavaScript(code);
-    const waitFor = async (code) => {
+    const waitFor = async (code, label = code) => {
       for (let attempt = 0; attempt < 100; attempt++) {
         if (await evaluate(code)) return;
         await delay(50);
       }
       throw new Error(
-        `Timed out: ${code}; errors: ${errors.join("; ")}; body: ${await evaluate("document.body.innerText.slice(0,2000)")}`
+        `Timed out: ${label} (${code}); errors: ${errors.join("; ")}; body: ${await evaluate("document.body.innerText.slice(0,2000)")}`
       );
     };
     const capture = async (name) => {
       await evaluate(
         "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
       );
-      if (process.env.KOED_BROWSER_VALIDATION_SCREENSHOT)
-        await writeFile(
-          process.env.KOED_BROWSER_VALIDATION_SCREENSHOT.replace(
+      const screenshot = screenshotDirectory
+        ? join(
+            screenshotDirectory,
+            name.endsWith(".png") ? name : `${name}.png`
+          )
+        : process.env.KOED_BROWSER_VALIDATION_SCREENSHOT?.replace(
             /\.png$/i,
             `-${name}.png`
-          ),
+          );
+      if (screenshot)
+        await writeFile(
+          screenshot,
           (await window.webContents.capturePage()).toPNG()
         );
     };

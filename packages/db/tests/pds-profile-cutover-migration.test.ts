@@ -1,14 +1,6 @@
+import { createMigrationBaseline } from "./fixtures/migration-baseline.js";
 import { createPrivateKey, randomUUID } from "node:crypto";
-import {
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile
-} from "node:fs/promises";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   canonicalizePdsJson,
@@ -52,37 +44,9 @@ type LegacyFixture = {
 describe.skipIf(!databaseUrl)("PDS pre-cutover profile migration", () => {
   it("preserves signed V3 bytes, ledger, Session and unresolved assignment through a V4 baseline", async () => {
     const pool = createDbPool({ connectionString: databaseUrl });
-    const folder = await mkdtemp(
-      fileURLToPath(
-        new URL("../../../scratch/pds-profile-migrations-", import.meta.url)
-      )
-    );
+    const baseline = await createMigrationBaseline();
     try {
-      expect(
-        (
-          await pool.query<{ existing: string | null }>(
-            "select to_regclass('public.sessions') as existing"
-          )
-        ).rows[0]!.existing
-      ).toBeNull();
-      const migrations = fileURLToPath(new URL("../drizzle/", import.meta.url));
-      const journal = JSON.parse(
-        await readFile(join(migrations, "meta/_journal.json"), "utf8")
-      ) as {
-        entries: Array<{ idx: number; tag: string }>;
-      };
-      await mkdir(join(folder, "meta"));
-      const prior = journal.entries.filter((entry) => entry.idx < 46);
-      for (const entry of prior)
-        await copyFile(
-          join(migrations, `${entry.tag}.sql`),
-          join(folder, `${entry.tag}.sql`)
-        );
-      await writeFile(
-        join(folder, "meta/_journal.json"),
-        JSON.stringify({ ...journal, entries: prior })
-      );
-      await runDbMigrations(pool, { migrationsFolder: folder });
+      await baseline.apply(pool);
       const legacy = JSON.parse(
         await readFile(
           new URL(
@@ -414,6 +378,7 @@ describe.skipIf(!databaseUrl)("PDS pre-cutover profile migration", () => {
         logicalMemoryId: manifest.logicalMemoryId,
         deletionFloorToken: manifest.deletionFloorToken,
         sourceProfile: "cumulative_checkpoint",
+        sourceLogicalSessionId: manifest.sourceSession.logicalSessionId,
         sourceFingerprint: manifest.sourceFingerprint,
         sourceClosureHash: manifest.sourceClosureHash,
         checkpoint: manifest.checkpoint,
@@ -504,7 +469,7 @@ describe.skipIf(!databaseUrl)("PDS pre-cutover profile migration", () => {
       ).rejects.toThrow("contiguous append");
     } finally {
       await pool.end();
-      await rm(folder, { recursive: true, force: true });
+      await baseline.dispose();
     }
   }, 60_000);
 });

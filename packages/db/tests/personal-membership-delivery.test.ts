@@ -11,33 +11,24 @@ import {
   vi
 } from "vitest";
 import {
-  canonicalizePdsJson,
   createLocalTestKeyEnvelopeEncryptionProvider,
-  decryptPdsEncryptedPayloadPackage,
-  parseCanonicalPdsJson,
-  verifyPersonalConfigurationRecord,
-  personalConfigurationRecordHash,
-  personalConfigurationPackageId,
   signPersonalConfigurationRecord,
   encodePdsPersonalMembershipEntitySnapshot,
   personalMembershipInclusionIdentity,
   PERSONAL_CONFIGURATION_PROTOCOL,
-  PdsRelayClient,
-  type PersonalConfigurationFeature,
-  type PdsSessionPackage
+  type PersonalConfigurationFeature
 } from "@koed/shared";
 import {
   createDbPool,
   createMemorySourceRepository,
   runDbMigrations
 } from "../src/index.js";
-import { personalSourceSelectionSql } from "../src/personal-selection-sql.js";
 import { personalSourceDeviceFixture } from "./fixtures/personal-source-device.js";
 import {
   personalFixtureClosedSource,
   receivePersonalFixtureClosedSource
 } from "./fixtures/personal-source-import.js";
-import { createPdsConfigurationRuntime } from "../../../apps/worker/src/personal-device-sync-configuration.js";
+import { createPersonalConfigurationDeliveryFixture } from "./fixtures/personal-configuration-delivery.js";
 
 const originUrl = process.env.P1_SOURCE_ORIGIN_DATABASE_URL,
   receiverUrl = process.env.P1_SOURCE_RECEIVER_DATABASE_URL;
@@ -76,120 +67,23 @@ describe.skipIf(!originUrl || !receiverUrl)(
         });
       let features: PersonalConfigurationFeature[] = ["source_context_v1"];
       // Model the receiving peer’s signed support independently from local advertisement.
-      const packets: PdsSessionPackage[] = [],
-        allPackets: PdsSessionPackage[] = [];
-      const relay = new PdsRelayClient({
-        baseUrl: "http://127.0.0.1:59998",
-        identity: {
-          certificate: fixture.origin.certificate,
-          deviceId: fixture.origin.deviceId,
-          signingKeyId: fixture.origin.signingKeyId,
-          signingPublicKey: fixture.origin.signing.publicKey,
-          signingPrivateSeed: fixture.origin.signing.privateSeed
-        }
-      });
-      const advertise = vi
-        .spyOn(relay, "advertiseConfigurationCapabilities")
-        .mockResolvedValue(undefined);
-      vi.spyOn(relay, "configurationCapabilities").mockImplementation(
-        async () => [
-          fixture.capability(fixture.origin, features),
-          fixture.capability(fixture.receiver, features)
-        ]
+      const {
+        packets,
+        allPackets,
+        advertise,
+        config,
+        scope,
+        decode,
+        deliver,
+        flush,
+        selected
+      } = createPersonalConfigurationDeliveryFixture(
+        fixture,
+        encryption,
+        () => features
       );
-      vi.spyOn(relay, "upload").mockImplementation(async (pkg) => {
-        packets.push(pkg);
-        allPackets.push(pkg);
-        return { transportId: pkg.header.transportId, deliveryState: "acked" };
-      });
-      const config = (
-        actor: typeof origin,
-        member: typeof fixture.origin,
-        repo: typeof originRepo
-      ) =>
-        createPdsConfigurationRuntime({
-          ...actor,
-          groupId: fixture.groupId,
-          originDeploymentId: member.deploymentId,
-          activeCertificates: fixture.certificates,
-          repository: repo.personalConfiguration!,
-          runtime: fixture.runtime(member),
-          signingKey: member.signing.privateKey,
-          encryption,
-          relay: () => relay
-        });
       let originConfig = config(origin, fixture.origin, originRepo),
         receiverConfig = config(receiver, fixture.receiver, receiverRepo);
-      const scope = (actor: typeof origin, member: typeof fixture.origin) => ({
-        ...actor,
-        groupId: fixture.groupId,
-        authorDeviceId: member.deviceId,
-        authorSigningKeyId: member.signingKeyId,
-        originatingDeploymentId: member.deploymentId,
-        expectedEpoch: fixture.epoch,
-        expectedAuthorityHead: fixture.authorityHead
-      });
-      const decode = (pkg: PdsSessionPackage) => {
-        const author =
-          pkg.header.servingDeviceId === fixture.origin.deviceId
-            ? fixture.origin
-            : fixture.receiver;
-        const recipient =
-          author === fixture.origin ? fixture.receiver : fixture.origin;
-        const decrypted = decryptPdsEncryptedPayloadPackage(
-          canonicalizePdsJson(pkg),
-          {
-            runtime: fixture.runtime(author, recipient),
-            recipientKemPrivateKey: recipient.kem.privateSeed
-          }
-        );
-        const record = verifyPersonalConfigurationRecord(
-          parseCanonicalPdsJson(
-            Buffer.from(decrypted.plaintext).toString("utf8")
-          ),
-          {
-            groupId: fixture.groupId,
-            deviceId: author.deviceId,
-            signingKeyId: author.signingKeyId,
-            publicKey: author.signing.publicKey
-          }
-        );
-        expect(
-          personalConfigurationPackageId(
-            personalConfigurationRecordHash(record),
-            pkg.header.transportId
-          )
-        ).toBe(pkg.header.packageId);
-        return { record, recipient };
-      };
-      const deliver = async (pkg: PdsSessionPackage) => {
-        const { record, recipient } = decode(pkg);
-        return (
-          recipient === fixture.origin ? originConfig : receiverConfig
-        ).retainVerified(record);
-      };
-      const drain = async () => {
-        while (packets.length) await deliver(packets.shift()!);
-      };
-      const flush = async (runtime: typeof originConfig) => {
-        await runtime.reconcile();
-        await drain();
-      };
-      const selected = (
-        pool: pg.Pool,
-        actor: typeof origin,
-        projectId: string
-      ) =>
-        pool.query<{ id: string }>(
-          `select s.id from sessions s where ${personalSourceSelectionSql("s", "$1", { inspection: true })}`,
-          [
-            {
-              ownerUserId: actor.userId,
-              searchDomain: "project",
-              namedProjectId: projectId
-            }
-          ]
-        );
 
       const name = "Private empty Project Ω",
         renamed = "Private reviewed rename Ω";

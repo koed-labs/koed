@@ -157,19 +157,17 @@ import {
 } from "@koed/shared/ai-client-contract";
 
 export type PersonalMemoryRoute =
-  | { kind: "projects"; browse?: "sources" }
+  | { kind: "projects" }
   | {
       kind: "project";
       projectId: string;
       sourceFilter?: ProjectSourceFilter;
-      browse?: "sources";
     }
   | {
       kind: "session";
       projectId: string;
       sessionId: string;
       sourceFilter?: ProjectSourceFilter;
-      browse?: "sources";
     };
 
 export type PersonalMemoryInspectorEvent = {
@@ -4033,8 +4031,7 @@ export function PersonalMemoryWorkspace({
               onNavigate({
                 kind: "project",
                 projectId,
-                sourceFilter,
-                browse: "sources"
+                sourceFilter
               })
             }
           />
@@ -4197,7 +4194,7 @@ export function PersonalMemoryWorkspace({
                 onNavigate({
                   kind: "session",
                   projectId: selectedProject.id,
-                  browse: route.browse,
+
                   sourceFilter:
                     route.kind !== "projects" ? route.sourceFilter : undefined,
                   sessionId: routeId
@@ -4228,7 +4225,7 @@ export function PersonalMemoryWorkspace({
                 onNavigate({
                   kind: "session",
                   projectId: selectedProject.id,
-                  browse: route.browse,
+
                   sourceFilter:
                     route.kind !== "projects" ? route.sourceFilter : undefined,
                   sessionId

@@ -68,39 +68,25 @@ Existing Team snapshots retain their published context while later shares use cu
 The documented Team fixture also passes its positive and denial matrix for seven Users, three Workspaces, fourteen memories, and five thread kinds.
 This scope does not claim full Team launch qualification or staged VPS validation.
 
-## Native UI demonstration
+## Native UI validation
 
-From the repository root, run:
-
-```bash
-pnpm --filter @koed/desktop demo:projects
-```
-
-The command builds the validation renderer and opens a disposable native Electron profile.
-It uses synthetic Memory and a simulated AI Client. It does not use the active profile or launch a real coding runner.
-The automation rehearses the route before the window opens for inspection.
-Close the window to remove the disposable profile.
-
-Open the Koed Project. The header contains its Folder dropdown and action controls above four distinct Conversations.
-Sources and Ask collapsible sections and the Browse by source option are absent.
-Open the three-dot Project actions menu and choose New Conversation.
-Type a draft, then use the Folder chip in the input toolbar to choose `/local/koed` and `/local/notes`.
-The input element and draft remain unchanged through both choices.
-The simulated launch receives the selected exact opaque native Folder identity.
-
-Switch repeatedly between Koed and Second Project.
-Each selection replaces the current header. The management menu also exposes New Conversation.
-Open the Project title dropdown and hide a Folder, select all Folders, and clear the selection.
-The list reflects each choice and restores all four Conversations after Select all.
-
-The current automated native demonstration passes eleven checks with no renderer faults.
-Its screenshots cover the clean header, Project actions menu, execution Folder picker, Project switching, and Folder dropdown.
-The source-management demonstration separately retains its narrow and short-window layout and keyboard focus checks.
-Run the automated route without retaining a visible window with:
+Run the automated Project journey from the repository root:
 
 ```bash
+pnpm --filter @koed/desktop build:validation
 pnpm --filter @koed/desktop exec electron scripts/validate-projects-default.mjs
 ```
+
+The shared browser runner uses a disposable native Electron profile, synthetic
+Memory and a simulated AI Client. The journey checks the clean header, Project
+actions menu, exact execution Folder selection, draft retention, repeated Project
+switching, Folder filtering, and Ask. It retains layout and focus checks at narrow
+and short window sizes, plus renderer fault collection.
+
+Screenshots and the result record are written under `scratch/pv-07/native-ui`.
+The runner closes the window and removes its profile after validation. The completed
+manual demo launcher and preview mode have been removed; automated browser checks
+remain part of `pnpm --filter @koed/desktop test:browser`.
 
 These results are automated native UI evidence and agent screenshot inspection.
 A User-run manual session and a physical two-computer session were not performed.

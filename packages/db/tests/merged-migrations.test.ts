@@ -1,14 +1,7 @@
+import { createMigrationBaseline } from "./fixtures/migration-baseline.js";
 import { randomUUID } from "node:crypto";
-import {
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile
-} from "node:fs/promises";
+import { copyFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import {
@@ -20,7 +13,7 @@ import {
 
 const databaseUrl = process.env.MERGED_MIGRATIONS_TEST_DATABASE_URL;
 describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
-  it.each(["main", "pre-branch", "discarded recall"] as const)(
+  it.each(["main", "repository identity", "discarded recall"] as const)(
     "handles an existing %s database without replaying applied migrations",
     async (history) => {
       const admin = createDbPool({ connectionString: databaseUrl });
@@ -28,39 +21,20 @@ describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
       const url = new URL(databaseUrl!);
       url.pathname = `/${name}`;
       const pool = createDbPool({ connectionString: url.toString() });
-      const folder = await mkdtemp(
-        fileURLToPath(
-          new URL("../../../scratch/merged-migrations-", import.meta.url)
-        )
+      const migrationBaseline = await createMigrationBaseline(
+        history === "repository identity"
+          ? "0046_project_scoped_recall"
+          : undefined
       );
+      const { folder, source, journal, entries: baseline } = migrationBaseline;
       try {
         await admin.query(`create database "${name}"`);
-        const source = fileURLToPath(new URL("../drizzle/", import.meta.url));
-        const journal = JSON.parse(
-          await readFile(join(source, "meta/_journal.json"), "utf8")
-        ) as {
-          entries: Array<{ idx: number; tag: string; when: number }>;
-        };
-        const baseline = journal.entries.slice(
-          0,
-          history === "pre-branch" ? 47 : 46
-        );
         const firstPending = baseline.length;
         const absentTable =
-          history === "pre-branch"
+          history === "repository identity"
             ? "personal_named_projects"
             : "session_repository_observations";
-        await mkdir(join(folder, "meta"));
-        for (const entry of baseline)
-          await copyFile(
-            join(source, `${entry.tag}.sql`),
-            join(folder, `${entry.tag}.sql`)
-          );
-        await writeFile(
-          join(folder, "meta/_journal.json"),
-          JSON.stringify({ ...journal, entries: baseline })
-        );
-        await runDbMigrations(pool, { migrationsFolder: folder });
+        await migrationBaseline.apply(pool);
         const repo = createMemorySourceRepository(pool);
         const owner = await repo.createUser({
           email: `merge-${randomUUID()}@example.test`
@@ -111,7 +85,7 @@ describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
           ).toBeNull();
           return;
         }
-        if (history === "main" || history === "pre-branch") {
+        if (history === "main" || history === "repository identity") {
           // A failed upgrade must roll back all schema changes and ledger inserts.
           for (const entry of journal.entries.slice(firstPending))
             await copyFile(
@@ -206,7 +180,7 @@ describe.skipIf(!databaseUrl)("consolidated Project recall migrations", () => {
         await pool.end();
         await admin.query(`drop database if exists "${name}" with (force)`);
         await admin.end();
-        await rm(folder, { recursive: true, force: true });
+        await migrationBaseline.dispose();
       }
     },
     120_000

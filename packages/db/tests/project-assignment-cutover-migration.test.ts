@@ -1,14 +1,5 @@
+import { createMigrationBaseline } from "./fixtures/migration-baseline.js";
 import { randomUUID } from "node:crypto";
-import {
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile
-} from "node:fs/promises";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { RepositoryIdentity } from "@koed/shared";
 import {
@@ -34,35 +25,9 @@ const identity: RepositoryIdentity = {
 describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
   it("marks existing Personal Sessions unresolved once and preserves capture and explicit reassignment behavior", async () => {
     const pool = createDbPool({ connectionString: databaseUrl });
-    const folder = await mkdtemp(
-      fileURLToPath(
-        new URL("../../../scratch/project-cutover-", import.meta.url)
-      )
-    );
+    const baseline = await createMigrationBaseline();
     try {
-      expect(
-        (
-          await pool.query<{ existing: string | null }>(
-            "select to_regclass('public.sessions') as existing"
-          )
-        ).rows[0]!.existing
-      ).toBeNull();
-      const migrations = fileURLToPath(new URL("../drizzle/", import.meta.url));
-      const journal = JSON.parse(
-        await readFile(join(migrations, "meta/_journal.json"), "utf8")
-      ) as { entries: Array<{ idx: number; tag: string }> };
-      const prior = journal.entries.filter((entry) => entry.idx < 46);
-      await mkdir(join(folder, "meta"));
-      for (const entry of prior)
-        await copyFile(
-          join(migrations, `${entry.tag}.sql`),
-          join(folder, `${entry.tag}.sql`)
-        );
-      await writeFile(
-        join(folder, "meta/_journal.json"),
-        JSON.stringify({ ...journal, entries: prior })
-      );
-      await runDbMigrations(pool, { migrationsFolder: folder });
+      await baseline.apply(pool);
       const repo = createMemorySourceRepository(pool);
       const owner = await repo.createUser({
         email: `cutover-${randomUUID()}@example.test`
@@ -246,7 +211,7 @@ describe.skipIf(!databaseUrl)("one-time Project assignment cutover", () => {
       ).toEqual(fresh.repositoryAssignment);
     } finally {
       await pool.end();
-      await rm(folder, { recursive: true, force: true });
+      await baseline.dispose();
     }
   }, 120_000);
 });

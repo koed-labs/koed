@@ -30,7 +30,6 @@ import { createRoot } from "react-dom/client";
 import { createCollaborationRendererClient } from "./collaboration/renderer-client.js";
 import { App } from "./renderer/App.js";
 import { ConversationCardsValidation } from "./conversation-cards-validation.js";
-import { ProjectTransferValidation } from "./project-transfer-validation.js";
 import "./renderer/index.css";
 
 const uuid = (suffix: number) =>
@@ -456,11 +455,27 @@ const personalMemoryApi: PersonalDesktopApi = {
     };
   },
   manageProject: async (input) => {
-    if (
-      input.projectId !== addedPersonalProject.id ||
-      input.expectedVersion !== addedPersonalProject.namedProject!.version
-    )
+    const project = [personalProject, addedPersonalProject].find(
+      (entry) => entry.id === input.projectId
+    );
+    if (!project || input.expectedVersion !== project.namedProject!.version)
       throw new Error("Project changed");
+    if (project === personalProject) {
+      if (input.action !== "explain_session")
+        throw new Error("Unsupported fixture command");
+      return {
+        project: project.namedProject!,
+        explanation: {
+          sessionId: input.sessionId,
+          logicalSessionId: uuid(804),
+          included: true,
+          reasons: [
+            { inclusionId: uuid(503), revisionId: uuid(504), kind: "folder" }
+          ],
+          exclusion: null
+        }
+      };
+    }
     if (input.action === "add_session") {
       const source = personalProject.threads.find(
         (thread) => thread.sessionId === input.sessionId
@@ -3184,8 +3199,6 @@ const browserValidationView = new URLSearchParams(window.location.search).get(
 createRoot(document.querySelector("#root")!).render(
   browserValidationView === "conversation-cards" ? (
     <ConversationCardsValidation />
-  ) : browserValidationView === "project-transfer" ? (
-    <ProjectTransferValidation />
   ) : browserValidationView === "chat" ? (
     <ChatValidationApp />
   ) : browserValidationView === "collaboration-interactions" ? (

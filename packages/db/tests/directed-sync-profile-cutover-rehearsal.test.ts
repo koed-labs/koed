@@ -1,13 +1,6 @@
-import {
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile
-} from "node:fs/promises";
+import { createMigrationBaseline } from "./fixtures/migration-baseline.js";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   crossIdentitySyncDigest,
@@ -62,11 +55,8 @@ describe.skipIf(!sourceUrl || !targetUrl)(
     it(`reconciles ${mode} V1 state and completes V2 through the authenticated target API`, async () => {
       const sourcePool = createDbPool({ connectionString: sourceUrl });
       const targetPool = createDbPool({ connectionString: targetUrl });
-      const scratch = fileURLToPath(
-        new URL("../../../scratch/", import.meta.url)
-      );
-      await mkdir(scratch, { recursive: true });
-      const folder = await mkdtemp(join(scratch, "directed-cutover-"));
+      const baseline = await createMigrationBaseline();
+      const { folder } = baseline;
       const saved = {
         KOED_HOME: process.env.KOED_HOME,
         KOED_DEPLOYMENT_PROFILE: process.env.KOED_DEPLOYMENT_PROFILE,
@@ -86,35 +76,11 @@ describe.skipIf(!sourceUrl || !targetUrl)(
           )
         ) as Fixture;
         expect(fixture.mode).toBe(mode);
-        const migrations = fileURLToPath(
-          new URL("../drizzle/", import.meta.url)
-        );
-        const journal = JSON.parse(
-          await readFile(join(migrations, "meta/_journal.json"), "utf8")
-        ) as { entries: Array<{ idx: number; tag: string }> };
-        await mkdir(join(folder, "meta"));
-        const prior = journal.entries.filter((entry) => entry.idx < 46);
-        for (const entry of prior)
-          await copyFile(
-            join(migrations, `${entry.tag}.sql`),
-            join(folder, `${entry.tag}.sql`)
-          );
-        await writeFile(
-          join(folder, "meta/_journal.json"),
-          JSON.stringify({ ...journal, entries: prior })
-        );
         for (const [pool, state] of [
           [sourcePool, fixture.source],
           [targetPool, fixture.target]
         ] as const) {
-          expect(
-            (
-              await pool.query<{ existing: string | null }>(
-                "select to_regclass('public.sessions') as existing"
-              )
-            ).rows[0]!.existing
-          ).toBeNull();
-          await runDbMigrations(pool, { migrationsFolder: folder });
+          await baseline.apply(pool);
           const seedClient = await pool.connect();
           try {
             await seedClient.query("begin");
@@ -514,7 +480,7 @@ describe.skipIf(!sourceUrl || !targetUrl)(
           if (value === undefined) delete process.env[key];
           else process.env[key] = value;
         }
-        await rm(folder, { recursive: true, force: true });
+        await baseline.dispose();
       }
     }, 120_000);
   }

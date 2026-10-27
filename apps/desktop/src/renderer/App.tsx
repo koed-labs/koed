@@ -515,8 +515,7 @@ const personalMemoryRoute = (route: DesktopRoute): PersonalMemoryRoute => {
     return {
       kind: "project",
       projectId: route.projectId,
-      sourceFilter: route.sourceFilter,
-      browse: route.browse
+      sourceFilter: route.sourceFilter
     };
   }
   if (route.kind === "personal-memory-session") {
@@ -524,15 +523,11 @@ const personalMemoryRoute = (route: DesktopRoute): PersonalMemoryRoute => {
       kind: "session",
       projectId: route.projectId,
       sessionId: route.sessionId,
-      sourceFilter: route.sourceFilter,
-      browse: route.browse
+      sourceFilter: route.sourceFilter
     };
   }
   return {
-    kind: "projects",
-    ...(route.kind === "personal-memory-projects"
-      ? { browse: route.browse }
-      : {})
+    kind: "projects"
   };
 };
 
@@ -1879,19 +1874,18 @@ export function App({
             onNavigate={(next) => {
               const nextRoute: DesktopRoute =
                 next.kind === "projects"
-                  ? { kind: "personal-memory-projects", browse: next.browse }
+                  ? { kind: "personal-memory-projects" }
                   : next.kind === "project"
                     ? {
                         kind: "personal-memory-project",
                         projectId: next.projectId,
-                        sourceFilter: next.sourceFilter,
-                        browse: next.browse
+                        sourceFilter: next.sourceFilter
                       }
                     : {
                         kind: "personal-memory-session",
                         projectId: next.projectId,
                         sourceFilter: next.sourceFilter,
-                        browse: next.browse,
+
                         sessionId: next.sessionId
                       };
               navigate({

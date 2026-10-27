@@ -698,7 +698,6 @@ describe("PersonalMemoryWorkspace", () => {
             initialRoute={{
               kind: "project",
               projectId: fixture.projectId,
-              browse: "sources",
               sourceFilter: { kind: "git", key: repositoryScopeId(fixture.git) }
             }}
           >

@@ -28,11 +28,6 @@ import {
   verifyAndDecryptPdsSessionSourcePackage,
   verifyPdsRepositoryAssignmentWithKeyHistory,
   isPdsSessionCheckpointManifest,
-  decryptPdsEncryptedPayloadPackage,
-  parseCanonicalPdsJson,
-  verifyPersonalConfigurationRecord,
-  personalConfigurationRecordHash,
-  personalConfigurationPackageId,
   PdsRelayClient,
   type PersonalSelectionSnapshot,
   type PersonalGitContext,
@@ -47,6 +42,7 @@ import {
   runDbMigrations,
   type MemorySourceRepository
 } from "../src/index.js";
+import { decodePersonalConfigurationPacket } from "./fixtures/personal-configuration-delivery.js";
 import { personalSourceDeviceFixture } from "./fixtures/personal-source-device.js";
 import { pdsConversationItemsForClosure } from "../../../apps/api/src/personal-device-sync/local-source.js";
 import { pdsCheckpointMaterializationSource } from "../../../apps/worker/src/personal-device-sync-runtime.js";
@@ -429,30 +425,12 @@ describe.skipIf(!originUrl || !receiverUrl)(
         recipient: typeof fixture.origin,
         runtime: typeof receiverConfig
       ) => {
-        const decrypted = decryptPdsEncryptedPayloadPackage(
-          canonicalizePdsJson(pkg),
-          {
-            runtime: fixture.runtime(author, recipient),
-            recipientKemPrivateKey: recipient.kem.privateSeed
-          }
+        const { record } = decodePersonalConfigurationPacket(
+          fixture,
+          pkg,
+          author,
+          recipient
         );
-        const record = verifyPersonalConfigurationRecord(
-          parseCanonicalPdsJson(
-            Buffer.from(decrypted.plaintext).toString("utf8")
-          ),
-          {
-            groupId: fixture.groupId,
-            deviceId: author.deviceId,
-            signingKeyId: author.signingKeyId,
-            publicKey: author.signing.publicKey
-          }
-        );
-        expect(
-          personalConfigurationPackageId(
-            personalConfigurationRecordHash(record),
-            pkg.header.transportId
-          )
-        ).toBe(pkg.header.packageId);
         return runtime.retainVerified(record);
       };
       const first = await publish();

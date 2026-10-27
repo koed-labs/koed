@@ -226,7 +226,6 @@
 .personal-source-impact li > span {
   font-variant-numeric: tabular-nums;
 }
-.personal-source-review-hint,
 .personal-source-impact > p,
 .personal-source-sync-status {
   color: var(--muted-foreground);

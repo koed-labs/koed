@@ -3743,15 +3743,6 @@ button.personal-project-details-folder:hover {
   overflow-wrap: anywhere;
 }
 
-.personal-project-details-folder-row {
-  align-items: center;
-  display: flex;
-  gap: 0.5rem;
-}
-.personal-project-details-folder-row .personal-project-details-folder {
-  flex: 1;
-  min-width: 0;
-}
 
 .personal-project-sync-list {
   max-height: 55vh;

@@ -87,15 +87,6 @@ export function ProjectsDefaultValidation() {
     );
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
-      <div
-        style={{
-          padding: "0.5rem 1rem",
-          fontSize: "0.75rem",
-          borderBottom: "1px solid var(--border)"
-        }}
-      >
-        Synthetic Project demo · sample Memory and AI Client
-      </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <PersonalMemoryWorkspace
           managedConversations={managed}

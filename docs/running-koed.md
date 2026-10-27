@@ -675,8 +675,8 @@ Use the shared input toolbar chip to choose an eligible local Folder.
 Changing the Project or Folder retains the draft.
 Chat uses its own automatic Conversation Folder.
 
-Run `pnpm --filter @koed/desktop demo:projects` for the isolated synthetic Project demonstration.
-The demonstration uses sample Memory and a simulated AI Client in a disposable Electron profile.
+Run `pnpm --filter @koed/desktop test:browser` for the maintained native browser journeys.
+They use synthetic Memory and simulated AI Clients in disposable Electron profiles.
 See [Project cutover validation](projects-default-view-validation.md) for the route and recorded automated results.
 
 ### Managed Conversation permissions

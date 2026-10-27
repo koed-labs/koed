@@ -2,13 +2,7 @@ import type pg from "pg";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  canonicalizePdsJson,
-  parseCanonicalPdsJson,
   createLocalTestKeyEnvelopeEncryptionProvider,
-  decryptPdsEncryptedPayloadPackage,
-  verifyPersonalConfigurationRecord,
-  personalConfigurationPackageId,
-  personalConfigurationRecordHash,
   PdsRelayClient,
   type PdsSessionPackage,
   type PersonalGitContext,
@@ -26,6 +20,7 @@ import {
   personalFixtureClosedSource,
   receivePersonalFixtureClosedSource
 } from "./fixtures/personal-source-import.js";
+import { decodePersonalConfigurationPacket } from "./fixtures/personal-configuration-delivery.js";
 import { personalSourceDeviceFixture } from "./fixtures/personal-source-device.js";
 import { createPdsConfigurationRuntime } from "../../../apps/worker/src/personal-device-sync-configuration.js";
 
@@ -168,30 +163,12 @@ describe.skipIf(!databaseUrl)(
         expect(originIndex).toBeGreaterThanOrEqual(0);
         const author = devices[originIndex]!,
           recipient = devices[receiverIndex]!;
-        const decrypted = decryptPdsEncryptedPayloadPackage(
-          canonicalizePdsJson(pkg),
-          {
-            runtime: fixture.runtime(author, recipient),
-            recipientKemPrivateKey: recipient.kem.privateSeed
-          }
+        const { record } = decodePersonalConfigurationPacket(
+          fixture,
+          pkg,
+          author,
+          recipient
         );
-        const record = verifyPersonalConfigurationRecord(
-          parseCanonicalPdsJson(
-            Buffer.from(decrypted.plaintext).toString("utf8")
-          ),
-          {
-            groupId: fixture.groupId,
-            deviceId: author.deviceId,
-            signingKeyId: author.signingKeyId,
-            publicKey: author.signing.publicKey
-          }
-        );
-        expect(
-          personalConfigurationPackageId(
-            personalConfigurationRecordHash(record),
-            pkg.header.transportId
-          )
-        ).toBe(pkg.header.packageId);
         expect(JSON.stringify(pkg)).not.toContain("gr_pv06");
         expect(JSON.stringify(pkg)).not.toContain("/original/koed");
         return { record, receiverIndex };

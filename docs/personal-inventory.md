@@ -279,5 +279,5 @@ These local presentation preferences intersect the current source selection and 
 They do not change membership, source assignments, Ask targets, or local execution choices.
 The rejected Project move and session-assignment bridge remain removed.
 Project source management uses atomic versioned membership changes.
-The native synthetic demonstration remains available through `pnpm --filter @koed/desktop demo:projects`.
+The maintained native Project browser journey runs through `pnpm --filter @koed/desktop test:browser`.
 Its automated results and the unperformed User manual and physical two-computer sessions are recorded separately.

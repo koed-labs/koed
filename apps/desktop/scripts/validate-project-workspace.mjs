@@ -600,9 +600,10 @@ const run = async () => {
       };
     })()`);
     assert.equal(projectDetails.folder, true, JSON.stringify(projectDetails));
+    // This named Project includes a Folder; checkout remotes alone do not establish a Git Anchor.
     assert.equal(
       projectDetails.repository,
-      true,
+      false,
       JSON.stringify(projectDetails)
     );
     assert.equal(
