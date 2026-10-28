@@ -4,6 +4,7 @@ import {
   currentNavigationEntry,
   navigationReducer,
   routePath,
+  sessionProjectRoute,
   type NavigationEntry
 } from "./navigation.js";
 
@@ -41,6 +42,33 @@ describe("navigationReducer", () => {
 
     state = navigationReducer(state, { type: "forward" });
     expect(currentNavigationEntry(state)).toEqual(teamChannel);
+  });
+
+  it("returns from a Conversation to its filtered Project list", () => {
+    const sourceFilter = {
+      kind: "folder" as const,
+      key: "full-folder-identity",
+      gitKey: "anchor-identity"
+    };
+    expect(
+      sessionProjectRoute({
+        kind: "personal-memory-session",
+        projectId: "git-anchor",
+        sessionId: "logical-session",
+        sourceFilter
+      })
+    ).toEqual({
+      kind: "personal-memory-project",
+      projectId: "git-anchor",
+      sourceFilter
+    });
+    expect(
+      sessionProjectRoute({
+        kind: "personal-memory-session",
+        projectId: "git-anchor",
+        sessionId: "logical-session"
+      })
+    ).toEqual({ kind: "personal-memory-project", projectId: "git-anchor" });
   });
 
   it("retains an exact nested source filter and context through Conversation back/forward navigation", () => {

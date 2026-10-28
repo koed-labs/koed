@@ -18,6 +18,15 @@ export type PersonalRoute =
     }
   | { kind: "personal-chat"; threadId: string };
 
+/** The Project list a Conversation was opened from, including its source filter. */
+export const sessionProjectRoute = (
+  route: Extract<PersonalRoute, { kind: "personal-memory-session" }>
+): Extract<PersonalRoute, { kind: "personal-memory-project" }> => ({
+  kind: "personal-memory-project",
+  projectId: route.projectId,
+  ...(route.sourceFilter ? { sourceFilter: route.sourceFilter } : {})
+});
+
 export type TeamRoute =
   | { kind: "team-people"; teamId: string }
   | { kind: "team-direct-message"; teamId: string; threadId: string }

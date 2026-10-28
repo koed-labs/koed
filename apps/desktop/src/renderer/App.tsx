@@ -44,6 +44,7 @@ import {
   createNavigationState,
   currentNavigationEntry,
   navigationReducer,
+  sessionProjectRoute,
   type DesktopRoute,
   type NavigationEntry
 } from "./navigation.js";
@@ -1462,10 +1463,7 @@ export function App({
                         snapshot?.navigation.personalOwner.id ??
                         "local-personal"
                     },
-                    route: {
-                      kind: "personal-memory-project",
-                      projectId: selectedProject.id
-                    }
+                    route: sessionProjectRoute(route)
                   })
                 }
               >
