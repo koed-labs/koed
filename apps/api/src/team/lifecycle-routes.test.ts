@@ -295,6 +295,7 @@ const createFixture = async (input?: {
     requireRepository: () => repository,
     auth: {
       hashSecret: (value: string) => value,
+      resolveDelegatedPrincipal: vi.fn(async () => null),
       authenticateSession: vi.fn(async () => user),
       authenticateSessionContext: vi.fn(async (request: FastifyRequest) => {
         if (/^Koed-Device(?:\s|$)/i.test(request.headers.authorization ?? "")) {
@@ -1172,6 +1173,13 @@ describe("Team lifecycle routes", () => {
       const response = await browser.app.inject(request(probe));
       expect(response.statusCode, `browser: ${probe.label}`).toBe(200);
     }
+    expect(browser.repository.listTeamWorkspaceContexts).toHaveBeenCalledWith({
+      userId: user.id
+    });
+    expect(browser.repository.getTeamWorkspaceContext).toHaveBeenCalledWith(
+      { userId: user.id },
+      workspaceId
+    );
     await browser.app.close();
 
     const scopedDevice = await createFixture();
@@ -1188,6 +1196,12 @@ describe("Team lifecycle routes", () => {
         probe.device === "browser_only" ? 401 : 200
       );
     }
+    expect(
+      scopedDevice.repository.listTeamWorkspaceContexts
+    ).toHaveBeenCalledWith({ userId: user.id });
+    expect(
+      scopedDevice.repository.getTeamWorkspaceContext
+    ).toHaveBeenCalledWith({ userId: user.id }, workspaceId);
     await scopedDevice.app.close();
 
     const wrongScope = await createFixture({ deviceOperationFamilies: [] });

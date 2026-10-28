@@ -4050,6 +4050,7 @@ export const freezeSharedMemorySemanticRecallBoundaryWithClient = async (
     onlyGrantIds?: string[];
   }
 ): Promise<SharedMemorySemanticAuthorizationBoundary> => {
+  if (actor.teamBoundaryId === null) throw new SharedMemoryAuthorizationError();
   assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
   if (
     !Number.isInteger(input.maximumGrantCount) ||
@@ -4125,12 +4126,14 @@ export const freezeSharedMemorySemanticRecallBoundaryWithClient = async (
        and wa.team_id=t.id and wa.user_id=u.id and wa.disabled_at is null
        and wa.access in ('read','write')
     where tw.id=$2 and tw.lifecycle='active' and tw.archived_at is null
+      and ($5::uuid is null or t.id=$5)
     limit 1 ${input.lockRows ? "for share of t,tw,tm,wa,u" : ""}`,
     [
       actor.userId,
       input.teamWorkspaceId,
       input.maximumGrantCount + 1,
-      input.onlyGrantIds ?? null
+      input.onlyGrantIds ?? null,
+      actor.teamBoundaryId ?? null
     ]
   );
   const row = frozen.rows[0];
@@ -4185,6 +4188,7 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
     typeof sharedMemorySanitizedSemanticSourceBinding
   >;
 } | null> => {
+  if (actor.teamBoundaryId === null) return null;
   const lockedContext = lockRows ? readContext : undefined;
   if (lockRows && !lockedContext?.sourceGrantLocks.has(input.shareGrantId)) {
     // Lock source dependencies before evaluating the shared authorization query.
@@ -4321,13 +4325,19 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
     and privacy_classifier.status='active'
     and privacy_classifier.revoked_at is null
   where g.id=$1 and g.lifecycle='active' and g.revoked_at is null
+    and ($4::uuid is null or g.team_id=$4)
     and (
       (g.source_kind='captured_session' and mr.id is not null and sr.id is not null)
       or (g.source_kind='personal_note' and g.remote_replica_id is null)
     )
     and ${cumulativeRepresentationAuthorizationSql("r.representation")}
   limit 1 ${lockRows ? "for share of g,t,tm,u,tw,wa,c,op,tp,wp,sp,sa,semantic,privacy_classifier" : ""}`,
-    [input.shareGrantId, actor.userId, input.representation]
+    [
+      input.shareGrantId,
+      actor.userId,
+      input.representation,
+      actor.teamBoundaryId ?? null
+    ]
   );
   const row = result.rows[0] as Row | undefined;
   if (!row) return null;
@@ -18018,6 +18028,7 @@ export const createSharedMemoryRepository = (
       );
     },
     async scanAuthorizedSharedMemorySemanticItems(actor, input) {
+      if (actor.teamBoundaryId === null) return [];
       assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
       if (input.queryVector.length !== input.dimensions) {
         throw new TypeError("queryVector does not match embedding dimensions");
@@ -18113,6 +18124,7 @@ export const createSharedMemoryRepository = (
                  and parent.embedding_state='embedded'
             ))
             and ($16::uuid[] is null or g.id=any($16))
+            and ($23::uuid is null or t.id=$23)
             and ($17::uuid is null or (
               t.id=$17 and t.version=$18 and tw.version=$19
               and tm.version=$20 and wa.version=$21 and u.xmin::text=$22
@@ -18148,7 +18160,8 @@ export const createSharedMemoryRepository = (
           input.authorizationBoundary?.workspaceVersion ?? null,
           input.authorizationBoundary?.membershipVersion ?? null,
           input.authorizationBoundary?.workspaceAccessVersion ?? null,
-          input.authorizationBoundary?.userRowVersion ?? null
+          input.authorizationBoundary?.userRowVersion ?? null,
+          actor.teamBoundaryId ?? null
         ]
       );
       return rows.rows.map((row) => ({
@@ -18161,6 +18174,7 @@ export const createSharedMemoryRepository = (
     },
 
     async searchAuthorizedSharedMemorySemanticItems(actor, input) {
+      if (actor.teamBoundaryId === null) return [];
       assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
       if (input.queryVector.length !== input.dimensions) {
         throw new TypeError("queryVector does not match embedding dimensions");
@@ -18262,6 +18276,7 @@ export const createSharedMemoryRepository = (
                  and parent.embedding_state='embedded'
             ))
             and ($16::uuid[] is null or g.id=any($16))
+            and ($23::uuid is null or t.id=$23)
             and ($17::uuid is null or (
               t.id=$17 and t.version=$18 and tw.version=$19
               and tm.version=$20 and wa.version=$21 and u.xmin::text=$22
@@ -18297,7 +18312,8 @@ export const createSharedMemoryRepository = (
           input.authorizationBoundary?.workspaceVersion ?? null,
           input.authorizationBoundary?.membershipVersion ?? null,
           input.authorizationBoundary?.workspaceAccessVersion ?? null,
-          input.authorizationBoundary?.userRowVersion ?? null
+          input.authorizationBoundary?.userRowVersion ?? null,
+          actor.teamBoundaryId ?? null
         ]
       );
       const hydrated = await hydrateAuthorizedSemanticCandidates(
@@ -18332,6 +18348,7 @@ export const createSharedMemoryRepository = (
     },
 
     async expandAuthorizedSharedMemorySemanticItem(actor, input) {
+      if (actor.teamBoundaryId === null) return null;
       assertUuid(input.teamWorkspaceId, "teamWorkspaceId");
       assertUuid(input.candidateId, "candidateId");
       const row = await pool.query<Row>(
@@ -18383,6 +18400,7 @@ export const createSharedMemoryRepository = (
            left join sessions source_session on source_session.id=local_memory.local_session_id
              and source_session.owner_user_id=g.owner_user_id
           where smi.id=$1 and smi.team_workspace_id=$2 and smi.embedding_state='embedded'
+            and ($17::uuid is null or g.team_id=$17)
             and (
               (g.source_kind='captured_session' and mr.id is not null and sr.id is not null
                 and local_memory.local_session_id is not null and source_session.id is not null)
@@ -18435,7 +18453,8 @@ export const createSharedMemoryRepository = (
           input.authorizationBoundary?.workspaceVersion ?? null,
           input.authorizationBoundary?.membershipVersion ?? null,
           input.authorizationBoundary?.workspaceAccessVersion ?? null,
-          input.authorizationBoundary?.userRowVersion ?? null
+          input.authorizationBoundary?.userRowVersion ?? null,
+          actor.teamBoundaryId ?? null
         ]
       );
       const candidate = row.rows[0];
