@@ -123,9 +123,8 @@ it("pins a repository scope to a live checkout whose identity still matches", as
     };
     const first = checkout("first", "https://github.com/example/shared.git");
     const second = checkout("second", "https://github.com/example/shared.git");
-    const firstIdentity = (
-      await discoverProjectMetadata(paths, { cwd: first })
-    ).project!.repository!;
+    const firstIdentity = (await discoverProjectMetadata(paths, { cwd: first }))
+      .project!.repository!;
     await discoverProjectMetadata(paths, { cwd: second });
     const scope = repositoryScopeId(firstIdentity);
     const pin = () =>
