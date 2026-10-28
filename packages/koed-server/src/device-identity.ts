@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -119,17 +120,37 @@ const writeState = (statePath: string, state: DeviceIdentityState): void => {
   }
 };
 
+/**
+ * The API trusts device identity only in a KOED_HOME nobody else can read.
+ * `mkdir` keeps the mode of a folder that already exists, so a KOED_HOME made
+ * beforehand with the usual 0755 used to fail later, deep in API startup.
+ * Tighten our own folders here instead.
+ */
+const keepPrivate = (path: string): void => {
+  if (process.platform === "win32") return;
+  const metadata = lstatSync(path);
+  const getuid = process.getuid;
+  if (
+    metadata.isDirectory() &&
+    (metadata.mode & 0o077) !== 0 &&
+    (typeof getuid !== "function" || metadata.uid === getuid())
+  )
+    chmodSync(path, 0o700);
+};
+
 const prepareIdentityStorage = (paths: KoedServerPaths): string => {
   mkdirSync(paths.koedHome, { recursive: true, mode: 0o700 });
   if (lstatSync(paths.koedHome).isSymbolicLink()) {
     throw new Error("KOED_HOME must not be a symbolic link.");
   }
+  keepPrivate(paths.koedHome);
   mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
   if (lstatSync(paths.configDir).isSymbolicLink()) {
     throw new Error(
       "Device identity config directory must not be a symbolic link."
     );
   }
+  keepPrivate(paths.configDir);
   return realpathSync(paths.koedHome);
 };
 

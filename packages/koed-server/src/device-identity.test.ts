@@ -109,6 +109,17 @@ describe("clone-safe device identity", () => {
     });
   });
 
+  it("makes a KOED_HOME created beforehand private so identity stays healthy", async () => {
+    const { paths, proofStore } = fixture();
+    mkdirSync(paths.koedHome, { recursive: true, mode: 0o755 });
+    chmodSync(paths.koedHome, 0o755);
+    const created = await ensureDeviceIdentity(paths, { proofStore });
+    expect(created.health).toBe("healthy");
+    chmodSync(paths.koedHome, 0o755);
+    const again = await ensureDeviceIdentity(paths, { proofStore });
+    expect(again.health).toBe("healthy");
+  });
+
   it("adopts legacy local sync deployment identity exactly once", async () => {
     const { paths, proofDirectory, proofStore } = fixture();
     await ensureDeviceIdentity(paths, { proofStore });
