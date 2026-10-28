@@ -51,7 +51,7 @@ describe.skipIf(!databaseUrl)(
       for (const name of names)
         await admin.query(`drop database if exists "${name}" with(force)`);
       await admin.end();
-    });
+    }, 60_000);
     const setup = async () => {
       const fixture = personalSourceDeviceFixture();
       const encryption = createLocalTestKeyEnvelopeEncryptionProvider(
