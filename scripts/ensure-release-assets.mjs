@@ -63,10 +63,22 @@ const main = async () => {
     throw new Error(
       "Usage: ensure-release-assets <tag> <file...> (requires GITHUB_REPOSITORY)."
     );
-  const release = JSON.parse(
-    gh(["api", `repos/${repository}/releases/tags/${tag}`])
-  );
-  if (release.tag_name !== tag || release.draft !== true)
+  // The releases/tags/{tag} endpoint only resolves published releases, so
+  // drafts must be found by listing releases and matching tag_name.
+  const matches = JSON.parse(
+    gh([
+      "api",
+      "--paginate",
+      "--slurp",
+      `repos/${repository}/releases?per_page=100`
+    ])
+  )
+    .flat()
+    .filter((candidate) => candidate.tag_name === tag);
+  if (matches.length > 1)
+    throw new Error(`Release ${tag} is ambiguous: ${matches.length} matches.`);
+  const [release] = matches;
+  if (release?.draft !== true)
     throw new Error(`Release ${tag} must exist as matching draft.`);
   const assets = new Map(release.assets.map((asset) => [asset.name, asset]));
   for (const input of paths) {

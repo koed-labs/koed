@@ -40,7 +40,7 @@ test("uploads an absent draft asset without replacing anything", () => {
     const gh = join(dir, "gh");
     writeFileSync(
       gh,
-      `#!${process.execPath}\nconst a=process.argv.slice(2);\nif(a[0]==='api') console.log(JSON.stringify({tag_name:'v1.2.3',draft:true,assets:[]}));\nelse if(a[0]==='release'&&a[1]==='upload') require('node:fs').writeFileSync(process.env.TEST_UPLOAD, 'uploaded');\nelse process.exitCode=9;\n`
+      `#!${process.execPath}\nconst a=process.argv.slice(2);\nif(a[0]==='api'&&a.includes('--slurp')) console.log(JSON.stringify([[{tag_name:'v1.0.0',draft:false,assets:[]}],[{tag_name:'v1.2.3',draft:true,assets:[]}]]));\nelse if(a[0]==='release'&&a[1]==='upload') require('node:fs').writeFileSync(process.env.TEST_UPLOAD, 'uploaded');\nelse process.exitCode=9;\n`
     );
     chmodSync(gh, 0o755);
     const result = spawnSync(
@@ -63,6 +63,47 @@ test("uploads an absent draft asset without replacing anything", () => {
   }
 });
 
+test("requires exactly one matching draft release without uploading", () => {
+  const dir = mkdtempSync(join(tmpdir(), "koed-asset-release-test-"));
+  try {
+    const asset = join(dir, "asset.bin");
+    writeFileSync(asset, "expected");
+    const gh = join(dir, "gh");
+    writeFileSync(
+      gh,
+      `#!${process.execPath}\nconst a=process.argv.slice(2);\nif(a.includes('--slurp')) console.log(process.env.TEST_RELEASES);\nelse require('node:fs').writeFileSync(process.env.TEST_UPLOAD, 'unexpected');\n`
+    );
+    chmodSync(gh, 0o755);
+    const draft = { tag_name: "v1.2.3", draft: true, assets: [] };
+    const cases = [
+      [[[{ tag_name: "v1.0.0", draft: true, assets: [] }]], /must exist/],
+      [[[{ ...draft, draft: false }]], /must exist/],
+      [[[draft], [draft]], /ambiguous/]
+    ];
+    for (const [releases, error] of cases) {
+      const result = spawnSync(
+        process.execPath,
+        [resolve("scripts/ensure-release-assets.mjs"), "v1.2.3", asset],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${dir}:${process.env.PATH}`,
+            GITHUB_REPOSITORY: "test/repo",
+            TEST_RELEASES: JSON.stringify(releases),
+            TEST_UPLOAD: join(dir, "uploaded")
+          }
+        }
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, error);
+    }
+    assert.equal(existsSync(join(dir, "uploaded")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("rejects failed or mismatched downloads without uploading", () => {
   const dir = mkdtempSync(join(tmpdir(), "koed-asset-failure-test-"));
   try {
@@ -71,7 +112,7 @@ test("rejects failed or mismatched downloads without uploading", () => {
     const gh = join(dir, "gh");
     writeFileSync(
       gh,
-      `#!${process.execPath}\nconst a=process.argv.slice(2);\nif(a[1]?.includes('/releases/tags/')) console.log(JSON.stringify({tag_name:'v1.2.3',draft:true,assets:[{name:'asset.bin',id:1}]}));\nelse if(a.includes('--header')) { process.stdout.write('wrong'); if(process.env.TEST_FAIL === '1') process.exitCode=7; }\nelse { require('node:fs').writeFileSync(process.env.TEST_UPLOAD, 'unexpected'); }\n`
+      `#!${process.execPath}\nconst a=process.argv.slice(2);\nif(a.includes('--slurp')) console.log(JSON.stringify([[{tag_name:'v1.2.3',draft:true,assets:[{name:'asset.bin',id:1}]}]]));\nelse if(a.includes('--header')) { process.stdout.write('wrong'); if(process.env.TEST_FAIL === '1') process.exitCode=7; }\nelse { require('node:fs').writeFileSync(process.env.TEST_UPLOAD, 'unexpected'); }\n`
     );
     chmodSync(gh, 0o755);
     for (const fail of ["0", "1"]) {
@@ -116,7 +157,7 @@ test(
       const gh = join(dir, "gh");
       writeFileSync(
         gh,
-        `#!${process.execPath}\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nif (args[1]?.includes('/releases/tags/')) console.log(JSON.stringify({tag_name:'v1.2.3',draft:true,assets:[{name:'large.bin',id:1}]}));\nelse if (args.includes('--header')) fs.createReadStream(process.env.TEST_ASSET).pipe(process.stdout);\nelse process.exit(8);\n`
+        `#!${process.execPath}\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nif (args.includes('--slurp')) console.log(JSON.stringify([[{tag_name:'v1.2.3',draft:true,assets:[{name:'large.bin',id:1}]}]]));\nelse if (args.includes('--header')) fs.createReadStream(process.env.TEST_ASSET).pipe(process.stdout);\nelse process.exit(8);\n`
       );
       chmodSync(gh, 0o755);
       const result = spawnSync(
