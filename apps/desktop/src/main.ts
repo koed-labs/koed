@@ -18,6 +18,8 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
+import { attachPackagedSmokeHarness } from "./packaged-smoke-harness.js";
+import type { DesktopCommandName } from "./ipc/protocol.js";
 import {
   desktopStatusChangedChannel,
   desktopRendererOrigin,
@@ -32,6 +34,7 @@ import {
 } from "./koed-server/manager.js";
 import {
   createKoedServerCliInvocation,
+  createNodeEntrypointInvocation,
   resolveKoedServerPaths
 } from "./koed-server/runtime.js";
 import {
@@ -53,6 +56,15 @@ import {
 } from "./window/theme-preference.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 import { createManagedPreviewController } from "./window/managed-preview-controller.js";
+import { createDesktopCliInstallManager } from "./cli-install/manager.js";
+import {
+  loadCliInstallSettingsForDesktop,
+  writeCliInstallSettings
+} from "./cli-install/settings.js";
+import {
+  registerCliInstallIpc,
+  sendCliInstallProgress
+} from "./cli-install/ipc.js";
 import { startDesktopWindowAndRuntime } from "./window/startup.js";
 import {
   createLaunchAtStartupController,
@@ -72,17 +84,23 @@ import {
 } from "./tray/menu-bar.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
-const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
+const {
+  repoRoot,
+  cliPath: genericKoedServerCli,
+  desktopCliPath
+} = resolveKoedServerPaths({
   appDir,
   appIsPackaged: app.isPackaged,
   environment: process.env,
   resourcesPath: process.resourcesPath
 });
+// Packaged Desktop and its launcher share one verified CLI entrypoint so every
+// command manages Desktop's own instance with Desktop's runtime authority.
+const koedServerCli = desktopCliPath ?? genericKoedServerCli;
 const appName = "Koed";
 const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
   desktopManagedLocal: true,
-  packagedDesktop: app.isPackaged,
-  packagedResourcesPath: process.resourcesPath
+  packagedDesktop: app.isPackaged
 });
 const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
 const menuBarIconFile = menuBarIconFilename(process.platform);
@@ -196,6 +214,23 @@ const createServerManager = (
         environment: koedEnvironment,
         existsSync
       }),
+    createSupervisorInvocation: app.isPackaged
+      ? () =>
+          createNodeEntrypointInvocation(
+            resolve(dirname(koedServerCli), "desktop-supervisor-entrypoint.js"),
+            [],
+            {
+              appIsPackaged: true,
+              electronExecPath: process.execPath,
+              platform: process.platform,
+              resourcesPath: process.resourcesPath,
+              environment: koedEnvironment,
+              existsSync
+            }
+          )
+      : undefined,
+    packagedResourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+    productVersion: app.getVersion(),
     existsSync,
     execFile,
     spawn,
@@ -375,6 +410,108 @@ const bootstrap = async () => {
     app.dock?.setIcon(desktopIcon);
   }
   registerAppProtocol();
+  const privacyInstallBridge = server.privacyInstall;
+  const selectPrivacyOfflineSource = async () => {
+    const files: string[] = [];
+    for (const [label, extensions] of [
+      ["Privacy archive", ["tar.gz"]],
+      ["Component manifest", ["json"]]
+    ] as const) {
+      const selected = mainWindow
+        ? await dialog.showOpenDialog(mainWindow, {
+            title: `Choose ${label}`,
+            properties: ["openFile"],
+            filters: [{ name: label, extensions: [...extensions] }]
+          })
+        : await dialog.showOpenDialog({
+            title: `Choose ${label}`,
+            properties: ["openFile"],
+            filters: [{ name: label, extensions: [...extensions] }]
+          });
+      if (selected.canceled || !selected.filePaths[0]) return null;
+      files.push(selected.filePaths[0]);
+    }
+    return { archivePath: files[0]!, manifestPath: files[1]! };
+  };
+  const cliInstallSettingsFile = resolve(
+    app.getPath("userData"),
+    "cli-install.json"
+  );
+  const cliInstallManager = createDesktopCliInstallManager({
+    ...loadCliInstallSettingsForDesktop(cliInstallSettingsFile, (error) =>
+      console.error(error)
+    ),
+    saveSettings: (settings) =>
+      writeCliInstallSettings(cliInstallSettingsFile, settings),
+    ...(privacyInstallBridge
+      ? {
+          bridge: {
+            ...privacyInstallBridge,
+            selectOffline: selectPrivacyOfflineSource
+          }
+        }
+      : {}),
+    appPath: app.getAppPath(),
+    helperPath: process.execPath,
+    cliPath: koedServerCli,
+    koedHome: resolveApplicationKoedHome(koedEnvironment),
+    ...(desktopCliPath ? { legacyCliPath: genericKoedServerCli } : {}),
+    expectedVersion: app.getVersion(),
+    currentPath: process.env.PATH ?? "",
+    platform: process.platform,
+    probeHelper: async () =>
+      new Promise<boolean>((resolveProbe) => {
+        const probe =
+          "process.stdout.write(JSON.stringify({electron:process.versions.electron??null,modules:process.versions.modules??null,node:process.versions.node??null}))";
+        execFile(
+          process.execPath,
+          ["-e", probe],
+          {
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+            timeout: 5_000,
+            windowsHide: true,
+            maxBuffer: 1024
+          },
+          (error, stdout) => {
+            if (error) return resolveProbe(false);
+            try {
+              const identity = JSON.parse(stdout) as {
+                electron?: unknown;
+                modules?: unknown;
+                node?: unknown;
+              };
+              resolveProbe(
+                identity.electron === process.versions.electron &&
+                  identity.modules === process.versions.modules &&
+                  identity.node === process.versions.node
+              );
+            } catch {
+              resolveProbe(false);
+            }
+          }
+        );
+      })
+  });
+  registerCliInstallIpc({
+    ipcMain,
+    allowedRendererOrigins,
+    manager: cliInstallManager,
+    selectLauncherDestination: async () => {
+      const options = {
+        title: "Choose Koed CLI launcher location",
+        defaultPath: resolve(app.getPath("home"), ".local", "bin", "koed"),
+        buttonLabel: "Install launcher"
+      };
+      const selected = mainWindow
+        ? await dialog.showSaveDialog(mainWindow, options)
+        : await dialog.showSaveDialog(options);
+      return selected.canceled ? null : (selected.filePath ?? null);
+    }
+  });
+  sendCliInstallProgress(cliInstallManager, (channel, value) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send(channel, value);
+  });
   registerDesktopCommandHandlers(ipcMain, server.handlers, {
     allowedRendererOrigins,
     localAiClients: server.localAiClients,
@@ -447,9 +584,23 @@ const bootstrap = async () => {
       buildMenu: (template) => Menu.buildFromTemplate(template),
       getStatus: () => server.handlers.status(),
       openDesktop: showDesktopWindow,
+      startKoed: () => {
+        void Promise.resolve(server.handlers.start()).catch(() => undefined);
+      },
       quit: () => app.quit()
     });
   }
+  // One cheap local observer drives both the window and the tray, so an
+  // external stop or start is reflected without waiting for full polling.
+  server.lifecycle.subscribe(() => {
+    void desktopMenuBar?.refresh();
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(desktopStatusChangedChannel);
+      }
+    }
+  });
+  server.lifecycle.start();
   await startDesktopWindowAndRuntime({
     background: backgroundLaunchPending,
     createWindow,
@@ -483,6 +634,41 @@ const bootstrap = async () => {
       return result;
     },
     onRuntimeSettled: () => {
+      attachPackagedSmokeHarness({
+        packaged: app.isPackaged,
+        argv: process.argv,
+        channel: process,
+        send: (message) => process.send?.(message),
+        invoke: async (command) => {
+          if (command === "privacy_status")
+            return server.privacyInstall.getStatus();
+          if (command === "privacy_install") {
+            const archivePath = process.env.KOED_PRIVATE_SMOKE_PRIVACY_ARCHIVE;
+            const manifestPath =
+              process.env.KOED_PRIVATE_SMOKE_PRIVACY_MANIFEST;
+            if (!archivePath || !manifestPath) {
+              throw new Error(
+                "Private smoke Privacy installation requires an offline archive and manifest."
+              );
+            }
+            const offlineSource = { archivePath, manifestPath };
+            if (!server.privacyInstall) {
+              throw new Error("Desktop Privacy installation is unavailable.");
+            }
+            return server.privacyInstall.installPrivacy({
+              consent: true,
+              offlineSource,
+              onProgress: () => undefined
+            });
+          }
+          if (command === "quit") return server.shutdown();
+          // The observation that drives the window and tray, without a refresh.
+          if (command === "lifecycle") return server.lifecycle.current();
+          return server.handlers[command as DesktopCommandName]();
+        },
+        stop: () => server.shutdown(),
+        quit: () => app.quit()
+      });
       for (const window of BrowserWindow.getAllWindows()) {
         if (!window.isDestroyed()) {
           window.webContents.send(desktopStatusChangedChannel);
@@ -523,7 +709,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   void (async () => {
     await managedPreviewController.close();
-    await koedServer?.stop();
+    await koedServer?.shutdown();
     desktopMenuBar?.dispose();
     desktopMenuBar = null;
     koedServerStoppedForQuit = true;

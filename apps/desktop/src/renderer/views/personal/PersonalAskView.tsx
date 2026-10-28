@@ -172,8 +172,6 @@ export function PersonalAskView({
         const assignment = settings
           ? assignmentFrom(settings.readModel, "conversations")
           : null;
-        if (settings && !assignment)
-          throw new Error("Conversations configuration is loading");
         const next = assignment
           ? selectionForAssignment(options, assignment)
           : selectionForInstance(
@@ -181,15 +179,6 @@ export function PersonalAskView({
               options.instances.find((instance) => instance.ready)
                 ?.instanceId ?? ""
             );
-        const instance = options.instances.find(
-          (instance) => instance.instanceId === next.instanceId
-        );
-        if (
-          !instance?.ready ||
-          !instance.models.some((model) => model.id === next.model) ||
-          !next.permissionMode
-        )
-          throw new Error("Conversations capabilities are loading");
         setSelection(next);
         setLaunchOptions(options);
       } catch {

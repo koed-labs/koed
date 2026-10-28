@@ -1,23 +1,164 @@
+/* global Response */
 import assert from "node:assert/strict";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
+  realpathSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import test from "node:test";
 import { tmpdir } from "node:os";
+import process from "node:process";
 import { resolve } from "node:path";
 import {
   removeSmokeHome,
+  createSmokeHome,
   smokeExecutionPlan,
+  withSmokeFailureDiagnostics,
   withPackagedNativeAssetsMasked
 } from "./smoke-packaged-desktop-app-lib.mjs";
 import {
+  createSmokeEnv,
   assertNoSourceCheckoutResolution,
+  assertFailClosedPrivacy,
+  assertFailClosedTeamStart,
+  parseArgs,
   waitForHealthyStatus
 } from "./smoke-packaged-desktop-app.mjs";
+
+test("failure diagnostics read failing home before cleanup and retain original cause", async () => {
+  const home = createSmokeHome("koed-team-diagnostics-test-");
+  const failure = new Error("Team handshake failed");
+  writeFileSync(resolve(home, "failure.log"), "supervisor failure");
+  try {
+    await assert.rejects(
+      withSmokeFailureDiagnostics(
+        async () => {
+          throw failure;
+        },
+        () => {
+          assert.equal(existsSync(resolve(home, "failure.log")), true);
+          return "Team diagnostics preserved";
+        }
+      ),
+      (error) =>
+        error.cause === failure &&
+        /Team diagnostics preserved/.test(error.message)
+    );
+  } finally {
+    removeSmokeHome(home);
+  }
+  assert.equal(existsSync(home), false);
+});
+
+test("diagnostics failure does not replace original smoke failure", async () => {
+  await assert.rejects(
+    withSmokeFailureDiagnostics(
+      async () => {
+        throw new Error("Team handshake failed");
+      },
+      () => {
+        throw new Error("diagnostic read failed");
+      }
+    ),
+    /Team handshake failed[\s\S]*diagnostic read failed/
+  );
+});
+
+test("packaged smoke defaults health polling to five seconds", () => {
+  assert.equal(parseArgs([]).pollIntervalMs, 5_000);
+  assert.equal(parseArgs(["--poll-interval-ms", "2000"]).pollIntervalMs, 2_000);
+});
+
+test("packaged smoke reserves API budget for repeated readiness and doctor probes", () => {
+  assert.equal(
+    createSmokeEnv("/tmp/koed-smoke-home").API_AUTH_RATE_LIMIT_MAX,
+    "1000"
+  );
+});
+
+test("packaged smoke strips untrusted resources path overrides", () => {
+  const original = process.env.KOED_PACKAGED_RESOURCES_PATH;
+  process.env.KOED_PACKAGED_RESOURCES_PATH = "/host/resources";
+  try {
+    const environment = createSmokeEnv("/tmp/koed-smoke-home", {
+      KOED_PACKAGED_RESOURCES_PATH: "/extra/resources"
+    });
+    assert.equal(environment.KOED_PACKAGED_DESKTOP, "1");
+    assert.equal(environment.KOED_PACKAGED_RESOURCES_PATH, undefined);
+  } finally {
+    if (original === undefined) delete process.env.KOED_PACKAGED_RESOURCES_PATH;
+    else process.env.KOED_PACKAGED_RESOURCES_PATH = original;
+  }
+});
+
+test("smoke home canonicalizes temporary paths before authenticated lifecycle selection", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-smoke-home-test-"));
+  try {
+    const link = resolve(root, "linked-temp");
+    const target = resolve(root, "real-temp");
+    mkdirSync(target);
+    symlinkSync(target, link, "dir");
+    const home = createSmokeHome("smoke-", link);
+    assert.equal(home, realpathSync(home));
+    assert.equal(home.startsWith(realpathSync(target)), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Base privacy remains disabled with configured roots or absent signer trust", () => {
+  assert.doesNotThrow(() =>
+    assertFailClosedPrivacy({
+      available: false,
+      state: "unavailable",
+      message:
+        "Production Privacy Filter signer trust is not configured in this Desktop release."
+    })
+  );
+  assert.doesNotThrow(() =>
+    assertFailClosedPrivacy({
+      available: false,
+      state: "unavailable",
+      message:
+        "Privacy Filter is not required by current runtime configuration."
+    })
+  );
+  assert.throws(
+    () => assertFailClosedPrivacy({ available: true, state: "ready" }),
+    /fail.closed/i
+  );
+  assert.throws(
+    () =>
+      assertFailClosedPrivacy({
+        available: false,
+        state: "unavailable",
+        message: "not required"
+      }),
+    /fail.closed/i
+  );
+});
+
+test("Team start must fail for Privacy gate, not unrelated startup errors", () => {
+  assert.doesNotThrow(() =>
+    assertFailClosedTeamStart({
+      ok: false,
+      error: "required privacy component is missing"
+    })
+  );
+  assert.throws(
+    () => assertFailClosedTeamStart({ ok: true, startedPid: 123 }),
+    /fail.closed/i
+  );
+  assert.throws(
+    () =>
+      assertFailClosedTeamStart({ ok: false, error: "database unavailable" }),
+    /fail.closed/i
+  );
+});
 
 const healthyStatus = () =>
   Object.fromEntries(
@@ -35,16 +176,46 @@ const healthyStatus = () =>
     ].map((component) => [component, { state: "healthy" }])
   );
 
-const statusPollHarness = (snapshots, { running = true } = {}) => {
+const statusPollHarness = (
+  snapshots,
+  { running = true, readinessStatuses = [200], statusProbeIntervalMs } = {}
+) => {
   let elapsed = 0;
   let polls = 0;
+  let readinessPolls = 0;
+  const readyRequests = [];
+  const koedHome = mkdtempSync(resolve(tmpdir(), "koed-smoke-status-"));
+  mkdirSync(resolve(koedHome, "run"), { recursive: true });
+  writeFileSync(
+    resolve(koedHome, "run", "koed-server.json"),
+    JSON.stringify({ apiUrl: "http://127.0.0.1:3300" })
+  );
   return {
     get polls() {
       return polls;
     },
+    get readinessPolls() {
+      return readinessPolls;
+    },
+    readyRequests,
+    koedHome,
+    cleanup: () => rmSync(koedHome, { recursive: true, force: true }),
     dependencies: {
       now: () => elapsed,
       isRunning: () => running,
+      fetcher: async (url, options) => {
+        readyRequests.push({
+          url: String(url),
+          authorization:
+            options?.headers?.authorization ?? options?.headers?.Authorization
+        });
+        const status =
+          readinessStatuses[
+            Math.min(readinessPolls++, readinessStatuses.length - 1)
+          ];
+        return new Response(JSON.stringify({ status }), { status });
+      },
+      ...(statusProbeIntervalMs === undefined ? {} : { statusProbeIntervalMs }),
       runCommand: () => {
         const snapshot = snapshots[Math.min(polls++, snapshots.length - 1)];
         return { status: 0, stdout: JSON.stringify(snapshot) };
@@ -63,47 +234,92 @@ const reconnectPollOptions = {
   requireClientIntegration: true
 };
 
-test("reconnect waits through transient Privacy Filter Service health failures", async () => {
+const waitForHarnessStatus = (harness, options = {}) =>
+  waitForHealthyStatus(
+    { ...reconnectPollOptions, koedHome: harness.koedHome, ...options },
+    harness.dependencies
+  );
+
+test("reconnect waits through transient Privacy Filter Service health failures", async (t) => {
   const pending = healthyStatus();
   pending.privacyService.state = "starting";
   const healthy = healthyStatus();
-  const harness = statusPollHarness([pending, healthy]);
-  assert.deepEqual(
-    await waitForHealthyStatus(reconnectPollOptions, harness.dependencies),
-    healthy
-  );
+  const harness = statusPollHarness([pending, healthy], {
+    statusProbeIntervalMs: 1
+  });
+  t.after(harness.cleanup);
+  assert.deepEqual(await waitForHarnessStatus(harness), healthy);
   assert.equal(harness.polls, 2);
 });
 
-test("reconnect does not accept healthy services until client integration is ready", async () => {
+test("readiness polling avoids repeated full status probes", async (t) => {
+  const healthy = healthyStatus();
+  const harness = statusPollHarness([healthy], {
+    readinessStatuses: [503, 200]
+  });
+  t.after(harness.cleanup);
+  assert.deepEqual(await waitForHarnessStatus(harness), healthy);
+  assert.equal(harness.readinessPolls, 2);
+  assert.equal(harness.polls, 1);
+  assert.deepEqual(harness.readyRequests, [
+    { url: "http://127.0.0.1:3300/ready", authorization: undefined },
+    { url: "http://127.0.0.1:3300/ready", authorization: undefined }
+  ]);
+});
+
+test("full status probes stay throttled while API readiness remains healthy", async (t) => {
+  const pending = healthyStatus();
+  pending.privacyService.state = "starting";
+  const harness = statusPollHarness([pending, healthyStatus()], {
+    statusProbeIntervalMs: 4
+  });
+  t.after(harness.cleanup);
+  await waitForHarnessStatus(harness);
+  assert.equal(harness.polls, 2);
+  assert.equal(harness.readinessPolls, 5);
+});
+
+test("default full status retry interval is thirty seconds", async (t) => {
+  const pending = healthyStatus();
+  pending.privacyService.state = "starting";
+  const harness = statusPollHarness([pending, healthyStatus()]);
+  t.after(harness.cleanup);
+  await waitForHarnessStatus(harness, {
+    timeoutMs: 30_001,
+    pollIntervalMs: 15_000
+  });
+  assert.equal(harness.polls, 2);
+  assert.equal(harness.readinessPolls, 3);
+});
+
+test("reconnect does not accept healthy services until client integration is ready", async (t) => {
   const pending = healthyStatus();
   pending.captureHook.state = "starting";
-  const harness = statusPollHarness([pending, healthyStatus()]);
-  const result = await waitForHealthyStatus(
-    reconnectPollOptions,
-    harness.dependencies
-  );
+  const harness = statusPollHarness([pending, healthyStatus()], {
+    statusProbeIntervalMs: 1
+  });
+  t.after(harness.cleanup);
+  const result = await waitForHarnessStatus(harness);
   assert.equal(result.captureHook.state, "healthy");
   assert.equal(harness.polls, 2);
 });
 
-test("reconnect fails with the last status if privacy never recovers", async () => {
+test("reconnect fails with the last status if privacy never recovers", async (t) => {
   const pending = healthyStatus();
   pending.privacyService.state = "starting";
-  const harness = statusPollHarness([pending]);
+  const harness = statusPollHarness([pending], { statusProbeIntervalMs: 1 });
+  t.after(harness.cleanup);
   await assert.rejects(
-    waitForHealthyStatus(reconnectPollOptions, harness.dependencies),
+    waitForHarnessStatus(harness),
     /Timed out waiting for packaged daemon health.*Last status:[\s\S]*privacyService[\s\S]*starting/
   );
   assert.equal(harness.polls, 10);
 });
 
-test("reconnect fails immediately if the daemon supervisor exited", async () => {
+test("reconnect fails immediately if the daemon supervisor exited", async (t) => {
   const harness = statusPollHarness([healthyStatus()], { running: false });
-  await assert.rejects(
-    waitForHealthyStatus(reconnectPollOptions, harness.dependencies),
-    /supervisor 123 exited/
-  );
+  t.after(harness.cleanup);
+  await assert.rejects(waitForHarnessStatus(harness), /supervisor 123 exited/);
   assert.equal(harness.polls, 0);
 });
 

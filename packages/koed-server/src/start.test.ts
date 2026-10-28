@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -26,6 +27,8 @@ import {
   it,
   vi
 } from "vitest";
+import { resolveKoedRuntimeOwner } from "./app-runtime.js";
+import type { RuntimeOwner } from "./component-contract.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import { deviceRequestCommand } from "./personal-device-request.js";
 import {
@@ -35,7 +38,10 @@ import {
   stopChildProcess,
   waitForManagedProcessExits
 } from "./start.js";
-import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
+import {
+  acquireKoedServerSupervisorLock,
+  releaseKoedServerSupervisorLock
+} from "./supervisor-lock.js";
 import type { KoedServerStatus } from "./types.js";
 
 vi.mock("./local-privacy-runtime.js", async (importOriginal) => {
@@ -94,6 +100,57 @@ const spawnResult = () =>
     pid: 1,
     output: []
   }) satisfies SpawnSyncReturns<string>;
+
+const writeDesktopBundleOwner = (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  owner: RuntimeOwner
+): void => {
+  const generationId = createHash("sha256")
+    .update(`${owner.installationId}\n${"e".repeat(64)}`)
+    .digest("hex");
+  const generationPath = resolve(paths.generationsDir, generationId);
+  mkdirSync(paths.componentsDir, { recursive: true, mode: 0o700 });
+  mkdirSync(generationPath, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    resolve(paths.componentsDir, "current.json"),
+    JSON.stringify({ schemaVersion: 1, generationId })
+  );
+  writeFileSync(
+    resolve(generationPath, "desktop-bundle.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      kind: "desktop-bundle",
+      id: generationId,
+      productVersion: "0.8.1",
+      owner,
+      bundleDigest: "e".repeat(64),
+      resourcesPath: "/test/Koed.app/Contents/Resources"
+    })
+  );
+};
+
+const writeActiveRuntimeOwner = (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  lock: ReturnType<typeof acquireKoedServerSupervisorLock>,
+  owner: RuntimeOwner
+): void => {
+  if (!lock.ownerPid || !lock.processIdentity)
+    throw new Error("Test supervisor lock is missing process identity.");
+  writeFileSync(
+    paths.generationStatePath ??
+      resolve(paths.runDir, "runtime-generation.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      generationId: "a".repeat(64),
+      pid: lock.ownerPid,
+      processIdentity: lock.processIdentity,
+      startedAt: new Date().toISOString(),
+      owner,
+      pinToken: "b".repeat(64)
+    })
+  );
+  writeFileSync(paths.runtimeStatePath, JSON.stringify({ pid: lock.ownerPid }));
+};
 
 const healthyStatus = (root: string): KoedServerStatus => ({
   ok: true,
@@ -320,6 +377,20 @@ afterEach(() => {
 });
 
 describe("start supervisor", () => {
+  it("rejects caller-constructed Desktop runtime authority", async () => {
+    await expect(
+      startKoedServer({
+        desktopRuntimeCapability: {
+          resourcesPath: "/untrusted",
+          productVersion: "1.2.3",
+          bundleDigest: "0".repeat(64)
+        } as never
+      })
+    ).rejects.toThrow(
+      "validated private Desktop runtime capability is required"
+    );
+  });
+
   it("collects startup status once per readiness phase and emits correlated timings", async () => {
     const root = tempDir();
     const logs: string[] = [];
@@ -941,6 +1012,12 @@ describe("start supervisor", () => {
     expect(commands.some((command) => command.command === "docker")).toBe(
       false
     );
+    expect(existsSync(resolve(root, "run/koed-server.lock"))).toBe(false);
+    const retryLock = acquireKoedServerSupervisorLock(
+      resolveKoedServerPaths({ KOED_HOME: root })
+    );
+    expect(retryLock.acquired).toBe(true);
+    releaseKoedServerSupervisorLock(retryLock);
   });
 
   it("lets one-shot port overrides win over repo .env URLs when starting external mode", async () => {
@@ -1627,10 +1704,13 @@ describe("start supervisor", () => {
 
   it("does not allocate ports when a live supervisor owns KOED_HOME", async () => {
     const root = tempDir();
-    const lock = acquireKoedServerSupervisorLock(
-      resolveKoedServerPaths({ KOED_HOME: root, KOED_REPO_ROOT: root })
-    );
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root
+    });
+    const lock = acquireKoedServerSupervisorLock(paths);
     expect(lock.acquired).toBe(true);
+    writeActiveRuntimeOwner(paths, lock, resolveKoedRuntimeOwner());
     const commands: string[] = [];
 
     await startKoedServer({
@@ -1651,9 +1731,78 @@ describe("start supervisor", () => {
     expect(() =>
       readFileSync(resolve(root, "config/local-ports.json"), "utf8")
     ).toThrow();
+    expect(releaseKoedServerSupervisorLock(lock)).toBe(true);
   });
 
-  it("starts packaged app services without workspace pnpm scripts", async () => {
+  it("rejects a stopped generation owned by another control plane", async () => {
+    const root = realpathSync(tempDir());
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root
+    });
+    writeDesktopBundleOwner(paths, {
+      kind: "desktop",
+      installationId: "d".repeat(32)
+    });
+    const spawnSync = vi.fn(() => spawnResult());
+    const spawn = vi.fn(() => child(1));
+
+    await expect(
+      startKoedServer({
+        signal: cleanShutdownSignal(),
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "bundled-local"
+        },
+        spawnSync,
+        spawn
+      })
+    ).rejects.toThrow(
+      "Packaged runtime owner does not match this standalone control plane."
+    );
+
+    expect(spawnSync).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(existsSync(resolve(paths.runDir, "koed-server.lock"))).toBe(false);
+  });
+
+  it("rejects a supervisor owned by another control plane", async () => {
+    const root = realpathSync(tempDir());
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root
+    });
+    const lock = acquireKoedServerSupervisorLock(paths);
+    expect(lock.acquired).toBe(true);
+    writeActiveRuntimeOwner(paths, lock, {
+      kind: "desktop",
+      installationId: "d".repeat(32)
+    });
+    const spawnSync = vi.fn(() => spawnResult());
+    const spawn = vi.fn(() => child(1));
+
+    await expect(
+      startKoedServer({
+        signal: cleanShutdownSignal(),
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "bundled-local"
+        },
+        spawnSync,
+        spawn
+      })
+    ).rejects.toThrow(
+      "Packaged runtime owner does not match this standalone control plane."
+    );
+
+    expect(spawnSync).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(releaseKoedServerSupervisorLock(lock)).toBe(true);
+  });
+
+  it("ignores packaged environment flags during source execution", async () => {
     const root = tempDir();
     createPackagedAppRuntime(root);
     writeFileSync(
@@ -1716,48 +1865,45 @@ describe("start supervisor", () => {
       collectStatus: async () => healthyStatus(root)
     });
 
-    expect(commands).toEqual([]);
-    expect(spawned[0]?.args).toEqual([
-      resolve(root, "koed-runtime/api/dist/index.js")
-    ]);
+    expect(
+      commands.some((entry) => entry.args[0]?.endsWith("setup-env.mjs"))
+    ).toBe(true);
+    expect(spawned[0]?.args).toEqual([resolve(root, "apps/api/dist/index.js")]);
     expect(spawned[1]?.args).toEqual([
-      resolve(root, "koed-runtime/mcp-server/dist/local-runtime-cli.js")
+      resolve(root, "packages/mcp-server/dist/local-runtime-cli.js")
     ]);
     expect(spawned[2]?.args).toEqual([
-      resolve(root, "koed-runtime/worker/dist/index.js")
+      resolve(root, "apps/worker/dist/index.js")
     ]);
-    expect(spawned[2]?.env?.EMBEDDING_SERVICE_TOKEN).toBeDefined();
-    expect(spawned[2]?.env?.EMBEDDING_SERVICE_TOKEN).not.toBe("");
-    expect(
-      spawned[0]?.env?.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY
-    ).toBeDefined();
-    expect(spawned[0]?.env?.OWNER_PRIVATE_REPLICA_DATA_ENCRYPTION_KEY).not.toBe(
-      spawned[0]?.env?.DATA_ENCRYPTION_KEY
-    );
     expect(spawned[0]?.env?.TEAM_MEMORY_DATA_ENCRYPTION_KEY).toBe(
-      "runtime-team-data-key"
+      "root-team-data-key"
     );
     expect(spawned[0]?.env?.TEAM_MEMORY_ENVELOPE_ENCRYPTION_PROVIDER).toBe(
-      "runtime-local-test-key"
+      "local_test_key"
     );
     expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_ID).toBe(
-      "runtime-team-kms-key"
+      "root-team-kms-key"
     );
-    expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_VERSION).toBe("8");
+    expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_KEY_VERSION).toBe("7");
     expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_ENDPOINT_URL).toBe(
-      "https://runtime-kms.koed.example"
+      "https://kms.koed.example"
     );
     expect(spawned[0]?.env?.TEAM_MEMORY_MANAGED_KMS_AUTH_TOKEN).toBe(
-      "runtime-team-kms-token"
+      "root-team-kms-token"
     );
     expect(spawned[2]?.env?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
     expect(spawned).toHaveLength(3);
     expect(spawned.map((entry) => entry.command)).not.toContain("pnpm");
   });
 
-  it("provisions a Personal API Token for a fresh packaged bundled-local start", async () => {
+  it("provisions a Personal API Token during a source bundled-local start", async () => {
     const root = tempDir();
-    createPackagedAppRuntime(root);
+    const embeddingEntry = resolve(
+      root,
+      "apps/embedding-service/dist/index.js"
+    );
+    mkdirSync(resolve(embeddingEntry, ".."), { recursive: true });
+    writeFileSync(embeddingEntry, "");
     const pgBin = resolve(root, "runtime/postgres/bin");
     const llamaBin = resolve(root, "runtime/llama.cpp");
     mkdirSync(pgBin, { recursive: true });
@@ -1784,8 +1930,6 @@ describe("start supervisor", () => {
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        KOED_PACKAGED_DESKTOP: "1",
-        KOED_PACKAGED_RESOURCES_PATH: root,
         KOED_RUNTIME_MODE: "local-personal",
         KOED_DEPENDENCY_MODE: "bundled-local",
         KOED_TEAM_COLLABORATION_ENABLED: "false"

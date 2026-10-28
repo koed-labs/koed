@@ -77,11 +77,13 @@ export {
   createDesktopCollaborationBroker,
   runDesktopCollaborationBrokerProcess
 } from "./desktop-collaboration-broker.js";
+export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
+export { resolveProcessIdentity } from "./supervisor-lock.js";
 export {
-  resolveKoedHome,
-  resolveKoedServerPaths,
-  type KoedServerPaths
-} from "./paths.js";
+  observeRuntimeLifecycle,
+  type RuntimeLifecycleObservation
+} from "./runtime-lifecycle.js";
+export type { KoedServerPaths } from "./paths.js";
 export {
   discoverProjectMetadata,
   historicalFolderRepositoryIdentity,

@@ -1,3 +1,4 @@
+import { canonicalArtifactBytes } from "../packages/koed-server/src/artifact-canonical-json.mjs";
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import {
   existsSync,
@@ -8,7 +9,7 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { assertNoClaudeAgentSdkPlatformRuntimes } from "./provider-runtime-package-policy.mjs";
 
 export const standalonePackageSchemaVersion = 2;
@@ -198,17 +199,45 @@ export const sha256File = (path) => {
   return hash.digest("hex");
 };
 
-const canonicalJson = (value) => {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
+export const canonicalComponentManifestBytes = (manifest) =>
+  canonicalArtifactBytes(manifest);
+
+export const buildComponentManifest = ({
+  componentRoot,
+  archivePath,
+  component,
+  productVersion,
+  target,
+  runtimes,
+  requiredFiles
+}) => {
+  const root = resolve(componentRoot);
+  const files = listFiles(root)
+    .sort()
+    .map((path) => {
+      const stat = lstatSync(resolve(root, path));
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw new Error(
+          `component payload must contain regular files only: ${path}`
+        );
+      }
+      return { path, sha256: sha256File(resolve(root, path)) };
+    });
+  const archive = readFileSync(archivePath);
+  return {
+    schemaVersion: 1,
+    productVersion,
+    component,
+    target,
+    runtimes,
+    archive: {
+      name: basename(archivePath),
+      bytes: archive.length,
+      sha256: createHash("sha256").update(archive).digest("hex")
+    },
+    requiredFiles: [...requiredFiles],
+    files
+  };
 };
 
 export const sha256Files = (root, files) => {
@@ -400,7 +429,7 @@ export const buildPackageProvenance = ({
     }
   };
   const key = signingPrivateKey();
-  const payload = Buffer.from(canonicalJson(statement), "utf8");
+  const payload = canonicalArtifactBytes(statement);
   const signature = key ? sign(null, payload, key).toString("base64") : null;
   return {
     statement,

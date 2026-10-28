@@ -7,8 +7,13 @@ export const productReleasePackagePath = "packages/koed/package.json";
 
 export const synchronizedProductPackagePaths = [
   ["root package", "package.json"],
-  ["koed-server package", "packages/koed-server/package.json"],
   ["Desktop package", "apps/desktop/package.json"]
+];
+
+export const publicProductReleasePackage = "@koed-labs/server";
+export const productReleaseFixedGroup = [
+  "@koed/koed",
+  publicProductReleasePackage
 ];
 
 export const internalWorkspacePackageNames = [
@@ -19,7 +24,6 @@ export const internalWorkspacePackageNames = [
   "@koed/desktop",
   "@koed/embedding-service",
   "@koed/evals",
-  "@koed-labs/server",
   "@koed/mcp-server",
   "@koed/memory-ui",
   "@koed/privacy-service",
@@ -57,6 +61,15 @@ export const readProductReleaseVersion = (root) =>
 
 export const syncProductPackageVersions = (root) => {
   const version = readProductReleaseVersion(root);
+  const serverVersion = readJson(
+    root,
+    "packages/koed-server/package.json"
+  ).version;
+  if (serverVersion !== version) {
+    throw new Error(
+      `Fixed Changesets release versions differ: ${publicProductReleasePackage} is ${String(serverVersion)}; @koed/koed is ${version}. Run Changesets before synchronizing release artifacts.`
+    );
+  }
   const changed = [];
   for (const [label, relativePath] of synchronizedProductPackagePaths) {
     const packageJson = readJson(root, relativePath);
@@ -83,9 +96,18 @@ export const assertProductPackageVersions = (root) => {
           ];
     }
   );
+  const serverVersion = readJson(
+    root,
+    "packages/koed-server/package.json"
+  ).version;
+  if (serverVersion !== version) {
+    mismatches.push(
+      `public server package (packages/koed-server/package.json) is ${String(serverVersion)}; expected fixed-group version ${version}`
+    );
+  }
   if (mismatches.length > 0) {
     throw new Error(
-      `Koed product release versions are out of sync:\n- ${mismatches.join("\n- ")}\nRun \`pnpm release:version\` to synchronize release artifacts.`
+      `Koed product release versions are out of sync:\n- ${mismatches.join("\n- ")}\nRun Changesets before \`pnpm release:version\` to synchronize release artifacts.`
     );
   }
   return version;
@@ -97,11 +119,41 @@ export const assertChangesetReleasePolicy = (root) => {
   const classifiedPackages = new Set(internalWorkspacePackageNames);
   const unclassifiedPackages = discoverWorkspacePackageNames(root).filter(
     (packageName) =>
-      packageName !== "@koed/koed" && !classifiedPackages.has(packageName)
+      packageName !== "@koed/koed" &&
+      packageName !== publicProductReleasePackage &&
+      !classifiedPackages.has(packageName)
   );
   if (unclassifiedPackages.length > 0) {
     throw new Error(
       `Internal workspace packages are missing from the release policy:\n- ${unclassifiedPackages.join("\n- ")}`
+    );
+  }
+  const fixedGroups = Array.isArray(config.fixed) ? config.fixed : [];
+  const coordinatedGroup = fixedGroups.find(
+    (group) =>
+      Array.isArray(group) &&
+      group.length === productReleaseFixedGroup.length &&
+      productReleaseFixedGroup.every((packageName) =>
+        group.includes(packageName)
+      )
+  );
+  if (!coordinatedGroup) {
+    throw new Error(
+      `Changesets must fixed-version @koed/koed and ${publicProductReleasePackage} together.`
+    );
+  }
+  if (config.access !== "public") {
+    throw new Error("Changesets access must be public for the server release.");
+  }
+  if (ignored.has(publicProductReleasePackage)) {
+    throw new Error(
+      `Changesets must not ignore ${publicProductReleasePackage}.`
+    );
+  }
+  const server = readJson(root, "packages/koed-server/package.json");
+  if (server.name !== publicProductReleasePackage || server.private !== true) {
+    throw new Error(
+      `Changesets must classify ${publicProductReleasePackage} as the private source workspace for the assembled public server release unit.`
     );
   }
   const missing = internalWorkspacePackageNames.filter(
@@ -251,7 +303,7 @@ export const assertReleaseWorkflowVersionPropagation = (root) => {
     }
   }
 
-  const desktopJobId = "unsigned-desktop-release-assets";
+  const desktopJobId = "signed-desktop-release-assets";
   const desktopJob = findWorkflowJob(
     workflow,
     desktopJobId,
@@ -276,33 +328,6 @@ export const assertReleaseWorkflowVersionPropagation = (root) => {
   ) {
     failures.push(
       `${desktopJobId}/Build native runtime artifact must pass the release job version`
-    );
-  }
-
-  const recoveryWorkflowPath = ".github/workflows/release-desktop-assets.yml";
-  const recoveryWorkflow = parseWorkflow(root, recoveryWorkflowPath);
-  const recoveryJobId = "recover-desktop-assets";
-  const recoveryJob = findWorkflowJob(
-    recoveryWorkflow,
-    recoveryJobId,
-    recoveryWorkflowPath,
-    failures
-  );
-  const recoveryStep = findWorkflowStep(
-    recoveryJob,
-    "Build native runtime artifact",
-    recoveryJobId,
-    failures
-  );
-  if (
-    !isRecord(recoveryStep?.env) ||
-    recoveryStep.env.TAG !== "${{ inputs.tag }}" ||
-    !/KOED_NATIVE_RUNTIME_VERSION=["']?\$\{TAG#v\}["']?\s+pnpm\s+native-runtime:build:macos-arm64\b/.test(
-      executableRun(recoveryStep)
-    )
-  ) {
-    failures.push(
-      `${recoveryJobId}/Build native runtime artifact must strip the tag prefix before versioning its native runtime`
     );
   }
 

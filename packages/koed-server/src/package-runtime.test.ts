@@ -25,12 +25,31 @@ import {
   cleanupServerPackages,
   collectServerPackageStatus,
   installServerPackage,
+  isVersionDowngrade,
   packageExtractionLimits,
   requiredPackageRuntimeFiles,
   sha256File,
   validateServerPackageRoot,
   type KoedServerPackageManifest
 } from "./package-runtime.js";
+
+describe("package version ordering", () => {
+  it.each([
+    ["1.0.0-alpha.1", "1.0.0-alpha.beta", false],
+    ["1.0.0-alpha.beta", "1.0.0-alpha.1", true],
+    ["1.0.0-alpha.9", "1.0.0-alpha.10", false],
+    ["1.0.0-rc.1", "1.0.0", false],
+    ["1.0.0", "1.0.0-rc.1", true],
+    ["1.0.0-alpha", "1.0.0-alpha.1", false],
+    ["1.0.0-alpha.1", "1.0.0-alpha", true],
+    ["1.0.0-alpha-a", "1.0.0-alpha-b", false],
+    ["1.0.0+build.2", "1.0.0+build.1", false],
+    ["1.0.0", "1.0.0", false],
+    ["2.0.0", "1.99.99", true]
+  ])("orders active %s and candidate %s", (current, next, downgrade) => {
+    expect(isVersionDowngrade(current, next)).toBe(downgrade);
+  });
+});
 
 const temps: string[] = [];
 

@@ -117,6 +117,7 @@ export class DesktopStatusStore {
     status: null
   };
   #refresh: Promise<KoedServerStatus | null> | null = null;
+  #stale = false;
 
   current = (): StatusSnapshot => this.#snapshot;
 
@@ -124,6 +125,13 @@ export class DesktopStatusStore {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   };
+
+  // A lifecycle change makes any response still in flight describe an older
+  // supervisor epoch: it is discarded and collected again.
+  invalidate(): void {
+    if (this.#refresh) this.#stale = true;
+    else void this.refresh();
+  }
 
   async refresh(): Promise<KoedServerStatus | null> {
     if (this.#refresh) return this.#refresh;
@@ -189,7 +197,11 @@ export class DesktopStatusStore {
 
   async #runRefresh(): Promise<KoedServerStatus | null> {
     try {
-      const status = await invokeDesktop<KoedServerStatus>("status");
+      let status: KoedServerStatus;
+      do {
+        this.#stale = false;
+        status = await invokeDesktop<KoedServerStatus>("status");
+      } while (this.#stale);
       this.#replace({
         busyCommand: this.#snapshot.busyCommand,
         error: null,
@@ -198,8 +210,19 @@ export class DesktopStatusStore {
       });
       return status;
     } catch (cause) {
+      const previous = this.#snapshot.status;
       this.#replace({
         ...this.#snapshot,
+        // Never leave the last successful status looking current.
+        status: previous
+          ? {
+              ...previous,
+              lifecycle: {
+                state: "unavailable",
+                message: "Koed status could not be refreshed."
+              }
+            }
+          : previous,
         error: cause instanceof Error ? cause.message : String(cause)
       });
       return null;

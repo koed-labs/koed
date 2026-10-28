@@ -64,7 +64,28 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
   write(resolve(root, "node_modules", ".pnpm", "lock.yaml"));
   write(resolve(root, "package.json"), "{}\n");
 
+  const runtimeCatalog = resolve(
+    root,
+    "node_modules/@koed-labs/server/dist/component-manifest-catalog-data.js"
+  );
+  write(
+    runtimeCatalog,
+    'export const productionComponentManifestCatalog = { productVersion: "must-not-survive" };\n'
+  );
   const result = finalizeStagedAppRuntime(root);
+  assert.equal(
+    readFileSync(runtimeCatalog, "utf8"),
+    "export const productionComponentManifestCatalog = null;\n"
+  );
+  write(
+    runtimeCatalog,
+    'export const productionComponentManifestCatalog = { productVersion: "rebuild" };\n'
+  );
+  finalizeStagedAppRuntime(root);
+  assert.equal(
+    readFileSync(runtimeCatalog, "utf8"),
+    "export const productionComponentManifestCatalog = null;\n"
+  );
   assert.equal(result.required.length > 10, true);
   assert.equal(existsSync(bin), false);
   assert.equal(existsSync(resolve(root, "node_modules", ".pnpm")), false);

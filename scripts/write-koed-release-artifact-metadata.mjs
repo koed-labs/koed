@@ -122,6 +122,9 @@ const collectServerPackageTargets = ({
       throw new Error(`Missing SHA-256 sidecar for ${archive}`);
     }
     const sha256 = readSha256Sidecar(checksum);
+    if (sha256File(archive) !== sha256) {
+      throw new Error(`Archive SHA-256 does not match sidecar: ${archive}`);
+    }
     const manifestFile = findUniqueNamedFile(
       files,
       `koed-server-app-runtime-${target.version}-${target.platform}-${target.architecture}.manifest.json`,
@@ -229,6 +232,51 @@ const collectServerPackageTargets = ({
   });
 };
 
+const collectPublicServerPackage = ({
+  artifactRoot,
+  repository,
+  tag,
+  version
+}) => {
+  const files = listFiles(resolve(artifactRoot));
+  const identityFiles = files.filter(
+    (file) => basename(file) === "koed-labs-server-release-identity.json"
+  );
+  if (identityFiles.length === 0) return undefined;
+  if (identityFiles.length !== 1)
+    throw new Error("Duplicate public server npm identity.");
+  const identityFile = identityFiles[0];
+  const identity = JSON.parse(readFileSync(identityFile, "utf8"));
+  const tarball = findUniqueNamedFile(
+    files,
+    "koed-labs-server.tgz",
+    "public server npm tarball"
+  );
+  const integrity = `sha512-${createHash("sha512").update(readFileSync(tarball)).digest("base64")}`;
+  if (
+    identity.schemaVersion !== 1 ||
+    identity.packageName !== "@koed-labs/server" ||
+    identity.version !== version ||
+    identity.npm?.integrity !== integrity ||
+    identity.npm?.bytes !== readFileSync(tarball).byteLength ||
+    !/^[a-f0-9]{64}$/.test(identity.npm?.inventorySha256 ?? "")
+  )
+    throw new Error(
+      "Public server npm identity does not match immutable tarball bytes."
+    );
+  return {
+    kind: "npm-package",
+    packageName: identity.packageName,
+    version: identity.version,
+    tarball: {
+      name: basename(tarball),
+      url: releaseUrl({ repository, tag, file: tarball }),
+      integrity
+    },
+    inventorySha256: identity.npm.inventorySha256
+  };
+};
+
 const collectNativeRuntimeTargets = ({
   artifactRoot,
   repository,
@@ -269,6 +317,10 @@ const collectNativeRuntimeTargets = ({
         provenance.artifact,
         target
       );
+      const archiveSha256 = readSha256Sidecar(checksum);
+      if (sha256File(archive) !== archiveSha256) {
+        throw new Error(`Archive SHA-256 does not match sidecar: ${archive}`);
+      }
       return {
         version: provenance.artifact?.version,
         platform: provenance.artifact?.platform,
@@ -276,7 +328,7 @@ const collectNativeRuntimeTargets = ({
         archive: {
           name: basename(archive),
           url: releaseUrl({ repository, tag, file: archive }),
-          sha256: readSha256Sidecar(checksum)
+          sha256: archiveSha256
         },
         checksum: {
           name: basename(checksum),
@@ -294,6 +346,7 @@ const collectNativeRuntimeTargets = ({
 
 export const buildReleaseArtifactMetadata = (options) => {
   const targets = collectServerPackageTargets(options);
+  const publicServerPackage = collectPublicServerPackage(options);
   const nativeRuntimeTargets = collectNativeRuntimeTargets(options);
   if (options.tag !== `v${options.version}`) {
     throw new Error(
@@ -313,6 +366,7 @@ export const buildReleaseArtifactMetadata = (options) => {
         version: options.version,
         description: "Koed Desktop control-plane package assets."
       },
+      ...(publicServerPackage ? { publicServerPackage } : {}),
       koedServerAppRuntime: {
         kind: "app-runtime",
         packageName: "koed-server",
@@ -346,6 +400,20 @@ export const validateReleaseArtifactMetadata = (metadata, options) => {
   ) {
     throw new Error("Release metadata identity is inconsistent.");
   }
+  const publicPackage = metadata.artifacts?.publicServerPackage;
+  if (
+    publicPackage &&
+    (publicPackage.packageName !== "@koed-labs/server" ||
+      publicPackage.version !== options.version ||
+      !/^sha512-[A-Za-z0-9+/]+=*$/.test(
+        publicPackage.tarball?.integrity ?? ""
+      ) ||
+      !/^[a-f0-9]{64}$/.test(publicPackage.inventorySha256 ?? "") ||
+      !publicPackage.tarball?.url?.endsWith(`/${publicPackage.tarball.name}`))
+  )
+    throw new Error(
+      "Public server npm release metadata identity is inconsistent."
+    );
   const groups = [
     metadata.artifacts?.koedServerAppRuntime?.targets ?? [],
     metadata.artifacts?.nativeRuntime?.targets ?? []

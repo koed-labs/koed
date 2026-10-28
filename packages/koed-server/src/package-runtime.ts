@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
+import { canonicalArtifactBytes } from "./artifact-canonical-json.mjs";
 import { createGunzip } from "node:zlib";
 import {
   chmodSync,
@@ -261,20 +262,6 @@ const normalizeSha256 = (value: string): string => {
   return normalized;
 };
 
-const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-};
-
 const validatePackageVersion = (version: string): string => {
   if (!/^[0-9A-Za-z][0-9A-Za-z._+-]*$/.test(version)) {
     throw new Error(
@@ -367,17 +354,58 @@ const sha256Files = (root: string, files: string[]): string => {
 const readJson = <T>(path: string): T =>
   JSON.parse(readFileSync(path, "utf8")) as T;
 
+const compareIdentifiers = (left: string, right: string): number => {
+  if (left === right) return 0;
+  const leftNumeric = /^\d+$/.test(left);
+  const rightNumeric = /^\d+$/.test(right);
+  if (leftNumeric && rightNumeric)
+    return BigInt(left) < BigInt(right)
+      ? -1
+      : BigInt(left) > BigInt(right)
+        ? 1
+        : 0;
+  if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+  return left < right ? -1 : 1;
+};
 const compareVersions = (a: string, b: string): number => {
-  const numberPart = (part: string): number =>
-    /^\d+$/.test(part) ? Number.parseInt(part, 10) : 0;
-  const left = a.split(/[.-]/).map(numberPart);
-  const right = b.split(/[.-]/).map(numberPart);
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    const leftPart = left[index] ?? 0;
-    const rightPart = right[index] ?? 0;
-    if (leftPart !== rightPart) return leftPart - rightPart;
+  const parts = (version: string) => {
+    const withoutBuild = version.split("+")[0]!;
+    const separator = withoutBuild.indexOf("-");
+    return {
+      core: (separator < 0
+        ? withoutBuild
+        : withoutBuild.slice(0, separator)
+      ).split("."),
+      prerelease:
+        separator < 0 ? [] : withoutBuild.slice(separator + 1).split(".")
+    };
+  };
+  const left = parts(a),
+    right = parts(b);
+  for (let index = 0; index < 3; index++) {
+    const order = compareIdentifiers(
+      left.core[index] ?? "0",
+      right.core[index] ?? "0"
+    );
+    if (order) return order;
   }
-  return a.localeCompare(b);
+  if (!left.prerelease.length || !right.prerelease.length)
+    return (
+      Number(right.prerelease.length > 0) - Number(left.prerelease.length > 0)
+    );
+  for (
+    let index = 0;
+    index < Math.max(left.prerelease.length, right.prerelease.length);
+    index++
+  ) {
+    const l = left.prerelease[index],
+      r = right.prerelease[index];
+    if (l === undefined) return -1;
+    if (r === undefined) return 1;
+    const order = compareIdentifiers(l, r);
+    if (order) return order;
+  }
+  return 0;
 };
 
 const validateManifestShape = (
@@ -661,6 +689,11 @@ const readExpectedSha256 = (options: ServerPackageInstallOptions): string => {
   throw new Error("--sha256 or --sha256-file is required.");
 };
 
+export const extractVerifiedPackageArchive = (
+  archivePath: string,
+  destination: string
+): Promise<void> => extractTarGz(archivePath, destination);
+
 const adjacentProvenancePath = (archivePath: string): string | undefined => {
   const archiveName = basename(archivePath);
   const releaseName = archiveName
@@ -697,7 +730,7 @@ const verifyProvenanceSignature = ({
     throw new Error("Package provenance signature algorithm must be ed25519.");
   }
   const key = createPublicKey(publicKey);
-  const payload = Buffer.from(canonicalJson(provenance.statement), "utf8");
+  const payload = canonicalArtifactBytes(provenance.statement);
   const ok = verify(null, payload, key, Buffer.from(signature, "base64"));
   if (!ok) {
     throw new Error("Package provenance signature verification failed.");
@@ -793,6 +826,37 @@ const migrationTimestamp = (
     : undefined;
 };
 
+export const isVersionDowngrade = (
+  currentVersion: string,
+  candidateVersion: string
+): boolean => compareVersions(candidateVersion, currentVersion) < 0;
+
+export const assertPackageMigrationCompatible = (
+  currentManifest: KoedServerPackageManifest,
+  nextManifest: KoedServerPackageManifest,
+  allowDowngrade = false
+): void => {
+  if (!isVersionDowngrade(currentManifest.version, nextManifest.version))
+    return;
+  if (!allowDowngrade) {
+    throw new Error(
+      `Installing koed-server ${nextManifest.version} over active ${currentManifest.version} is a downgrade and requires --allow-downgrade.`
+    );
+  }
+  const currentMigration = migrationTimestamp(currentManifest);
+  const nextMigration = migrationTimestamp(nextManifest);
+  if (
+    currentMigration !== undefined &&
+    nextMigration !== undefined &&
+    nextMigration < currentMigration &&
+    nextManifest.database?.allowsRollback !== true
+  ) {
+    throw new Error(
+      "Downgrade would roll back the package migration set, and the target package does not allow rollback."
+    );
+  }
+};
+
 const assertUpgradeCompatible = ({
   paths,
   nextManifest,
@@ -804,25 +868,11 @@ const assertUpgradeCompatible = ({
 }): void => {
   const currentManifest = activePackageManifest(paths);
   if (!currentManifest?.version) return;
-  if (compareVersions(nextManifest.version, currentManifest.version) < 0) {
-    if (!allowDowngrade) {
-      throw new Error(
-        `Installing koed-server ${nextManifest.version} over active ${currentManifest.version} is a downgrade and requires --allow-downgrade.`
-      );
-    }
-    const currentMigration = migrationTimestamp(currentManifest);
-    const nextMigration = migrationTimestamp(nextManifest);
-    if (
-      currentMigration !== undefined &&
-      nextMigration !== undefined &&
-      nextMigration < currentMigration &&
-      nextManifest.database?.allowsRollback !== true
-    ) {
-      throw new Error(
-        "Downgrade would roll back the package migration set, and the target package does not allow rollback."
-      );
-    }
-  }
+  assertPackageMigrationCompatible(
+    currentManifest,
+    nextManifest,
+    allowDowngrade
+  );
 };
 
 const copyAdjacentProvenanceSidecars = (

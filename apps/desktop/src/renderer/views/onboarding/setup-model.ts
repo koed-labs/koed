@@ -166,15 +166,22 @@ export const setupStepsFromStatus = (status: KoedServerStatus): SetupStep[] => {
 };
 
 export const setupIsReady = (status: KoedServerStatus): boolean =>
+  (!status.lifecycle || status.lifecycle.state === "running") &&
   setupStepsFromStatus(status).every(({ state }) => state === "healthy");
 
 export const compactHealthSummary = (
   status: KoedServerStatus | null
 ): {
   label: string;
-  state: "checking" | "healthy" | "starting" | "waiting" | "fault";
+  state: "checking" | "healthy" | "starting" | "stopped" | "waiting" | "fault";
 } => {
   if (!status) return { label: "Checking Koed", state: "checking" };
+  if (status.lifecycle?.state === "stopped") {
+    return { label: "Koed is stopped", state: "stopped" };
+  }
+  if (status.lifecycle?.state === "unavailable") {
+    return { label: "Koed status is unavailable", state: "fault" };
+  }
 
   const components = status.core
     ? Object.values(status.core.components)

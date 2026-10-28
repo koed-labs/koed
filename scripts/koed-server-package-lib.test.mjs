@@ -14,8 +14,10 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import {
+  buildComponentManifest,
   buildPackageManifest,
   buildPackageProvenance,
+  canonicalComponentManifestBytes,
   normalizeDeployedWorkspaceDependencies,
   pruneStandalonePackageMetadata,
   prunePnpmWorkspaceVirtualStorePaths,
@@ -108,6 +110,45 @@ test("validates a standalone koed-server package root", () => {
     manifest.database.migrationSet.latestMigrationTimestamp,
     20260708000000
   );
+});
+
+test("builds canonical component manifests binding archive and payload metadata", () => {
+  const root = tempDir();
+  const componentRoot = resolve(root, "component");
+  writeFile(resolve(componentRoot, "entry.js"), "export {}\n");
+  const archivePath = resolve(root, "base.tar.gz");
+  writeFile(archivePath, "fixture archive\n");
+  const manifest = buildComponentManifest({
+    componentRoot,
+    archivePath,
+    component: "base",
+    productVersion: "0.8.1",
+    target: { platform: "linux", architecture: "x64" },
+    runtimes: [
+      {
+        kind: "node",
+        runtimeRange: ">=24 <25",
+        nodeRange: ">=24 <25",
+        modulesAbi: "137",
+        minimumNapi: 10
+      }
+    ],
+    requiredFiles: ["entry.js"]
+  });
+  const manifestBytes = canonicalComponentManifestBytes(manifest);
+  assert.deepEqual(JSON.parse(manifestBytes.toString("utf8")), manifest);
+  assert.deepEqual(manifest.archive, {
+    name: "base.tar.gz",
+    bytes: 16,
+    sha256: "b82d14bd3717287c78a2e1351107a49a925192cae59c0f844437eed8a0d6caef"
+  });
+  assert.deepEqual(manifest.requiredFiles, ["entry.js"]);
+  assert.deepEqual(manifest.files, [
+    {
+      path: "entry.js",
+      sha256: "7992a39d6cde5e050eb78461a8bf9ad986175a94826e835c110b3967290bd249"
+    }
+  ]);
 });
 
 test("validates a previously released archive with the legacy launcher", () => {

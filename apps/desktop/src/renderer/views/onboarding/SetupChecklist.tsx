@@ -24,6 +24,7 @@ import {
   clientVersionLabel,
   summarizeCapabilities
 } from "../ai-client-card.js";
+import { CliInstallSettingsSection } from "../preferences/CliInstallSettingsSection.js";
 import { compactHealthSummary } from "./setup-model.js";
 import { TrustBoundaryGuide } from "./TrustBoundaryGuide.js";
 import "../ai-client-card.css";
@@ -157,13 +158,15 @@ export type SetupChecklistProps = {
   onComplete: () => Promise<void> | void;
   showTrustGuide?: boolean;
   statusStore: DesktopStatusStore;
+  teamCollaborationEnabled?: boolean;
 };
 
 export function SetupChecklist({
   onComplete,
   // Temporarily skip the memory welcome guide; retain it for re-enabling later.
   showTrustGuide = false,
-  statusStore
+  statusStore,
+  teamCollaborationEnabled = false
 }: SetupChecklistProps) {
   const setupApi = window.koedDesktop?.setup;
   const [snapshot, setSnapshot] = useState<DesktopSetupSnapshot | null>(null);
@@ -289,6 +292,18 @@ export function SetupChecklist({
           <p className="koed-setup-error" role="alert">
             {error ?? snapshot?.error}
           </p>
+        ) : null}
+
+        {teamCollaborationEnabled ? (
+          <>
+            <p>
+              Team-enabled local services require Privacy Filter assets. Install
+              them with separate consent below before starting or retrying
+              setup. Installing assets does not start setup or bypass
+              verification.
+            </p>
+            <CliInstallSettingsSection api={window.koedDesktop?.cliInstall} />
+          </>
         ) : null}
 
         {!snapshot ? (
@@ -849,19 +864,26 @@ export function CompactHealthAffordance({
   const summary = compactHealthSummary(snapshot.status);
 
   if (summary.state === "healthy") return null;
+  const stopped = summary.state === "stopped";
   return (
     <button
       className="koed-health-affordance"
       data-state={summary.state}
-      onClick={onOpenSetup}
+      disabled={stopped && snapshot.busyCommand !== null}
+      onClick={() => {
+        if (stopped) void statusStore.run("start").catch(() => undefined);
+        else onOpenSetup();
+      }}
       type="button"
     >
-      {summary.state === "checking" || summary.state === "starting" ? (
+      {summary.state === "checking" ||
+      summary.state === "starting" ||
+      (stopped && snapshot.busyCommand === "start") ? (
         <Spinner aria-hidden="true" />
       ) : (
         <AlertTriangle aria-hidden="true" />
       )}
-      <span>{summary.label}</span>
+      <span>{stopped ? `${summary.label} — Start Koed` : summary.label}</span>
     </button>
   );
 }

@@ -114,22 +114,10 @@ redistributable runtime bundle. Python virtualenv files are no longer packaged
 native runtime assets. If no native source is staged, missing native runtime assets
 show as actionable `koed runtime status/install` diagnostics and
 Homebrew remains the macOS/Linux fallback.
-Point the packaged app back at a checkout for developer diagnostics by opting
-into source fallbacks explicitly:
-
-```bash
-KOED_REPO_ROOT=/path/to/koed \
-KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1 \
-  apps/desktop/release/mac/Koed.app/Contents/MacOS/Koed
-```
-
-`KOED_SERVER_CLI=/path/to/cli.js` can override the control-plane CLI directly.
-Use the app executable when passing environment variables; macOS `open` does not
-reliably preserve inline shell environment assignments for `.app` launches.
-Alternatively, set persistent launch services environment with `launchctl setenv
-KOED_REPO_ROOT /path/to/koed` before using `open`. Without those overrides, the
-packaged app uses its bundled `koed-server` CLI and reports missing runtime
-diagnostics instead of crashing.
+Packaged Desktop always resolves the control-plane CLI from its bundled
+`@koed-labs/server` package. Packaged `KOED_REPO_ROOT`, `KOED_SERVER_CLI`, and
+`KOED_NODE_COMMAND` overrides cause runtime resolution to fail closed; use an
+unpackaged development build for checkout overrides.
 
 Packaged Desktop bundled-local startup asks `koed-server` to allocate local
 ports automatically. The first successful allocation is persisted under
@@ -163,11 +151,13 @@ updated hooks if prompted before expecting new captures.
 Packaged Desktop uses `Koed` app metadata, `assets/icon.icns`, and
 `assets/koed-icon.png` for branding. First run starts bundled-local
 `koed-server`, allocates ports, and verifies runtime/model assets under
-`KOED_HOME` before the main window reports healthy. Packaged release
-signing/notarization is not turned on in this repo yet; `desktop:package` and
-`desktop:package:smoke:mac` are unsigned local smoke builds, and
-`desktop:package:release` still needs local Developer ID credentials and
-release setup. Native Windows packaged app support is not shipped here;
+`KOED_HOME` before the main window reports healthy. Production release signing
+uses electron-builder's built-in Developer ID Application and notarization flow
+in `release.yml`, gated by protected `desktop-release` environment approval.
+Administrator credential/environment setup and first-release clean-Mac acceptance
+remain operational prerequisites; see `docs/desktop-notarization.md`.
+`desktop:package` and `desktop:package:smoke:mac` remain unsigned/ad-hoc local smoke
+builds for iteration. Native Windows packaged app support is not shipped here;
 Linux/WSL use is limited to smoke and unpacked-artifact testing.
 
 Packaged builds expose **Launch Koed at startup** in General settings. When
@@ -185,22 +175,29 @@ packaging, signing, runtime distribution, or packaged smoke support.
 - `desktop:start` builds the app and launches Electron in source-checkout mode.
 - `desktop:dev` runs the renderer dev server only.
 - `desktop:package` (`desktop:package:mac`) builds `apps/desktop/release/mac/Koed.app` with
-  `electron-builder --mac dir` and disables signing/notarization.
+  `electron-builder --mac dir`. Local builds use ad-hoc integrity signing rather
+  than Developer ID/notarization; the normal `release.yml` pipeline uses
+  `desktop:package:release` for signed DMG/ZIP output.
 - `desktop:package:smoke:mac` builds the unsigned app and verifies the packaged
   renderer, bundled `koed-server`, and `koed-runtime` JS/service artifact layout
-  can run without checkout overrides. The smoke launches the packaged
-  `koed-server` with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, verifies
+  can run without checkout overrides. The smoke launches the real packaged
+  Desktop manager with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, verifies
   the setup surface, Personal Memory navigation, collaboration, preferences,
   and renderer fault handling, and verifies daemon
-  start/status/reconnect/stop. The focused `--missing-assets` mode checks
+  start/status/reconnect/stop through a private inherited IPC harness. The
+  manager retains sole supervisor authority; environment flags do not grant it.
+  Personal/Base smoke installs only embedding assets. A separate Team launch
+  proves missing verified Privacy assets fail closed; positive Team provisioning
+  remains a release gate until pin-verified Privacy assets pass packaged Team validation.
+  The focused `--missing-assets` mode checks
   packaged-CLI status and actionable `doctor --json` output without launching
   Electron services. Add `--mask-native-assets` to temporarily hide and then
   restore `postgres` and `llama.cpp` in an already-built packaged app. Set
   `KOED_NATIVE_RUNTIME_SOURCE_DIR` to stage native assets into the package
   manifest for packaged-provider runtime install tests. For deterministic
-  offline smoke, pass `--embedding-model-source <gguf>` and
-  `--privacy-model-source <privacy-model-directory>`; the packaged CLI still
-  verifies the pinned hashes before starting services.
+  offline smoke, pass `--embedding-model-source <gguf>`; the packaged CLI still
+  verifies pinned hashes before starting services. Privacy pre-seeding is not
+  supported by Base smoke and cannot bypass the Team verification gate.
   `pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force`
   can produce a local Homebrew-backed staging directory for those smoke tests.
   `desktop:package:smoke` currently aliases the macOS smoke and guards
@@ -211,18 +208,33 @@ packaging, signing, runtime distribution, or packaged smoke support.
   available.
 - `desktop:package:internal:mac` builds unsigned macOS `dmg` and `zip`
   artifacts for internal testing, including packaged native runtime assets when
-  `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. CI uploads these artifacts from the
-  manual native-runtime workflow; see `docs/desktop-internal-artifacts.md` for
-  download, install/open, Gatekeeper-warning, runtime status/doctor, and cleanup
-  steps.
-- `desktop:package:release` builds macOS `dmg` and `zip` artifacts using the
-  release packaging config. Signing/notarization requires a local Developer ID
-  identity and release credentials; use `desktop:package` for unsigned local
-  smoke builds.
+  `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. CI may build these candidates for
+  validation but does not publish them as signed releases; see
+  `docs/desktop-internal-artifacts.md` for internal install/open, Gatekeeper-warning,
+  runtime status/doctor, and cleanup steps.
+- Release DMG/ZIP packaging uses one approved-main path and electron-builder's
+  built-in signing/notarization/stapling flow; see `docs/desktop-notarization.md`.
+  Signature/staple verification, packaged smoke, composition policy, and checksums
+  gate release upload/publication. Manual asset recovery is disabled; old rebuilds
+  require patch releases.
 - macOS packaging uses `assets/icon.icns` plus hardened-runtime entitlement
   templates in `build/` for signed release artifacts.
 - The packaged desktop shell resolves the bundled
-  `node_modules/@koed-labs/server/dist/cli.js` by default; `KOED_REPO_ROOT` and
-  `KOED_SERVER_CLI` remain available for developer control-plane overrides.
-  Source-checkout runtime fallback also requires
-  `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1`.
+  `node_modules/@koed-labs/server/dist/cli.js`; packaged `KOED_REPO_ROOT`,
+  `KOED_SERVER_CLI`, and `KOED_NODE_COMMAND` overrides fail closed. Desktop
+  generation ownership still requires a validated private manager channel;
+  Desktop does not assert ownership through renderer data, environment
+  variables, or public CLI flags. Terminal launcher filesystem helpers exist
+  for isolated validation, but installation and shell PATH editing remain
+  unavailable until packaged Electron helper/fuse compatibility and mutation
+  safety are validated on supported target.
+
+### Privacy asset management before startup
+
+The private stopped management child supports Privacy status and first installation
+before Team services are ready. It verifies the Base bundle and hash-pinned Privacy assets;
+it never grants authority through renderer arguments or environment flags. Running
+installations stage assets, stop services, activate, and restart with rollback on failure.
+Claude Code/Pi setup and repair also use private IPC, including while services are stopped.
+Complete version-matched manifest pins, compatible Electron artifacts and positive packaged
+Team validation remain release/acceptance gates; this flow does not enable publication.

@@ -1792,7 +1792,7 @@ describe("CollaborationApp", () => {
     });
   });
 
-  it("refreshes an unready top-level health status until it becomes healthy", async () => {
+  it("bounds unready health polling and stops polling once healthy", async () => {
     vi.useFakeTimers();
     const healthy = {
       state: "healthy" as const,
@@ -1853,11 +1853,19 @@ describe("CollaborationApp", () => {
     });
     expect(container.querySelector(".lucide-loader-circle")).not.toBeNull();
 
-    currentStatus = status(true);
-    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+    // Full status also validates API access, reads AI Client settings and runs
+    // MCP diagnostics. Leave quota for startup, setup and the background runner.
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(invoke.mock.calls.length).toBeLessThanOrEqual(13);
 
-    expect(invoke).toHaveBeenCalledTimes(2);
+    currentStatus = status(true);
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+
+    expect(invoke.mock.calls.length).toBeLessThanOrEqual(14);
     expect(container.querySelector(".lucide-circle-check")).not.toBeNull();
+    const healthyRefreshCount = invoke.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(invoke).toHaveBeenCalledTimes(healthyRefreshCount);
   });
 
   it("opens sharing for a local Captured Session before collaboration convergence", async () => {

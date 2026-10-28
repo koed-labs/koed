@@ -160,7 +160,7 @@ export interface HeadlessRemoteIntegrationOptions {
   setupHarness?: (
     harness: HeadlessRemoteHarness,
     environment: NodeJS.ProcessEnv
-  ) => HarnessResult;
+  ) => HarnessResult | Promise<HarnessResult>;
   removeHarness?: (
     harness: HeadlessRemoteHarness,
     environment: NodeJS.ProcessEnv
@@ -168,7 +168,7 @@ export interface HeadlessRemoteIntegrationOptions {
   checkHarness?: (
     harness: HeadlessRemoteHarness,
     environment: NodeJS.ProcessEnv
-  ) => boolean;
+  ) => boolean | Promise<boolean>;
 }
 
 export interface HeadlessRemoteIntegrationResult {
@@ -219,12 +219,14 @@ const harnessEnvironment = (
   };
 };
 
-const inspectHarness = (
+const inspectHarness = async (
   harness: HeadlessRemoteHarness,
   environment: NodeJS.ProcessEnv
-): boolean => {
+): Promise<boolean> => {
   const paths = resolveKoedServerPaths(environment);
   const dependencies: Required<KoedServerStatusDependencies> = {
+    appRuntime: null,
+    desktopRuntimeCapability: null,
     fetch: globalThis.fetch.bind(globalThis),
     spawnSync: (command, args, options) =>
       spawnSync(command, args, { ...options, encoding: "utf8" }),
@@ -234,29 +236,30 @@ const inspectHarness = (
     resolveClaudeExecutable: resolveClaudeExecutablePath,
     resolveCodexExecutable: resolveCodexExecutablePath,
     checkPid: isProcessRunning,
+    delay: (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
     now: () => new Date()
   };
-  const profile =
-    harness === "codex"
-      ? inspectCodex(
-          environment,
-          paths,
-          dependencies,
-          resolveKoedServerConfig(paths, environment)
-            .codexGlobalMemoryGuidanceEnabled
-        )
-      : harness === "claude"
-        ? inspectClaudeCode(environment, paths, dependencies)
-        : inspectPi(environment, paths, dependencies);
+  const profile = await (harness === "codex"
+    ? inspectCodex(
+        environment,
+        paths,
+        dependencies,
+        resolveKoedServerConfig(paths, environment)
+          .codexGlobalMemoryGuidanceEnabled
+      )
+    : harness === "claude"
+      ? inspectClaudeCode(environment, paths, dependencies)
+      : inspectPi(environment, paths, dependencies));
   return profile.configured === true && profile.state === "healthy";
 };
 
-export const setupHeadlessRemoteIntegration = (
+export const setupHeadlessRemoteIntegration = async (
   options: HeadlessRemoteIntegrationOptions & {
     backendUrl: string;
     credentialRef: string;
   }
-): HeadlessRemoteIntegrationResult => {
+): Promise<HeadlessRemoteIntegrationResult> => {
   const denied = approved(options);
   if (denied) return denied;
   const environment = options.environment ?? process.env;
@@ -291,7 +294,7 @@ export const setupHeadlessRemoteIntegration = (
     }
     if (options.signal?.aborted) return result(options.harness, "cancelled");
     const childEnvironment = harnessEnvironment(environment, descriptor);
-    const configured = options.setupHarness
+    const configured = await (options.setupHarness
       ? options.setupHarness(options.harness, childEnvironment)
       : options.harness === "codex"
         ? configureCodexIntegrationForRemoteBackend({
@@ -302,7 +305,7 @@ export const setupHeadlessRemoteIntegration = (
           })
         : options.harness === "claude"
           ? setupClaude(childEnvironment)
-          : setupPi(childEnvironment);
+          : setupPi(childEnvironment));
     if (!configured.ok) {
       return result(
         options.harness,
@@ -321,9 +324,9 @@ export const setupHeadlessRemoteIntegration = (
   }
 };
 
-export const checkHeadlessRemoteIntegration = (
+export const checkHeadlessRemoteIntegration = async (
   options: Omit<HeadlessRemoteIntegrationOptions, "consent">
-): HeadlessRemoteIntegrationResult => {
+): Promise<HeadlessRemoteIntegrationResult> => {
   if (options.signal?.aborted) return result(options.harness, "cancelled");
   const environment = options.environment ?? process.env;
   try {
@@ -343,10 +346,10 @@ export const checkHeadlessRemoteIntegration = (
       );
     }
     if (
-      !(options.checkHarness ?? inspectHarness)(
+      !(await (options.checkHarness ?? inspectHarness)(
         options.harness,
         harnessEnvironment(environment, descriptor)
-      )
+      ))
     ) {
       return result(
         options.harness,

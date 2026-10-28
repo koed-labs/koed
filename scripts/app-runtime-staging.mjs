@@ -8,7 +8,7 @@ import {
   readFileSync,
   writeFileSync
 } from "node:fs";
-import { resolve } from "node:path";
+import { delimiter, dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export const appRuntimePackages = [
@@ -191,6 +191,17 @@ const writeThirdPartyInventory = (runtimeRoot) => {
 };
 
 export const finalizeStagedAppRuntime = (runtimeRoot) => {
+  // Runtime archives cannot carry authority over their own manifests. Do this
+  // before inventory/archive generation, never by excluding files from hashes.
+  const catalogModule = resolve(
+    runtimeRoot,
+    "node_modules/@koed-labs/server/dist/component-manifest-catalog-data.js"
+  );
+  if (existsSync(catalogModule))
+    writeFileSync(
+      catalogModule,
+      "export const productionComponentManifestCatalog = null;\n"
+    );
   removeBinDirectories(resolve(runtimeRoot, "node_modules"));
   rmSync(resolve(runtimeRoot, "node_modules", ".pnpm"), {
     recursive: true,
@@ -293,7 +304,16 @@ export const stageSharedAppRuntime = ({ repoRoot, runtimeRoot }) => {
       "--prod",
       runtimeRoot
     ],
-    { cwd: repoRoot, stdio: "inherit" }
+    {
+      cwd: repoRoot,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        PATH: [dirname(process.execPath), process.env.PATH]
+          .filter(Boolean)
+          .join(delimiter)
+      }
+    }
   );
   if (result.error) throw result.error;
   if (result.status !== 0) {

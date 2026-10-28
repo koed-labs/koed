@@ -238,6 +238,7 @@ export const smokePackagedRendererFaults = async ({
   const child = spawn(
     executable,
     [
+      "--use-mock-keychain",
       `--remote-debugging-port=${debuggingPort}`,
       `--user-data-dir=${userDataDir}`,
       "--no-first-run"

@@ -4,6 +4,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
+  writeFileSync,
   writeSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -161,6 +163,94 @@ describe("koed executable help", () => {
   });
 });
 
+describe("explicit component provisioning CLI", () => {
+  it("rejects incomplete offline metadata before installation", async () => {
+    const stdout = writer();
+    const stderr = writer();
+    const exitCode = await runKoedServerCli(
+      [
+        "components",
+        "install",
+        "--component",
+        "base",
+        "--archive",
+        "/tmp/base.tar.gz",
+        "--json"
+      ],
+      {
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        resolvePaths: () =>
+          resolveKoedServerPaths({ KOED_HOME: "/tmp/koed-component-cli-test" })
+      }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: false,
+      error: "Offline install requires --archive and --manifest paths."
+    });
+  });
+
+  it("rejects an incomplete network source pair without fetching", async () => {
+    const stdout = writer();
+    const exitCode = await runKoedServerCli(
+      [
+        "components",
+        "install",
+        "--component",
+        "base",
+        "--archive-url",
+        "https://artifacts.example/base.tar.gz",
+        "--json"
+      ],
+      { stdout: stdout.stream }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      error: "Network install requires --archive-url and --manifest-url."
+    });
+  });
+
+  it.each(["--signature", "--signature-url"])(
+    "rejects removed artifact argument %s",
+    async (argument) => {
+      const stdout = writer();
+      const exitCode = await runKoedServerCli(
+        [
+          "components",
+          "install",
+          "--component",
+          "base",
+          "--archive",
+          "/tmp/base.tar.gz",
+          "--manifest",
+          "/tmp/base.manifest.json",
+          argument,
+          "/tmp/base.signature.json",
+          "--json"
+        ],
+        { stdout: stdout.stream }
+      );
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(stdout.text())).toMatchObject({
+        error: `Unsupported components option: ${argument}`
+      });
+    }
+  );
+
+  it("does not accept public trust-root or owner overrides", async () => {
+    const stdout = writer();
+    const exitCode = await runKoedServerCli(
+      ["components", "status", "--owner", "desktop", "--json"],
+      { stdout: stdout.stream }
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      error: "Unsupported components option: --owner"
+    });
+  });
+});
+
 describe("koed-server CLI entrypoint detection", () => {
   it("recognizes argv paths containing spaces", () => {
     const cliPath =
@@ -169,6 +259,22 @@ describe("koed-server CLI entrypoint detection", () => {
     expect(
       isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, cliPath)
     ).toBe(true);
+  });
+
+  it("recognizes argv paths that are symlinks to the loaded CLI", () => {
+    const tempDir = mkdtempSync(resolve(tmpdir(), "koed-cli-entrypoint-"));
+    const cliPath = resolve(tempDir, "cli.js");
+    const symlinkPath = resolve(tempDir, "cli-symlink.js");
+    try {
+      writeFileSync(cliPath, "");
+      symlinkSync(cliPath, symlinkPath);
+
+      expect(
+        isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, symlinkPath)
+      ).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("explicitly exits only the packaged long-running supervisor", () => {
@@ -186,6 +292,35 @@ describe("koed-server CLI entrypoint detection", () => {
 });
 
 describe("koed-server detached supervisor", () => {
+  it("preserves external process.argv entrypoint for standalone daemon starts", () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-daemon-entrypoint-"));
+    const originalArgv1 = process.argv[1]!;
+    const spawns: Array<{ command: string; args: string[] }> = [];
+    process.argv[1] = "/opt/koed/bin/koed";
+    try {
+      const result = startKoedServerDaemon({
+        environment: { KOED_HOME: koedHome },
+        resolvePaths: () =>
+          ({
+            koedHome,
+            logsDir: resolve(koedHome, "logs"),
+            repoRoot: "/repo"
+          }) as never,
+        spawn: ((command: string, args: readonly string[]) => {
+          spawns.push({ command, args: [...args] });
+          return { pid: 43, unref: () => undefined } as never;
+        }) as never
+      });
+      expect(result.ok).toBe(true);
+      expect(spawns).toEqual([
+        { command: process.execPath, args: ["/opt/koed/bin/koed", "start"] }
+      ]);
+    } finally {
+      process.argv[1] = originalArgv1;
+      rmSync(koedHome, { recursive: true, force: true });
+    }
+  });
+
   it("redirects detached supervisor output to the Koed log directory", () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-daemon-log-test-"));
     const logsDir = resolve(koedHome, "logs");
@@ -786,6 +921,102 @@ describe("JSON command output", () => {
       state: "starting",
       startedPid: 42
     });
+  });
+
+  it("injects verified Desktop authority into shared lifecycle and setup commands", async () => {
+    const home = mkdtempSync(resolve(tmpdir(), "koed-cli-authority-"));
+    const capability = { productVersion: "0.0.0" } as never;
+    const supervisorInvocation = {
+      startCommand: "/Apps/Koed.app/entry.js",
+      cwd: "/tmp/koed"
+    };
+    const calls: Array<[string, unknown]> = [];
+    const ok = { ok: true, state: "healthy", koedHome: "/tmp/koed" };
+    const dependencies = {
+      stdout: writer().stream,
+      desktopRuntimeCapability: capability,
+      supervisorInvocation,
+      startDaemon: (options: unknown) => {
+        calls.push(["daemon", options]);
+        return { ...ok, state: "starting" as const, message: "started" };
+      },
+      start: async (options: unknown) => {
+        calls.push(["start", options]);
+      },
+      restart: async (options: unknown) => {
+        calls.push(["restart", options]);
+        return {
+          ...ok,
+          message: "restarted",
+          stoppedPids: [],
+          missingPids: [],
+          stoppedServices: [],
+          missingServices: []
+        };
+      },
+      stop: (options: unknown) => {
+        calls.push(["stop", options]);
+        return {
+          ...ok,
+          message: "stopped",
+          stoppedPids: [],
+          missingPids: [],
+          stoppedServices: [],
+          missingServices: []
+        };
+      },
+      setupCore: async (options: unknown) => {
+        calls.push(["core", options]);
+        return ok;
+      },
+      setupClaude: async (
+        _environment: unknown,
+        _spawn: unknown,
+        options: unknown
+      ) => {
+        calls.push(["claude", options]);
+        return ok;
+      },
+      collectDoctor: async (_environment: unknown, deps: unknown) => {
+        calls.push(["doctor", deps]);
+        return {
+          ok: true,
+          summary: "ok",
+          generatedAt: "2026-10-20T00:00:00Z",
+          checks: []
+        };
+      },
+      resolvePaths: () => resolveKoedServerPaths({ KOED_HOME: home })
+    } as unknown as Parameters<typeof runKoedServerCli>[1];
+    for (const args of [
+      ["start", "--daemon", "--json"],
+      ["start"],
+      ["restart", "--json"],
+      ["stop", "--json"],
+      ["setup", "core", "--json"],
+      ["setup", "claude", "--json"],
+      ["doctor", "--json"]
+    ])
+      await runKoedServerCli(args, dependencies);
+    expect(calls).toEqual([
+      ["daemon", supervisorInvocation],
+      ["start", { desktopRuntimeCapability: capability }],
+      [
+        "restart",
+        { desktopRuntimeCapability: capability, ...supervisorInvocation }
+      ],
+      ["stop", { desktopRuntimeCapability: capability }],
+      ["core", { desktopRuntimeCapability: capability }],
+      ["claude", { desktopRuntimeCapability: capability }],
+      ["doctor", { desktopRuntimeCapability: capability }]
+    ]);
+    await expect(
+      runKoedServerCli(["components", "status", "--json"], {
+        ...dependencies,
+        stderr: writer().stream
+      })
+    ).resolves.toBe(1);
+    rmSync(home, { recursive: true, force: true });
   });
 
   it("prints stop --json", async () => {
@@ -1542,7 +1773,7 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["setup", "claude", "--json"], {
       stdout: stdout.stream,
-      setupClaude: () => ({
+      setupClaude: async () => ({
         ok: true,
         state: "healthy",
         koedHome: "/tmp/koed",
@@ -1566,7 +1797,7 @@ describe("JSON command output", () => {
       ["setup", "claude", "--background-recall", "--json"],
       {
         stdout: stdout.stream,
-        setupClaude: (_environment, _spawn, options) => {
+        setupClaude: async (_environment, _spawn, options) => {
           consent = options;
           return {
             ok: true,
@@ -1726,7 +1957,7 @@ describe("JSON command output", () => {
 
     const exitCode = await runKoedServerCli(["repair", "codex", "--json"], {
       stdout: stdout.stream,
-      repairCodex: () => ({
+      repairCodex: async () => ({
         ok: true,
         state: "healthy",
         koedHome: "/tmp/koed",

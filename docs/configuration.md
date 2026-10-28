@@ -66,6 +66,27 @@ documented defaults. API and Worker processes in one deployment must be started
 from the same resolved environment. Changing `.env` after startup has no effect
 until the affected processes are restarted.
 
+Effective runtime resolution uses process environment over an explicitly supplied
+`KOED_ENV_PATH` file, then `KOED_HOME/config/server.json`. Packaged execution
+never discovers checkout `.env` implicitly. Source execution retains checkout
+`.env` discovery; an explicitly supplied `KOED_ENV_PATH` must exist in either
+mode. Explicit env files use strict parsing and report file/line for malformed
+syntax. Packaged resolution rejects malformed, non-object, and invalid-valued
+`server.json` rather than silently falling back to defaults. Team state comes
+from `KOED_TEAM_COLLABORATION_ENABLED` (including explicit env-file values),
+not a `server.json` field.
+
+Effective requirements default queue to `local` for `bundled-local` and
+`bullmq` for `external`. An explicit process-environment
+`WORK_QUEUE_BACKEND=local|bullmq` overrides either default. A value inherited
+only from a source `.env` file does not change the bundled-local default; to
+select BullMQ there, set it in the launching process and provide Operator-managed
+`REDIS_URL`. `bundled-local` requires Postgres and Embedding Service processes and
+embedding model/native runtime assets. Team adds local Privacy Filter Service
+and privacy model only with `bundled-local`. External dependencies retain
+Operator-managed database, queue, embedding, and (when Team enabled) privacy
+endpoint/token requirements; they do not add local privacy artifacts.
+
 External dependency mode means the Operator manages Postgres, Redis/BullMQ, the
 Embedding Service, and the Privacy Service lifecycle. The services may be
 launched by Docker Compose, systemd, Homebrew, managed infrastructure, or
@@ -1001,7 +1022,7 @@ install --kind privacy --json`: verify or install the pinned local Privacy
 - `KOED_EMBEDDING_DEVICE`: optional exact llama-server device identifier, such as `CUDA0`. The device must match the requested backend.
 - `KOED_EMBEDDING_GPU_IDLE_UNLOAD_SECONDS`: seconds of accelerator inactivity before llama-server unloads the embedding model from memory. Defaults to `300`; `0` keeps it resident. CPU execution does not use this policy.
 - `EMBEDDING_LLAMA_N_CTX`, `EMBEDDING_LLAMA_N_BATCH`, and `EMBEDDING_LLAMA_N_UBATCH`: context, logical batch, and physical microbatch sizes. The defaults are 8192, 8192, and 512. The bounded context and microbatch avoid allocating accelerator buffers for unused 32K context or the entire logical batch while preserving the 4096-token embedding input contract.
-- `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged mode does not use source-checkout fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `status --json` and `doctor --json` include runtime artifact source diagnostics such as `koed-home-runtime`, `packaged-resource`, or `source-checkout`.
+- `KOED_PACKAGED_DESKTOP=1`: selects packaged Desktop resolver behavior. Packaged Desktop does not use source-checkout fallbacks. For packaged standalone `koed-server`, `KOED_JS_RUNTIME_ROOT`, `KOED_REPO_ROOT`, `KOED_PACKAGED_RESOURCES_PATH`, and `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK` cannot select service code; startup and MCP setup require a compatible authenticated runtime generation. `resolveKoedAppRuntime` maps an already-selected generation to paths but does not authenticate or pin it. `status --json` and `doctor --json` report runtime artifact source diagnostics without launching service code from the current directory or checkout.
 - `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
 - `KOED_PDS_LAN_PORT`: private HTTP endpoint for trusted-overlay Desktop
   pairing and local PDS relay gateway traffic. Defaults to `3310`. Koed binds

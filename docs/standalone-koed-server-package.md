@@ -145,8 +145,15 @@ The initial CI artifact build is produced by:
 
 ```bash
 pnpm build
-pnpm koed-server:package -- --platform linux --arch x64 --json
+pnpm koed-server:package -- --catalogless-development --platform linux --arch x64 --json
 ```
+
+This explicit internal-testing mode embeds no component admission authority.
+Official release packaging instead requires the complete frozen-manifest catalog
+build input; see [component manifest catalogs](component-manifest-catalog.md).
+The trusted standalone control plane lives outside `koed-runtime/`, under
+`control-plane/`; `bin/koed` and supervisor re-execution retain that entrypoint.
+Its Base runtime copy remains catalog-less rather than authenticating itself.
 
 The script stages one private aggregate production deployment with a hoisted
 dependency graph. Deterministic service wrappers preserve the established
@@ -383,15 +390,57 @@ Signature/provenance rules:
   or Desktop configuration opts into stricter policy.
 - Native runtime archives keep their own manifest/SHA-256 verification.
 
+Component bundle manifests use canonical JSON authenticated by expected SHA-256 hashes embedded in the trusted version-matched control plane. Downloaded manifests and catalog sidecars are not independent trust anchors. The pinned fields bind product/component identity, target, Node/Electron and Node ABI or
+N-API compatibility, optional Linux glibc minimum, required files, archive size
+and SHA-256, and every archived file hash. Archive verification streams gzip/tar
+content under compressed, expanded, per-file, and entry-count limits; requires
+exactly two tar end records followed only by zero padding; and rejects partial
+blocks, concatenated archives, unsafe or duplicate paths, links, unsupported
+tar entries, and path conflicts. Extracted trees are traversed iteratively with
+depth, directory, file-count, aggregate-byte, and per-file limits; no-follow
+file-descriptor reads verify inode identity before and after hashing, and extra,
+missing, linked, and special files are rejected.
+
+Installation creates a fresh exclusive staging root under the private `KOED_HOME` runtime directory and verifies/extracts only within that root. These checks detect ordinary link and replacement races;
+they do not claim defense against a same-UID attacker with arbitrary ability to
+mutate the verifier process or its staging files.
+
+Component acquisition downloads and verifies archives in exclusive private
+staging directories without holding the component publication lock. Publication
+then locks the store, rechecks existing digests and cache entries, and atomically
+publishes the verified tree and index; conflicts fail closed and failed staging
+is removed. HTTPS transfers bound response headers to 30 seconds and reset a
+30-second body idle timeout on each chunk, allowing large progressing downloads
+without an absolute transfer deadline. Caller cancellation and byte limits still
+apply throughout acquisition and publication.
+
+Component verification is wired into explicit component provisioning and cached
+runtime selection. Missing compiled pins fail closed, including catalog-less development builds. Runtime admission does not consume component signing roots or signature sidecars. The stack must be component pin-only before merge, without component KMS, hosted signer, roots, sidecars or component-signing OIDC. Protected independently reviewed build identity, read-only candidate verification, publication approval, npm authentication/provenance, immutability and SRI remain mandatory. Actual native Personal/Team and signed/notarized clean-Mac acceptance remain gates, not reasons to retain obsolete source. Source cleanup does not authorize live cloud or repository-variable changes. Apple Developer ID signing/notarization, unrelated hosted/encryption KMS and legacy app-runtime provenance remain unchanged. The implemented pin boundary and remaining release gates are recorded in [ADR 0057](adr/0057-versioned-component-manifest-pins.md). Runtime ranges intentionally use
+restricted numeric SemVer syntax: one to three decimal components with optional
+`>=`, `>`, `<=`, `<`, or `=` comparisons, whitespace-conjoined; exact runtime
+versions use two or three components. Leading zeroes, prerelease/build labels,
+wildcards, caret, and tilde ranges are rejected. This matches current pinned
+component contracts without introducing an undeclared production SemVer
+dependency; all numeric components must be safe integers. No component-pin environment, CLI, or per-user override exists. An internal trusted runtime-identity adapter is available in
+`component-runtime-identity.ts`; it derives Node/Electron versions, platform,
+architecture, ABI, N-API, and Linux glibc version from the running process.
+Unknown platforms, architectures, runtime fields, or Linux libc fail closed.
+Provisioning uses this adapter; verifier inputs remain injectable only for internal tests. This component trust gate is distinct from
+existing standalone package provenance trust-policy options above; those options
+do not supply component manifest pins.
+
 Downgrade and rollback rules:
 
-- Automatic downgrade is not allowed.
-- Installing an older `koed-server` over a newer active runtime requires an
-  explicit Operator confirmation and must first check DB migration compatibility.
-- Rollback can switch back to a previous package only if the current DB schema is
-  compatible with that package's migration set.
-- If DB migrations have advanced beyond the previous package, rollback should
-  fail with repair guidance rather than attempting reverse migrations.
+- Generation activation refuses version downgrades by comparing product versions,
+  without database migration metadata. This guard does not establish database
+  compatibility. A matching older control plane does not bypass the guard.
+- Same-version generation switching supports recovery between verified component
+  sets; it does not restore database state.
+- The separate legacy package-install path supports explicit `--allow-downgrade`
+  and checks migration timestamps when provided. That flag is not supported by
+  component generation activation and is not a general database-safety guarantee.
+- No unrestricted whole-release rollback or reverse migration is promised. A
+  general database compatibility framework remains separate work.
 
 ## Compatibility rules
 

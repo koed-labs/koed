@@ -149,12 +149,17 @@ export const writeDeterministicTarGz = ({
     const remainder = size % 512;
     if (remainder !== 0) append(Buffer.alloc(512 - remainder, 0));
   };
-  append(tarHeader({ path: `${rootName}/`, mode: 0o755, size: 0, type: "5" }));
+  if (rootName)
+    append(
+      tarHeader({ path: `${rootName}/`, mode: 0o755, size: 0, type: "5" })
+    );
   let paxIndex = 0;
   let writeFailure;
   try {
     for (const entry of deterministicArchiveEntries(sourceDir)) {
-      const archivePath = `${rootName}/${entry.relativePath}`;
+      const archivePath = rootName
+        ? `${rootName}/${entry.relativePath}`
+        : entry.relativePath;
       const linkname =
         entry.type === "symlink" ? readlinkSync(entry.path) : undefined;
       const pax = {};

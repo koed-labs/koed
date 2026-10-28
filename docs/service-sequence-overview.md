@@ -154,16 +154,60 @@ other clients. No backend synthesis or parallel queue is added.
    collaboration is enabled, it also waits for the Privacy Filter; Personal-only
    startup reports that service as not required. Both source and packaged
    runtimes use these rules.
-8. `koed start --daemon --json` starts a detached `koed start`
-   supervisor and returns machine-readable startup intent for Desktop and
-   scripts. `koed stop --json` stops supervised processes in
+8. Packaged Desktop main starts its private supervisor entrypoint as a
+   long-running child with inherited IPC, a fresh nonce handshake, and Desktop
+   resources path. The child verifies the packaged runtime bundle itself and
+   receives process-local Desktop generation authority only after verification;
+   it then runs the same Personal supervisor and pins the selected authenticated
+   generation until shutdown. Desktop stop/restart is manager-owned and signals
+   that child, not a detached CLI daemon. Standalone `koed start --daemon --json`
+   remains available for CLI/scripts and starts a detached `koed start`
+   supervisor. `koed stop --json` stops standalone supervised processes in
    dependency-safe order: Local AI Runtime, Worker, API, native
    Embedding Service, then native Postgres through `pg_ctl stop`. Stopping the
    Local AI Runtime before the API lets active local work finish or terminate without
    losing the API dependency. Stop treats stale process IDs as an idempotent
    no-op and does not stop Docker Compose or Operator-managed dependencies.
-   `koed restart --json` runs the same stop lifecycle, starts a detached
-   supervisor, and returns machine-readable JSON without streaming startup logs.
+   Standalone `koed restart --json` runs the same stop lifecycle, starts a
+   detached supervisor, and returns machine-readable JSON without streaming
+   startup logs. Packaged Desktop restart keeps ownership in its Electron main
+   manager and restarts its inherited-IPC child.
+
+   The CLI launcher installed from Desktop shares that same instance. It runs
+   the packaged `desktop-cli-entrypoint.js`, which derives authority only from
+   its own real location, the running Electron executable in the same
+   installation, and full bundle verification (never from argv or environment
+   resource paths), binds `KOED_HOME` to Desktop's instance, and injects the
+   verified capability into the shared `status`, `doctor`, `setup`, repair,
+   `start`, `stop`, and `restart` functions. `start --daemon` and `restart`
+   re-enter this entrypoint, so a detached supervisor survives the launcher and
+   remains the Desktop-owned generation. A standalone npm installation keeps its
+   own signed standalone owner and never manages a Desktop-owned instance. The
+   persisted generation owner remains checked after shutdown, so a standalone
+   `start` cannot claim a stopped Desktop generation when the lock is free. The
+   persisted bundle record identifies its owner but never grants Desktop authority.
+   Packaged `stop` and `restart` require the expected generation owner and
+   matching supervisor process identity before they signal services or clear
+   runtime state. Missing, stale, or foreign proof fails closed; restart does not
+   start a replacement after a rejected stop.
+
+   Ownership is the live supervisor pin: the singleton supervisor lock, the
+   generation pin, process identity, and the Desktop runtime owner. A healthy
+   API alone proves nothing. When Desktop finds a live supervisor it opens a
+   short-lived management session (no process-exclusive ownership and no pointer
+   rewrite under the live pin), and adopts the instance only when the pin owner
+   and process identity match; a different owner or an unpinned starting
+   supervisor is refused. Simultaneous starts converge on the single lock
+   holder. Desktop quit stops only a supervisor it spawned; an adopted instance
+   keeps running. An explicit stop fences any older start or resume still in
+   flight.
+
+   One cheap local observer (lock, pin, runtime state and process identity only;
+   no service probes, bundle verification, model hashing or access checks) feeds
+   the window and the tray. An external stop is shown as explicit **Stopped**
+   with a Start action, and a status response collected for an older supervisor
+   epoch is discarded rather than shown as healthy.
+
 9. `koed status --json` and `koed doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker and Local AI Runtime process state, local API Token configuration, MCP
@@ -1897,3 +1941,35 @@ changed after startup on its next check.
 After machine sleep or a network outage, Team routing can remain denied until the
 next successful maintenance check. This does not extend expired authorization or
 retry an agent request automatically.
+
+## Private Desktop component management
+
+Packaged Desktop can open a private stopped management child before core services
+are ready. The child authenticates the bundled Base payload using the same issued
+capability as runtime startup, reconciles the installation-owned bundle generation
+under the lifecycle lock, and serves status, catalog-pinned Privacy installation/cancellation,
+activation, core setup, doctor, and AI Client setup/repair over nonce-correlated IPC.
+Before core setup or doctor, it checks startup status and refuses to proceed when a
+healthy API belongs to a supervisor this Desktop manager does not own. The stopped
+management child starts no services. Core setup still requires reachable PostgreSQL
+while it provisions or revalidates the local API Token; it does not start the
+database. This breaks the first-install cycle when Team startup requires Privacy.
+The parent closes the helper after the operation; disconnect, exit, send failure
+and deadline remove pending RPC listeners and fail the request. A historical test-signed
+macOS arm64 packaged-manager integration (not pin-only acceptance) ran this setup before daemon startup with
+an isolated fixture database, then started the normal supervisor, reached healthy
+Team readiness, and stopped cleanly. It used packaged Electron in Node mode and did
+not validate full GUI launch.
+
+Running installations stage Privacy without activation, then stop, activate and
+restart through the manager-owned lifecycle. If restart fails, the transaction restores
+the previous generation and restarts it; failed rollback leaves services stopped.
+An application upgrade admits the newly verified Base bundle using the same stable
+installation owner without executing the previous bundle journal. A Privacy generation
+bound to a different bundle is not carried forward automatically.
+
+Status uses one authenticated runtime selection per collection, including failed
+selection results. Startup passes its pinned selection into readiness; Privacy and
+AI Client/MCP inspectors reuse that selection. A subsequent poll revalidates disk state.
+Claude Code and Pi setup/repair, as well as Codex, receive private Desktop authority
+in both running and stopped modes; standalone CLI requests cannot claim it.

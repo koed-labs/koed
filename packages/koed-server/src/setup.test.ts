@@ -123,13 +123,15 @@ afterEach(() => {
 });
 
 describe("Codex setup wrapper", () => {
-  it("removes only valid Koed-owned Codex block and preserves unrelated profile", () => {
+  it("removes only valid Koed-owned Codex block and preserves unrelated profile", async () => {
     const root = tempDir();
-    const runtimeRoot = resolve(root, "runtime");
     const codexHome = resolve(root, "codex");
-    const mcpCli = resolve(runtimeRoot, "mcp-server/dist/cli.js");
-    const captureHook = resolve(runtimeRoot, "mcp-server/dist/capture-hook.js");
-    mkdirSync(resolve(runtimeRoot, "mcp-server/dist"), { recursive: true });
+    const mcpCli = resolve(root, "packages/mcp-server/dist/cli.js");
+    const captureHook = resolve(
+      root,
+      "packages/mcp-server/dist/capture-hook.js"
+    );
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
     writeFileSync(mcpCli, "");
     writeFileSync(captureHook, "");
     const configPath = resolve(root, "codex/config.toml");
@@ -160,7 +162,6 @@ describe("Codex setup wrapper", () => {
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        KOED_JS_RUNTIME_ROOT: runtimeRoot,
         CODEX_HOME: codexHome,
         CODEX_CONFIG_PATH: configPath,
         MEMORY_NODE_COMMAND: "node"
@@ -176,7 +177,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("fails Codex removal without mutating malformed or unexpected ownership block", () => {
+  it("fails Codex removal without mutating malformed or unexpected ownership block", async () => {
     const root = tempDir();
     const configPath = resolve(root, "codex/config.toml");
     mkdirSync(resolve(root, "codex"), { recursive: true });
@@ -267,7 +268,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("contributor check accepts repaired configuration with legacy recall selections", () => {
+  it("contributor check accepts repaired configuration with legacy recall selections", async () => {
     const root = realpathSync(tempDir());
     const codexHome = resolve(root, "codex");
     const mcpCli = resolve(root, "packages/mcp-server/dist/cli.js");
@@ -293,7 +294,7 @@ describe("Codex setup wrapper", () => {
       KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false"
     };
     for (const selection of ["1", "0"]) {
-      const result = repairCodexIntegration({
+      const result = await repairCodexIntegration({
         environment: { ...environment, KOED_CODEX_STOP_DELIVERY: selection },
         resolveRuntime: () => ({ root, mcpCli, captureHook }) as never,
         resolveCodexExecutable: () => "/bin/sh",
@@ -406,8 +407,8 @@ describe("Codex setup wrapper", () => {
       CODEX_HOME: codexHome,
       KOED_CODEX_GLOBAL_MEMORY_GUIDANCE_ENABLED: "false"
     };
-    const repair = (selection?: string) =>
-      repairCodexIntegration({
+    const repair = async (selection?: string) =>
+      await repairCodexIntegration({
         environment: {
           ...base,
           ...(selection ? { KOED_CODEX_STOP_DELIVERY: selection } : {})
@@ -416,15 +417,15 @@ describe("Codex setup wrapper", () => {
         resolveCodexExecutable: () => "/bin/sh",
         registerAiClient: () => true
       });
-    expect(repair().ok).toBe(true);
+    expect((await repair()).ok).toBe(true);
     expect(readFileSync(configPath, "utf8")).toBe(installed);
-    expect(repair("0").ok).toBe(true);
+    expect((await repair("0")).ok).toBe(true);
     expect(readFileSync(configPath, "utf8")).toBe(installed);
     writeFileSync(
       configPath,
       'model = "user-model"\n\n# >>> koed\n[mcp_servers.koed.env]\nKOED_CODEX_STOP_DELIVERY = "1"\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "node codex-memory-hook.js"\ntimeout = 305\n# <<< koed\n'
     );
-    expect(repair().ok).toBe(true);
+    expect((await repair()).ok).toBe(true);
     const upgraded = readFileSync(configPath, "utf8");
     expect(upgraded).toContain('model = "user-model"');
     expect(upgraded).toContain("[mcp_servers.koed.tools.memory_answer_result]");
@@ -435,7 +436,7 @@ describe("Codex setup wrapper", () => {
     expect(stopGroups[0]).toContain("capture-hook.js");
     expect(stopGroups[0]).toContain("timeout = 30");
     rmSync(resolve(mcpCli, "../codex-memory-hook.js"));
-    expect(repair("1").ok).toBe(true);
+    expect((await repair("1")).ok).toBe(true);
     expect(readFileSync(configPath, "utf8")).toBe(upgraded);
 
     expect(order).not.toContain("bootstrap");
@@ -447,7 +448,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("installs the same task collection and Capture Hooks on Windows", () => {
+  it("installs the same task collection and Capture Hooks on Windows", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "codex");
     const configPath = resolve(codexHome, "config.toml");
@@ -480,8 +481,8 @@ describe("Codex setup wrapper", () => {
         dbPackageRoot: "db",
         missing: []
       }) as never;
-    const repair = (selection?: string) =>
-      repairCodexIntegration({
+    const repair = async (selection?: string) =>
+      await repairCodexIntegration({
         environment: {
           KOED_HOME: root,
           KOED_REPO_ROOT: root,
@@ -496,16 +497,16 @@ describe("Codex setup wrapper", () => {
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     Object.defineProperty(process, "platform", { value: "win32" });
     try {
-      expect(repair().ok).toBe(true);
+      expect((await repair()).ok).toBe(true);
       const installed = readFileSync(configPath, "utf8");
       expect(installed).toContain(
         "[mcp_servers.koed.tools.memory_answer_result]"
       );
       expect((installed.match(/capture-hook\.js/g) ?? []).length).toBe(7);
-      expect(repair("1").ok).toBe(true);
+      expect((await repair("1")).ok).toBe(true);
       const deferred = readFileSync(configPath, "utf8");
       expect(deferred).toBe(installed);
-      expect(repair().ok).toBe(true);
+      expect((await repair()).ok).toBe(true);
       expect(readFileSync(configPath, "utf8")).toBe(deferred);
     } finally {
       Object.defineProperty(process, "platform", platform);
@@ -609,6 +610,92 @@ describe("Codex setup wrapper", () => {
     expect(result.stderr).toContain(
       "Skipped legacy Codex registration migration"
     );
+  });
+
+  it("uses the effective API Token pepper for bundled-local core setup", async () => {
+    const scenarios = [
+      {
+        environmentPepper: "operator-pepper",
+        repoPepper: "repo-pepper",
+        expectedPepper: "operator-pepper"
+      },
+      {
+        repoPepper: "repo-pepper",
+        expectedPepper: "repo-pepper"
+      },
+      {
+        databaseUrl: "postgres://operator/explicit",
+        expectedPepper: "persisted-pepper"
+      }
+    ];
+
+    for (const scenario of scenarios) {
+      const root = tempDir();
+      writeRuntimeState(root);
+      writeLocalPorts(root);
+      writeLocalSecrets(root, {
+        POSTGRES_PASSWORD: "database-password",
+        API_TOKEN_PEPPER: "persisted-pepper"
+      });
+      writeFileSync(
+        resolve(root, ".env"),
+        [
+          "KOED_RUNTIME_MODE=local-personal",
+          "KOED_DEPENDENCY_MODE=bundled-local",
+          "POSTGRES_HOST_PORT=15432",
+          ...(scenario.repoPepper
+            ? [`API_TOKEN_PEPPER=${scenario.repoPepper}`]
+            : [])
+        ].join("\n")
+      );
+      let provisionedWithPepper: string | undefined;
+      let databaseUrl: string | undefined;
+
+      const result = await setupCore({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_RUNTIME_MODE: "local-personal",
+          KOED_DEPENDENCY_MODE: "bundled-local",
+          KOED_AUTO_PORTS: "1",
+          ...(scenario.databaseUrl
+            ? { DATABASE_URL: scenario.databaseUrl }
+            : {}),
+          ...(scenario.environmentPepper
+            ? { API_TOKEN_PEPPER: scenario.environmentPepper }
+            : {})
+        },
+        resolveRuntime: (paths) =>
+          ({
+            kind: "source",
+            artifactSource: "source-checkout",
+            root: paths.repoRoot,
+            apiEntry: "api",
+            workerEntry: "worker",
+            embeddingServiceEntry: "embedding",
+            privacyServiceEntry: "privacy",
+            mcpCli: "mcp",
+            localAiRuntime: "local-ai",
+            captureHook: "capture",
+            dbPackageRoot: "db",
+            missing: []
+          }) as never,
+        provisionLocalApiToken: async (_paths, _runtime, environment) => {
+          provisionedWithPepper = environment.API_TOKEN_PEPPER;
+          databaseUrl = environment.DATABASE_URL;
+          return { token: "core", reused: false, ownerUserId: "owner" };
+        },
+        migrateCodex: () => ({ migrated: false })
+      });
+
+      expect(result.ok).toBe(true);
+      expect(provisionedWithPepper).toBe(scenario.expectedPepper);
+      if (scenario.databaseUrl) {
+        expect(databaseUrl).toBe(scenario.databaseUrl);
+      } else {
+        expect(new URL(databaseUrl!).port).toBe("45432");
+      }
+    }
   });
 
   it("migrates existing Koed marker without changing Codex profile bytes", async () => {
@@ -1074,7 +1161,7 @@ describe("Codex setup wrapper", () => {
     writeMcpRuntimeArtifacts(root);
     const codexConfigPath = resolve(root, "codex.toml");
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1128,7 +1215,7 @@ describe("Codex setup wrapper", () => {
     const profile = '[mcp_servers.other]\ncommand = "other"\n';
     writeFileSync(codexConfigPath, profile);
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1147,7 +1234,7 @@ describe("Codex setup wrapper", () => {
     ).toThrow();
   });
 
-  it("rolls back Codex profile when registry registration fails", () => {
+  it("rolls back Codex profile when registry registration fails", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "isolated-codex");
     mkdirSync(resolve(root, "config"), { recursive: true });
@@ -1165,7 +1252,7 @@ describe("Codex setup wrapper", () => {
       mode: 0o640
     });
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1194,7 +1281,7 @@ describe("Codex setup wrapper", () => {
     );
     writeMcpRuntimeArtifacts(root);
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1221,7 +1308,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("repair honors the persisted global memory guidance opt-out", () => {
+  it("repair honors the persisted global memory guidance opt-out", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "isolated-codex");
     mkdirSync(resolve(root, "config"), { recursive: true });
@@ -1240,7 +1327,7 @@ describe("Codex setup wrapper", () => {
       "# User rules\n\n<!-- >>> koed-memory-guidance -->\nold\n<!-- <<< koed-memory-guidance -->\n"
     );
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1255,7 +1342,7 @@ describe("Codex setup wrapper", () => {
     );
   });
 
-  it("fails closed without rewriting malformed global instructions", () => {
+  it("fails closed without rewriting malformed global instructions", async () => {
     const root = tempDir();
     const codexHome = resolve(root, "isolated-codex");
     mkdirSync(resolve(root, "config"), { recursive: true });
@@ -1269,7 +1356,7 @@ describe("Codex setup wrapper", () => {
       "# User rules\n\n<!-- >>> koed-memory-guidance -->\nbroken\n";
     writeFileSync(resolve(codexHome, "AGENTS.md"), malformed);
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1298,7 +1385,7 @@ describe("Codex setup wrapper", () => {
     writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=repo_token\n");
     writeMcpRuntimeArtifacts(root);
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1338,7 +1425,7 @@ describe("Codex setup wrapper", () => {
     const codexConfigPath = resolve(root, "codex.toml");
     const checkedPids: number[] = [];
 
-    const result = repairCodexIntegration({
+    const result = await repairCodexIntegration({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,

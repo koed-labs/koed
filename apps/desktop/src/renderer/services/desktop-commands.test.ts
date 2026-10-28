@@ -78,6 +78,46 @@ describe("DesktopStatusStore", () => {
     expect(store.current().revision).toBe(1);
   });
 
+  it("discards a response collected before a lifecycle change and collects again", async () => {
+    const stale = { ...status(), generatedAt: "stale" } as KoedServerStatus;
+    const current = {
+      ...status(false),
+      lifecycle: { state: "stopped", message: "Koed is not running." }
+    } as KoedServerStatus;
+    const resolvers: Array<(value: KoedServerStatus) => void> = [];
+    const invoke = vi.fn(
+      () =>
+        new Promise<KoedServerStatus>((done) => {
+          resolvers.push(done);
+        })
+    );
+    window.koedDesktop = { invoke } as DesktopApi;
+    const store = new DesktopStatusStore();
+    const pending = store.refresh();
+    store.invalidate();
+    resolvers[0]!(stale);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    expect(store.current().status).toBeNull();
+    resolvers[1]!(current);
+    await expect(pending).resolves.toEqual(current);
+    expect(store.current()).toMatchObject({ status: current, revision: 1 });
+  });
+
+  it("does not leave the last healthy status looking current after a failed refresh", async () => {
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockResolvedValueOnce(status())
+      .mockRejectedValueOnce(new Error("Status timed out"));
+    window.koedDesktop = { invoke } as DesktopApi;
+    const store = new DesktopStatusStore();
+    await store.refresh();
+    await store.refresh();
+    expect(store.current()).toMatchObject({
+      error: "Status timed out",
+      status: { lifecycle: { state: "unavailable" } }
+    });
+  });
+
   it("refreshes authoritative status after a successful operation", async () => {
     const invoke = vi
       .fn<DesktopApi["invoke"]>()

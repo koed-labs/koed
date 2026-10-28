@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 /* global console, process */
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { canonicalArtifactBytes } from "../../../packages/koed-server/src/artifact-canonical-json.mjs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  inventoryRuntime,
+  writeDesktopBundleManifest
+} from "./finalize-runtime-manifests.mjs";
 import {
   pruneSharedAppRuntimeMetadata,
   stageSharedAppRuntime
@@ -42,6 +48,10 @@ if (nativeRuntimeSource) {
   copyNativeRuntimeSource(resolve(nativeRuntimeSource), runtimeRoot);
 }
 prunePythonEmbeddingRuntimeFiles(runtimeRoot);
+rmSync(resolve(runtimeRoot, "privacy-service"), {
+  recursive: true,
+  force: true
+});
 const nativeAssets = writeNativeManifest();
 if (nativeRuntimeSource && nativeAssets.length === 0) {
   throw new Error(
@@ -55,7 +65,6 @@ const required = [
   "node_modules/@koed/db/drizzle/meta/_journal.json",
   "worker/dist/index.js",
   "embedding-service/dist/index.js",
-  "privacy-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
   "mcp-server/dist/codex-memory-hook.js",
@@ -70,6 +79,28 @@ if (missing.length > 0) {
   throw new Error(`Prepared Koed runtime is missing: ${missing.join(", ")}`);
 }
 
+const runtimeFiles = inventoryRuntime(runtimeRoot);
+const bundleManifest = {
+  schemaVersion: 1,
+  productVersion: JSON.parse(
+    readFileSync(resolve(desktopRoot, "package.json"), "utf8")
+  ).version,
+  component: "base",
+  target: {
+    platform: process.platform === "darwin" ? "macos" : process.platform,
+    architecture: process.arch === "arm64" ? "arm64" : "x64"
+  },
+  files: runtimeFiles
+};
+writeDesktopBundleManifest(runtimeRoot, bundleManifest);
+const bundleManifestDigest = createHash("sha256")
+  .update(canonicalArtifactBytes(bundleManifest))
+  .digest("hex");
+
 console.log(
-  JSON.stringify({ ok: true, runtimeRoot, required, nativeAssets }, null, 2)
+  JSON.stringify(
+    { ok: true, runtimeRoot, required, nativeAssets, bundleManifestDigest },
+    null,
+    2
+  )
 );

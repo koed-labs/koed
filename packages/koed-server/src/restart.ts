@@ -23,6 +23,7 @@ export interface KoedServerRestartOptions
   sleep?: (ms: number) => Promise<void>;
   start?: typeof startKoedServer;
   startCommand?: string;
+  cwd?: string;
 }
 
 const defaultCheckPid = (pid: number): boolean => {
@@ -37,16 +38,17 @@ const defaultCheckPid = (pid: number): boolean => {
 const startDetached = ({
   environment = process.env,
   spawn = nodeSpawn as SpawnLike,
-  startCommand = process.argv[1]
+  startCommand = process.argv[1],
+  cwd
 }: Pick<
   KoedServerRestartOptions,
-  "environment" | "spawn" | "startCommand"
+  "environment" | "spawn" | "startCommand" | "cwd"
 >): number => {
   if (!startCommand) {
     throw new Error("Could not resolve koed-server CLI path for restart.");
   }
   const child = spawn(process.execPath, [startCommand, "start"], {
-    cwd: environment.KOED_REPO_ROOT ?? process.cwd(),
+    cwd: cwd ?? environment.KOED_REPO_ROOT ?? process.cwd(),
     detached: true,
     env: environment,
     stdio: "ignore"

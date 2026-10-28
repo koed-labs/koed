@@ -21,6 +21,7 @@ export interface KoedServerStartDaemonOptions {
   spawn?: SpawnLike;
   startCommand?: string;
   startArgs?: string[];
+  cwd?: string;
   resolvePaths?: typeof resolveKoedServerPaths;
 }
 
@@ -54,6 +55,7 @@ export const startKoedServerDaemon = ({
   spawn = nodeSpawn,
   startCommand = process.argv[1],
   startArgs,
+  cwd,
   resolvePaths = resolveKoedServerPaths
 }: KoedServerStartDaemonOptions = {}): KoedServerStartDaemonResult => {
   const paths = resolvePaths(environment);
@@ -86,7 +88,7 @@ export const startKoedServerDaemon = ({
     stdoutFd = openSync(logPath, "a", 0o600);
     stderrFd = openSync(logPath, "a", 0o600);
     const child = spawn(command, args, {
-      cwd: environment.KOED_REPO_ROOT ?? process.cwd(),
+      cwd: cwd ?? environment.KOED_REPO_ROOT ?? process.cwd(),
       detached: true,
       env: { ...environment, KOED_SERVER_SUPERVISOR_LOG_PATH: logPath },
       stdio: ["ignore", stdoutFd, stderrFd]

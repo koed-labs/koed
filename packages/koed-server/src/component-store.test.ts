@@ -1,0 +1,1024 @@
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, resolve } from "node:path";
+import properLockfile from "proper-lockfile";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  ComponentManifest,
+  RuntimeIdentity
+} from "./component-contract.js";
+import type { ManifestPinCatalog } from "./component-manifest-catalog.js";
+
+const testRuntime = vi.hoisted(() => ({
+  current: undefined as RuntimeIdentity | undefined
+}));
+const testCatalog = vi.hoisted(() => ({
+  current: null as ManifestPinCatalog | null
+}));
+vi.mock("./component-runtime-identity.js", () => ({
+  discoverActualRuntimeIdentity: () => {
+    if (!testRuntime.current) throw new Error("fixture runtime missing");
+    return testRuntime.current;
+  }
+}));
+vi.mock("./component-manifest-catalog-data.js", () => ({
+  get productionComponentManifestCatalog() {
+    return testCatalog.current;
+  }
+}));
+import {
+  goldenComponentArchive,
+  componentFixture
+} from "./component-test-fixtures.js";
+import { resolveKoedServerPaths } from "./paths.js";
+import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
+import {
+  readStagedGeneration,
+  stageComponent,
+  stageDesktopPrivacyGeneration,
+  stageGeneration
+} from "./component-store.js";
+
+const roots: string[] = [];
+const fixtures: Awaited<ReturnType<typeof componentFixture>>[] = [];
+const activePointers: Array<{ pointer: string; bytes: Buffer }> = [];
+const preserveActivePointer = (home: string) => {
+  const pointer = resolve(home, "runtime/components/current.json");
+  mkdirSync(resolve(home, "runtime/components"), { recursive: true });
+  writeFileSync(pointer, "active-generation-fixture\n", { mode: 0o600 });
+  const snapshot = { pointer, bytes: readFileSync(pointer) };
+  activePointers.push(snapshot);
+  return snapshot;
+};
+const temp = () => {
+  const root = mkdtempSync(
+    resolve(realpathSync(tmpdir()), "koed-component-store-test-")
+  );
+  roots.push(root);
+  preserveActivePointer(root);
+  return root;
+};
+const fixture = async (
+  overrides: Parameters<typeof componentFixture>[0] = {},
+  archiveEntries?: Parameters<typeof componentFixture>[1],
+  includeArchiveInventory = false,
+  archiveOptions: Parameters<typeof componentFixture>[2] = {}
+) => {
+  const manifestOverrides = {
+    component: "base",
+    productVersion: "0.8.1",
+    target: { platform: "linux", architecture: "x64" },
+    ...overrides
+  } satisfies Partial<ComponentManifest>;
+  const item = await componentFixture(
+    manifestOverrides,
+    archiveEntries,
+    archiveOptions,
+    includeArchiveInventory
+  );
+  fixtures.push(item);
+  mergeTestCatalog(item.input.manifestCatalog);
+  return {
+    ...item,
+    input: {
+      ...item.input,
+      expectedComponent: manifestOverrides.component,
+      expectedVersion: manifestOverrides.productVersion,
+      target: manifestOverrides.target
+    }
+  };
+};
+const mergeTestCatalog = (catalog: ManifestPinCatalog | null) => {
+  if (!catalog) throw new Error("fixture catalog missing");
+  const current = testCatalog.current;
+  if (!current || current.productVersion !== catalog.productVersion) {
+    testCatalog.current = catalog;
+    return;
+  }
+  const entries = [...current.entries];
+  for (const entry of catalog.entries) {
+    const index = entries.findIndex(
+      (candidate) =>
+        candidate.component === entry.component &&
+        JSON.stringify(candidate.target) === JSON.stringify(entry.target)
+    );
+    if (index < 0) entries.push(entry);
+    else entries[index] = entry;
+  }
+  testCatalog.current = { ...catalog, entries };
+};
+const stageFixture = async (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  item: Awaited<ReturnType<typeof fixture>>,
+  catalog: ManifestPinCatalog | null = item.input.manifestCatalog
+) => {
+  testRuntime.current = item.input.runtime;
+  if (catalog) mergeTestCatalog(catalog);
+  else testCatalog.current = null;
+  return stageComponent(
+    paths,
+    {
+      kind: "offline",
+      archivePath: item.input.archivePath,
+      manifestPath: writeMetadata(item.input.manifestBytes)
+    },
+    {
+      expectedComponent: item.input.expectedComponent,
+      expectedVersion: item.input.expectedVersion,
+      target: item.input.target,
+      runtime: item.input.runtime
+    }
+  );
+};
+const writeMetadata = (contents: Buffer) => {
+  const path = resolve(
+    temp(),
+    `metadata-${Math.random().toString(16).slice(2)}.json`
+  );
+  writeFileSync(path, contents, { mode: 0o600 });
+  return path;
+};
+const owner = { kind: "standalone" as const, installationId: "fixture-owner" };
+const desktopBundle = (
+  root: string,
+  productVersion: string,
+  target: { platform: "macos" | "linux"; architecture: "arm64" | "x64" }
+) => {
+  const resourcesPath = resolve(root, "resources");
+  const runtimeRoot = resolve(resourcesPath, "koed-runtime");
+  mkdirSync(runtimeRoot, { recursive: true });
+  writeFileSync(
+    resolve(runtimeRoot, "desktop-bundle-manifest.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      productVersion,
+      component: "base",
+      target,
+      files: []
+    })
+  );
+  return resourcesPath;
+};
+
+afterEach(() => {
+  const changedPointers = activePointers
+    .splice(0)
+    .filter(({ pointer, bytes }) => {
+      try {
+        return !readFileSync(pointer).equals(bytes);
+      } catch {
+        return true;
+      }
+    });
+  for (const item of fixtures.splice(0)) item.dispose();
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true });
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  testRuntime.current = undefined;
+  testCatalog.current = null;
+  expect(changedPointers).toEqual([]);
+});
+
+describe("immutable component and generation store", () => {
+  it("rejects historical signatures when no compiled pin exists without changing pointer", async () => {
+    const home = temp();
+    const paths = resolveKoedServerPaths({ KOED_HOME: home });
+    const active = activePointers.at(-1)!;
+    const item = await fixture();
+    await expect(stageFixture(paths, item, null)).rejects.toThrow(
+      "Component manifest pin catalog is unavailable"
+    );
+    expect(readFileSync(active.pointer)).toEqual(active.bytes);
+  });
+
+  it("resolves exact libc pin from independent runtime identity", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const generic = await fixture();
+    const glibc = await fixture({
+      target: {
+        platform: "linux",
+        architecture: "x64",
+        libc: { family: "glibc", minimumVersion: "2.35" }
+      }
+    });
+    mergeTestCatalog(generic.input.manifestCatalog);
+    mergeTestCatalog(glibc.input.manifestCatalog);
+    testRuntime.current = glibc.input.runtime;
+    const staged = await stageComponent(
+      paths,
+      {
+        kind: "offline",
+        archivePath: glibc.input.archivePath,
+        manifestPath: writeMetadata(glibc.input.manifestBytes)
+      },
+      {
+        expectedComponent: "base",
+        expectedVersion: "0.8.1",
+        target: { platform: "linux", architecture: "x64" },
+        runtime: glibc.input.runtime
+      }
+    );
+    expect(staged.manifest.target.libc?.minimumVersion).toBe("2.35");
+  });
+
+  it("stages verified components idempotently by content digest", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const first = await stageFixture(paths, item);
+    const second = await stageFixture(paths, item);
+    expect(second).toEqual(first);
+    expect(first.root).toContain(first.manifestDigest);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy component records with reinstall guidance instead of fallback", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    const component = await stageFixture(paths, item);
+    writeFileSync(
+      resolve(component.root, "..", "component.json"),
+      JSON.stringify({ schemaVersion: 1 })
+    );
+    await expect(stageFixture(paths, item)).rejects.toThrow(
+      "Stored component predates manifest pin admission; reinstall components using a trusted versioned control plane."
+    );
+  });
+
+  it("persists a Desktop bundle plus manifest-pinned privacy generation and re-verifies disk bytes", async () => {
+    const home = temp();
+    const paths = resolveKoedServerPaths({ KOED_HOME: home });
+    const item = await fixture({ component: "privacy" });
+    const privacy = await stageFixture(paths, item);
+    const resourcesPath = desktopBundle(
+      home,
+      item.input.expectedVersion,
+      item.input.target
+    );
+    const bundle = verifyDesktopRuntimeBundle(resourcesPath);
+    const generation = await stageDesktopPrivacyGeneration(paths, {
+      resourcesPath,
+      bundleDigest: bundle.bundleDigest,
+      productVersion: bundle.productVersion,
+      privacy,
+      owner
+    });
+    expect(
+      (await readStagedGeneration(paths, generation.id)).privacy?.manifestDigest
+    ).toBe(privacy.manifestDigest);
+    const archiveName = (
+      JSON.parse(item.input.manifestBytes.toString("utf8")) as {
+        archive: { name: string };
+      }
+    ).archive.name;
+    writeFileSync(resolve(dirname(privacy.root), archiveName), "tampered");
+    await expect(readStagedGeneration(paths, generation.id)).rejects.toThrow();
+  });
+
+  it("rejects same component version with a different manifest digest", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const original = await fixture();
+    await stageFixture(paths, original);
+    const compatible = {
+      kind: "node" as const,
+      runtimeRange: ">=24 <25",
+      nodeRange: ">=24 <25",
+      modulesAbi: "137",
+      minimumNapi: 10
+    };
+    const conflicting = await fixture({ runtimes: [compatible, compatible] });
+    await expect(stageFixture(paths, conflicting)).rejects.toThrow(
+      "component version already installed with different digest"
+    );
+  });
+
+  it("rejects a component from a different product version without changing active pointer", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const active = preserveActivePointer(paths.koedHome);
+    const base = await fixture({ productVersion: "0.9.0" });
+    const privacy = await fixture({
+      component: "privacy",
+      productVersion: "0.9.1"
+    });
+    await stageFixture(paths, base);
+    await expect(
+      stageFixture(paths, privacy, base.input.manifestCatalog)
+    ).rejects.toThrow("Component pin catalog version mismatch");
+    expect(readFileSync(active.pointer)).toEqual(active.bytes);
+  });
+
+  it("rejects mixed component targets without changing active pointer", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const active = preserveActivePointer(paths.koedHome);
+    const base = await fixture();
+    const privacy = await fixture({
+      component: "privacy",
+      target: {
+        platform: "linux",
+        architecture: "x64",
+        libc: { family: "glibc", minimumVersion: "1.0" }
+      }
+    });
+    const stagedBase = await stageFixture(paths, base);
+    const stagedPrivacy = await stageFixture(paths, privacy);
+    await expect(
+      stageGeneration(paths, {
+        base: stagedBase,
+        privacy: stagedPrivacy,
+        owner
+      })
+    ).rejects.toThrow("mixed component targets");
+    expect(readFileSync(active.pointer)).toEqual(active.bytes);
+  });
+
+  it("rejects corrupt cached component bytes without changing active pointer", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const active = preserveActivePointer(paths.koedHome);
+    const item = await fixture();
+    const staged = await stageFixture(paths, item);
+    writeFileSync(resolve(staged.root, "entry.js"), "tampered\n");
+    await expect(stageFixture(paths, item)).rejects.toThrow();
+    expect(readFileSync(active.pointer)).toEqual(active.bytes);
+  });
+
+  it("rejects a symlinked digest cache root before reusing it", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const active = preserveActivePointer(paths.koedHome);
+    const item = await fixture();
+    const staged = await stageFixture(paths, item);
+    const digestRoot = resolve(staged.root, "..");
+    const movedRoot = resolve(temp(), "moved-cache");
+    renameSync(digestRoot, movedRoot);
+    symlinkSync(movedRoot, digestRoot);
+    await expect(stageFixture(paths, item)).rejects.toThrow();
+    expect(readFileSync(active.pointer)).toEqual(active.bytes);
+  });
+
+  it("offline source with missing metadata makes no network calls", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    testRuntime.current = {
+      kind: "node",
+      version: "24.13.1",
+      nodeVersion: "24.13.1",
+      modulesAbi: "137",
+      napiVersion: 10,
+      platform: "linux",
+      architecture: "x64"
+    };
+    const fetch = vi.spyOn(globalThis, "fetch");
+    await expect(
+      stageComponent(
+        paths,
+        {
+          kind: "offline",
+          archivePath: resolve(temp(), "absent.tar.gz"),
+          manifestPath: resolve(temp(), "absent-manifest.json")
+        },
+        {
+          expectedComponent: "base",
+          expectedVersion: "0.8.1",
+          target: { platform: "linux", architecture: "x64" },
+          runtime: {
+            kind: "node",
+            version: "24.13.1",
+            nodeVersion: "24.13.1",
+            modulesAbi: "137",
+            napiVersion: 10,
+            platform: "linux",
+            architecture: "x64"
+          }
+        }
+      )
+    ).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+    fetch.mockRestore();
+  });
+
+  it("retries transient manifest server failures", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    testRuntime.current = item.input.runtime;
+    const urls = new Map([
+      ["https://fixture.test/manifest.json", item.input.manifestBytes],
+      ["https://fixture.test/base.tar.gz", readFileSync(item.input.archivePath)]
+    ]);
+    let manifestAttempts = 0;
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        if (
+          String(input) === "https://fixture.test/manifest.json" &&
+          manifestAttempts++ === 0
+        )
+          return new Response(null, { status: 503 });
+        const bytes = urls.get(String(input));
+        return bytes
+          ? new Response(new Uint8Array(bytes))
+          : new Response(null, { status: 404 });
+      });
+    const result = await stageComponent(
+      paths,
+      {
+        kind: "remote",
+        archiveUrl: "https://fixture.test/base.tar.gz",
+        manifestUrl: "https://fixture.test/manifest.json"
+      },
+      {
+        expectedComponent: "base",
+        expectedVersion: "0.8.1",
+        target: item.input.target,
+        runtime: item.input.runtime
+      }
+    );
+    expect(result.manifestDigest).toBeTruthy();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    fetch.mockRestore();
+  });
+
+  it("rejects malformed remote archive bytes without changing active pointer", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const active = preserveActivePointer(paths.koedHome);
+    const item = await fixture();
+    testRuntime.current = item.input.runtime;
+    const urls = new Map([
+      ["https://fixture.test/manifest.json", item.input.manifestBytes],
+      ["https://fixture.test/base.tar.gz", Buffer.from("corrupt archive")]
+    ]);
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const bytes = urls.get(String(input));
+        return bytes
+          ? new Response(new Uint8Array(bytes))
+          : new Response(null, { status: 404 });
+      });
+    await expect(
+      stageComponent(
+        paths,
+        {
+          kind: "remote",
+          archiveUrl: "https://fixture.test/base.tar.gz",
+          manifestUrl: "https://fixture.test/manifest.json"
+        },
+        {
+          expectedComponent: "base",
+          expectedVersion: "0.8.1",
+          target: item.input.target,
+          runtime: item.input.runtime
+        }
+      )
+    ).rejects.toThrow();
+    expect(readFileSync(active.pointer)).toEqual(active.bytes);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    fetch.mockRestore();
+  });
+
+  it("rejects redirects from HTTPS to an unsafe protocol", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    testRuntime.current = item.input.runtime;
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "file:///etc/passwd" }
+      })
+    );
+    await expect(
+      stageComponent(
+        paths,
+        {
+          kind: "remote",
+          archiveUrl: "https://fixture.test/base.tar.gz",
+          manifestUrl: "https://fixture.test/manifest.json"
+        },
+        {
+          expectedComponent: "base",
+          expectedVersion: "0.8.1",
+          target: item.input.target,
+          runtime: item.input.runtime
+        }
+      )
+    ).rejects.toThrow("component redirect requires safe HTTPS");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    fetch.mockRestore();
+  });
+
+  it("allows another acquisition to publish while a download is stalled", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    testRuntime.current = item.input.runtime;
+    let resume!: (response: Response) => void;
+    vi.spyOn(globalThis, "fetch")
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolveResponse) => {
+            resume = resolveResponse;
+          })
+      )
+      .mockResolvedValueOnce(
+        new Response(readFileSync(item.input.archivePath))
+      );
+    const pending = stageComponent(
+      paths,
+      {
+        kind: "remote",
+        archiveUrl: "https://fixture.test/archive",
+        manifestUrl: "https://fixture.test/manifest"
+      },
+      {
+        expectedComponent: "base",
+        expectedVersion: "0.8.1",
+        target: item.input.target,
+        runtime: item.input.runtime
+      }
+    );
+    const installed = await stageFixture(paths, item);
+    resume(new Response(new Uint8Array(item.input.manifestBytes)));
+    expect(await pending).toEqual(installed);
+    expect(
+      readdirSync(paths.componentsDir).filter((name) =>
+        name.startsWith(".stage-")
+      )
+    ).toEqual([]);
+  });
+
+  it.each(["headers", "body"])(
+    "bounds stalled %s and removes private staging",
+    async (phase) => {
+      vi.useFakeTimers();
+      const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+      const item = await fixture();
+      testRuntime.current = item.input.runtime;
+      let cancelled = false;
+      vi.spyOn(globalThis, "fetch").mockImplementation((_url, options) => {
+        if (phase === "headers")
+          return new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("Aborted", "AbortError")),
+              { once: true }
+            );
+          });
+        return Promise.resolve(
+          new Response(
+            new ReadableStream({
+              cancel() {
+                cancelled = true;
+              }
+            })
+          )
+        );
+      });
+      const pending = stageComponent(
+        paths,
+        {
+          kind: "remote",
+          archiveUrl: "https://fixture.test/archive",
+          manifestUrl: "https://fixture.test/manifest"
+        },
+        {
+          expectedComponent: "base",
+          expectedVersion: "0.8.1",
+          target: item.input.target,
+          runtime: item.input.runtime
+        }
+      );
+      const rejected = expect(pending).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(30_001);
+      await rejected;
+      if (phase === "body") expect(cancelled).toBe(true);
+      expect(readdirSync(paths.componentsDir)).toEqual(["current.json"]);
+    }
+  );
+
+  it("keeps progressing bodies alive beyond header timeout", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((delay) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), delay);
+      return controller.signal;
+    });
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    testRuntime.current = item.input.runtime;
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              stream = controller;
+            }
+          })
+        )
+      )
+      .mockResolvedValueOnce(new Response("{}"));
+    const pending = stageComponent(
+      paths,
+      {
+        kind: "remote",
+        archiveUrl: "https://fixture.test/archive",
+        manifestUrl: "https://fixture.test/manifest"
+      },
+      {
+        expectedComponent: "base",
+        expectedVersion: "0.8.1",
+        target: item.input.target,
+        runtime: item.input.runtime
+      }
+    );
+    const rejected = expect(pending).rejects.toThrow(
+      "component manifest has invalid fields"
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    stream.enqueue(Buffer.from("{"));
+    await vi.advanceTimersByTimeAsync(20_000);
+    stream.enqueue(Buffer.from("}"));
+    stream.close();
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+    await rejected;
+    expect(readdirSync(paths.componentsDir)).toEqual(["current.json"]);
+  });
+
+  it("cancels a stalled response body when caller aborts", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const controller = new AbortController();
+    testRuntime.current = {
+      kind: "node",
+      version: "24.13.1",
+      nodeVersion: "24.13.1",
+      modulesAbi: "137",
+      napiVersion: 10,
+      platform: "linux",
+      architecture: "x64"
+    };
+    let bodyCancelled = false;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(streamController) {
+            streamController.enqueue(new Uint8Array([1]));
+          },
+          cancel() {
+            bodyCancelled = true;
+          }
+        })
+      )
+    );
+    const pending = stageComponent(
+      paths,
+      {
+        kind: "remote",
+        archiveUrl: "https://fixture.test/archive",
+        manifestUrl: "https://fixture.test/manifest"
+      },
+      {
+        expectedComponent: "base",
+        expectedVersion: "0.8.1",
+        target: { platform: "linux", architecture: "x64" },
+        runtime: {
+          kind: "node",
+          version: "24.13.1",
+          nodeVersion: "24.13.1",
+          modulesAbi: "137",
+          napiVersion: 10,
+          platform: "linux",
+          architecture: "x64"
+        },
+        signal: controller.signal
+      }
+    );
+    setTimeout(() => controller.abort(), 20);
+    await expect(pending).rejects.toThrow("component installation cancelled");
+    expect(bodyCancelled).toBe(true);
+  });
+
+  it("cancels rejected HTTP response bodies", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    testRuntime.current = {
+      kind: "node",
+      version: "24.13.1",
+      nodeVersion: "24.13.1",
+      modulesAbi: "137",
+      napiVersion: 10,
+      platform: "linux",
+      architecture: "x64"
+    };
+    let bodyCancelled = false;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          cancel() {
+            bodyCancelled = true;
+          }
+        }),
+        { status: 404 }
+      )
+    );
+    await expect(
+      stageComponent(
+        paths,
+        {
+          kind: "remote",
+          archiveUrl: "https://fixture.test/archive",
+          manifestUrl: "https://fixture.test/manifest"
+        },
+        {
+          expectedComponent: "base",
+          expectedVersion: "0.8.1",
+          target: { platform: "linux", architecture: "x64" },
+          runtime: {
+            kind: "node",
+            version: "24.13.1",
+            nodeVersion: "24.13.1",
+            modulesAbi: "137",
+            napiVersion: 10,
+            platform: "linux",
+            architecture: "x64"
+          }
+        }
+      )
+    ).rejects.toThrow("component download failed with HTTP 404");
+    expect(bodyCancelled).toBe(true);
+  });
+
+  it("aborts while waiting for component-store lock", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    testRuntime.current = item.input.runtime;
+    const release = await properLockfile.lock(paths.componentsDir, {
+      realpath: false
+    });
+    const controller = new AbortController();
+    const pending = stageComponent(
+      paths,
+      {
+        kind: "offline",
+        archivePath: item.input.archivePath,
+        manifestPath: writeMetadata(item.input.manifestBytes)
+      },
+      {
+        expectedComponent: "base",
+        expectedVersion: "0.8.1",
+        target: { platform: "linux", architecture: "x64" },
+        runtime: item.input.runtime,
+        signal: controller.signal
+      }
+    );
+    setTimeout(() => controller.abort(), 30);
+    await expect(pending).rejects.toThrow("component installation cancelled");
+    expect(readdirSync(paths.componentsDir)).toEqual(["current.json"]);
+    await release();
+  });
+
+  it("rejects cancellation before starting remote requests", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    testRuntime.current = {
+      kind: "node",
+      version: "24.13.1",
+      nodeVersion: "24.13.1",
+      modulesAbi: "137",
+      napiVersion: 10,
+      platform: "linux",
+      architecture: "x64"
+    };
+    const fetch = vi.spyOn(globalThis, "fetch");
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      stageComponent(
+        paths,
+        {
+          kind: "remote",
+          archiveUrl: "https://example.test/component.tar.gz",
+          manifestUrl: "https://example.test/manifest.json"
+        },
+        {
+          expectedComponent: "base",
+          expectedVersion: "0.8.1",
+          target: { platform: "linux", architecture: "x64" },
+          runtime: {
+            kind: "node",
+            version: "24.13.1",
+            nodeVersion: "24.13.1",
+            modulesAbi: "137",
+            napiVersion: 10,
+            platform: "linux",
+            architecture: "x64"
+          },
+          signal: controller.signal
+        }
+      )
+    ).rejects.toThrow("component installation cancelled");
+    expect(fetch).not.toHaveBeenCalled();
+    fetch.mockRestore();
+  });
+
+  it("rejects a caller-forged runtime identity", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture();
+    testRuntime.current = item.input.runtime;
+    await expect(
+      stageComponent(
+        paths,
+        {
+          kind: "offline",
+          archivePath: item.input.archivePath,
+          manifestPath: writeMetadata(item.input.manifestBytes)
+        },
+        {
+          expectedComponent: "base",
+          expectedVersion: "0.8.1",
+          target: item.input.target,
+          runtime: { ...item.input.runtime, version: "99.0.0" }
+        }
+      )
+    ).rejects.toThrow("caller runtime identity does not match actual runtime");
+  });
+
+  it("re-reads staged generation and binds owner and exact component roots", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const item = await fixture({}, undefined, false, {
+      bytes: goldenComponentArchive
+    });
+    const base = await stageFixture(paths, item);
+    const generation = await stageGeneration(paths, { base, owner });
+    expect(base.manifestDigest).toBe(
+      "67b2e5143f9815d6c16e0e215cde0efb2f2a6f9acfa01dcf62dba1985b2a56b6"
+    );
+    expect(generation.id).toBe(
+      "e5740ccc368b96b059940fe4e5983a4eb28208f1dab13b8b9a8d42eccaece008"
+    );
+    expect(readdirSync(resolve(paths.componentsDir, "base"))).toContain(
+      "66e1244931a366e97d2b2d65.json"
+    );
+    const storedComponent: unknown = JSON.parse(
+      readFileSync(resolve(base.root, "../component.json"), "utf8")
+    );
+    expect(storedComponent).not.toHaveProperty("kind");
+    const storedGeneration = JSON.parse(
+      readFileSync(
+        resolve(paths.generationsDir, generation.id, "generation.json"),
+        "utf8"
+      )
+    ) as { components: { base: unknown } };
+    expect(storedGeneration.components.base).not.toHaveProperty("kind");
+    expect(base.kind).toBe("manifest-pinned-component");
+    expect(generation.base.kind).toBe("manifest-pinned-component");
+    await expect(readStagedGeneration(paths, generation.id)).resolves.toEqual(
+      generation
+    );
+    await expect(readStagedGeneration(paths, "../escape")).rejects.toThrow();
+  });
+
+  it("derives generation identity only from reverified component records", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const baseItem = await fixture();
+    const privacyItem = await fixture({ component: "privacy" });
+    const base = await stageFixture(paths, baseItem);
+    const privacy = await stageFixture(paths, privacyItem);
+    const generation = await stageGeneration(paths, {
+      base: {
+        ...base,
+        manifest: { ...base.manifest, productVersion: "9.9.9" }
+      },
+      privacy: {
+        ...privacy,
+        manifest: { ...privacy.manifest, productVersion: "1.2.3" }
+      },
+      owner
+    });
+    expect(generation.productVersion).toBe("0.8.1");
+    expect(generation.base.manifest.productVersion).toBe("0.8.1");
+  });
+
+  it("reads generation records larger than the former 1 MiB limit", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const archiveEntries = Array.from({ length: 11_000 }, (_, index) => ({
+      path: index === 0 ? "entry.js" : `inventory/file-${index}.js`
+    }));
+    const baseItem = await fixture({}, archiveEntries, true);
+    const privacyItem = await fixture(
+      { component: "privacy" },
+      archiveEntries,
+      true
+    );
+    const base = await stageFixture(paths, baseItem);
+    const privacy = await stageFixture(paths, privacyItem);
+    const generation = await stageGeneration(paths, { base, privacy, owner });
+    const recordPath = resolve(
+      paths.generationsDir,
+      generation.id,
+      "generation.json"
+    );
+    expect(readFileSync(recordPath).byteLength).toBeGreaterThan(1024 * 1024);
+    await expect(readStagedGeneration(paths, generation.id)).resolves.toEqual(
+      generation
+    );
+  }, 45_000);
+
+  it("rejects unknown generation record fields", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const base = await stageFixture(paths, await fixture());
+    const generation = await stageGeneration(paths, { base, owner });
+    const recordPath = resolve(
+      paths.generationsDir,
+      generation.id,
+      "generation.json"
+    );
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    record.unbound = "extra";
+    writeFileSync(recordPath, JSON.stringify(record));
+    await expect(readStagedGeneration(paths, generation.id)).rejects.toThrow();
+  });
+
+  it("requires privacy reference presence to match component reference presence", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const baseItem = await fixture();
+    const privacyItem = await fixture({ component: "privacy" });
+    const base = await stageFixture(paths, baseItem);
+    const privacy = await stageFixture(paths, privacyItem);
+    const generation = await stageGeneration(paths, { base, privacy, owner });
+    const recordPath = resolve(
+      paths.generationsDir,
+      generation.id,
+      "generation.json"
+    );
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    delete record.privacy;
+    writeFileSync(recordPath, JSON.stringify(record));
+    await expect(readStagedGeneration(paths, generation.id)).rejects.toThrow();
+  });
+
+  it("rejects noncanonical generation record JSON", async () => {
+    const paths = resolveKoedServerPaths({ KOED_HOME: temp() });
+    const base = await stageFixture(paths, await fixture());
+    const generation = await stageGeneration(paths, { base, owner });
+    const recordPath = resolve(
+      paths.generationsDir,
+      generation.id,
+      "generation.json"
+    );
+    const recordBytes = readFileSync(recordPath, "utf8");
+    writeFileSync(recordPath, ` ${recordBytes}`);
+    await expect(readStagedGeneration(paths, generation.id)).rejects.toThrow(
+      "component metadata is not canonical JSON"
+    );
+  });
+
+  it("rejects symlinked KOED_HOME ancestry before creating store directories", async () => {
+    const parent = temp();
+    const realHome = resolve(parent, "real-home");
+    mkdirSync(realHome);
+    const linkedHome = resolve(parent, "linked-home");
+    const { symlinkSync } = await import("node:fs");
+    symlinkSync(realHome, linkedHome);
+    const paths = resolveKoedServerPaths({ KOED_HOME: linkedHome });
+    const fetch = vi.spyOn(globalThis, "fetch");
+    await expect(
+      stageComponent(
+        paths,
+        {
+          kind: "remote",
+          archiveUrl: "https://fixture.test/archive",
+          manifestUrl: "https://fixture.test/manifest"
+        },
+        {
+          expectedComponent: "base",
+          expectedVersion: "0.8.1",
+          target: { platform: "linux", architecture: "x64" },
+          runtime: {
+            kind: "node",
+            version: "24.13.1",
+            nodeVersion: "24.13.1",
+            modulesAbi: "137",
+            napiVersion: 10,
+            platform: "linux",
+            architecture: "x64"
+          }
+        }
+      )
+    ).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
