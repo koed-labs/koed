@@ -539,6 +539,27 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
     await drain(actor, 1);
     expect(await repo.listNamedPersonalProjects(actor)).toHaveLength(1);
   });
+  it("does not schedule retries for disabled or deleted owners", async () => {
+    const retryAt = new Date("2001-02-03T04:05:06.000Z");
+    const owners = [await owner(), await owner()];
+    for (const actor of owners) await capture(actor, git(`gr_${randomUUID()}`));
+    await pool.query(
+      "update personal_project_default_reconciliation set pending=true,retry_at=$2 where owner_user_id=any($1::uuid[])",
+      [owners.map((actor) => actor.userId), retryAt]
+    );
+    await pool.query("update users set disabled_at=now() where id=$1", [
+      owners[0]!.userId
+    ]);
+    await pool.query("update users set deleted_at=now() where id=$1", [
+      owners[1]!.userId
+    ]);
+    expect(await repo.nextPersonalProjectDefaultRetryAt()).not.toBe(
+      retryAt.toISOString()
+    );
+    expect(owners.map((actor) => actor.userId)).not.toContain(
+      await repo.nextPersonalProjectDefaultOwner()
+    );
+  });
   it("processes durable capture wakeups and resumes work accepted while the worker was stopped", async () => {
     const actor = await owner();
     const errors: unknown[] = [];

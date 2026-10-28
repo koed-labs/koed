@@ -279,8 +279,10 @@ export const createPersonalProjectDefaultRepository = (pool: pg.Pool) => ({
     );
   },
   async nextPersonalProjectDefaultRetryAt() {
+    // Match nextPersonalProjectDefaultOwner; ineligible owners must not wake the worker.
     const result = await pool.query<{ retry_at: Date | null }>(
-      "select min(retry_at) retry_at from personal_project_default_reconciliation where pending=true"
+      `select min(r.retry_at) retry_at from personal_project_default_reconciliation r join users u on u.id=r.owner_user_id
+        where r.pending=true and u.disabled_at is null and u.deleted_at is null`
     );
     return result.rows[0]?.retry_at?.toISOString() ?? null;
   }
