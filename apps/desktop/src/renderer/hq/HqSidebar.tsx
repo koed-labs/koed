@@ -1,4 +1,5 @@
 import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
+import { soloEdition } from "../edition.js";
 import type { Project } from "@koed/shared";
 import {
   projectNavigation,
@@ -243,6 +244,7 @@ export function HqSidebar({
   pendingDeletionIds,
   route
 }: HqSidebarProps) {
+  const solo = soloEdition();
   const groupsReady = groupsReadyProp ?? !loading;
   const preferencesStoreRef = useRef<HqSidebarPreferencesStore | null>(null);
   if (!preferencesStoreRef.current) {
@@ -1300,19 +1302,21 @@ export function HqSidebar({
         </header>
         <nav aria-label="Project navigation" className="hq-sidebar__nav">
           <div aria-label="Sidebar actions" className="hq-sidebar__actions">
-            <HqIconAction
-              className="hq-sidebar__action"
-              disabled={!onNewConversation}
-              label="New chat"
-              onClick={onNewConversation}
-              title={
-                onNewConversation
-                  ? "Start a new conversation"
-                  : "New chat is not available yet"
-              }
-            >
-              <SquarePen aria-hidden="true" />
-            </HqIconAction>
+            {solo && !onNewConversation ? null : (
+              <HqIconAction
+                className="hq-sidebar__action"
+                disabled={!onNewConversation}
+                label="New chat"
+                onClick={onNewConversation}
+                title={
+                  onNewConversation
+                    ? "Start a new conversation"
+                    : "New chat is not available yet"
+                }
+              >
+                <SquarePen aria-hidden="true" />
+              </HqIconAction>
+            )}
             <HqIconAction
               className="hq-sidebar__action"
               label="Search and commands"
@@ -1321,19 +1325,21 @@ export function HqSidebar({
             >
               <Search aria-hidden="true" />
             </HqIconAction>
-            <HqIconAction
-              className="hq-sidebar__action"
-              disabled={!onCreateProject}
-              label="New project"
-              onClick={onCreateProject}
-              title={
-                onCreateProject
-                  ? "Create a Project"
-                  : "Project creation is not available yet"
-              }
-            >
-              <Plus aria-hidden="true" />
-            </HqIconAction>
+            {solo && !onCreateProject ? null : (
+              <HqIconAction
+                className="hq-sidebar__action"
+                disabled={!onCreateProject}
+                label="New project"
+                onClick={onCreateProject}
+                title={
+                  onCreateProject
+                    ? "Create a Project"
+                    : "Project creation is not available yet"
+                }
+              >
+                <Plus aria-hidden="true" />
+              </HqIconAction>
+            )}
             <HqIconAction
               className="hq-sidebar__action hq-sidebar__action--now"
               disabled={!onOpenNow}

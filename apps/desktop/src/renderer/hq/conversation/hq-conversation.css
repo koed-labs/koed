@@ -792,3 +792,19 @@
   max-width: 780px;
   margin-inline: auto;
 }
+
+.hq-conversation__loading {
+  margin: 0 0 16px;
+  color: var(--hq-muted);
+  font-size: 14px;
+  text-align: center;
+}
+.hq-conversation__loading button {
+  border: 0;
+  padding: 0;
+  color: var(--hq-fg);
+  background: none;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}

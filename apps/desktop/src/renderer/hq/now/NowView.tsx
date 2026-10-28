@@ -6,6 +6,7 @@ import {
   RotateCw,
   ShieldAlert
 } from "lucide-react";
+import { soloEdition } from "../../edition.js";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type { Project } from "@koed/shared";
@@ -320,10 +321,12 @@ export function NowView({
   const [approvalClock, setApprovalClock] = useState(0);
   const drafts = lifecycle?.drafts;
   const draftIdentityKey = [...(drafts?.keys() ?? [])].sort().join("\u0000");
-  const privateDueProjects = (personalProjects ?? []).filter(
+  // Solo has no to-dos, so there are no deadlines to read.
+  const solo = soloEdition();
+  const privateDueProjects = (solo ? [] : (personalProjects ?? [])).filter(
     (project) => !project.workspaceProjectId
   );
-  const sharedDueProjects = (personalProjects ?? []).filter(
+  const sharedDueProjects = (solo ? [] : (personalProjects ?? [])).filter(
     (project) =>
       project.workspaceProjectId &&
       project.teamBackendId &&

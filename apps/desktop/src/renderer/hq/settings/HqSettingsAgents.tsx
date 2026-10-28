@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { soloEdition } from "../../edition.js";
 import { Button } from "@koed/ui";
 import type { DesktopApi, KoedServerStatus } from "../../../types.js";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
@@ -136,10 +137,12 @@ export function HqSettingsAgents({
   );
   return (
     <>
-      <HqUsageTable
-        localAiClients={localAiClients}
-        authorityKey={authorityKey}
-      />
+      {soloEdition() ? null : (
+        <HqUsageTable
+          localAiClients={localAiClients}
+          authorityKey={authorityKey}
+        />
+      )}
       <section aria-label="AI Client integrations">
         <h3 className="hq-settings__eyebrow">Connections</h3>
         {error || snapshot.error ? (

@@ -10,6 +10,7 @@ import {
   Sparkles,
   X
 } from "lucide-react";
+import { soloEdition } from "../../edition.js";
 import {
   useCallback,
   useEffect,
@@ -107,6 +108,15 @@ const activeStates = new Set([
   "quiesced"
 ]);
 const cap = { need: 4, doing: 4, todo: 5, review: 4, done: 3 } as const;
+
+const aiClientLabel = (client: string | null | undefined): string =>
+  client === "claude-code"
+    ? "Claude Code"
+    : client === "codex" || client === "codex-cli"
+      ? "Codex"
+      : client === "pi"
+        ? "Pi"
+        : "Koed";
 
 /** Runtime project IDs are technical IDs; the Project route is a Personal Project ID. */
 export function projectHqExecutionBelongsTo(
@@ -240,6 +250,9 @@ export function HqProjectView({
   rightColumnVisible?: boolean;
 }) {
   const linked = Boolean(project.workspaceProjectId);
+  // Solo shows a Project as its conversations and what Koed knows about it;
+  // to-dos, decks, activity and sharing stay hidden and are not polled.
+  const solo = soloEdition();
   const sharedIdentity =
     ownerId && profileKey && project.workspaceProjectId && project.teamBackendId
       ? {
@@ -525,7 +538,7 @@ export function HqProjectView({
       }
     };
     window.addEventListener("hq-agent-delegated", notified);
-    const timer = window.setInterval(load, 10_000);
+    const timer = window.setInterval(load, solo ? 60_000 : 10_000);
     return () => {
       live = false;
       window.removeEventListener("hq-agent-delegated", notified);
@@ -562,10 +575,13 @@ export function HqProjectView({
     };
   }, [sendFor]);
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible")
-        setRefresh((value) => value + 1);
-    }, 10_000);
+    const timer = window.setInterval(
+      () => {
+        if (document.visibilityState === "visible")
+          setRefresh((value) => value + 1);
+      },
+      solo ? 30_000 : 10_000
+    );
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
@@ -577,7 +593,7 @@ export function HqProjectView({
         await Promise.allSettled([
           projectsApi.hq(project.id),
           conversationsApi?.list?.() ?? Promise.resolve(null),
-          linked
+          linked || solo
             ? Promise.resolve([] as WorkItem[])
             : (projectsApi.workItemList?.(project.id) ??
               Promise.reject(new Error("Work Items unavailable"))),
@@ -1245,6 +1261,15 @@ export function HqProjectView({
       <span>{count}</span>
     </button>
   );
+  const soloConversations = solo
+    ? [
+        ...(projectNavigation(personalProjects, graphProjects).projects.find(
+          (row) => row.id === project.id
+        )?.conversations ?? [])
+      ].sort((a, b) =>
+        (b.thread.latestAt ?? "").localeCompare(a.thread.latestAt ?? "")
+      )
+    : [];
   return (
     <div className="hq-project-view" aria-label={`${project.name} HQ`}>
       <header className="hq-project-view__header">
@@ -1254,7 +1279,7 @@ export function HqProjectView({
             <span title={project.folderPath}>{project.folderPath}</span>
           ) : null}
         </div>
-        {outcomes ? (
+        {solo ? null : outcomes ? (
           <div
             className="hq-project-view__activity"
             title="Work Items completed and pull requests merged each day, last seven UTC days"
@@ -1279,17 +1304,19 @@ export function HqProjectView({
             Done and merged unavailable
           </span>
         )}
-        <button
-          type="button"
-          className="hq-project-view__shared"
-          onClick={onShareProject}
-          disabled={!onShareProject}
-          aria-label={
-            linked ? "View who is in this shared Project" : "Share Project"
-          }
-        >
-          {linked ? "HQ Shared" : "Share"}
-        </button>
+        {solo && !onShareProject ? null : (
+          <button
+            type="button"
+            className="hq-project-view__shared"
+            onClick={onShareProject}
+            disabled={!onShareProject}
+            aria-label={
+              linked ? "View who is in this shared Project" : "Share Project"
+            }
+          >
+            {linked ? "HQ Shared" : "Share"}
+          </button>
+        )}
         {linked && onOpenTeamTab && !rightColumnVisible ? (
           <button
             type="button"
@@ -1463,7 +1490,51 @@ export function HqProjectView({
       ) : linked ? (
         <p role="status">Shared Project state is unavailable.</p>
       ) : null}
-      <div className="hq-project-view__work" hidden={linked}>
+      {solo ? (
+        <section
+          className="hq-project-view__section hq-project-view__conversations"
+          aria-label="Conversations"
+        >
+          <h2 className="hq-project-view__solo-head">Conversations</h2>
+          {soloConversations.length ? (
+            <ul className="hq-project-view__solo-list">
+              {soloConversations.map(({ technicalProjectId, thread }) => (
+                <li key={`${technicalProjectId}:${thread.id}`}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSelectConversation({
+                        id: `project-conversation:${thread.id}`,
+                        kind: "question",
+                        title: thread.name || "Conversation",
+                        context: project.name,
+                        projectId: technicalProjectId,
+                        sessionId: thread.sessionId ?? undefined,
+                        threadId: thread.id,
+                        createdAt: thread.latestAt
+                      })
+                    }
+                  >
+                    <span>{thread.name || "Conversation"}</span>
+                    <small>
+                      {aiClientLabel(thread.sourceAiClient)}
+                      {thread.latestAt
+                        ? ` · ${new Date(thread.latestAt).toLocaleString()}`
+                        : ""}
+                    </small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="hq-project-view__none">
+              No conversations yet. Work in this folder with Claude Code or
+              Codex and they appear here.
+            </p>
+          )}
+        </section>
+      ) : null}
+      <div className="hq-project-view__work" hidden={linked || solo}>
         {(["need", "doing"] as const).map((kind) => {
           const workRows = kind === "need" ? work.needs : work.doing;
           const boundExecutions = new Set(

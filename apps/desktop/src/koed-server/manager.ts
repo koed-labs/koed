@@ -80,6 +80,7 @@ import type { ChildProcess } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { type SourceControlV2Result } from "@koed/shared/source-control-v2";
 import { handleHqSourceControlMerge } from "./hq-source-control-merge-client.js";
+import { createReadCoalescer } from "./read-coalescer.js";
 import WebSocket from "ws";
 import {
   approvalActivityClassificationSchema,
@@ -2575,6 +2576,36 @@ export const createKoedServerManager = ({
     }
   };
 
+  // Identical reads asked for at the same time share one request; a read
+  // that starts after the previous one finished always goes to the API.
+  const localApiReads = createReadCoalescer(0);
+
+  // One `koed status` at a time: every caller that needs the API origin
+  // while it is unknown waits for the same lookup instead of starting its own
+  // CLI process (each can take seconds on a busy Mac).
+  let personalApiOriginLookup: Promise<string | null> | null = null;
+  const lookupPersonalApiOrigin = (
+    refresh: boolean
+  ): Promise<string | null> => {
+    if (refresh && !personalApiOriginLookup) retainedPersonalApiOrigin = null;
+    if (retainedPersonalApiOrigin)
+      return Promise.resolve(retainedPersonalApiOrigin);
+    if (!personalApiOriginLookup) {
+      const lookup = runJson(["status"], statusCommandTimeoutMs)
+        .then((current) => {
+          const origin = current ? localPersonalMemoryOrigin(current) : null;
+          if (origin) retainedPersonalApiOrigin = origin;
+          return origin;
+        })
+        .finally(() => {
+          if (personalApiOriginLookup === lookup)
+            personalApiOriginLookup = null;
+        });
+      personalApiOriginLookup = lookup;
+    }
+    return personalApiOriginLookup;
+  };
+
   const personalMemoryAccess = async ({
     refreshOrigin = false,
     refreshToken = false
@@ -2582,17 +2613,10 @@ export const createKoedServerManager = ({
     refreshOrigin?: boolean;
     refreshToken?: boolean;
   } = {}) => {
-    if (refreshOrigin) retainedPersonalApiOrigin = null;
-    const current = retainedPersonalApiOrigin
-      ? null
-      : await runJson(["status"], statusCommandTimeoutMs);
-    const apiOrigin =
-      retainedPersonalApiOrigin ??
-      (current ? localPersonalMemoryOrigin(current) : null);
+    const apiOrigin = await lookupPersonalApiOrigin(refreshOrigin);
     if (!apiOrigin) {
       throw new PersonalMemoryBoundaryError("not_ready", true);
     }
-    retainedPersonalApiOrigin = apiOrigin;
     const credential = await provisionLocalAppCredential(refreshToken);
     if (!credential.ok) {
       throw new PersonalMemoryBoundaryError("not_ready", true);
@@ -2606,16 +2630,10 @@ export const createKoedServerManager = ({
     environment: NodeJS.ProcessEnv;
     desktopAuthorization: string;
   }> => {
-    const current = retainedPersonalApiOrigin
-      ? null
-      : await runJson(["status"], statusCommandTimeoutMs);
-    const apiOrigin =
-      retainedPersonalApiOrigin ??
-      (current ? localPersonalMemoryOrigin(current) : null);
+    const apiOrigin = await lookupPersonalApiOrigin(false);
     if (!apiOrigin) {
       throw new PersonalMemoryBoundaryError("not_ready", true);
     }
-    retainedPersonalApiOrigin = apiOrigin;
     const desktop = readDesktopLocalCredentialAuthorization(
       resolveKoedHome(environment)
     );
@@ -3305,7 +3323,30 @@ export const createKoedServerManager = ({
     });
   };
 
-  const authenticatedPersonalMemoryRequest = async (
+  const authenticatedPersonalMemoryRequest = (
+    request: (access: { apiOrigin: string; apiToken: string }) => {
+      url: URL;
+      init: RequestInit;
+    },
+    maximumResponseBytes: number
+  ): Promise<Record<string, unknown>> => {
+    // The builders are pure, so a placeholder origin shows what is asked for.
+    const shape = request({ apiOrigin: "http://koed.invalid", apiToken: "" });
+    const method = (shape.init.method ?? "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD") {
+      localApiReads.clear();
+      return authenticatedPersonalMemoryRequestNow(
+        request,
+        maximumResponseBytes
+      );
+    }
+    return localApiReads.read(
+      `personal ${maximumResponseBytes} ${shape.url.pathname}${shape.url.search}`,
+      () => authenticatedPersonalMemoryRequestNow(request, maximumResponseBytes)
+    );
+  };
+
+  const authenticatedPersonalMemoryRequestNow = async (
     request: (access: { apiOrigin: string; apiToken: string }) => {
       url: URL;
       init: RequestInit;
@@ -3333,7 +3374,11 @@ export const createKoedServerManager = ({
           },
           { timeoutMs: 30_000, maxBytes: maximumResponseBytes }
         );
-      } catch {
+      } catch (cause) {
+        // A slow answer is not a moved API: retrying through a fresh
+        // `koed status` would only add load. Re-resolve on connection errors.
+        if (cause instanceof RemoteRequestTimeoutError)
+          throw new PersonalMemoryBoundaryError("request_failed", true);
         if (!options?.refreshOrigin) {
           return perform({ ...options, refreshOrigin: true });
         }
@@ -4472,20 +4517,13 @@ export const createKoedServerManager = ({
   };
 
   const managedProjectAccess = async (refreshOrigin = false) => {
-    if (refreshOrigin) retainedPersonalApiOrigin = null;
-    const current = retainedPersonalApiOrigin
-      ? null
-      : await runJson(["status"], statusCommandTimeoutMs);
-    const apiOrigin =
-      retainedPersonalApiOrigin ??
-      (current ? localPersonalMemoryOrigin(current) : null);
+    const apiOrigin = await lookupPersonalApiOrigin(refreshOrigin);
     const credential = readDesktopLocalCredentialAuthorization(
       resolveKoedHome(environment)
     );
     if (!apiOrigin || !credential) {
       throw new PersonalMemoryBoundaryError("not_ready", true);
     }
-    retainedPersonalApiOrigin = apiOrigin;
     return { apiOrigin, authorization: credential.authorization };
   };
 
@@ -4652,7 +4690,30 @@ export const createKoedServerManager = ({
   });
 
   const projects = createProjectsClient(
-    async (path, init, bound: ProjectsAuthority) => {
+    (path, init, bound: ProjectsAuthority) => {
+      const method = (init.method ?? "GET").toUpperCase();
+      if (method !== "GET" && method !== "HEAD") {
+        localApiReads.clear();
+        return projectsRequestNow(path, init, bound);
+      }
+      return localApiReads.read(`projects ${bound.key} ${path}`, () =>
+        projectsRequestNow(path, init, bound)
+      );
+    },
+    projectsAuthority,
+    async (folderPath) =>
+      discoverProjectSourceRepos(
+        resolveKoedServerPaths(environment),
+        folderPath
+      )
+  );
+
+  async function projectsRequestNow(
+    path: string,
+    init: RequestInit,
+    bound: ProjectsAuthority
+  ): Promise<Record<string, unknown>> {
+    {
       const remote = await fetchBoundedJsonObject(
         personalMemoryFetch,
         new URL(path, bound.apiOrigin),
@@ -4671,18 +4732,14 @@ export const createKoedServerManager = ({
         await remote.response.body?.cancel().catch(() => undefined);
         throw new PersonalMemoryBoundaryError(
           remote.response.status === 404 ? "not_found" : "request_failed",
-          remote.response.status === 408 || remote.response.status >= 500
+          remote.response.status === 408 ||
+            remote.response.status === 429 ||
+            remote.response.status >= 500
         );
       }
       return remote.payload;
-    },
-    projectsAuthority,
-    async (folderPath) =>
-      discoverProjectSourceRepos(
-        resolveKoedServerPaths(environment),
-        folderPath
-      )
-  );
+    }
+  }
 
   const sharedProjectIdentity = new AsyncLocalStorage<string>();
   const workspaceProjectTransport = createWorkspaceProjectTransport({

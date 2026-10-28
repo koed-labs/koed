@@ -564,3 +564,42 @@ button.hq-project-view__row:hover:not(:disabled) {
     flex-wrap: wrap;
   }
 }
+
+/* Solo: a Project is its conversations. */
+.hq-project-view__solo-head {
+  margin: 18px 28px 6px;
+  color: var(--hq-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.hq-project-view__solo-list {
+  margin: 0 16px;
+  padding: 0;
+  list-style: none;
+}
+.hq-project-view__solo-list button {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--hq-fg);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.hq-project-view__solo-list button:hover {
+  background: var(--hq-surface-hover);
+}
+.hq-project-view__solo-list small {
+  flex: none;
+  color: var(--hq-muted);
+  font-size: 11.5px;
+}

@@ -927,6 +927,14 @@ export const registerDesktopCommandHandlers = (
         rawResult = await options.managedConversation(request);
       } catch (error) {
         if (error instanceof LocalApiRateLimitError) throw error;
+        // The renderer only gets a generic sentence; keep the cause in the
+        // Desktop log so a failure can be diagnosed.
+        console.warn(
+          `[managed conversation] ${request.operation} failed:`,
+          error instanceof Error
+            ? `${error.name}: ${error.message}${"code" in error ? ` (${String((error as { code: unknown }).code)})` : ""}`
+            : String(error)
+        );
         const messages: Record<ManagedConversationResult["operation"], string> =
           {
             list: "Koed could not list managed Conversations.",

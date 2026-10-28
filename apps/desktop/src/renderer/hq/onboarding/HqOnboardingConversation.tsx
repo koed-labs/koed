@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { soloEdition } from "../../edition.js";
 import { SecureMarkdown } from "@koed/memory-ui";
 import { createPortal } from "react-dom";
 import type { Agent } from "@koed/shared/agent-contract";
@@ -532,6 +533,7 @@ function NestCard() {
 }
 
 export function HqOnboardingConversation(props: Props) {
+  const solo = soloEdition();
   const markdownAdapters = useMemo(() => {
     const platform = createRendererPlatform();
     return {
@@ -901,14 +903,16 @@ export function HqOnboardingConversation(props: Props) {
         return (
           <>
             <p>
-              The same memory works with every AI Client you connect and every
-              agent you create. Over time Koed also remembers your projects,
-              your decisions and the files you drop in, so nobody re-explains
-              anything. You can see, change or forget any of it: just say
-              “forget that”.
+              The same memory works with every AI Client you connect
+              {solo ? "" : " and every agent you create"}. Over time Koed also
+              remembers your projects, your decisions and the files you drop in,
+              so nobody re-explains anything. You can see, change or forget any
+              of it: just say “forget that”.
             </p>
             {buttons([
-              ["Next: working together", "ways"],
+              solo
+                ? ["Finish setup", "summary"]
+                : ["Next: working together", "ways"],
               ["What else can it do?", "more"],
               ...(record.memoryDemoStatus !== "answered"
                 ? [
@@ -942,12 +946,23 @@ export function HqOnboardingConversation(props: Props) {
                 <strong>Drop a spec once</strong>, and every agent on that
                 Project uses it.
               </li>
-              <li>
-                <strong>Share what you choose</strong> with your co-workers when
-                Team is available. The rest stays private.
-              </li>
+              {solo ? (
+                <li>
+                  <strong>Everything stays on this Mac.</strong> Nothing is
+                  shared or sent to a Koed server.
+                </li>
+              ) : (
+                <li>
+                  <strong>Share what you choose</strong> with your co-workers
+                  when Team is available. The rest stays private.
+                </li>
+              )}
             </ul>
-            {buttons([["Next: working together", "ways"]])}
+            {buttons([
+              solo
+                ? ["Finish setup", "summary"]
+                : ["Next: working together", "ways"]
+            ])}
           </>
         );
       case "ways-intro":
@@ -1215,7 +1230,9 @@ export function HqOnboardingConversation(props: Props) {
                   <small>
                     {record.hireAgentId
                       ? `Solo, with ${record.hireName ?? "your hired agent"} (${record.hireRole ?? "Agent"})`
-                      : "Solo. I’ll hire agents when a job needs them."}
+                      : solo
+                        ? `Solo, with ${record.chiefName || "your chief of staff"}`
+                        : "Solo. I’ll hire agents when a job needs them."}
                   </small>
                 </span>
               </div>

@@ -68,6 +68,7 @@ import { reconcileHqRoute, type HqRoute } from "./hq-navigation.js";
 import { usePersonalProjectsLoader } from "./use-personal-projects-loader.js";
 import { useProjectMenuActions } from "./useProjectMenuActions.js";
 import { NowView } from "./now/NowView.js";
+import { soloEdition } from "../edition.js";
 import { useScheduledJobs } from "./jobs/use-scheduled-jobs.js";
 import { HqProjectConversation } from "./project/HqProjectConversation.js";
 import { HqProjectThread } from "./project/HqProjectThread.js";
@@ -221,7 +222,11 @@ export function HqApplication({
     visibilityProfileKey,
     visibilityClient?.current()?.connection.backendId
   ]);
-  const sharingEnabled = teamCollaborationEnabled && Boolean(sharingStore);
+  // Solo (the open-source v1.0) has no Team: every sharing surface follows
+  // this one switch, not merely whether a collaboration client exists.
+  const solo = soloEdition();
+  const teamUi = teamCollaborationEnabled && !solo;
+  const sharingEnabled = teamUi && Boolean(sharingStore);
   const [sharingOpen, setSharingOpen] = useState(false);
   const showingSharing = sharingOpen && sharingEnabled;
   const [sharingProjectFilter, setSharingProjectFilter] = useState<{
@@ -247,7 +252,7 @@ export function HqApplication({
     );
   }, [sharingStore, visibilityOwnerId, visibilityProfileKey, sharingEnabled]);
   const scheduledJobs = useScheduledJobs(
-    window.koedDesktop?.scheduledJobs,
+    solo ? undefined : window.koedDesktop?.scheduledJobs,
     visibilityOwnerId,
     visibilityProfileKey,
     visibilityClient
@@ -3022,7 +3027,7 @@ export function HqApplication({
         sidebar={({ compact }) => (
           <HqSidebar
             compact={compact}
-            scheduledJobs={scheduledJobs.jobs}
+            scheduledJobs={solo ? [] : scheduledJobs.jobs}
             onPauseScheduledJob={(job, paused) =>
               void scheduledJobs.pause(job, paused)
             }
@@ -3056,6 +3061,7 @@ export function HqApplication({
             sharedPeopleCounts={sharedPeopleCounts}
             sharedAudienceNames={sharedAudienceNames}
             teams={
+              teamUi &&
               visibilityClient?.current()?.connection.backendId &&
               visibilityClient.current()?.navigation.personalOwner.id ===
                 visibilityOwnerId
@@ -3084,7 +3090,7 @@ export function HqApplication({
               selectRoute({ kind: "project", projectId })
             }
             onCreateProject={
-              projectsStore && firstClassLoaded
+              !solo && projectsStore && firstClassLoaded
                 ? projectMenu.openCreate
                 : undefined
             }
@@ -3101,7 +3107,7 @@ export function HqApplication({
                 : undefined
             }
             onReviewSharedProject={
-              visibilityClient && projectsStore
+              teamUi && visibilityClient && projectsStore
                 ? async (projectId) => {
                     const project = projectsStore
                       .current()
@@ -3123,10 +3129,12 @@ export function HqApplication({
                 : undefined
             }
             onShareProject={
-              projectsApi && visibilityClient ? setShareProjectId : undefined
+              teamUi && projectsApi && visibilityClient
+                ? setShareProjectId
+                : undefined
             }
             onOpenSharedGroup={
-              projectsApi && visibilityClient
+              teamUi && projectsApi && visibilityClient
                 ? () => setTeamGroupsOpen(true)
                 : undefined
             }
@@ -3144,17 +3152,23 @@ export function HqApplication({
             }
             chatShareScopeKey={chatShareScopeKey}
             onChatShareStatus={
-              projectsApi?.sharedChatStatus && projectsApi.sharedChatMakePrivate
+              teamUi &&
+              projectsApi?.sharedChatStatus &&
+              projectsApi.sharedChatMakePrivate
                 ? readChatShareStatus
                 : undefined
             }
             onMakeChatPrivate={
-              projectsApi?.sharedChatStatus && projectsApi.sharedChatMakePrivate
+              teamUi &&
+              projectsApi?.sharedChatStatus &&
+              projectsApi.sharedChatMakePrivate
                 ? makeChatPrivate
                 : undefined
             }
             onShareChatAgain={
-              projectsApi?.sharedChatStatus && projectsApi.sharedChatOffer
+              teamUi &&
+              projectsApi?.sharedChatStatus &&
+              projectsApi.sharedChatOffer
                 ? (personalProjectId, sessionId) =>
                     offerChatSummary(
                       personalProjectId,
@@ -3165,7 +3179,9 @@ export function HqApplication({
                 : undefined
             }
             onShareUnsharedChat={
-              projectsApi?.sharedChatStatus && projectsApi.sharedChatOffer
+              teamUi &&
+              projectsApi?.sharedChatStatus &&
+              projectsApi.sharedChatOffer
                 ? (personalProjectId, sessionId) =>
                     offerChatSummary(
                       personalProjectId,
@@ -3182,7 +3198,7 @@ export function HqApplication({
               selectRoute({ kind: "conversation", projectId, sessionId })
             }
             onMoveConversation={
-              personalMemoryApi && firstClassLoaded
+              !solo && personalMemoryApi && firstClassLoaded
                 ? (sessionId, fromProjectId, toProjectId) => {
                     const thread = projects
                       .flatMap((project) => project.threads)
@@ -3203,6 +3219,7 @@ export function HqApplication({
                 : undefined
             }
             onNewConversation={
+              !solo &&
               managedConversations &&
               managedConversationLifecycle &&
               onResolveIndependent
@@ -3661,8 +3678,8 @@ export function HqApplication({
               {route.kind === "home" && !blankOpen ? (
                 <NowView
                   key={visibilityOwnerId ?? "no-owner"}
-                  invitationsClient={visibilityClient}
-                  scheduledJobs={scheduledJobs}
+                  invitationsClient={teamUi ? visibilityClient : undefined}
+                  scheduledJobs={solo ? undefined : scheduledJobs}
                   scheduledJobAgents={agentsSnapshot?.agents ?? []}
                   onOpenJob={openScheduledJob}
                   projects={projects}
@@ -3712,8 +3729,8 @@ export function HqApplication({
           ) : route.kind === "home" ? (
             <NowView
               key={visibilityOwnerId ?? "no-owner"}
-              invitationsClient={visibilityClient}
-              scheduledJobs={scheduledJobs}
+              invitationsClient={teamUi ? visibilityClient : undefined}
+              scheduledJobs={solo ? undefined : scheduledJobs}
               scheduledJobAgents={agentsSnapshot?.agents ?? []}
               onOpenJob={openScheduledJob}
               projects={projects}
@@ -3763,7 +3780,7 @@ export function HqApplication({
               personalProjects={personalProjects}
               graphProjects={projects}
               projectsApi={projectsApi}
-              decksApi={window.koedDesktop?.decks}
+              decksApi={solo ? undefined : window.koedDesktop?.decks}
               openDeckId={
                 openDeckRequest?.ownerId === visibilityOwnerId &&
                 openDeckRequest?.profileKey === visibilityProfileKey &&
@@ -3794,7 +3811,7 @@ export function HqApplication({
               }
               onFocusWorkItemHandled={() => setFocusDueItem(null)}
               onShareProject={
-                visibilityClient
+                teamUi && visibilityClient
                   ? () => setShareProjectId(personalProject.id)
                   : undefined
               }

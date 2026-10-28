@@ -452,39 +452,41 @@ const bootstrap = async () => {
   const server = koedServer;
   // Phone access (Settings › Phone): off until the person turns it on. It
   // keeps paired phones in the encrypted secret store, so it needs one.
-  phoneGateway = personalDevicePairingStore
-    ? createPhoneGateway({
-        deps: {
-          macName: () =>
-            hostname()
-              .replace(/\.local$/u, "")
-              .slice(0, 80) || "Mac",
-          agents: server.agents,
-          managedConversation: server.managedConversation,
-          personalMemory: server.personalMemory,
-          scheduledJobs: server.scheduledJobs,
-          localAiClients: server.localAiClients,
-          managedTextActions: server.managedTextActions,
-          ensureIndependentProject: async () => {
-            const result =
-              (await server.handlers.ensure_independent_project()) as {
-                project?: { localProjectId?: unknown };
-              };
-            const localProjectId = result?.project?.localProjectId;
-            if (typeof localProjectId !== "string")
-              throw new Error("The Chats project isn't available.");
-            return { localProjectId };
+  phoneGateway =
+    personalDevicePairingStore &&
+    desktopFeatureFlagsFromEnvironment(process.env).phoneEnabled
+      ? createPhoneGateway({
+          deps: {
+            macName: () =>
+              hostname()
+                .replace(/\.local$/u, "")
+                .slice(0, 80) || "Mac",
+            agents: server.agents,
+            managedConversation: server.managedConversation,
+            personalMemory: server.personalMemory,
+            scheduledJobs: server.scheduledJobs,
+            localAiClients: server.localAiClients,
+            managedTextActions: server.managedTextActions,
+            ensureIndependentProject: async () => {
+              const result =
+                (await server.handlers.ensure_independent_project()) as {
+                  project?: { localProjectId?: unknown };
+                };
+              const localProjectId = result?.project?.localProjectId;
+              if (typeof localProjectId !== "string")
+                throw new Error("The Chats project isn't available.");
+              return { localProjectId };
+            }
+          },
+          secrets: personalDevicePairingStore,
+          subscribePersonalMemory: (listener, signal) =>
+            server.subscribePersonalMemory(listener, signal),
+          onStatusChange: (status) => {
+            if (mainWindow && !mainWindow.isDestroyed())
+              mainWindow.webContents.send(phoneGatewayChangedChannel, status);
           }
-        },
-        secrets: personalDevicePairingStore,
-        subscribePersonalMemory: (listener, signal) =>
-          server.subscribePersonalMemory(listener, signal),
-        onStatusChange: (status) => {
-          if (mainWindow && !mainWindow.isDestroyed())
-            mainWindow.webContents.send(phoneGatewayChangedChannel, status);
-        }
-      })
-    : null;
+        })
+      : null;
   const gateway = phoneGateway;
   const desktopIcon = getDesktopIcon();
   if (desktopIcon && process.platform === "darwin") {

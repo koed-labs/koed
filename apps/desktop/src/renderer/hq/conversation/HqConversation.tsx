@@ -855,79 +855,98 @@ export function HqBlankConversation({
   useEffect(() => {
     if (!api) return;
     let alive = true;
-    void Promise.all([api.launchOptions(), localAiClients?.list()])
-      .then(([{ options }, settings]) => {
-        if (!alive) return;
-        setOptions(options);
-        const assignment = settings
-          ? assignmentFrom(settings.readModel, "conversations")
-          : null;
-        const preferred = assignment
-          ? options.instances.find(
-              (item) => item.instanceId === assignment.ai_client_instance_id
-            )
-          : null;
-        const instance = assignment
-          ? preferred
-          : options.instances.find(
-              (item) =>
-                item.ready &&
-                item.capabilities.permissionModes.some(
-                  (mode) =>
-                    mode.mode === "supervised" && mode.support === "supported"
-                )
-            );
-        const initialInstance = initialAiClientInstanceId
-          ? options.instances.find(
-              (item) =>
-                item.instanceId === initialAiClientInstanceId && item.ready
-            )
-          : null;
-        const requestedUnavailable = Boolean(
-          initialAiClientInstanceId && !initialInstance
-        );
-        setHandoffNeedsChoice(requestedUnavailable);
-        const base = hqSelectionForInstance(
-          options,
-          initialInstance?.instanceId ??
-            instance?.instanceId ??
-            assignment?.ai_client_instance_id ??
-            ""
-        );
-        const assignedModel = (initialInstance ?? instance)?.models.find(
-          (item) =>
-            [item.id, item.fullId, item.model].includes(assignment?.model)
-        );
-        setSelection({
-          ...base,
-          model:
-            assignment && !initialInstance
-              ? (assignedModel?.id ?? assignment.model)
-              : base.model,
-          reasoningEffort:
-            assignment && !initialInstance
-              ? assignment.reasoning_effort === "none" &&
-                !assignedModel?.supportedReasoningEfforts.length
-                ? ""
-                : assignment.reasoning_effort
-              : base.reasoningEffort
-        });
-        setSavedAssignmentUnavailable(
-          requestedUnavailable
-            ? "The requested AI Client is unavailable. Choose an available AI Client and model before sending."
-            : assignment && !initialInstance && (!preferred || !assignedModel)
-              ? "The saved Conversations AI Client or model is unavailable. Choose a supported AI Client and model before sending."
-              : ""
-        );
-      })
-      .catch(() => {
-        if (alive)
-          setError(
-            "AI Client options are unavailable. Retry when your AI Client is ready."
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    // Right after Koed starts, the AI Client list is often not ready yet.
+    // Keep trying quietly (2 s, 4 s, 8 s … up to 30 s) instead of leaving the
+    // composer locked until the page is reopened.
+    const load = (attempt: number): void => {
+      void Promise.all([api.launchOptions(), localAiClients?.list()])
+        .then(([{ options }, settings]) => {
+          if (!alive) return;
+          setError((current) =>
+            current ===
+            "AI Client options are unavailable. Koed keeps trying while your AI Client gets ready."
+              ? ""
+              : current
           );
-      });
+          setOptions(options);
+          const assignment = settings
+            ? assignmentFrom(settings.readModel, "conversations")
+            : null;
+          const preferred = assignment
+            ? options.instances.find(
+                (item) => item.instanceId === assignment.ai_client_instance_id
+              )
+            : null;
+          const instance = assignment
+            ? preferred
+            : options.instances.find(
+                (item) =>
+                  item.ready &&
+                  item.capabilities.permissionModes.some(
+                    (mode) =>
+                      mode.mode === "supervised" && mode.support === "supported"
+                  )
+              );
+          const initialInstance = initialAiClientInstanceId
+            ? options.instances.find(
+                (item) =>
+                  item.instanceId === initialAiClientInstanceId && item.ready
+              )
+            : null;
+          const requestedUnavailable = Boolean(
+            initialAiClientInstanceId && !initialInstance
+          );
+          setHandoffNeedsChoice(requestedUnavailable);
+          const base = hqSelectionForInstance(
+            options,
+            initialInstance?.instanceId ??
+              instance?.instanceId ??
+              assignment?.ai_client_instance_id ??
+              ""
+          );
+          const assignedModel = (initialInstance ?? instance)?.models.find(
+            (item) =>
+              [item.id, item.fullId, item.model].includes(assignment?.model)
+          );
+          setSelection({
+            ...base,
+            model:
+              assignment && !initialInstance
+                ? (assignedModel?.id ?? assignment.model)
+                : base.model,
+            reasoningEffort:
+              assignment && !initialInstance
+                ? assignment.reasoning_effort === "none" &&
+                  !assignedModel?.supportedReasoningEfforts.length
+                  ? ""
+                  : assignment.reasoning_effort
+                : base.reasoningEffort
+          });
+          setSavedAssignmentUnavailable(
+            requestedUnavailable
+              ? "The requested AI Client is unavailable. Choose an available AI Client and model before sending."
+              : assignment && !initialInstance && (!preferred || !assignedModel)
+                ? "The saved Conversations AI Client or model is unavailable. Choose a supported AI Client and model before sending."
+                : ""
+          );
+        })
+        .catch(() => {
+          if (!alive) return;
+          if (attempt >= 2)
+            setError(
+              "AI Client options are unavailable. Koed keeps trying while your AI Client gets ready."
+            );
+          retry = setTimeout(
+            () => load(attempt + 1),
+            Math.min(30_000, 2_000 * 2 ** attempt)
+          );
+        });
+    };
+    load(0);
     return () => {
       alive = false;
+      if (retry) clearTimeout(retry);
     };
   }, [api, localAiClients, initialAiClientInstanceId]);
   const start = async (requestedAttach = false) => {
@@ -1314,12 +1333,14 @@ export function HqActiveConversation({
   helperAgents?: readonly Agent[];
 }) {
   const detailThread = draft?.thread ?? thread;
+  const detailEnabled =
+    !inventoryOnly &&
+    (!draft ||
+      draft.conversation.capturedSessionId !== draft.conversation.executionId);
   const { detail, loadOlder, retry } = usePersonalMemoryDetail(
     store,
     detailThread,
-    !inventoryOnly &&
-      (!draft ||
-        draft.conversation.capturedSessionId !== draft.conversation.executionId)
+    detailEnabled
   );
   const identityKey = [
     project.id,
@@ -1664,12 +1685,16 @@ export function HqActiveConversation({
     runtime?.latestCommand?.commandKind === "prompt" &&
     runtime.latestCommand.clientUserMessageId === pending.current?.messageId &&
     ["completed", "failed"].includes(runtime.latestCommand.state);
+  const launchOptionsReadAt = useRef(0);
   const refresh = useCallback(async () => {
     if (!api || !executionId) return;
+    // Launch options rarely change: read them every 30 s, not every poll.
+    const launchDue = Date.now() - launchOptionsReadAt.current > 30_000;
+    if (launchDue) launchOptionsReadAt.current = Date.now();
     const [run, nextUsage, launch] = await Promise.allSettled([
       api.runtime(executionId),
       api.usage(executionId),
-      api.launchOptions()
+      launchDue ? api.launchOptions() : Promise.reject(new Error("not due"))
     ]);
     if (identityKeyRef.current !== identityKey) return;
     if (run.status === "fulfilled") {
@@ -2750,6 +2775,14 @@ export function HqActiveConversation({
     visibleEvents.length === 0 &&
     visibleOptimistic.length === 0 &&
     (!draft?.initialPrompt || draft.initialPrompt.status === "rejected");
+  // An existing chat with nothing on screen yet is still loading, not new.
+  const transcriptPending =
+    isBlank &&
+    detailEnabled &&
+    Boolean(detailThread.sessionId) &&
+    (!detail || detail.status === "idle" || detail.status === "loading");
+  const transcriptFailed =
+    isBlank && Boolean(detailThread.sessionId) && detail?.status === "error";
   const selectedProject = [project];
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
@@ -3029,11 +3062,24 @@ export function HqActiveConversation({
           className="hq-conversation__hero"
           hidden={privateProjectHq && inspectorOpen}
         >
-          <h1>
-            {options?.instances.find(
-              (item) => item.instanceId === selection.instanceId
-            )?.displayName ?? "New Conversation"}
-          </h1>
+          {transcriptPending ? (
+            <p className="hq-conversation__loading" role="status">
+              Loading this conversation…
+            </p>
+          ) : transcriptFailed ? (
+            <p className="hq-conversation__loading" role="alert">
+              This conversation could not be loaded.{" "}
+              <button type="button" onClick={() => void retry()}>
+                Try again
+              </button>
+            </p>
+          ) : (
+            <h1>
+              {options?.instances.find(
+                (item) => item.instanceId === selection.instanceId
+              )?.displayName ?? "New Conversation"}
+            </h1>
+          )}
           {runtime?.items
             .filter((item) => item.itemKind !== "transient_output")
             .map((item) => (

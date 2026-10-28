@@ -25,13 +25,20 @@ describe("Desktop feature flags", () => {
         KOED_DESKTOP_HQ_ENABLED: "true",
         KOED_TEAM_COLLABORATION_ENABLED: "false"
       })
-    ).toEqual({ hqEnabled: true, teamCollaborationEnabled: false });
+    ).toEqual({
+      hqEnabled: true,
+      teamCollaborationEnabled: false,
+      edition: "solo",
+      phoneEnabled: false
+    });
   });
 
   it("keeps Team collaboration disabled when HQ is enabled by default", () => {
     expect(desktopFeatureFlagsFromEnvironment({})).toEqual({
       hqEnabled: true,
-      teamCollaborationEnabled: false
+      teamCollaborationEnabled: false,
+      edition: "solo",
+      phoneEnabled: false
     });
   });
 
@@ -50,4 +57,26 @@ describe("Desktop feature flags", () => {
       ).toBe(expected);
     }
   );
+
+  it.each([
+    [{}, "solo"],
+    [{ KOED_EDITION: "solo" }, "solo"],
+    [{ KOED_EDITION: "Full" }, "solo"],
+    [{ KOED_EDITION: "full" }, "full"]
+  ] as const)(
+    "runs the Solo edition unless asked for full",
+    (environment, expected) => {
+      expect(desktopFeatureFlagsFromEnvironment(environment).edition).toBe(
+        expected
+      );
+    }
+  );
+
+  it("keeps the phone off until switched on", () => {
+    expect(desktopFeatureFlagsFromEnvironment({}).phoneEnabled).toBe(false);
+    expect(
+      desktopFeatureFlagsFromEnvironment({ KOED_PHONE_ENABLED: "true" })
+        .phoneEnabled
+    ).toBe(true);
+  });
 });

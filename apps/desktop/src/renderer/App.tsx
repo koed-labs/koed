@@ -5,6 +5,7 @@ import {
   CollaborationSnapshot,
   CollaborationThreadReference
 } from "@koed/shared/collaboration";
+import { phoneEnabled } from "./edition.js";
 import type {
   PersonalDesktopApi,
   PersonalDesktopAskThread
@@ -1218,7 +1219,9 @@ export function App({
         }
         renderSettings={(onClose, onChatRestored) => (
           <HqSettings
-            phoneGateway={window.koedDesktop?.phoneGateway}
+            phoneGateway={
+              phoneEnabled() ? window.koedDesktop?.phoneGateway : undefined
+            }
             personalMemoryApi={window.koedDesktop?.personalMemory}
             personalMemoryAuthorityKey={`${snapshot?.navigation.personalOwner.id ?? ""}|${snapshot?.connection.backendId ?? "local"}|${snapshot?.connection.connectedAt ?? ""}|${client.currentRemoteUrl() ?? ""}`}
             onChatRestored={(sessionId, batchId) => {
