@@ -2,12 +2,14 @@ import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type {} from "@fastify/cookie";
 import type {
+  ActorContext,
   DeviceCredentialAuthContext,
   MemorySourceRepository,
   UserSessionContext
 } from "@koed/db";
 import type { AuthLogKind } from "../server/logging.js";
 import {
+  DelegatedAuthenticationError,
   remoteMcpAccessTokenPrefix,
   type RemoteMcpDelegatedPrincipal
 } from "./remote-mcp-oauth.js";
@@ -48,10 +50,12 @@ export interface AuthHelpers {
     user: { id: string };
     allowTeam: boolean;
     allowPersonal: boolean;
+    teamBoundaryId?: string | null;
   }>;
   hashSecret: HashSecret;
   resolveDelegatedPrincipal(
-    request: FastifyRequest
+    request: FastifyRequest,
+    options?: { fresh?: boolean }
   ): Promise<RemoteMcpDelegatedPrincipal | null>;
   resolveApiTokenUser(request: FastifyRequest): Promise<{
     id: string;
@@ -123,6 +127,7 @@ export const createAuthHelpers = (
     resolveDelegatedPrincipal?: (
       token: string
     ) => Promise<RemoteMcpDelegatedPrincipal>;
+    isDelegatedCredential?: (token: string) => boolean;
     recordAuthContext?: (
       request: FastifyRequest,
       context: {
@@ -133,6 +138,13 @@ export const createAuthHelpers = (
   }
 ): AuthHelpers => {
   const { hashSecret } = options;
+  const isDelegatedCredential = (token: string) =>
+    token.startsWith(remoteMcpAccessTokenPrefix) ||
+    options.isDelegatedCredential?.(token) === true;
+  const delegatedPrincipals = new WeakMap<
+    FastifyRequest,
+    Promise<RemoteMcpDelegatedPrincipal | null>
+  >();
   const authenticatedKinds = new WeakMap<
     FastifyRequest,
     Exclude<AuthLogKind, "anonymous">
@@ -183,13 +195,13 @@ export const createAuthHelpers = (
     });
   };
 
-  const resolveDelegatedPrincipal = async (
+  const resolveUncachedDelegatedPrincipal = async (
     request: FastifyRequest
   ): Promise<RemoteMcpDelegatedPrincipal | null> => {
     const bearer = readAuthorizationCredential(request, "Bearer");
     if (!bearer) return null;
     if (!options.resolveDelegatedPrincipal) {
-      if (bearer.startsWith(remoteMcpAccessTokenPrefix)) {
+      if (isDelegatedCredential(bearer)) {
         throw Object.assign(new Error("Delegated access is unavailable"), {
           statusCode: 401
         });
@@ -198,14 +210,26 @@ export const createAuthHelpers = (
     }
     try {
       return await options.resolveDelegatedPrincipal(bearer);
-    } catch {
-      if (bearer.startsWith(remoteMcpAccessTokenPrefix)) {
+    } catch (error) {
+      if (isDelegatedCredential(bearer)) {
+        if (error instanceof DelegatedAuthenticationError) throw error;
         throw Object.assign(new Error("Delegated access is unavailable"), {
           statusCode: 401
         });
       }
       return null;
     }
+  };
+  const resolveDelegatedPrincipal = (
+    request: FastifyRequest,
+    options?: { fresh?: boolean }
+  ): Promise<RemoteMcpDelegatedPrincipal | null> => {
+    let lookup = options?.fresh ? undefined : delegatedPrincipals.get(request);
+    if (!lookup) {
+      lookup = resolveUncachedDelegatedPrincipal(request);
+      delegatedPrincipals.set(request, lookup);
+    }
+    return lookup;
   };
   const resolveDelegatedUser = async (
     request: FastifyRequest,
@@ -238,9 +262,10 @@ export const createAuthHelpers = (
       return cached;
     }
     const bearer = readAuthorizationCredential(request, "Bearer");
-    const lookup = bearer
-      ? requireRepository().getApiTokenUser(hashSecret(bearer))
-      : Promise.resolve(null);
+    const lookup =
+      bearer && !isDelegatedCredential(bearer)
+        ? requireRepository().getApiTokenUser(hashSecret(bearer))
+        : Promise.resolve(null);
     apiTokenUsers.set(request, lookup);
     return lookup;
   };
@@ -497,7 +522,13 @@ export const createAuthHelpers = (
         new Error("Team Memory Answer permission is required"),
         { statusCode: 403 }
       );
-    return { user, ...restrict(allowTeam, true) };
+    return {
+      user,
+      ...restrict(allowTeam, true),
+      ...(principal && principal.teamBoundaryId !== undefined
+        ? { teamBoundaryId: principal.teamBoundaryId }
+        : {})
+    };
   };
 
   return {
@@ -514,5 +545,24 @@ export const createAuthHelpers = (
     authenticateApiToken,
     authenticateDeviceCredential,
     authenticateSessionOrDeviceCredential
+  };
+};
+
+export const actorForAuthenticatedRequest = async (
+  auth: Pick<AuthHelpers, "resolveDelegatedPrincipal">,
+  request: FastifyRequest,
+  userId: string
+): Promise<ActorContext> => {
+  const principal = await auth.resolveDelegatedPrincipal(request);
+  if (principal && principal.userId !== userId)
+    throw Object.assign(
+      new Error("Credential identity does not match the authenticated User"),
+      { statusCode: 403 }
+    );
+  return {
+    userId,
+    ...(principal && principal.teamBoundaryId !== undefined
+      ? { teamBoundaryId: principal.teamBoundaryId }
+      : {})
   };
 };

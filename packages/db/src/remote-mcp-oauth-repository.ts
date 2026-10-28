@@ -1,4 +1,32 @@
+import { randomUUID } from "node:crypto";
 import type pg from "pg";
+
+export interface ExternalAgentGrantBinding {
+  issuer: string;
+  providerEnvironment: string;
+  registrationId: string;
+  providerUserId: string;
+  providerOrganizationId: string;
+  userId: string;
+  resource: string;
+  teamBoundaryId: string | null;
+  scopes: string[];
+}
+
+export interface RemoteMcpConnection {
+  id: string;
+  userId: string;
+  clientName: string;
+  resource: string;
+  scopes: string[];
+  expiresAt: Date;
+  revokedAt: Date | null;
+  createdAt: Date;
+  authorizationVersion: number;
+  providerIssuer: string | null;
+  registrationId: string | null;
+  providerOrganizationId: string | null;
+}
 
 export interface RemoteMcpOAuthRequest {
   clientId: string;
@@ -26,6 +54,23 @@ export interface RemoteMcpOAuthCredential {
 }
 
 export interface RemoteMcpOAuthStore {
+  resolveExternalGrant(
+    input: ExternalAgentGrantBinding & { now: Date; expiresAt: Date }
+  ): Promise<{ id: string; scopes: string[]; expiresAt: Date } | null>;
+  listConnections(
+    userId: string,
+    resource: string,
+    offset?: number
+  ): Promise<RemoteMcpConnection[]>;
+  updateConnection(input: {
+    userId: string;
+    resource: string;
+    id: string;
+    version: number;
+    action: "disconnect" | "approve";
+    now: Date;
+    expiresAt: Date;
+  }): Promise<boolean>;
   pruneExpired(now: Date, batchSize?: number): Promise<void>;
   getClient(id: string): Promise<Record<string, unknown> | undefined>;
   registerClient(id: string, metadata: Record<string, unknown>): Promise<void>;
@@ -129,6 +174,145 @@ export const createRemoteMcpOAuthRepository = (
     );
   };
   return {
+    async resolveExternalGrant(input) {
+      return transaction(async (client) => {
+        // Only a provider-validated, claimed registration may reach this method.
+        // The initial WorkOS claim establishes consent; conflicts never renew it.
+        const created = await client.query<{ id: string }>(
+          `insert into remote_mcp_oauth_grants
+            (id,user_id,resource,scopes,expires_at,provider_issuer,provider_environment,
+             provider_registration_id,provider_user_id,provider_organization_id,team_boundary_id)
+           select $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11 from users
+           where id=$2 and disabled_at is null and deleted_at is null
+           on conflict (provider_issuer,provider_environment,provider_registration_id,resource) do nothing returning id`,
+          [
+            randomUUID(),
+            input.userId,
+            input.resource,
+            input.scopes,
+            input.expiresAt,
+            input.issuer,
+            input.providerEnvironment,
+            input.registrationId,
+            input.providerUserId,
+            input.providerOrganizationId,
+            input.teamBoundaryId
+          ]
+        );
+        if (created.rows[0])
+          await client.query(
+            `insert into audit_events (actor_user_id,owner_user_id,visibility,action,target_table,target_id,metadata)
+           values ($1,$1,'personal','remote_mcp.external.granted','remote_mcp_oauth_grants',$2,'{}'::jsonb)`,
+            [input.userId, created.rows[0].id]
+          );
+        const result = await client.query<{
+          id: string;
+          scopes: string[];
+          expires_at: Date;
+        }>(
+          `select g.id,g.scopes,g.expires_at from remote_mcp_oauth_grants g join users u on u.id=g.user_id
+           where g.provider_issuer=$1 and g.provider_environment=$2 and g.provider_registration_id=$3
+             and g.resource=$4 and g.user_id=$5 and g.provider_user_id=$6 and g.provider_organization_id=$7
+             and (g.team_boundary_id is not distinct from $8::uuid or
+                  not ('koed:team:read'=any(g.scopes)) or not ('koed:team:read'=any($10::text[])))
+             and g.revoked_at is null and g.expires_at>$9 and u.disabled_at is null and u.deleted_at is null`,
+          [
+            input.issuer,
+            input.providerEnvironment,
+            input.registrationId,
+            input.resource,
+            input.userId,
+            input.providerUserId,
+            input.providerOrganizationId,
+            input.teamBoundaryId,
+            input.now,
+            input.scopes
+          ]
+        );
+        const row = result.rows[0];
+        return row
+          ? {
+              id: row.id,
+              scopes: input.scopes.filter((s) => row.scopes.includes(s)),
+              expiresAt: row.expires_at
+            }
+          : null;
+      });
+    },
+    async listConnections(userId, resource, offset = 0) {
+      if (!Number.isInteger(offset) || offset < 0 || offset > 500_000)
+        throw new RangeError("Invalid connection page");
+      const result = await pool.query<{
+        id: string;
+        user_id: string;
+        resource: string;
+        scopes: string[];
+        expires_at: Date;
+        revoked_at: Date | null;
+        created_at: Date;
+        authorization_version: number;
+        provider_issuer: string | null;
+        provider_registration_id: string | null;
+        provider_organization_id: string | null;
+        client_name: string;
+      }>(
+        `select g.*,coalesce(c.metadata->>'client_name','External AI Client') as client_name
+         from remote_mcp_oauth_grants g left join remote_mcp_oauth_clients c on c.id=g.client_id
+         join users u on u.id=g.user_id where g.user_id=$1 and g.resource=$2
+         and u.disabled_at is null and u.deleted_at is null order by g.created_at desc,g.id desc limit 51 offset $3`,
+        [userId, resource, offset]
+      );
+      return result.rows.map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        clientName: row.client_name,
+        resource: row.resource,
+        scopes: row.scopes,
+        expiresAt: row.expires_at,
+        revokedAt: row.revoked_at,
+        createdAt: row.created_at,
+        authorizationVersion: row.authorization_version,
+        providerIssuer: row.provider_issuer,
+        registrationId: row.provider_registration_id,
+        providerOrganizationId: row.provider_organization_id
+      }));
+    },
+    async updateConnection(input) {
+      return transaction(async (client) => {
+        const result = await client.query<{ id: string }>(
+          `update remote_mcp_oauth_grants g set
+             revoked_at=case when $5='disconnect' then $6::timestamptz else null end,
+             expires_at=case when $5='approve' then $7::timestamptz else expires_at end,
+             authorization_version=authorization_version+1
+           where g.id=$1 and g.user_id=$2 and g.resource=$3 and g.authorization_version=$4
+             and ($5='disconnect' or (g.provider_registration_id is not null and (g.revoked_at is not null or g.expires_at<=$6)))
+             and exists(select 1 from users u where u.id=g.user_id and u.disabled_at is null and u.deleted_at is null)
+           returning g.id`,
+          [
+            input.id,
+            input.userId,
+            input.resource,
+            input.version,
+            input.action,
+            input.now,
+            input.expiresAt
+          ]
+        );
+        if (!result.rows[0]) return false;
+        await client.query(
+          `insert into audit_events (actor_user_id,owner_user_id,visibility,action,target_table,target_id,metadata)
+           values ($1,$1,'personal',$2,'remote_mcp_oauth_grants',$3,'{}'::jsonb)`,
+          [
+            input.userId,
+            input.action === "disconnect"
+              ? "remote_mcp.connection.disconnected"
+              : "remote_mcp.connection.reapproved",
+            input.id
+          ]
+        );
+        return true;
+      });
+    },
     async pruneExpired(now, batchSize = 500) {
       if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 500)
         throw new RangeError(
@@ -148,7 +332,7 @@ export const createRemoteMcpOAuthRepository = (
           [now, batchSize]
         );
         await client.query(
-          `delete from remote_mcp_oauth_grants where id in (select g.id from remote_mcp_oauth_grants g where (g.expires_at <= $1 or g.revoked_at is not null) and not exists (select 1 from remote_mcp_oauth_credentials c where c.grant_id = g.id) limit $2 for update skip locked)`,
+          `delete from remote_mcp_oauth_grants where id in (select g.id from remote_mcp_oauth_grants g where g.provider_registration_id is null and (g.expires_at <= $1 or g.revoked_at is not null) and not exists (select 1 from remote_mcp_oauth_credentials c where c.grant_id = g.id) limit $2 for update skip locked)`,
           [now, batchSize]
         );
         const unused = await client.query<{ id: string }>(

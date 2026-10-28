@@ -53,11 +53,15 @@ export const registerMemoryAnswerTaskRoutes = (
     user: { id: string };
     allowTeam: boolean;
     allowPersonal: boolean;
+    teamBoundaryId?: string | null;
   }): TaskActor => ({
     userId: auth.user.id,
     allowTeam:
       context.config.teamCollaborationEnabled !== false && auth.allowTeam,
-    allowPersonal: auth.allowPersonal
+    allowPersonal: auth.allowPersonal,
+    ...(auth.teamBoundaryId !== undefined
+      ? { teamBoundaryId: auth.teamBoundaryId }
+      : {})
   });
 
   app.post(
