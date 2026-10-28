@@ -278,7 +278,7 @@ it("revalidates a supplied context whose root now holds a different checkout", a
       expect(await pin(domain)).toMatchObject({
         repository_context: { root: second }
       });
-    expect((await pin("project")).project_id).toBe(scope);
+    expect(await pin("project")).toMatchObject({ project_id: scope });
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
