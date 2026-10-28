@@ -1,5 +1,11 @@
 # @koed/koed-server
 
+## 0.9.1
+
+### Patch Changes
+
+- 4ed0931: Find draft releases by listing releases when uploading release assets, so release jobs no longer fail with a 404 from the tag lookup.
+
 ## 0.9.0
 
 ### Minor Changes
