@@ -1,5 +1,11 @@
 # @koed/koed-server
 
+## 0.9.2
+
+### Patch Changes
+
+- 43f02a6: Accept the pnpm argument separator when packing the public Koed Server npm candidate so release jobs no longer fail with an unknown-option error.
+
 ## 0.9.1
 
 ### Patch Changes
