@@ -750,7 +750,7 @@ not discover an automatic assignment from current filesystem contents.
 Owner session inspection is available through `GET /v1/sessions/:sessionId`.
 Another User cannot inspect the assignment or update its override. Repository
 metadata grants no Workspace access and changes no existing Team snapshot.
-See [ADR 0057](adr/0057-selected-repository-identity.md) for identity selection.
+See [ADR 0064](adr/0064-selected-repository-identity.md) for identity selection.
 
 ### Claude Code repository context
 

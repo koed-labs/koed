@@ -71,7 +71,7 @@ It does not create continuous sharing rules, change sharing modes, or add Team
 grouping authority. Those changes belong to Package 2.
 
 Preserve selected-anchor discovery from
-[ADR 0057](adr/0057-selected-repository-identity.md).
+[ADR 0064](adr/0064-selected-repository-identity.md).
 Retain source eligibility, time bounds, deletion rules, retrieval budgets,
 and the AI Client synthesis boundary. A new grouping does not require new
 embeddings or a new synthesis service.

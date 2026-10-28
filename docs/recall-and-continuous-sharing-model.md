@@ -254,7 +254,7 @@ The Desktop grouping and recall results must use the same membership boundary.
 ### Personal sync and migration
 
 Keep selected-anchor discovery and normalization from
-[ADR 0057](adr/0057-selected-repository-identity.md).
+[ADR 0064](adr/0064-selected-repository-identity.md).
 Project inclusion is separate from the existing encrypted journal for
 [Personal Project anchor selection](personal-project-selection.md).
 Design membership replication without putting local paths or Personal inclusion

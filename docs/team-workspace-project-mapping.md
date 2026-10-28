@@ -44,7 +44,7 @@ salted common-directory hash records that they share one device-local Git
 repository. A repository without a remote has no portable matching signal and
 must be linked explicitly on each device.
 
-[ADR 0057](adr/0057-selected-repository-identity.md) defines one selected anchor
+[ADR 0064](adr/0064-selected-repository-identity.md) defines one selected anchor
 for repository equality. Extra and historical remotes do not establish Project
 associations. Configuration replication requires an accepted association and
 remains separate from explicit Project-to-Team Workspace links.

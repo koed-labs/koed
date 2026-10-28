@@ -1011,7 +1011,7 @@ additional repository identities. A reused checkout path receives new checkout
 provenance and cannot inherit the old selection. Local editing does not reassign
 recorded sessions, establish a Project association, or change Workspace access.
 The complete capture and recall behavior is released at the Project cutover;
-see [ADR 0057](adr/0057-selected-repository-identity.md).
+see [ADR 0064](adr/0064-selected-repository-identity.md).
 
 ## Managed terminals
 
