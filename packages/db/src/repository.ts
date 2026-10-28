@@ -11894,8 +11894,28 @@ export const createMemorySourceRepository = (
                   )
               )
               select * from (
-                (select candidates.*, 'global'::text as candidate_pool from candidates
-                  order by score desc, created_at desc, source_id limit $4)
+                ${
+                  // Global recall merges rows by canonical key, so limit distinct
+                  // keys rather than raw rows and keep each key's references.
+                  searchDomain === "global"
+                    ? `(select candidates.*, 'global'::text as candidate_pool from candidates
+                  join (
+                    select visibility as key_visibility, source_type as key_source_type,
+                      source_id as key_source_id,
+                      coalesce(source_chunk_index, 0) as key_chunk_index,
+                      coalesce(source_chunk_count, 1) as key_chunk_count,
+                      source_generation as key_generation
+                    from candidates group by 1, 2, 3, 4, 5, 6
+                    order by max(score) desc, max(created_at) desc, source_id limit $4
+                  ) global_keys on global_keys.key_visibility = candidates.visibility
+                    and global_keys.key_source_type = candidates.source_type
+                    and global_keys.key_source_id = candidates.source_id
+                    and global_keys.key_chunk_index = coalesce(candidates.source_chunk_index, 0)
+                    and global_keys.key_chunk_count = coalesce(candidates.source_chunk_count, 1)
+                    and global_keys.key_generation is not distinct from candidates.source_generation)`
+                    : `(select candidates.*, 'global'::text as candidate_pool from candidates
+                  order by score desc, created_at desc, source_id limit $4)`
+                }
                 union all
                 (select candidates.*, 'current'::text as candidate_pool from candidates
                   where $13::integer>0 and jsonb_array_length(repository_contexts)>0

@@ -1493,5 +1493,108 @@ describe.skipIf(!databaseUrl)(
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
     });
+    it("fills the Global pool with distinct candidates when one source repeats", async () => {
+      const repo = createMemorySourceRepository(pool);
+      const user = await repo.createUser({
+        email: `global-distinct-${randomUUID()}@example.test`
+      });
+      const actor = { userId: user.id };
+      const a = identity("distinct_a"),
+        b = identity("distinct_b");
+      const queryVector: number[] = Array.from({ length: 1024 }, (_, index) =>
+        index === 0 ? 1 : 0
+      );
+      vi.stubEnv("EMBEDDING_SERVICE_URL", "http://embedding.fixture");
+      vi.stubEnv("MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT", "4");
+      vi.spyOn(globalThis, "fetch").mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              model: "qwen3-0.6b",
+              dimensions: 1024,
+              vectors: [queryVector]
+            }),
+            { status: 200 }
+          )
+      );
+      try {
+        const capture = async (context: RepositoryIdentity, score: number) => {
+          const session = await repo.createCapturedSession(actor, {
+            externalSessionId: randomUUID(),
+            cwd: context.root!,
+            repositoryIdentity: context
+          });
+          const event = await repo.createMemoryEvent(actor, {
+            sessionId: session.id,
+            projectId: repositoryScopeId(context)!,
+            actor: "user",
+            visibility: "personal",
+            eventType: "captured",
+            rawEventType: "user_message",
+            content: "Release checklist decision and rationale.",
+            idempotencyKey: randomUUID()
+          });
+          const source = (await repo.listSourcesNeedingEmbeddings(10000)).find(
+            (candidate) => candidate.sourceId === event.id
+          )!;
+          const vector = [...queryVector];
+          vector[0] = score;
+          vector[1] = Math.sqrt(1 - score * score);
+          await repo.upsertSourceEmbedding({
+            source,
+            model: "qwen3-0.6b",
+            dimensions: 1024,
+            version: "qwen3-0.6b",
+            vector,
+            modelArtifactHash: "a".repeat(64),
+            tokenizer: "qwen3-embedding-0.6b-gguf",
+            inputTransform: "qwen3-retrieval-document-v1",
+            pooling: "last",
+            normalization: "l2"
+          });
+          return event;
+        };
+        // One strong source observed through three nodes yields three rows.
+        const repeated = await capture(b, 0.95);
+        for (let index = 0; index < 3; index++) {
+          const node = await repo.createMemoryNode(actor, {
+            visibility: "personal",
+            summaryText: `Repeated observation ${index}`,
+            sourceHash: randomUUID()
+          });
+          await pool.query(
+            "insert into memory_node_sources(memory_node_id,memory_event_id,source_order) values($1,$2,0)",
+            [node.id, repeated.id]
+          );
+          await pool.query(
+            "update memory_nodes set kind='rollup' where id=$1",
+            [node.id]
+          );
+        }
+        for (const score of [0.9, 0.89, 0.88, 0.87]) await capture(b, score);
+        await capture(a, 0.5);
+        const result = await createMemoryEngine(repo).searchMemory({
+          requesterContext: actor,
+          query: "release checklist rationale",
+          scope: "personal",
+          searchDomain: "global",
+          repositoryContext: a,
+          retrievalStage: "raw_fallback_search",
+          limit: 4
+        });
+        expect(new Set(result.results.map((row) => row.sourceId)).size).toBe(4);
+        expect(result.metadata).toMatchObject({
+          globalCandidateCount: 3,
+          currentRepositoryCandidateCount: 1
+        });
+        expect(
+          result.results.find((row) => row.sourceId === repeated.id)
+            ?.observedReferences
+        ).toHaveLength(3);
+      } finally {
+        vi.restoreAllMocks();
+        vi.unstubAllEnvs();
+      }
+    });
   }
 );
