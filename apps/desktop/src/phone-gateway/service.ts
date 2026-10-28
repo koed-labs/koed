@@ -142,6 +142,47 @@ const mapLimit = async <T, R>(
   return results;
 };
 
+/**
+ * A slow read kept for `ttlMs`. Once loaded, a stale value is answered at once
+ * while a fresh one loads in the background; concurrent callers share one load.
+ */
+const memo = <T>(
+  ttlMs: number,
+  load: () => Promise<T>,
+  clock: () => number
+) => {
+  let value: { at: number; value: T } | null = null;
+  let loading: Promise<T> | null = null;
+  const refresh = () =>
+    (loading ??= load()
+      .then((result) => {
+        value = { at: clock(), value: result };
+        return result;
+      })
+      .finally(() => {
+        loading = null;
+      }));
+  return {
+    /** The value: fresh, or stale while refreshing, or the first load. */
+    async get(): Promise<T> {
+      if (value && clock() - value.at < ttlMs) return value.value;
+      if (value) {
+        void refresh().catch(() => undefined);
+        return value.value;
+      }
+      return refresh();
+    },
+    /** Like get, but give up after `ms` on a first load (it keeps loading for next time). */
+    async soon(ms: number, fallback: T): Promise<T> {
+      if (value) return this.get();
+      return within(refresh(), ms, fallback);
+    },
+    clear() {
+      value = null;
+    }
+  };
+};
+
 /** A value, or `fallback` if it takes longer than `ms`. */
 const within = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
   new Promise((resolve) => {
@@ -488,21 +529,30 @@ export const createPhoneGatewayService = (
       : null;
   };
 
+  /** The Mac's AI Clients: reading them can take seconds, and they rarely change. */
+  const aiClients = memo(
+    60_000,
+    () => deps.localAiClients({ operation: "list" }),
+    () => now().getTime()
+  );
   const instanceNames = async (): Promise<Map<string, string>> => {
-    try {
-      const list = await deps.localAiClients({ operation: "list" });
-      return new Map(
-        list.readModel.instances.map((instance) => [
-          instance.instanceId,
-          instance.displayName
-        ])
-      );
-    } catch {
-      return new Map();
-    }
+    const list = await aiClients.soon(3_000, null as never).catch(() => null);
+    if (!list) return new Map();
+    return new Map(
+      list.readModel.instances.map((instance) => [
+        instance.instanceId,
+        instance.displayName
+      ])
+    );
   };
 
-  const listAgents = async (): Promise<Agent[]> => {
+  const agentsMemo = memo(
+    10_000,
+    () => loadAgents(),
+    () => now().getTime()
+  );
+  const listAgents = (): Promise<Agent[]> => agentsMemo.get();
+  const loadAgents = async (): Promise<Agent[]> => {
     const listed = await deps.agents({ operation: "list" });
     if (listed.operation !== "list")
       throw new PhoneGatewayError(502, "Koed answered a different request.");
@@ -1012,13 +1062,21 @@ export const createPhoneGatewayService = (
     progressed();
   };
 
-  const factsFor = async (agents?: Agent[]): Promise<GamificationFacts> => {
+  /** What ranks and editions are computed from. `quick`: use what's cached rather than wait long. */
+  const factsFor = async (
+    agents?: Agent[],
+    quick = false
+  ): Promise<GamificationFacts> => {
     const [team, jobsInfo] = await Promise.all([
       agents ? Promise.resolve(agents) : listAgents(),
-      jobsAndMissed().catch(() => null),
-      syncChiefReplies().catch(() => undefined)
+      (quick ? jobsSoon() : jobsAndMissed()).catch(() => null),
+      (quick
+        ? within(syncChiefReplies(), 2_000, undefined)
+        : syncChiefReplies()
+      ).catch(() => undefined)
     ]);
-    if (remembered === null) await threads().catch(() => undefined);
+    if (remembered === null)
+      await (quick ? threadsSoon() : threads()).catch(() => undefined);
     return {
       now: now(),
       agents: team.map((agent) => ({
@@ -1037,7 +1095,7 @@ export const createPhoneGatewayService = (
     agents: Agent[]
   ): Promise<Map<string, PhoneStanding>> => {
     if (!game) return new Map();
-    return standings(await factsFor(agents), await game.read());
+    return standings(await factsFor(agents, true), await game.read());
   };
 
   /** Record what was newly earned; returns it so the gateway can tell the phone. */
@@ -1073,8 +1131,13 @@ export const createPhoneGatewayService = (
   const collection = async (): Promise<PhoneCollection> => {
     if (!game)
       throw new PhoneGatewayError(503, "Ranks and editions aren't on yet.");
-    await evaluate().catch(() => []);
-    return collectionView(await factsFor(), await game.read());
+    // Record what's newly earned, but don't make the phone wait long for it.
+    await within(
+      evaluate().catch(() => []),
+      5_000,
+      []
+    );
+    return collectionView(await factsFor(undefined, true), await game.read());
   };
 
   const assignEdition = async (editionId: string, agentId: string | null) => {
@@ -1099,30 +1162,84 @@ export const createPhoneGatewayService = (
 
   /* ---------- operations ---------- */
 
+  /** Jobs for home: cached ones at once (refreshing behind), or wait a little for the first load. */
+  const jobsSoon = () =>
+    jobsCache
+      ? (void jobsAndMissed().catch(() => undefined),
+        Promise.resolve(jobsCache))
+      : within(jobsAndMissed(), 4_000, null);
+  /** Chats for home: the same, with no Chats rather than a long wait the first time. */
+  const threadsSoon = () =>
+    threadsCache
+      ? (void threads().catch(() => undefined),
+        Promise.resolve(threadsCache.value))
+      : within(
+          threads(),
+          4_000,
+          new Map() as Awaited<ReturnType<typeof threads>>
+        );
+
   const home = async (): Promise<PhoneHome> => {
+    // Home answers in a few seconds from what's at hand; slow parts fill in on the next read.
+    const started = now().getTime();
+    const timing: Record<string, number> = {};
+    const timed = <T>(name: string, promise: Promise<T>) =>
+      promise.finally(() => {
+        timing[name] = now().getTime() - started;
+      });
+    // Everything that doesn't depend on something else starts now, side by side.
+    const jobsReady = timed(
+      "jobs",
+      jobsSoon().catch(() => null)
+    );
+    const agentsReady = timed("agents", listAgents());
+    const standingReady = agentsReady.then((team) =>
+      timed(
+        "standing",
+        within(
+          standingsOf(team).catch(() => new Map<string, PhoneStanding>()),
+          3_000,
+          new Map<string, PhoneStanding>()
+        )
+      )
+    );
     const [agents, names, list, refs, chiefRef] = await Promise.all([
-      listAgents(),
-      instanceNames(),
-      conversation({ operation: "list" }),
-      threads().catch(() => new Map() as Awaited<ReturnType<typeof threads>>),
+      agentsReady,
+      timed("aiClients", instanceNames()),
+      timed("executions", conversation({ operation: "list" })),
+      timed("chats", threadsSoon()),
       readChief()
     ]);
     const inspectable = list.executions
       .filter((entry) => INSPECTABLE_STATES.has(entry.state))
       .slice(-MAXIMUM_INSPECTED_EXECUTIONS);
-    const runtimes = await Promise.all(
-      inspectable.map(async (entry) => ({
-        entry,
-        runtime: await runtimeOf(entry.executionId).catch(() => null)
-      }))
-    );
+    const [runtimes, proposals, jobsInfo, standing] = await Promise.all([
+      timed(
+        "runtimes",
+        mapLimit(inspectable, 8, async (entry) => ({
+          entry,
+          runtime: await within(
+            runtimeOf(entry.executionId).catch(() => null),
+            6_000,
+            null
+          )
+        }))
+      ),
+      timed(
+        "proposals",
+        mapLimit(inspectable, 8, (entry) =>
+          within(
+            jobActionsOf(entry.executionId, chiefRef?.executionId ?? null),
+            6_000,
+            []
+          )
+        )
+      ),
+      jobsReady,
+      standingReady
+    ]);
     const working: PhoneWorking[] = [];
     const needs: PhoneNeed[] = [];
-    const proposals = await Promise.all(
-      inspectable.map((entry) =>
-        jobActionsOf(entry.executionId, chiefRef?.executionId ?? null)
-      )
-    );
     for (const [index, { entry, runtime }] of runtimes.entries()) {
       const ref = refForExecution(entry, refs);
       if (runtime) {
@@ -1144,10 +1261,9 @@ export const createPhoneGatewayService = (
       });
     }
     let upcoming: PhoneUpcoming[] = [];
-    try {
-      const { jobs, missed } = await jobsAndMissed();
-      needs.push(...missed);
-      upcoming = jobs
+    if (jobsInfo) {
+      needs.push(...jobsInfo.missed);
+      upcoming = jobsInfo.jobs
         .filter((job) => job.nextRunAt)
         .map((job) => ({
           jobId: job.id,
@@ -1157,12 +1273,10 @@ export const createPhoneGatewayService = (
         }))
         .sort((left, right) => left.at.localeCompare(right.at))
         .slice(0, 8);
-    } catch {
-      /* Scheduled Jobs unavailable: the rest of home still works */
     }
     needs.sort((left, right) => left.at.localeCompare(right.at));
     const chief = agents.find((agent) => agent.isChiefOfStaff) ?? null;
-    const standing = await standingsOf(agents).catch(() => new Map());
+    const total = now().getTime() - started;
     return {
       mac: { name: deps.macName() },
       chief: chief
@@ -1183,7 +1297,8 @@ export const createPhoneGatewayService = (
       working: working.filter((entry) => entry.busy),
       upcoming,
       needs,
-      complete: list.complete
+      complete: list.complete,
+      ...(total > 1_500 ? { timing: { ...timing, total } } : {})
     };
   };
 
@@ -1649,7 +1764,7 @@ export const createPhoneGatewayService = (
 
   const computer = async (): Promise<PhoneComputer> => {
     const [list, usage] = await Promise.all([
-      deps.localAiClients({ operation: "list" }),
+      aiClients.get(),
       // Plan usage comes from the providers and can be slow: show the Mac without it rather than wait.
       within(
         deps.localAiClients({ operation: "usage", action: "read" }),

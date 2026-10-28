@@ -330,6 +330,8 @@ export type PhoneHome = {
   needs: PhoneNeed[];
   /** False when the execution list was cut at the API page limit. */
   complete: boolean;
+  /** When home was slow to build: ms from the start until each part was ready. */
+  timing?: Record<string, number>;
 };
 
 export type PhoneEvent = {
