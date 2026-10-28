@@ -24,16 +24,32 @@ export const pinRepositoryRecallContext = async <
   caller: { cwd: string },
   environment: NodeJS.ProcessEnv
 ): Promise<Input & { repository_context?: RepositoryIdentity | null }> => {
+  const paths = resolveKoedServerPaths(environment);
   if (input.search_domain === "global") {
     // Null is an explicit, durable unknown context; retries must not discover the worker cwd.
-    if (input.repository_context !== undefined)
-      return {
-        ...input,
-        repository_context:
-          input.repository_context === null
-            ? null
-            : repositoryIdentitySchema.parse(input.repository_context)
-      };
+    if (input.repository_context !== undefined) {
+      const context =
+        input.repository_context === null
+          ? null
+          : repositoryIdentitySchema.parse(input.repository_context);
+      if (!context || !(await replacedCheckout(paths, context)))
+        return { ...input, repository_context: context };
+      try {
+        const pinned = await pinRepositoryRecallContext(
+          {
+            ...input,
+            search_domain: "project",
+            project_id: repositoryScopeId(context),
+            repository_context: undefined
+          },
+          caller,
+          environment
+        );
+        return { ...input, repository_context: pinned.repository_context };
+      } catch {
+        return { ...input, repository_context: null };
+      }
+    }
     try {
       const pinned = await pinRepositoryRecallContext(
         { ...input, search_domain: "project", repository_context: undefined },
@@ -75,9 +91,15 @@ export const pinRepositoryRecallContext = async <
           retryable: false
         }
       );
+    // A replaced checkout no longer vouches for this scope; use a live one that does.
+    if (await replacedCheckout(paths, context))
+      return pinRepositoryRecallContext(
+        { ...input, project_id: scope, repository_context: undefined },
+        caller,
+        environment
+      );
     return { ...input, project_id: scope, repository_context: context };
   }
-  const paths = resolveKoedServerPaths(environment);
   const named = input.project_id
     ? listNamedProjects(paths).find(
         (project) =>
@@ -131,6 +153,25 @@ export const pinRepositoryRecallContext = async <
     unresolvedReason
       ? `Project identity is unresolved (${unresolvedReason})`
       : "Project target does not match its pinned repository context"
+  );
+};
+
+/**
+ * Whether a supplied context's root now holds a different checkout. A changed
+ * remote or branch keeps the checkout; a recreated directory does not. Context
+ * from another device names a checkout this host cannot inspect.
+ */
+const replacedCheckout = async (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  context: RepositoryIdentity
+) => {
+  if (!context.root || !context.checkoutId || !isDirectory(context.root))
+    return false;
+  const live = (await discoverProjectMetadata(paths, { cwd: context.root }))
+    .project?.repository;
+  return (
+    live?.originatingDeviceId === context.originatingDeviceId &&
+    live.checkoutId !== context.checkoutId
   );
 };
 

@@ -215,3 +215,71 @@ it("pins Global caller context and preserves explicit unknown context on retry",
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+it("revalidates a supplied context whose root now holds a different checkout", async () => {
+  const directory = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "koed-stale-context-"))
+  );
+  try {
+    const env = { KOED_HOME: path.join(directory, "profile") };
+    const paths = resolveKoedServerPaths(env);
+    const checkout = (name: string, remote: string) => {
+      const root = path.join(directory, name);
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.mkdirSync(root, { recursive: true });
+      execFileSync("git", ["-C", root, "init", "--initial-branch=main"]);
+      execFileSync("git", ["-C", root, "remote", "add", "origin", remote]);
+      return root;
+    };
+    const first = checkout("first", "https://github.com/example/shared.git");
+    const supplied = (await discoverProjectMetadata(paths, { cwd: first }))
+      .project!.repository!;
+    const scope = repositoryScopeId(supplied);
+    const pin = (search_domain: string) =>
+      pinRepositoryRecallContext(
+        { search_domain, repository_context: supplied },
+        { cwd: directory },
+        env
+      );
+
+    // A changed remote keeps the checkout, so the supplied context stays pinned.
+    execFileSync("git", [
+      "-C",
+      first,
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/example/renamed.git"
+    ]);
+    expect((await pin("project")).repository_context).toEqual(supplied);
+
+    // The same path recreated for another repository cannot serve the old scope.
+    checkout("first", "https://github.com/example/other.git");
+    await expect(pin("project")).rejects.toMatchObject({
+      memoryAnswerTaskErrorCode: "invalid_project_scope"
+    });
+    expect((await pin("global")).repository_context).toBeNull();
+    // Another device's checkout cannot be inspected at a matching local path.
+    const remote = { ...supplied, originatingDeviceId: "remote-device" };
+    expect(
+      (
+        await pinRepositoryRecallContext(
+          { search_domain: "project", repository_context: remote },
+          { cwd: directory },
+          env
+        )
+      ).repository_context
+    ).toEqual(remote);
+
+    // A live checkout that still has the identity serves the scope instead.
+    const second = checkout("second", "https://github.com/example/shared.git");
+    await discoverProjectMetadata(paths, { cwd: second });
+    for (const domain of ["project", "global"])
+      expect(await pin(domain)).toMatchObject({
+        repository_context: { root: second }
+      });
+    expect((await pin("project")).project_id).toBe(scope);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -165,6 +165,12 @@ metadata; they do not select the local worker's execution directory. The API
 rejects Project task acceptance without resolved context or when the supplied
 scope value disagrees with it.
 
+Before a supplied context from this device is used, the adapter checks that its
+root still holds the same checkout. A changed remote or branch keeps the
+checkout. A recreated directory does not, so Project recall uses another live
+checkout with the same identity or fails with `invalid_project_scope`. Global
+recall uses that live checkout or unknown current-Project context.
+
 Blocking and non-blocking delivery use the same context. Worker replacement and
 retry use the stored request, so cwd, anchor, or branch changes cannot retarget
 accepted work. Authorized collection belongs to the User and does not depend on
