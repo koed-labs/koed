@@ -112,7 +112,7 @@ jobs:
     name: Tests
     needs: static-checks
     runs-on: ${{ github.event_name == 'pull_request' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
-    timeout-minutes: 30
+    timeout-minutes: 20
     services:
       postgres:
         image: pgvector/pgvector:pg17
