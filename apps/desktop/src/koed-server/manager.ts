@@ -1933,6 +1933,15 @@ export const createKoedServerManager = ({
   // across inspections or coalesce mutations, enrollment or startup probes.
   const activeStatusReads = new Map<string, Promise<unknown>>();
   const runJson = (args: string[], timeout = 30_000): Promise<unknown> => {
+    const started = Date.now();
+    return runJsonNow(args, timeout).finally(() => {
+      const took = Date.now() - started;
+      // Each run is a Node process; slow ones explain a sluggish Desktop.
+      if (took > 3_000)
+        console.warn(`[koed cli] ${args.join(" ")} took ${took} ms`);
+    });
+  };
+  const runJsonNow = (args: string[], timeout: number): Promise<unknown> => {
     const coalesce =
       desktopFeatureFlagsFromEnvironment(environment).hqEnabled &&
       ((args.length === 1 && args[0] === "status") ||
@@ -2579,6 +2588,14 @@ export const createKoedServerManager = ({
   // Identical reads asked for at the same time share one request; a read
   // that starts after the previous one finished always goes to the API.
   const localApiReads = createReadCoalescer(0);
+
+  // The API answered nothing at all (not slowly): it may have restarted on
+  // another port, so the next read looks the address up again.
+  const forgetApiOriginAfterConnectionFailure = (cause: unknown): never => {
+    if (!(cause instanceof RemoteRequestTimeoutError))
+      retainedPersonalApiOrigin = null;
+    throw cause;
+  };
 
   // One `koed status` at a time: every caller that needs the API origin
   // while it is unknown waits for the same lookup instead of starting its own
@@ -4557,10 +4574,14 @@ export const createKoedServerManager = ({
     return remote.payload;
   };
 
-  const projectsAuthority = async (): Promise<
-    ProjectsAuthority & ProjectHqAuthority
-  > => {
-    const access = await managedProjectAccess(true);
+  const projectsAuthority = async (
+    options: { verifyOrigin?: boolean } = {}
+  ): Promise<ProjectsAuthority & ProjectHqAuthority> => {
+    // Reuse the known API address. Forcing a fresh `koed status` here ran a
+    // CLI process before every Project read, which took seconds on a busy
+    // Mac; a connection failure clears the address instead. Team sharing,
+    // which must notice a backend that moved mid-read, still verifies.
+    const access = await managedProjectAccess(options.verifyOrigin === true);
     const credential = readDesktopLocalCredentialAuthorization(
       resolveKoedHome(environment)
     );
@@ -4727,7 +4748,7 @@ export const createKoedServerManager = ({
           }
         },
         { timeoutMs: 30_000, maxBytes: 8_000_000 }
-      );
+      ).catch(forgetApiOriginAfterConnectionFailure);
       if (!remote.response.ok) {
         await remote.response.body?.cancel().catch(() => undefined);
         throw new PersonalMemoryBoundaryError(
@@ -5859,7 +5880,7 @@ export const createKoedServerManager = ({
         }
       },
       { timeoutMs: 30_000, maxBytes: 1_024_000 }
-    );
+    ).catch(forgetApiOriginAfterConnectionFailure);
     if (!remote.response.ok) {
       await remote.response.body?.cancel().catch(() => undefined);
       throw new PersonalMemoryBoundaryError(
@@ -5936,20 +5957,20 @@ export const createKoedServerManager = ({
     }
   });
   const sharing = async (): Promise<SharingOverview> => {
-    const authority = await projectsAuthority();
+    const authority = await projectsAuthority({ verifyOrigin: true });
     const payload = await agentsRequestJson(
       "/v1/local-edge/sharing",
       { method: "GET" },
       authority
     );
-    if ((await projectsAuthority()).key !== authority.key)
+    if ((await projectsAuthority({ verifyOrigin: true })).key !== authority.key)
       throw new PersonalMemoryBoundaryError("not_ready", true);
     return sharingOverviewSchema.parse(payload);
   };
   const scheduledJobs = createScheduledJobsClient({
     requestJson: agentsRequestJson,
     authority: async (): Promise<ScheduledJobsAuthority> => {
-      const access = await managedProjectAccess(true);
+      const access = await managedProjectAccess();
       const credential = readDesktopLocalCredentialAuthorization(
         resolveKoedHome(environment)
       );
