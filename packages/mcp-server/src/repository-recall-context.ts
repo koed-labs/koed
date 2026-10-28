@@ -92,38 +92,73 @@ export const pinRepositoryRecallContext = async <
       repository_context: named.repository
     };
   const target = resolveRequestedProjectRoot(input, caller, environment);
-  try {
-    if (!target || !statSync(target).isDirectory())
-      throw new Error("Project target is not a directory");
-  } catch {
-    throw Object.assign(
-      new Error("Requested Project directory is unavailable"),
-      {
-        statusCode: 400,
-        memoryAnswerTaskErrorCode: "invalid_project_scope",
-        retryable: false
-      }
-    );
+  // A repository scope can be catalogued at several checkouts. Use a live one
+  // whose current identity still matches the requested scope.
+  const requestedScope = input.project_id?.startsWith("repository:")
+    ? input.project_id
+    : undefined;
+  const roots = [
+    ...new Set([
+      ...(target ? [target] : []),
+      ...(requestedScope ? cataloguedProjectRoots(paths, requestedScope) : [])
+    ])
+  ].filter(isDirectory);
+  const invalid = (message: string) =>
+    Object.assign(new Error(message), {
+      statusCode: 400,
+      memoryAnswerTaskErrorCode: "invalid_project_scope",
+      retryable: false
+    });
+  if (!roots.length)
+    throw invalid("Requested Project directory is unavailable");
+  let unresolvedReason: string | undefined;
+  for (const root of roots) {
+    const context = (await discoverProjectMetadata(paths, { cwd: root }))
+      .project?.repository;
+    if (!context || context.kind === "unresolved" || !context.key) {
+      unresolvedReason ??= context?.reason ?? "missing";
+      continue;
+    }
+    if (requestedScope && repositoryScopeId(context) !== requestedScope)
+      continue;
+    return {
+      ...input,
+      project_id: repositoryScopeId(context),
+      repository_context: context
+    };
   }
-  const context = (await discoverProjectMetadata(paths, { cwd: target! }))
-    .project?.repository;
-  if (!context || context.kind === "unresolved" || !context.key)
-    throw Object.assign(
-      new Error(
-        `Project identity is unresolved (${context?.reason ?? "missing"})`
-      ),
-      {
-        statusCode: 400,
-        memoryAnswerTaskErrorCode: "invalid_project_scope",
-        retryable: false
-      }
-    );
-  return {
-    ...input,
-    project_id: repositoryScopeId(context),
-    repository_context: context
-  };
+  throw invalid(
+    unresolvedReason
+      ? `Project identity is unresolved (${unresolvedReason})`
+      : "Project target does not match its pinned repository context"
+  );
 };
+
+const isDirectory = (root: string) => {
+  try {
+    return statSync(root).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/** Catalogued checkout roots for a Local Project id or repository scope, in catalog order. */
+const cataloguedProjectRoots = (
+  paths: ReturnType<typeof resolveKoedServerPaths>,
+  projectId: string
+) => [
+  ...new Set(
+    (listProjectMetadata(paths).projects ?? [])
+      .filter(
+        (project) =>
+          project.localProjectId === projectId ||
+          (project.repository?.kind !== "unresolved" &&
+            project.repository?.key &&
+            repositoryScopeId(project.repository) === projectId)
+      )
+      .map((project) => project.path.projectRoot ?? project.path.cwd)
+  )
+];
 
 export const resolveRequestedProjectRoot = (
   input: {
@@ -152,19 +187,10 @@ export const resolveRequestedProjectRoot = (
     !path.isAbsolute(input.project_id) &&
     !path.win32.isAbsolute(input.project_id)
   ) {
-    const catalogued = (listProjectMetadata(paths).projects ?? []).filter(
-      (project) =>
-        project.localProjectId === input.project_id ||
-        (project.repository?.kind !== "unresolved" &&
-          project.repository?.key &&
-          repositoryScopeId(project.repository) === input.project_id)
-    );
-    const roots = new Set(
-      catalogued.map((project) => project.path.projectRoot ?? project.path.cwd)
-    );
+    const roots = cataloguedProjectRoots(paths, input.project_id);
     if (
-      !catalogued.length ||
-      (roots.size > 1 && !input.project_id.startsWith("repository:"))
+      !roots.length ||
+      (roots.length > 1 && !input.project_id.startsWith("repository:"))
     )
       throw Object.assign(
         new Error("Requested Project could not be resolved"),
@@ -174,7 +200,7 @@ export const resolveRequestedProjectRoot = (
           retryable: false
         }
       );
-    target = catalogued[0]!.path.projectRoot ?? catalogued[0]!.path.cwd;
+    target = roots.find(isDirectory) ?? roots[0]!;
   }
   return path.isAbsolute(target) || path.win32.isAbsolute(target)
     ? target

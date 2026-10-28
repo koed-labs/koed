@@ -107,6 +107,60 @@ it("pins the requested Project before acceptance and preserves it through cwd, a
   }
 });
 
+it("pins a repository scope to a live checkout whose identity still matches", async () => {
+  const directory = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "koed-live-checkout-"))
+  );
+  try {
+    const env = { KOED_HOME: path.join(directory, "profile") };
+    const paths = resolveKoedServerPaths(env);
+    const checkout = (name: string, remote: string) => {
+      const root = path.join(directory, name);
+      fs.mkdirSync(root, { recursive: true });
+      execFileSync("git", ["-C", root, "init", "--initial-branch=main"]);
+      execFileSync("git", ["-C", root, "remote", "add", "origin", remote]);
+      return root;
+    };
+    const first = checkout("first", "https://github.com/example/shared.git");
+    const second = checkout("second", "https://github.com/example/shared.git");
+    const firstIdentity = (
+      await discoverProjectMetadata(paths, { cwd: first })
+    ).project!.repository!;
+    await discoverProjectMetadata(paths, { cwd: second });
+    const scope = repositoryScopeId(firstIdentity);
+    const pin = () =>
+      pinRepositoryRecallContext(
+        { search_domain: "project", project_id: scope },
+        { cwd: directory },
+        env
+      );
+
+    fs.rmSync(first, { recursive: true, force: true });
+    expect(
+      resolveRequestedProjectRoot(
+        { project_id: scope },
+        { cwd: directory },
+        env
+      )
+    ).toBe(second);
+    expect(await pin()).toMatchObject({
+      project_id: scope,
+      repository_context: { root: second }
+    });
+
+    // A recreated checkout at the old path no longer has the requested identity.
+    checkout("first", "https://github.com/example/other.git");
+    expect((await pin()).repository_context?.root).toBe(second);
+
+    fs.rmSync(second, { recursive: true, force: true });
+    await expect(pin()).rejects.toMatchObject({
+      memoryAnswerTaskErrorCode: "invalid_project_scope"
+    });
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 it("pins Global caller context and preserves explicit unknown context on retry", async () => {
   const directory = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), "koed-global-context-"))
