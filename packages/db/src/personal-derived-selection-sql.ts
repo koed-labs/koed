@@ -49,7 +49,7 @@ const eventEligibleSql = (
   and ${options.includeInvalidated ? "true" : "source_ev.invalidated_at is null and source_ev.personal_deleted_at is null"} and ${curated ? "(source_ev.include_in_embedding=true or source_ev.include_in_lcm=true)" : "source_ev.include_in_lcm=true"}
   and (${semanticMemoryEventEligibleSql("source_ev")})
   and ${personalSourceSelectionSql("source_session", selection, options)}
-  and ${windowSql(curated ? "coalesce(source_ev.source_event_time,source_ev.captured_at)" : "source_ev.captured_at", after, before)}
+  and ${windowSql("coalesce(source_ev.source_event_time,source_ev.captured_at)", after, before)}
 )`;
 
 const messageEligibleSql = (
@@ -65,7 +65,7 @@ const messageEligibleSql = (
       and source_msg.idempotency_key='message:' || coalesce(approval_item.metadata->>'canonicalConversationItemKey',approval_item.canonical_item_key,approval_item.logical_source_id,approval_item.id::text)
       and ${approvalConversationItemSql("approval_item")})
   and ${personalSourceSelectionSql("source_session", selection, options)}
-  and ${windowSql("source_msg.captured_at", after, before)}
+  and ${windowSql("coalesce(source_msg.source_event_time,source_msg.captured_at)", after, before)}
 )`;
 
 /** A placeholder can be represented by a fresh outline, without disclosing its retained body. */

@@ -18417,6 +18417,77 @@ describeDb("memory repository visibility", () => {
     expect(unboundedSearch.metadata.temporalFilter).toBeUndefined();
   });
 
+  it("windows delayed imports by source event time rather than capture time", async () => {
+    const alice = await repo.createUser({
+      email: `alice-delayed-import-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const oldEventIds: string[] = [];
+    const recentEventIds: string[] = [];
+    for (let index = 1; index <= 10; index += 1) {
+      const event = await captureUserEvent(engine, alice.id, {
+        projectId: "workspace-delayed-import",
+        content:
+          index <= 5
+            ? `Imported last-month evidence ${index}.`
+            : `Imported this-week evidence ${index}.`,
+        metadata: { index }
+      });
+      (index <= 5 ? oldEventIds : recentEventIds).push(event.id);
+    }
+    // Everything was imported today; only the source times differ.
+    await pool.query(
+      "update memory_events set source_event_time = now() - interval '45 days', captured_at = now() where id = any($1::uuid[])",
+      [oldEventIds]
+    );
+    await pool.query(
+      "update memory_events set source_event_time = now() - interval '2 days', captured_at = now() where id = any($1::uuid[])",
+      [recentEventIds]
+    );
+    await engine.scheduleCompaction({
+      requesterContext: { userId: alice.id },
+      visibility: "personal"
+    });
+    await embedPendingSources();
+    const leafFor = async (eventId: string) =>
+      (
+        await pool.query<{ memory_node_id: string }>(
+          `select mns.memory_node_id from memory_node_sources mns
+             join memory_nodes mn on mn.id = mns.memory_node_id
+            where mns.memory_event_id = $1 and mn.kind = 'leaf' limit 1`,
+          [eventId]
+        )
+      ).rows[0]!.memory_node_id;
+    const oldLeafId = await leafFor(oldEventIds[0]!);
+    const recentLeafId = await leafFor(recentEventIds[0]!);
+    const day = 24 * 60 * 60 * 1000;
+
+    mockEmbeddingQuery();
+    const recent = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "imported evidence",
+      scope: "personal",
+      recentDays: 30,
+      limit: 10
+    });
+    const recentIds = recent.results.map((result) => result.nodeId);
+    expect(recentIds).toContain(recentLeafId);
+    expect(recentIds).not.toContain(oldLeafId);
+
+    mockEmbeddingQuery();
+    const lastMonth = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "imported evidence",
+      scope: "personal",
+      sourceAfter: new Date(Date.now() - 60 * day).toISOString(),
+      sourceBefore: new Date(Date.now() - 30 * day).toISOString(),
+      limit: 10
+    });
+    const lastMonthIds = lastMonth.results.map((result) => result.nodeId);
+    expect(lastMonthIds).toContain(oldLeafId);
+    expect(lastMonthIds).not.toContain(recentLeafId);
+  });
+
   it("requires the same node source to satisfy project and temporal filters", async () => {
     const alice = await repo.createUser({
       email: `alice-project-boundary-${randomUUID()}@example.com`
