@@ -1,6 +1,8 @@
 import type { HqOnboardingRole } from "@koed/shared/hq-onboarding-contract";
 
 export type HqOnboardingRecord = {
+  /** How Koed will be used, asked first. Solo is the only one available now. */
+  edition?: "solo" | "team" | null;
   role: HqOnboardingRole;
   roleAnswered: boolean;
   completed: boolean;

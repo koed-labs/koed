@@ -59,6 +59,7 @@ export const desktopCommandNames = [
   "hq_onboarding_identity",
   "hq_onboarding_discover",
   "hq_onboarding_connect",
+  "hq_onboarding_prepare_core",
   "hq_onboarding_prepare_memory"
 ] as const;
 

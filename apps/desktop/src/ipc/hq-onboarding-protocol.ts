@@ -18,6 +18,12 @@ export type HqOnboardingClient = {
 
 export type HqOnboardingStatus = {
   profileKey: string;
+  /**
+   * Koed's own local services (database, memory engine, models). Solo starts
+   * them on the first onboarding screen, before any AI Client is chosen, so
+   * they are usually ready by the time Memory needs them.
+   */
+  coreState?: "not_started" | "preparing" | "ready" | "failed";
   memoryState: "not_started" | "preparing" | "ready" | "failed";
   ownerId: string | null;
   error: string | null;

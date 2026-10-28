@@ -368,6 +368,7 @@ function ClientCard({
 }
 
 function CompareCard({ preview }: Pick<Props, "preview">) {
+  const solo = soloEdition();
   const rows = [
     [
       "Starts every chat from zero",
@@ -381,10 +382,15 @@ function CompareCard({ preview }: Pick<Props, "preview">) {
       "You paste the same context again and again",
       "Drop a spec or doc once, and it’s used everywhere it matters"
     ],
-    [
-      "Just you",
-      "Your co-workers’ agents get what you choose to share when Team is available"
-    ]
+    solo
+      ? [
+          "Your chats live on someone else’s servers",
+          "Your memory stays on this Mac, and you can see, export or forget it"
+        ]
+      : [
+          "Just you",
+          "Your co-workers’ agents get what you choose to share when Team is available"
+        ]
   ];
   return (
     <div className="hq-onboarding__card hq-onboarding__compare">
@@ -575,7 +581,7 @@ export function HqOnboardingConversation(props: Props) {
   const progress = (
     <div className="hq-onboarding__progress">
       <nav className="hq-onboarding__steps" aria-label="Setup progress">
-        {steps.map((label, index) => (
+        {(solo ? steps.slice(0, 3) : steps).map((label, index) => (
           <span className="hq-onboarding__step-wrap" key={label}>
             {index > 0 ? (
               <span className="hq-onboarding__step-line" aria-hidden="true" />
@@ -633,13 +639,52 @@ export function HqOnboardingConversation(props: Props) {
             </p>
           </>
         );
+      case "edition":
+        return (
+          <>
+            <p>
+              First, how will you use Koed? This decides what I set up on this
+              Mac.
+            </p>
+            <div className="hq-onboarding__actions">
+              <button
+                type="button"
+                className="hq-onboarding__primary"
+                disabled={Boolean(record.edition) || Boolean(working)}
+                onClick={() => onAction("edition-solo")}
+              >
+                Just me, on this Mac
+              </button>
+              <button
+                type="button"
+                disabled={solo || Boolean(record.edition) || Boolean(working)}
+                title={solo ? "Koed for teams is coming later." : undefined}
+                onClick={() => onAction("edition-team")}
+              >
+                With my team{solo ? " (coming later)" : ""}
+              </button>
+            </div>
+            <p className="hq-onboarding__fineprint">
+              Everything runs on this Mac with the AI subscriptions you already
+              have. Nothing is sent to a Koed server.
+            </p>
+          </>
+        );
+      case "setup-started":
+        return (
+          <p>
+            Great. I'm setting Koed up on this Mac in the background: a local
+            database and memory engine. It takes a few minutes the first time,
+            so let's keep going meanwhile.
+          </p>
+        );
       case "intro":
         return (
           <div className="hq-onboarding__intro">
             <p>
-              I'm your new agent. I'll be your chief of staff: I run your other
-              agents, remember your work, and bring people in when you want
-              them.
+              {solo
+                ? "I'm your new agent. I'll be your chief of staff: I remember your work across your AI tools, so you never start from zero."
+                : "I'm your new agent. I'll be your chief of staff: I run your other agents, remember your work, and bring people in when you want them."}
             </p>
             <p>
               But first, make me yours. What should I be called, and how should
@@ -665,7 +710,7 @@ export function HqOnboardingConversation(props: Props) {
       case "three-things":
         return (
           <>
-            <p>Let's set you up. Three quick things:</p>
+            <p>Let's set you up. {solo ? "Two" : "Three"} quick things:</p>
             <ol>
               <li>
                 <strong>Your AI.</strong> I run on the subscriptions you already
@@ -675,10 +720,12 @@ export function HqOnboardingConversation(props: Props) {
                 <strong>Memory.</strong> What Koed remembers for you, and why
                 that beats your AI on its own.
               </li>
-              <li>
-                <strong>Working together.</strong> Just you and your agents, or
-                with your co-workers too.
-              </li>
+              {solo ? null : (
+                <li>
+                  <strong>Working together.</strong> Just you and your agents,
+                  or with your co-workers too.
+                </li>
+              )}
             </ol>
             {buttons([
               ["Let's go", "go"],
@@ -690,10 +737,9 @@ export function HqOnboardingConversation(props: Props) {
         return (
           <>
             <p>
-              Koed is where you and your agents work. I'm your chief of staff in
-              it: I run agents on your own AI subscriptions, Koed remembers your
-              work so you never start from zero, and I bring your co-workers in
-              when you want them.
+              {solo
+                ? "Koed gives the AI tools you already use one shared memory, kept on this Mac. I'm your chief of staff in it: I remember your work so you never start from zero."
+                : "Koed is where you and your agents work. I'm your chief of staff in it: I run agents on your own AI subscriptions, Koed remembers your work so you never start from zero, and I bring your co-workers in when you want them."}
             </p>
             {buttons([["Let's go", "go"]])}
           </>
@@ -737,15 +783,38 @@ export function HqOnboardingConversation(props: Props) {
                   ? "Your AI Client is already selected. Ready to carry on?"
                   : "I didn't find a signed-in AI Client on this Mac. Sign in to one and I'll look again."}
             </p>
+            {found.length ? (
+              <div className="hq-onboarding__card hq-onboarding__consent">
+                <strong>What connecting does</strong>
+                <ul>
+                  <li>
+                    Adds Koed's memory tools and a capture hook to{" "}
+                    {found.map(clientName).join(" and ")}.
+                  </li>
+                  <li>
+                    From then on, your sessions with{" "}
+                    {found.length === 1 ? "it" : "them"}, in any folder, are
+                    saved to your memory on this Mac. Nothing leaves this Mac.
+                  </li>
+                  <li>
+                    I also read your past sessions in the background, so your
+                    Mac may be busier for a while the first time.
+                  </li>
+                  <li>
+                    You can pause, export or forget any of it later in Settings.
+                  </li>
+                </ul>
+              </div>
+            ) : null}
             {buttons(
               found.length
                 ? [
                     [
                       found.length === 1
-                        ? "Connect it"
+                        ? "Connect and remember"
                         : found.length === 2
-                          ? "Connect both"
-                          : "Connect all three",
+                          ? "Connect both and remember"
+                          : "Connect all three and remember",
                       "connect"
                     ],
                     ["I'll add them myself", "manual"]

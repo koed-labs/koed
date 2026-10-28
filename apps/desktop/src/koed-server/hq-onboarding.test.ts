@@ -262,6 +262,7 @@ const createHarness = (
     | "hq_onboarding_status"
     | "hq_onboarding_discover"
     | "hq_onboarding_connect"
+    | "hq_onboarding_prepare_core"
     | "hq_onboarding_prepare_memory";
   const handlers = manager.handlers as Omit<
     typeof manager.handlers,
@@ -274,6 +275,9 @@ const createHarness = (
       args?: Record<string, unknown>
     ) => Promise<HqOnboardingStatus>;
     hq_onboarding_connect: (
+      args?: Record<string, unknown>
+    ) => Promise<HqOnboardingStatus>;
+    hq_onboarding_prepare_core: (
       args?: Record<string, unknown>
     ) => Promise<HqOnboardingStatus>;
     hq_onboarding_prepare_memory: (
@@ -622,5 +626,53 @@ describe("HQ onboarding main-owned bridge", () => {
       )
     ).toHaveLength(1);
     expect(commands.some((args) => args.includes("upstream"))).toBe(false);
+  });
+
+  it("sets Koed itself up before any AI Client is chosen, and Memory reuses it", async () => {
+    const { manager, commands } = createHarness(undefined, false, {
+      coldServices: true
+    });
+    await expect(
+      manager.handlers.hq_onboarding_prepare_core!()
+    ).rejects.toThrow("explicit operator consent");
+    const started = await manager.handlers.hq_onboarding_prepare_core!({
+      operatorConsented: true
+    });
+    expect(started.clients.every((client) => !client.selected)).toBe(true);
+    expect(started.clients.every((client) => client.error === null)).toBe(true);
+    const deadline = Date.now() + 2000;
+    let status = await manager.handlers.hq_onboarding_status!();
+    while (status.coreState === "preparing" && Date.now() < deadline) {
+      await new Promise((done) => setTimeout(done, 5));
+      status = await manager.handlers.hq_onboarding_status!();
+    }
+    expect(status.coreState).toBe("ready");
+    expect(status.memoryState).toBe("not_started");
+    const daemonStarts = () =>
+      commands.filter(
+        (args) => args.includes("start") && args.includes("--daemon")
+      ).length;
+    expect(daemonStarts()).toBe(1);
+    expect(commands.some((args) => args.includes("setup"))).toBe(false);
+    await manager.handlers.hq_onboarding_discover!();
+    await manager.handlers.hq_onboarding_connect!({
+      driver: "codex",
+      operatorConsented: true
+    });
+    await manager.handlers.hq_onboarding_prepare_memory!({
+      operatorConsented: true
+    });
+    status = await manager.handlers.hq_onboarding_status!();
+    while (status.memoryState === "preparing" && Date.now() < deadline + 2000) {
+      await new Promise((done) => setTimeout(done, 5));
+      status = await manager.handlers.hq_onboarding_status!();
+    }
+    expect(status).toMatchObject({ memoryState: "ready", error: null });
+    expect(daemonStarts()).toBe(1);
+    expect(
+      commands.filter(
+        (args) => args.includes("setup") && args.includes("codex")
+      )
+    ).toHaveLength(1);
   });
 });

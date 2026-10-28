@@ -1157,3 +1157,21 @@
   background: var(--hq-card);
   cursor: pointer;
 }
+
+.hq-onboarding__fineprint {
+  margin-top: 10px;
+  color: var(--hq-muted);
+  font-size: 12.5px;
+}
+.hq-onboarding__consent {
+  margin: 10px 0 14px;
+  padding: 14px 18px;
+  font-size: 13.5px;
+}
+.hq-onboarding__consent ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.hq-onboarding__consent li + li {
+  margin-top: 4px;
+}

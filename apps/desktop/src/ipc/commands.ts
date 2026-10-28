@@ -368,7 +368,8 @@ export const registerDesktopCommandHandlers = (
               Object.keys(args).length === 2 &&
               ["codex", "claude", "pi"].includes(String(args.driver)) &&
               args.operatorConsented === true
-            : command === "hq_onboarding_prepare_memory"
+            : command === "hq_onboarding_prepare_memory" ||
+                command === "hq_onboarding_prepare_core"
               ? args !== null &&
                 typeof args === "object" &&
                 Object.keys(args).length === 1 &&

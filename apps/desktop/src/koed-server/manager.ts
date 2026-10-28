@@ -2163,10 +2163,13 @@ export const createKoedServerManager = ({
           selected: saved.selected.includes(driver),
           configured,
           memoryConnected,
+          // Before Koed has set itself up there is no Koed status to read;
+          // that is expected, not an error to show on every AI Client.
           error:
             installed && authenticated === "no"
               ? signInGuidance
-              : typeof profile?.message === "string" &&
+              : setupStartupReady(status) &&
+                  typeof profile?.message === "string" &&
                   profile?.state === "needs_attention"
                 ? profile.message
                 : null
@@ -2190,8 +2193,17 @@ export const createKoedServerManager = ({
         : prepared && hqMemoryError === null
           ? "ready"
           : "failed";
+    const coreState: NonNullable<HqOnboardingStatus["coreState"]> =
+      hqCorePreparation
+        ? "preparing"
+        : hqCoreReady || setupStartupReady(status)
+          ? "ready"
+          : hqCoreError
+            ? "failed"
+            : "not_started";
     return {
       profileKey: saved.profileKey,
+      coreState,
       memoryState,
       ownerId,
       error:
@@ -2230,6 +2242,66 @@ export const createKoedServerManager = ({
     return hqOnboardingStatus();
   };
 
+  const hqStageMessages: Record<DesktopSetupStageId, string> = {
+    package: "Preparing Memory…",
+    runtime: "Preparing local storage…",
+    model: "Preparing local models…",
+    services: "Starting local Memory…",
+    integration: "Connecting Memory…",
+    verification: "Checking Memory is ready…"
+  };
+  let hqCorePreparation: Promise<void> | null = null;
+  let hqCoreReady = false;
+  let hqCoreError: string | null = null;
+  /**
+   * Sets up Koed's own services (no AI Client involved, nothing read from
+   * the person's chats). Onboarding starts this on its first screen so the
+   * slow part runs while the person names their Chief of Staff.
+   */
+  const startHqCorePreparation = (): Promise<void> => {
+    if (hqCorePreparation) return hqCorePreparation;
+    if (hqCoreReady) return Promise.resolve();
+    hqCoreError = null;
+    if (!hqMemoryPreparation)
+      hqMemoryProgress = {
+        message: "Setting up Koed on this Mac…",
+        completedSteps: 0,
+        totalSteps: 7,
+        startedAt: Date.now()
+      };
+    const task = (async () => {
+      const result = await hqSetupWorkflow.run((snapshot) => {
+        if (!hqMemoryProgress) return;
+        hqMemoryProgress = {
+          ...hqMemoryProgress,
+          message: snapshot.activeStage
+            ? hqStageMessages[snapshot.activeStage]
+            : "Checking what Memory needs…",
+          completedSteps: snapshot.stages.filter(
+            (stage) => stage.state === "complete"
+          ).length
+        };
+      });
+      if (result.state !== "complete")
+        throw new Error(result.error ?? "Koed could not set itself up.");
+      hqCoreReady = true;
+    })();
+    const tracked = task
+      .catch((error: unknown) => {
+        hqCoreError =
+          error instanceof Error
+            ? error.message
+            : "Koed could not set itself up.";
+        throw error;
+      })
+      .finally(() => {
+        if (hqCorePreparation === tracked) hqCorePreparation = null;
+      });
+    hqCorePreparation = tracked;
+    tracked.catch(() => undefined);
+    return tracked;
+  };
+
   const startHqMemoryPreparation = (): void => {
     if (hqMemoryPreparation) return;
     hqMemoryError = null;
@@ -2259,28 +2331,8 @@ export const createKoedServerManager = ({
           );
         }
       }
-      const stageMessages: Record<DesktopSetupStageId, string> = {
-        package: "Preparing Memory…",
-        runtime: "Preparing local storage…",
-        model: "Preparing local models…",
-        services: "Starting local Memory…",
-        integration: "Connecting Memory…",
-        verification: "Checking Memory is ready…"
-      };
-      const result = await hqSetupWorkflow.run((snapshot) => {
-        if (!hqMemoryProgress) return;
-        hqMemoryProgress = {
-          ...hqMemoryProgress,
-          message: snapshot.activeStage
-            ? stageMessages[snapshot.activeStage]
-            : "Checking what Memory needs…",
-          completedSteps: snapshot.stages.filter(
-            (stage) => stage.state === "complete"
-          ).length
-        };
-      });
-      if (result.state !== "complete")
-        throw new Error(result.error ?? "Memory setup failed.");
+      // Usually already running or done since the first onboarding screen.
+      await startHqCorePreparation();
       for (const [index, driver] of selected.entries()) {
         if (hqMemoryProgress)
           hqMemoryProgress = {
@@ -7639,6 +7691,17 @@ export const createKoedServerManager = ({
         )
           throw new Error("Invalid HQ onboarding Connect request.");
         return hqOnboardingConnect(args.driver as HqOnboardingDriver);
+      },
+      hq_onboarding_prepare_core: async (args) => {
+        if (
+          !desktopFeatureFlagsFromEnvironment(environment).hqEnabled ||
+          !args ||
+          Object.keys(args).length !== 1 ||
+          args.operatorConsented !== true
+        )
+          throw new Error("Koed setup requires explicit operator consent.");
+        void startHqCorePreparation();
+        return hqOnboardingStatus();
       },
       hq_onboarding_prepare_memory: async (args) => {
         if (

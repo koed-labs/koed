@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { soloEdition } from "../../edition.js";
 import type { Agent } from "@koed/shared/agent-contract";
 import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
 import type { DesktopApi } from "../../../types.js";
@@ -22,6 +23,8 @@ const draftKey = (profileKey: string) =>
   `koed.hq.onboarding.v56.draft:${encodeURIComponent(profileKey)}`;
 const storyKeys = [
   "welcome",
+  "edition",
+  "setup-started",
   "intro",
   "maker",
   "user",
@@ -62,16 +65,33 @@ const storyKeys = [
 ] as const;
 type StoryKey = (typeof storyKeys)[number];
 export type StoryEvent = { key: StoryKey; value?: string };
-const initialStory: StoryEvent[] = [
+// The first question is how Koed will be used; answering it starts Koed's
+// own setup in the background while the person names their Chief of Staff.
+const initialStory: StoryEvent[] = [{ key: "welcome" }, { key: "edition" }];
+const editionChosen = (edition: "solo" | "team"): StoryEvent[] => [
+  {
+    key: "user",
+    value: edition === "team" ? "With my team" : "Just me, on this Mac"
+  },
+  { key: "setup-started" },
+  { key: "intro" },
+  { key: "maker" }
+];
+// Drafts saved before the edition question existed start at the intro.
+const legacyStory: StoryEvent[] = [
   { key: "welcome" },
   { key: "intro" },
   { key: "maker" }
 ];
 const storyForRecord = (record: HqOnboardingRecord): StoryEvent[] => {
-  if ((record.stage ?? 1) === 1 || !record.chiefName.trim())
-    return initialStory;
+  const opening = record.edition
+    ? [...initialStory, ...editionChosen(record.edition)]
+    : (record.stage ?? 1) === 1
+      ? initialStory
+      : legacyStory;
+  if ((record.stage ?? 1) === 1 || !record.chiefName.trim()) return opening;
   const accepted: StoryEvent[] = [
-    ...initialStory,
+    ...opening,
     { key: "user", value: `I'll call you ${record.chiefName.trim()}.` },
     { key: "name-reply" },
     { key: "three-things" }
@@ -137,6 +157,7 @@ function readDraft(
       typeof draft.lookColor !== "string" ||
       !/^#[0-9a-fA-F]{6}$/.test(draft.lookColor) ||
       typeof draft.remember !== "boolean" ||
+      (draft.edition != null && !["solo", "team"].includes(draft.edition)) ||
       (draft.memoryFact != null &&
         (typeof draft.memoryFact !== "string" ||
           draft.memoryFact.length > 240)) ||
@@ -419,6 +440,7 @@ export function HqOnboarding({
     action:
       | "hq_onboarding_discover"
       | "hq_onboarding_connect"
+      | "hq_onboarding_prepare_core"
       | "hq_onboarding_prepare_memory",
     args?: Record<string, unknown>
   ) => {
@@ -566,10 +588,21 @@ export function HqOnboarding({
       });
       return;
     }
+    if (key === "edition-solo" || key === "edition-team") {
+      const edition = key === "edition-team" ? "team" : "solo";
+      appendStory(editionChosen(edition), { ...record, edition });
+      // Koed's own services take the longest to set up and need nothing from
+      // the person: start them now, while they name their Chief of Staff.
+      await invokeAction("hq_onboarding_prepare_core", {
+        operatorConsented: true
+      });
+      return;
+    }
     if (key === "text") {
       const typed = (value ?? "").trim().slice(0, 240);
       if (!typed) return;
       const last = storyRef.current.at(-1)?.key;
+      if (last === "edition") return action("edition-solo");
       if (/^skip\b/i.test(typed)) return action("skip");
       if (stage === 1) {
         const name = typed
@@ -603,8 +636,8 @@ export function HqOnboarding({
           "ai-ask": "scan",
           "scan-result": "connect",
           "after-models": "memory",
-          "memory-explain": "ways",
-          "more-reply": "ways",
+          "memory-explain": soloEdition() ? "summary" : "ways",
+          "more-reply": soloEdition() ? "summary" : "ways",
           "ways-ask": "solo",
           "solo-intro": "hire",
           "invite-intro": "invite-example",
@@ -681,6 +714,12 @@ export function HqOnboarding({
         if (!latest) return;
       }
       appendStory([{ key: "routes" }, { key: "after-models" }]);
+      // The person just agreed to connect these AI Clients and let Koed
+      // remember their sessions: start that now instead of at the Memory step.
+      if (latest?.memoryState === "not_started")
+        await invokeAction("hq_onboarding_prepare_memory", {
+          operatorConsented: true
+        });
       return;
     }
     if (key === "continue-ai") {

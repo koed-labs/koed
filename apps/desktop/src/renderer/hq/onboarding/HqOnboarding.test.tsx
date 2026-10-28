@@ -124,10 +124,33 @@ describe("HQ v56 conversation", () => {
     else delete window.koedDesktop;
   });
 
-  it("retains the exact welcome, accepted maker, user reply and three-things exchange before AI", async () => {
+  it("asks how Koed will be used first and starts Koed's own setup on the answer", async () => {
     await act(async () => root.render(<HqOnboarding onComplete={vi.fn()} />));
     expect(messages()[0]).toContain("Hi, welcome to Koed.");
-    expect(messages()[1]).toContain(
+    expect(messages()[1]).toContain("First, how will you use Koed?");
+    expect(container.querySelector(".hq-onboarding__maker")).toBeFalsy();
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "hq_onboarding_status"
+    ]);
+    await click("Just me, on this Mac");
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "hq_onboarding_status",
+      "hq_onboarding_prepare_core"
+    ]);
+    expect(invoke).toHaveBeenLastCalledWith("hq_onboarding_prepare_core", {
+      operatorConsented: true
+    });
+    expect(container.textContent).toContain(
+      "I'm setting Koed up on this Mac in the background"
+    );
+    expect(container.querySelector(".hq-onboarding__maker")).toBeTruthy();
+  });
+
+  it("retains the exact welcome, accepted maker, user reply and three-things exchange before AI", async () => {
+    await act(async () => root.render(<HqOnboarding onComplete={vi.fn()} />));
+    await click("Just me, on this Mac");
+    expect(messages()[0]).toContain("Hi, welcome to Koed.");
+    expect(messages()[4]).toContain(
       "I'm your new agent. I'll be your chief of staff: I run your other agents, remember your work, and bring people in when you want them."
     );
     expect(container.querySelector(".hq-onboarding__maker")).toBeTruthy();
@@ -135,7 +158,8 @@ describe("HQ v56 conversation", () => {
       "What will you mostly use Koed for?"
     );
     expect(invoke.mock.calls.map(([command]) => command)).toEqual([
-      "hq_onboarding_status"
+      "hq_onboarding_status",
+      "hq_onboarding_prepare_core"
     ]);
     expect(
       container.querySelectorAll(".hq-onboarding__colors button")
@@ -144,11 +168,11 @@ describe("HQ v56 conversation", () => {
     await click("Juno");
     await click("That’s me");
     expect(container.querySelector(".hq-onboarding__maker-done")).toBeTruthy();
-    expect(messages().slice(3, 6).join(" ")).toContain("I'll call you Juno.");
-    expect(messages().slice(3, 6).join(" ")).toContain(
+    expect(messages().slice(6, 9).join(" ")).toContain("I'll call you Juno.");
+    expect(messages().slice(6, 9).join(" ")).toContain(
       "Juno it is. Nice to meet you."
     );
-    expect(messages().slice(3, 6).join(" ")).toContain(
+    expect(messages().slice(6, 9).join(" ")).toContain(
       "Let's set you up. Three quick things:"
     );
     expect(container.textContent).toContain(
@@ -165,12 +189,14 @@ describe("HQ v56 conversation", () => {
     expect(container.textContent).toContain("Can I look for them on this Mac?");
     expect(messages()[0]).toContain("Hi, welcome to Koed.");
     expect(invoke.mock.calls.map(([command]) => command)).toEqual([
-      "hq_onboarding_status"
+      "hq_onboarding_status",
+      "hq_onboarding_prepare_core"
     ]);
   });
 
-  it("routes a typed name through the same accepted exchange without starting services", async () => {
+  it("routes a typed name through the same accepted exchange without starting AI Client setup", async () => {
     await act(async () => root.render(<HqOnboarding onComplete={vi.fn()} />));
+    await click("Just me, on this Mac");
     const composer = container.querySelector<HTMLTextAreaElement>(
       ".hq-onboarding__composer textarea"
     )!;
@@ -195,12 +221,14 @@ describe("HQ v56 conversation", () => {
       "Let's set you up. Three quick things:"
     );
     expect(invoke.mock.calls.map(([command]) => command)).toEqual([
-      "hq_onboarding_status"
+      "hq_onboarding_status",
+      "hq_onboarding_prepare_core"
     ]);
   });
 
-  it("discovers and selects explicitly, then starts preparation once upon entering Memory", async () => {
+  it("explains what connecting does, then starts Memory once when the person connects", async () => {
     await act(async () => root.render(<HqOnboarding onComplete={vi.fn()} />));
+    await click("Just me, on this Mac");
     await click("Atlas");
     await click("That’s me");
     await click("Let's go");
@@ -209,7 +237,16 @@ describe("HQ v56 conversation", () => {
     expect(invoke.mock.calls.map(([command]) => command)).not.toContain(
       "hq_onboarding_prepare_memory"
     );
-    await click("Connect it");
+    expect(container.textContent).toContain("What connecting does");
+    expect(container.textContent).toContain(
+      "your sessions with it, in any folder, are saved to your memory on this Mac"
+    );
+    await click("Connect and remember");
+    expect(
+      invoke.mock.calls.filter(
+        ([command]) => command === "hq_onboarding_prepare_memory"
+      )
+    ).toHaveLength(1);
     expect(container.textContent).toContain("How I’ll use them");
     expect(container.textContent).toContain(
       "Next, the part that makes Koed worth it."
@@ -252,11 +289,12 @@ describe("HQ v56 conversation", () => {
       return originalInvoke(command);
     });
     await act(async () => root.render(<HqOnboarding onComplete={vi.fn()} />));
+    await click("Just me, on this Mac");
     await click("Atlas");
     await click("That’s me");
     await click("Let's go");
     await click("Look for them");
-    await click("Connect it");
+    await click("Connect and remember");
     await click("Next: memory");
     expect(container.textContent).toContain("Your selections are saved.");
     expect(container.querySelector("textarea")?.disabled).toBe(true);
@@ -350,11 +388,12 @@ describe("HQ v56 conversation", () => {
         />
       )
     );
+    await click("Just me, on this Mac");
     await click("Mika");
     await click("That’s me");
     await click("Let's go");
     await click("Look for them");
-    await click("Connect it");
+    await click("Connect and remember");
     await click("Next: memory");
     expect(run).not.toHaveBeenCalled();
     await click("Keep answers short");
@@ -534,10 +573,43 @@ describe("HQ v56 conversation", () => {
     );
     expect(container.textContent).not.toContain("Leaked");
     expect(container.textContent).not.toContain("Secret");
+    await click("Just me, on this Mac");
     expect(
       container.querySelector<HTMLInputElement>(
         'input[aria-label="Chief of Staff name"]'
       )?.value
     ).toBe("");
+  });
+
+  it("keeps Solo to Solo: Team waits, and there is no Working together step", async () => {
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: {
+        invoke,
+        featureFlags: {
+          hqEnabled: true,
+          teamCollaborationEnabled: false,
+          edition: "solo",
+          phoneEnabled: false
+        }
+      } as unknown as DesktopApi
+    });
+    await act(async () => root.render(<HqOnboarding onComplete={vi.fn()} />));
+    const team = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.startsWith("With my team")
+    );
+    expect(team?.textContent).toContain("coming later");
+    expect(team?.disabled).toBe(true);
+    await click("Just me, on this Mac");
+    expect(container.textContent).not.toContain("Working together");
+    expect(container.textContent).toContain(
+      "I'm setting Koed up on this Mac in the background"
+    );
+    await click("Atlas");
+    await click("That’s me");
+    expect(container.textContent).toContain(
+      "Let's set you up. Two quick things:"
+    );
+    expect(container.textContent).not.toContain("co-workers");
   });
 });
