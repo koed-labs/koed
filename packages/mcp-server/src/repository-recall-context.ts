@@ -206,3 +206,29 @@ export const resolveRequestedProjectRoot = (
     ? target
     : path.resolve(target);
 };
+
+/** The checkout that selects a Project's route, chosen only after its identity is verified. */
+export const resolveVerifiedProjectRoot = async <
+  Input extends {
+    search_domain: string;
+    project_id?: string;
+    repository_context?: RepositoryIdentity | null;
+  }
+>(
+  input: Input,
+  caller: { cwd: string },
+  environment: NodeJS.ProcessEnv
+): Promise<{ pinned: Input; projectRoot: string | undefined }> => {
+  const pinned = (await pinRepositoryRecallContext(
+    input,
+    caller,
+    environment
+  )) as Input;
+  return {
+    pinned,
+    projectRoot:
+      pinned.search_domain === "project"
+        ? resolveRequestedProjectRoot(pinned, caller, environment)
+        : undefined
+  };
+};

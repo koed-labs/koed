@@ -1,6 +1,6 @@
 import {
   pinRepositoryRecallContext,
-  resolveRequestedProjectRoot
+  resolveVerifiedProjectRoot
 } from "./repository-recall-context.js";
 import os from "node:os";
 import path from "node:path";
@@ -492,14 +492,22 @@ export const createMemoryAnswerTaskCoordinator = (
       }
       const input = memoryAnswerInputSchema.parse(request.request.input);
       const caller = request.request.caller as { cwd?: string } | undefined;
-      const projectRoot =
-        input.search_domain === "project"
-          ? resolveRequestedProjectRoot(
-              input,
-              { cwd: caller?.cwd ?? "" },
-              environment
-            )
-          : undefined;
+      // Verify the checkout's identity before its path can select a route. An
+      // unverifiable checkout selects no Team route; pinning reports its error
+      // after route authorization, as before.
+      const verified = await resolveVerifiedProjectRoot(
+        input,
+        { cwd: caller?.cwd ?? "" },
+        environment
+      ).catch(() => undefined);
+      const projectRoot = verified?.projectRoot;
+      const pin = async () =>
+        verified?.pinned ??
+        (await pinRepositoryRecallContext(
+          input,
+          { cwd: caller?.cwd ?? "" },
+          environment
+        ));
       const route = resolveProjectTeamWorkspaceRoute({
         projectRoot,
         requestedTeamWorkspaceId: input.team_workspace_id,
@@ -511,14 +519,12 @@ export const createMemoryAnswerTaskCoordinator = (
             "A Team Workspace is required for Team recall",
             400
           );
-        const pinned = await pinRepositoryRecallContext(
-          input,
-          { cwd: caller?.cwd ?? "" },
-          environment
-        );
         return {
           backendId: "personal",
-          input: { ...request, request: { ...request.request, input: pinned } }
+          input: {
+            ...request,
+            request: { ...request.request, input: await pin() }
+          }
         };
       }
       let backendId = "remote-team";
@@ -567,11 +573,7 @@ export const createMemoryAnswerTaskCoordinator = (
         if (input.team_backend_id && input.team_backend_id !== "remote")
           throw unavailable("Requested Team backend is not available");
       }
-      const normalized = await pinRepositoryRecallContext(
-        input,
-        { cwd: caller?.cwd ?? "" },
-        environment
-      );
+      const normalized = { ...(await pin()) };
       if (normalized.search_domain === "project")
         requirePortableTeamRepositoryContext(normalized.repository_context);
       delete normalized.team_backend_id;

@@ -1,6 +1,7 @@
 import {
   pinRepositoryRecallContext,
-  resolveRequestedProjectRoot
+  resolveRequestedProjectRoot,
+  resolveVerifiedProjectRoot
 } from "./repository-recall-context.js";
 import { pinPersonalRecallRequest } from "./personal-recall-request.js";
 import {
@@ -499,6 +500,23 @@ export class MemoryToolExecutor {
         acceptedSelection.target.kind === "folder");
     const desktopSelection =
       execution.origin === "desktop_ask" && acceptedSelection?.version === 1;
+    // Verify the checkout's identity before its path can select a Team route.
+    // An unverifiable checkout selects none; pinning below reports its error.
+    const routesToTeam = async () => {
+      const verified = await resolveVerifiedProjectRoot(
+        input,
+        caller,
+        this.environment
+      ).catch(() => undefined);
+      if (!verified) return false;
+      input = verified.pinned;
+      return Boolean(
+        resolveProjectTeamWorkspaceRoute({
+          projectRoot: verified.projectRoot,
+          env: this.environment
+        }).teamWorkspaceId
+      );
+    };
     if (
       taskAuthority?.scope !== "team" &&
       (input.team_workspace_id ||
@@ -506,13 +524,8 @@ export class MemoryToolExecutor {
         (!taskAuthority &&
           !nonRepositorySelection &&
           !desktopSelection &&
-          resolveProjectTeamWorkspaceRoute({
-            projectRoot:
-              input.search_domain === "project"
-                ? resolveRequestedProjectRoot(input, caller, this.environment)
-                : undefined,
-            env: this.environment
-          }).teamWorkspaceId))
+          input.search_domain === "project" &&
+          (await routesToTeam())))
     ) {
       throw Object.assign(
         new Error("Team Memory Answer requires an authorized durable task"),
