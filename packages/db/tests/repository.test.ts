@@ -18444,7 +18444,7 @@ describeDb("memory repository visibility", () => {
       "update memory_events set source_event_time = now() - interval '2 days', captured_at = now() where id = any($1::uuid[])",
       [recentEventIds]
     );
-    await engine.scheduleCompaction({
+    const compacted = await engine.scheduleCompaction({
       requesterContext: { userId: alice.id },
       visibility: "personal"
     });
@@ -18486,6 +18486,43 @@ describeDb("memory repository visibility", () => {
     const lastMonthIds = lastMonth.results.map((result) => result.nodeId);
     expect(lastMonthIds).toContain(oldLeafId);
     expect(lastMonthIds).not.toContain(recentLeafId);
+
+    // Raw fallback windows the same imported events by their source time.
+    const rawSources = async (window: {
+      recentDays?: number;
+      sourceAfter?: string;
+      sourceBefore?: string;
+    }) => {
+      mockEmbeddingQuery();
+      return (
+        await engine.searchMemory({
+          requesterContext: { userId: alice.id },
+          query: "imported evidence",
+          scope: "personal",
+          retrievalStage: "raw_fallback_search",
+          limit: 20,
+          ...window
+        })
+      ).results.flatMap((result) => (result.sourceId ? [result.sourceId] : []));
+    };
+    const rawRecent = await rawSources({ recentDays: 30 });
+    expect(rawRecent).toEqual(expect.arrayContaining(recentEventIds));
+    expect(rawRecent.some((id) => oldEventIds.includes(id))).toBe(false);
+    const rawLastMonth = await rawSources({
+      sourceAfter: new Date(Date.now() - 60 * day).toISOString(),
+      sourceBefore: new Date(Date.now() - 30 * day).toISOString()
+    });
+    expect(rawLastMonth).toEqual(expect.arrayContaining(oldEventIds));
+    expect(rawLastMonth.some((id) => recentEventIds.includes(id))).toBe(false);
+
+    const expanded = await engine.expandMemoryNode(
+      compacted.rollupNodeId!,
+      { userId: alice.id },
+      { recentDays: 30 }
+    );
+    const expandedText = JSON.stringify(expanded.sourceItems);
+    expect(expandedText).toContain("Imported this-week evidence");
+    expect(expandedText).not.toContain("Imported last-month evidence");
   });
 
   it("requires the same node source to satisfy project and temporal filters", async () => {

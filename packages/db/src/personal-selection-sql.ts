@@ -224,16 +224,16 @@ export const authorizedPersonalRawEvidence = async (
       and ev.invalidated_at is null and ev.personal_deleted_at is null and ev.include_in_embedding=true
       and (${semanticMemoryEventEligibleSql("ev")})
       and ${personalSourceSelectionSql("s", "$2")}
-      and ($5::timestamptz is null or ev.captured_at >= $5)
-      and ($6::timestamptz is null or ev.captured_at < $6)
+      and ($5::timestamptz is null or coalesce(ev.source_event_time, ev.captured_at) >= $5)
+      and ($6::timestamptz is null or coalesce(ev.source_event_time, ev.captured_at) < $6)
     union all
     select 'message', m.id::text
     from messages m left join sessions s on s.id=m.session_id
     where m.id=any($4::uuid[]) and m.owner_user_id=$1 and m.visibility='personal'
       and m.invalidated_at is null and m.recall_eligible=true
       and ${personalSourceSelectionSql("s", "$2")}
-      and ($5::timestamptz is null or m.captured_at >= $5)
-      and ($6::timestamptz is null or m.captured_at < $6)
+      and ($5::timestamptz is null or coalesce(m.source_event_time, m.captured_at) >= $5)
+      and ($6::timestamptz is null or coalesce(m.source_event_time, m.captured_at) < $6)
   `,
     [
       selection.ownerUserId,

@@ -11830,8 +11830,8 @@ export const createMemorySourceRepository = (
                   and (me.memory_node_id is null or ${personalMemoryNodeSelectionSql("mn.id", "$14", "$9", "$10")}
                     or (mn.summary_model is null and ${personalMemoryNodeHasSelectedSourcesSql("mn.id", "$14", "$9", "$10")}))
                   and (me.curated_memory_assertion_id is null or ${personalCuratedMemorySelectionSql("cma", "$14", "$9", "$10")})
-                  and (me.memory_event_id is null or (($9::timestamptz is null or ev.captured_at >= $9) and ($10::timestamptz is null or ev.captured_at < $10)))
-                  and (me.message_id is null or (($9::timestamptz is null or msg.captured_at >= $9) and ($10::timestamptz is null or msg.captured_at < $10)))
+                  and (me.memory_event_id is null or (($9::timestamptz is null or coalesce(ev.source_event_time, ev.captured_at) >= $9) and ($10::timestamptz is null or coalesce(ev.source_event_time, ev.captured_at) < $10)))
+                  and (me.message_id is null or (($9::timestamptz is null or coalesce(msg.source_event_time, msg.captured_at) >= $9) and ($10::timestamptz is null or coalesce(msg.source_event_time, msg.captured_at) < $10)))
                   and (
                     ($8::text = 'rollup_search' and me.memory_node_id is not null and mn.kind = 'rollup')
                     or ($8::text = 'leaf_search' and me.memory_node_id is not null and mn.kind = 'leaf')
@@ -13252,8 +13252,8 @@ export const createMemorySourceRepository = (
           and (me.include_in_embedding=true or me.include_in_lcm=true)
           and ${semanticMemoryEventEligibleSql("me")}
           and ${personalSourceSelectionSql("source_session", "$3")}
-          and ($4::timestamptz is null or me.captured_at >= $4)
-          and ($5::timestamptz is null or me.captured_at < $5)
+          and ($4::timestamptz is null or coalesce(me.source_event_time, me.captured_at) >= $4)
+          and ($5::timestamptz is null or coalesce(me.source_event_time, me.captured_at) < $5)
         order by me.captured_at,me.id
       `,
         [

@@ -37,7 +37,7 @@ export const loadPersonalExpansionMessages = async (
     left join sessions s on s.id=m.session_id
     where m.owner_user_id=($2::jsonb->>'ownerUserId')::uuid and m.visibility='personal'
       and m.invalidated_at is null and m.recall_eligible=true and ${personalSourceSelectionSql("s", "$2")}
-      and ($3::timestamptz is null or m.captured_at >= $3) and ($4::timestamptz is null or m.captured_at < $4)
+      and ($3::timestamptz is null or coalesce(m.source_event_time, m.captured_at) >= $3) and ($4::timestamptz is null or coalesce(m.source_event_time, m.captured_at) < $4)
       and not exists(select 1 from conversation_items approval_item
         where approval_item.owner_user_id=m.owner_user_id
           and m.idempotency_key='message:' || coalesce(approval_item.metadata->>'canonicalConversationItemKey',approval_item.canonical_item_key,approval_item.logical_source_id,approval_item.id::text)
