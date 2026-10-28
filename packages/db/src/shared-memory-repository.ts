@@ -5140,14 +5140,18 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
     );
     lockedContext?.sourceGrantLocks.add(input.shareGrantId);
   }
-  // Bound ordinary reads before joining the remaining authorization gates.
+  // Bound the grant view before joining the remaining authorization gates.
   // This prevents repeated source-binding UNION expansion across the full join
-  // tree. Locked mutation reviews retain their existing row-lock propagation.
-  const publicationAuthority = lockRows
-    ? "team_memory_publication_grant_records g"
-    : "(select * from team_memory_publication_grant_records where id=$1 offset 0) g";
-  const result = await client.query(
-    `select g.*,
+  // tree. A locking clause naming g still locks every table inside this view.
+  const publicationAuthority =
+    "(select * from team_memory_publication_grant_records where id=$1 offset 0) g";
+  // Authority checks repeat this query per grant and representation. A named
+  // statement lets each connection reuse its plan instead of replanning it.
+  const result = await client.query({
+    name: lockRows
+      ? "shared_memory_grant_authority_locked"
+      : "shared_memory_grant_authority",
+    text: `select g.*,
         r.id as representation_row_id,r.consent_id as representation_consent_id,
         r.source_preview_id,r.source_artifact_id,
         r.sanitized_source_preview_id,
@@ -5281,13 +5285,13 @@ export const readSharedMemoryGrantAuthorityWithClient = async (
   order by case r.representation when 'memory_events' then 0 when 'lcm_leaves' then 1 when 'lcm_rollups' then 2 else 3 end,
            r.source_revision desc,r.available_at desc,r.id desc
   limit 1 ${lockRows ? "for share of g,t,tm,u,tw,wa,c,op,tp,wp,sp,sa,semantic,privacy_classifier" : ""}`,
-    [
+    values: [
       input.shareGrantId,
       actor.userId,
       input.representation,
       actor.teamBoundaryId ?? null
     ]
-  );
+  });
   const row = result.rows[0] as Row | undefined;
   if (!row) return null;
 
@@ -24814,7 +24818,7 @@ export const createSharedMemoryRepository = (
                      and r.logical_memory_id=smi.logical_memory_id
                      and r.state in ('available','stale') and r.invalidated_at is null
                      and (r.curated_expires_at is null or r.curated_expires_at>now())
-                   join team_memory_publication_grant_records g on g.id=smi.share_grant_id and g.publication_representation_id=r.id
+                   join ${representationPublicationAuthoritySql} on g.id=smi.share_grant_id and g.publication_representation_id=r.id
                      and g.team_workspace_id=smi.team_workspace_id
                      and g.team_id=smi.team_id and g.logical_memory_id=smi.logical_memory_id
                      and g.lifecycle='active' and g.revoked_at is null
