@@ -70,7 +70,8 @@ export function HqProjectConversation({
   foreground = true,
   teamUnreadCount = 0,
   onOpenTeam,
-  privateVisibilityTeamName
+  privateVisibilityTeamName,
+  home = false
 }: {
   project: DesktopProject;
   chiefName: string;
@@ -114,6 +115,8 @@ export function HqProjectConversation({
   teamUnreadCount?: number;
   onOpenTeam?: () => void;
   privateVisibilityTeamName?: string | null;
+  /** Solo's Now: the one conversation with the Chief of Staff, not a Project's. */
+  home?: boolean;
 }) {
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [conversation, setConversation] =
@@ -796,8 +799,17 @@ export function HqProjectConversation({
         hidden={inspectorOpen}
       >
         <span className="hq-visually-hidden">{project.name}</span>
-        {chiefAgent ? <Pixelkin agent={chiefAgent} size={22} /> : null}
-        <strong>Just me</strong>
+        {chiefAgent ? (
+          <Pixelkin agent={chiefAgent} size={home ? 32 : 22} />
+        ) : null}
+        {home ? (
+          <span className="hq-project-conversation__chief">
+            <strong>{chiefName}</strong>
+            <small>Your chief of staff</small>
+          </span>
+        ) : (
+          <strong>Just me</strong>
+        )}
       </header>
       {onOpenTeam && teamUnreadCount > 0 ? (
         <div className="hq-project-conversation__team-unread" role="status">
@@ -909,8 +921,16 @@ export function HqProjectConversation({
                 }}
               >
                 <textarea
-                  aria-label={`Ask ${chiefName} about ${project.name}`}
-                  placeholder={`Ask ${chiefName} about ${project.name}`}
+                  aria-label={
+                    home
+                      ? `Message ${chiefName}`
+                      : `Ask ${chiefName} about ${project.name}`
+                  }
+                  placeholder={
+                    home
+                      ? `Message ${chiefName}`
+                      : `Ask ${chiefName} about ${project.name}`
+                  }
                   value={prompt}
                   disabled={
                     loading || pending || Boolean(executionId) || uncertain

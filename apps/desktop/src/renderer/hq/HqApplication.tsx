@@ -556,12 +556,43 @@ export function HqApplication({
     projectsStore?.current ?? emptySnapshot,
     projectsStore?.current ?? emptySnapshot
   );
-  const personalProjects =
+  const allPersonalProjects =
     projectsStore &&
     personalProjectsSnapshot?.ownerId === visibilityOwnerId &&
     personalProjectsSnapshot?.profileKey === visibilityProfileKey
       ? (personalProjectsSnapshot?.projects ?? emptyPersonalProjects)
       : emptyPersonalProjects;
+  // Solo's Now is one conversation with the Chief of Staff. It lives in a
+  // Project of its own, kept out of the Project lists.
+  const chiefHomeKey = visibilityOwnerId
+    ? `koed.solo.chief-home.v1:${visibilityOwnerId}`
+    : null;
+  const [chiefHome, setChiefHome] = useState<{
+    key: string | null;
+    projectId: string | null;
+    error: string | null;
+  }>({ key: null, projectId: null, error: null });
+  const rememberedChiefHomeId = (() => {
+    if (!solo || !chiefHomeKey) return null;
+    if (chiefHome.key === chiefHomeKey && chiefHome.projectId)
+      return chiefHome.projectId;
+    try {
+      return localStorage.getItem(chiefHomeKey);
+    } catch {
+      return null;
+    }
+  })();
+  const personalProjects = useMemo(
+    () =>
+      rememberedChiefHomeId
+        ? allPersonalProjects.filter(({ id }) => id !== rememberedChiefHomeId)
+        : allPersonalProjects,
+    [allPersonalProjects, rememberedChiefHomeId]
+  );
+  const chiefHomeProject = rememberedChiefHomeId
+    ? (allPersonalProjects.find(({ id }) => id === rememberedChiefHomeId) ??
+      null)
+    : null;
   const deckAuthority = useRef({
     ownerId: visibilityOwnerId,
     profileKey: visibilityProfileKey,
@@ -818,6 +849,59 @@ export function HqApplication({
     projectsAuthorityCurrent && Boolean(personalProjectsSnapshot?.loaded);
   const firstClassError =
     projectsAuthorityCurrent && Boolean(personalProjectsSnapshot?.error);
+  const [chiefHomeAttempt, setChiefHomeAttempt] = useState(0);
+  useEffect(() => {
+    if (
+      !solo ||
+      !chiefHomeKey ||
+      !projectsApi ||
+      !projectsStore ||
+      !firstClassLoaded ||
+      !chiefAgent
+    )
+      return;
+    if (chiefHome.key === chiefHomeKey && chiefHome.projectId) return;
+    let live = true;
+    // Idempotent: the same key always returns the same Project.
+    void projectsApi
+      .create({
+        name: "Chief of Staff",
+        idempotencyKey: `koed-solo-chief-home:${visibilityOwnerId}`
+      })
+      .then(async (created) => {
+        if (!live) return;
+        try {
+          localStorage.setItem(chiefHomeKey, created.id);
+        } catch {
+          // Only hides the Project from the list a moment sooner next time.
+        }
+        setChiefHome({ key: chiefHomeKey, projectId: created.id, error: null });
+        if (!allPersonalProjects.some(({ id }) => id === created.id))
+          await projectsStore.refresh();
+      })
+      .catch((cause: unknown) => {
+        if (live)
+          setChiefHome({
+            key: chiefHomeKey,
+            projectId: null,
+            error:
+              cause instanceof Error
+                ? cause.message
+                : "Your Chief of Staff could not be opened."
+          });
+      });
+    return () => {
+      live = false;
+    };
+  }, [
+    solo,
+    chiefHomeKey,
+    projectsApi,
+    projectsStore,
+    firstClassLoaded,
+    chiefAgent?.id,
+    chiefHomeAttempt
+  ]);
   const settingsReturnFocus = useRef<HTMLElement | null>(null);
   usePersonalProjectsLoader({
     personalMemoryReady,
@@ -3624,6 +3708,80 @@ export function HqApplication({
                 <p role="alert">{sharingActionError}</p>
               ) : null}
             </>
+          ) : solo && route.kind === "home" && !blankOpen ? (
+            <div className="hq-chief-home">
+              {chiefHomeProject &&
+              chiefAgent &&
+              projectHqConversation &&
+              managedConversations &&
+              managedConversationLifecycle &&
+              personalMemoryStore ? (
+                <HqProjectConversation
+                  key={`${visibilityOwnerId ?? "no-owner"}:${visibilityProfileKey ?? "no-profile"}:chief:${chiefHomeProject.id}`}
+                  home
+                  project={{
+                    id: chiefHomeProject.id,
+                    name: chiefHomeProject.name,
+                    path: null,
+                    eventCount: 0,
+                    threads: [],
+                    contextKind: "project",
+                    catalogued: false,
+                    discoveredAt: null,
+                    lastSeenAt: null,
+                    localProjectId: null,
+                    branch: null,
+                    remoteDisplay: null,
+                    isWorktree: false
+                  }}
+                  chiefName={chiefAgent.name}
+                  chiefAgent={chiefAgent}
+                  chiefInstanceId={chiefAgent.aiClientInstanceId ?? null}
+                  localAiClients={localAiClients}
+                  usageAuthorityKey={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}:${visibilityRevision ?? ""}`}
+                  usageDismissalScopeKey={JSON.stringify([
+                    visibilityOwnerId ?? "",
+                    visibilityProfileKey ?? ""
+                  ])}
+                  agentsApi={agentsApi}
+                  ownerIdentity={`${visibilityOwnerId ?? ""}:${visibilityProfileKey ?? ""}`}
+                  api={projectHqConversation}
+                  managedConversations={managedConversations}
+                  managedProject={managedProject ?? null}
+                  store={personalMemoryStore}
+                  lifecycle={managedConversationLifecycle}
+                  markdownAdapters={
+                    markdownAdapters ?? {
+                      openExternal: () => undefined,
+                      writeClipboard: (value) =>
+                        navigator.clipboard.writeText(value)
+                    }
+                  }
+                  onOfferChatForget={offerMemorySourceChatForget}
+                  onTextActionApply={applyTextAction}
+                  onTextActionNativeReview={reviewTextActionNative}
+                  onTextActionResumeMove={resumeTextActionMove}
+                  ownerId={visibilityOwnerId ?? undefined}
+                  profileKey={visibilityProfileKey ?? undefined}
+                  foreground={documentVisible}
+                />
+              ) : chiefHome.key === chiefHomeKey && chiefHome.error ? (
+                <p className="hq-chief-home__status" role="alert">
+                  {chiefAgent?.name ?? "Your Chief of Staff"} could not be
+                  opened: {chiefHome.error}{" "}
+                  <button
+                    type="button"
+                    onClick={() => setChiefHomeAttempt((value) => value + 1)}
+                  >
+                    Try again
+                  </button>
+                </p>
+              ) : (
+                <p className="hq-chief-home__status" role="status">
+                  Opening {chiefAgent?.name ?? "your Chief of Staff"}…
+                </p>
+              )}
+            </div>
           ) : (blankOpen || route.kind === "home") &&
             managedConversationLifecycle ? (
             <>
