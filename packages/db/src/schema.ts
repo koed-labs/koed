@@ -16097,7 +16097,7 @@ export const personalProjectDefaults = pgTable(
   {
     ownerUserId: uuid("owner_user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     sourceKey: text("source_key").notNull(),
     sourceScope: text("source_scope").notNull(),
     target: jsonb("target")
@@ -16149,7 +16149,7 @@ export const personalProjectDefaultReconciliation = pgTable(
   {
     ownerUserId: uuid("owner_user_id")
       .primaryKey()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     generation: bigint("generation", { mode: "number" }).notNull().default(1),
     scanGeneration: bigint("scan_generation", { mode: "number" }),
     afterSessionId: uuid("after_session_id"),

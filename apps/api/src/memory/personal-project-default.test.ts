@@ -539,6 +539,30 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
     await drain(actor, 1);
     expect(await repo.listNamedPersonalProjects(actor)).toHaveLength(1);
   });
+  it("removes default Project bookkeeping when its owner is hard-deleted", async () => {
+    const actor = await owner();
+    await pool.query(
+      "insert into personal_project_default_reconciliation(owner_user_id) values($1) on conflict do nothing",
+      [actor.userId]
+    );
+    await pool.query(
+      `insert into personal_project_defaults(owner_user_id,source_key,source_scope,target,state)
+       values($1,'git:fixture','git:fixture','{}'::jsonb,'suppressed')`,
+      [actor.userId]
+    );
+    await pool.query("delete from users where id=$1", [actor.userId]);
+    for (const table of [
+      "personal_project_default_reconciliation",
+      "personal_project_defaults"
+    ])
+      expect(
+        (
+          await pool.query(`select 1 from ${table} where owner_user_id=$1`, [
+            actor.userId
+          ])
+        ).rowCount
+      ).toBe(0);
+  });
   it("does not schedule retries for disabled or deleted owners", async () => {
     const retryAt = new Date("2001-02-03T04:05:06.000Z");
     const owners = [await owner(), await owner()];

@@ -351,6 +351,13 @@
       "when": 1793102000001,
       "tag": "0049_continuous_sharing",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1793195167967,
+      "tag": "0050_personal_project_default_owner_cascade",
+      "breakpoints": true
     }
   ]
 }
