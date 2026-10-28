@@ -70,6 +70,8 @@ export type PhoneGatewayOptions = {
   push?: PushSender;
   onStatusChange?: (status: PhoneGatewayStatus) => void;
   onError?: (error: unknown) => void;
+  /** A phone request took more than a few seconds. Defaults to a console warning. */
+  onSlow?: (request: string, ms: number) => void;
   /** How often to look for new approvals and replies while a phone listens (ms). */
   pollMs?: number;
   /** Personal Memory change feed (new captured events, Ask answers). */
@@ -426,6 +428,10 @@ export const createPhoneGateway = (options: PhoneGatewayOptions) => {
         hosts: addresses,
         port: state.port,
         onError: options.onError,
+        onSlow:
+          options.onSlow ??
+          ((request, ms) =>
+            console.warn(`[phone gateway] ${request} took ${ms} ms`)),
         routes: {
           hello: () => ({
             app: "koed",

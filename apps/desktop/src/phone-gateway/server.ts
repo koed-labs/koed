@@ -42,6 +42,8 @@ import type { PairedPhone } from "./store.js";
 const MAXIMUM_BODY_BYTES = 300 * 1024;
 const REQUESTS_PER_MINUTE = 240;
 const PAIR_ATTEMPTS_PER_MINUTE = 10;
+/** Requests slower than this are reported (onSlow), to find what makes the phone wait. */
+const SLOW_REQUEST_MS = 3_000;
 
 export type PhoneGatewayRequestContext = {
   phone: PairedPhone | null;
@@ -356,6 +358,8 @@ export const startPhoneGatewayListener = async (input: {
   routes: PhoneGatewayRoutes;
   now?: () => number;
   onError?: (error: unknown) => void;
+  /** A request took longer than a few seconds (method and path, never bodies). */
+  onSlow?: (request: string, ms: number) => void;
 }): Promise<PhoneGatewayListener> => {
   const now = input.now ?? Date.now;
   const requests = new Limiter(REQUESTS_PER_MINUTE, now);
@@ -426,6 +430,7 @@ export const startPhoneGatewayListener = async (input: {
         method === "GET" || method === "DELETE"
           ? undefined
           : await readBody(request);
+      const started = Date.now();
       const handled = await routePhoneRequest(
         input.routes,
         method,
@@ -433,6 +438,9 @@ export const startPhoneGatewayListener = async (input: {
         body,
         { phone, remoteAddress }
       );
+      const took = Date.now() - started;
+      if (took > SLOW_REQUEST_MS)
+        input.onSlow?.(`${method} ${url.pathname}`, took);
       send(response, handled.status, handled.body);
     } catch (error) {
       if (error instanceof PhoneGatewayError)

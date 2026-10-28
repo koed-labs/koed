@@ -122,6 +122,42 @@ const START_WAIT_MS = 45_000;
 const textOf = (value: unknown, max = 4_096): string | null =>
   typeof value === "string" && value.trim() ? value.slice(0, max) : null;
 
+/** Run `fn` over `items`, at most `limit` at a time, keeping the order. */
+const mapLimit = async <T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> => {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]!);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker)
+  );
+  return results;
+};
+
+/** A value, or `fallback` if it takes longer than `ms`. */
+const within = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
+  new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      }
+    );
+  });
+
 const recordOf = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -380,9 +416,22 @@ export const createPhoneGatewayService = (
   /** Every captured Chat by session, with the thread it lives in (cached for 15 s). */
   /** Events Koed's memory holds across your Chats (from the last projects read). */
   let remembered: number | null = null;
+  let threadsLoading: Promise<
+    Map<
+      string,
+      PhoneConversationRef & { latestAt: string; aiClient: string | null }
+    >
+  > | null = null;
   const threads = async (fresh = false) => {
     if (!fresh && threadsCache && now().getTime() - threadsCache.at < 15_000)
       return threadsCache.value;
+    if (threadsLoading) return threadsLoading;
+    threadsLoading = loadThreads().finally(() => {
+      threadsLoading = null;
+    });
+    return threadsLoading;
+  };
+  const loadThreads = async () => {
     const data = await personal("personal.projects.list", {});
     remembered = data.projects.reduce(
       (sum, project) => sum + (project.eventCount ?? 0),
@@ -539,9 +588,24 @@ export const createPhoneGatewayService = (
     skipReason: run.skipReason
   });
 
+  let jobsLoading: Promise<{
+    at: number;
+    jobs: PhoneJob[];
+    missed: PhoneNeed[];
+    finished: Map<string, string[]>;
+  }> | null = null;
+  /** Jobs, missed runs and finished runs (cached 30 s; concurrent callers share one load). */
   const jobsAndMissed = async (fresh = false) => {
     if (!fresh && jobsCache && now().getTime() - jobsCache.at < 30_000)
       return jobsCache;
+    if (jobsLoading) return jobsLoading;
+    jobsLoading = loadJobs().finally(() => {
+      jobsLoading = null;
+    });
+    return jobsLoading;
+  };
+
+  const loadJobs = async () => {
     const listed = await deps.scheduledJobs({ operation: "list" });
     if (listed.operation !== "list")
       throw new PhoneGatewayError(502, "Koed answered a different request.");
@@ -549,13 +613,14 @@ export const createPhoneGatewayService = (
     const missed: PhoneNeed[] = [];
     const finished = new Map<string, string[]>();
     // A missed run is something to decide (run it now, or skip it); look at the recent runs of each job.
-    for (const job of listed.jobs.slice(0, 50)) {
+    // Each job's runs are a request of their own: fetch them a few at a time, not one by one.
+    const histories = await mapLimit(listed.jobs.slice(0, 50), 6, (job) =>
+      deps.scheduledJobs({ operation: "runs", jobId: job.id }).catch(() => null)
+    );
+    for (const [index, job] of listed.jobs.slice(0, 50).entries()) {
       try {
-        const runs = await deps.scheduledJobs({
-          operation: "runs",
-          jobId: job.id
-        });
-        if (runs.operation !== "runs") continue;
+        const runs = histories[index];
+        if (!runs || runs.operation !== "runs") continue;
         for (const run of runs.runs) {
           if (run.status !== "ok") continue;
           const list = finished.get(job.agentId) ?? [];
@@ -579,8 +644,9 @@ export const createPhoneGatewayService = (
         /* one job's history failing doesn't hide the others */
       }
     }
-    jobsCache = { at: now().getTime(), jobs, missed, finished };
-    return jobsCache;
+    const value = { at: now().getTime(), jobs, missed, finished };
+    jobsCache = value;
+    return value;
   };
 
   /* ---------- the phone's conversation with the Chief of Staff ---------- */
@@ -1584,9 +1650,12 @@ export const createPhoneGatewayService = (
   const computer = async (): Promise<PhoneComputer> => {
     const [list, usage] = await Promise.all([
       deps.localAiClients({ operation: "list" }),
-      deps
-        .localAiClients({ operation: "usage", action: "read" })
-        .catch(() => null)
+      // Plan usage comes from the providers and can be slow: show the Mac without it rather than wait.
+      within(
+        deps.localAiClients({ operation: "usage", action: "read" }),
+        5_000,
+        null
+      )
     ]);
     return {
       name: deps.macName(),
