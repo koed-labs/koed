@@ -2,7 +2,6 @@ import {
   pinRepositoryRecallContext,
   resolveRequestedProjectRoot
 } from "./repository-recall-context.js";
-import path from "node:path";
 import { pinPersonalRecallRequest } from "./personal-recall-request.js";
 import {
   assertPersonalSelectionInput,
@@ -10,6 +9,7 @@ import {
   snapshotPinnedPersonalSelection,
   personalFolderScopeId,
   repositoryScopeId,
+  requirePortableTeamRepositoryContext,
   personalDesktopAskSubmitInputSchema,
   type PersonalSelectionSnapshot
 } from "@koed/shared";
@@ -80,14 +80,6 @@ const questionFromResponse = (response: Record<string, unknown>) => {
   }
   throw new Error("Memory question response did not include question detail");
 };
-
-const normalizeProjectId = (
-  projectId: string | undefined,
-  caller: LocalRuntimeCallerContext
-): string =>
-  projectId && (path.isAbsolute(projectId) || path.win32.isAbsolute(projectId))
-    ? projectId
-    : path.resolve(caller.cwd);
 
 export interface MemoryToolExecutorServices {
   lcmSummaryService?: LcmSummaryServiceHandle | null;
@@ -598,12 +590,15 @@ export class MemoryToolExecutor {
           ? config.cwd
           : caller.cwd
     }));
+    // Acceptance pins Team Project tasks to their portable repository scope.
+    // Execute that exact scope; Team retrieval and completion both require it.
     if (
       taskAuthority?.scope === "team" &&
       input.search_domain === "project" &&
-      (!input.project_id ||
-        (!path.isAbsolute(input.project_id) &&
-          !path.win32.isAbsolute(input.project_id)))
+      input.project_id !==
+        repositoryScopeId(
+          requirePortableTeamRepositoryContext(input.repository_context)
+        )
     ) {
       throw Object.assign(
         new Error(
@@ -612,10 +607,7 @@ export class MemoryToolExecutor {
         { memoryAnswerTaskErrorCode: "invalid_project_scope", retryable: false }
       );
     }
-    const projectId =
-      input.search_domain === "project" && taskAuthority?.scope === "team"
-        ? normalizeProjectId(input.project_id, caller)
-        : input.project_id;
+    const projectId = input.project_id;
     const teamWorkspaceId =
       taskAuthority?.scope === "team"
         ? taskAuthority.teamWorkspaceId

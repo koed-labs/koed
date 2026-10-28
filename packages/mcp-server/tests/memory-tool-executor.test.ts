@@ -691,6 +691,73 @@ describe("MemoryToolExecutor", () => {
     }
   );
 
+  it("executes a Team Project task with its pinned repository scope", async () => {
+    const workspace = "11111111-1111-4111-8111-111111111111";
+    const context = repositoryContext("/work/fixture");
+    const scope = repositoryScopeId(context);
+    const client = {
+      accessCheck: vi.fn(async () => ({
+        user: { id: "00000000-0000-4000-8000-000000000001" }
+      })),
+      listLocalMemoryAgentSettings: vi.fn(async () => ({ settings: [] })),
+      recordTokenUsage: vi.fn(async () => ({}))
+    } as unknown as MemoryApiClient;
+    const answer = vi.fn<
+      NonNullable<MemoryToolExecutorServices["answerWithMemoryWorker"]>
+    >(async () => ({
+      markdown: "Team Project answer",
+      retrieval: { evidenceCount: 1 },
+      localMemoryWorker: {
+        provider: "codex",
+        promptVersion: "test",
+        jobId: "team-project-job",
+        model: "fixture",
+        usedFallback: false
+      }
+    }));
+    const executor = new MemoryToolExecutor(
+      client,
+      {},
+      { answerWithMemoryWorker: answer }
+    );
+    const run = (projectId: string) =>
+      executor.executeMemoryAnswerTask(
+        memoryAnswerInputSchema.parse({
+          query: "decision",
+          search_domain: "project",
+          project_id: projectId,
+          repository_context: context,
+          team_workspace_id: workspace
+        }),
+        { cwd: "/untrusted/remote/path" },
+        "22222222-2222-4222-8222-222222222222",
+        undefined,
+        undefined,
+        {
+          getExecutionAuthority: () => ({
+            scope: "team",
+            teamWorkspaceId: workspace,
+            authorizationBoundary: "signed"
+          })
+        }
+      );
+
+    const completed = await run(scope);
+    expect(answer.mock.calls[0]?.[1]).toMatchObject({
+      projectId: scope,
+      teamWorkspaceId: workspace
+    });
+    expect(completed.finalQuestion).toMatchObject({
+      project_id: scope,
+      team_workspace_id: workspace,
+      status: "answered"
+    });
+    await expect(run("/work/fixture")).rejects.toMatchObject({
+      memoryAnswerTaskErrorCode: "invalid_project_scope",
+      retryable: false
+    });
+  });
+
   it("rejects a Team request inconsistent with the trusted task Workspace", async () => {
     const executor = new MemoryToolExecutor({} as MemoryApiClient, {});
     await expect(

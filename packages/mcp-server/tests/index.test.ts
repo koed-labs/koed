@@ -6,7 +6,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   readLocalEdgeClientCredentialAuthorization,
-  storeLocalEdgeClientCredential
+  repositoryScopeId,
+  storeLocalEdgeClientCredential,
+  type RepositoryIdentity
 } from "@koed/shared";
 import {
   MemoryApiClient,
@@ -1771,13 +1773,27 @@ describe("LCM summary background service", () => {
       directory,
       backendId
     )!.authorization;
+    // Acceptance pins Team Project tasks to a portable repository scope.
+    const repositoryContext: RepositoryIdentity = {
+      kind: "portable_repository",
+      key: "gr_koed",
+      root: "/repo/koed",
+      branch: "main",
+      reason: "origin",
+      checkoutId: "checkout_koed",
+      originatingDeviceId: "fixture_device",
+      selectedRemote: "origin",
+      anchorDisplay: "example.test/team/koed"
+    };
+    const projectScope = repositoryScopeId(repositoryContext);
     try {
       const { result, finalQuestion } = await executor.executeMemoryAnswerTask(
         memoryAnswerInputSchema.parse({
           query: "What did the Team decide?",
           retrieval_hints: { exact: [hintSentinel] },
           search_domain: "project",
-          project_id: "/repo/koed",
+          project_id: projectScope,
+          repository_context: repositoryContext,
           team_workspace_id: teamWorkspaceId
         }),
         { cwd: "/repo/koed" },
@@ -1837,6 +1853,7 @@ describe("LCM summary background service", () => {
       ).toBe(true);
       expect(finalQuestion).toMatchObject({
         team_workspace_id: teamWorkspaceId,
+        project_id: projectScope,
         query: "What did the Team decide?"
       });
     } finally {
