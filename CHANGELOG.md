@@ -1,5 +1,163 @@
 # Koed
 
+## 0.9.0
+
+### Minor Changes
+
+- 9565818: AI Clients can continue to work while a Personal Memory Answer runs and receive
+  the result in the same Conversation without another prompt. Pi and Codex do
+  this by default; Codex can opt out with
+  `koed-server setup codex --blocking-recall`. Claude Code turns it on with
+  `koed-server setup claude --background-recall`, because that setting applies
+  to every MCP Server in Claude Code.
+- c618bcf: Add AI Client-aware slash-command suggestions to Chat and Project composers. Discover file-backed commands and skills for the selected client, showing global entries without a Project and adding Project-scoped entries when a Project is selected.
+- ff5c7e1: Add capability-based Personal Device pairing with one-time invitation links,
+  automatic enrollment, and no human-facing short-code or ordinary approval step.
+  Preserve private/Tailscale HTTP transport, encrypted local PDS storage, and
+  stdin/FD-only input for headless joining devices. Desktop paste/scan remains
+  preferred; registered OS protocol activation has platform-specific argv caveats.
+- fc263da: Support legacy and paginated Codex histories, including bounded Zstandard
+  decoding and verified native migration and revert source generations. Preserve
+  admitted evidence, Capture Policy, conversation identity and encrypted source
+  replication without duplicating previously processed Memory. Ambiguous rewrites
+  and missing ancestry remain pending rather than silently advancing capture.
+
+  Scope Projection replay identities to each User and visibility boundary so
+  independent Users can capture the same native history without losing data.
+
+- 248feca: Add explicit non-blocking Memory Answer submission and result collection over
+  the existing local task runtime, with cancellation tools and guidance for doing
+  independent work before collecting an answer. Preserve blocking recall and
+  replace Codex answer-delivery Stop hooks with ordinary tool results.
+  Both delivery modes support requested citations and evidence.
+  Retry interrupted Privacy Filter model downloads with bounded attempts and
+  strict verification, and report privacy-service startup stages for diagnosis.
+- 564e63b: Add opt-in remote MCP with User-approved, resource-bound OAuth PKCE grants and
+  a headless local helper for capture, durable Personal and Team Memory Answers, and LCM
+  Summaries. Connect to the existing backend without Electron or local database,
+  API, or embedding services. Preserve current Team recall authorization and
+  AI-client-only synthesis; remote capture starts at a persisted future-only
+  consent frontier and does not automatically upload historical transcripts.
+  Report Pi provider authentication failures clearly without exposing raw provider
+  errors, while retaining retries for transient provider failures.
+- ff5c7e1: Let a joining headless or Electron installation create a device request link,
+  then review and accept it in the existing Authority-hosting Electron app.
+  Add `koed-server pair`, shared supervisor-owned request state, and native
+  Personal startup defaults without required environment flags. Remove the
+  mandatory recovery-file and recovery-code steps from device-group setup.
+  LAN or Tailscale connectivity is required; an internet pairing relay is not
+  included. Existing invitation redemption remains available for compatibility.
+
+  Allow the empty device overview before Authority configuration and identify the
+  local member as This device, with an explicit message when no other devices have
+  joined.
+
+  Remember reviewed device names and allow installation-local nicknames in Devices
+  and device selectors. Simplify the AI Client setup copy and CLI help, and let
+  Personal Sync status authenticate automatically on local SSH installations.
+
+  Show a computer icon and local device nickname on received sessions, and use
+  consistent computer icons in Devices instead of alternating laptop/phone icons.
+
+  Automatically publish completed-turn checkpoints from supported AI Client
+  capture, keeping source conversations resumable and received sessions read-only.
+  Preserve source client identity and append later checkpoints to the same local
+  session. Show pairing separately from local sync progress. Both devices need
+  this checkpoint-capable version; existing closed-session packages remain valid.
+
+  Refuse to mint a new PDS Authority key over undetected legacy pre-upgrade
+  secret state, instead of silently orphaning an existing Personal Device Group;
+  Personal Device Sync is disabled with a warning until the installation is
+  explicitly reset. Add `KOED_PDS_REQUEST_HOST` and `KOED_PDS_LAN_HOST` to pin
+  the pairing/request listener to one explicit private interface on devices
+  reachable over more than one (for example LAN plus Tailscale), where automatic
+  selection is not reachability-aware.
+
+- 8c85a9a: AI Clients can choose how each Memory Answer is delivered with the new
+  `delivery_mode` option on `memory_answer`. Use `blocking` to wait for the
+  answer, or `non_blocking` to continue independent work while it runs where
+  deferred delivery is available. Leaving it out keeps the configured default.
+- 5292e19: Publish Koed Server as `@koed-labs/server` with the `koed` command. Packaged service startup uses only a version-matched, verified, pinned component generation and fails closed without downloading or falling back to checkout files. The old `koed-server` executable alias is removed; native runtime and model provisioning remain explicit setup steps, with privacy components provisioned when required.
+
+  Headless releases use canonical manifests with v2 domain-separated SHA-256 digest signatures compatible with managed Ed25519 signing, payload-relative archives and explicit Node 24 ABI metadata. The public npm bundle includes its runtime helpers; promotion streams large assets and uses npm-valid candidate tags. The approved KMS public root and authenticated signing service support production component verification; publication remains gated pending release acceptance and explicit authorization.
+
+- 18d95c0: Remove the dedicated reranker. Recall keeps the previous disabled-reranker semantic retrieval behavior and existing embedding models and budgets.
+
+  Breaking alpha changes: delete reranking response fields, the reranking health flag and retrieval-mode literal, reranker environment settings, model installation and CLI choices, the rerank HTTP endpoint, model process and port, Compose wiring, packaging metadata, benchmarks, and reranker-only evaluation arms. No compatibility shims are provided.
+
+  Preserve complete observed evidence references when searched and expanded candidates merge, and retain distinct selected parent summaries alongside partial children within existing evidence budgets. Recovered traces distinguish lost observed aliases from invalid model selections; conflicting parent-node/child-chunk combinations still fail closed.
+
+- aa7a654: Maintain enabled upstream capability caches in the local Server supervisor so Team recall does not depend on Desktop collaboration being open. Refresh before expiry, retry failed checks, and bound network requests while preserving fail-closed routing.
+- 3030a65: The `koed` launcher installed from Koed Desktop now manages Desktop's own
+  instance: `status`, `doctor`, `setup`, client repair, `start`, `stop`, and
+  `restart` work whether Desktop is open or closed, and Desktop reconnects to a
+  supervisor started by the launcher without starting a duplicate. Desktop shows
+  an externally stopped instance as stopped with a Start action. An independently
+  installed CLI keeps its own instance. Local API Token checks retry one short,
+  locally rate-limited access check and expose retry metadata when still blocked.
+  Reinstall the launcher from Desktop to upgrade an existing one.
+- 06cea06: Gate macOS arm64 Desktop releases on Developer ID signing, electron-builder notarization, signature/staple verification, packaged smoke, and checksums after protected release approval. Disable manual Desktop asset recovery; rebuild old releases through patch releases.
+- 7162f7c: AI Clients can discover authorized Team Workspaces through `memory_workspaces`
+  and recall shared memory using the existing Koed enrollment. MCP can resolve
+  an explicitly selected Workspace's backend without manual backend configuration.
+  Desktop and headless `koed-server` use the same credential custody. Personal
+  Memory remains the default, and ambiguous or unavailable Team routes fail closed.
+
+  MCP detects support for the new Team features before calling a running runtime.
+  Workspace matching accepts equivalent UUIDs with different letter case.
+
+  Malformed Memory Answer worker output is reported as a validation failure
+  instead of a resource-limit message when retries are exhausted.
+  Saved structured diagnostics report the same validation failure.
+
+- ff0eb4b: Admit Base and Privacy components using versioned manifest pins embedded in trusted control planes. Acquire archive and manifest without detached signature inputs; reject legacy installed component records with reinstall guidance. Preserve external standalone launchers across restart, bind Desktop readiness to required catalog pins, and verify packaged catalog consistency before release promotion.
+- ff0eb4b: Support pinned component generation upgrades across versions while preserving the prior generation's component presence in upgrade status. Release promotion now verifies candidates against protected reviewed-build identity before any publication: the npm package is inspected statically (archive safety, ESM package scope, and generated CLI admission bindings), downloaded assets must match the protected build bytes before they are read, and candidate code is never executed in the credential-bearing verifier.
+- e94eb96: Add opt-in WorkOS Agent Registration for the existing remote MCP endpoint,
+  supporting Personal and Team Memory through the current authorization and
+  local-execution pipeline. Confine WorkOS Team credentials to their mapped Team,
+  retain Koed OAuth, and provide hosted-registration discovery with bounded online
+  credential validation. Require explicit Operator enablement and entitlement
+  confirmation. Add User-owned connection management with durable per-registration
+  disconnect, explicit reauthorisation and a 30-day absolute authorisation lifetime
+  independent of WorkOS credential renewal. Verify JWT signatures before upstream
+  validation, enforce verified User and registration quotas, and bound public-key
+  refreshes. Use atomic shared Redis rate-limit counters for multi-instance limits.
+
+### Patch Changes
+
+- 39dd6db: Treat Claude Code setup and repair as a reinstall: replace any existing
+  user-scoped MCP Server under the configured Koed name. Correctly capture pi runtime in onboarding flow.
+- b078fac: Keep Codex history capture moving when one paginated Conversation returns a
+  very large native metadata page, for example because of inline images. The
+  metadata line limit rises from 256 KiB to 1 MiB. A larger response now fails
+  only its own Conversation with `codex_history_response_oversized` and retries
+  with backoff, instead of stopping metadata reads for every Conversation in the
+  same Codex home. Discarded bytes stay bounded, and unattributable oversized
+  output still fails closed.
+- 5fe0c92: Keep Memory Answer replies compact by default. Remove internal worker diagnostics from public replies and omit Evidence Bundles from Team routing errors. Clarify that implementation and debugging recall uses answer_only unless source attribution or evidence inspection is requested.
+- aa77c30: Keep renderer-only terminal libraries in Desktop build dependencies and correct
+  the artifact policy check for the Electron runtime dependencies.
+- 34d39b0: Show Embedding Service status under Preferences → Services in Koed Desktop: backlog, throughput, drain estimate, queue counts, Projection backlog, and historical import admission. `koed status` now includes this snapshot as `embeddingState`.
+- b078fac: Keep historical Projection moving during real use.
+  - A single turn larger than the historical batch row or byte cap is now
+    projected by itself, instead of blocking every later imported turn.
+  - Live rows that are only waiting for an open agent turn to finish no longer
+    pause historical import and Projection. Completed and stale turns still give
+    live capture priority.
+  - Historical-import 409 responses now carry machine-readable codes. Importers
+    retry only a pending completion, accept an already-applied one, and report
+    other conflicts without stopping work on later sources.
+
+- c2acccd: Report Memory Answers as not found, not a resource limit, when every allowed search ran without a match.
+- 5fe0c92: Fix Pi Team Memory recall compatibility by exposing authorized Workspace discovery and explicit backend selection, with older-runtime capability checks.
+- 8b628e9: Fix Pi Memory Answer workers by supplying scoped retrieval tools, validating structured results before completion, and feeding validation errors into retries. Allow insufficient answers to retain relevant partial evidence and identify missing evidence consistently across providers.
+- c618bcf: Include bundled MCP prompt assets in standalone API Docker images and verify deployed route imports during the image build. Fix slash-command autocomplete keyboard acceptance while preserving newline insertion, focus navigation, IME composition, and normal submission when no suggestion is selectable.
+- 3030a65: Serialize Desktop lifecycle operations to prevent concurrent Team Privacy status checks and daemon starts from contending for the generation lock.
+- 7959e0a: Keep previously shown Memory Answer evidence references valid during later retrieval in the same request, without preventing candidate replacement or relaxing evidence selection limits.
+- c618bcf: Fix Claude slash suggestions dropping synced skills with long storage paths. Preserve the CLI secure-storage identity across managed Conversation config canonicalization and SDK SessionStore resume relocation. Add regression coverage for version-qualified Claude model labels without changing model identifiers.
+
+  Bound file-backed slash discovery by visited entries, including non-command files and directories, and cancel all root scans when the adapter deadline expires.
+
 ## 0.8.1
 
 ### Patch Changes
