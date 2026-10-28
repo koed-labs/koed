@@ -133,6 +133,41 @@ describe("PersonalMemoryStore", () => {
     expect(store.current().error).toBeNull();
   });
 
+  it("prepares eligible native Folders beside an unresolved checkout", async () => {
+    const fixture = createProjectSourceFixture();
+    const prepareLocalFolder = vi.fn(async () => fixture.localFolders[0]!);
+    const unresolved: PersonalDesktopProjectMetadata = {
+      ...fixture.metadata[0]!,
+      localProjectId: `lp_${"1".repeat(32)}`,
+      path: { cwd: "/checkout", projectRoot: "/checkout" },
+      repository: {
+        kind: "unresolved",
+        key: null,
+        root: "/checkout",
+        branch: "main",
+        reason: "selection_missing",
+        checkoutId: "checkout_unresolved",
+        originatingDeviceId: "device_one",
+        selectedRemote: "missing",
+        anchorDisplay: null
+      }
+    };
+    const store = new PersonalMemoryStore(
+      api({
+        listProjects: async () => fixture.groups,
+        listProjectMetadata: async () => [unresolved, ...fixture.metadata],
+        listLocalFolders: async () => [],
+        prepareLocalFolder
+      })
+    );
+    await store.loadProjects();
+    expect(prepareLocalFolder).toHaveBeenCalledTimes(1);
+    expect(prepareLocalFolder).toHaveBeenCalledWith({
+      localProjectId: "lp_fixture_local"
+    });
+    expect(store.current().error).toBeNull();
+  });
+
   it("publishes named Projects while source enumeration and native enrichment remain pending", async () => {
     const fixture = createProjectSourceFixture();
     let finishInventory!: (projects: PersonalDesktopProject[]) => void;

@@ -302,9 +302,11 @@ export class PersonalMemoryStore {
             )
           )
         );
+        // Unresolved checkouts have no repository scope and match no Git rule.
         const candidates = details.metadataProjects.filter(
           (metadata) =>
             metadata.repository &&
+            metadata.repository.kind !== "unresolved" &&
             repositories.has(repositoryScopeId(metadata.repository)) &&
             !details.localFolders.some(
               (folder) =>
