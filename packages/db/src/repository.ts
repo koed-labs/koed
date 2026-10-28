@@ -11908,7 +11908,8 @@ export const createMemorySourceRepository = (
                   actor.userId,
                   visibility,
                   vectorLiteral(queryVector),
-                  pools.global,
+                  // Over-fetch Global by the current pool so overlap can be backfilled.
+                  pools.global + pools.current,
                   embedded.model,
                   embedded.dimensions,
                   localEmbeddingVersion(),
@@ -11921,12 +11922,6 @@ export const createMemorySourceRepository = (
                   JSON.stringify(personalSourceSelection)
                 ]
               );
-              globalCandidateCount += vectorResult.rows.filter(
-                (row) => row.candidate_pool === "global"
-              ).length;
-              currentRepositoryCandidateCount += vectorResult.rows.filter(
-                (row) => row.candidate_pool === "current"
-              ).length;
               const uniqueRows = new Map<string, VectorRow>();
               for (const row of vectorResult.rows) {
                 const key = canonicalGlobalCandidateKey(row);
@@ -11969,8 +11964,25 @@ export const createMemorySourceRepository = (
                     { ...row, observed_references: [reference] }
                   );
               }
+              // Keep every current-Project candidate, then fill the remaining
+              // slots from Global in score order.
+              const fromCurrent = (row: VectorRow) =>
+                (row.observed_references ?? []).some(
+                  (reference) =>
+                    reference.provenance?.candidatePool === "current"
+                );
+              let globalSlots =
+                pools.global +
+                pools.current -
+                [...uniqueRows.values()].filter(fromCurrent).length;
+              const selectedRows = [...uniqueRows.values()].filter(
+                (row) => fromCurrent(row) || globalSlots-- > 0
+              );
+              const currentSelected = selectedRows.filter(fromCurrent).length;
+              currentRepositoryCandidateCount += currentSelected;
+              globalCandidateCount += selectedRows.length - currentSelected;
               const rows = await hydrateSearchRows(
-                [...uniqueRows.values()].map((row) => {
+                selectedRows.map((row) => {
                   const filteredSummary = row.has_out_of_window_sources
                     ? filteredNodeSourceText(row.filtered_source_items)
                     : null;

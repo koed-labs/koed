@@ -9220,8 +9220,9 @@ describeDb("Shared Memory repository", () => {
         actor(fixture.readerUserId),
         contextualInput
       );
-    expect(contextual).toHaveLength(3);
-    expect(new Set(contextual.map((item) => item.candidateId)).size).toBe(3);
+    // The current-Project record overlaps Global; Global backfills the slot.
+    expect(contextual).toHaveLength(4);
+    expect(new Set(contextual.map((item) => item.candidateId)).size).toBe(4);
     expect(contextual[0]).toMatchObject({
       shareGrantId: rollupGrant.shareGrantId,
       project: {

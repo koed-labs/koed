@@ -1361,7 +1361,9 @@ describe.skipIf(!databaseUrl)(
       expect(
         overlapped.results.filter((row) => row.sourceId === overlap.event.id)
       ).toHaveLength(1);
-      expect(overlapped.metadata.hydrationCount).toBeLessThanOrEqual(3);
+      // The overlapping candidate is backfilled from Global, not lost.
+      expect(overlapped.results).toHaveLength(4);
+      expect(overlapped.metadata.hydrationCount).toBeLessThanOrEqual(4);
       await correctGit(repo, actor, overlap.session.id, {
         repositoryIdentity: b,
         expectedAssignmentVersion: 1

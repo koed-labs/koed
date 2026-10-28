@@ -25818,7 +25818,8 @@ export const createSharedMemoryRepository = (
         input.searchDomain === "project"
           ? portableTeamFingerprintForScope(input.projectId)
           : null,
-        limits.global
+        // Over-fetch Global by the current pool so overlap can be backfilled.
+        limits.global + limits.current
       );
       const currentRows =
         limits.current > 0
@@ -25832,21 +25833,33 @@ export const createSharedMemoryRepository = (
       // the same source revision in different records; retain each exact record
       // until hydration selects the currently authorized representation.
       const merged = new Map<string, Row>();
-      for (const row of [...globalRows.rows, ...currentRows.rows]) {
-        const key = JSON.stringify([
-          row.representation_id,
-          row.representation,
-          row.pseudonymous_source_id,
-          row.source_item_index,
-          row.source_revision
-        ]);
-        const previous = merged.get(key);
-        if (!previous || Number(row.score) > Number(previous.score))
-          merged.set(key, row);
-      }
+      const currentKeys = new Set<string>();
+      for (const [pool, rows] of [
+        ["global", globalRows.rows],
+        ["current", currentRows.rows]
+      ] as const)
+        for (const row of rows) {
+          const key = JSON.stringify([
+            row.representation_id,
+            row.representation,
+            row.pseudonymous_source_id,
+            row.source_item_index,
+            row.source_revision
+          ]);
+          if (pool === "current") currentKeys.add(key);
+          const previous = merged.get(key);
+          if (!previous || Number(row.score) > Number(previous.score))
+            merged.set(key, row);
+        }
+      // Keep every current-Project record, then fill the remaining slots from
+      // Global in score order.
+      let globalSlots = limits.global + limits.current - currentKeys.size;
+      const selected = [...merged].flatMap(([key, row]) =>
+        currentKeys.has(key) || globalSlots-- > 0 ? [row] : []
+      );
       const hydrated = await hydrateAuthorizedSemanticCandidates(
         actor,
-        [...merged.values()].map((row) => ({
+        selected.map((row) => ({
           candidateId: stringValue(row.id),
           shareGrantId: stringValue(row.share_grant_id),
           teamWorkspaceId: input.teamWorkspaceId,
