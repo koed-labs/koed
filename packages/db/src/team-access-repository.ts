@@ -2794,6 +2794,7 @@ export const createTeamAccessRepository = (
       teamWorkspace: TeamWorkspaceRecord;
       access: TeamWorkspaceAccessRecord;
     } | null> {
+      if (actor.teamBoundaryId === null) return null;
       return withTeamAccessReadSnapshot(async (tx, client) => {
         const rows = await tx
           .select({
@@ -2827,6 +2828,9 @@ export const createTeamAccessRepository = (
           .where(
             and(
               eq(teamWorkspaces.id, teamWorkspaceId),
+              actor.teamBoundaryId
+                ? eq(teamWorkspaces.teamId, actor.teamBoundaryId)
+                : undefined,
               eq(teamWorkspaces.lifecycle, "active"),
               eq(teams.lifecycle, "active"),
               inArray(teams.entitlementStatus, ["active", "grace"]),
@@ -4580,6 +4584,7 @@ export const createTeamAccessRepository = (
     async listTeamWorkspaceContexts(
       actor: ActorContext
     ): Promise<TeamWorkspaceContextRecord[]> {
+      if (actor.teamBoundaryId === null) return [];
       const rows = await db
         .select({
           teamId: teams.id,
@@ -4608,6 +4613,9 @@ export const createTeamAccessRepository = (
         .where(
           and(
             eq(teamWorkspaceAccessGrants.userId, actor.userId),
+            actor.teamBoundaryId
+              ? eq(teamWorkspaceAccessGrants.teamId, actor.teamBoundaryId)
+              : undefined,
             inArray(teamWorkspaceAccessGrants.access, ["read", "write"]),
             isNull(teamWorkspaceAccessGrants.disabledAt),
             eq(teamMemberships.status, "enabled"),
