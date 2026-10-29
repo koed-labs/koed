@@ -156,7 +156,8 @@ export const managedConversationKoedMcpConfigOverrides = (
     const result = spawnSync(invocation.command, invocation.args, {
       cwd,
       env: nodeCliProcessEnvironment(invocation, env, env),
-      timeout: 5_000,
+      // Starting the Codex CLI can take well over five seconds on a busy Mac.
+      timeout: 30_000,
       maxBuffer: 256_000,
       encoding: "utf8"
     });

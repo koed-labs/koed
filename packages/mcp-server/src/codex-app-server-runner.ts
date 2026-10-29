@@ -273,6 +273,12 @@ export class CodexAppServerOversizedResponseError extends Error {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+/**
+ * Opening a thread starts Codex's MCP servers and loads the rollout. That
+ * takes about ten seconds even on an idle Mac and longer on a busy one, so
+ * a ten-second limit made reopening a conversation after a restart fail.
+ */
+const THREAD_OPEN_TIMEOUT_MS = 60_000;
 const DEFAULT_INTERRUPT_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_SERVER_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CLOSE_GRACE_MS = 1_000;
@@ -925,7 +931,11 @@ export class CodexAppServerClient {
         ? { dynamicTools: config.dynamicTools }
         : {})
     };
-    const response = await this.request("thread/start", params);
+    const response = await this.request(
+      "thread/start",
+      params,
+      Math.max(this.requestTimeoutMs, THREAD_OPEN_TIMEOUT_MS)
+    );
     this.recordRawEvent("thread/start", params, response.result);
     return threadInfoFromResponse("thread/start", response.result);
   }
@@ -947,7 +957,11 @@ export class CodexAppServerClient {
       developerInstructions: config.developerInstructions ?? "",
       personality: "none"
     };
-    const response = await this.request("thread/resume", params);
+    const response = await this.request(
+      "thread/resume",
+      params,
+      Math.max(this.requestTimeoutMs, THREAD_OPEN_TIMEOUT_MS)
+    );
     this.recordRawEvent("thread/resume", params, response.result);
     return threadInfoFromResponse("thread/resume", response.result);
   }
@@ -974,7 +988,11 @@ export class CodexAppServerClient {
       developerInstructions: config.developerInstructions ?? "",
       threadSource: "user"
     };
-    const response = await this.request("thread/fork", params);
+    const response = await this.request(
+      "thread/fork",
+      params,
+      Math.max(this.requestTimeoutMs, THREAD_OPEN_TIMEOUT_MS)
+    );
     const thread = threadInfoFromResponse("thread/fork", response.result);
     this.recordRawEvent(
       "thread/fork",
