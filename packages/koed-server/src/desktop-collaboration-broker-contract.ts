@@ -10,7 +10,10 @@ import {
 
 export const DESKTOP_COLLABORATION_BROKER_PROTOCOL_VERSION = 1;
 export const DESKTOP_COLLABORATION_BROKER_MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
-export const DESKTOP_COLLABORATION_BROKER_HANDSHAKE_TIMEOUT_MS = 10_000;
+// Only covers starting the broker's Node process, which can take well over
+// ten seconds on a busy Mac. Giving up sooner restarted it and kept the app's
+// first screen waiting for a minute or more.
+export const DESKTOP_COLLABORATION_BROKER_HANDSHAKE_TIMEOUT_MS = 60_000;
 export const DESKTOP_COLLABORATION_BROKER_COMMAND_TIMEOUT_MS = 30_000;
 export const DESKTOP_COLLABORATION_BROKER_LONG_POLL_COMMAND_TIMEOUT_MS = 60_000;
 export const DESKTOP_COLLABORATION_BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;

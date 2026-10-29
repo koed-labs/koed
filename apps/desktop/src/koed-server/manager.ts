@@ -6643,6 +6643,7 @@ export const createKoedServerManager = ({
   };
 
   const start = async () => {
+    collaborationTransport.prepare();
     const result = await requestDaemonStart();
     if (
       typeof result === "object" &&
@@ -6675,6 +6676,7 @@ export const createKoedServerManager = ({
       };
     }
     try {
+      collaborationTransport.prepare();
       const result = await requestDaemonStart();
       if (
         typeof result === "object" &&

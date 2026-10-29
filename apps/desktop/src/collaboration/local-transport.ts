@@ -412,7 +412,16 @@ export const createCollaborationLocalTransport = (
     });
   };
 
-  return { request, stop, stopOwner };
+  /**
+   * Start the broker ahead of the first command. It is a separate Node
+   * process that can take many seconds to start on a busy Mac, and the app's
+   * first screen waits for the collaboration snapshot it serves.
+   */
+  const prepare = (): void => {
+    void ensureBroker().catch(() => undefined);
+  };
+
+  return { request, stop, stopOwner, prepare };
 };
 
 export type CollaborationLocalTransport = ReturnType<

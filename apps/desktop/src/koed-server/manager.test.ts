@@ -4512,7 +4512,11 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
           ""
         );
       },
-      spawn: () => spawned as never,
+      // The collaboration broker is started early and stopped with the app.
+      spawn: ((_command: string, args: readonly string[]) =>
+        args.includes("collaboration-broker")
+          ? childProcess()
+          : spawned) as never,
       openExternal: async () => undefined
     });
 
