@@ -226,7 +226,7 @@ export const createFakeKoed = (options: FakeKoedOptions = {}) => {
       reason: "r"
     },
     state: "pending",
-    payload: { command, cwd: "/Users/jacobo/Coding/koed", reason },
+    payload: { command, cwd: "/Users/someone/projects/koed", reason },
     revision: 1,
     createdAt: iso(-60_000),
     updatedAt: iso(-60_000),

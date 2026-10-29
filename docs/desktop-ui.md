@@ -28,8 +28,9 @@ environment; it does not automatically load the repository-root or Desktop
 `.env` files. The `.env.example` files catalogue setup values and do not
 configure Desktop's launch environment.
 
-On first run, HQ opens conversational onboarding immediately. Its four stages
-are **Your agent**, **Your AI**, **Memory**, and **Working together**. The Agent's
+On first run, HQ opens conversational onboarding immediately. Its stages are
+**Your agent**, **Your AI**, **Memory**, and, in the full edition, **Working
+together**; the Solo edition (the default) finishes after Memory. The Agent's
 name and appearance are saved as a local profile draft before the Personal
 backend or its owner credential exists. Onboarding follows the v56 conversation:
 welcome, Agent maker, accepted Agent card, the User's name-confirmation message,
@@ -47,15 +48,27 @@ The progress indicator and Skip setup control live in the workspace header.
 Existing role preferences remain editable in Settings; onboarding adds no extra
 role-question screen.
 
+Onboarding opens by asking how Koed will be used: **Just me, on this Mac**
+(Solo) or **With my team**, which the Solo edition shows as coming later.
+Answering starts Koed's own local services in the background (runtime, local
+storage, models, services and core integration). This needs no AI Client and
+reads no chats, so the slow part runs while the User names their Chief of Staff
+and connects AI Clients. The Desktop exposes it as `hq_onboarding_prepare_core`
+and reports `coreState` in onboarding status.
+
 **Your AI** discovers installed AI Clients and their native sign-in state only
 when the User asks. The User explicitly selects clients; installation, sign-in,
-selection, and a verified Koed Memory connection are separate states. These
-first two stages do not start the local backend. Provider sign-in remains with
-the provider's own client. Token-dependent MCP and capture integration is
-finalised during **Memory**, rather than claiming that selection alone connected
-Memory.
+selection, and a verified Koed Memory connection are separate states. Before
+connecting, onboarding explains what connecting does: Koed's memory tools and
+Capture Hook are added to the selected clients, their sessions in any folder are
+saved to Memory on this Mac, and past sessions are read in the background. The
+connect button is that consent and starts the Memory preparation for the
+selected clients at once. Provider sign-in remains with the provider's own
+client. Token-dependent MCP and capture integration is verified during
+**Memory**, rather than claiming that selection alone connected Memory.
 
-Entering **Memory** starts local preparation in the background. The main process
+Memory preparation runs in the background and reuses the core preparation
+started on the first screen. The main process
 owns one preparation run per active profile, reuses completed setup stages, and
 reports a small Memory readiness state to onboarding. The User does not see a
 service checklist or a separate infrastructure setup screen. Preparation installs
@@ -79,8 +92,8 @@ waits for its Projection, and asks the connected local AI Client to answer using
 retrieved Memory. Its answer is displayed only when the real Ask request finishes;
 pending work and failures remain visible without a simulated answer or citation count.
 
-**Working together** retains the v56 explanation, optional demonstrations and
-final recap within the same conversation. Collaboration remains optional.
+**Working together** (full edition only) retains the v56 explanation, optional
+demonstrations and final recap within the same conversation. Collaboration remains optional.
 Personal-only setup does not enroll a Team connection, send invitations,
 or enable sharing. Completion requires a verified Memory connection and a Chief
 of Staff bound to the owning User and a selected, available AI Client. The
