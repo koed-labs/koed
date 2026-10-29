@@ -723,6 +723,14 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private readonly metrics: WatcherSnapshot;
   private readonly localProjectAssociation: LocalProjectAssociationService | null;
   private readonly associationRecoveries = new Set<Promise<void>>();
+  // Unchanged files are rechecked every pass. Remember, per conversation and
+  // length, when that check last found nothing to file, so an idle history
+  // of hundreds of conversations does not ask the API about each one every
+  // few seconds. A later change to the file, or ten minutes, checks again.
+  private readonly quiescentAssociationChecks = new Map<
+    string,
+    { boundary: number; at: number }
+  >();
   private failureCount = 0;
   private scanPromise: Promise<void> | null = null;
   private scanRequested = false;
@@ -1172,6 +1180,29 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
           : null;
         const recoverQuiescentAssociation = (): void => {
           if (!sourceProject || !this.localProjectAssociation) return;
+          const checked = this.quiescentAssociationChecks.get(
+            identity.sessionId
+          );
+          if (
+            checked &&
+            checked.boundary === boundary &&
+            Date.now() - checked.at < 10 * 60_000
+          )
+            return;
+          const settle = () => {
+            this.quiescentAssociationChecks.delete(identity.sessionId);
+            this.quiescentAssociationChecks.set(identity.sessionId, {
+              boundary,
+              at: Date.now()
+            });
+            while (this.quiescentAssociationChecks.size > 10_000) {
+              const oldest = this.quiescentAssociationChecks
+                .keys()
+                .next().value;
+              if (oldest === undefined) break;
+              this.quiescentAssociationChecks.delete(oldest);
+            }
+          };
           const recovery = (async () => {
             const artifact = await lookupArtifact(
               this.client,
@@ -1181,8 +1212,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
               !artifact ||
               artifact.externalSessionId !== identity.sessionId ||
               artifact.providerCursorOffset < boundary
-            )
+            ) {
+              settle();
               return;
+            }
             if (
               this.localProjectAssociation?.isCompleted({
                 sourceKind: "codex",
@@ -1191,8 +1224,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
                 artifactId: artifact.id,
                 providerCursorOffset: artifact.providerCursorOffset
               })
-            )
+            ) {
+              settle();
               return;
+            }
             await this.localProjectAssociation?.prepare({
               sourceKind: "codex",
               externalSessionId: identity.sessionId,

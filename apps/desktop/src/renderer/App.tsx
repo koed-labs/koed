@@ -943,11 +943,19 @@ export function App({
 
   useEffect(() => {
     if (statusReadyOverride !== undefined || desktopHealthIsReady) return;
-    const interval = window.setInterval(
-      () => void activeStatusStore.refresh(),
-      1_500
-    );
-    return () => window.clearInterval(interval);
+    // Each status read starts a separate program. Check often while Koed is
+    // starting, then back off: a service that stays unhealthy (for example
+    // one that is not set up) otherwise kept the Mac busy reading status
+    // back to back for as long as the app was open.
+    let delay = 1_500;
+    let timer = 0;
+    const tick = () => {
+      void activeStatusStore.refresh();
+      delay = Math.min(delay * 1.5, 30_000);
+      timer = window.setTimeout(tick, delay);
+    };
+    timer = window.setTimeout(tick, delay);
+    return () => window.clearTimeout(timer);
   }, [activeStatusStore, desktopHealthIsReady, statusReadyOverride]);
 
   useEffect(() => {

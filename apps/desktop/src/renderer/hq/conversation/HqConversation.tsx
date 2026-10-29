@@ -3096,7 +3096,7 @@ export function HqActiveConversation({
               ))}
             {active ? (
               <p className="hq-conversation__working" role="status">
-                The AI Client is working…
+                {assistantName ?? "The AI Client"} is working…
               </p>
             ) : null}
           </div>
