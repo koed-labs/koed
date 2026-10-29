@@ -406,19 +406,6 @@ export const managedCodexRuntimeEnvironment = (input: {
   });
 };
 
-/**
- * A Chief of Staff conversation without a chosen effort answers at a low one:
- * Codex's own default can think for ten seconds or more before the first
- * word, which makes a conversation feel stuck.
- */
-export const codexReasoningEffort = (
-  execution: Pick<
-    ManagedConversationExecutionRecord,
-    "reasoningEffort" | "isProjectHq"
-  >
-): string | null =>
-  execution.reasoningEffort ?? (execution.isProjectHq ? "low" : null);
-
 export const managedRecallLaunchEnvironment = (
   execution: Pick<
     ManagedConversationExecutionRecord,
@@ -2060,8 +2047,8 @@ export const createManagedConversationService = (options: {
           runtimeEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ??
           options.appServerBinary,
         model: execution.model,
-        ...(codexReasoningEffort(execution)
-          ? { reasoningEffort: codexReasoningEffort(execution)! }
+        ...(execution.reasoningEffort
+          ? { reasoningEffort: execution.reasoningEffort }
           : {}),
         cwd: override?.projectPath ?? binding.projectPath,
         env: runtimeEnvironment,
