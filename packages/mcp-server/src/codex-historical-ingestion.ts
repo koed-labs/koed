@@ -553,7 +553,7 @@ const importNextBatch = async (input: {
         smaller < 1_024 ||
         nextLineBoundary(available, smaller) >= batch.bytesConsumed
       )
-        throw new Error("historical_batch_rejected", { cause: error });
+        throw new Error(rejectedBatchReason(error), { cause: error });
       limit = smaller;
     }
   }
@@ -578,6 +578,20 @@ const createRun = async (client: MemoryApiClient): Promise<string> => {
 // every newer selection from ever running. Skip the source instead so the
 // cohort keeps moving; the historical_import_state machine requires passing
 // through "failed" (with a failure reason) before "skipped" is reachable.
+// Keeps the API's own reason code (for example
+// "historical_batch_rejected:canonical_identity_mismatch") so a skipped
+// source says why, in logs and in its failure reason.
+const rejectedBatchReason = (error: MemoryApiError): string => {
+  const payload = error.payload as { code?: unknown } | undefined;
+  const code =
+    typeof payload?.code === "string" &&
+    /^[a-z][a-z0-9_]{0,80}$/.test(payload.code)
+      ? payload.code
+      : null;
+  return code
+    ? `historical_batch_rejected:${code}`
+    : "historical_batch_rejected";
+};
 const unrepresentableReasons = new Set([
   "historical_record_exceeds_batch_limit",
   // The API refused the batch as invalid (400). The same bytes always build
@@ -586,7 +600,9 @@ const unrepresentableReasons = new Set([
   "historical_batch_rejected"
 ]);
 const isUnrepresentableRecordError = (error: unknown): boolean =>
-  error instanceof Error && unrepresentableReasons.has(error.message);
+  error instanceof Error &&
+  (unrepresentableReasons.has(error.message) ||
+    error.message.startsWith("historical_batch_rejected:"));
 
 const skipUnrepresentableSource = async (
   client: MemoryApiClient,
