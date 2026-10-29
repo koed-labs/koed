@@ -880,3 +880,24 @@
   text-decoration: underline;
   cursor: pointer;
 }
+
+/* v56: the composer names the AI answering, e.g. "Codex · gpt-6.1-sol · Low". */
+.hq-composer__ai {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--hq-muted, #a6aca5);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.hq-composer__ai-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #3fa66f;
+}

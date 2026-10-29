@@ -7727,6 +7727,14 @@ export const createKoedServerManager = ({
         await openExternal(`file://${logsDir}`);
         return { ok: true, path: logsDir };
       },
+      // A cheap readiness check (runtime record and /ready) the window can
+      // ask every half second while starting, instead of waiting for a full
+      // status read that takes many seconds on a busy Mac.
+      local_api_ready: async (args) => {
+        if (args && Object.keys(args).length > 0)
+          throw new Error("Invalid local API readiness request.");
+        return { ready: Boolean(await runtimeApiOrigin()) };
+      },
       onboarding_status: () => ({
         complete: readDesktopOnboardingComplete(onboardingStatePath)
       }),

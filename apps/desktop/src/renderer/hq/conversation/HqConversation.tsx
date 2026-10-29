@@ -129,6 +129,40 @@ const hqToolActivityLabel = (event: DesktopConversationEvent): string => {
   return conversationToolKindAndLabel(named?.[1] ?? "").label;
 };
 
+/**
+ * Which AI answers here, e.g. "Codex · gpt-6.1-sol · Low", so the person
+ * always sees what the Chief of Staff is running on.
+ */
+function HqAiLabel({
+  options,
+  selection
+}: {
+  options: ManagedConversationLaunchOptions | null;
+  selection: HqSelection;
+}) {
+  const instance = options?.instances.find(
+    (item) => item.instanceId === selection.instanceId
+  );
+  const model = instance?.models.find((item) => item.id === selection.model);
+  const parts = [
+    instance?.displayName,
+    model?.displayName ?? (selection.model || undefined),
+    selection.reasoningEffort
+      ? hqReasoningLabel(selection.reasoningEffort)
+      : undefined
+  ].filter((part): part is string => Boolean(part));
+  if (!parts.length) return null;
+  return (
+    <span
+      className="hq-composer__ai"
+      title={`Answering with ${parts.join(", ")}`}
+    >
+      <span className="hq-composer__ai-dot" aria-hidden="true" />
+      {parts.join(" · ")}
+    </span>
+  );
+}
+
 export function HqConversationSettings({
   options,
   selection,
@@ -781,7 +815,7 @@ function Composer({
             onSeeUsage={onSeeUsage}
           />
           {privateProjectHq ? (
-            <span className="hq-project-conversation__status">Auto</span>
+            <HqAiLabel options={options} selection={selection} />
           ) : null}
           {active ? (
             <button

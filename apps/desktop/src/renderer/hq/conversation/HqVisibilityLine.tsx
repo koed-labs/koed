@@ -1,5 +1,6 @@
 import { LockKeyhole, UsersRound } from "lucide-react";
 import type { HqVisibility } from "./hq-visibility.js";
+import { soloEdition } from "../../edition.js";
 
 /** Shared by each HQ composer host, regardless of its placement. */
 export function HqVisibilityLine({
@@ -10,6 +11,9 @@ export function HqVisibilityLine({
   onManage?: () => void;
 }) {
   if (visibility === "unverified") return null;
+  // In Solo nothing can be shared, so a "Just me" lock on every conversation
+  // says nothing. Only shared conversations will be marked there.
+  if (visibility === "personal-private" && soloEdition()) return null;
   const shared =
     typeof visibility === "object" && visibility.kind === "shared-summary";
   const label =

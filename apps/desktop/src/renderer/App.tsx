@@ -663,12 +663,42 @@ export function App({
   const localSetupReady =
     statusReadyOverride ??
     (desktopStatus.status ? setupIsReady(desktopStatus.status) : undefined);
+  // While Koed starts, a cheap check tells whether its local API already
+  // answers. The first full status read can take tens of seconds on a busy
+  // Mac, and everything else (your Chief of Staff, Projects) waited for it.
+  const [localApiReady, setLocalApiReady] = useState(false);
+  const statusShowsApi = Boolean(
+    desktopStatus.status?.api.state === "healthy" &&
+    desktopStatus.status.database.state === "healthy"
+  );
+  useEffect(() => {
+    if (statusReadyOverride !== undefined || statusShowsApi || localApiReady)
+      return;
+    const invoke = window.koedDesktop?.invoke;
+    if (!invoke) return;
+    let live = true;
+    let timer = 0;
+    const started = Date.now();
+    const check = () =>
+      void invoke<{ ready: boolean }>("local_api_ready")
+        .then((result) => {
+          if (!live) return;
+          if (result.ready) setLocalApiReady(true);
+          else if (Date.now() - started < 180_000)
+            timer = window.setTimeout(check, 500);
+        })
+        .catch(() => {
+          if (live && Date.now() - started < 180_000)
+            timer = window.setTimeout(check, 1_000);
+        });
+    check();
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [statusReadyOverride, statusShowsApi, localApiReady]);
   const personalMemoryReady =
-    statusReadyOverride ??
-    Boolean(
-      desktopStatus.status?.api.state === "healthy" &&
-      desktopStatus.status.database.state === "healthy"
-    );
+    statusReadyOverride ?? (statusShowsApi || localApiReady);
   const theme = useSyncExternalStore(
     themeStore.subscribe,
     readTheme,
@@ -1191,7 +1221,7 @@ export function App({
     );
   }
 
-  if (localSetupReady === undefined && !desktopStatus.error) {
+  if (localSetupReady === undefined && !desktopStatus.error && !localApiReady) {
     return (
       <main aria-live="polite" className="desktop-starting">
         Opening Koed…
@@ -1202,7 +1232,7 @@ export function App({
   if (
     localSetupReady !== true &&
     (desktopStatus.status?.state === "not_configured" ||
-      desktopStatus.status === null)
+      (desktopStatus.status === null && !localApiReady))
   ) {
     if (hqEnabled)
       return (

@@ -53,6 +53,7 @@ export const desktopCommandNames = [
   "open_logs",
   "onboarding_status",
   "onboarding_complete",
+  "local_api_ready",
   "setup_inspect",
   "setup_run",
   "hq_onboarding_status",
