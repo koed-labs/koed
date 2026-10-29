@@ -363,10 +363,13 @@ export const resolveEnv = (
       ["EMBEDDING_MAX_REQUEST_CHARS"],
       1000000
     ),
+    // Embedding past conversations can run for hours. Using every core made
+    // the whole computer (and Koed's own replies) sluggish meanwhile, so by
+    // default it uses half of them, at most four.
     llamaNThreads: intAlias(
       environment,
       ["LLAMA_N_THREADS", "EMBEDDING_LLAMA_N_THREADS"],
-      cpuCount
+      Math.max(1, Math.min(4, Math.floor(cpuCount / 2)))
     ),
     llamaNBatch,
     llamaBatchTokenHeadroom,

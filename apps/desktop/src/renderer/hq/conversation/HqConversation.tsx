@@ -1739,6 +1739,7 @@ export function HqActiveConversation({
   const [retainedStream, setRetainedStream] = useState<{
     text: string;
     createdAt: string;
+    providerTurnId: string | null;
   } | null>(null);
   useEffect(() => {
     const streamed = runtime?.items
@@ -1756,7 +1757,8 @@ export function HqActiveConversation({
           ? current
           : {
               text: streamed.payload.text as string,
-              createdAt: streamed.createdAt
+              createdAt: streamed.createdAt,
+              providerTurnId: streamed.providerTurnId
             }
       );
   }, [runtime]);
@@ -3214,8 +3216,11 @@ export function HqActiveConversation({
             !visibleEvents.some(
               (event) =>
                 (event.actor === "assistant" || event.actor === "agent") &&
-                Date.parse(event.timestamp) >=
-                  Date.parse(retainedStream.createdAt)
+                ((retainedStream.providerTurnId &&
+                  event.metadata.providerTurnId ===
+                    retainedStream.providerTurnId) ||
+                  Date.parse(event.timestamp) >=
+                    Date.parse(retainedStream.createdAt))
             ) ? (
               // The streamed reply stays on screen after the turn ends until
               // the saved reply replaces it, instead of blinking out.
@@ -3238,7 +3243,13 @@ export function HqActiveConversation({
                     (event) =>
                       (event.actor === "assistant" ||
                         event.actor === "agent") &&
-                      Date.parse(event.timestamp) >= Date.parse(item.createdAt)
+                      // The saved reply of the same turn replaces the
+                      // streamed copy, whatever their timestamps say.
+                      ((item.providerTurnId &&
+                        event.metadata.providerTurnId ===
+                          item.providerTurnId) ||
+                        Date.parse(event.timestamp) >=
+                          Date.parse(item.createdAt))
                   )
               )
               .map((item) =>
