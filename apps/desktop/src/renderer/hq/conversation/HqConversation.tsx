@@ -3401,6 +3401,13 @@ export function HqActiveConversation({
         {resumeStatus === "read_only" ? (
           <p role="status">This Captured Conversation is read-only.</p>
         ) : null}
+        {resumeStatus === "reconciling" ? (
+          <p role="status">
+            Koed is checking whether your last message reached{" "}
+            {assistantName ?? "the AI Client"}. You can send again once that
+            check finishes.
+          </p>
+        ) : null}
         {lifecycle?.recoveryStatus === "unavailable" ? (
           <p role="status">
             Secure Conversation recovery is unavailable. Sending is paused.
