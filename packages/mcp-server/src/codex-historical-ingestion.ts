@@ -639,6 +639,10 @@ export const createCodexHistoricalProviderAdapter = (input: {
   config?: CodexHistoricalIngestionConfig;
 }): HistoricalProviderAdapter<CodexHistoricalCandidate> => {
   const config = input.config ?? resolveCodexHistoricalIngestionConfig();
+  // Conversations whose journal already reaches its frozen frontier in this
+  // process. Registering again reads the transcript and asks the API about it
+  // and every ancestor thread, before every batch, for nothing new.
+  const journalRegisteredTo = new Map<string, number>();
   return {
     aiClient: "codex",
     candidateId: (candidate) => candidate.sourceSessionId,
@@ -714,7 +718,12 @@ export const createCodexHistoricalProviderAdapter = (input: {
           };
         }
         let artifact: ConversationSourceArtifact | undefined;
-        if (!currentSelection.artifactId || candidate) {
+        if (
+          !currentSelection.artifactId ||
+          (candidate &&
+            (journalRegisteredTo.get(currentSelection.candidateId) ?? -1) <
+              currentSelection.frontierOffset)
+        ) {
           if (!candidate) {
             return { state: "waiting", selection, ...(runId ? { runId } : {}) };
           }
@@ -735,6 +744,11 @@ export const createCodexHistoricalProviderAdapter = (input: {
           });
           artifact = registered.artifact;
           currentSelection = { ...currentSelection, artifactId: artifact.id };
+          if (artifact.providerCursorOffset >= currentSelection.frontierOffset)
+            journalRegisteredTo.set(
+              currentSelection.candidateId,
+              currentSelection.frontierOffset
+            );
           if (artifact.providerCursorOffset < currentSelection.frontierOffset) {
             return {
               state: "progress",

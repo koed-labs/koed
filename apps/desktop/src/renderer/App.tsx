@@ -697,7 +697,17 @@ export function App({
         : snapshotWithoutTeamCollaboration(collaboration.snapshot),
     [collaboration.snapshot, teamCollaborationEnabled]
   );
-  if (desktopStatus.status) startupMark("first status");
+  if (desktopStatus.status) {
+    startupMark("first status");
+    const core = desktopStatus.status.core?.components;
+    const unhealthy = core
+      ? Object.entries(core)
+          .filter(([, component]) => component.state !== "healthy")
+          .map(([name, component]) => `${name}=${component.state}`)
+      : [];
+    // Records each distinct set of unhealthy services once.
+    if (unhealthy.length) startupMark(`not healthy: ${unhealthy.join(", ")}`);
+  }
   if (localSetupReady) startupMark("setup ready");
   if (personalMemoryReady) startupMark("personal memory ready");
   if (snapshot) startupMark("collaboration snapshot");

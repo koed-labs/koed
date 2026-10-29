@@ -3103,13 +3103,19 @@ export const registerManagedConversationRoutes = (
               statusCode: 409
             }
           );
+        // The Chief of Staff is a conversation partner first: a low reasoning
+        // effort answers in seconds instead of thinking for ten or more
+        // before the first word. Models without that option keep their own
+        // default.
+        const chiefReasoningEffort =
+          model && modelReasoningEfforts(model).includes("low") ? "low" : null;
         const selection = {
           projectId: id,
           contextKind: "independent" as const,
           provider: instance.driverId,
           aiClientInstanceId: chief.aiClientInstanceId,
           model: selectedModel,
-          reasoningEffort: null,
+          reasoningEffort: chiefReasoningEffort,
           permissionMode: "supervised" as const,
           runnerKind: "local_device" as const,
           idempotencyKey: `project-hq:${id}`

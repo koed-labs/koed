@@ -1987,7 +1987,19 @@ export function HqActiveConversation({
   // While a reply is on its way, read progress often so streamed text and
   // steps such as "Checking memory…" appear as they happen; when idle, read
   // rarely so the app is not kept busy.
-  const turnInFlight = active || optimistic.length > 0;
+  // A sent message stays in `optimistic` after it is saved (only its display
+  // is hidden), so count only messages the transcript does not show yet.
+  // Counting all of them kept polling every 500 ms for as long as the window
+  // was open after the first message.
+  const unsavedOptimistic = optimistic.some(
+    (item) =>
+      !(detail?.events ?? []).some(
+        (event) =>
+          event.actor === "user" &&
+          event.metadata.clientUserMessageId === item.id
+      )
+  );
+  const turnInFlight = active || unsavedOptimistic;
   useEffect(() => {
     if (!api || !executionId) return;
     const timer = window.setInterval(
