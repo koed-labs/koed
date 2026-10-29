@@ -3090,9 +3090,13 @@ export function HqActiveConversation({
                 key={item.id}
               >
                 <p className="hq-conversation__bubble">{item.prompt}</p>
-                <small>
-                  {item.status === "queued" ? "Queued" : "Sending…"}
-                </small>
+                {/* Once the AI Client has the message, the step line below
+                    says what is happening; a lasting "Queued" read as stuck. */}
+                {item.status === "queued" && active ? null : (
+                  <small>
+                    {item.status === "queued" ? "Queued" : "Sending…"}
+                  </small>
+                )}
               </article>
             ))}
             {draft?.initialPrompt &&

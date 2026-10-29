@@ -992,6 +992,62 @@ describe("provider-neutral historical ingestion coordination", () => {
     await coordinator.stop();
   });
 
+  it("stops after several conversations are refused with none completing", async () => {
+    const koedHome = temporaryDirectory();
+    const stateDirectory = path.join(koedHome, "state");
+    mkdirSync(stateDirectory, { recursive: true });
+    writeFileSync(
+      path.join(stateDirectory, "refusing-provider-historical-ingestion.json"),
+      `${JSON.stringify({
+        version: 1,
+        selectionFrozen: true,
+        runCompleted: false,
+        runId: "run-refusing",
+        selections: ["a", "b", "c", "d", "e"].map((id) => ({
+          aiClient: "refusing-provider",
+          candidateId: id,
+          frontierOffset: 40,
+          frontierLine: 2,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        }))
+      })}\n`
+    );
+    const processed: string[] = [];
+    const completeRun = vi.fn(async () => undefined);
+    const errors: string[] = [];
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "refusing-provider",
+      discoverCandidates: async (ids) => ids.map((id) => ({ id })),
+      candidateId: (entry) => entry.id,
+      selectCandidates: () => [],
+      async processNextBatch({ selection, runId }) {
+        processed.push(selection.candidateId);
+        return {
+          state: "skipped",
+          selection,
+          runId,
+          diagnosticCode:
+            "historical_batch_rejected:canonical_component_mismatch"
+        };
+      },
+      completeRun
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 5,
+      onError: (code) => errors.push(code)
+    });
+    await vi.waitFor(() =>
+      expect(errors).toContain("historical_import_suspended_after_rejections")
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(processed).toEqual(["a", "b", "c"]);
+    expect(completeRun).not.toHaveBeenCalled();
+    expect(coordinator.snapshot().runCompleted).toBe(false);
+    await coordinator.stop();
+  });
+
   it("does not let a skipped oldest selection block a newer selection in the same pass", async () => {
     const koedHome = temporaryDirectory();
     const calls: string[] = [];

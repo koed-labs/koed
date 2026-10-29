@@ -192,6 +192,12 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   let running: Promise<void> | null = null;
   let timer: NodeJS.Timeout | undefined;
   let stopped = false;
+  // When the API refuses the batches of several conversations with none
+  // completing in between, the rest will very likely be refused too, and
+  // reading each one first keeps the Mac busy for nothing. Stop until Koed
+  // next starts; the reason is in the log.
+  let consecutiveRejected = 0;
+  const rejectedLimit = 3;
   let requested = false;
   let discovery: Promise<void> | null = null;
   let discoveryTimer: NodeJS.Timeout | undefined;
@@ -235,6 +241,20 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       }
       if (result.runId) state.runId = result.runId;
       if (result.diagnosticCode) input.onError?.(result.diagnosticCode);
+      if (
+        result.state === "skipped" &&
+        result.diagnosticCode?.startsWith("historical_batch_rejected")
+      ) {
+        consecutiveRejected += 1;
+        if (consecutiveRejected >= rejectedLimit) {
+          save();
+          stopped = true;
+          input.onError?.("historical_import_suspended_after_rejections");
+          break;
+        }
+      } else if (result.state === "completed") {
+        consecutiveRejected = 0;
+      }
       if (result.state === "progress") progressed = true;
       if (result.state !== "completed" && result.state !== "skipped") {
         allTerminal = false;
@@ -245,7 +265,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       // finalization may finish later and remains a downstream concern.
       if (result.state === "progress" || result.state === "waiting") break;
     }
-    if (allTerminal && state.runId && input.adapter.completeRun) {
+    if (!stopped && allTerminal && state.runId && input.adapter.completeRun) {
       await input.adapter.completeRun(state.runId);
       state = { ...state, runCompleted: true };
       save();
