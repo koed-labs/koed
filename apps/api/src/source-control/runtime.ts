@@ -381,7 +381,8 @@ export const createSourceControlRuntime = (options: {
   > | null = null;
   const requireCheckoutDriver = () =>
     (checkoutDriver ??= createGitExecutionCheckoutDriver({
-      managedRoot: resolve(options.koedHome, "managed-checkouts", "worktrees")
+      managedRoot: resolve(options.koedHome, "managed-checkouts", "worktrees"),
+      privateRoot: options.koedHome
     }));
   let journalSerial = Promise.resolve();
 

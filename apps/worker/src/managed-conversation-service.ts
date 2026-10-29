@@ -1060,7 +1060,12 @@ export const createManagedConversationService = (options: {
   const executionCheckoutDriver = options.executionCheckoutDriver
     ? Promise.resolve(options.executionCheckoutDriver)
     : createGitExecutionCheckoutDriver({
-        managedRoot: resolve(options.koedHome, "managed-checkouts", "worktrees")
+        managedRoot: resolve(
+          options.koedHome,
+          "managed-checkouts",
+          "worktrees"
+        ),
+        privateRoot: options.koedHome
       });
 
   const scheduleExecutionCheckoutRetry = (): void => {

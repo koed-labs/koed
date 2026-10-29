@@ -55,6 +55,36 @@ afterEach(() => {
 });
 
 describe("runner-owned execution checkouts", () => {
+  it("never treats Koed's own folders as a checkout of a repository around KOED_HOME", async () => {
+    const outer = repository();
+    const koedHome = join(outer, "profiles", "home");
+    const hq = join(koedHome, "managed-conversations", "project-hq", "user");
+    mkdirSync(hq, { recursive: true });
+    const driver = await createGitExecutionCheckoutDriver({
+      managedRoot: join(koedHome, "managed-checkouts", "worktrees"),
+      privateRoot: koedHome
+    });
+    await expect(
+      driver.select({ operationId: randomUUID(), path: hq })
+    ).resolves.toMatchObject({
+      vcsDriver: null,
+      ownership: "non_vcs_directory"
+    });
+    // A real Project folder inside that same repository is still a checkout.
+    const project = join(outer, "project");
+    mkdirSync(project);
+    await expect(
+      driver.select({ operationId: randomUUID(), path: project })
+    ).resolves.toMatchObject({ vcsDriver: "git" });
+    // A repository of its own inside KOED_HOME is still a checkout.
+    const ownRepository = join(koedHome, "own");
+    mkdirSync(ownRepository);
+    git(ownRepository, "init", "--initial-branch=main");
+    await expect(
+      driver.select({ operationId: randomUUID(), path: ownRepository })
+    ).resolves.toMatchObject({ vcsDriver: "git" });
+  });
+
   it("selects an initialized Project before its first commit and verifies it after committing", async () => {
     const project = temporaryDirectory("koed-unborn-project-");
     git(project, "init", "--initial-branch=main");

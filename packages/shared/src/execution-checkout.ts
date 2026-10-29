@@ -282,9 +282,21 @@ const inspectGit = async (
 
 export const createGitExecutionCheckoutDriver = async (input: {
   managedRoot: string;
+  /**
+   * Koed's own state (KOED_HOME). A folder in it, such as a private Project
+   * HQ Conversation folder, is never a person's checkout, even when KOED_HOME
+   * itself sits inside someone's git repository: treating it as one made
+   * every prompt checkpoint that whole repository.
+   */
+  privateRoot?: string;
 }): Promise<GitExecutionCheckoutDriver> => {
   await mkdir(resolve(input.managedRoot), { recursive: true, mode: 0o700 });
   const managedRoot = await canonicalDirectory(input.managedRoot);
+  const privateRoot = input.privateRoot
+    ? await realpath(resolve(input.privateRoot)).catch(() =>
+        resolve(input.privateRoot!)
+      )
+    : null;
 
   const managedCoordinates = (
     canonicalPath: string
@@ -323,7 +335,16 @@ export const createGitExecutionCheckoutDriver = async (input: {
         allowFailure: true
       }
     );
-    if (isGit !== "true") {
+    const repositoryOutsideKoedState = async () => {
+      if (!privateRoot || !inside(privateRoot, canonicalPath)) return false;
+      const top = await git(canonicalPath, ["rev-parse", "--show-toplevel"], {
+        allowFailure: true
+      });
+      if (!top) return true;
+      const canonicalTop = await realpath(top).catch(() => resolve(top));
+      return !inside(privateRoot, canonicalTop);
+    };
+    if (isGit !== "true" || (await repositoryOutsideKoedState())) {
       return {
         checkoutId: randomUUID(),
         vcsDriver: null,

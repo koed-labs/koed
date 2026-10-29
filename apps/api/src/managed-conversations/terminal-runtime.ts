@@ -329,7 +329,8 @@ export const createManagedTerminalRuntime = (options: {
   > | null = null;
   const requireCheckoutDriver = () =>
     (checkoutDriver ??= createGitExecutionCheckoutDriver({
-      managedRoot: resolve(options.koedHome, "managed-checkouts", "worktrees")
+      managedRoot: resolve(options.koedHome, "managed-checkouts", "worktrees"),
+      privateRoot: options.koedHome
     }));
   const detachedTtlMs = options.detachedTtlMs ?? 30 * 60 * 1_000;
   const verifyPreviewListenerOwnership =
