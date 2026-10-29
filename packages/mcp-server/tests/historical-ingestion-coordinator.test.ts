@@ -880,6 +880,51 @@ describe("Codex historical batches the API refuses", () => {
   });
 });
 
+describe("Codex historical sources under a finished run", () => {
+  it("registers the next source under a new run instead of retrying forever", async () => {
+    const client =
+      new FakeHistoricalSourceClient() as FakeHistoricalSourceClient & {
+        createHistoricalImportSource: (input: {
+          runId: string;
+        }) => Promise<Record<string, unknown>>;
+        createHistoricalImportRun: () => Promise<Record<string, unknown>>;
+        transitionHistoricalImportRun: (
+          runId: string,
+          input: { state: string }
+        ) => Promise<Record<string, unknown>>;
+      };
+    const runsUsed: string[] = [];
+    client.createHistoricalImportSource = async (input) => {
+      runsUsed.push(input.runId);
+      if (input.runId === "run-finished")
+        throw new MemoryApiError("Historical import run not found", {
+          status: 409
+        });
+      return { source: { id: "source-next", runId: input.runId } };
+    };
+    client.createHistoricalImportRun = async () => ({
+      run: { id: "run-new", state: "discovered" }
+    });
+    const adapter = createCodexHistoricalProviderAdapter({
+      client: client as unknown as MemoryApiClient
+    });
+    const result = await adapter.processNextBatch({
+      selection: {
+        aiClient: "codex",
+        candidateId: "session-next",
+        artifactId: "artifact-next",
+        frontierOffset: 10,
+        frontierLine: 1,
+        latestActivityAt: "2026-08-17T00:00:00.000Z",
+        adapterState: { threadKind: "conversation" }
+      },
+      runId: "run-finished"
+    });
+    expect(result).toMatchObject({ state: "progress", runId: "run-new" });
+    expect(runsUsed).toEqual(["run-finished", "run-new"]);
+  });
+});
+
 describe("provider-neutral historical ingestion coordination", () => {
   it("rediscovers transient candidates for a frozen incomplete cohort after restart", async () => {
     const koedHome = temporaryDirectory();

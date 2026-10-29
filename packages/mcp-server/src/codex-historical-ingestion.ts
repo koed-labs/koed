@@ -735,9 +735,9 @@ export const createCodexHistoricalProviderAdapter = (input: {
         let activeRunId = source?.runId ?? runId;
         if (!source) {
           if (!activeRunId) activeRunId = await createRun(input.client);
-          objectValue<HistoricalSource>(
-            await input.client.createHistoricalImportSource({
-              runId: activeRunId,
+          const createSource = (forRun: string) =>
+            input.client.createHistoricalImportSource({
+              runId: forRun,
               artifactId,
               aiClient: "codex",
               detectedProject: {
@@ -756,7 +756,22 @@ export const createCodexHistoricalProviderAdapter = (input: {
                     }
                   : {})
               }
-            }),
+            });
+          let created: Record<string, unknown>;
+          try {
+            created = await createSource(activeRunId);
+          } catch (error) {
+            // The run this cohort started under has finished (for example
+            // once every source registered so far was completed or skipped),
+            // so it takes no new sources. Continue under a new run instead of
+            // asking again every few seconds.
+            if (!(error instanceof MemoryApiError) || error.status !== 409)
+              throw error;
+            activeRunId = await createRun(input.client);
+            created = await createSource(activeRunId);
+          }
+          objectValue<HistoricalSource>(
+            created,
             "source",
             "historical_source_response_missing"
           );
