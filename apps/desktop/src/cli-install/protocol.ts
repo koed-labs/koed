@@ -2,6 +2,7 @@ export const cliInstallCommandChannel = "koed:cli-install:command";
 export const cliInstallProgressChannel = "koed:cli-install:progress";
 
 export interface PrivacyInstallStatus {
+  reason?: "packaged_app_required";
   available: boolean;
   state: "not_installed" | "ready" | "installing" | "failed" | "unavailable";
   message: string;

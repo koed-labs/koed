@@ -101,62 +101,42 @@ const button = (label: string) =>
     (item) => item.textContent === label
   )!;
 const click = async (element: HTMLElement) => act(async () => element.click());
+const confirmSetup = async () => {
+  const dialog = document.body.querySelector('[role="dialog"]');
+  expect(dialog).toBeTruthy();
+  const confirm = [...dialog!.querySelectorAll("button")].find(
+    (item) => item.textContent === "Set up Koed"
+  )!;
+  await click(confirm);
+};
 
-describe("Team onboarding Privacy installer", () => {
-  it("offers pinned installation before services without automatic download or setup", async () => {
-    const api = makeApi();
-    const run = await render(true, api);
-    expect(container.textContent).toContain(
-      "Privacy Filter assets are missing."
-    );
-    expect(button("Install Privacy Filter").disabled).toBe(true);
-    expect(api.installPrivacy).not.toHaveBeenCalled();
-    expect(run).not.toHaveBeenCalled();
-    await click(button("Choose offline component files"));
-    await click(
-      container.querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    );
-    await click(button("Install Privacy Filter"));
-    expect(api.installPrivacy).toHaveBeenCalledWith(true, {
-      archivePath: "/tmp/privacy.tar.gz",
-      manifestPath: "/tmp/privacy.manifest.json"
-    });
-    expect(run).not.toHaveBeenCalled();
-  });
+describe("Initial setup optional tools", () => {
+  it.each([true, false])(
+    "keeps optional tools out of initial setup (Team enabled: %s)",
+    async (teamCollaborationEnabled) => {
+      const api = makeApi();
+      const run = await render(teamCollaborationEnabled, api);
+      expect(container.textContent).not.toContain("Optional tools");
+      expect(container.textContent).not.toContain("Privacy Filter");
+      expect(container.textContent).not.toContain("Command line");
+      expect(api.getStatus).not.toHaveBeenCalled();
+      expect(api.launcher).not.toHaveBeenCalled();
+      expect(api.installPrivacy).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      await click(button("Set up Koed"));
+      expect(run).not.toHaveBeenCalled();
+      await confirmSetup();
+      expect(run).toHaveBeenCalledTimes(1);
+    }
+  );
 
-  it("keeps missing installer bridge actionable before onboarding completes", async () => {
-    await render(true);
-    expect(container.textContent).toContain(
+  it("allows core setup without an optional installer bridge", async () => {
+    const run = await render(true);
+    expect(container.textContent).not.toContain(
       "Desktop installer bridge unavailable"
     );
-    expect(button("Install Privacy Filter").disabled).toBe(true);
-    expect(button("Set up Koed")).toBeDefined();
-  });
-
-  it("reports failed verification and allows explicit retry without starting services", async () => {
-    const api = makeApi();
-    api.installPrivacy.mockRejectedValueOnce(
-      new Error("component manifest pin mismatch.")
-    );
-    const run = await render(true, api);
-    await click(
-      container.querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    );
-    await click(button("Install Privacy Filter"));
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "component manifest pin mismatch."
-    );
-    await click(button("Retry install"));
-    expect(api.installPrivacy).toHaveBeenCalledTimes(2);
-    expect(run).not.toHaveBeenCalled();
-  });
-
-  it("leaves Personal-only onboarding free of Privacy installation", async () => {
-    const api = makeApi();
-    await render(false, api);
-    expect(container.textContent).not.toContain("Privacy Filter assets");
-    expect(api.getStatus).not.toHaveBeenCalled();
-    expect(api.installPrivacy).not.toHaveBeenCalled();
-    expect(button("Set up Koed")).toBeDefined();
+    await click(button("Set up Koed"));
+    await confirmSetup();
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });

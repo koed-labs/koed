@@ -6057,6 +6057,17 @@ export const createKoedServerManager = ({
 
   const privacyInstall = createPrivacyInstallBridge({
     productVersion,
+    ...(!createSupervisorInvocation
+      ? {
+          unavailableStatus: {
+            available: false,
+            state: "unavailable" as const,
+            reason: "packaged_app_required" as const,
+            message:
+              "Install Privacy Filter from a packaged Koed app. Installation is not available when running Koed from source."
+          }
+        }
+      : {}),
     requestPrivacyRpc,
     stop,
     requestDaemonStart,

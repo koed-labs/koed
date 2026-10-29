@@ -1,5 +1,15 @@
 # Implementation backlog
 
+## Desktop Preferences design
+
+- [ ] Establish and document a supported location for manually downloaded
+      Privacy Filter component files. The current component installer downloads
+      into temporary `runtime/components/.stage-*` directories and does not
+      discover archives placed there manually. Keep this out of the Preferences
+      UI. Verify matching release manifests and archives through the normal
+      installer before activation; document the stable location only once this
+      workflow is supported.
+
 ## Production follow-ups from the accepted alpha
 
 - [ ] Investigate switching backends when the previous backend is offline.

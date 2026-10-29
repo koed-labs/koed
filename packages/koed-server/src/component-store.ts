@@ -675,6 +675,7 @@ async function stageComponentInternal(
       );
     }
     aborted(context.signal);
+    context.progress?.({ phase: "verify", transferredBytes: 0 });
     await verifyComponent({
       manifestBytes,
       manifestCatalog: catalog,
@@ -697,6 +698,7 @@ async function stageComponentInternal(
     const stagedRoot = resolve(tempRoot, "verified");
     const completeRoot = resolve(tempRoot, "complete");
     aborted(context.signal);
+    context.progress?.({ phase: "extract", transferredBytes: 0 });
     await extractVerifiedPackageArchive(archivePath, stagedRoot);
     aborted(context.signal);
     await verifyExtractedComponent(stagedRoot, manifest);

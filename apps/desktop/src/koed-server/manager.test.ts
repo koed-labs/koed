@@ -1614,6 +1614,35 @@ describe("Koed server desktop manager", () => {
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
+  it("reports Privacy installation unavailable in source builds without spawning a supervisor", async () => {
+    const execFile = vi.fn();
+    const spawn = vi.fn();
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      existsSync: () => true,
+      execFile,
+      spawn: spawn as never,
+      openExternal: async () => undefined
+    });
+    await expect(manager.privacyInstall.getStatus()).resolves.toMatchObject({
+      available: false,
+      state: "unavailable",
+      reason: "packaged_app_required",
+      message: expect.stringContaining("packaged Koed app")
+    });
+    await expect(
+      manager.privacyInstall.installPrivacy({
+        consent: true,
+        onProgress: vi.fn()
+      })
+    ).rejects.toThrow("packaged Koed app");
+    expect(execFile).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("fails closed when packaged private setup has no trusted resources path", async () => {
     const execFile = vi.fn((_command, _args, _options, callback) =>
       callback(null, "{}", "")

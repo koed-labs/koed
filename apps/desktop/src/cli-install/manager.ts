@@ -8,7 +8,7 @@ import {
   type LauncherInput,
   type LauncherStatus
 } from "./launcher.js";
-import { updateManagedPathBlock } from "./shell-path.js";
+import { hasManagedPathBlock, updateManagedPathBlock } from "./shell-path.js";
 import {
   validateCliInstallSettings,
   type CliInstallSettings
@@ -131,7 +131,21 @@ export const createDesktopCliInstallManager = (input: {
         throw new Error("CLI launcher is unsupported on Windows.");
       const launcher = launcherInput(options.destination);
       if (operation === "inspect")
-        return inspectLauncher({ ...launcher, probeHelper: input.probeHelper });
+        return {
+          ...(await inspectLauncher({
+            ...launcher,
+            probeHelper: input.probeHelper
+          })),
+          pathConfigured:
+            settings.pathDirectory === dirname(launcher.destination) &&
+            hasManagedPathBlock(
+              join(
+                input.homePath ?? homedir(),
+                process.env.SHELL?.endsWith("zsh") ? ".zshrc" : ".bashrc"
+              ),
+              dirname(launcher.destination)
+            )
+        };
       if (operation === "install") {
         const status = await installLauncher({
           ...launcher,

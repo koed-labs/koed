@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { PrivacyInstallBridge } from "../cli-install/protocol.js";
+import type {
+  PrivacyInstallBridge,
+  PrivacyInstallStatus
+} from "../cli-install/protocol.js";
 const objectValue = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -20,6 +23,7 @@ const resultMessage = (value: unknown, fallback: string): string => {
 
 export function createPrivacyInstallBridge({
   productVersion,
+  unavailableStatus,
   requestPrivacyRpc,
   stop,
   requestDaemonStart,
@@ -27,6 +31,7 @@ export function createPrivacyInstallBridge({
   activatePrivacyGeneration
 }: {
   productVersion?: string;
+  unavailableStatus?: PrivacyInstallStatus;
   requestPrivacyRpc: <T>(
     action: string,
     args?: Record<string, unknown>,
@@ -41,6 +46,7 @@ export function createPrivacyInstallBridge({
   let cancelActivePrivacyRequest: (() => void) | null = null;
   return {
     getStatus: async () => {
+      if (unavailableStatus) return unavailableStatus;
       const result = await requestPrivacyRpc<Record<string, unknown>>("status");
       if (result.requiredManifestPinsAvailable === false)
         return {
@@ -79,6 +85,7 @@ export function createPrivacyInstallBridge({
       };
     },
     installPrivacy: async ({ consent, offlineSource, onProgress }) => {
+      if (unavailableStatus) throw new Error(unavailableStatus.message);
       if (activePrivacyRequestId)
         throw new Error("A Privacy installation is already active.");
       if (consent !== true)

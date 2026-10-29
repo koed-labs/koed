@@ -36,10 +36,28 @@ content still require manual conflict resolution. Unrelated files and symlinks
 are never treated as owned launchers. Removal revalidates file identity and
 contents after probing the helper before unlinking.
 
-Adding the launcher directory to shell PATH requires separate consent. Desktop
-manages an exact marked block in `.zshrc` or `.bashrc`; edited blocks are preserved
-and reported as conflicts. The managed PATH directory is saved independently
-from the selected launcher destination. Removing a launcher, choosing another
-launcher destination, or restarting Desktop does not lose the directory needed
-to remove the existing PATH block. PATH removal requires separate consent and
-does not remove the launcher. Open a new shell to observe PATH changes.
+In Preferences → General → Optional tools, Command line automatically inspects
+its launcher. **Install command line** installs the launcher and adds its
+directory to PATH in one explicit action. The dialog explains the shell startup
+file change before installation. Desktop manages an exact marked block in
+`.zshrc` or `.bashrc`; edited blocks are preserved and reported as conflicts.
+The saved managed directory remains independent from the launcher destination.
+
+Setup shows launcher installation and PATH setup as separate progress steps.
+If PATH setup fails after installation, the dialog reports that the launcher
+exists and provides a retry. **Remove command line** removes the managed PATH
+entry before removing the unchanged Koed-owned launcher. Partial failures are
+reported with the underlying error. Open a new terminal after successful setup.
+
+Privacy Filter installation from Preferences requires a packaged Koed app with
+its verified Desktop supervisor. Source/development builds report this feature
+as unavailable without attempting to start an asset-management supervisor.
+
+Privacy Filter is an optional local component used to help remove personally
+identifiable information before memory is shared with a Team. **Download and
+install** authorizes its download and any local service restart. The dialog
+shows download, verification, and activation progress, and provides retry after
+failure. Closing a setup dialog lets installation continue; download and
+verification can be cancelled before activation begins. The Preferences UI does
+not offer an offline file picker. Component manifest pins, archive validation,
+and activation checks still apply.
