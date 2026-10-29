@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -28,6 +29,27 @@ const write = (path, content = "export {};\n") => {
   writeFileSync(path, content);
 };
 
+const requiredSharedFixtures = [
+  "node_modules/@koed/api/dist/browser-approval/index.html",
+  "node_modules/@koed/db/dist/index.js",
+  "node_modules/@koed/db/dist/connection.js",
+  "node_modules/@koed/db/dist/user-api-token-repository.js",
+  "node_modules/@koed/db/drizzle/meta/_journal.json",
+  "node_modules/@koed/mcp-server/dist/prompts/mcp-server-instructions.md",
+  "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md",
+  "node_modules/@koed/mcp-server/integrations/pi/package.json",
+  "node_modules/@koed/mcp-server/integrations/pi/extensions/koed.mjs",
+  "node_modules/@koed/mcp-server/integrations/pi/extensions/structured-result.mjs",
+  "node_modules/@koed/mcp-server/integrations/pi/koed-home.mjs",
+  "node_modules/@koed/mcp-server/integrations/pi/runtime-client.mjs",
+  "node_modules/@koed/mcp-server/integrations/pi/memory-answer-delivery-policy.mjs",
+  "node_modules/@koed/mcp-server/integrations/pi/memory-answer-delivery-policy.d.mts",
+  "node_modules/@koed/mcp-server/integrations/pi/pi-memory-delivery.mjs",
+  "node_modules/@koed/mcp-server/integrations/pi/pi-memory-delivery.d.mts",
+  "node_modules/@koed/mcp-server/integrations/pi/managed-rpc-host.mjs",
+  "node_modules/@koed/mcp-server/integrations/pi/managed-permissions.mjs"
+];
+
 test("finalizes one symlink-free shared app-runtime graph with stable wrappers", () => {
   const root = mkdtempSync(resolve(tmpdir(), "koed-shared-runtime-"));
   roots.push(root);
@@ -36,26 +58,7 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
       write(resolve(root, "node_modules", service.package, entry));
     }
   }
-  for (const entry of [
-    "node_modules/@koed/api/dist/browser-approval/index.html",
-    "node_modules/@koed/db/dist/index.js",
-    "node_modules/@koed/db/dist/connection.js",
-    "node_modules/@koed/db/dist/user-api-token-repository.js",
-    "node_modules/@koed/db/drizzle/meta/_journal.json",
-    "node_modules/@koed/mcp-server/dist/prompts/mcp-server-instructions.md",
-    "node_modules/@koed/mcp-server/dist/prompts/codex-global-agent-guidance.md",
-    "node_modules/@koed/mcp-server/integrations/pi/package.json",
-    "node_modules/@koed/mcp-server/integrations/pi/extensions/koed.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/extensions/structured-result.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/koed-home.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/runtime-client.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/memory-answer-delivery-policy.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/memory-answer-delivery-policy.d.mts",
-    "node_modules/@koed/mcp-server/integrations/pi/pi-memory-delivery.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/pi-memory-delivery.d.mts",
-    "node_modules/@koed/mcp-server/integrations/pi/managed-rpc-host.mjs",
-    "node_modules/@koed/mcp-server/integrations/pi/managed-permissions.mjs"
-  ]) {
+  for (const entry of requiredSharedFixtures) {
     write(resolve(root, entry), "fixture\n");
   }
   const bin = resolve(root, "node_modules", ".bin");
@@ -127,6 +130,39 @@ test("finalizes one symlink-free shared app-runtime graph with stable wrappers",
     () => finalizeStagedAppRuntime(root),
     /integrations\/pi\/package\.json/
   );
+});
+
+test("nulls the runtime catalog without rewriting its hard-linked workspace source", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-shared-runtime-"));
+  roots.push(root);
+  const runtimeRoot = resolve(root, "runtime");
+  for (const service of appRuntimePackages) {
+    for (const entry of service.entries) {
+      write(resolve(runtimeRoot, "node_modules", service.package, entry));
+    }
+  }
+  for (const entry of requiredSharedFixtures) {
+    write(resolve(runtimeRoot, entry), "fixture\n");
+  }
+  const workspaceCatalog = resolve(
+    root,
+    "packages/koed-server/dist/component-manifest-catalog-data.js"
+  );
+  const embedded =
+    'export const productionComponentManifestCatalog = { productVersion: "0.0.0" };\n';
+  write(workspaceCatalog, embedded);
+  const runtimeCatalog = resolve(
+    runtimeRoot,
+    "node_modules/@koed-labs/server/dist/component-manifest-catalog-data.js"
+  );
+  linkSync(workspaceCatalog, runtimeCatalog);
+
+  finalizeStagedAppRuntime(runtimeRoot);
+  assert.equal(
+    readFileSync(runtimeCatalog, "utf8"),
+    "export const productionComponentManifestCatalog = null;\n"
+  );
+  assert.equal(readFileSync(workspaceCatalog, "utf8"), embedded);
 });
 
 test("prunes package documentation but preserves runtime MCP prompt Markdown", () => {

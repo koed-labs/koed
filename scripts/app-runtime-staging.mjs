@@ -197,11 +197,15 @@ export const finalizeStagedAppRuntime = (runtimeRoot) => {
     runtimeRoot,
     "node_modules/@koed-labs/server/dist/component-manifest-catalog-data.js"
   );
-  if (existsSync(catalogModule))
+  if (existsSync(catalogModule)) {
+    // pnpm deploy hard-links injected workspace files. Unlink first so the
+    // workspace build that Desktop packages keeps its embedded catalog.
+    rmSync(catalogModule);
     writeFileSync(
       catalogModule,
       "export const productionComponentManifestCatalog = null;\n"
     );
+  }
   removeBinDirectories(resolve(runtimeRoot, "node_modules"));
   rmSync(resolve(runtimeRoot, "node_modules", ".pnpm"), {
     recursive: true,

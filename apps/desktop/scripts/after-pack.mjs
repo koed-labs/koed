@@ -1,12 +1,13 @@
 import {
   existsSync,
   lstatSync,
+  readFileSync,
   readlinkSync,
   readdirSync,
   rmSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import {
   assertNoClaudeAgentSdkPlatformRuntimes,
   removeClaudeAgentSdkPlatformRuntimes
@@ -112,6 +113,25 @@ export default async function afterPack(context) {
   if (removed > 0) {
     console.log(`Removed ${removed} dangling symlink(s) from ${appPath}.`);
   }
+
+  // Release builds embed the component catalog in app.asar. Check it before
+  // signing and notarization so a bad package fails in minutes, not hours.
+  const catalogPath = process.env.KOED_COMPONENT_MANIFEST_CATALOG;
+  if (catalogPath) {
+    const { version } = JSON.parse(
+      readFileSync(
+        resolve(
+          import.meta.dirname,
+          "../../../packages/koed-server/package.json"
+        ),
+        "utf8"
+      )
+    );
+    const { verifyPackagedDesktopCatalog } =
+      await import("./verify-packaged-component-catalog.mjs");
+    verifyPackagedDesktopCatalog({ appPath, catalogPath, version });
+  }
+
   if (process.env.KOED_ADHOC_SIGN_MACOS_APP !== "true") return;
 
   // Sign Electron's nested app/framework bundles before sealing the completed
