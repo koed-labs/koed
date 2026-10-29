@@ -25,6 +25,7 @@ const sourceManifest = JSON.parse(
 const parseArgs = (args) => {
   const out = { outDir: resolve(repoRoot, "dist/public-server-package") };
   for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--") continue;
     if (args[i] === "--out-dir") out.outDir = resolve(args[++i]);
     else if (args[i] === "--help" || args[i] === "-h") out.help = true;
     else throw new Error(`Unknown option: ${args[i]}`);

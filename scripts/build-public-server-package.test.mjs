@@ -18,6 +18,19 @@ import { requiredComponentIdentities } from "./component-manifest-catalog.mjs";
 const repoRoot = resolve(import.meta.dirname, "..");
 const node24 = process.execPath;
 
+test("public package builder accepts pnpm argument separators", () => {
+  const help = execFileSync(
+    node24,
+    [
+      resolve(repoRoot, "scripts/build-public-server-package.mjs"),
+      "--",
+      "--help"
+    ],
+    { cwd: repoRoot, encoding: "utf8" }
+  );
+  assert.match(help, /Usage: node scripts\/build-public-server-package\.mjs/);
+});
+
 test("assembled public package has only koed bin and self-contained control plane", () => {
   const scratch = realpathSync(
     mkdtempSync(resolve(tmpdir(), "koed public package "))
@@ -43,6 +56,7 @@ test("assembled public package has only koed bin and self-contained control plan
       node24,
       [
         resolve(repoRoot, "scripts/build-public-server-package.mjs"),
+        "--",
         "--out-dir",
         scratch
       ],
