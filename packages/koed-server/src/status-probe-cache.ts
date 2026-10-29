@@ -29,8 +29,12 @@ type SpawnSyncLike = (
  * within the reuse window.
  */
 export const statusProbeReuseMs = 5 * 60_000;
-/** A probe that timed out is retried sooner. */
-const timedOutReuseMs = 15_000;
+/**
+ * A probe that failed is asked again much sooner: failures are often only
+ * "not ready yet" (for example the MCP doctor during startup), and reusing
+ * one for minutes kept Koed marked unhealthy long after it was fine.
+ */
+const failedReuseMs = 20_000;
 const maxEntries = 64;
 
 type CachedResult = {
@@ -89,8 +93,8 @@ const probeKey = (
     )
     .digest("hex");
 
-const timedOut = (result: CachedResult): boolean =>
-  result.error?.code === "ETIMEDOUT" || result.signal === "SIGTERM";
+const succeeded = (result: CachedResult): boolean =>
+  result.status === 0 && !result.error && !result.signal;
 
 export const clearStatusProbeCache = (cacheDir: string): void => {
   try {
@@ -114,7 +118,7 @@ export const cachedStatusProbeSpawnSync = (
     if (
       hit &&
       at - hit.at <
-        (timedOut(hit.result) ? timedOutReuseMs : statusProbeReuseMs) &&
+        (succeeded(hit.result) ? statusProbeReuseMs : failedReuseMs) &&
       at >= hit.at
     ) {
       const { error, ...rest } = hit.result;

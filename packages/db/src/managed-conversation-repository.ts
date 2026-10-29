@@ -114,6 +114,8 @@ export interface ManagedConversationExecutionRecord {
   id: string;
   ownerUserId: string;
   projectId: string;
+  /** A Project's Chief of Staff conversation. */
+  isProjectHq?: boolean;
   provider: string;
   aiClientInstanceId: string;
   model: string;
@@ -1234,6 +1236,7 @@ const mapExecution = (
   id: row.id,
   ownerUserId: row.owner_user_id,
   projectId: row.project_id,
+  isProjectHq: row.is_project_hq,
   provider: row.provider,
   aiClientInstanceId: row.ai_client_instance_id,
   model: row.model,

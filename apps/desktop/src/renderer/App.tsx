@@ -703,7 +703,10 @@ export function App({
     const unhealthy = core
       ? Object.entries(core)
           .filter(([, component]) => component.state !== "healthy")
-          .map(([name, component]) => `${name}=${component.state}`)
+          .map(
+            ([name, component]) =>
+              `${name}=${component.state}${component.state === "needs_attention" && component.message ? ` (${component.message.slice(0, 60)})` : ""}`
+          )
       : [];
     // Records each distinct set of unhealthy services once.
     if (unhealthy.length) startupMark(`not healthy: ${unhealthy.join(", ")}`);

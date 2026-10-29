@@ -58,6 +58,20 @@ describe("status probe cache", () => {
     expect(spawn).toHaveBeenCalledTimes(4);
   });
 
+  it("asks again soon after a failed probe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "koed-probe-cache-"));
+    let clock = 0;
+    const spawn = vi.fn(() => answer("", { status: 1 }));
+    const probe = cachedStatusProbeSpawnSync(dir, spawn, () => clock);
+    probe("node", ["mcp-cli.js", "doctor"]);
+    clock = 10_000;
+    probe("node", ["mcp-cli.js", "doctor"]);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    clock = 25_000;
+    probe("node", ["mcp-cli.js", "doctor"]);
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
   it("replays a failed probe's error", () => {
     const dir = mkdtempSync(join(tmpdir(), "koed-probe-cache-"));
     const spawn = vi.fn(() =>
