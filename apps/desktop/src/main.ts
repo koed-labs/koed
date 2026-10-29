@@ -1006,22 +1006,38 @@ app.on("activate", () => {
   }
 });
 let koedServerStoppedForQuit = false;
+let koedServerStoppingForQuit = false;
 app.on("before-quit", (event) => {
   if (koedServerStoppedForQuit) {
     return;
   }
+  if (koedServerStoppingForQuit) {
+    // A second Quit while services stop must not start a second shutdown.
+    event.preventDefault();
+    return;
+  }
+  koedServerStoppingForQuit = true;
   // Revoke renderer commands before asynchronous shutdown can outlive an Undo window.
   if (desktopFeatureFlagsFromEnvironment(process.env).hqEnabled) {
     allowedRendererOrigins.clear();
   }
   event.preventDefault();
+  // Stopping local services takes seconds. Hide the windows now so quitting
+  // feels immediate; the services stop in the background before exit.
+  for (const window of BrowserWindow.getAllWindows()) window.hide();
   void (async () => {
-    await managedPreviewController.close();
-    await phoneGateway?.stop().catch(() => undefined);
-    await koedServer?.stop();
-    desktopMenuBar?.dispose();
-    desktopMenuBar = null;
-    koedServerStoppedForQuit = true;
-    app.quit();
+    try {
+      await managedPreviewController.close().catch(() => undefined);
+      await phoneGateway?.stop().catch(() => undefined);
+      await koedServer?.stop();
+    } catch (error) {
+      // The windows are already hidden; never leave the app running unseen.
+      console.warn("[quit] Koed services did not stop cleanly:", error);
+    } finally {
+      desktopMenuBar?.dispose();
+      desktopMenuBar = null;
+      koedServerStoppedForQuit = true;
+      app.quit();
+    }
   })();
 });

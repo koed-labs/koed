@@ -2586,13 +2586,45 @@ export const createKoedServerManager = ({
     return withPackageComponent(current, packageStatus);
   };
 
+  /**
+   * One startup status read. Each read is a Node process that takes seconds
+   * on a busy Mac, so a read that began before the API came up would report
+   * "not ready" and cost the app a whole extra read. While a read runs, watch
+   * the cheap /ready check; when the API comes up first, start a fresh read
+   * and use whichever finishes ready.
+   */
+  const startupStatusSoonAfterApiReady = async (): Promise<unknown> => {
+    const read = () => runJson(["status", "--startup"], statusCommandTimeoutMs);
+    if (await runtimeApiOrigin()) return read();
+    const first = read();
+    let settled = false;
+    const firstResult = first.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error })
+    );
+    void firstResult.then(() => (settled = true));
+    // Resolves to a fresh read once the API answers, or null if the first
+    // read finished before that.
+    const fresh = (async (): Promise<{ read: Promise<unknown> } | null> => {
+      while (!settled) {
+        await sleep(250);
+        if (!settled && (await runtimeApiOrigin())) return { read: read() };
+      }
+      return null;
+    })();
+    const outcome = await firstResult;
+    if ("value" in outcome && setupStartupReady(outcome.value))
+      return outcome.value;
+    const second = await fresh;
+    if (second) return second.read;
+    if ("error" in outcome) throw outcome.error;
+    return outcome.value;
+  };
+
   const pollUntilReady = async (attemptLimit = 90) => {
     let latest: unknown = null;
     for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
-      const result = await runJson(
-        ["status", "--startup"],
-        statusCommandTimeoutMs
-      );
+      const result = await startupStatusSoonAfterApiReady();
       latest = isRenderableKoedServerStartupStatus(result)
         ? result
         : diagnosticStartupStatus("Koed startup status could not be read.");
@@ -6571,6 +6603,16 @@ export const createKoedServerManager = ({
     });
 
   const requestDaemonStart = async () => {
+    const running = await runtimeApiOrigin();
+    if (running) {
+      retainedPersonalApiOrigin = running;
+      await provisionLocalAppCredential();
+      return {
+        ok: true,
+        state: "starting",
+        message: "Koed server is already starting or running."
+      };
+    }
     const current = await runJson(
       ["status", "--startup"],
       statusCommandTimeoutMs
