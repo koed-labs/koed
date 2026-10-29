@@ -232,6 +232,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   const run = async (): Promise<void> => {
     if (running || stopped) return running ?? Promise.resolve();
     requested = false;
+    const passStartedAt = Date.now();
     running = (async () => {
       try {
         const progressed = await pass();
@@ -245,7 +246,12 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       }
     })().finally(() => {
       running = null;
-      if (requested) schedule();
+      // Importing past conversations is background work that can run for
+      // hours. Rest as long as the last pass took (up to 10 seconds) before
+      // the next one, so it uses at most about half of the time and the
+      // conversations you are having stay responsive.
+      if (requested)
+        schedule(Math.min(Math.max(Date.now() - passStartedAt, 0), 10_000));
       else if (!stopped && !state.runCompleted && state.selections.length > 0) {
         schedule(input.retryMs);
       }
