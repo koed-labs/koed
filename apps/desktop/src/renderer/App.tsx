@@ -674,9 +674,13 @@ export function App({
     readTheme,
     readTheme
   );
+  // The local API and database are all the collaboration snapshot needs.
+  // Waiting for every setup check (AI Clients, models, last verification)
+  // held the whole app on "Opening your Chief of Staff…" for a minute or
+  // more on a busy Mac, because each full status read takes many seconds.
   const collaboration = useCollaborationController(
     client,
-    localSetupReady ?? false
+    Boolean(localSetupReady || personalMemoryReady)
   );
   const route = currentNavigationEntry(navigation).route;
   const selectedAskThreadId =

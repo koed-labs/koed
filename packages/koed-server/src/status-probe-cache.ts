@@ -23,9 +23,10 @@ type SpawnSyncLike = (
  * and its sign-in state, and runs the MCP doctor. Every one of those is a
  * separate program; together they take 10-20 seconds on a busy Mac, and
  * Desktop asks for status every few seconds. Their answers rarely change, so
- * status reuses an answer for a short while. Any other koed command (setup,
- * repair, start, stop, ...) clears the cache first, so changes Koed makes
- * show at once; changes made outside Koed show within the reuse window.
+ * status reuses an answer for a short while. Commands that change AI Client
+ * or MCP setup (setup, repair, doctor, remote, installs) clear the cache
+ * first, so changes Koed makes show at once; changes made outside Koed show
+ * within the reuse window.
  */
 export const statusProbeReuseMs = 60_000;
 /** A probe that timed out is retried sooner. */

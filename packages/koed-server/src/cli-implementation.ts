@@ -408,18 +408,10 @@ export const runKoedServerCli = async (
   const subcommand = args[1];
   const wantsHelp = args.includes("--help") || args.includes("-h");
   const wantsJson = args.includes("--json");
-  // Commands that change AI Client, MCP or service setup make the next
-  // status probe its answers afresh.
+  // Commands that change AI Client or MCP setup make the next status probe
+  // its answers afresh. Starting or stopping services changes none of them.
   if (
-    [
-      "setup",
-      "repair",
-      "start",
-      "stop",
-      "restart",
-      "doctor",
-      "remote"
-    ].includes(command ?? "") ||
+    ["setup", "repair", "doctor", "remote"].includes(command ?? "") ||
     (["package", "runtime", "models"].includes(command ?? "") &&
       ["install", "activate"].includes(subcommand ?? ""))
   )
