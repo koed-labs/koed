@@ -4339,6 +4339,16 @@ const directRecallKind = (
   }
 };
 
+const directRecallBareQuestion = (
+  record: Record<string, unknown>,
+  text: string
+): boolean =>
+  record.sourceType !== "memory_node" &&
+  record.sourceType !== "curated_memory" &&
+  text.length <= 300 &&
+  !text.includes("\n") &&
+  /\?\s*$/.test(text);
+
 /**
  * Memory recall for an AI Client that writes the answer itself, such as the
  * Chief of Staff. A Memory Answer normally hands the question to a second AI
@@ -4401,6 +4411,9 @@ export const directMemoryRecallAnswer = async (
           : "";
     const [citation] = citationsFromHits([item]);
     if (!text || !citation) continue;
+    // A short bare question (often an earlier recall request captured from a
+    // conversation) matches the new question closely but holds no answer.
+    if (directRecallBareQuestion(record, text)) continue;
     const key = sourceKey(citation);
     if (seen.has(key)) continue;
     const label = [directRecallKind(record), directRecallDate(record)]
