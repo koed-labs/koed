@@ -1706,19 +1706,63 @@ export function HqActiveConversation({
     );
   const active =
     runtimeBusy && runtime?.latestCommand?.state !== "indeterminate";
+  const [retainedStream, setRetainedStream] = useState<{
+    text: string;
+    createdAt: string;
+  } | null>(null);
+  useEffect(() => {
+    const streamed = runtime?.items
+      .filter(
+        (item) =>
+          item.itemKind === "transient_output" &&
+          typeof item.payload.text === "string" &&
+          item.payload.text.trim()
+      )
+      .at(-1);
+    if (streamed)
+      setRetainedStream((current) =>
+        current?.text === streamed.payload.text &&
+        current?.createdAt === streamed.createdAt
+          ? current
+          : {
+              text: streamed.payload.text as string,
+              createdAt: streamed.createdAt
+            }
+      );
+  }, [runtime]);
+  // The latest step reported for the running turn, e.g. "Checking memory".
+  const currentActivity = (() => {
+    let latest: { at: string; activity: string } | null = null;
+    for (const item of runtime?.items ?? []) {
+      const activity = item.payload.activity;
+      if (
+        item.itemKind !== "transient_output" ||
+        typeof activity !== "string" ||
+        !activity.trim()
+      )
+        continue;
+      if (!latest || item.updatedAt > latest.at)
+        latest = { at: item.updatedAt, activity: activity.slice(0, 80) };
+    }
+    return latest?.activity ?? null;
+  })();
   const matchingTerminal =
     runtime?.latestCommand?.commandKind === "prompt" &&
     runtime.latestCommand.clientUserMessageId === pending.current?.messageId &&
     ["completed", "failed"].includes(runtime.latestCommand.state);
   const launchOptionsReadAt = useRef(0);
+  const usageReadAt = useRef(0);
   const refresh = useCallback(async () => {
     if (!api || !executionId) return;
     // Launch options rarely change: read them every 30 s, not every poll.
     const launchDue = Date.now() - launchOptionsReadAt.current > 30_000;
     if (launchDue) launchOptionsReadAt.current = Date.now();
+    // Usage changes slowly; fast progress reads skip it.
+    const usageDue = Date.now() - usageReadAt.current > 3_000;
+    if (usageDue) usageReadAt.current = Date.now();
     const [run, nextUsage, launch] = await Promise.allSettled([
       api.runtime(executionId),
-      api.usage(executionId),
+      usageDue ? api.usage(executionId) : Promise.reject(new Error("not due")),
       launchDue ? api.launchOptions() : Promise.reject(new Error("not due"))
     ]);
     if (identityKeyRef.current !== identityKey) return;
@@ -1940,13 +1984,20 @@ export function HqActiveConversation({
   useEffect(() => {
     void refresh();
   }, [refresh]);
+  // While a reply is on its way, read progress often so streamed text and
+  // steps such as "Checking memory…" appear as they happen; when idle, read
+  // rarely so the app is not kept busy.
+  const turnInFlight = active || optimistic.length > 0;
   useEffect(() => {
     if (!api || !executionId) return;
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, 2000);
+    const timer = window.setInterval(
+      () => {
+        void refresh();
+      },
+      turnInFlight ? 500 : 4000
+    );
     return () => window.clearInterval(timer);
-  }, [api, executionId, refresh]);
+  }, [api, executionId, refresh, turnInFlight]);
   useEffect(() => {
     if (!api || !detailThread.sessionId) return;
     let active = true;
@@ -3008,6 +3059,7 @@ export function HqActiveConversation({
             {executionId && window.koedDesktop?.managedMemoryActions ? (
               <ManagedMemoryActions
                 key={`${citationGeneration}:${executionId}`}
+                refreshSignal={`${runtime?.latestCommand?.id ?? ""}:${runtime?.latestCommand?.state ?? ""}`}
                 api={window.koedDesktop.managedMemoryActions}
                 executionId={executionId}
                 ownerId={visibilityOwnerId ?? undefined}
@@ -3021,6 +3073,7 @@ export function HqActiveConversation({
             window.koedDesktop?.managedTextActions ? (
               <ManagedTextActions
                 key={`text-actions:${identityKey}:${executionId}`}
+                refreshSignal={`${runtime?.latestCommand?.id ?? ""}:${runtime?.latestCommand?.state ?? ""}`}
                 api={window.koedDesktop.managedTextActions}
                 executionId={executionId}
                 ownerId={visibilityOwnerId}
@@ -3054,6 +3107,30 @@ export function HqActiveConversation({
                 <p className="hq-conversation__bubble">
                   {draft.initialPrompt.prompt}
                 </p>
+              </article>
+            ) : null}
+            {retainedStream &&
+            !runtime?.items.some(
+              (item) =>
+                item.itemKind === "transient_output" &&
+                typeof item.payload.text === "string"
+            ) &&
+            !visibleEvents.some(
+              (event) =>
+                (event.actor === "assistant" || event.actor === "agent") &&
+                Date.parse(event.timestamp) >=
+                  Date.parse(retainedStream.createdAt)
+            ) ? (
+              // The streamed reply stays on screen after the turn ends until
+              // the saved reply replaces it, instead of blinking out.
+              <article className="hq-conversation__message hq-conversation__message--assistant">
+                <b>{assistantName ?? "AI Client"}</b>
+                <CitedAnswer
+                  source={retainedStream.text}
+                  citations={[]}
+                  adapters={markdownAdapters}
+                  onOpen={openCitation}
+                />
               </article>
             ) : null}
             {runtime?.items
@@ -3096,7 +3173,9 @@ export function HqActiveConversation({
               ))}
             {active ? (
               <p className="hq-conversation__working" role="status">
-                {assistantName ?? "The AI Client"} is working…
+                {currentActivity
+                  ? `${currentActivity}…`
+                  : `${assistantName ?? "The AI Client"} is working…`}
               </p>
             ) : null}
           </div>

@@ -2024,6 +2024,24 @@ export const createManagedConversationService = (options: {
       executionGeneration: execution.executionGeneration,
       aiClientInstanceId: execution.aiClientInstanceId,
       onKoedToolCompleted: (tool) => completedKoedTool(execution, tool),
+      // Shown in the conversation while the turn runs ("Checking memory…").
+      // Prompt completion deletes this generation's transient items.
+      onAgentActivity: async ({ turnId, activity }) => {
+        await options.repository
+          .putManagedConversationRuntimeItem(
+            { userId: execution.ownerUserId },
+            {
+              executionId: execution.id,
+              executionGeneration: execution.executionGeneration,
+              providerRequestId: `transient:${turnId}:activity`,
+              providerTurnId: turnId,
+              itemKind: "transient_output",
+              payload: { activity }
+            }
+          )
+          .then(() => signalRuntimeWake())
+          .catch(() => undefined);
+      },
       appServer: {
         appServerBinary:
           runtimeEnvironment.MEMORY_CODEX_APP_SERVER_BINARY ??

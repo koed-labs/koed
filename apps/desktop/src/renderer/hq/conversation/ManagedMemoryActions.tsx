@@ -7,6 +7,7 @@ import "./hq-memory-actions.css";
 
 /** Show only owner-facing results loaded from the current trusted Desktop profile. */
 export function ManagedMemoryActions({
+  refreshSignal,
   api,
   executionId,
   ownerId,
@@ -14,6 +15,8 @@ export function ManagedMemoryActions({
   onChanged,
   onOfferChatForget
 }: {
+  /** Changes when the conversation's latest command changes state. */
+  refreshSignal?: string;
   api: ManagedMemoryActionDesktopApi;
   executionId: string;
   ownerId?: string;
@@ -27,6 +30,7 @@ export function ManagedMemoryActions({
   const generation = useRef(0);
   const busy = useRef(false);
 
+  const loadRef = useRef<(() => Promise<void>) | null>(null);
   useEffect(() => {
     const current = ++generation.current;
     setActions([]);
@@ -47,7 +51,10 @@ export function ManagedMemoryActions({
       }
     };
     void load();
-    const timer = setInterval(() => void load(), 5_000);
+    loadRef.current = load;
+    // New actions follow a finished turn (see refreshSignal), so a slow
+    // background check is enough between turns.
+    const timer = setInterval(() => void load(), 20_000);
     const onVisibilityChange = () => void load();
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
@@ -56,6 +63,9 @@ export function ManagedMemoryActions({
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [api, executionId, ownerId, profileKey]);
+  useEffect(() => {
+    if (refreshSignal) void loadRef.current?.();
+  }, [refreshSignal]);
 
   const undo = async (action: ManagedMemoryAction) => {
     if (busy.current) return;

@@ -956,16 +956,24 @@ export function App({
     // starting, then back off: a service that stays unhealthy (for example
     // one that is not set up) otherwise kept the Mac busy reading status
     // back to back for as long as the app was open.
+    // Once Koed is usable, a remaining unhealthy service is rechecked only
+    // every two minutes (status changes Koed makes are pushed anyway).
+    const maximum = localSetupReady ? 120_000 : 30_000;
     let delay = 1_500;
     let timer = 0;
     const tick = () => {
       void activeStatusStore.refresh();
-      delay = Math.min(delay * 1.5, 30_000);
+      delay = Math.min(delay * 1.5, maximum);
       timer = window.setTimeout(tick, delay);
     };
     timer = window.setTimeout(tick, delay);
     return () => window.clearTimeout(timer);
-  }, [activeStatusStore, desktopHealthIsReady, statusReadyOverride]);
+  }, [
+    activeStatusStore,
+    desktopHealthIsReady,
+    statusReadyOverride,
+    localSetupReady
+  ]);
 
   useEffect(() => {
     if (statusReadyOverride !== undefined) return;

@@ -21,6 +21,7 @@ import {
 } from "./codex-historical-ingestion.js";
 import {
   createHistoricalBatchScheduler,
+  markForegroundWork,
   startHistoricalIngestionCoordinator
 } from "./historical-ingestion-coordinator.js";
 import { createClaudeHistoricalProviderAdapter } from "./claude-historical-import.js";
@@ -648,22 +649,29 @@ export const startLocalAiRuntime = async ({
     ? new MemoryAnswerTaskScheduler(
         taskCoordinator!,
         {
-          executeMemoryAnswerTask: (
+          executeMemoryAnswerTask: async (
             input,
             caller,
             taskId,
             signal,
             onProgress,
             context
-          ) =>
-            executor.executeMemoryAnswerTask!(
-              input,
-              caller,
-              taskId,
-              signal,
-              onProgress,
-              context
-            )
+          ) => {
+            // Someone is waiting for this answer: hold history import.
+            const release = markForegroundWork();
+            try {
+              return await executor.executeMemoryAnswerTask!(
+                input,
+                caller,
+                taskId,
+                signal,
+                onProgress,
+                context
+              );
+            } finally {
+              release();
+            }
+          }
         },
         {
           executionCapacity: answerCapacity,

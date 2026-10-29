@@ -191,6 +191,7 @@ const deckReviewDetails = (action: KoedTextActionProjection) => {
 
 /** A Koed action approval is separate from AI Client command approval. */
 export function ManagedTextActions({
+  refreshSignal,
   api,
   executionId,
   ownerId,
@@ -200,6 +201,8 @@ export function ManagedTextActions({
   onResumeMove,
   onOpenDeck
 }: {
+  /** Changes when the conversation's latest command changes state. */
+  refreshSignal?: string;
   api: ManagedTextActionDesktopApi;
   executionId: string;
   ownerId?: string;
@@ -216,6 +219,7 @@ export function ManagedTextActions({
   const inFlight = useRef(new Set<string>());
   const busy = useRef(false);
 
+  const loadRef = useRef<(() => Promise<void>) | null>(null);
   useEffect(() => {
     const current = ++scope.current;
     inFlight.current.clear();
@@ -243,7 +247,10 @@ export function ManagedTextActions({
       }
     };
     void load();
-    const timer = window.setInterval(() => void load(), 5_000);
+    loadRef.current = load;
+    // New actions follow a finished turn (see refreshSignal), so a slow
+    // background check is enough between turns.
+    const timer = window.setInterval(() => void load(), 20_000);
     const onVisibilityChange = () => void load();
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
@@ -252,6 +259,9 @@ export function ManagedTextActions({
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [api, executionId, ownerId, profileKey]);
+  useEffect(() => {
+    if (refreshSignal) void loadRef.current?.();
+  }, [refreshSignal]);
 
   const run = async (action: KoedTextActionProjection) => {
     if (!onApply || busy.current || inFlight.current.has(action.id)) return;

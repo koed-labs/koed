@@ -433,7 +433,7 @@ describe("HQ active Conversation", () => {
     );
     const initialRefreshes = vi.mocked(f.api.runtime).mock.calls.length;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(2_001);
+      await vi.advanceTimersByTimeAsync(4_001);
     });
     vi.useRealTimers();
     expect(vi.mocked(f.api.runtime).mock.calls.length).toBeGreaterThan(
@@ -986,6 +986,60 @@ describe("HQ active Conversation", () => {
     expect(container.textContent).toContain("rejected authentication");
   });
 
+  it("shows what the AI Client is doing while a reply is on its way", async () => {
+    const activity = {
+      id: "activity-1",
+      providerTurnId: "turn-1",
+      providerItemId: null,
+      itemKind: "transient_output",
+      executionGeneration: 1,
+      state: "pending",
+      answered: false,
+      presentation: {
+        mode: "status",
+        renderer: "message",
+        policyKey: "transient",
+        policyRevision: 1,
+        reason: "Fixture"
+      },
+      revision: 1,
+      createdAt: "2026-10-19T00:00:00Z",
+      updatedAt: "2026-10-19T00:00:01Z",
+      payload: { activity: "Checking memory" }
+    } satisfies ManagedConversationRuntimeItem;
+    const capturedDraft = {
+      ...draft,
+      conversation: { ...identity, capturedSessionId: "captured-1" }
+    } as ManagedConversationDraft;
+    const events = [
+      {
+        id: "question-1",
+        actor: "user",
+        eventType: "message",
+        content: "How do I like my answers?",
+        timestamp: "2026-10-19T00:00:00Z",
+        sourceEventTime: null,
+        sourceSequence: 1,
+        invalidatedAt: null,
+        metadata: {}
+      }
+    ] as unknown as PersonalDesktopConversationEvent[];
+    const f = fixture("ready", "queued", capturedDraft, events, [activity]);
+    f.setLatestCommand({
+      id: "command-1",
+      sequence: 1,
+      executionGeneration: 1,
+      commandKind: "prompt",
+      clientUserMessageId: "message-1",
+      state: "dispatching",
+      lastErrorCode: null,
+      updatedAt: "2026-10-19T00:00:00Z"
+    });
+    await f.render();
+    expect(container.textContent).toContain("Checking memory…");
+    expect(container.textContent).not.toContain("is working…");
+  });
+
   it("binds inline approval response to item, kind, and execution generation", async () => {
     const item = {
       id: "approval-1",
@@ -1147,13 +1201,13 @@ describe("HQ active Conversation", () => {
     Object.defineProperty(scroll, "scrollHeight", { get: () => height });
     Object.defineProperty(scroll, "clientHeight", { get: () => 100 });
     events[0]!.content = "Part one streamed part two";
-    await act(async () => vi.advanceTimersByTimeAsync(2_001));
+    await act(async () => vi.advanceTimersByTimeAsync(4_001));
     expect(scroll.scrollTop).toBe(500);
     scroll.scrollTop = 100;
     scroll.dispatchEvent(new Event("scroll", { bubbles: true }));
     height = 800;
     events[0]!.content = "Part one streamed part two and three";
-    await act(async () => vi.advanceTimersByTimeAsync(2_001));
+    await act(async () => vi.advanceTimersByTimeAsync(4_001));
     expect(scroll.scrollTop).toBe(100);
   });
 

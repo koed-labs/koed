@@ -1420,6 +1420,11 @@ export class CodexAppServerClient {
       return;
     }
 
+    // A started item (a tool call, a command, reasoning) also goes to the
+    // transient handler at once, so the person can see what the AI Client is
+    // doing while durable events are still being written.
+    if (message.method === "item/started")
+      this.dispatchTransientEvent(rawEvent);
     if (message.method === "item/agentMessage/delta") {
       const params = asRecord(message.params);
       if (

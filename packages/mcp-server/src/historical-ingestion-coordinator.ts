@@ -45,6 +45,28 @@ export interface HistoricalBatchScheduler {
   runExclusive<Result>(operation: () => Promise<Result>): Promise<Result>;
 }
 
+let foregroundWork = 0;
+
+/**
+ * Marks work someone is waiting for (a Memory Answer) as running in this
+ * process. Historical batches wait until it finishes, so importing past
+ * conversations never competes with an answer. Call the result when done.
+ */
+export const markForegroundWork = (): (() => void) => {
+  foregroundWork += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    foregroundWork -= 1;
+  };
+};
+
+const waitForForegroundWork = async (): Promise<void> => {
+  while (foregroundWork > 0)
+    await new Promise((resolve) => setTimeout(resolve, 500).unref?.());
+};
+
 export const createHistoricalBatchScheduler = (): HistoricalBatchScheduler => {
   let tail = Promise.resolve();
   return {
@@ -56,6 +78,7 @@ export const createHistoricalBatchScheduler = (): HistoricalBatchScheduler => {
       });
       await predecessor;
       try {
+        await waitForForegroundWork();
         return await operation();
       } finally {
         release();

@@ -79,6 +79,11 @@ export interface CodexManagedConversationConfig {
     result: unknown;
   }) => Promise<void>;
   onStartupTiming?: (timing: CodexConversationStartupTiming) => void;
+  /** What the AI Client is doing right now, e.g. "Checking memory". */
+  onAgentActivity?: (input: {
+    turnId: string;
+    activity: string;
+  }) => void | Promise<void>;
   transcriptReadMaxBytes?: number;
   requestTimeoutMs?: number;
   interruptRequestTimeoutMs?: number;
@@ -217,6 +222,36 @@ export interface CodexManagedConversationSealedSource {
   providerCursorOffset: number;
   providerCursorLine: number;
 }
+
+/** A short, plain description of a started Codex item, or null. */
+export const codexItemActivity = (
+  item: Record<string, unknown>
+): string | null => {
+  switch (item.type) {
+    case "mcpToolCall":
+      if (
+        item.server === "koed" &&
+        typeof item.tool === "string" &&
+        /^memory_(answer|answer_result|search|expand)$/.test(item.tool)
+      )
+        return "Checking memory";
+      return typeof item.tool === "string" && /^[\w.-]{1,64}$/.test(item.tool)
+        ? `Using ${item.tool.replace(/_/g, " ")}`
+        : "Using a tool";
+    case "commandExecution":
+      return "Running a command";
+    case "fileChange":
+      return "Editing files";
+    case "webSearch":
+      return "Searching the web";
+    case "reasoning":
+      return "Thinking";
+    case "agentMessage":
+      return "Writing";
+    default:
+      return null;
+  }
+};
 
 export class CodexManagedConversationIdentityError extends Error {
   constructor(readonly issues: CodexConversationIdentityIssue[]) {
@@ -1647,6 +1682,24 @@ export class CodexManagedConversationSession {
       return;
     }
     const params = asRecord(event.params);
+    if (event.method === "item/started") {
+      const activity = codexItemActivity(asRecord(params.item));
+      if (
+        activity &&
+        typeof params.turnId === "string" &&
+        this.config.onAgentActivity
+      )
+        // Showing progress must never fail the conversation.
+        void Promise.resolve()
+          .then(() =>
+            this.config.onAgentActivity?.({
+              turnId: params.turnId as string,
+              activity
+            })
+          )
+          .catch(() => undefined);
+      return;
+    }
     if (
       event.method !== "item/agentMessage/delta" ||
       typeof params.threadId !== "string" ||
