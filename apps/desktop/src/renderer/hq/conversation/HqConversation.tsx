@@ -2303,23 +2303,48 @@ export function HqActiveConversation({
       setError(`/${unverified} is not verified and cannot be dispatched.`);
       return;
     }
+    // Why a send did nothing, for the app log and so the person is not left
+    // wondering. Each entry names one condition that holds the message back.
+    const blockers = Object.entries({
+      api: !api,
+      recovery: !recoveryReady || !lifecycle?.persistPendingSend,
+      execution: !conversation?.executionId,
+      runtime: !runtime && !exactRetry,
+      resume: resumeStatus !== "ready",
+      settingsExecution:
+        expectedForExecution !== conversation?.executionId && !exactRetry,
+      empty: !effectivePrompt.trim(),
+      busy,
+      terminalRetry: Boolean(manualRetry && matchingTerminal),
+      runtimeBusy:
+        runtimeBusy &&
+        !(manualRetry && runtime?.latestCommand?.state === "indeterminate"),
+      failed: runtime?.executionState === "failed",
+      sendLocked: sendLocked && !manualRetry,
+      settings: !expected && !exactRetry,
+      selection: !manualRetry && !hqSelectionIsSupported(options, selection)
+    })
+      .filter(([, blocked]) => blocked)
+      .map(([name]) => name);
+    if (blockers.length) {
+      console.info(
+        `[koed-send] not sent: ${blockers.join(", ")} (resume=${String(resumeStatus)}, command=${runtime?.latestCommand?.state ?? "none"}, uncertain=${String(uncertainSend)}, pending=${String(Boolean(recoveredPending))})`
+      );
+      if (blockers.includes("empty") || blockers.includes("busy")) return;
+      setError(
+        blockers.includes("runtimeBusy")
+          ? `${assistantName ?? "The AI Client"} is still finishing the last reply. Your message stays here; send it again in a moment.`
+          : blockers.includes("sendLocked")
+            ? "Koed is still checking whether your last message arrived. Your message stays here; send it again once that check finishes."
+            : `${assistantName ?? "The AI Client"} is not ready to take a message yet. Your message stays here; try again in a moment.`
+      );
+      return;
+    }
     if (
       !api ||
-      !recoveryReady ||
       !lifecycle?.persistPendingSend ||
       !conversation?.executionId ||
-      (!runtime && !exactRetry) ||
-      resumeStatus !== "ready" ||
-      (expectedForExecution !== conversation.executionId && !exactRetry) ||
-      !effectivePrompt.trim() ||
-      busy ||
-      (manualRetry && matchingTerminal) ||
-      (runtimeBusy &&
-        !(manualRetry && runtime?.latestCommand?.state === "indeterminate")) ||
-      runtime?.executionState === "failed" ||
-      (sendLocked && !manualRetry) ||
-      (!expected && !exactRetry) ||
-      (!manualRetry && !hqSelectionIsSupported(options, selection))
+      (!expected && !exactRetry)
     )
       return;
     const settingsChange = expected

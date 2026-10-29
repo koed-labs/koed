@@ -349,10 +349,14 @@ const createWindow = async () => {
     }
     return { action: "deny" };
   });
-  // Startup timing marks from the renderer ("[koed-startup] …") go to the
-  // app log, so a slow first screen can be traced to the step that waited.
+  // Startup timing marks from the renderer ("[koed-startup] …") and the
+  // reason a message was held back ("[koed-send] …") go to the app log, so a
+  // slow first screen or a send that did nothing can be traced.
   window.webContents.on("console-message", (event) => {
-    if (event.message.startsWith("[koed-startup] "))
+    if (
+      event.message.startsWith("[koed-startup] ") ||
+      event.message.startsWith("[koed-send] ")
+    )
       console.info(`${new Date().toISOString()} ${event.message}`);
   });
   window.webContents.on("will-navigate", (event, url) => {
