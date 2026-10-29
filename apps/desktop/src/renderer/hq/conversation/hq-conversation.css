@@ -643,6 +643,11 @@
   color: var(--hq-muted, #a6aca5);
   font-size: 14px;
 }
+.hq-conversation__tool-activity {
+  margin: 0;
+  color: var(--hq-muted, #a6aca5);
+  font-size: 13px;
+}
 .hq-runtime-item {
   display: flex;
   flex-direction: column;

@@ -135,6 +135,10 @@
       "types": "./dist/koed-text-action-contract.d.ts",
       "import": "./dist/koed-text-action-contract.js"
     },
+    "./managed-project-recall-contract": {
+      "types": "./dist/managed-project-recall-contract.d.ts",
+      "import": "./dist/managed-project-recall-contract.js"
+    },
     "./sharing-help": {
       "types": "./dist/sharing-help.d.ts",
       "import": "./dist/sharing-help.js"

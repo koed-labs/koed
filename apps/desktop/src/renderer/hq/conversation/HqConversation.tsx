@@ -36,8 +36,11 @@ import {
 } from "react";
 import {
   conversationEventText,
-  expandConversationDisplayEvents
+  conversationEventToolDisplay,
+  expandConversationDisplayEvents,
+  type DesktopConversationEvent
 } from "../../../desktop-conversation.js";
+import { conversationToolKindAndLabel } from "@koed/shared/personal-desktop";
 import type { DesktopProject } from "../../../project-memory-ui.js";
 import type {
   ManagedConversationDesktopApi,
@@ -115,6 +118,14 @@ const draftScope = (identity: ManagedConversationIdentity) => ({
   capturedSessionId: identity.capturedSessionId,
   threadId: identity.threadId
 });
+
+/** One short line for a tool the AI used, e.g. "Checked memory". */
+const hqToolActivityLabel = (event: DesktopConversationEvent): string => {
+  if (event.toolDisplay || typeof event.metadata.toolName === "string")
+    return conversationEventToolDisplay(event).label;
+  const named = /^Tool call:\s*(\S+)/u.exec(conversationEventText(event));
+  return conversationToolKindAndLabel(named?.[1] ?? "").label;
+};
 
 export function HqConversationSettings({
   options,
@@ -500,6 +511,7 @@ export function HqConversationSettings({
 }
 
 function Composer({
+  assistantName,
   value,
   setValue,
   onSubmit,
@@ -537,6 +549,8 @@ function Composer({
   previousUsageChoice,
   onManageSharing
 }: {
+  /** Who replies here, e.g. the Chief of Staff; generic when absent. */
+  assistantName?: string;
   value: string;
   setValue: (value: string) => void;
   onSubmit: () => void;
@@ -640,8 +654,16 @@ function Composer({
         ) : null}
         <textarea
           ref={input}
-          aria-label="Message your AI Client"
-          placeholder="What do you want to get done?"
+          aria-label={
+            assistantName
+              ? `Message ${assistantName}`
+              : "Message your AI Client"
+          }
+          placeholder={
+            assistantName
+              ? `Message ${assistantName}`
+              : "What do you want to get done?"
+          }
           rows={1}
           value={value}
           disabled={busy || lockDraft}
@@ -1268,8 +1290,11 @@ export function HqActiveConversation({
   onOpenDeck,
   focusEventId,
   agentsApi,
-  helperAgents = []
+  helperAgents = [],
+  assistantName
 }: {
+  /** Who replies here, e.g. the Chief of Staff; "AI Client" when absent. */
+  assistantName?: string;
   api: ManagedConversationDesktopApi | null;
   localAiClients?: DesktopApi["localAiClients"];
   usageAuthorityKey?: string;
@@ -2905,6 +2930,25 @@ export function HqActiveConversation({
             {visibleEvents.map((event, index) => {
               const message = conversationEventText(event);
               if (!message) return null;
+              if (event.actor === "tool") {
+                // Show what the AI did in one short line, not the raw call.
+                const label = hqToolActivityLabel(event);
+                const previous = visibleEvents[index - 1];
+                if (
+                  previous?.actor === "tool" &&
+                  hqToolActivityLabel(previous) === label
+                )
+                  return null;
+                return (
+                  <p
+                    className="hq-conversation__tool-activity"
+                    key={event.id}
+                    data-message-id={event.id}
+                  >
+                    {label}
+                  </p>
+                );
+              }
               const user = event.actor === "user";
               const precedingUser = visibleEvents
                 .slice(0, index)
@@ -2916,7 +2960,7 @@ export function HqActiveConversation({
                   key={event.id}
                   data-message-id={event.id}
                 >
-                  {!user ? <b>AI Client</b> : null}
+                  {!user ? <b>{assistantName ?? "AI Client"}</b> : null}
                   {user ? (
                     <p className="hq-conversation__bubble">{message}</p>
                   ) : (
@@ -3030,7 +3074,7 @@ export function HqActiveConversation({
                     className="hq-conversation__message hq-conversation__message--assistant"
                     key={item.id}
                   >
-                    <b>AI Client</b>
+                    <b>{assistantName ?? "AI Client"}</b>
                     <CitedAnswer
                       source={item.payload.text}
                       citations={[]}
@@ -3114,6 +3158,7 @@ export function HqActiveConversation({
           </p>
         ) : null}
         <Composer
+          assistantName={assistantName}
           visibility={
             privateProjectHq
               ? privateProjectHqTeamName

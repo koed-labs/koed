@@ -9,7 +9,8 @@ import {
   type EnvelopeEncryptionProvider,
   type ConversationPresentationDecision,
   type ManagedConversationFileOperation,
-  type ManagedConversationFileOperationResult
+  type ManagedConversationFileOperationResult,
+  chiefOfStaffHomeProjectKeyPrefix
 } from "@koed/shared";
 import pg from "pg";
 import {
@@ -682,6 +683,7 @@ export interface ManagedConversationRepository {
         linked: false;
         personalProjectId: string;
         projectVersion: number;
+        recallScope?: "all_personal";
       }
     | {
         linked: true;
@@ -5168,9 +5170,11 @@ export const createManagedConversationRepository = (
         team_workspace_id: string | null;
         workspace_project_id: string | null;
         project_version: number;
+        creation_idempotency_key: string | null;
       }>(
         `select p.id as personal_project_id,p.team_backend_id,
-                p.team_workspace_id,p.workspace_project_id,p.version as project_version
+                p.team_workspace_id,p.workspace_project_id,p.version as project_version,
+                p.creation_idempotency_key
            from managed_conversation_executions e
            join projects p on p.id::text=e.project_id and p.owner_user_id=e.owner_user_id
            join sessions s on s.owner_user_id=e.owner_user_id
@@ -5197,7 +5201,11 @@ export const createManagedConversationRepository = (
         return {
           linked: false,
           personalProjectId: row.personal_project_id,
-          projectVersion: row.project_version
+          projectVersion: row.project_version,
+          ...(row.creation_idempotency_key ===
+          `${chiefOfStaffHomeProjectKeyPrefix}${actor.userId}`
+            ? { recallScope: "all_personal" as const }
+            : {})
         };
       if (
         !row.team_backend_id ||

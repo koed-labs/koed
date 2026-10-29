@@ -335,9 +335,20 @@ export const createKoedMcpServer = async (
           const invocationKey = `${context.sessionId ?? invocationNamespace}:${String(context.mcpReq.id)}`;
           const answerInput = input as Record<string, unknown>;
           const delivery = splitMemoryAnswerDeliveryInput(answerInput);
-          if (toolName === "memory_answer" && managedSelector) {
-            const linked =
-              await readManagedProjectRecallContext(managedSelector);
+          const managedLinked =
+            toolName === "memory_answer" && managedSelector
+              ? await readManagedProjectRecallContext(managedSelector)
+              : null;
+          // The Chief of Staff home recalls across all of the owner's
+          // Personal Memory, like their own AI Clients, so it takes the
+          // ordinary path below instead of Project-scoped recall.
+          if (
+            managedSelector &&
+            managedLinked &&
+            (managedLinked.linked ||
+              managedLinked.recallScope !== "all_personal")
+          ) {
+            const linked = managedLinked;
             const requested = memoryAnswerInputSchema.parse(
               delivery.executionInput
             );

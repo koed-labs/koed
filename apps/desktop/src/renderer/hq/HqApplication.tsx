@@ -23,6 +23,7 @@ import {
   type KoedTextActionProjection
 } from "@koed/shared/koed-text-action-contract";
 import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
+import { chiefOfStaffHomeProjectKeyPrefix } from "@koed/shared/managed-project-recall-contract";
 import type { ManagedProjectDesktopApi } from "../../ipc/managed-project-protocol.js";
 import type { ProjectsDesktopApi } from "../../ipc/projects-protocol.js";
 import { ProjectsStore } from "./useProjects.js";
@@ -866,7 +867,7 @@ export function HqApplication({
     void projectsApi
       .create({
         name: "Chief of Staff",
-        idempotencyKey: `koed-solo-chief-home:${visibilityOwnerId}`
+        idempotencyKey: `${chiefOfStaffHomeProjectKeyPrefix}${visibilityOwnerId}`
       })
       .then(async (created) => {
         if (!live) return;

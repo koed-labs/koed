@@ -740,6 +740,7 @@ export function HqProjectConversation({
       <>
         <HqActiveConversation
           key={conversation.executionId}
+          {...(home ? { assistantName: chiefName } : {})}
           privateProjectHq
           privateProjectHqTeamName={privateVisibilityTeamName}
           privateProjectHqIdentity={conversation}

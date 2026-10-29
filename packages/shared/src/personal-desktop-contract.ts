@@ -1462,7 +1462,16 @@ export const conversationToolKindAndLabel = (
     read_file: { kind: "file_read", label: "Read file" },
     rg: { kind: "search", label: "Searched files" },
     view_image: { kind: "file_read", label: "Read file" },
-    write_stdin: { kind: "command", label: "Ran command" }
+    write_stdin: { kind: "command", label: "Ran command" },
+    // Koed's own memory tools.
+    memory_answer: { kind: "search", label: "Checked memory" },
+    memory_answer_result: { kind: "search", label: "Checked memory" },
+    memory_answer_cancel: { kind: "search", label: "Stopped a memory check" },
+    memory_search: { kind: "search", label: "Checked memory" },
+    memory_expand: { kind: "search", label: "Checked memory" },
+    memory_access_check: { kind: "search", label: "Checked memory access" },
+    memory_workspaces: { kind: "search", label: "Checked memory access" },
+    memory_intake_propose: { kind: "tool", label: "Suggested a memory" }
   };
   const explicit = explicitKinds[canonicalName];
   if (explicit) return explicit;

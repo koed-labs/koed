@@ -103,7 +103,7 @@ const submit = (client: Client, extra: Record<string, unknown> = {}) =>
 const collect = (client: Client, id: string) =>
   client.callTool({ name: "memory_answer_result", arguments: { task_id: id } });
 
-const managedLaunch = (linked: boolean) => {
+const managedLaunch = (linked: boolean, chiefHome = false) => {
   const home = mkdtempSync(join(tmpdir(), "koed-managed-recall-mcp-"));
   homes.push(home);
   const ownerUserId = randomUUID();
@@ -125,7 +125,12 @@ const managedLaunch = (linked: boolean) => {
         workspaceProjectId,
         projectVersion: 3
       }
-    : { linked: false, personalProjectId, projectVersion: 3 };
+    : {
+        linked: false,
+        personalProjectId,
+        projectVersion: 3,
+        ...(chiefHome ? { recallScope: "all_personal" } : {})
+      };
   const fetchContext = vi.fn<typeof fetch>(async (url, init) => {
     expect(String(url)).toBe(
       `http://127.0.0.1:32123/v1/managed-conversations/${executionId}/recall-context?executionGeneration=2`
@@ -246,6 +251,29 @@ describe("managed MCP Project recall entry", () => {
     expect(runtime.callTool).not.toHaveBeenCalled();
     const collected = await collect(client, completed.id);
     expect(JSON.stringify(collected)).toContain("Team memory was not checked");
+  });
+
+  it("lets the Chief of Staff home recall across all Personal Memory", async () => {
+    const launch = managedLaunch(false, true);
+    const { client, runtime } = await connect(
+      { callTool: vi.fn(async () => ({ markdown: "Keep answers short" })) },
+      launch.environment
+    );
+    await client.callTool({
+      name: "memory_answer",
+      arguments: {
+        query: "How do I like my answers?",
+        delivery_mode: "blocking",
+        search_domain: "global"
+      }
+    });
+    const input = vi.mocked(runtime.callTool).mock.calls[0]![1];
+    if (!input) throw new Error("Chief recall request was not observed");
+    expect(input).toMatchObject({ search_domain: "global" });
+    expect(input).not.toHaveProperty("managed_project_recall");
+    expect(input).not.toHaveProperty("personal_project_and_me");
+    expect(input).not.toHaveProperty("project_id");
+    expect(launch.fetchContext).toHaveBeenCalledOnce();
   });
 
   it("keeps an unlinked managed execution on Personal Project recall without cwd Team mapping", async () => {
