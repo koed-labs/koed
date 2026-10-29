@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { MemorySourceRepository } from "@koed/db";
 import type { PdsSessionManifest, PdsSessionPackage } from "@koed/shared";
 import {
+  createPdsApplicationSecretStore,
   canonicalizePdsJson,
   createPdsSessionCheckpointManifest,
   createPdsSessionCheckpointPackage,
@@ -730,6 +731,24 @@ describe("PDS session materialization", () => {
       PDS_RUNTIME_SECRET_REF: "pds-runtime"
     });
     expect(resolved).toEqual(secret);
+    // Koed's own CLI provider is read from its local store directly.
+    const koedHome = mkdtempSync(join(tmpdir(), "koed-pds-secret-"));
+    createPdsApplicationSecretStore({ rootPath: koedHome }).put(
+      "pds-runtime",
+      JSON.stringify(secret)
+    );
+    expect(
+      resolvePdsProviderRuntimeSecret({
+        KOED_HOME: koedHome,
+        PDS_SECRET_PROVIDER: "headless",
+        PDS_SECRET_PROVIDER_COMMAND: "/definitely/not/a/command",
+        PDS_SECRET_PROVIDER_COMMAND_ARGS_JSON: JSON.stringify([
+          "/app/packages/koed-server/dist/cli.js",
+          "secret-provider"
+        ]),
+        PDS_RUNTIME_SECRET_REF: "pds-runtime"
+      })
+    ).toEqual(secret);
   });
 
   it("rejects an application provider runtime without the opaque provider command", () => {

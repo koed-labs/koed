@@ -10,6 +10,7 @@ import type {
   PdsCheckpointSessionInput
 } from "@koed/db";
 import {
+  createPdsApplicationSecretStore,
   PDS_ARTIFACT_PROTOCOL,
   PDS_PEER_RECEIPT_WAIT_MS,
   PDS_PEER_ENDPOINT_RUNTIME_FILE,
@@ -151,6 +152,47 @@ const providerArgs = (environment: NodeJS.ProcessEnv): string[] => {
   }
 };
 
+/**
+ * Reads one secret from the provider. When the provider is Koed's own CLI
+ * ("… cli.js secret-provider"), read its local store directly: starting that
+ * CLI is a whole Node process that blocks this worker for a second or more,
+ * and the worker asks on every reconciliation cycle.
+ */
+const readProviderSecret = (
+  environment: NodeJS.ProcessEnv,
+  command: string,
+  reference: string
+): string | null => {
+  const args = providerArgs(environment);
+  const koedHome = environment.KOED_HOME?.trim();
+  if (
+    koedHome &&
+    args.length === 2 &&
+    args[1] === "secret-provider" &&
+    /(^|[\\/])cli\.js$/.test(args[0]!)
+  ) {
+    try {
+      return createPdsApplicationSecretStore({ rootPath: koedHome }).get(
+        reference
+      );
+    } catch {
+      return null;
+    }
+  }
+  const result = spawnSync(command, [...args, "get", reference], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    env: providerEnvironment(environment),
+    maxBuffer: maximumSecretBytes + 1,
+    timeout: 10_000
+  });
+  return result.status === 0 &&
+    !result.error &&
+    typeof result.stdout === "string"
+    ? result.stdout
+    : null;
+};
+
 export const resolvePdsProviderRuntimeSecret = (
   environment: NodeJS.ProcessEnv
 ): RuntimeSecret | null => {
@@ -167,25 +209,13 @@ export const resolvePdsProviderRuntimeSecret = (
   )
     return null;
   try {
-    const result = spawnSync(
-      command,
-      [...providerArgs(environment), "get", reference],
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        env: providerEnvironment(environment),
-        maxBuffer: maximumSecretBytes + 1,
-        timeout: 10_000
-      }
-    );
+    const stdout = readProviderSecret(environment, command, reference);
     if (
-      result.status !== 0 ||
-      result.error ||
-      typeof result.stdout !== "string" ||
-      Buffer.byteLength(result.stdout, "utf8") > maximumSecretBytes
+      typeof stdout !== "string" ||
+      Buffer.byteLength(stdout, "utf8") > maximumSecretBytes
     )
       return null;
-    const value = JSON.parse(result.stdout) as Record<string, unknown>;
+    const value = JSON.parse(stdout) as Record<string, unknown>;
     if (
       typeof value.userId !== "string" ||
       typeof value.groupId !== "string" ||
