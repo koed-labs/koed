@@ -2174,6 +2174,22 @@ export const createManagedConversationService = (options: {
               .filter((key) => key.startsWith(prefix))
               .map(flushCompletedTransientOutput)
           );
+          // The reply is complete. Saving it to memory and checkpointing can
+          // take a while longer; this lets the conversation show the reply as
+          // done and accept the next message, which queues behind that work.
+          await options.repository
+            .putManagedConversationRuntimeItem(
+              { userId: execution.ownerUserId },
+              {
+                executionId: execution.id,
+                executionGeneration: execution.executionGeneration,
+                providerRequestId: `transient:${turnId}:done`,
+                providerTurnId: turnId,
+                itemKind: "transient_output",
+                payload: { turnCompleted: true }
+              }
+            )
+            .catch(() => undefined);
           signalRuntimeWake();
           scheduleOptionalCodexUsage({
             resolveInstance: () =>

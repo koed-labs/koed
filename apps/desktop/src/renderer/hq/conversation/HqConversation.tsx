@@ -1718,11 +1718,22 @@ export function HqActiveConversation({
     project.id,
     project.path ?? null
   );
+  // The AI Client finished its reply; Koed is only saving it. The reply is
+  // shown as done and the next message can be sent (it queues behind).
+  const providerTurnDone = Boolean(
+    runtime?.latestCommand?.state === "dispatching" &&
+    runtime.items.some(
+      (item) =>
+        item.itemKind === "transient_output" &&
+        item.payload.turnCompleted === true
+    )
+  );
   const runtimeBusy =
     runtime?.latestCommand?.commandKind === "prompt" &&
     ["queued", "blocked", "dispatching", "indeterminate"].includes(
       runtime.latestCommand.state
-    );
+    ) &&
+    !providerTurnDone;
   const active =
     runtimeBusy && runtime?.latestCommand?.state !== "indeterminate";
   const [retainedStream, setRetainedStream] = useState<{
