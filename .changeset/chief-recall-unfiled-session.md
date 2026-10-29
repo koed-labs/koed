@@ -2,4 +2,4 @@
 "@koed/db": patch
 ---
 
-Your Chief of Staff can use Koed's memory from its first message. Memory lookups from a Project HQ Conversation were refused ("Managed Project recall context is unavailable (409)") until its Session had been filed under a Project, which never happens for its private folder. A Project HQ Conversation now recalls for its own Project unless it has been moved elsewhere.
+Your Chief of Staff can use Koed's memory. A Project HQ Conversation's Session was never filed under its Project, because its private folder is never a local Project checkout, so every memory lookup from it was refused ("Managed Project recall context is unavailable (409)" or "Managed Project recall authority changed"). Koed now files that Session under its Project when the Conversation starts, and files existing ones on their next turn, unless the Session has been moved elsewhere.

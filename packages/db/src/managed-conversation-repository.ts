@@ -12,7 +12,10 @@ import {
   type ManagedConversationFileOperationResult
 } from "@koed/shared";
 import pg from "pg";
-import { stampManagedPolicyCapture } from "./managed-policy-capture.js";
+import {
+  fileProjectHqSession,
+  stampManagedPolicyCapture
+} from "./managed-policy-capture.js";
 import {
   appendProjectActivityWithClient,
   decodeProjectActivityCursor
@@ -5172,17 +5175,9 @@ export const createManagedConversationRepository = (
            join projects p on p.id::text=e.project_id and p.owner_user_id=e.owner_user_id
            join sessions s on s.owner_user_id=e.owner_user_id
             and s.logical_session_id=e.logical_session_id
-            -- A Project HQ Conversation belongs to its Project from the start.
-            -- Its Session may not be filed under a Project yet (its private
-            -- folder is never a local Project checkout); it still recalls for
-            -- that Project unless someone moved it elsewhere.
-            and ((case when s.project_override_id is not null
-                       then s.project_override_personal_project_id
-                       else s.automatic_personal_project_id end)=p.id
-              or (e.is_project_hq
-                and s.automatic_personal_project_id is null
-                and s.project_override_id is null
-                and s.project_override_personal_project_id is null))
+            and (case when s.project_override_id is not null
+                      then s.project_override_personal_project_id
+                      else s.automatic_personal_project_id end)=p.id
           where e.owner_user_id=$1 and e.id=$2 and e.execution_generation=$3
             and e.state in ('starting','running','reconciling')
             and p.lifecycle='active' and p.deletion_phase is null
@@ -6305,6 +6300,11 @@ export const createManagedConversationRepository = (
           actor.userId,
           input.logicalSessionId
         );
+        await fileProjectHqSession(
+          client,
+          actor.userId,
+          input.logicalSessionId
+        );
         await appendManagedConversationEvent(client, {
           ownerUserId: actor.userId,
           executionId: input.executionId,
@@ -6360,6 +6360,14 @@ export const createManagedConversationRepository = (
               input.executionGeneration,
               input.providerTurnId
             ]
+          );
+        // Conversations bound before Project HQ filing existed are filed on
+        // their next turn.
+        if (execution.is_project_hq && execution.logical_session_id)
+          await fileProjectHqSession(
+            client,
+            actor.userId,
+            execution.logical_session_id
           );
         if (execution.source_generation_id === input.sourceGenerationId) {
           await client.query("commit");

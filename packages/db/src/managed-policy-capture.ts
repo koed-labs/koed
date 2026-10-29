@@ -60,3 +60,38 @@ export const stampManagedPolicyCapture = async (
     [ownerUserId, logicalSessionId]
   );
 };
+
+/**
+ * A Project HQ Conversation belongs to its Project from the first message.
+ * Its private folder is never a local Project checkout, so ordinary capture
+ * association does not file its Session. File it here, unless the Session is
+ * already filed or someone moved it, so recall and Memory Answers for that
+ * Project accept it.
+ */
+export const fileProjectHqSession = async (
+  client: pg.PoolClient,
+  ownerUserId: string,
+  logicalSessionId: string
+): Promise<void> => {
+  await client.query(
+    `update sessions session
+        set automatic_personal_project_id=project.id,
+            updated_at=now()
+       from managed_conversation_executions execution
+       join projects project on project.id::text=execution.project_id
+         and project.owner_user_id=execution.owner_user_id
+      where session.owner_user_id=$1 and session.logical_session_id=$2
+        and execution.owner_user_id=$1 and execution.logical_session_id=$2
+        and execution.is_project_hq
+        and project.lifecycle='active' and project.deletion_phase is null
+        and session.visibility='personal'
+        and session.automatic_personal_project_id is null
+        and session.project_override_id is null
+        and session.project_override_personal_project_id is null
+        and session.project_override_at is null
+        and session.invalidated_at is null and session.trashed_at is null
+        and session.personal_deleted_at is null
+        and session.delete_batch_id is null and session.forget_batch_id is null`,
+    [ownerUserId, logicalSessionId]
+  );
+};
