@@ -30,8 +30,14 @@ export class ProjectsStore {
   #generation = 0;
   #refresh: Promise<void> | null = null;
   #refreshAgain = false;
+  #retry: ReturnType<typeof setTimeout> | null = null;
+  #failures = 0;
 
-  constructor(api: ProjectsDesktopApi) {
+  constructor(
+    api: ProjectsDesktopApi,
+    readonly retryDelayMs: (failures: number) => number | null = (failures) =>
+      Math.min(30_000, 2_000 * 2 ** (failures - 1))
+  ) {
     this.#api = api;
   }
   current = (): ProjectsSnapshot => this.#snapshot;
@@ -53,6 +59,9 @@ export class ProjectsStore {
     this.#versions.clear();
     this.#refresh = null;
     this.#refreshAgain = false;
+    this.#failures = 0;
+    if (this.#retry) clearTimeout(this.#retry);
+    this.#retry = null;
     this.#set(empty(ownerId, profileKey));
     if (ownerId) void this.refresh();
   }
@@ -108,7 +117,22 @@ export class ProjectsStore {
     if (this.#refreshAgain) {
       this.#refreshAgain = false;
       await this.refresh();
+      return;
     }
+    // Right after Koed starts the API is often not ready yet. Without a retry
+    // the Projects (and the Chief of Staff's home) stayed unavailable until
+    // the person pressed Retry.
+    if (!this.#snapshot.error) {
+      this.#failures = 0;
+      return;
+    }
+    this.#failures += 1;
+    const delay = this.retryDelayMs(this.#failures);
+    if (delay === null || this.#retry) return;
+    this.#retry = setTimeout(() => {
+      this.#retry = null;
+      if (generation === this.#generation) void this.refresh();
+    }, delay);
   };
   projectChanged(
     ownerId: string,

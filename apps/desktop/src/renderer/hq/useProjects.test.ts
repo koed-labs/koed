@@ -44,6 +44,28 @@ const mockApi = (list: ProjectsDesktopApi["list"]): ProjectsDesktopApi => ({
 });
 
 describe("ProjectsStore", () => {
+  it("retries a list that failed because Koed was not ready yet", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const store = new ProjectsStore(
+        mockApi(async () => {
+          calls += 1;
+          if (calls === 1) throw new Error("not_ready");
+          return [project(randomUUID())];
+        })
+      );
+      store.setOwner("owner", "profile");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.current().error).toBe("not_ready");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(calls).toBe(2);
+      expect(store.current()).toMatchObject({ loaded: true, error: null });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("clears old authority synchronously and ignores its delayed list", async () => {
     const old = deferred<ReturnType<typeof project>[]>();
     const current = project(randomUUID());
