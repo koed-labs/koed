@@ -640,8 +640,75 @@
   opacity: 1;
 }
 .hq-conversation__working {
+  margin: 0;
   color: var(--hq-muted, #a6aca5);
   font-size: 14px;
+}
+.hq-conversation__working--with-avatar {
+  position: relative;
+  min-height: 24px;
+  padding-left: 36px;
+  line-height: 24px;
+}
+.hq-conversation__working-text {
+  display: inline-block;
+  animation:
+    hq-working-in 260ms ease-out,
+    hq-working-pulse 1.8s ease-in-out 260ms infinite;
+}
+@keyframes hq-working-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes hq-working-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hq-conversation__working-text {
+    animation: none;
+  }
+}
+/* v56: the Chief of Staff replies beside a 24 px pixelkin, without a name. */
+.hq-conversation__message--with-avatar {
+  position: relative;
+  padding-left: 36px;
+}
+.hq-conversation__avatar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  width: 24px;
+  height: 24px;
+}
+/* v56: the conversation opens with the Chief of Staff's 64 px hello. */
+.hq-conversation__intro {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding-top: 8px;
+}
+.hq-conversation__intro-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.25;
+}
+.hq-conversation__intro-name strong {
+  font-size: 17px;
+}
+.hq-conversation__intro-name small {
+  color: var(--hq-muted, #a6aca5);
+  font-size: 13px;
 }
 .hq-conversation__tool-activity {
   margin: 0;

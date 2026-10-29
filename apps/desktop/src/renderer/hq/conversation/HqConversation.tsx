@@ -32,8 +32,10 @@ import {
   useEffect,
   useLayoutEffect,
   useRef,
-  useState
+  useState,
+  type ReactNode
 } from "react";
+import { HqWorkingLine } from "./HqWorkingLine.js";
 import {
   conversationEventText,
   conversationEventToolDisplay,
@@ -1291,10 +1293,25 @@ export function HqActiveConversation({
   focusEventId,
   agentsApi,
   helperAgents = [],
-  assistantName
+  assistantName,
+  assistantAvatar,
+  threadIntro,
+  allowStopConversation = true,
+  preferredReasoningEffort
 }: {
   /** Who replies here, e.g. the Chief of Staff; "AI Client" when absent. */
   assistantName?: string;
+  /** Shown beside each reply instead of the name, as in the v56 design. */
+  assistantAvatar?: ReactNode;
+  /** Shown at the top of the conversation (the Chief of Staff's hello). */
+  threadIntro?: ReactNode;
+  /** The Chief of Staff's home conversation is never stopped from here. */
+  allowStopConversation?: boolean;
+  /**
+   * Effort to use when the conversation has none recorded and its model offers
+   * it. The next message carries it as an ordinary settings change.
+   */
+  preferredReasoningEffort?: string;
   api: ManagedConversationDesktopApi | null;
   localAiClients?: DesktopApi["localAiClients"];
   usageAuthorityKey?: string;
@@ -1415,6 +1432,8 @@ export function HqActiveConversation({
   const usage = usageState?.key === identityKey ? usageState.value : null;
   const [options, setOptions] =
     useState<ManagedConversationLaunchOptions | null>(null);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
   const [selection, setSelection] = useState<HqSelection>(() =>
     draft
       ? {
@@ -1730,6 +1749,23 @@ export function HqActiveConversation({
             }
       );
   }, [runtime]);
+  const assistantMark = assistantAvatar ? (
+    <span className="hq-conversation__avatar" aria-label={assistantName}>
+      {assistantAvatar}
+    </span>
+  ) : (
+    <b>{assistantName ?? "AI Client"}</b>
+  );
+  const assistantMessageClass = `hq-conversation__message hq-conversation__message--assistant${assistantAvatar ? " hq-conversation__message--with-avatar" : ""}`;
+  // Reply text is already arriving; the waiting line steps aside for it.
+  const replyStreaming = Boolean(
+    runtime?.items.some(
+      (item) =>
+        item.itemKind === "transient_output" &&
+        typeof item.payload.text === "string" &&
+        item.payload.text.trim()
+    )
+  );
   // The latest step reported for the running turn, e.g. "Checking memory".
   const currentActivity = (() => {
     let latest: { at: string; activity: string } | null = null;
@@ -1953,13 +1989,27 @@ export function HqActiveConversation({
         setExpected(settings);
         setExpectedForExecution(executionId);
         if (!settingsDirty && !pending.current) {
+          const instanceId =
+            conversation?.executionOwner?.instanceId ??
+            draft?.conversation.executionOwner?.instanceId ??
+            "";
+          const latestOptions =
+            launch.status === "fulfilled"
+              ? launch.value.options
+              : optionsRef.current;
+          const preferred =
+            !settings.reasoningEffort &&
+            preferredReasoningEffort &&
+            latestOptions?.instances
+              .find((candidate) => candidate.instanceId === instanceId)
+              ?.models.find((candidate) => candidate.id === settings.model)
+              ?.supportedReasoningEfforts.includes(preferredReasoningEffort)
+              ? preferredReasoningEffort
+              : null;
           setSelection({
-            instanceId:
-              conversation?.executionOwner?.instanceId ??
-              draft?.conversation.executionOwner?.instanceId ??
-              "",
+            instanceId,
             model: settings.model,
-            reasoningEffort: settings.reasoningEffort ?? "",
+            reasoningEffort: settings.reasoningEffort ?? preferred ?? "",
             permissionMode: settings.permissionMode
           });
         }
@@ -1979,7 +2029,8 @@ export function HqActiveConversation({
     store,
     detailThread,
     queueDraftOperation,
-    lifecycle
+    lifecycle,
+    preferredReasoningEffort
   ]);
   useEffect(() => {
     void refresh();
@@ -2977,6 +3028,7 @@ export function HqActiveConversation({
           }}
         >
           <div className="hq-conversation__thread">
+            {threadIntro}
             {focusUnavailable ? (
               <p role="status">Source message unavailable.</p>
             ) : null}
@@ -3019,11 +3071,11 @@ export function HqActiveConversation({
                 .find((candidate) => candidate.actor === "user");
               return (
                 <article
-                  className={`hq-conversation__message ${user ? "hq-conversation__message--user" : "hq-conversation__message--assistant"}`}
+                  className={`hq-conversation__message ${user ? "hq-conversation__message--user" : `hq-conversation__message--assistant${assistantAvatar ? " hq-conversation__message--with-avatar" : ""}`}`}
                   key={event.id}
                   data-message-id={event.id}
                 >
-                  {!user ? <b>{assistantName ?? "AI Client"}</b> : null}
+                  {!user ? assistantMark : null}
                   {user ? (
                     <p className="hq-conversation__bubble">{message}</p>
                   ) : (
@@ -3139,8 +3191,8 @@ export function HqActiveConversation({
             ) ? (
               // The streamed reply stays on screen after the turn ends until
               // the saved reply replaces it, instead of blinking out.
-              <article className="hq-conversation__message hq-conversation__message--assistant">
-                <b>{assistantName ?? "AI Client"}</b>
+              <article className={assistantMessageClass}>
+                {assistantMark}
                 <CitedAnswer
                   source={retainedStream.text}
                   citations={[]}
@@ -3163,11 +3215,8 @@ export function HqActiveConversation({
               )
               .map((item) =>
                 typeof item.payload.text === "string" ? (
-                  <article
-                    className="hq-conversation__message hq-conversation__message--assistant"
-                    key={item.id}
-                  >
-                    <b>{assistantName ?? "AI Client"}</b>
+                  <article className={assistantMessageClass} key={item.id}>
+                    {assistantMark}
                     <CitedAnswer
                       source={item.payload.text}
                       citations={[]}
@@ -3187,12 +3236,12 @@ export function HqActiveConversation({
                   onRespond={(response) => void respond(item, response)}
                 />
               ))}
-            {active ? (
-              <p className="hq-conversation__working" role="status">
-                {currentActivity
-                  ? `${currentActivity}…`
-                  : `${assistantName ?? "The AI Client"} is working…`}
-              </p>
+            {active && !replyStreaming ? (
+              <HqWorkingLine
+                name={assistantName ?? "The AI Client"}
+                activity={currentActivity}
+                avatar={assistantAvatar}
+              />
             ) : null}
           </div>
         </div>
@@ -3469,7 +3518,9 @@ export function HqActiveConversation({
             {transferMessage ? <p role="status">{transferMessage}</p> : null}
           </details>
         ) : null}
-        {runtime?.executionState === "running" && !active ? (
+        {allowStopConversation &&
+        runtime?.executionState === "running" &&
+        !active ? (
           <button
             className="hq-conversation__stop"
             type="button"

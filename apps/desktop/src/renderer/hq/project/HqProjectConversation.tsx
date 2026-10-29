@@ -751,7 +751,32 @@ export function HqProjectConversation({
       <>
         <HqActiveConversation
           key={conversation.executionId}
-          {...(home ? { assistantName: chiefName } : {})}
+          {...(home
+            ? {
+                assistantName: chiefName,
+                allowStopConversation: false,
+                // Conversation first: answer in seconds rather than after a
+                // long think. Applied with the next message when the
+                // conversation has no effort of its own.
+                preferredReasoningEffort: "low",
+                ...(chiefAgent
+                  ? {
+                      assistantAvatar: (
+                        <Pixelkin agent={chiefAgent} size={24} />
+                      ),
+                      threadIntro: (
+                        <div className="hq-conversation__intro">
+                          <Pixelkin agent={chiefAgent} size={64} />
+                          <span className="hq-conversation__intro-name">
+                            <strong>{chiefName}</strong>
+                            <small>Your chief of staff</small>
+                          </span>
+                        </div>
+                      )
+                    }
+                  : {})
+              }
+            : {})}
           privateProjectHq
           privateProjectHqTeamName={privateVisibilityTeamName}
           privateProjectHqIdentity={conversation}
@@ -808,7 +833,8 @@ export function HqProjectConversation({
     <div className="hq-project-conversation">
       <header
         className="hq-project-conversation__header"
-        hidden={inspectorOpen}
+        // At home the conversation itself opens with the Chief's hello.
+        hidden={inspectorOpen || (home && Boolean(activeConversation))}
       >
         <span className="hq-visually-hidden">{project.name}</span>
         {chiefAgent ? (
