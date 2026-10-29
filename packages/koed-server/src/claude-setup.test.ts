@@ -717,6 +717,63 @@ describe("Claude Code setup", () => {
     }
   );
 
+  it("replaces an existing koed MCP entry even when `claude mcp get` times out", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "koed-claude-get-timeout-"));
+    temporaryDirectories.push(root);
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, "packages/mcp-server/dist/capture-hook.js"),
+      ""
+    );
+    writeFileSync(
+      resolve(root, ".claude.json"),
+      JSON.stringify({
+        mcpServers: {
+          koed: {
+            type: "stdio",
+            command: "node",
+            args: ["/old/mcp-server/dist/cli.js"],
+            env: { KOED_HOME: "/old" }
+          }
+        }
+      })
+    );
+    const calls: string[][] = [];
+    const result = setupClaude(
+      {
+        HOME: root,
+        KOED_HOME: resolve(root, "koed"),
+        KOED_REPO_ROOT: root,
+        KOED_CLAUDE_CODE_EXECUTABLE: "/bin/sh"
+      },
+      ((_command: string, args: string[]) => {
+        calls.push(args);
+        if (args[0] === "--version")
+          return spawnResult("2.1.227 (Claude Code)\n");
+        if (args[0] === "auth") return spawnResult('{"loggedIn":true}\n');
+        if (args[0] === "mcp" && args[1] === "get")
+          return {
+            stdout: "",
+            stderr: "",
+            status: null,
+            error: new Error("spawnSync /bin/sh ETIMEDOUT"),
+            output: []
+          } as never;
+        return spawnResult();
+      }) as never
+    );
+    expect(result).toMatchObject({ ok: true, state: "healthy" });
+    const remove = calls.findIndex(
+      (args) => args[0] === "mcp" && args[1] === "remove"
+    );
+    const add = calls.findIndex(
+      (args) => args[0] === "mcp" && args[1] === "add"
+    );
+    expect(remove).toBeGreaterThan(-1);
+    expect(add).toBeGreaterThan(remove);
+  });
+
   it("replaces an unrelated user-scoped MCP name collision", () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-claude-collision-"));
     temporaryDirectories.push(root);

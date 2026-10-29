@@ -2392,6 +2392,7 @@ export const createKoedServerManager = ({
       .catch((error: unknown) => {
         hqMemoryError =
           error instanceof Error ? error.message : "Memory setup failed.";
+        console.warn(`[onboarding] Memory setup failed: ${hqMemoryError}`);
       })
       .finally(() => {
         hqMemoryPreparation = null;

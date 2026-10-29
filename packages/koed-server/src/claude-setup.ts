@@ -565,20 +565,28 @@ export const setupClaude = (
         timeout: 10_000
       }
     );
-    if (existingMcp.status === 0) {
-      // Keep the exact user-scoped entry for rollback, including non-stdio
-      // transports and argument boundaries that `mcp get` does not preserve.
-      const configPath = environment.CLAUDE_CONFIG_DIR?.trim()
-        ? resolve(environment.CLAUDE_CONFIG_DIR, ".claude.json")
-        : resolve(environment.HOME?.trim() || homedir(), ".claude.json");
-      previousMcpConfigPath = configPath;
-      if (existsSync(configPath)) {
-        const config = JSON.parse(readFileSync(configPath, "utf8")) as {
+    // `claude mcp get` also checks the server and can time out on a busy Mac;
+    // the user config file says reliably whether the entry exists.
+    const mcpConfigPath = environment.CLAUDE_CONFIG_DIR?.trim()
+      ? resolve(environment.CLAUDE_CONFIG_DIR, ".claude.json")
+      : resolve(environment.HOME?.trim() || homedir(), ".claude.json");
+    const configuredMcpEntry = (() => {
+      try {
+        if (!existsSync(mcpConfigPath)) return undefined;
+        const config = JSON.parse(readFileSync(mcpConfigPath, "utf8")) as {
           mcpServers?: Record<string, unknown>;
         };
-        const entry = config.mcpServers?.[mcpName];
-        if (entry) previousMcpJson = JSON.stringify(entry);
+        return config.mcpServers?.[mcpName];
+      } catch {
+        return undefined;
       }
+    })();
+    if (existingMcp.status === 0 || configuredMcpEntry) {
+      // Keep the exact user-scoped entry for rollback, including non-stdio
+      // transports and argument boundaries that `mcp get` does not preserve.
+      previousMcpConfigPath = mcpConfigPath;
+      if (configuredMcpEntry)
+        previousMcpJson = JSON.stringify(configuredMcpEntry);
       previousMcp = parseClaudeOwnedMcpEntry(
         existingMcp.stdout ?? "",
         runtime.mcpCli,
