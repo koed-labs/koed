@@ -2653,6 +2653,50 @@ export const createKoedServerManager = ({
   // while it is unknown waits for the same lookup instead of starting its own
   // CLI process (each can take seconds on a busy Mac).
   let personalApiOriginLookup: Promise<string | null> | null = null;
+  /**
+   * The running server records its API address in run/koed-server.json.
+   * Reading that and asking the API itself whether it is ready takes
+   * milliseconds; `koed status` checks every service and AI Client and took
+   * 13–37 s on a busy Mac, which every screen then waited for.
+   */
+  const runtimeApiOrigin = async (): Promise<string | null> => {
+    try {
+      const state = objectValue(
+        JSON.parse(
+          readFileSync(
+            resolveKoedServerPaths(environment).runtimeStatePath,
+            "utf8"
+          )
+        )
+      );
+      if (typeof state?.pid !== "number" || typeof state.apiUrl !== "string")
+        return null;
+      try {
+        process.kill(state.pid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EPERM") return null;
+      }
+      const origin = localPersonalMemoryOrigin({
+        api: { state: "healthy", url: state.apiUrl }
+      });
+      if (!origin) return null;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3_000);
+      try {
+        const ready = await personalMemoryFetch(new URL("/ready", origin), {
+          method: "GET",
+          redirect: "error",
+          signal: controller.signal
+        });
+        await ready.body?.cancel().catch(() => undefined);
+        return ready.ok ? origin : null;
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      return null;
+    }
+  };
   const lookupPersonalApiOrigin = (
     refresh: boolean
   ): Promise<string | null> => {
@@ -2660,9 +2704,13 @@ export const createKoedServerManager = ({
     if (retainedPersonalApiOrigin)
       return Promise.resolve(retainedPersonalApiOrigin);
     if (!personalApiOriginLookup) {
-      const lookup = runJson(["status"], statusCommandTimeoutMs)
-        .then((current) => {
-          const origin = current ? localPersonalMemoryOrigin(current) : null;
+      const lookup = runtimeApiOrigin()
+        .then(async (fast) => {
+          if (fast) return fast;
+          const current = await runJson(["status"], statusCommandTimeoutMs);
+          return current ? localPersonalMemoryOrigin(current) : null;
+        })
+        .then((origin) => {
           if (origin) retainedPersonalApiOrigin = origin;
           return origin;
         })

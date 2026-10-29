@@ -3779,6 +3779,15 @@ export function HqApplication({
               ) : (
                 <p className="hq-chief-home__status" role="status">
                   Opening {chiefAgent?.name ?? "your Chief of Staff"}…
+                  {!chiefAgent && agentsSnapshot?.error ? (
+                    <>
+                      <br />
+                      <small>
+                        Koed is still starting ({agentsSnapshot.error}). It
+                        keeps trying.
+                      </small>
+                    </>
+                  ) : null}
                 </p>
               )}
             </div>

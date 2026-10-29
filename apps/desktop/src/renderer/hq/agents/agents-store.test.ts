@@ -50,6 +50,29 @@ describe("HQ Agents store", () => {
     store.setOwner("22222222-2222-4222-8222-222222222222", "other");
     expect(store.current().agents).toEqual([]);
   });
+  it("tries again when Koed was not ready yet, then shows the Chief", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = {
+        list: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("Koed is starting"))
+          .mockResolvedValue([chief]),
+        ensureChief: vi.fn()
+      };
+      const store = new AgentsStore(api as never, () => 2_000);
+      store.setOwner(id, "local");
+      await vi.waitFor(() =>
+        expect(store.current().error).toBe("Koed is starting")
+      );
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.waitFor(() => expect(store.current().agents).toEqual([chief]));
+      expect(store.current().error).toBeNull();
+      expect(api.list).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("keeps an existing Chief visible when runtime is unavailable", async () => {
     const api = { list: vi.fn(async () => [chief]), ensureChief: vi.fn() };
     const store = new AgentsStore(api as never);

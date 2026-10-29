@@ -28,7 +28,13 @@ export class AgentsStore {
   #snapshot = empty(null, null);
   #generation = 0;
   #refresh: Promise<void> | null = null;
-  constructor(readonly api: AgentsDesktopApi) {}
+  #retry: ReturnType<typeof setTimeout> | null = null;
+  #failures = 0;
+  constructor(
+    readonly api: AgentsDesktopApi,
+    readonly retryDelayMs: (failures: number) => number | null = (failures) =>
+      Math.min(30_000, 2_000 * 2 ** (failures - 1))
+  ) {}
   current = () => this.#snapshot;
   subscribe = (listener: () => void) => {
     this.#listeners.add(listener);
@@ -46,6 +52,9 @@ export class AgentsStore {
       return;
     this.#generation++;
     this.#refresh = null;
+    this.#failures = 0;
+    if (this.#retry) clearTimeout(this.#retry);
+    this.#retry = null;
     this.#set(empty(ownerId, profileKey));
     if (ownerId) void this.refresh();
   }
@@ -138,6 +147,20 @@ export class AgentsStore {
     this.#refresh = task;
     void task.finally(() => {
       if (this.#refresh === task) this.#refresh = null;
+      if (generation !== this.#generation) return;
+      // Right after Koed starts the API is often not ready yet; without a
+      // retry the Chief of Staff stayed missing until the app restarted.
+      if (!this.#snapshot.error) {
+        this.#failures = 0;
+        return;
+      }
+      this.#failures += 1;
+      const delay = this.retryDelayMs(this.#failures);
+      if (delay === null || this.#retry) return;
+      this.#retry = setTimeout(() => {
+        this.#retry = null;
+        if (generation === this.#generation) void this.refresh();
+      }, delay);
     });
     return task;
   };
