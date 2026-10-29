@@ -62,7 +62,9 @@ const readLegacyValues = (path: string): Record<string, string> => {
       ([reference, value]) =>
         !referencePattern.test(reference) ||
         typeof value !== "string" ||
-        !/^[A-Za-z0-9_-]+$/.test(value) ||
+        // An empty draft used to be saved as an empty entry; it is harmless
+        // and must not make every draft and recovery record unreadable.
+        !/^[A-Za-z0-9_-]*$/.test(value) ||
         Buffer.byteLength(value, "utf8") > maximumValueBytes * 2
     )
   ) {
@@ -129,7 +131,7 @@ const createLegacyDraftStore = (
       return await serial(async () => {
         try {
           const encrypted = readLegacyValues(path)[reference];
-          if (!encrypted) return null;
+          if (!encrypted) return null; // missing or a saved empty draft
           const buffer = Buffer.from(encrypted, "base64url");
           const decryptedResult = storage.decryptStringAsync
             ? await storage.decryptStringAsync(buffer)
@@ -167,11 +169,14 @@ const createLegacyDraftStore = (
       }
       await serial(async () => {
         const values = readLegacyValues(path);
-        values[reference] = (
-          storage.encryptStringAsync
-            ? await storage.encryptStringAsync(value)
-            : storage.encryptString(value)
-        ).toString("base64url");
+        // Nothing to keep: an empty draft is the same as no draft.
+        if (value === "") delete values[reference];
+        else
+          values[reference] = (
+            storage.encryptStringAsync
+              ? await storage.encryptStringAsync(value)
+              : storage.encryptString(value)
+          ).toString("base64url");
         writeLegacyValues(path, values);
       });
     },

@@ -50,6 +50,30 @@ describe("managed conversation draft storage", () => {
     expect(lstatSync(path).mode & 0o077).toBe(0);
   });
 
+  it("keeps recovery readable when an empty draft was saved, and stops saving empty drafts", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "koed-drafts-"));
+    directories.push(directory);
+    const path = join(directory, "managed-conversation-drafts.json");
+    writeFileSync(
+      path,
+      `${JSON.stringify({
+        "managed-recovery-a":
+          Buffer.from("encrypted:recovery").toString("base64url"),
+        "managed-draft-b": ""
+      })}\n`,
+      { mode: 0o600 }
+    );
+    const store = createManagedConversationDraftStore({
+      userDataPath: directory
+    });
+    await expect(store?.get("managed-recovery-a")).resolves.toBe("recovery");
+    await expect(store?.get("managed-draft-b")).resolves.toBeNull();
+    await store?.put("managed-draft-b", "");
+    expect(Object.keys(JSON.parse(readFileSync(path, "utf8")))).toEqual([
+      "managed-recovery-a"
+    ]);
+  });
+
   it("reopens application-managed draft state after storage becomes available", async () => {
     const directory = mkdtempSync(join(tmpdir(), "koed-drafts-"));
     directories.push(directory);
