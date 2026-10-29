@@ -767,6 +767,119 @@ describe("bounded Codex historical batch failures", () => {
   });
 });
 
+describe("Codex historical batches the API refuses", () => {
+  it("retries a refused batch with fewer records before giving up", async () => {
+    const record = (second: number) =>
+      `${JSON.stringify({
+        timestamp: `2026-08-17T00:00:0${second}.000Z`,
+        type: "event_msg",
+        payload: { type: "user_message", message: "y".repeat(100_000) }
+      })}\n`;
+    const bytes = Buffer.from(record(1) + record(2) + record(3));
+    const client = new FakeHistoricalSourceClient();
+    const accept = client.ingestHistoricalImportBatch.bind(client);
+    const sizes: number[] = [];
+    client.ingestHistoricalImportBatch = async (sourceId, input) => {
+      const items = input.items as unknown[];
+      sizes.push(
+        Number(input.sourceOffset) - Number(input.expectedSourceOffset)
+      );
+      if (sizes.length === 1)
+        throw new MemoryApiError("Historical import batch exceeds byte limit", {
+          status: 400
+        });
+      return accept(sourceId, { ...input, items });
+    };
+    const source = {
+      id: "source-large",
+      runId: "run-large",
+      artifactId: "artifact-large",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      sourceSessionId: "session-large",
+      sourceFingerprint: "a".repeat(64),
+      historicalCursorOffset: 0,
+      historicalCursorLine: 0,
+      registrationFrontierOffset: bytes.byteLength,
+      state: "importing"
+    };
+    client.seedSource("artifact-large", source, bytes);
+    const adapter = createCodexHistoricalProviderAdapter({
+      client: client as unknown as MemoryApiClient
+    });
+    const result = await adapter.processNextBatch({
+      selection: {
+        aiClient: "codex",
+        candidateId: "session-large",
+        artifactId: "artifact-large",
+        frontierOffset: bytes.byteLength,
+        frontierLine: 3,
+        latestActivityAt: "2026-08-17T00:00:00.000Z",
+        adapterState: { threadKind: "conversation" }
+      },
+      runId: "run-large"
+    });
+    expect(result.state).toBe("progress");
+    expect(sizes[0]).toBe(bytes.byteLength);
+    expect(sizes[1]).toBeLessThan(bytes.byteLength);
+    expect(client.transitionCalls).toEqual([]);
+  });
+
+  it("skips a source whose batch the API rejects as invalid instead of retrying it forever", async () => {
+    const bytes = Buffer.from(
+      `${JSON.stringify({
+        timestamp: "2026-08-17T00:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "user_message", message: "hello" }
+      })}\n`
+    );
+    const client = new FakeHistoricalSourceClient();
+    client.ingestHistoricalImportBatch = async () => {
+      throw new MemoryApiError("Invalid request", { status: 400 });
+    };
+    const source = {
+      id: "source-refused",
+      runId: "run-refused",
+      artifactId: "artifact-refused",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      sourceSessionId: "session-refused",
+      sourceFingerprint: "a".repeat(64),
+      historicalCursorOffset: 0,
+      historicalCursorLine: 0,
+      registrationFrontierOffset: bytes.byteLength,
+      state: "importing"
+    };
+    client.seedSource("artifact-refused", source, bytes);
+    const adapter = createCodexHistoricalProviderAdapter({
+      client: client as unknown as MemoryApiClient
+    });
+    const result = await adapter.processNextBatch({
+      selection: {
+        aiClient: "codex",
+        candidateId: "session-refused",
+        artifactId: "artifact-refused",
+        frontierOffset: bytes.byteLength,
+        frontierLine: 1,
+        latestActivityAt: "2026-08-17T00:00:00.000Z",
+        adapterState: { threadKind: "conversation" }
+      },
+      runId: "run-refused"
+    });
+    expect(result).toMatchObject({
+      state: "skipped",
+      diagnosticCode: "historical_batch_rejected"
+    });
+    expect(client.transitionCalls).toEqual([
+      {
+        sourceId: "source-refused",
+        expectedState: "importing",
+        state: "failed",
+        failureReason: "historical_batch_rejected"
+      },
+      { sourceId: "source-refused", expectedState: "failed", state: "skipped" }
+    ]);
+  });
+});
+
 describe("provider-neutral historical ingestion coordination", () => {
   it("rediscovers transient candidates for a frozen incomplete cohort after restart", async () => {
     const koedHome = temporaryDirectory();

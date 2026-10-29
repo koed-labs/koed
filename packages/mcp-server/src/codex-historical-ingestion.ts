@@ -504,44 +504,59 @@ const importNextBatch = async (input: {
     frontier - segment.sourceStartOffset
   );
   const available = segmentBytes.subarray(start, end);
-  const bounded = available.subarray(
-    0,
-    nextLineBoundary(available, input.config.maxBatchBytes)
-  );
-  const batch = buildCodexHistoricalBatch({
-    bytes: bounded,
-    absoluteStartOffset: input.source.historicalCursorOffset,
-    lineIndexOffset: input.source.historicalCursorLine,
-    prior: (input.source.historicalCursorParserState ??
-      {}) as TranscriptJournalParserState,
-    source: input.source,
-    selection: input.selection,
-    config: input.config
-  });
-  if (batch.bytesConsumed === 0) {
-    throw new Error("historical_batch_made_no_progress");
+  // The API refuses a batch whose encoded items are too large (400). Encoded
+  // items can be several times their raw bytes, so try fewer records before
+  // giving up on the source.
+  let limit = input.config.maxBatchBytes;
+  for (;;) {
+    const bounded = available.subarray(0, nextLineBoundary(available, limit));
+    const batch = buildCodexHistoricalBatch({
+      bytes: bounded,
+      absoluteStartOffset: input.source.historicalCursorOffset,
+      lineIndexOffset: input.source.historicalCursorLine,
+      prior: (input.source.historicalCursorParserState ??
+        {}) as TranscriptJournalParserState,
+      source: input.source,
+      selection: input.selection,
+      config: input.config
+    });
+    if (batch.bytesConsumed === 0) {
+      throw new Error("historical_batch_made_no_progress");
+    }
+    const eventTimes = batch.items
+      .map((item) => item.eventTime)
+      .filter((value): value is string => typeof value === "string")
+      .sort();
+    try {
+      await input.client.ingestHistoricalImportBatch(input.source.id, {
+        expectedSourceOffset: input.source.historicalCursorOffset,
+        sourceOffset: input.source.historicalCursorOffset + batch.bytesConsumed,
+        sourceLine: batch.sourceLine,
+        segmentIndex: segment.segmentIndex,
+        lastVerifiedDigest: segment.plaintextDigest,
+        parserState: batch.parserState,
+        malformedRecordCount: batch.malformedRecordCount,
+        ...(eventTimes[0]
+          ? {
+              sourceEventFrom: eventTimes[0],
+              sourceEventTo: eventTimes.at(-1)
+            }
+          : {}),
+        items: batch.items
+      });
+      return true;
+    } catch (error) {
+      if (!(error instanceof MemoryApiError) || error.status !== 400)
+        throw error;
+      const smaller = Math.floor(limit / 4);
+      if (
+        smaller < 1_024 ||
+        nextLineBoundary(available, smaller) >= batch.bytesConsumed
+      )
+        throw new Error("historical_batch_rejected", { cause: error });
+      limit = smaller;
+    }
   }
-  const eventTimes = batch.items
-    .map((item) => item.eventTime)
-    .filter((value): value is string => typeof value === "string")
-    .sort();
-  await input.client.ingestHistoricalImportBatch(input.source.id, {
-    expectedSourceOffset: input.source.historicalCursorOffset,
-    sourceOffset: input.source.historicalCursorOffset + batch.bytesConsumed,
-    sourceLine: batch.sourceLine,
-    segmentIndex: segment.segmentIndex,
-    lastVerifiedDigest: segment.plaintextDigest,
-    parserState: batch.parserState,
-    malformedRecordCount: batch.malformedRecordCount,
-    ...(eventTimes[0]
-      ? {
-          sourceEventFrom: eventTimes[0],
-          sourceEventTo: eventTimes.at(-1)
-        }
-      : {}),
-    items: batch.items
-  });
-  return true;
 };
 
 const createRun = async (client: MemoryApiClient): Promise<string> => {
@@ -563,19 +578,26 @@ const createRun = async (client: MemoryApiClient): Promise<string> => {
 // every newer selection from ever running. Skip the source instead so the
 // cohort keeps moving; the historical_import_state machine requires passing
 // through "failed" (with a failure reason) before "skipped" is reachable.
+const unrepresentableReasons = new Set([
+  "historical_record_exceeds_batch_limit",
+  // The API refused the batch as invalid (400). The same bytes always build
+  // the same batch, so retrying it only repeats the refusal every few
+  // seconds, decoding the transcript each time, and blocks newer sources.
+  "historical_batch_rejected"
+]);
 const isUnrepresentableRecordError = (error: unknown): boolean =>
-  error instanceof Error &&
-  error.message === "historical_record_exceeds_batch_limit";
+  error instanceof Error && unrepresentableReasons.has(error.message);
 
 const skipUnrepresentableSource = async (
   client: MemoryApiClient,
-  source: HistoricalSource
+  source: HistoricalSource,
+  reason: string
 ): Promise<void> => {
   try {
     await client.transitionHistoricalImportSource(source.id, {
       expectedState: "importing",
       state: "failed",
-      failureReason: "historical_record_exceeds_batch_limit"
+      failureReason: reason
     });
   } catch (error) {
     if (!(error instanceof MemoryApiError) || error.status !== 409) throw error;
@@ -806,11 +828,13 @@ export const createCodexHistoricalProviderAdapter = (input: {
           });
         } catch (error) {
           if (!isUnrepresentableRecordError(error)) throw error;
-          await skipUnrepresentableSource(input.client, source);
+          const reason = (error as Error).message;
+          await skipUnrepresentableSource(input.client, source, reason);
           return {
             state: "skipped",
             selection: currentSelection,
-            runId: activeRunId
+            runId: activeRunId,
+            diagnosticCode: reason
           };
         }
         if (progressed) {
