@@ -328,30 +328,37 @@ export function useManagedConversationLifecycle({
     setRecoveryOwner(null);
     if (!ownerId) return;
     let active = true;
+    let timer = 0;
+    let failures = 0;
     if (!api?.readRecovery) {
       setRecoveryStatus("unavailable");
       setRecoveryOwner(ownerId);
       return;
     }
-    void api
-      .readRecovery(ownerId)
-      .then((result) => {
-        if (!active || scope.current !== currentScope) return;
-        const recovered = recoveredManagedConversationState(result.value);
-        pendingSendsRef.current = recovered.pendingSends;
-        setPendingSends(recovered.pendingSends);
-        setDrafts((current) => new Map([...recovered.drafts, ...current]));
-        setRecoveryStatus("ready");
-        setRecoveryOwner(ownerId);
-      })
-      .catch(() => {
-        if (active && scope.current === currentScope) {
+    const read = () =>
+      void api.readRecovery!(ownerId)
+        .then((result) => {
+          if (!active || scope.current !== currentScope) return;
+          const recovered = recoveredManagedConversationState(result.value);
+          pendingSendsRef.current = recovered.pendingSends;
+          setPendingSends(recovered.pendingSends);
+          setDrafts((current) => new Map([...recovered.drafts, ...current]));
+          setRecoveryStatus("ready");
+          setRecoveryOwner(ownerId);
+        })
+        .catch(() => {
+          if (!active || scope.current !== currentScope) return;
+          // Right after Koed starts, its secure storage may not answer yet.
+          // Keep trying instead of pausing sending until the app restarts.
+          failures += 1;
           setRecoveryStatus("unavailable");
           setRecoveryOwner(ownerId);
-        }
-      });
+          timer = window.setTimeout(read, Math.min(1_000 * failures, 10_000));
+        });
+    read();
     return () => {
       active = false;
+      window.clearTimeout(timer);
     };
   }, [api, ownerId]);
 
