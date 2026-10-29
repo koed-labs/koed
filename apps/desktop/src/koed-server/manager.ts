@@ -5053,7 +5053,7 @@ export const createKoedServerManager = ({
         "privacy",
         action,
         args,
-        600_000,
+        action === "install" ? 3_600_000 : 600_000,
         onProgress
       );
     if (action === "cancel") {
@@ -5079,7 +5079,7 @@ export const createKoedServerManager = ({
         "privacy",
         action,
         args,
-        600_000,
+        action === "install" ? 3_600_000 : 600_000,
         onProgress
       );
     } finally {
@@ -6072,11 +6072,23 @@ export const createKoedServerManager = ({
     stop,
     requestDaemonStart,
     pollUntilReady,
-    activatePrivacyGeneration: (id) => activatePrivacyGeneration(id)
+    canStartServices: async () => {
+      const [runtime, embedding] = await Promise.all([
+        runRuntimeStatusJson(),
+        runJson(["models", "status", "--kind", "embedding"], 60_000)
+      ]);
+      return (
+        resultState(runtime) === "installed" &&
+        resultState(embedding) === "installed"
+      );
+    },
+    activatePrivacyGeneration: (id, expected) =>
+      activatePrivacyGeneration(id, expected)
   });
 
   const activatePrivacyGeneration = async (
-    generationId: string
+    generationId: string,
+    expectedCurrentGeneration: string | null
   ): Promise<void> =>
     withLifecycleOperation(async () => {
       const session = await openStoppedPrivacySession();
@@ -6085,7 +6097,7 @@ export const createKoedServerManager = ({
           session,
           "privacy",
           "activate",
-          { generationId },
+          { generationId, expectedCurrentGeneration },
           30_000
         );
       } finally {

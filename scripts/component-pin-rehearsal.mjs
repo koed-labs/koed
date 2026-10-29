@@ -63,7 +63,7 @@ const exerciseFixture = async (root) => {
       : {})
   };
   const componentsRoot = resolve(root, "components");
-  for (const component of ["base", "privacy"]) {
+  for (const component of ["base", "privacy", "privacy-cpu"]) {
     mkdirSync(resolve(componentsRoot, component), { recursive: true });
     writeFileSync(
       resolve(componentsRoot, component, "main.js"),
@@ -92,7 +92,14 @@ const exerciseFixture = async (root) => {
   const catalog = buildComponentManifestCatalog({
     version: "1.2.3",
     manifests,
-    required: ["base", "privacy"].map((component) => ({ component, target }))
+    required: manifests.map((bytes) => {
+      const manifest = JSON.parse(bytes);
+      return {
+        component: manifest.component,
+        target,
+        ...(manifest.variant ? { variant: manifest.variant } : {})
+      };
+    })
   });
   const installer = await fixtureInstaller(root, catalog, "trusted-fixture");
   const base = {

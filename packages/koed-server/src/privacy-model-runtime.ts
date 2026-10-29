@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createReadStream,
   createWriteStream,
@@ -11,7 +11,7 @@ import {
   statSync
 } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import type { KoedServerPaths } from "./paths.js";
@@ -46,6 +46,16 @@ export interface PrivacyModelStatus {
   action?: string;
   modelPath: string;
   files: Array<{ path: string; sha256: string; sizeBytes?: number }>;
+}
+
+export interface PrivacyModelInstallOptions {
+  signal?: AbortSignal;
+  progress?: (event: {
+    phase: string;
+    transferredBytes: number;
+    totalBytes?: number;
+    file?: string;
+  }) => void;
 }
 
 export const resolvePrivacyModelPaths = (
@@ -95,9 +105,12 @@ export const materializePrivacyModelCacheEntry = (
   }
 };
 
-const sha256File = async (path: string): Promise<string> => {
+const sha256File = async (
+  path: string,
+  signal?: AbortSignal
+): Promise<string> => {
   const hash = createHash("sha256");
-  await pipeline(createReadStream(path), hash);
+  await pipeline(createReadStream(path), hash, signal ? { signal } : {});
   return hash.digest("hex");
 };
 
@@ -128,13 +141,28 @@ const retryableTransferError = (error: unknown): boolean => {
 const downloadPrivacyAsset = async (
   file: PrivacyModelFile,
   temporary: string,
-  fetcher: typeof fetch
+  fetcher: typeof fetch,
+  options: PrivacyModelInstallOptions
 ): Promise<number | undefined> => {
   const url = `https://huggingface.co/${PRIVACY_MODEL_ID}/resolve/${PRIVACY_MODEL_REVISION}/${file.path}`;
   for (let attempt = 1; attempt <= 3; attempt++) {
+    options.signal?.throwIfAborted();
     rmSync(temporary, { force: true });
+    const idle = new AbortController();
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const activity = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => idle.abort(new Error("Privacy model transfer stalled.")),
+        30000
+      );
+    };
+    activity();
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, idle.signal])
+      : idle.signal;
     try {
-      const response = await fetcher(url);
+      const response = await fetcher(url, { signal });
       if (!response.ok || !response.body) {
         await response.body?.cancel();
         const retryAfter = response.headers.get("retry-after");
@@ -155,37 +183,90 @@ const downloadPrivacyAsset = async (
             response.status === 429 ||
             response.status >= 500)
         ) {
-          await delay(retryDelay);
+          clearTimeout(idleTimer);
+          await delay(
+            retryDelay,
+            undefined,
+            options.signal ? { signal: options.signal } : {}
+          );
           continue;
         }
         return response.status;
       }
+      let transferredBytes = 0;
+      let lastProgressAt = 0;
+      const headerSize = Number(response.headers.get("content-length"));
+      const totalBytes =
+        file.size ??
+        (Number.isSafeInteger(headerSize) && headerSize > 0
+          ? headerSize
+          : undefined);
+      options.progress?.({
+        phase: "model-download",
+        transferredBytes,
+        ...(totalBytes === undefined ? {} : { totalBytes }),
+        file: file.path
+      });
+      const monitor = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          activity();
+          transferredBytes += chunk.length;
+          if (Date.now() - lastProgressAt >= 100) {
+            options.progress?.({
+              phase: "model-download",
+              transferredBytes,
+              ...(totalBytes === undefined ? {} : { totalBytes }),
+              file: file.path
+            });
+            lastProgressAt = Date.now();
+          }
+          callback(null, chunk);
+        }
+      });
       await pipeline(
         Readable.fromWeb(response.body as never),
-        createWriteStream(temporary, { mode: 0o600 })
+        monitor,
+        createWriteStream(temporary, { mode: 0o600 }),
+        { signal }
       );
+      options.progress?.({
+        phase: "model-download",
+        transferredBytes,
+        ...(totalBytes === undefined ? {} : { totalBytes }),
+        file: file.path
+      });
       return undefined;
     } catch (error) {
       rmSync(temporary, { force: true });
-      if (!retryableTransferError(error)) throw error;
+      options.signal?.throwIfAborted();
+      if (!idle.signal.aborted && !retryableTransferError(error)) throw error;
       if (attempt === 3) {
         throw new Error(
           `Could not download pinned Privacy Filter model asset ${file.path}: transfer failed after ${attempt} attempts.`,
           { cause: error }
         );
       }
-      await delay(250 * attempt);
+      clearTimeout(idleTimer);
+      await delay(
+        250 * attempt,
+        undefined,
+        options.signal ? { signal: options.signal } : {}
+      );
+    } finally {
+      clearTimeout(idleTimer);
     }
   }
   throw new Error("Privacy Filter model transfer did not complete.");
 };
 
 export const collectPrivacyModelStatus = async (
-  serverPaths: KoedServerPaths
+  serverPaths: KoedServerPaths,
+  signal?: AbortSignal
 ): Promise<PrivacyModelStatus> => {
   const paths = resolvePrivacyModelPaths(serverPaths);
   const files: PrivacyModelStatus["files"] = [];
   for (const file of PRIVACY_MODEL_FILES) {
+    signal?.throwIfAborted();
     const blob = blobPath(paths, file);
     if (!existsSync(blob)) {
       return {
@@ -198,7 +279,7 @@ export const collectPrivacyModelStatus = async (
       };
     }
     const sizeBytes = statSync(blob).size;
-    const actual = await sha256File(blob);
+    const actual = await sha256File(blob, signal);
     files.push({ path: file.path, sha256: actual, sizeBytes });
     if (
       actual !== file.sha256 ||
@@ -228,7 +309,8 @@ export const collectPrivacyModelStatus = async (
 export const installPrivacyModel = async (
   serverPaths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
-  fetcher: typeof fetch = globalThis.fetch.bind(globalThis)
+  fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
+  options: PrivacyModelInstallOptions = {}
 ): Promise<PrivacyModelStatus> => {
   if (environment.KOED_DEPENDENCY_MODE?.trim() === "external") {
     return {
@@ -245,14 +327,23 @@ export const installPrivacyModel = async (
   const paths = resolvePrivacyModelPaths(serverPaths);
   mkdirSync(paths.blobsDir, { recursive: true, mode: 0o700 });
   for (const file of PRIVACY_MODEL_FILES) {
+    options.signal?.throwIfAborted();
     const blob = blobPath(paths, file);
-    if (existsSync(blob) && (await sha256File(blob)) === file.sha256) {
+    if (
+      existsSync(blob) &&
+      (await sha256File(blob, options.signal)) === file.sha256
+    ) {
       materializeCacheEntry(paths, file);
       continue;
     }
-    const temporary = `${blob}.${process.pid}.download`;
+    const temporary = `${blob}.${process.pid}.${randomUUID()}.download`;
     try {
-      const failedStatus = await downloadPrivacyAsset(file, temporary, fetcher);
+      const failedStatus = await downloadPrivacyAsset(
+        file,
+        temporary,
+        fetcher,
+        options
+      );
       if (failedStatus !== undefined) {
         return {
           ok: false,
@@ -264,7 +355,13 @@ export const installPrivacyModel = async (
         };
       }
       const sizeBytes = statSync(temporary).size;
-      const actual = await sha256File(temporary);
+      options.progress?.({
+        phase: "model-verify",
+        transferredBytes: sizeBytes,
+        totalBytes: sizeBytes,
+        file: file.path
+      });
+      const actual = await sha256File(temporary, options.signal);
       if (
         actual !== file.sha256 ||
         (file.size !== undefined && sizeBytes !== file.size)
@@ -286,5 +383,5 @@ export const installPrivacyModel = async (
       rmSync(temporary, { force: true });
     }
   }
-  return collectPrivacyModelStatus(serverPaths);
+  return collectPrivacyModelStatus(serverPaths, options.signal);
 };

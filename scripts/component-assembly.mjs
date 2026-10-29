@@ -23,10 +23,14 @@ import {
   assertNoClaudeAgentSdkPlatformRuntimes,
   removeClaudeAgentSdkPlatformRuntimes
 } from "./provider-runtime-package-policy.mjs";
-import { prunePrivacyRuntimeForTarget } from "./privacy-runtime-package-policy.mjs";
+import {
+  prunePrivacyRuntimeForTarget,
+  prunePrivacyRuntimeVariant
+} from "./privacy-runtime-package-policy.mjs";
 import { pruneTerminalRuntimeForTarget } from "./terminal-runtime-package-policy.mjs";
 import {
   pruneSharedAppRuntimeMetadata,
+  packageDirectories,
   stageSharedAppRuntime
 } from "./app-runtime-staging.mjs";
 
@@ -687,6 +691,60 @@ const projectComponent = (
   return { root: componentRoot, required, closure };
 };
 
+// Read the same closures used by assembly. This is deliberately independent of
+// copying/pruning so assessment can describe an existing distribution first.
+export const inspectRuntimeComponentOwnership = ({
+  sourceRoot,
+  excludedPackages = []
+}) => {
+  assertSafeTree(sourceRoot);
+  const base = packageClosure(
+    sourceRoot,
+    baseServices.map((service) => servicePackages[service])
+  );
+  const privacy = packageClosure(
+    sourceRoot,
+    [servicePackages["privacy-service"]],
+    excludedPackages
+  );
+  const basePaths = new Set(base.map(({ packageRoot }) => packageRoot));
+  const privacyPaths = new Set(privacy.map(({ packageRoot }) => packageRoot));
+  const packages = new Map(
+    [...base, ...privacy].map((entry) => [entry.packageRoot, entry])
+  );
+  const ownership = [...packages.values()]
+    .map(({ packageRoot, manifest }) => ({
+      name: manifest.name,
+      version: manifest.version,
+      path: relative(sourceRoot, packageRoot).replaceAll("\\", "/"),
+      ownership: basePaths.has(packageRoot)
+        ? privacyPaths.has(packageRoot)
+          ? "shared"
+          : "base"
+        : "privacy",
+      dependencies: manifest.dependencies ?? {},
+      optionalDependencies: manifest.optionalDependencies ?? {},
+      peerDependencies: manifest.peerDependencies ?? {},
+      peerDependenciesMeta: manifest.peerDependenciesMeta ?? {}
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    schemaVersion: 1,
+    services: { base: baseServices, privacy: privacyServices },
+    packages: ownership,
+    unreachablePackages: packageDirectories(resolve(sourceRoot, "node_modules"))
+      .filter((packageRoot) => !packages.has(packageRoot))
+      .map((packageRoot) => ({
+        name: readManifest(resolve(packageRoot, "package.json")).name,
+        path: relative(sourceRoot, packageRoot).replaceAll("\\", "/")
+      })),
+    audits: {
+      base: unresolvedRuntimeEdges(sourceRoot, base),
+      privacy: unresolvedRuntimeEdges(sourceRoot, privacy)
+    }
+  };
+};
+
 export const projectRuntimeComponents = ({
   sourceRoot,
   outputDir,
@@ -710,11 +768,24 @@ export const projectRuntimeComponents = ({
     [privacyName],
     excludedPackages
   );
+  const baseNamesPresent = new Set(
+    base.closure.map(({ manifest }) => manifest.name)
+  );
+  const privacyOnlyPackages = [
+    ...new Set(
+      packageDirectories(resolve(sourceRoot, "node_modules")).map(
+        (packageRoot) => readManifest(resolve(packageRoot, "package.json")).name
+      )
+    )
+  ]
+    .filter((name) => !baseNamesPresent.has(name))
+    .sort();
   return {
     baseRoot: base.root,
     privacyRoot: privacy.root,
     baseRequired: base.required,
-    privacyRequired: privacy.required
+    privacyRequired: privacy.required,
+    privacyOnlyPackages
   };
 };
 
@@ -758,6 +829,16 @@ export const stageRuntimeComponents = async ({
     assertTargetPolicies(result.privacyRoot, platform, architecture);
     result.baseRequired = refreshRequiredFiles(result.baseRoot);
     result.privacyRequired = refreshRequiredFiles(result.privacyRoot);
+    if (platform === "linux" && architecture === "x64") {
+      result.privacyCpuRoot = resolve(outputDir, "privacy-cpu");
+      cpSync(result.privacyRoot, result.privacyCpuRoot, { recursive: true });
+      prunePrivacyRuntimeVariant({
+        runtimeRoot: result.privacyCpuRoot,
+        variant: "cpu"
+      });
+      result.privacyCpuRequired = refreshRequiredFiles(result.privacyCpuRoot);
+      result.privacyCudaRoot = result.privacyRoot;
+    }
     return result;
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });

@@ -13,24 +13,15 @@ import { resolve } from "node:path";
 import { canonicalComponentManifestBytes } from "./koed-server-package-lib.mjs";
 import {
   buildComponentManifestCatalog,
+  requiredComponentIdentities,
   writeComponentManifestCatalog
 } from "./component-manifest-catalog.mjs";
 
 const version = "0.9.0";
-const targets = [
-  {
-    platform: "linux",
-    architecture: "x64",
-    libc: { family: "glibc", minimumVersion: "2.35" }
-  },
-  { platform: "macos", architecture: "arm64" }
-];
-const required = targets.flatMap((target) =>
-  ["base", "privacy"].map((component) => ({ component, target }))
-);
+const required = requiredComponentIdentities;
 const manifestBytes = (identity) =>
   canonicalComponentManifestBytes({
-    schemaVersion: 1,
+    schemaVersion: identity.variant ? 2 : 1,
     productVersion: version,
     ...identity,
     runtimes: [
@@ -42,7 +33,7 @@ const manifestBytes = (identity) =>
       }
     ],
     archive: {
-      name: `koed-${identity.component}.tar.gz`,
+      name: `koed-${identity.component}-${version}-${identity.target.platform}-${identity.target.architecture}${identity.variant ? `-${identity.variant}` : ""}.tar.gz`,
       bytes: 123,
       sha256: "a".repeat(64)
     },
@@ -66,13 +57,14 @@ test("catalog deterministically binds all independently required manifest identi
       required
     })
   );
-  assert.equal(catalog.schemaVersion, 1);
+  assert.equal(catalog.schemaVersion, 2);
   assert.equal(catalog.productVersion, version);
-  assert.equal(catalog.entries.length, 4);
+  assert.equal(catalog.entries.length, 5);
   for (const identity of required) {
     const entry = catalog.entries.find(
       (entry) =>
         entry.component === identity.component &&
+        entry.variant === identity.variant &&
         entry.target.platform === identity.target.platform
     );
     assert.deepEqual(entry.target, identity.target);
@@ -83,7 +75,7 @@ test("catalog deterministically binds all independently required manifest identi
   }
 });
 
-test("four files containing duplicate tuples cannot replace missing macOS identity", () => {
+test("five files containing duplicate tuples cannot replace missing macOS identity", () => {
   const bytes = manifests();
   bytes[3] = bytes[1];
   assert.throws(
@@ -106,7 +98,7 @@ test("catalog rejects missing, extra, wrong-version and wrong-libc identities", 
       /missing|complete/i
     );
   const wrongVersion = bytes.map((bytes) =>
-    Buffer.from(bytes.toString().replace(version, "0.9.1"))
+    Buffer.from(bytes.toString().replaceAll(version, "0.9.1"))
   );
   assert.throws(
     () =>
@@ -153,7 +145,7 @@ test("generator writes canonical complete catalog but never writes partial catal
       writeFileSync(
         resolve(
           root,
-          `koed-${identity.component}-${version}-${identity.target.platform}-${identity.target.architecture}.tar.gz.manifest.json`
+          `koed-${identity.component}-${version}-${identity.target.platform}-${identity.target.architecture}${identity.variant ? `-${identity.variant}` : ""}.tar.gz.manifest.json`
         ),
         manifestBytes(identity)
       );

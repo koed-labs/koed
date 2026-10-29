@@ -9,7 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
-import { prunePrivacyRuntimeForTarget } from "./privacy-runtime-package-policy.mjs";
+import {
+  prunePrivacyRuntimeForTarget,
+  prunePrivacyRuntimeVariant
+} from "./privacy-runtime-package-policy.mjs";
 
 const roots = [];
 test.afterEach(() => {
@@ -85,6 +88,35 @@ const fixture = () => {
   );
   return root;
 };
+
+for (const variant of ["cpu", "cuda"])
+  test(`Linux ${variant} retains its complete reviewed native provider boundary`, () => {
+    const runtimeRoot = fixture();
+    prunePrivacyRuntimeForTarget({
+      repoRoot: resolve("."),
+      runtimeRoot,
+      platform: "linux",
+      architecture: "x64"
+    });
+    const files = prunePrivacyRuntimeVariant({ runtimeRoot, variant });
+    assert.ok(files.includes("onnxruntime_binding.node"));
+    assert.ok(files.includes("libonnxruntime.so.1"));
+    for (const name of [
+      "libonnxruntime_providers_cuda.so",
+      "libonnxruntime_providers_shared.so",
+      "libonnxruntime_providers_tensorrt.so"
+    ])
+      assert.equal(files.includes(name), variant === "cuda");
+    assert.equal(
+      existsSync(
+        resolve(
+          runtimeRoot,
+          "node_modules/@huggingface/transformers/package.json"
+        )
+      ),
+      true
+    );
+  });
 
 test("keeps only macOS arm64 ONNX and Sharp payloads", () => {
   const runtimeRoot = fixture();

@@ -3,6 +3,7 @@ import { runReleaseVerification } from "./release-candidate-readers.mjs";
 import { verifyWorkflowApproval } from "./release-approval.mjs";
 import { hashFileSync } from "./release-candidate-verification.mjs";
 import { verifyFrozenComponentAssets } from "./verify-frozen-component-assets.mjs";
+import { requiredComponentIdentities } from "./component-manifest-catalog.mjs";
 import { verifyPackagedControlPlaneCatalog } from "./verify-packaged-control-plane-catalog.mjs";
 import { execFileSync } from "node:child_process";
 import {
@@ -156,8 +157,10 @@ export const runReleasePromotion = async (args, adapters = {}) => {
     const manifests = [...assets.keys()].filter((name) =>
       /^koed-(?:base|privacy)-.*\.tar\.gz\.manifest\.json$/.test(name)
     );
-    if (manifests.length !== 4)
-      throw new Error("Expected four component target manifests.");
+    if (manifests.length !== requiredComponentIdentities.length)
+      throw new Error(
+        "Expected the complete component target and variant manifest set."
+      );
     for (const manifestName of manifests) {
       const archiveName = manifestName.replace(/\.manifest\.json$/, "");
       if (!assets.has(archiveName))

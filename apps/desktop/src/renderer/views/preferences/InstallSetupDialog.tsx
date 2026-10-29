@@ -25,7 +25,11 @@ export type InstallState = {
 export type InstallTool = "privacy" | "cli";
 
 export const installationSteps = {
-  privacy: ["Download components", "Verify files", "Restart Koed services"],
+  privacy: [
+    "Download runtime and model",
+    "Verify files and filtering",
+    "Start Koed services"
+  ],
   cli: ["Install launcher", "Add to PATH"]
 };
 
@@ -111,7 +115,7 @@ export function InstallSetupDialog({
           ? "Installed and available for Team sharing."
           : "Open a new terminal and run koed status to get started."
         : privacy
-          ? "Downloads the required local components. Koed services may restart to finish installation."
+          ? "Downloads the Privacy runtime and pinned model. The total download size is not yet known. Koed services may restart to finish installation."
           : "Installs the Koed launcher and adds it to PATH by updating your shell startup file.";
 
   return (
@@ -123,7 +127,7 @@ export function InstallSetupDialog({
           </DialogTitle>
           <DialogDescription>
             {privacy
-              ? "Helps remove personally identifiable information (PII) before memory is shared with your Team."
+              ? `Helps remove personally identifiable information (PII) before memory is shared with your Team.${!busy && !ready ? " Installation downloads both the Privacy runtime and model. The total download size is not yet known." : ""}`
               : "Use the koed command from any terminal."}
           </DialogDescription>
         </DialogHeader>

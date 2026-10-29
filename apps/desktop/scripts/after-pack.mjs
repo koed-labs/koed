@@ -12,6 +12,7 @@ import {
   assertNoClaudeAgentSdkPlatformRuntimes,
   removeClaudeAgentSdkPlatformRuntimes
 } from "../../../scripts/provider-runtime-package-policy.mjs";
+import { assertNoPrivacyPayload } from "./privacy-payload-inventory.mjs";
 
 /**
  * Electron's prebuilt macOS binary is ad-hoc signed without a sealed resource
@@ -98,6 +99,25 @@ export default async function afterPack(context) {
       `Removed ${providerRuntimes.length} verified Claude Agent SDK platform runtime package(s) from ${runtimeRoot}.`
     );
   }
+
+  const exclusions = JSON.parse(
+    readFileSync(join(runtimeRoot, "desktop-privacy-exclusions.json"), "utf8")
+  );
+  if (
+    exclusions.schemaVersion !== 1 ||
+    !Array.isArray(exclusions.packages) ||
+    exclusions.packages.some((name) => typeof name !== "string")
+  )
+    throw new Error("Desktop Privacy ownership inventory is invalid.");
+  assertNoPrivacyPayload(
+    context.electronPlatformName === "darwin"
+      ? join(
+          context.appOutDir,
+          `${context.packager.appInfo.productFilename}.app`
+        )
+      : context.appOutDir,
+    exclusions.packages
+  );
 
   if (context.electronPlatformName !== "darwin") return;
 

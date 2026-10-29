@@ -58,7 +58,7 @@ export class InstallSetupStore {
       if (!this.state.privacy.running) return;
       const step = /activation|restart/.test(event.stage)
         ? 2
-        : /verif|extract/.test(event.stage)
+        : /verif|extract|inference|fallback/.test(event.stage)
           ? 1
           : 0;
       const percent =
@@ -75,13 +75,14 @@ export class InstallSetupStore {
         step,
         percent,
         message:
-          step === 0
+          event.message ||
+          (step === 0
             ? "Downloading the components needed on this device."
             : step === 1
               ? "Checking files before they are installed."
               : event.stage === "restart"
                 ? "Restarting local Koed services to activate Privacy Filter."
-                : "Activating the verified Privacy Filter components."
+                : "Activating the verified Privacy Filter components.")
       });
     });
     void this.refresh();
@@ -121,9 +122,14 @@ export class InstallSetupStore {
                   ? "progress"
                   : "idle",
           message:
-            status.state === "unavailable" || status.state === "failed"
-              ? status.message
-              : undefined
+            status.state === "ready"
+              ? this.privacyMessage(status)
+              : status.state === "unavailable" || status.state === "failed"
+                ? status.message
+                : status.installationState === "staged" ||
+                    status.installationState === "starting"
+                  ? status.message
+                  : undefined
         });
     } catch (cause) {
       this.job("privacy", {
@@ -179,7 +185,10 @@ export class InstallSetupStore {
             : status.state === "not_installed"
               ? "idle"
               : "failed",
-        message: status.state === "ready" ? undefined : status.message
+        message:
+          status.state === "ready"
+            ? this.privacyMessage(status)
+            : status.message
       });
     } catch (cause) {
       this.job("privacy", {
@@ -198,6 +207,26 @@ export class InstallSetupStore {
       this.update({ cancelling: false });
     }
   };
+  private privacyMessage(status: PrivacyInstallStatus): string {
+    return [
+      status.message,
+      status.bundleVariant
+        ? `Installed runtime: ${status.bundleVariant === "cuda" ? "CUDA with CPU fallback" : "CPU"}.`
+        : "",
+      status.activeProvider
+        ? `Active provider: ${status.activeProvider.toUpperCase()}.`
+        : "",
+      status.fallbackReason
+        ? status.fallbackReason === "insufficient_measured_benefit"
+          ? "CPU filtering is active because local acceleration did not improve inference."
+          : status.bundleVariant === "cuda"
+            ? "CPU filtering is active after CUDA became unavailable or failed verification."
+            : "CPU filtering is active after local acceleration became unavailable or failed verification."
+        : ""
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
   cancelPrivacy = async () => {
     if (this.state.cancelling || this.state.privacy.step >= 2) return;
     this.cancelRequested = true;

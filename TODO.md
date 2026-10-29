@@ -1,5 +1,25 @@
 # Implementation backlog
 
+## Optional Privacy runtime delivery (29 October 2026)
+
+The approved `tickets.md` owns the implementation and qualification sequence.
+Tickets 01–06 have local implementation and controlled failure coverage.
+The User authorized proceeding without unavailable Koed recall and requested omission of the changeset.
+
+- Qualify exact runtime release-URL downloading against the complete immutable candidate.
+  Fresh model downloading and packaged installation passed after the User approved LuLu connections.
+  The Mac runtime used an authorized offline fixture because this candidate is unpublished.
+- Retain native Linux x64 build, CPU inference and CUDA-bundle CPU fallback as ticket 08 gates.
+  The Mac handoff includes frozen Mac components, source identities, and executable Linux instructions.
+- Retain colleague CUDA execution and clean signed/notarized Mac acceptance as release gates.
+  Fixtures and ad-hoc apps cannot pass those gates. Keep publication separate.
+
+Packaged abrupt-exit recovery, external-to-local availability, and the native Team fixture's
+filtering/authorization boundary passed. The v0.8.1 packaged CLI to new Desktop upgrade retained
+synthetic memory and model assets. The old GUI and browser grant creation were not automated.
+
+See [Mac qualification](docs/optional-privacy-mac-qualification.md) for evidence and limitations.
+
 ## Desktop Preferences design
 
 - [ ] Establish and document a supported location for manually downloaded

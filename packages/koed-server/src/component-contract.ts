@@ -1,6 +1,7 @@
 import type { DesktopRuntimeManifest } from "./desktop-runtime-capability.js";
 
 export type ComponentId = "base" | "privacy";
+export type ComponentVariant = "cpu" | "cuda";
 export type ProcessId =
   | "api"
   | "worker"
@@ -31,9 +32,10 @@ export interface RuntimeCompatibility {
   minimumNapi?: number;
 }
 export interface ComponentManifest {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   productVersion: string;
   component: ComponentId;
+  variant?: ComponentVariant;
   target: ArtifactTarget;
   runtimes: readonly RuntimeCompatibility[];
   archive: { name: string; bytes: number; sha256: string };

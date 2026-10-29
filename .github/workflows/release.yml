@@ -379,6 +379,8 @@ jobs:
           node scripts/verify-frozen-component-assets.mjs release-components "${KOED_COMPONENT_MANIFEST_CATALOG}" "${{ needs.release.outputs.version }}"
           cp release-components/koed-*-${target}.* "${release_dir}/"
           if [[ "${{ matrix.platform }}-${{ matrix.arch }}" == "linux-x64" ]]; then
+            cp release-components/koed-privacy-*-${target}-cpu.* "${release_dir}/"
+            cp release-components/koed-privacy-*-${target}-cuda.* "${release_dir}/"
             cp dist/public-server-package/tarballs/koed-labs-server.tgz "${release_dir}/"
             cp dist/public-server-package/tarballs/koed-labs-server-release-identity.json "${release_dir}/"
           fi
@@ -970,9 +972,12 @@ jobs:
             "koed-base-${VERSION}-linux-x64.tar.gz" \
             "koed-base-${VERSION}-linux-x64.tar.gz.sha256" \
             "koed-base-${VERSION}-linux-x64.tar.gz.manifest.json" \
-            "koed-privacy-${VERSION}-linux-x64.tar.gz" \
-            "koed-privacy-${VERSION}-linux-x64.tar.gz.sha256" \
-            "koed-privacy-${VERSION}-linux-x64.tar.gz.manifest.json" \
+            "koed-privacy-${VERSION}-linux-x64-cpu.tar.gz" \
+            "koed-privacy-${VERSION}-linux-x64-cpu.tar.gz.sha256" \
+            "koed-privacy-${VERSION}-linux-x64-cpu.tar.gz.manifest.json" \
+            "koed-privacy-${VERSION}-linux-x64-cuda.tar.gz" \
+            "koed-privacy-${VERSION}-linux-x64-cuda.tar.gz.sha256" \
+            "koed-privacy-${VERSION}-linux-x64-cuda.tar.gz.manifest.json" \
             "koed-base-${VERSION}-macos-arm64.tar.gz" \
             "koed-base-${VERSION}-macos-arm64.tar.gz.sha256" \
             "koed-base-${VERSION}-macos-arm64.tar.gz.manifest.json" \

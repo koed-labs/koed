@@ -6,6 +6,18 @@ export interface PrivacyInstallStatus {
   available: boolean;
   state: "not_installed" | "ready" | "installing" | "failed" | "unavailable";
   message: string;
+  installationState?:
+    | "missing_runtime"
+    | "missing_model"
+    | "staged"
+    | "starting"
+    | "ready"
+    | "failed";
+  bundleVariant?: "cpu" | "cuda";
+  activeProvider?: string;
+  compatibility?: { compatible: boolean; reason: string };
+  fallbackReason?: string;
+  downloadBytes?: number | null;
 }
 
 export interface PrivacyInstallProgress {
@@ -14,6 +26,7 @@ export interface PrivacyInstallProgress {
   message: string;
   stage: string;
   totalBytes: number | null;
+  cancellable?: boolean;
 }
 
 export interface PrivacyOfflineSource {

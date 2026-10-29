@@ -1291,18 +1291,26 @@ Then use `http://<WSL_IP>:<port>` for the API. Native Windows packaged app suppo
 
 ### Packaged Desktop first-run
 
-Team-enabled Desktop onboarding exposes the same consent-gated Privacy Filter
-installer used in Preferences before local services are ready. If Privacy Filter
-assets are missing, install them there before selecting **Set up Koed** or
-**Retry setup**. Installation requires its own explicit consent; opening onboarding
-never downloads these assets. Offline installation supplies archive and manifest
-files through the same verified installer bridge. The trusted version-matched
-Desktop control plane supplies expected manifest hashes; downloaded sidecars
-cannot replace those pins. Missing
-bridges and installation failures remain visible in onboarding, with retry
-controls; installation does not complete onboarding or bypass service and final
-verification. Start or retry setup explicitly after installation. Personal-only
-onboarding does not show or invoke the Privacy Filter installer.
+Team-enabled Desktop onboarding exposes the Privacy Filter installer before local
+services are ready. The same installer appears in Preferences. One consent action
+installs the optional runtime and the separately pinned model. Opening onboarding
+does not download either asset. The total download size is unknown until each
+transfer supplies its size.
+
+The installer authenticates both assets and runs a synthetic masking example.
+It then activates the runtime and starts Koed when the remaining core assets are
+installed. If storage or embedding assets are missing, complete **Set up Koed**
+or **Retry setup**. This pending state does not report Privacy Filter as ready.
+Required Team sharing stays blocked until the service passes readiness.
+
+The trusted Desktop control plane supplies the expected manifest hashes.
+Downloaded sidecars cannot replace those pins. The private installer bridge
+accepts offline archive and manifest paths, but Desktop does not expose an
+offline file picker. The model still needs its pinned files in the local cache.
+Personal-only onboarding does not invoke the Privacy Filter installer. External
+services and remote connections do not require these local downloads. See
+[Optional Privacy Filter installation](optional-privacy-installation.md) for
+provider selection, cancellation, retry, and recovery.
 
 Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists the public service and private llama-server child ports in `KOED_HOME/config/local-ports.json`, and uses the same inspect-before-change setup workflow as source Desktop. Allocating the child ports per Koed home allows independent local installations to run concurrently without sharing model processes. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
 

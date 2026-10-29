@@ -297,7 +297,8 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
     private readonly loadCalibration: CalibrationLoader = (path) =>
       readFile(path, "utf8"),
     readonly provider: PrivacyRuntimeProvider = "cpu",
-    private readonly execution?: PrivacyModelExecution
+    private readonly execution?: PrivacyModelExecution,
+    private readonly verificationProfilePrefix?: string
   ) {
     if (execution?.availability)
       this.availability = () => execution.availability!();
@@ -430,6 +431,16 @@ export class HuggingFacePrivacyRuntime implements PrivacyRuntimeAdapter {
           }
         : {})
     };
+    // Installation verification records executed ONNX providers. These options
+    // are supported by the pinned Node binding, despite its stale TS comments.
+    if (this.verificationProfilePrefix)
+      Object.assign(options, {
+        session_options: {
+          ...options.session_options,
+          enableProfiling: true,
+          profileFilePrefix: this.verificationProfilePrefix
+        }
+      });
     const verifiedModelPath = resolve(
       this.cacheDir,
       ...this.modelId.split("/"),

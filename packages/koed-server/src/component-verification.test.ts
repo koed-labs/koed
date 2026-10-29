@@ -17,6 +17,7 @@ import {
 import {
   canonicalComponentManifestBytes,
   verifyComponent,
+  verifyComponentManifestPin,
   verifyExtractedComponent,
   verifyExtractedComponentWithTestSeams
 } from "./component-verification.js";
@@ -58,6 +59,60 @@ const testCatalog = (
 });
 
 describe("component manifest pin verification", () => {
+  it("rejects variant substitution, renamed variant archives and old pins before executing payloads", async () => {
+    const sample = await fixture();
+    const original = fixtureManifest(sample.input.manifestBytes);
+    const manifests = (["cpu", "cuda"] as const).map((variant) => ({
+      ...original,
+      schemaVersion: 2 as const,
+      component: "privacy" as const,
+      variant,
+      archive: {
+        ...original.archive,
+        name: `koed-privacy-${original.productVersion}-linux-x64-${variant}.tar.gz`
+      }
+    }));
+    const entries = manifests.map((manifest) => ({
+      component: "privacy" as const,
+      target: manifest.target,
+      variant: manifest.variant,
+      manifestSha256: digest(canonicalComponentManifestBytes(manifest))
+    }));
+    const manifestCatalog: ManifestPinCatalog = {
+      schemaVersion: 2,
+      productVersion: original.productVersion,
+      entries
+    };
+    const input = {
+      ...sample.input,
+      expectedComponent: "privacy" as const,
+      expectedVariant: "cpu" as const,
+      manifestCatalog,
+      manifestBytes: canonicalComponentManifestBytes(manifests[0]!)
+    };
+    expect(verifyComponentManifestPin(input).variant).toBe("cpu");
+    expect(() =>
+      verifyComponentManifestPin({
+        ...input,
+        manifestBytes: canonicalComponentManifestBytes(manifests[1]!)
+      })
+    ).toThrow(/pin mismatch/);
+    expect(() =>
+      verifyComponentManifestPin({
+        ...input,
+        manifestCatalog: testCatalog(digest(input.manifestBytes))
+      })
+    ).toThrow(/missing/);
+    expect(() =>
+      verifyComponentManifestPin({
+        ...input,
+        manifestBytes: canonicalComponentManifestBytes({
+          ...manifests[0]!,
+          archive: { ...original.archive, name: "renamed.tar.gz" }
+        })
+      })
+    ).toThrow(/variant identity/);
+  });
   it("rejects a historically signed manifest when catalog is absent", async () => {
     const sample = await componentFixture({}, undefined, {
       bytes: goldenComponentArchive

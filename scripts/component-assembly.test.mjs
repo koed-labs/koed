@@ -14,7 +14,10 @@ import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { classifyRuntimeException } from "./component-assembly-policy.mjs";
-import { projectRuntimeComponents } from "./component-assembly.mjs";
+import {
+  inspectRuntimeComponentOwnership,
+  projectRuntimeComponents
+} from "./component-assembly.mjs";
 
 const roots = [];
 test.afterEach(() => {
@@ -75,6 +78,57 @@ const minimalGraph = (
   );
   write(resolve(sourceRoot, "privacy-service/dist/index.js"), privacySource);
 };
+
+test("ownership assessment follows shared, optional and peer dependencies without changing the source", () => {
+  const sourceRoot = mkdtempSync(resolve(tmpdir(), "koed-ownership-"));
+  roots.push(sourceRoot);
+  minimalGraph(
+    sourceRoot,
+    'import "shared-fixture";\n',
+    {
+      "shared-fixture": "1.0.0"
+    },
+    {
+      optionalDependencies: { "missing-optional": "1.0.0" },
+      peerDependencies: { "peer-fixture": "1.0.0" }
+    }
+  );
+  packageFixture(
+    sourceRoot,
+    "shared-fixture",
+    {},
+    { "index.js": "export {};\n" }
+  );
+  packageFixture(
+    sourceRoot,
+    "peer-fixture",
+    {},
+    { "index.js": "export {};\n" }
+  );
+  packageFixture(
+    sourceRoot,
+    "@koed/api",
+    { "shared-fixture": "1.0.0" },
+    { "dist/index.js": 'import "shared-fixture";\n' }
+  );
+  const manifestPath = resolve(
+    sourceRoot,
+    "node_modules/@koed/privacy-service/package.json"
+  );
+  const before = readFileSync(manifestPath);
+  const report = inspectRuntimeComponentOwnership({ sourceRoot });
+  assert.equal(
+    report.packages.find((entry) => entry.name === "shared-fixture").ownership,
+    "shared"
+  );
+  assert.equal(
+    report.packages.find((entry) => entry.name === "peer-fixture").ownership,
+    "privacy"
+  );
+  assert.deepEqual(report.audits.base.unresolved, []);
+  assert.deepEqual(report.audits.privacy.unresolved, []);
+  assert.deepEqual(readFileSync(manifestPath), before);
+});
 
 test("projects hermetic base and privacy closures from shared production graph", () => {
   const workspace = mkdtempSync(resolve(tmpdir(), "koed-component-assembly-"));
@@ -1119,4 +1173,48 @@ test("remote MCP dynamic contract import requires its concrete component target"
     null
   );
   assert.match(classify(edge, []).error, /entrypoint is absent/);
+});
+
+test("Privacy inference imports remain limited to the authenticated three-module boundary", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-inference-policy-"));
+  roots.push(root);
+  const closure = [
+    { manifest: { name: "@koed-labs/server" }, packageRoot: root }
+  ];
+  const classify = (file, argumentText, packages = closure) =>
+    classifyRuntimeException(
+      "@koed-labs/server",
+      file,
+      { kind: "dynamic", loader: "import", argumentText },
+      packages
+    );
+  assert.match(
+    classify("dist/privacy-inference-probe.js", 'moduleUrl("config.js")').error,
+    /authenticated component/
+  );
+  for (const name of [
+    "privacy-inference",
+    "component-store",
+    "privacy-model-runtime"
+  ])
+    write(resolve(root, `dist/${name}.js`), "export {};\n");
+  for (const name of ["config", "runtime-factory", "runtime-manager"])
+    assert.equal(
+      classify("dist/privacy-inference-probe.js", `moduleUrl("${name}.js")`)
+        .owner,
+      "authenticated-privacy-inference-modules"
+    );
+  for (const value of [
+    'moduleUrl("index.js")',
+    'moduleUrl("../config.js")',
+    "moduleUrl(file)",
+    'otherModule("config.js")'
+  ])
+    assert.equal(classify("dist/privacy-inference-probe.js", value), null);
+  assert.equal(classify("dist/unrelated.js", 'moduleUrl("config.js")'), null);
+  assert.match(
+    classify("dist/privacy-inference-probe.js", 'moduleUrl("config.js")', [])
+      .error,
+    /authenticated component/
+  );
 });

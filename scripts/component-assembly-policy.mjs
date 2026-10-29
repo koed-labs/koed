@@ -346,6 +346,34 @@ const dynamicRules = [
   {
     match: (packageName, file, edge) =>
       packageName === "@koed-labs/server" &&
+      file === "dist/privacy-inference-probe.js" &&
+      edge.loader === "import" &&
+      /^moduleUrl\("(?:config|runtime-factory|runtime-manager)\.js"\)$/.test(
+        edge.argumentText ?? ""
+      ),
+    policy: {
+      owner: "authenticated-privacy-inference-modules",
+      requiresClosure: (closure) =>
+        closure.some(
+          ({ manifest, packageRoot }) =>
+            manifest.name === "@koed-labs/server" &&
+            [
+              "privacy-inference.js",
+              "component-store.js",
+              "privacy-model-runtime.js"
+            ].every((file) => existsSync(resolve(packageRoot, "dist", file)))
+        ),
+      missingClosure:
+        "Privacy inference verification requires the authenticated component and pinned model installers.",
+      rationale:
+        "Exactly three modules from the separately admitted Privacy component are loaded for installation verification; Base must not bundle that inference engine.",
+      limits:
+        "The parent verifies the component and model before spawning this probe. This rule does not permit arbitrary module names, paths or imports from checkout/global modules."
+    }
+  },
+  {
+    match: (packageName, file, edge) =>
+      packageName === "@koed-labs/server" &&
       file === "dist/remote-mcp-client.js" &&
       edge.loader === "import" &&
       edge.argumentText === "pathToFileURL(entry).href",

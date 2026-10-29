@@ -129,7 +129,7 @@ const pruneKnownBuildSources = (runtimeRoot) => {
   }
 };
 
-const packageDirectories = (nodeModules) => {
+export const packageDirectories = (nodeModules) => {
   const result = [];
   const visitModules = (root) => {
     if (!existsSync(root)) return;

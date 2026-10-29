@@ -1021,15 +1021,23 @@ describe("Koed server desktop manager", () => {
                     type: String(message.type).replace(".request", ".response"),
                     result:
                       message.type === "koed.desktop.status.request"
-                        ? { ok: true }
+                        ? message.action === "lifecycle"
+                          ? stoppedManagedLifecycle
+                          : { ok: true }
                         : message.action === "status"
                           ? {
                               required: ["base", "privacy"],
                               components: { privacy: "missing" },
                               requiredManifestPinsAvailable: true,
-                              activeGeneration: null
+                              activeGeneration: null,
+                              running: false
                             }
-                          : { state: "active", generationId: "b".repeat(64) }
+                          : message.action === "prepare"
+                            ? {
+                                target: "macos-arm64",
+                                recoveryGenerationId: "a".repeat(64)
+                              }
+                            : { state: "staged", generationId: "b".repeat(64) }
                   }
             )
           );
@@ -1039,7 +1047,7 @@ describe("Koed server desktop manager", () => {
       return child;
     }
     const execFile = vi.fn((_command, _args, _options, callback) =>
-      callback(null, "{}", "")
+      callback(null, JSON.stringify({ ok: true, state: "stopped" }), "")
     );
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -1067,14 +1075,21 @@ describe("Koed server desktop manager", () => {
         consent: true,
         onProgress: vi.fn()
       })
-    ).resolves.toMatchObject({ state: "ready" });
+    ).resolves.toMatchObject({
+      state: "not_installed",
+      installationState: "starting"
+    });
     expect(
       requests
         .filter((r) => r.type === "koed.desktop.supervisor.init")
         .every((r) => r.mode === "privacy-management")
     ).toBe(true);
     expect(requests.some((r) => r.action === "install")).toBe(true);
-    expect(execFile).not.toHaveBeenCalled();
+    expect(
+      execFile.mock.calls.every((call) =>
+        ["runtime", "models", "stop"].includes(String(call[1]?.[0]))
+      )
+    ).toBe(true);
     await manager.handlers.setup_pi();
     await manager.handlers.repair_claude();
     expect(
@@ -1149,7 +1164,7 @@ describe("Koed server desktop manager", () => {
 
   it("routes privacy status/install through nonce-correlated child RPC with exact release source", async () => {
     const requests: Record<string, unknown>[] = [];
-    let statusCount = 0;
+    let pinsUnavailable = false;
     let holdStatus = false;
     let releaseStatus: (() => void) | undefined;
     let pendingInstall: Record<string, unknown> | null = null;
@@ -1179,7 +1194,6 @@ describe("Koed server desktop manager", () => {
               nonce: message.nonce
             };
             if (message.action === "status") {
-              statusCount += 1;
               const respond = () =>
                 child.emit("message", {
                   ...envelope,
@@ -1187,11 +1201,19 @@ describe("Koed server desktop manager", () => {
                     required: ["privacy"],
                     components: { privacy: "missing" },
                     activeGeneration: null,
-                    requiredManifestPinsAvailable: statusCount < 2
+                    requiredManifestPinsAvailable: !pinsUnavailable
                   }
                 });
               if (holdStatus) releaseStatus = respond;
               else respond();
+            } else if (message.action === "prepare") {
+              child.emit("message", {
+                ...envelope,
+                result: {
+                  target: "macos-arm64",
+                  recoveryGenerationId: "a".repeat(64)
+                }
+              });
             } else if (message.action === "install") {
               pendingInstall = envelope;
               child.emit("message", {
@@ -1273,8 +1295,8 @@ describe("Koed server desktop manager", () => {
       requestId: expect.any(String),
       source: {
         kind: "remote",
-        archiveUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}.tar.gz`,
-        manifestUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}.tar.gz.manifest.json`
+        archiveUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-macos-arm64.tar.gz`,
+        manifestUrl: `https://github.com/koed-labs/koed/releases/download/v0.8.1/koed-privacy-0.8.1-macos-arm64.tar.gz.manifest.json`
       }
     });
     expect(progress).toHaveBeenCalledWith(
@@ -1304,11 +1326,12 @@ describe("Koed server desktop manager", () => {
       false
     );
     holdStatus = false;
+    pinsUnavailable = true;
     await expect(manager.privacyInstall.getStatus()).resolves.toEqual({
       available: false,
       state: "unavailable",
       message:
-        "Required component manifest pins are unavailable in this Desktop release for this runtime. Update to a compatible control plane; no component can be installed until then."
+        "Required component manifest pins are unavailable in this Desktop release. Update to a compatible Koed release before installing Privacy Filter."
     });
     const inFlightStatus = manager.privacyInstall.getStatus();
     child.emit("exit", 1, null);

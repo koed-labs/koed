@@ -531,6 +531,7 @@ export const runKoedServerCli = async (
         install: new Set([
           "--json",
           "--component",
+          "--variant",
           "--version",
           "--archive",
           "--manifest",
@@ -583,6 +584,17 @@ export const runKoedServerCli = async (
         const component = requireFlagValue(args, "--component");
         if (component !== "base" && component !== "privacy")
           throw new Error("--component must be base or privacy.");
+        const variant = flagValue(args, "--variant");
+        if (
+          variant !== undefined &&
+          (component !== "privacy" ||
+            target.platform !== "linux" ||
+            target.architecture !== "x64" ||
+            (variant !== "cpu" && variant !== "cuda"))
+        )
+          throw new Error(
+            "--variant must be cpu or cuda for Linux x64 Privacy."
+          );
         const offlineValues = ["--archive", "--manifest"].map((flag) =>
           flagValue(args, flag)
         );
@@ -616,6 +628,7 @@ export const runKoedServerCli = async (
             };
         result = await handlers.runComponentInstall(context, {
           component,
+          ...(variant === "cpu" || variant === "cuda" ? { variant } : {}),
           version: flagValue(args, "--version"),
           source,
           stageOnly: args.includes("--stage-only")
