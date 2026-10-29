@@ -242,6 +242,27 @@ describe("HQ sidebar", () => {
     }
   });
 
+  it("names the Solo group Projects without a private lock", async () => {
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: {
+        hqSidebar: api,
+        featureFlags: {
+          hqEnabled: true,
+          teamCollaborationEnabled: false,
+          edition: "solo",
+          phoneEnabled: false
+        }
+      }
+    });
+    await render();
+    const heading = container.querySelector<HTMLElement>(
+      '[data-hq-sidebar-group="just-me"]'
+    );
+    expect(heading?.textContent?.trim()).toBe("Projects");
+    expect(heading?.querySelector("[data-hq-group-icon]")).toBeNull();
+  });
+
   it("renders real personal groups, caps lists, and filters subagents", async () => {
     await render();
 

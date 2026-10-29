@@ -1390,12 +1390,18 @@ export function HqSidebar({
                     className="hq-sidebar__row-chevron-icon"
                     data-hq-group-chevron=""
                   />
-                  <LockKeyhole
-                    aria-hidden="true"
-                    className="hq-sidebar__group-icon"
-                    data-hq-group-icon=""
-                  />
-                  <span className="hq-sidebar__group-title">Just me</span>
+                  {/* In Solo nothing can be shared, so the only group is just
+                      your Projects: no private lock. */}
+                  {solo ? null : (
+                    <LockKeyhole
+                      aria-hidden="true"
+                      className="hq-sidebar__group-icon"
+                      data-hq-group-icon=""
+                    />
+                  )}
+                  <span className="hq-sidebar__group-title">
+                    {solo ? "Projects" : "Just me"}
+                  </span>
                 </button>
                 <ul
                   className="hq-sidebar__group-children"
