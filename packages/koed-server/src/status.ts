@@ -1,3 +1,4 @@
+import { cachedStatusProbeSpawnSync } from "./status-probe-cache.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -115,6 +116,20 @@ export interface KoedServerStatusDependencies {
   checkPid?: (pid: number) => boolean;
   now?: () => Date;
 }
+
+/** Real AI Client probes reuse recent answers; injected ones never do. */
+const withStatusProbeCache = (
+  paths: KoedServerPaths,
+  dependencies: KoedServerStatusDependencies
+): Required<KoedServerStatusDependencies> => {
+  const deps = withDefaults(dependencies);
+  return dependencies.spawnSync
+    ? deps
+    : {
+        ...deps,
+        spawnSync: cachedStatusProbeSpawnSync(paths.cacheDir, deps.spawnSync)
+      };
+};
 
 const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   fetch: globalThis.fetch.bind(globalThis),
@@ -2412,9 +2427,9 @@ export const collectKoedServerStartupStatus = async (
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: KoedServerStatusDependencies = {}
 ): Promise<KoedServerStartupStatus> => {
-  const deps = withDefaults(dependencies);
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
+  const deps = withStatusProbeCache(paths, dependencies);
   environment = applyPersistedLocalPorts(paths, environment);
   const repoEnv = loadRepoEnv(paths.repoRoot);
   const fetcher = withFetchTimeout(deps.fetch);
@@ -2596,9 +2611,9 @@ export const collectKoedServerStatus = async (
   dependencies: KoedServerStatusDependencies = {},
   options: { capabilitiesRefreshedSince?: string } = {}
 ): Promise<KoedServerStatus> => {
-  const deps = withDefaults(dependencies);
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
+  const deps = withStatusProbeCache(paths, dependencies);
   environment = applyPersistedLocalPorts(paths, environment);
   const repoEnv = loadRepoEnv(paths.repoRoot);
   const fetcher = withFetchTimeout(deps.fetch);

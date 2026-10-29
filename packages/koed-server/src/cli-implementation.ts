@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { clearStatusProbeCache } from "./status-probe-cache.js";
 import { deviceRequestCommand } from "./personal-device-request.js";
 import { existsSync, mkdirSync, readSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -407,6 +408,22 @@ export const runKoedServerCli = async (
   const subcommand = args[1];
   const wantsHelp = args.includes("--help") || args.includes("-h");
   const wantsJson = args.includes("--json");
+  // Commands that change AI Client, MCP or service setup make the next
+  // status probe its answers afresh.
+  if (
+    [
+      "setup",
+      "repair",
+      "start",
+      "stop",
+      "restart",
+      "doctor",
+      "remote"
+    ].includes(command ?? "") ||
+    (["package", "runtime", "models"].includes(command ?? "") &&
+      ["install", "activate"].includes(subcommand ?? ""))
+  )
+    clearStatusProbeCache(resolvePaths().cacheDir);
   const kindFlagIndex = args.indexOf("--kind");
   const modelKind = (
     kindFlagIndex >= 0 ? args[kindFlagIndex + 1] : "embedding"
