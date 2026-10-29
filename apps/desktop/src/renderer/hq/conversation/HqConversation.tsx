@@ -1973,7 +1973,10 @@ export function HqActiveConversation({
               : latest.lastErrorCode ===
                   "ManagedConversationSettingsUnavailableError"
                 ? "The selected settings became unavailable. Review them and send the restored draft manually."
-                : "The AI Client rejected this prompt. Review the saved draft before retrying."
+                : latest.lastErrorCode ===
+                    "ManagedConversationRuntimeUnavailableError"
+                  ? `${assistantName ?? "The AI Client"} was not ready yet, so your message was not sent. It is back in the box: send it again.`
+                  : "The AI Client rejected this prompt. Review the saved draft before retrying."
           );
         }
       }
@@ -3250,6 +3253,7 @@ export function HqActiveConversation({
           className="hq-conversation__hero"
           hidden={privateProjectHq && inspectorOpen}
         >
+          {threadIntro}
           {transcriptPending ? (
             <p className="hq-conversation__loading" role="status">
               Loading this conversation…
@@ -3261,7 +3265,7 @@ export function HqActiveConversation({
                 Try again
               </button>
             </p>
-          ) : (
+          ) : threadIntro ? null : (
             <h1>
               {options?.instances.find(
                 (item) => item.instanceId === selection.instanceId

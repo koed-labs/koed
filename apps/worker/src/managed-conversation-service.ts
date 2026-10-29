@@ -3229,7 +3229,14 @@ export const createManagedConversationService = (options: {
               category: "managed_conversation"
             },
             execution_id: execution.id,
-            error_name: errorCode(error)
+            error_name: errorCode(error),
+            // The underlying reason, when the error above is generic.
+            error_class:
+              error instanceof Error ? error.name.slice(0, 80) : typeof error,
+            error_detail:
+              error instanceof Error
+                ? error.message.replace(/\/[^\s]+/g, "<path>").slice(0, 160)
+                : null
           },
           "managed Conversation runtime recovery is waiting for exact local state"
         );
@@ -6172,26 +6179,42 @@ export const createManagedConversationService = (options: {
         });
         return;
       }
-      const providerRuntime =
-        command.execution.provider === "claude"
-          ? {
-              provider: "claude" as const,
-              session: (
-                await Promise.all([
-                  ensureTurnBaselineCheckpoint(command, checkpointBinding),
-                  sessionForClaude(command.execution)
-                ])
-              )[1]
-            }
-          : {
-              provider: "codex" as const,
-              session: (
-                await Promise.all([
-                  ensureTurnBaselineCheckpoint(command, checkpointBinding),
-                  sessionFor(command.execution, catchUp)
-                ])
-              )[1]
-            };
+      // Until the AI Client's session is up, nothing of this message has
+      // been sent. A failure here (for example the session could not start in
+      // time on a busy computer) is a plain "not sent", not an uncertain
+      // delivery that would lock the conversation for reconciliation.
+      const providerRuntime = await (async () => {
+        try {
+          return command.execution.provider === "claude"
+            ? {
+                provider: "claude" as const,
+                session: (
+                  await Promise.all([
+                    ensureTurnBaselineCheckpoint(command, checkpointBinding),
+                    sessionForClaude(command.execution)
+                  ])
+                )[1]
+              }
+            : {
+                provider: "codex" as const,
+                session: (
+                  await Promise.all([
+                    ensureTurnBaselineCheckpoint(command, checkpointBinding),
+                    sessionFor(command.execution, catchUp)
+                  ])
+                )[1]
+              };
+        } catch (error) {
+          if (error instanceof ManagedConversationLeaseLostError) throw error;
+          throw Object.assign(
+            managedConversationError(
+              "ManagedConversationRuntimeUnavailableError",
+              error
+            ),
+            { promptNotDelivered: true }
+          );
+        }
+      })();
       const providerPrompt = catchUp
         ? promptFrom(command)
         : await promptWithFileMentions(command, checkpointBinding);
@@ -8223,7 +8246,9 @@ export const createManagedConversationService = (options: {
         const isPrompt = command.commandKind === "prompt";
         const settingsRejected =
           isPrompt &&
-          errorCode(error) === "ManagedConversationSettingsUnavailableError";
+          (errorCode(error) === "ManagedConversationSettingsUnavailableError" ||
+            (error as { promptNotDelivered?: unknown }).promptNotDelivered ===
+              true);
         const isForkCreate = command.commandKind === "fork_create";
         const isForkPrepare = command.commandKind === "fork_prepare";
         const isForkLifecycleCommand = isForkCreate || isForkPrepare;
@@ -8314,8 +8339,27 @@ export const createManagedConversationService = (options: {
         }
         failed += 1;
         if (settingsRejected) {
-          // No provider operation ran. Leave the Conversation writable so the
-          // User can refresh capabilities and explicitly submit another turn.
+          // No provider operation ran (settings unavailable, or the session
+          // never started). Leave the Conversation writable so the User can
+          // send again.
+          options.logger.warn(
+            {
+              event: {
+                name: "worker.managed_conversation.prompt_not_sent",
+                category: "managed_conversation"
+              },
+              error_name: errorCode(error),
+              cause_name:
+                error instanceof Error && error.cause instanceof Error
+                  ? error.cause.name.slice(0, 80)
+                  : null,
+              cause_code:
+                error instanceof Error && error.cause instanceof Error
+                  ? errorCode(error.cause)
+                  : null
+            },
+            "managed Conversation prompt was not sent"
+          );
           continue;
         }
         if (terminal && !isCoordinationCommand) {
