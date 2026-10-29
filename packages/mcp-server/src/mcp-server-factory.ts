@@ -241,6 +241,30 @@ export type McpCallerContextResolver = (
   input: McpCallerContextResolverInput
 ) => LocalRuntimeCallerContext;
 
+const completedMemoryAnswer = (
+  response: Record<string, unknown>,
+  detailed: boolean
+) => {
+  const citedResponse = withCitationAliases(response);
+  const retrieval = response.retrieval;
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: formatMemoryAnswerCompletion(citedResponse, "completed", {
+          includeDetails: detailed
+        })
+      }
+    ],
+    ...(detailed ? { structuredContent: citedResponse } : {}),
+    // Clients do not show _meta to the model. Observers such as the
+    // benchmark bridge still need retrieval counts for compact recall.
+    ...(retrieval && typeof retrieval === "object"
+      ? { _meta: { [MEMORY_ANSWER_RETRIEVAL_META]: retrieval } }
+      : {})
+  };
+};
+
 export const createKoedMcpServer = async (
   _requestContext: McpRequestContext,
   {
@@ -419,6 +443,49 @@ export const createKoedMcpServer = async (
               structuredContent: personal
             };
           }
+          // The Chief of Staff writes the answer itself, so Koed hands it the
+          // matching memories at once (with citations) instead of running a
+          // second AI Client to write an answer. That takes a second or two,
+          // so it always completes in this call. If it fails, the full Memory
+          // Answer below still runs.
+          if (
+            toolName === "memory_answer" &&
+            managedSelector &&
+            managedLinked &&
+            !managedLinked.linked &&
+            managedLinked.recallScope === "all_personal"
+          ) {
+            try {
+              const {
+                project_id: _project,
+                session_id: _session,
+                team_workspace_id: _workspace,
+                team_backend_id: _backend,
+                ...request
+              } = memoryAnswerInputSchema.parse(delivery.executionInput);
+              void _project;
+              void _session;
+              void _workspace;
+              void _backend;
+              const recalled = await runtimeClient.callTool(
+                "memory_answer",
+                {
+                  ...request,
+                  search_domain: "global",
+                  response_detail: "with_citations",
+                  direct_recall: true
+                },
+                caller,
+                context.mcpReq.signal,
+                `${invocationKey}:direct`
+              );
+              await markRuntimeAvailable();
+              if (recalled.status !== "pending")
+                return completedMemoryAnswer(recalled, true);
+            } catch (error) {
+              if (context.mcpReq.signal?.aborted) throw error;
+            }
+          }
           if (
             toolName === "memory_answer" &&
             delivery.requestedMode === "non_blocking"
@@ -451,33 +518,13 @@ export const createKoedMcpServer = async (
           );
           await markRuntimeAvailable();
           if (toolName === "memory_answer" && response.status !== "pending") {
-            const citedResponse = withCitationAliases(response);
             const answerInput = input as Record<string, unknown>;
-            const detailed =
+            return completedMemoryAnswer(
+              response,
               answerInput.include_evidence === true ||
-              answerInput.response_detail === "with_citations" ||
-              answerInput.response_detail === "with_evidence";
-            const retrieval = response.retrieval;
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: formatMemoryAnswerCompletion(
-                    citedResponse,
-                    "completed",
-                    {
-                      includeDetails: detailed
-                    }
-                  )
-                }
-              ],
-              ...(detailed ? { structuredContent: citedResponse } : {}),
-              // Clients do not show _meta to the model. Observers such as the
-              // benchmark bridge still need retrieval counts for compact recall.
-              ...(retrieval && typeof retrieval === "object"
-                ? { _meta: { [MEMORY_ANSWER_RETRIEVAL_META]: retrieval } }
-                : {})
-            };
+                answerInput.response_detail === "with_citations" ||
+                answerInput.response_detail === "with_evidence"
+            );
           }
           return jsonResponse(response);
         } catch (error) {

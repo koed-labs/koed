@@ -253,13 +253,67 @@ describe("managed MCP Project recall entry", () => {
     expect(JSON.stringify(collected)).toContain("Team memory was not checked");
   });
 
-  it("lets the Chief of Staff home recall across all Personal Memory", async () => {
+  it("gives the Chief of Staff home its memories directly across all Personal Memory", async () => {
     const launch = managedLaunch(false, true);
+    const questionId = randomUUID();
     const { client, runtime } = await connect(
-      { callTool: vi.fn(async () => ({ markdown: "Keep answers short" })) },
+      {
+        callTool: vi.fn(async () => ({
+          markdown: 'Memories matching "How do I like my answers?"',
+          question_id: questionId,
+          citations: [{ nodeId: "node-short", visibility: "personal" }]
+        }))
+      },
       launch.environment
     );
-    await client.callTool({
+    const result = await client.callTool({
+      name: "memory_answer",
+      arguments: {
+        query: "How do I like my answers?",
+        delivery_mode: "non_blocking",
+        search_domain: "project",
+        project_id: randomUUID()
+      }
+    });
+    expect(runtime.startMemoryAnswerTask).not.toHaveBeenCalled();
+    expect(runtime.callTool).toHaveBeenCalledOnce();
+    const [name, input] = vi.mocked(runtime.callTool).mock.calls[0]!;
+    expect(name).toBe("memory_answer");
+    expect(input).toMatchObject({
+      query: "How do I like my answers?",
+      search_domain: "global",
+      response_detail: "with_citations",
+      direct_recall: true
+    });
+    expect(input).not.toHaveProperty("project_id");
+    expect(input).not.toHaveProperty("managed_project_recall");
+    expect(input).not.toHaveProperty("personal_project_and_me");
+    const text = JSON.stringify(result.content);
+    expect(text).toContain("Koed Memory Answer complete");
+    expect(text).toContain(questionId);
+    const structured = result.structuredContent as {
+      question_id?: string;
+      citations?: Array<{ nodeId?: string; citationId?: unknown }>;
+    };
+    expect(structured.question_id).toBe(questionId);
+    expect(structured.citations?.[0]?.nodeId).toBe("node-short");
+    expect(typeof structured.citations?.[0]?.citationId).toBe("string");
+    expect(launch.fetchContext).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to a full Memory Answer when the Chief's direct recall fails", async () => {
+    const launch = managedLaunch(false, true);
+    const callTool = vi.fn(
+      async (_name: string, input: Record<string, unknown>) => {
+        if (input.direct_recall) throw new Error("direct recall unavailable");
+        return { markdown: "Keep answers short" };
+      }
+    );
+    const { client } = await connect(
+      { callTool: callTool as KoedMcpRuntimeClient["callTool"] },
+      launch.environment
+    );
+    const result = await client.callTool({
       name: "memory_answer",
       arguments: {
         query: "How do I like my answers?",
@@ -267,13 +321,14 @@ describe("managed MCP Project recall entry", () => {
         search_domain: "global"
       }
     });
-    const input = vi.mocked(runtime.callTool).mock.calls[0]![1];
-    if (!input) throw new Error("Chief recall request was not observed");
+    expect(callTool).toHaveBeenCalledTimes(2);
+    const input = callTool.mock.calls[1]![1];
     expect(input).toMatchObject({ search_domain: "global" });
+    expect(input).not.toHaveProperty("direct_recall");
     expect(input).not.toHaveProperty("managed_project_recall");
     expect(input).not.toHaveProperty("personal_project_and_me");
     expect(input).not.toHaveProperty("project_id");
-    expect(launch.fetchContext).toHaveBeenCalledOnce();
+    expect(JSON.stringify(result.content)).toContain("Keep answers short");
   });
 
   it("keeps an unlinked managed execution on Personal Project recall without cwd Team mapping", async () => {

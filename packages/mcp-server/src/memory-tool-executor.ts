@@ -3,6 +3,7 @@ import { setTimeout as waitFor } from "node:timers/promises";
 import { withCitationAliases } from "../integrations/pi/memory-answer-presentation.mjs";
 import {
   answerWithMemoryWorker,
+  directMemoryRecallAnswer,
   type MemoryAnswerConversationTurn,
   type MemoryAnswerRetrievalClient,
   type MemoryAnswerResponseDetail,
@@ -96,6 +97,8 @@ export interface TrustedMemoryAnswerExecutionOptions {
   pendingQuestionId?: string;
   taskContext?: MemoryAnswerTaskExecutionContext;
   onFinalQuestionPrepared?: (question: Record<string, unknown>) => void;
+  /** Return the matching memories without a second AI Client run. */
+  directRecall?: boolean;
 }
 
 export interface DesktopAskExecutionInput {
@@ -532,6 +535,7 @@ export class MemoryToolExecutor {
         idempotencyKey: `memory-answer-task:${taskId}`,
         taskContext: context,
         onProgress,
+        directRecall: parsedInput.direct_recall === true,
         onFinalQuestionPrepared: (question) => {
           finalQuestion = question;
         }
@@ -590,23 +594,25 @@ export class MemoryToolExecutor {
     void response_detail;
     void team_backend_id;
     const retrievalScope = defaultAnswerScope(await this.client.accessCheck());
-    const workerConfig = await resolveLocalMemoryAgentConfig({
-      client: this.client,
-      flowKey: "mcp_memory_answer",
-      fallback: () => resolveMemoryAnswerWorkerConfig(this.environment),
-      fromSetting: (setting) =>
-        resolveMemoryAnswerWorkerConfig(
-          this.environment,
-          workerOverridesFromLocalMemorySetting(setting)
-        )
-    }).then((config) => ({
-      ...config,
-      cwd:
-        execution.taskContext ||
-        this.environment.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1"
-          ? config.cwd
-          : caller.cwd
-    }));
+    const workerConfig = execution.directRecall
+      ? undefined
+      : await resolveLocalMemoryAgentConfig({
+          client: this.client,
+          flowKey: "mcp_memory_answer",
+          fallback: () => resolveMemoryAnswerWorkerConfig(this.environment),
+          fromSetting: (setting) =>
+            resolveMemoryAnswerWorkerConfig(
+              this.environment,
+              workerOverridesFromLocalMemorySetting(setting)
+            )
+        }).then((config) => ({
+          ...config,
+          cwd:
+            execution.taskContext ||
+            this.environment.KOED_HEADLESS_FUTURE_CAPTURE_ONLY === "1"
+              ? config.cwd
+              : caller.cwd
+        }));
     if (
       taskAuthority?.scope === "team" &&
       input.search_domain === "project" &&
@@ -703,26 +709,42 @@ export class MemoryToolExecutor {
         retrieval: { mode: "app_server_dynamic_tools" }
       }
     };
-    const answer = await (
-      this.services.answerWithMemoryWorker ?? answerWithMemoryWorker
-    )(evidence, {
-      config: workerConfig,
-      client: progressAwareRetrievalClient,
-      retrievalScope,
-      searchDomain: input.search_domain,
-      projectId,
-      teamWorkspaceId,
-      sessionId: input.session_id,
-      recentDays: input.recent_days,
-      sourceAfter: input.source_after,
-      sourceBefore: input.source_before,
-      limit: input.limit,
-      responseDetail: "internal",
-      retrievalHints: retrieval_hints,
-      conversationContext: execution.conversationContext,
-      signal,
-      onProgress: execution.onProgress
-    });
+    const answer = !workerConfig
+      ? await directMemoryRecallAnswer(evidence, {
+          client: progressAwareRetrievalClient,
+          retrievalScope,
+          searchDomain: input.search_domain,
+          projectId,
+          teamWorkspaceId,
+          sessionId: input.session_id,
+          recentDays: input.recent_days,
+          sourceAfter: input.source_after,
+          sourceBefore: input.source_before,
+          limit: input.limit,
+          retrievalHints: retrieval_hints,
+          signal
+        })
+      : await (this.services.answerWithMemoryWorker ?? answerWithMemoryWorker)(
+          evidence,
+          {
+            config: workerConfig,
+            client: progressAwareRetrievalClient,
+            retrievalScope,
+            searchDomain: input.search_domain,
+            projectId,
+            teamWorkspaceId,
+            sessionId: input.session_id,
+            recentDays: input.recent_days,
+            sourceAfter: input.source_after,
+            sourceBefore: input.source_before,
+            limit: input.limit,
+            responseDetail: "internal",
+            retrievalHints: retrieval_hints,
+            conversationContext: execution.conversationContext,
+            signal,
+            onProgress: execution.onProgress
+          }
+        );
     execution.onProgress?.("answer synthesis completed");
     if (signal?.aborted) throw new Error("Koed memory request was cancelled");
     let recordedQuestion: McpMemoryQuestion | null = null;

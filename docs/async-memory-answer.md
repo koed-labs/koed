@@ -25,6 +25,21 @@ then collect the answer when it is needed.
 Do not perform a memory-dependent action until the answer has been collected.
 Follow-up questions can choose either mode independently.
 
+### Chief of Staff direct recall
+
+The Chief of Staff is itself an AI Client that writes its own reply, so its
+managed MCP Server does not ask a second AI Client run to write a Memory
+Answer. It submits the question as a blocking durable task marked
+`direct_recall` across all of the owner's Personal Memory. The Local AI Runtime
+runs the same scripted first-pass search a Memory Answer starts with and
+returns the matching memories, numbered in citation order, as the recalled
+text. The question, evidence and citations are recorded as for any Memory
+Answer, so citation chips still work. Because no AI Client writes an answer,
+the call completes in about the time of one search, whatever delivery mode was
+requested. If direct recall fails, the MCP Server runs the full Memory Answer
+instead. `direct_recall` is set only by the managed MCP adapter; it never
+widens what can be recalled.
+
 ## Submit, Collect And Cancel
 
 For example, submit a focused question:

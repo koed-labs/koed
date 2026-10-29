@@ -73,7 +73,11 @@ export const managedMemoryAnswerExecutionSchema = memoryAnswerInputSchema
         execution_generation: z.number().int().positive()
       })
       .strict()
-      .optional()
+      .optional(),
+    // Set for an AI Client that writes the answer itself (the Chief of
+    // Staff): Koed returns the matching memories instead of running a second
+    // AI Client to write an answer. It never widens what can be recalled.
+    direct_recall: z.literal(true).optional()
   })
   .refine(
     (input) =>

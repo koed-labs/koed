@@ -4304,6 +4304,173 @@ const runDynamicToolMemoryAnswer = async (
   };
 };
 
+const DIRECT_RECALL_PROMPT_VERSION = "direct-recall-v1";
+const directRecallMaxSearches = 5;
+const directRecallMaxResults = 12;
+const directRecallMaxMemoryChars = 1_500;
+const directRecallMaxTotalChars = 14_000;
+
+const directRecallDate = (
+  record: Record<string, unknown>
+): string | undefined => {
+  for (const key of ["occurredAt", "capturedAt", "sourceTime", "createdAt"]) {
+    const value = record[key];
+    if (typeof value !== "string") continue;
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime()))
+      return parsed.toISOString().slice(0, 10);
+  }
+  return undefined;
+};
+
+const directRecallKind = (
+  record: Record<string, unknown>
+): string | undefined => {
+  switch (record.sourceType) {
+    case "curated_memory":
+      return "saved memory";
+    case "memory_node":
+      return "conversation summary";
+    case "memory_event":
+    case "message":
+      return "conversation";
+    default:
+      return undefined;
+  }
+};
+
+/**
+ * Memory recall for an AI Client that writes the answer itself, such as the
+ * Chief of Staff. A Memory Answer normally hands the question to a second AI
+ * Client run that searches and writes an answer, which adds many seconds to
+ * every memory question. Here Koed runs the same first-pass search and
+ * returns the matching memories, numbered in citation order, as the recalled
+ * text. The question, evidence and citations are recorded exactly as for a
+ * written answer, so citations still work.
+ */
+export const directMemoryRecallAnswer = async (
+  payload: MemoryAnswerPayload,
+  options: {
+    client: MemoryAnswerRetrievalClient;
+    retrievalScope: string;
+    searchDomain: string;
+    sessionId?: string;
+    projectId?: string;
+    teamWorkspaceId?: string;
+    recentDays?: number;
+    sourceAfter?: string;
+    sourceBefore?: string;
+    limit?: number;
+    retrievalHints?: MemoryAnswerRetrievalHints;
+    signal?: AbortSignal;
+  }
+): Promise<MemoryAnswerWorkerResponse> => {
+  const jobId = randomUUID();
+  const query = queryFromPayload(payload);
+  const limit = Math.min(options.limit ?? 10, directRecallMaxResults);
+  const firstPass = await runScriptedMemoryAnswerFirstPass({
+    client: options.client,
+    query,
+    retrievalHints: normalizeMemoryAnswerRetrievalHints(options.retrievalHints),
+    retrievalScope: options.retrievalScope,
+    searchDomain: options.searchDomain,
+    sessionId: options.sessionId,
+    projectId: options.projectId,
+    teamWorkspaceId: options.teamWorkspaceId,
+    recentDays: options.recentDays,
+    sourceAfter: options.sourceAfter,
+    sourceBefore: options.sourceBefore,
+    limit,
+    maxSearches: directRecallMaxSearches
+  });
+  if (options.signal?.aborted)
+    throw new Error("Memory answer request was cancelled");
+  const evidence: unknown[] = [];
+  const citations: unknown[] = [];
+  const entries: string[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  for (const item of firstPass.evidence) {
+    if (evidence.length >= limit) break;
+    const record = recordFromUnknown(item);
+    const text =
+      typeof record.summaryText === "string"
+        ? record.summaryText.trim()
+        : typeof record.text === "string"
+          ? record.text.trim()
+          : "";
+    const [citation] = citationsFromHits([item]);
+    if (!text || !citation) continue;
+    const key = sourceKey(citation);
+    if (seen.has(key)) continue;
+    const label = [directRecallKind(record), directRecallDate(record)]
+      .filter(Boolean)
+      .join(", ");
+    const body =
+      text.length > directRecallMaxMemoryChars
+        ? `${text.slice(0, directRecallMaxMemoryChars).trimEnd()}…`
+        : text;
+    const entry = `[${entries.length + 1}]${label ? ` (${label})` : ""} ${body}`;
+    if (total + entry.length > directRecallMaxTotalChars && entries.length > 0)
+      break;
+    seen.add(key);
+    total += entry.length;
+    entries.push(entry);
+    evidence.push(item);
+    citations.push(citation);
+  }
+  const incomplete = firstPass.errors.length > 0;
+  const markdown =
+    entries.length === 0
+      ? `No memories matched "${query}". Koed did not write an answer; tell the user nothing about this was found in their memory instead of guessing.`
+      : [
+          `Memories matching "${query}", most relevant first. Koed did not write an answer: answer from these yourself, use only what they support, prefer the most recent when they disagree, and say so when they do not cover the question. Memory [n] is citation n.`,
+          ...entries
+        ].join("\n\n");
+  return compactMemoryAnswerPayload(
+    {
+      ...payload,
+      markdown: incomplete
+        ? `${markdown}\n\nSome memory searches did not complete, so relevant memories may be missing.`
+        : markdown,
+      evidence,
+      citations,
+      evidenceBundle: {
+        ...payload.evidenceBundle,
+        query,
+        evidence,
+        retrieval: {
+          mode: "direct_recall",
+          searches: firstPass.searches.map((search) => ({
+            query: search.query.slice(0, 512),
+            retrievalScope: search.retrievalScope,
+            searchDomain: search.searchDomain,
+            retrievalStage: search.retrievalStage,
+            limit: search.limit,
+            hitCount: search.hitCount,
+            phase: search.phase,
+            durationMs: search.durationMs,
+            errorClass: search.errorClass
+          })),
+          retrievals: firstPass.retrievals.map(sanitizeRetrievalDiagnostic)
+        }
+      },
+      localMemoryWorker: {
+        provider: "koed",
+        promptVersion: DIRECT_RECALL_PROMPT_VERSION,
+        jobId,
+        model: null,
+        searchCount: firstPass.searches.length,
+        expandCount: 0,
+        candidateCount: firstPass.evidence.length,
+        memoryStatus: evidence.length > 0 ? "found" : "not_found",
+        usedFallback: false
+      }
+    },
+    "internal"
+  );
+};
+
 export const answerWithMemoryWorker = async (
   payload: MemoryAnswerPayload,
   options: {

@@ -235,6 +235,85 @@ describe("MemoryToolExecutor", () => {
     });
   });
 
+  it("returns matching memories with citations for a direct recall without a second AI Client run", async () => {
+    const search = vi.fn(async () => ({
+      hits: [
+        {
+          nodeId: "11111111-1111-4111-8111-111111111111",
+          sourceType: "curated_memory",
+          sourceId: "11111111-1111-4111-8111-111111111111",
+          visibility: "personal",
+          summaryText: "Keep answers short",
+          occurredAt: "2026-10-01T09:00:00.000Z",
+          score: 0.9,
+          citation: {
+            nodeId: "11111111-1111-4111-8111-111111111111",
+            sourceType: "curated_memory",
+            sourceId: "11111111-1111-4111-8111-111111111111",
+            visibility: "personal"
+          }
+        },
+        {
+          nodeId: "22222222-2222-4222-8222-222222222222",
+          visibility: "personal",
+          summaryText: "No citation, so not offered",
+          score: 0.8
+        }
+      ],
+      retrieval: { semanticRetrievalComplete: true }
+    }));
+    const listLocalMemoryAgentSettings = vi.fn(async () => ({
+      settings: []
+    }));
+    const answerWithMemoryWorker = vi.fn();
+    const executor = new MemoryToolExecutor(
+      {
+        search,
+        recordTokenUsage: vi.fn(async () => ({})),
+        accessCheck: vi.fn(async () => ({})),
+        listLocalMemoryAgentSettings
+      } as unknown as MemoryApiClient,
+      {},
+      { answerWithMemoryWorker }
+    );
+    const completed = await executor.executeMemoryAnswerTask(
+      {
+        query: "How do I like my answers?",
+        search_domain: "global",
+        response_detail: "with_citations",
+        direct_recall: true
+      },
+      { cwd: "/fixture" },
+      "task",
+      undefined,
+      undefined,
+      { getExecutionAuthority: () => ({ scope: "personal" }) }
+    );
+    expect(answerWithMemoryWorker).not.toHaveBeenCalled();
+    expect(listLocalMemoryAgentSettings).not.toHaveBeenCalled();
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: "How do I like my answers?",
+        search_domain: "global",
+        retrieval_scope: "personal"
+      })
+    );
+    const markdown = String(completed.finalQuestion.answer_markdown);
+    expect(markdown).toContain("Koed did not write an answer");
+    expect(markdown).toContain(
+      "[1] (saved memory, 2026-10-01) Keep answers short"
+    );
+    expect(markdown).not.toContain("No citation");
+    expect(completed.finalQuestion).toMatchObject({
+      status: "answered",
+      citations: [{ nodeId: "11111111-1111-4111-8111-111111111111" }],
+      local_memory_worker: { provider: "koed", usedFallback: false }
+    });
+    expect(completed.result).toMatchObject({
+      citations: [{ nodeId: "11111111-1111-4111-8111-111111111111" }]
+    });
+  });
+
   it("runs Memory Answer from the requesting adapter cwd", async () => {
     const client = {
       accessCheck: vi.fn(async () => ({})),
