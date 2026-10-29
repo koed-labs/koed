@@ -483,6 +483,55 @@ describe("HQ v56 conversation", () => {
     expect(readHqOnboarding(ownerId, "live-profile").completed).toBe(false);
   });
 
+  it("says what it is doing while the memory example runs", async () => {
+    status = ready();
+    status = {
+      ...status,
+      clients: [
+        {
+          ...status.clients[0]!,
+          selected: false,
+          configured: false,
+          memoryConnected: false
+        }
+      ]
+    };
+    let finish!: (value: object) => void;
+    const run = vi.fn(
+      () =>
+        new Promise<object>((resolve) => {
+          finish = resolve;
+        })
+    );
+    await act(async () =>
+      root.render(
+        <HqOnboarding
+          ownerId={ownerId}
+          memoryDemoApi={{ run } as never}
+          onComplete={vi.fn()}
+        />
+      )
+    );
+    await click("Just me, on this Mac");
+    await click("Mika");
+    await click("That’s me");
+    await click("Let's go");
+    await click("Look for them");
+    await click("Connect and remember");
+    await click("Next: memory");
+    await click("Keep answers short");
+    expect(container.textContent).toContain(
+      "Saving that to your memory, then asking Codex what it knows about you."
+    );
+    await act(async () =>
+      finish({ noteId: "note-1", status: "answered", answer: "Short." })
+    );
+    expect(container.textContent).not.toContain("Saving that to your memory");
+    expect(container.textContent).toContain(
+      "I asked: What do you know about how I like to work?"
+    );
+  });
+
   it("rehydrates the accepted exchange from an older stage-two draft", async () => {
     status = ready();
     const oldRecord = {

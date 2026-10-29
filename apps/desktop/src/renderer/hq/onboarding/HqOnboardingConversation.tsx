@@ -946,8 +946,7 @@ export function HqOnboardingConversation(props: Props) {
         return (
           <div className="hq-onboarding__card hq-onboarding__routed">
             <div className="hq-onboarding__routed-question">
-              You asked: Suggest a name for the setting that controls webhook
-              retries.
+              I asked: What do you know about how I like to work?
             </div>
             <div className="hq-onboarding__routed-answer">
               <SecureMarkdown
@@ -1403,6 +1402,13 @@ export function HqOnboardingConversation(props: Props) {
             <p role="alert">
               The local profile belongs to a different owner. Setup cannot
               finish in this profile.
+            </p>
+          ) : null}
+          {working === "memory-demo" ? (
+            <p role="status" aria-live="polite">
+              Saving that to your memory, then asking{" "}
+              {selected[0] ? clientName(selected[0]) : "your AI Client"} what it
+              knows about you. The first answer can take a minute…
             </p>
           ) : null}
           {working === "hire" ? (

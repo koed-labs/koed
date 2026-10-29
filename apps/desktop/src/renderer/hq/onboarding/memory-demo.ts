@@ -17,8 +17,13 @@ const defaultClock: Clock = {
   sleep: (milliseconds) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds))
 };
-const recallQuestion =
-  "Suggest a name for the setting that controls webhook retries. Use my work preferences from retrieved Koed memory, and briefly explain how they affect your suggestion. Do not invent preferences; identify the source when available.";
+// Asks about the very thing the person just told Koed, so the answer shows
+// that a client which has never talked to them already knows it. (The old
+// question asked to name a webhook setting, which none of the offered facts
+// such as "Keep answers short" bear on, so recall honestly found nothing.)
+export const onboardingRecallQuestion =
+  "What do you know about how I like to work? Answer in one or two sentences using only what Koed's memory returns, and say where it came from. If Koed's memory has nothing about it, say so.";
+const recallQuestion = onboardingRecallQuestion;
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error && error.message.trim()

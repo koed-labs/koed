@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PersonalDesktopApi } from "@koed/shared/personal-desktop";
-import { createOnboardingMemoryDemoApi } from "./memory-demo.js";
+import {
+  createOnboardingMemoryDemoApi,
+  onboardingRecallQuestion
+} from "./memory-demo.js";
 
 const noteId = "11111111-1111-4111-8111-111111111111";
 const askThreadId = "22222222-2222-4222-8222-222222222222";
@@ -19,8 +22,7 @@ const turn = (status: "pending" | "answered" | "error", id = questionId) => ({
   id,
   askThreadId,
   askTurnIndex: 0,
-  query:
-    "Suggest a name for the setting that controls webhook retries. Use my work preferences from retrieved Koed memory, and briefly explain how they affect your suggestion. Do not invent preferences; identify the source when available.",
+  query: onboardingRecallQuestion,
   status,
   answerMarkdown: status === "answered" ? "You prefer short answers." : null,
   errorMessage: status === "error" ? "Recall failed." : null,
