@@ -16,38 +16,45 @@ const config = resolveEnv();
 const logger = createEmbeddingLogger(config.logLevel);
 const runtime = new EmbeddingRuntime(config, logger);
 let shutdownPromise: Promise<void> | null = null;
+let server: ReturnType<typeof createNodeHttpServer> | null = null;
+
+const shutdown = (): Promise<void> => {
+  if (shutdownPromise) return shutdownPromise;
+  const listening = server;
+  shutdownPromise = Promise.all([
+    listening
+      ? new Promise<void>((resolve) => {
+          listening.close(() => resolve());
+          listening.closeIdleConnections();
+        })
+      : Promise.resolve(),
+    runtime.shutdownRuntime()
+  ]).then(() => undefined);
+  return shutdownPromise;
+};
+const shutdownFromSignal = () => {
+  void shutdown().then(
+    () => process.exit(0),
+    () => process.exit(1)
+  );
+};
+// Registered before the model loads: a stop that arrives while llama-server
+// is still starting must end it too, not leave it running on its own.
+process.once("SIGINT", shutdownFromSignal);
+process.once("SIGTERM", shutdownFromSignal);
 
 const start = async (): Promise<void> => {
   await verifyEmbeddingModelArtifact(config);
   await runtime.loadEmbeddingModel();
+  if (shutdownPromise) return;
 
   const service = createEmbeddingService(config, runtime, logger);
-  const server = createNodeHttpServer(service);
+  server = createNodeHttpServer(service);
   await listenNodeHttpServer(server, config.host, config.port);
   logger.info("Embedding Service listening", {
     event: { name: "embedding.service.listening" },
     http: { host: config.host, port: config.port }
   });
-
-  const shutdown = (): Promise<void> => {
-    if (shutdownPromise) return shutdownPromise;
-    shutdownPromise = Promise.all([
-      new Promise<void>((resolve) => {
-        server.close(() => resolve());
-        server.closeIdleConnections();
-      }),
-      runtime.shutdownRuntime()
-    ]).then(() => undefined);
-    return shutdownPromise;
-  };
-  const shutdownFromSignal = () => {
-    void shutdown().then(
-      () => process.exit(0),
-      () => process.exit(1)
-    );
-  };
-  process.once("SIGINT", shutdownFromSignal);
-  process.once("SIGTERM", shutdownFromSignal);
 };
 
 start().catch(async (error: unknown) => {

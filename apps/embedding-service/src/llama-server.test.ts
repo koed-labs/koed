@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
@@ -6,6 +9,7 @@ import {
   LlamaServerClient,
   llamaServerArgs,
   llamaServerEnvironment,
+  reapRecordedLlamaServer,
   tokenPieceText
 } from "./llama-server.js";
 import { testConfig, testLogger } from "./test-helpers.js";
@@ -321,5 +325,81 @@ describe("llama-server adapter helpers", () => {
       fallbackReason: "cuda_startup_failed"
     });
     await client.stop();
+  });
+});
+
+describe("reapRecordedLlamaServer", () => {
+  const recorded = (pid: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "koed-llama-pid-"));
+    const pidPath = join(dir, "llama.pid");
+    writeFileSync(pidPath, pid);
+    return pidPath;
+  };
+
+  it("ends a recorded llama-server that is still running on this port", async () => {
+    const pidPath = recorded("4242\n");
+    let alive = true;
+    const signal = vi.fn((_pid: number, name: NodeJS.Signals) => {
+      if (name === "SIGTERM") alive = false;
+    });
+    const reaped = await reapRecordedLlamaServer(
+      pidPath,
+      "/koed/llama-server",
+      5001,
+      {
+        isAlive: () => alive,
+        commandOf: () => "/koed/llama-server --model m.gguf --port 5001",
+        signal,
+        wait: async () => undefined
+      }
+    );
+    expect(reaped).toBe(4242);
+    expect(signal).toHaveBeenCalledWith(4242, "SIGTERM");
+    expect(signal).not.toHaveBeenCalledWith(4242, "SIGKILL");
+    expect(existsSync(pidPath)).toBe(false);
+  });
+
+  it("forces a recorded llama-server that ignores SIGTERM", async () => {
+    const pidPath = recorded("4243");
+    const signal = vi.fn();
+    await reapRecordedLlamaServer(pidPath, "/koed/llama-server", 5001, {
+      isAlive: () => true,
+      commandOf: () => "/koed/llama-server --port 5001",
+      signal,
+      wait: async () => undefined
+    });
+    expect(signal).toHaveBeenLastCalledWith(4243, "SIGKILL");
+  });
+
+  it("leaves a reused process id alone", async () => {
+    const pidPath = recorded("4244");
+    const signal = vi.fn();
+    const reaped = await reapRecordedLlamaServer(
+      pidPath,
+      "/koed/llama-server",
+      5001,
+      {
+        isAlive: () => true,
+        commandOf: () => "/usr/bin/vim notes.txt",
+        signal,
+        wait: async () => undefined
+      }
+    );
+    expect(reaped).toBeNull();
+    expect(signal).not.toHaveBeenCalled();
+    expect(existsSync(pidPath)).toBe(false);
+  });
+
+  it("does nothing without a record", async () => {
+    const signal = vi.fn();
+    expect(
+      await reapRecordedLlamaServer(
+        join(tmpdir(), "koed-missing-llama.pid"),
+        "/koed/llama-server",
+        5001,
+        { signal }
+      )
+    ).toBeNull();
+    expect(signal).not.toHaveBeenCalled();
   });
 });

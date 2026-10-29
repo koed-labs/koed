@@ -1,9 +1,11 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import {
   createWriteStream,
   existsSync,
   mkdirSync,
-  readFileSync
+  readFileSync,
+  rmSync,
+  writeFileSync
 } from "node:fs";
 import { dirname } from "node:path";
 import type { WriteStream } from "node:fs";
@@ -50,6 +52,84 @@ type SpawnLike = typeof spawn;
 type ListDevicesLike = typeof listLlamaDevices;
 type HostPlatform = { platform: NodeJS.Platform; arch: string };
 const llamaServerShutdownGraceMs = 2_000;
+
+/**
+ * A llama-server whose Embedding Service was killed outright (for example a
+ * forced quit, or a stop during startup) keeps running with its model loaded
+ * and its port taken. Each start records the server's process id; the next
+ * start ends a recorded server that is still running, after checking that the
+ * process really is this llama-server on this port.
+ */
+export const reapRecordedLlamaServer = async (
+  pidPath: string,
+  binary: string,
+  port: number,
+  deps: {
+    isAlive?: (pid: number) => boolean;
+    commandOf?: (pid: number) => string;
+    signal?: (pid: number, signal: NodeJS.Signals) => void;
+    wait?: (ms: number) => Promise<void>;
+  } = {}
+): Promise<number | null> => {
+  let pid: number;
+  try {
+    pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
+  } catch {
+    return null;
+  }
+  const isAlive =
+    deps.isAlive ??
+    ((candidate: number) => {
+      try {
+        process.kill(candidate, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  const commandOf =
+    deps.commandOf ??
+    ((candidate: number) =>
+      execFileSync("ps", ["-o", "command=", "-p", String(candidate)], {
+        encoding: "utf8",
+        timeout: 5_000
+      }));
+  const signal =
+    deps.signal ??
+    ((candidate: number, name: NodeJS.Signals) =>
+      process.kill(candidate, name));
+  const wait =
+    deps.wait ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const clear = () => rmSync(pidPath, { force: true });
+  if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) {
+    clear();
+    return null;
+  }
+  if (!isAlive(pid)) {
+    clear();
+    return null;
+  }
+  let command: string;
+  try {
+    command = commandOf(pid);
+  } catch {
+    return null;
+  }
+  if (!command.includes(binary) || !command.includes(`--port ${port}`)) {
+    // The process id now belongs to something else.
+    clear();
+    return null;
+  }
+  signal(pid, "SIGTERM");
+  for (let waited = 0; waited < llamaServerShutdownGraceMs; waited += 100) {
+    if (!isAlive(pid)) break;
+    await wait(100);
+  }
+  if (isAlive(pid)) signal(pid, "SIGKILL");
+  clear();
+  return pid;
+};
 
 const waitForChildExit = (
   child: ChildProcess,
@@ -175,7 +255,10 @@ export class LlamaServerClient {
   ) {
     this.baseUrl = `http://127.0.0.1:${options.port}`;
     this.logPath = `/tmp/koed-${options.name}-llama-server.log`;
+    this.pidPath = `/tmp/koed-${options.name}-${options.port}-llama-server.pid`;
   }
+
+  private readonly pidPath: string;
 
   async start(): Promise<void> {
     if (this.isRunning()) {
@@ -296,6 +379,16 @@ export class LlamaServerClient {
       this.logFile.write(
         `\n--- starting ${this.options.name} llama-server ---\n`
       );
+      const reaped = await reapRecordedLlamaServer(
+        this.pidPath,
+        this.config.llamaServerBinary,
+        this.options.port
+      ).catch(() => null);
+      if (reaped !== null)
+        this.logger.warning("ended a llama-server left running", {
+          event: event("embedding.llama_server.stale_reaped"),
+          llama_server: { name: this.options.name, port: this.options.port }
+        });
       const child = this.spawner(this.config.llamaServerBinary, args, {
         env: llamaServerEnvironment(
           this.config.llamaServerBinary,
@@ -305,6 +398,13 @@ export class LlamaServerClient {
         stdio: ["ignore", "pipe", "pipe"]
       });
       this.process = child;
+      if (typeof child.pid === "number") {
+        try {
+          writeFileSync(this.pidPath, `${child.pid}\n`, { mode: 0o600 });
+        } catch {
+          // Recording is only a safety net for a later start.
+        }
+      }
       child.stdout?.pipe(this.logFile, { end: false });
       child.stderr?.pipe(this.logFile, { end: false });
       await this.waitReady(this.config.llamaServerStartupTimeoutSeconds);
@@ -352,6 +452,7 @@ export class LlamaServerClient {
     this.process = null;
     this.logFile?.end();
     this.logFile = null;
+    rmSync(this.pidPath, { force: true });
     if (child.exitCode === null) {
       child.kill("SIGTERM");
       const exited = await waitForChildExit(child, llamaServerShutdownGraceMs);
