@@ -4347,7 +4347,10 @@ const directRecallBareQuestion = (
   record.sourceType !== "curated_memory" &&
   text.length <= 300 &&
   !text.includes("\n") &&
-  /\?\s*$/.test(text);
+  (/\?\s*$/.test(text) ||
+    /\b(check|search|ask|look (?:in|at|through))\b[^.?!]{0,40}\bmemor(?:y|ies)\b/i.test(
+      text
+    ));
 
 /**
  * Memory recall for an AI Client that writes the answer itself, such as the
@@ -4411,8 +4414,9 @@ export const directMemoryRecallAnswer = async (
           : "";
     const [citation] = citationsFromHits([item]);
     if (!text || !citation) continue;
-    // A short bare question (often an earlier recall request captured from a
-    // conversation) matches the new question closely but holds no answer.
+    // A short question or "check memory" request (often an earlier recall
+    // request captured from a conversation) matches the new question closely
+    // but holds no answer.
     if (directRecallBareQuestion(record, text)) continue;
     const key = sourceKey(citation);
     if (seen.has(key)) continue;

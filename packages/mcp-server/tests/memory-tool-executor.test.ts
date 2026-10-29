@@ -264,7 +264,7 @@ describe("MemoryToolExecutor", () => {
           sourceType: "memory_event",
           sourceId: "33333333-3333-4333-8333-333333333333",
           visibility: "personal",
-          summaryText: "How do I like my answers? Check memory?",
+          summaryText: "Check memory: how do I like my answers.",
           score: 0.95,
           citation: {
             nodeId: "33333333-3333-4333-8333-333333333333",
@@ -318,7 +318,7 @@ describe("MemoryToolExecutor", () => {
       "[1] (saved memory, 2026-10-01) Keep answers short"
     );
     expect(markdown).not.toContain("No citation");
-    expect(markdown).not.toContain("Check memory?");
+    expect(markdown).not.toContain("Check memory");
     expect(completed.finalQuestion).toMatchObject({
       status: "answered",
       citations: [{ nodeId: "11111111-1111-4111-8111-111111111111" }],
