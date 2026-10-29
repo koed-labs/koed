@@ -2078,30 +2078,43 @@ export function HqActiveConversation({
   useEffect(() => {
     if (!api || !detailThread.sessionId) return;
     let active = true;
-    void api
-      .resume({
-        projectId: project.id,
-        capturedSessionId: detailThread.sessionId,
-        threadId: privateProjectHqIdentity?.threadId ?? detailThread.id
-      })
-      .then((result) => {
-        if (!active || identityKeyRef.current !== identityKey) return;
-        setResumed({
-          key: identityKey,
-          status: result.status,
-          conversation: result.conversation
+    let timer = 0;
+    let attempt = 0;
+    const resume = () =>
+      void api
+        .resume({
+          projectId: project.id,
+          capturedSessionId: detailThread.sessionId!,
+          threadId: privateProjectHqIdentity?.threadId ?? detailThread.id
+        })
+        .then((result) => {
+          if (!active || identityKeyRef.current !== identityKey) return;
+          setResumed({
+            key: identityKey,
+            status: result.status,
+            conversation: result.conversation
+          });
+          // Right after Koed starts, the AI Client's resume support and the
+          // conversation's runtime are often not published yet, so the first
+          // answer is "read-only" or "reconciling". Ask again for a while
+          // instead of leaving the conversation unwritable until reopened.
+          if (privateProjectHq && result.status !== "ready" && attempt < 40) {
+            attempt += 1;
+            timer = window.setTimeout(resume, Math.min(1_000 * attempt, 5_000));
+          }
+        })
+        .catch((cause: unknown) => {
+          if (!active || identityKeyRef.current !== identityKey) return;
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Unable to resume this Conversation."
+          );
         });
-      })
-      .catch((cause: unknown) => {
-        if (!active || identityKeyRef.current !== identityKey) return;
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "Unable to resume this Conversation."
-        );
-      });
+    resume();
     return () => {
       active = false;
+      window.clearTimeout(timer);
     };
   }, [
     api,
@@ -2109,7 +2122,8 @@ export function HqActiveConversation({
     project.id,
     detailThread.id,
     detailThread.sessionId,
-    privateProjectHqIdentity?.threadId
+    privateProjectHqIdentity?.threadId,
+    privateProjectHq
   ]);
   useEffect(() => {
     if (!api || !conversation) return;
@@ -3463,7 +3477,11 @@ export function HqActiveConversation({
           </p>
         ) : null}
         {resumeStatus === "read_only" ? (
-          <p role="status">This Captured Conversation is read-only.</p>
+          <p role="status">
+            {privateProjectHq
+              ? `Connecting to ${assistantName ?? "the AI Client"}…`
+              : "This Captured Conversation is read-only."}
+          </p>
         ) : null}
         {resumeStatus === "reconciling" ? (
           <p role="status">
