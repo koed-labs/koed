@@ -427,7 +427,14 @@ export function HqProjectConversation({
           setConversation(result.conversation);
           setPending(false);
           return;
-        } else if (result.status === "failed") {
+        } else if (
+          result.status === "failed" ||
+          // A conversation whose last message could not be confirmed waits
+          // for the person to check it. Open it from its saved record so
+          // they see the history and the recovery choices; polling for
+          // "ready" here showed "Opening your Conversation…" forever.
+          result.status === "reconciling"
+        ) {
           const durable = await api.read(project.id);
           if (!live) return;
           const execution = durable.execution;
@@ -452,6 +459,9 @@ export function HqProjectConversation({
                 instanceId: execution.aiClientInstanceId
               }
             });
+          } else if (result.status === "reconciling") {
+            if (live) timer = setTimeout(() => void inspect(), 1_000);
+            return;
           } else {
             setTerminalUncaptured(true);
             setError(
