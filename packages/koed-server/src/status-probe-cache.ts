@@ -28,7 +28,7 @@ type SpawnSyncLike = (
  * first, so changes Koed makes show at once; changes made outside Koed show
  * within the reuse window.
  */
-export const statusProbeReuseMs = 60_000;
+export const statusProbeReuseMs = 5 * 60_000;
 /** A probe that timed out is retried sooner. */
 const timedOutReuseMs = 15_000;
 const maxEntries = 64;
