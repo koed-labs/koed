@@ -15,7 +15,9 @@ if (command === "doctor") {
         "memory_access_check",
         { include_notes: true },
         { cwd: process.cwd() },
-        AbortSignal.timeout(10_000)
+        // The Local AI Runtime can be busy importing history for a while;
+        // a slow answer is not a broken MCP Server.
+        AbortSignal.timeout(30_000)
       )
     ]);
     console.log(

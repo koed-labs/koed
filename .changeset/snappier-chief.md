@@ -13,3 +13,4 @@ The Chief of Staff feels quicker:
 - Importing a Codex conversation from your history registers its transcript once, instead of rereading it before every batch.
 - Existing Chief of Staff conversations without a chosen reasoning effort also answer at a low one.
 - `koed status` asks again within 20 seconds after an AI Client check fails, so a check that failed only because Koed was still starting no longer keeps Koed marked unhealthy for minutes.
+- The MCP Server health check waits up to 30 seconds for the Local AI Runtime, so a runtime that is busy importing history no longer marks Koed as needing attention.
