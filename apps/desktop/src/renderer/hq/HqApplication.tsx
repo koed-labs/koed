@@ -1,3 +1,4 @@
+import { startupMark } from "../startup-marks.js";
 import {
   cloneElement,
   isValidElement,
@@ -848,6 +849,8 @@ export function HqApplication({
   );
   const firstClassLoaded =
     projectsAuthorityCurrent && Boolean(personalProjectsSnapshot?.loaded);
+  if (visibilityOwnerId && visibilityProfileKey) startupMark("owner known");
+  if (firstClassLoaded) startupMark("projects loaded");
   const firstClassError =
     projectsAuthorityCurrent && Boolean(personalProjectsSnapshot?.error);
   const [chiefHomeAttempt, setChiefHomeAttempt] = useState(0);

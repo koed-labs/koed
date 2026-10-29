@@ -1,3 +1,4 @@
+import { startupMark } from "../../startup-marks.js";
 import type { Agent } from "@koed/shared/agent-contract";
 import type { KoedTextActionProjection } from "@koed/shared";
 import { Pixelkin } from "../agents/Pixelkin.js";
@@ -852,6 +853,9 @@ export function HqProjectConversation({
           ) : null}
         </div>
       ) : null}
+      {activeConversation && home ? (
+        <StartupMark name="chief conversation shown" />
+      ) : null}
       {activeConversation ? (
         <div className="hq-project-conversation__active">
           {activeConversation}
@@ -1025,3 +1029,8 @@ export function HqProjectConversation({
     </div>
   );
 }
+
+const StartupMark = ({ name }: { name: string }) => {
+  startupMark(name);
+  return null;
+};

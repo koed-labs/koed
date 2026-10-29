@@ -349,6 +349,12 @@ const createWindow = async () => {
     }
     return { action: "deny" };
   });
+  // Startup timing marks from the renderer ("[koed-startup] …") go to the
+  // app log, so a slow first screen can be traced to the step that waited.
+  window.webContents.on("console-message", (event) => {
+    if (event.message.startsWith("[koed-startup] "))
+      console.info(`${new Date().toISOString()} ${event.message}`);
+  });
   window.webContents.on("will-navigate", (event, url) => {
     try {
       const origin = desktopRendererOrigin(url);
@@ -962,7 +968,13 @@ const bootstrap = async () => {
           "PDS local device storage provider is unavailable; Local Memory remains available."
         );
       }
+      console.info(
+        `${new Date().toISOString()} [koed-startup] main: resuming services`
+      );
       const result = await server.resume();
+      console.info(
+        `${new Date().toISOString()} [koed-startup] main: services resumed`
+      );
       void phoneGateway?.start().catch(() => undefined);
       if (shouldRefreshLocalAiClientsAfterResume(result)) {
         void server

@@ -1,3 +1,4 @@
+import { startupMark } from "./startup-marks.js";
 import {
   TEAM_ACTIVITY_WRITE_THROTTLE_MS,
   type CollaborationDurableSend,
@@ -692,6 +693,10 @@ export function App({
         : snapshotWithoutTeamCollaboration(collaboration.snapshot),
     [collaboration.snapshot, teamCollaborationEnabled]
   );
+  if (desktopStatus.status) startupMark("first status");
+  if (localSetupReady) startupMark("setup ready");
+  if (personalMemoryReady) startupMark("personal memory ready");
+  if (snapshot) startupMark("collaboration snapshot");
   const managedConversationLifecycle = useManagedConversationLifecycle({
     api: managedConversations,
     store: personalMemoryStore,
