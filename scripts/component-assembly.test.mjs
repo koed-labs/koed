@@ -14,10 +14,7 @@ import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { classifyRuntimeException } from "./component-assembly-policy.mjs";
-import {
-  inspectRuntimeComponentOwnership,
-  projectRuntimeComponents
-} from "./component-assembly.mjs";
+import { projectRuntimeComponents } from "./component-assembly.mjs";
 
 const roots = [];
 test.afterEach(() => {
@@ -78,57 +75,6 @@ const minimalGraph = (
   );
   write(resolve(sourceRoot, "privacy-service/dist/index.js"), privacySource);
 };
-
-test("ownership assessment follows shared, optional and peer dependencies without changing the source", () => {
-  const sourceRoot = mkdtempSync(resolve(tmpdir(), "koed-ownership-"));
-  roots.push(sourceRoot);
-  minimalGraph(
-    sourceRoot,
-    'import "shared-fixture";\n',
-    {
-      "shared-fixture": "1.0.0"
-    },
-    {
-      optionalDependencies: { "missing-optional": "1.0.0" },
-      peerDependencies: { "peer-fixture": "1.0.0" }
-    }
-  );
-  packageFixture(
-    sourceRoot,
-    "shared-fixture",
-    {},
-    { "index.js": "export {};\n" }
-  );
-  packageFixture(
-    sourceRoot,
-    "peer-fixture",
-    {},
-    { "index.js": "export {};\n" }
-  );
-  packageFixture(
-    sourceRoot,
-    "@koed/api",
-    { "shared-fixture": "1.0.0" },
-    { "dist/index.js": 'import "shared-fixture";\n' }
-  );
-  const manifestPath = resolve(
-    sourceRoot,
-    "node_modules/@koed/privacy-service/package.json"
-  );
-  const before = readFileSync(manifestPath);
-  const report = inspectRuntimeComponentOwnership({ sourceRoot });
-  assert.equal(
-    report.packages.find((entry) => entry.name === "shared-fixture").ownership,
-    "shared"
-  );
-  assert.equal(
-    report.packages.find((entry) => entry.name === "peer-fixture").ownership,
-    "privacy"
-  );
-  assert.deepEqual(report.audits.base.unresolved, []);
-  assert.deepEqual(report.audits.privacy.unresolved, []);
-  assert.deepEqual(readFileSync(manifestPath), before);
-});
 
 test("projects hermetic base and privacy closures from shared production graph", () => {
   const workspace = mkdtempSync(resolve(tmpdir(), "koed-component-assembly-"));

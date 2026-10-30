@@ -134,12 +134,7 @@ export const packageDirectories = (nodeModules) => {
   const visitModules = (root) => {
     if (!existsSync(root)) return;
     for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (
-        !entry.isDirectory() ||
-        entry.name === ".bin" ||
-        entry.name === ".pnpm"
-      )
-        continue;
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
       const path = resolve(root, entry.name);
       if (entry.name.startsWith("@")) {
         for (const child of readdirSync(path, { withFileTypes: true })) {

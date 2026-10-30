@@ -184,6 +184,13 @@ relevant `$KOED_HOME/run/generation-lifecycle.lock` or
 `$KOED_HOME/runtime/components.lock`, then retry. Never use an `O_EXCL` check
 followed by rename to reclaim a lock.
 
+The supervisor monitors essential child processes during startup as well as normal operation.
+If a child exits or startup is stopped, it cancels readiness probes and polling delays immediately.
+It stops managed children and its native Postgres before releasing the runtime pin and supervisor lock.
+A dead API cannot become ready through further polling.
+If cleanup cannot confirm that the children stopped, the supervisor retains those ownership protections and reports the failure.
+Desktop recovery must still authenticate the previous generation before restoring it.
+
 `resolveKoedAppRuntime` maps a supplied generation selection to component
 paths; it is not an authentication boundary and does not verify or pin a
 selection. Packaged service launch uses the asynchronous verified selection
@@ -365,10 +372,9 @@ completed stage to distinguish slow loading from an unavailable service.
 
 The separate Linux x64 Team CPU image packages the newer ONNX worker, bounded
 two-worker scheduling and short-field batching. Its qualified service profile,
-resource bounds, qualified publication/rollout results and platform limits are documented in
+resource bounds, deployment/rollback procedures, and platform limits are documented in
 [Packaged Privacy CPU worker](privacy-cpu-worker.md). Native/provider defaults
-remain unchanged. [Qualification replay](privacy-runtime-qualification.md)
-uses isolated synthetic runners and does not modify a running Team backend.
+remain unchanged.
 
 Bundled-local Team startup verifies every pinned Privacy Filter model file once
 before the Privacy Filter process is spawned. Readiness polling then trusts the
@@ -845,7 +851,6 @@ Chat uses its own automatic Conversation Folder.
 
 Run `pnpm --filter @koed/desktop test:browser` for the maintained native browser journeys.
 They use synthetic Memory and simulated AI Clients in disposable Electron profiles.
-See [Project cutover validation](projects-default-view-validation.md) for the route and recorded automated results.
 
 ### Managed Conversation permissions
 

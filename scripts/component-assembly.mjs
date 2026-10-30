@@ -691,60 +691,6 @@ const projectComponent = (
   return { root: componentRoot, required, closure };
 };
 
-// Read the same closures used by assembly. This is deliberately independent of
-// copying/pruning so assessment can describe an existing distribution first.
-export const inspectRuntimeComponentOwnership = ({
-  sourceRoot,
-  excludedPackages = []
-}) => {
-  assertSafeTree(sourceRoot);
-  const base = packageClosure(
-    sourceRoot,
-    baseServices.map((service) => servicePackages[service])
-  );
-  const privacy = packageClosure(
-    sourceRoot,
-    [servicePackages["privacy-service"]],
-    excludedPackages
-  );
-  const basePaths = new Set(base.map(({ packageRoot }) => packageRoot));
-  const privacyPaths = new Set(privacy.map(({ packageRoot }) => packageRoot));
-  const packages = new Map(
-    [...base, ...privacy].map((entry) => [entry.packageRoot, entry])
-  );
-  const ownership = [...packages.values()]
-    .map(({ packageRoot, manifest }) => ({
-      name: manifest.name,
-      version: manifest.version,
-      path: relative(sourceRoot, packageRoot).replaceAll("\\", "/"),
-      ownership: basePaths.has(packageRoot)
-        ? privacyPaths.has(packageRoot)
-          ? "shared"
-          : "base"
-        : "privacy",
-      dependencies: manifest.dependencies ?? {},
-      optionalDependencies: manifest.optionalDependencies ?? {},
-      peerDependencies: manifest.peerDependencies ?? {},
-      peerDependenciesMeta: manifest.peerDependenciesMeta ?? {}
-    }))
-    .sort((left, right) => left.path.localeCompare(right.path));
-  return {
-    schemaVersion: 1,
-    services: { base: baseServices, privacy: privacyServices },
-    packages: ownership,
-    unreachablePackages: packageDirectories(resolve(sourceRoot, "node_modules"))
-      .filter((packageRoot) => !packages.has(packageRoot))
-      .map((packageRoot) => ({
-        name: readManifest(resolve(packageRoot, "package.json")).name,
-        path: relative(sourceRoot, packageRoot).replaceAll("\\", "/")
-      })),
-    audits: {
-      base: unresolvedRuntimeEdges(sourceRoot, base),
-      privacy: unresolvedRuntimeEdges(sourceRoot, privacy)
-    }
-  };
-};
-
 export const projectRuntimeComponents = ({
   sourceRoot,
   outputDir,

@@ -1,6 +1,6 @@
 # Default Project identities and automatic provenance
 
-Status: Accepted, 27 October 2026. Implements PV-06 in `tickets.md`.
+Status: Accepted, 27 October 2026.
 
 ## Context
 

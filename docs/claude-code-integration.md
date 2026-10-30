@@ -404,14 +404,13 @@ remain after a local registry reset; status checks the local registration that
 capability discovery consumes. In that case, onboarding repairs the
 registration so capability discovery can publish a Local Synthesis snapshot.
 
-## Per-call validation evidence
+## Conditional delivery validation
 
-The conditional-delivery matrix passed on Claude Code 2.1.267 using native print
-execution with its explicit noninteractive background opt-in. Both enabled and
-disabled backgrounding, final statuses, dependency ordering, and waiter
-interruption were checked. This adds no interactive TUI or reopened-session
-guarantee. See [validation](async-memory-answer.md#validation) for what the
-protocol tests and evaluation suite establish.
+Validate conditional delivery separately in native print execution, the interactive
+TUI, and reopened Conversations. An explicit noninteractive background opt-in does
+not establish normal interactive delivery. Check enabled and disabled backgrounding,
+final statuses, dependency ordering, and waiter interruption. See
+[validation](async-memory-answer.md#validation) for protocol checks and agent evaluations.
 
 ### Repository assignments
 

@@ -368,7 +368,7 @@ installation remains the fixed control-plane hub in V1.
    `pnpm pds-fixture:validate` with its PostgreSQL stage enabled, then
    `pnpm pds-pairing:e2e` against two disposable local-personal APIs and two
    distinct databases using the joining-control variables documented in
-   [Running Koed](running-koed.md#same-network-desktop-pairing). Do not continue
+   [Device pairing](device-pairing.md). Do not continue
    if either skips required storage coverage, uses the same API origin/database,
    or fails.
 2. Create or recover one Personal Device Group through the supported device

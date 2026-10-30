@@ -47,7 +47,18 @@ Automatic CUDA selection requires driver 570.26 or later and a supported compute
 It also requires CUDA runtime version 12080 through 12999 and cuDNN major version 9.
 The required host libraries appear in `PRIVACY_CUDA_REQUIREMENTS` in the Server source.
 These conservative requirements avoid a claim of support based only on a GPU name.
-The [runtime assessment](optional-privacy-runtime-assessment.md) records upstream evidence and native qualification limits.
+The pinned [ONNX build](https://github.com/microsoft/onnxruntime/blob/v1.24.3/tools/ci_build/github/linux/build_cuda_c_api_package.sh) uses CUDA 12.8.
+The [ONNX provider requirements](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html) identify the corresponding CUDA and cuDNN dependencies.
+The driver threshold follows the [CUDA 12.8 toolkit requirements](https://docs.nvidia.com/cuda/archive/12.8.0/cuda-toolkit-release-notes/index.html).
+This conservative policy accounts for PTX requirements as well as same-major CUDA compatibility.
+Unknown GPU architectures select CPU until their support is reviewed.
+
+The CPU variant retains `libonnxruntime.so.1` and `onnxruntime_binding.node`.
+It excludes `libonnxruntime_providers_cuda.so`, `libonnxruntime_providers_shared.so`, and `libonnxruntime_providers_tensorrt.so`.
+The CUDA variant retains all five files and its complete dependency closure.
+Removing TensorRT from that variant requires a separately reviewed policy change and affected native qualification.
+The macOS bundle retains its existing native files and provider behavior.
+The [manifest catalog contract](component-manifest-catalog.md) defines variant identities and authentication.
 
 After installation, inference requests CUDA explicitly and compares masking against the CPU result.
 An ONNX execution profile must identify a kernel that ran through `CUDAExecutionProvider`.
@@ -70,6 +81,9 @@ The activation progress message identifies the point after which cancellation is
 Activation must finish or restore the previous selection before the operation completes.
 Restart and readiness failures remain visible even when the previous selection returns successfully.
 If recovery cannot establish a safe selection or restart, the error identifies the incomplete recovery.
+If an essential service exits during startup, the supervisor cancels readiness polling and stops its managed resources immediately.
+It releases ownership only after confirmed cleanup, so Desktop can authenticate and restore the previous generation.
+Startup failure never substitutes for successful filtering or permits required sharing.
 
 Retry authenticates cached runtime and model assets before reuse.
 Incomplete transfers never become accepted cache entries.
@@ -87,6 +101,7 @@ An archive checksum supplied beside a download cannot replace embedded manifest 
 
 Controlled compatibility and failure fixtures can run on this Mac.
 They cannot establish Linux execution or successful CUDA execution.
-Ticket 08 requires native Linux x64 CPU and fallback evidence.
-Ticket 09 requires the colleague's compatible NVIDIA machine and actual CUDA kernel execution.
+Native Linux x64 acceptance requires CPU and fallback evidence.
+CUDA acceptance requires a compatible NVIDIA host and actual CUDA kernel execution.
 The release remains unqualified until those results pass for the final candidate.
+Use [draft validation](../DRAFT_VALIDATION.md) before publication and [post-publication validation](../POST_VALIDATION.md) afterward.

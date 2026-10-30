@@ -44,14 +44,6 @@ An initial-read failure falls back to the complete inventory read. A source-read
 Transport pages remain bounded. Existing named Project and Folder views retain their 5,000-Conversation view limit.
 An unavailable or oversized view produces an error instead of a silently incomplete catalog.
 The source header index does not replace the source reconciliation scheduler or authorize capture, sharing, or local execution.
-The implementation and acceptance sequence remain in [the approved plan](projects-default-view-plan.md) and [tickets.md](../tickets.md).
-
-PV-01 acceptance on 27 October 2026 passed 157 focused inventory and Desktop tests.
-The named Project API regression and the isolated PostgreSQL pagination regression also passed.
-The PostgreSQL fixture enumerated 601 Conversations with repeated provider identifiers and changing activity timestamps.
-It also made sure that another owner could not read those Conversations.
-The shared build, API and Desktop type checks, test type check, and targeted lint passed.
-The User requested that the changeset remain omitted during implementation.
 
 ## Default Git Projects
 
@@ -82,13 +74,6 @@ Historical removed rules and deleted Projects also prevent an unwanted replaceme
 Suppression prevents automatic creation. It does not prevent an explicit source inclusion or delete captured Memory.
 An empty Project remains available for normal management.
 Initialization provenance remains separate from User edits in the native membership journal.
-Personal Device Sync convergence follows in its dependent implementation ticket.
-
-PV-02 acceptance on 27 October 2026 passed four isolated PostgreSQL lifecycle cases.
-The cases cover two checkouts, later capture, rename, removal, restart, explicit inclusion, deletion, managed sources, owner isolation, and initialization rollback.
-The journey reads real API and Desktop inventories. The worker case uses PostgreSQL notifications and a stopped-worker restart.
-The shared build, API build, worker type check, test type check, and targeted lint passed.
-A native UI demonstration remains part of PV-07.
 
 ## Exact Folders and recorded relationships
 
@@ -115,12 +100,6 @@ Sharing attachments prevent automatic retirement.
 The worker conservatively retains a Project when protected sharing records prevent a conclusive attachment assessment.
 Renamed, edited, mixed, and unresolved Projects remain available through the normal source management controls.
 
-PV-03 acceptance on 27 October 2026 passed six PostgreSQL lifecycle cases and 19 focused classification, inventory, and Desktop state checks.
-The fixtures cover repeated checkout labels, equal paths on different devices, replaced directories, parent and child Folders, mixed history, and unresolved history.
-They retain User-authored source rules, direct inclusions, and exclusions.
-Guarded retirement uses an explicit source correction and preserves rename and protected sharing intent.
-The shared and API builds, Desktop and worker type checks, test type check, and targeted lint passed.
-
 ## Project and source navigation
 
 The Project list contains named Projects, including automatic defaults and User-created Projects.
@@ -128,8 +107,6 @@ Project search includes recorded source labels and exact Folder context.
 The Project header contains its title and Folder filter dropdown, source management, and the Project actions menu.
 New Conversation is inside the three-dot Project actions menu.
 The main Project view has no Sources or Ask collapsible section and no Browse by source entry point.
-Those presentation changes follow the User's later request on 27 October 2026.
-The earlier dated PV-04 UI results below describe the initial cutover presentation.
 
 The Folder dropdown intersects current authorized Project members.
 Hidden source-view navigation state does not narrow a named Project after its source-filter controls are removed.
@@ -178,22 +155,10 @@ The picker retains a local choice only while that Folder remains available.
 Project rules determine which local choices can receive future Conversations in that Project.
 
 The managed execution API resolves the selected native Folder again before it starts execution.
+API execution checks reject historical paths without native execution metadata.
 Historical graph paths cannot supply a local execution fallback.
 An unavailable or remote Folder remains available for browsing and recall.
 Read-only Project reconciliation status distinguishes pending organization from an empty inventory.
-PV-04 acceptance on 27 October 2026 passed the focused navigation, preload, native Folder identity, and explicit Ask selection checks.
-The Desktop workspace suite covers source filters, refresh, remote browsing, and explicit local Folder selection.
-API execution checks reject historical paths without native execution metadata.
-The existing execution and first-prompt lifecycle cases use current native Folder fixtures.
-The navigation history check retains exact source identities through back and forward actions.
-
-An isolated Electron demonstration passed with synthetic data and a separate native profile.
-It shows one Koed Project, two checkout Folders, a standalone source, mixed-history filtering, the actual Ask target, selected-state labels, keyboard activation, and unresolved history.
-Screenshots were inspected separately from the automated assertions.
-Run `pnpm --filter @koed/desktop build:validation` and `pnpm --filter @koed/desktop exec electron scripts/validate-projects-default.mjs` to repeat it.
-This is automated native UI evidence. No User-run manual session is claimed.
-The shared build, Desktop type check, test type check, and targeted lint passed.
-The full integrated demonstration remains part of PV-07.
 
 ## Project source management
 
@@ -219,13 +184,6 @@ These operations edit membership metadata. They do not retarget a Git Anchor or 
 The normal membership notification reaches existing sharing reconciliation.
 No source-management operation creates sharing consent, Workspace Access, or Conversation Source Access.
 Removing a rule uses the same retained default suppression as a single-source edit.
-
-PV-05 acceptance on 27 October 2026 passed seven isolated PostgreSQL lifecycle cases.
-The new case exercises two Folders, two Git Anchors, direct inclusion, logical overlap counts, duplicate-rule prevention, rollback, stale versions, rename, exclusion, reviewed add back, future capture, and explicit regrouping between same-name Projects.
-Focused Desktop checks cover atomic confirmation, source navigation, inclusion reasons, failed previews, and a rename draft that becomes stale during a background refresh.
-The native source-management layout demonstration passed at widths from 360 to 1100 pixels, including short windows and keyboard focus return.
-The demonstration uses synthetic data. No User-run manual session is claimed.
-The shared and database builds, API, Desktop, worker and test type checks, and targeted lint passed.
 
 ## Personal device convergence
 
@@ -254,21 +212,10 @@ Owner translation preserves the original Folder device, profile, and directory l
 No decision creates a source row or grants access through an equal key or path.
 Verified source readiness and corrections schedule the same bounded reconciliation used by local capture.
 Pending source metadata does not create a Conversation or an automatic Project.
-
-PV-06 acceptance on 27 October 2026 passed five native journeys across two isolated PostgreSQL databases.
-The journeys use real signed configuration records and encrypted Personal transport packages.
-They cover creation before pairing, equivalent roots with different labels, retained rename, concurrent User names and seed-rule edits, offline removal and deletion, delayed replay, restart, source suppression without an automatic Project, and equal paths on different devices.
-A verified closed source creates its default only after body readiness. A later source correction schedules reconciliation again.
-An unrelated owner cannot introduce the same signed record into that Personal scope or read the source.
-Three focused provenance and identity checks and three Desktop sync-detail checks passed.
-The existing native causal-receipt and encrypted-delivery journeys also passed unchanged behavior checks.
-These are two-database device fixtures. No physical two-computer manual session is claimed.
+A verified closed source creates its default only after body readiness.
+An unrelated owner cannot introduce the signed record into that Personal scope or read the source.
 
 ## Integrated cutover
-
-PV-07 replaces the pending integrated demonstration noted in the earlier dated acceptance records.
-The [cutover validation record](projects-default-view-validation.md) reports the measured existing-data classification and final checks.
-Every Conversation in the 601-entry starting fixture and the 603-entry final fixture remains reachable.
 
 Projects is the default Personal destination, and Ask remains explicit.
 The shell and workspace resolve system source views from one transient presentation model.
