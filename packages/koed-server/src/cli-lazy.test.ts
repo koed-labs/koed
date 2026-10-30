@@ -28,6 +28,8 @@ describe("lightweight CLI dispatch", () => {
     vi.stubGlobal("fetch", fetch);
     try {
       await runKoedServerCli(["--help"], { stdout: writer().stream });
+      await runKoedServerCli(["--version"], { stdout: writer().stream });
+      expect(serviceLoads).not.toHaveBeenCalled();
       await runKoedServerCli(["models", "status", "--json"], {
         stdout: writer().stream
       });

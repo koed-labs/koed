@@ -100,15 +100,24 @@ In a source checkout, the Desktop `prestart` script runs
 SHA-256 fingerprint for the API, Worker, MCP Server, Embedding Service, Privacy
 Filter Service, and their workspace dependencies. It builds these packages only
 when their inputs or required outputs changed. Before a rebuild, it removes
-the previous runtime packages' compiled output and TypeScript build state so
-deleted source modules cannot remain in an artifact. Workspace builds run
-one at a time to limit peak memory use. Desktop packaging uses the same
-preparation step before staging its service runtime.
+the service packages' compiled output and TypeScript build state so deleted
+source modules cannot remain in an artifact. It retains the Server control
+plane, which includes the CLI. Workspace builds run one at a time to limit
+peak memory use. Desktop packaging uses the same preparation step before
+staging its service runtime.
+
+The Server build compiles into a temporary directory and checks every expected
+output plus executable CLI help before replacing generated files. Compilation
+errors and interruptions during compilation leave the previous CLI intact.
+The build publishes new dependencies before replacing existing files. It
+removes obsolete outputs after all replacement files are present. A failed
+service build therefore retains CLI help for diagnosis and recovery.
 
 The source-runtime state is under
 `node_modules/.cache/koed/source-runtime-build.json`. A failed or interrupted
 build leaves a dirty marker beside this file. The dirty marker prevents a later
-start from using partial outputs. If workspace dependencies do not match
+start from using partial service outputs. Preparation also requires the CLI
+entrypoint and its generated command tree. If workspace dependencies do not match
 `pnpm-lock.yaml`, run `pnpm install` before preparation.
 
 Use these commands for source-checkout diagnostics:
@@ -1472,6 +1481,10 @@ Setup status still controls onboarding. Permission denials remain nonretryable;
 normal backend authorization and enrollment checks apply to every request.
 
 ## CLI help navigation
+
+Run `koed --version` or `koed -V` to print the installed Server version.
+The value comes from `@koed-labs/server/package.json`, which Changesets versions with the Koed product release.
+In a source checkout, use `pnpm koed --version`.
 
 Run `koed --help` to list public commands and command groups.
 Each public command group provides help at its own level.

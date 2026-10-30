@@ -17,6 +17,7 @@ import { registerProjectCommands } from "./cli-projects.js";
 import { registerPackageCommands } from "./cli-package.js";
 import { registerModelCommands } from "./cli-models.js";
 import { registerRuntimeCommands } from "./cli-runtime.js";
+import { resolveKoedControlPlaneVersion } from "./app-runtime.js";
 
 export const runCommandTree = async (
   args: string[],
@@ -28,6 +29,11 @@ export const runCommandTree = async (
   const program = new Command()
     .name("koed")
     .description("Manage Koed services and AI Client integrations")
+    .version(
+      resolveKoedControlPlaneVersion(),
+      "-V, --version",
+      "Print the Koed version"
+    )
     .exitOverride()
     .showSuggestionAfterError(false)
     .configureOutput({

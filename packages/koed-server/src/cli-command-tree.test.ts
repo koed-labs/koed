@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { runKoedServerCli } from "./cli.js";
 
 const output = () => {
@@ -15,6 +16,29 @@ const output = () => {
 };
 
 describe("Commander help and lightweight actions", () => {
+  it.each(["--version", "-V"])(
+    "prints the Changesets-managed package version for %s without invoking actions",
+    async (flag) => {
+      const stdout = output();
+      const stderr = output();
+      const resolvePaths = vi.fn(() => {
+        throw new Error("version resolved runtime paths");
+      });
+      const manifest = JSON.parse(
+        readFileSync(new URL("../package.json", import.meta.url), "utf8")
+      ) as { version: string };
+      expect(
+        await runKoedServerCli([flag], {
+          stdout: stdout.stream,
+          stderr: stderr.stream,
+          resolvePaths
+        })
+      ).toBe(0);
+      expect(stdout.text()).toBe(`${manifest.version}\n`);
+      expect(stderr.text()).toBe("");
+      expect(resolvePaths).not.toHaveBeenCalled();
+    }
+  );
   it.each<[string[], string, string]>([
     [[], "Manage Koed services", "--dependency-mode"],
     [["runtime"], "install", "--kind"],

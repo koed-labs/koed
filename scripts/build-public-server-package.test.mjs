@@ -72,6 +72,13 @@ test("assembled public package has only koed bin and self-contained control plan
       readFileSync(resolve(packageDir, "package.json"), "utf8")
     );
     assert.equal(manifest.name, "@koed-labs/server");
+    assert.equal(
+      execFileSync(node24, [resolve(packageDir, "bin/koed.js"), "--version"], {
+        cwd: scratch,
+        encoding: "utf8"
+      }),
+      `${version}\n`
+    );
     const embedded = execFileSync(
       node24,
       [
