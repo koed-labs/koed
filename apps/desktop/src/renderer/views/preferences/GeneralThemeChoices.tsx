@@ -2,15 +2,13 @@ import { Check, Sun, Moon, Monitor } from "lucide-react";
 import type { DesktopThemePreference } from "../../../window/theme-preference.js";
 export function GeneralThemeChoices({
   theme,
-  onThemeChange,
-  compact = false
+  onThemeChange
 }: {
   theme: DesktopThemePreference;
   onThemeChange: (theme: DesktopThemePreference) => void;
-  compact?: boolean;
 }) {
   return (
-    <fieldset className={`koed-general-themes ${compact ? "is-compact" : ""}`}>
+    <fieldset className="koed-general-themes">
       <legend className="koed-visually-hidden">Theme</legend>
       {(
         [
@@ -27,29 +25,27 @@ export function GeneralThemeChoices({
             checked={theme === value}
             onChange={() => onThemeChange(value)}
           />
-          {!compact && (
-            <span
-              className={`koed-general-theme-preview koed-preview-${value}`}
-              aria-hidden="true"
-            >
-              <span className="koed-mini-rail">
-                <i />
-                <i />
-                <i />
-              </span>
-              <span className="koed-mini-sidebar">
-                <i />
-                <i />
-                <i />
-              </span>
-              <span className="koed-mini-main">
-                <i />
-                <i />
-                <span />
-                <span />
-              </span>
+          <span
+            className={`koed-general-theme-preview koed-preview-${value}`}
+            aria-hidden="true"
+          >
+            <span className="koed-mini-rail">
+              <i />
+              <i />
+              <i />
             </span>
-          )}
+            <span className="koed-mini-sidebar">
+              <i />
+              <i />
+              <i />
+            </span>
+            <span className="koed-mini-main">
+              <i />
+              <i />
+              <span />
+              <span />
+            </span>
+          </span>
           <span className="koed-general-theme-label">
             <Icon size={14} />
             <span>{value[0]!.toUpperCase() + value.slice(1)}</span>

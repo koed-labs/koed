@@ -1,22 +1,3 @@
-.koed-general {
-  padding-top: 34px;
-  container: general / inline-size;
-}
-.koed-general-heading {
-  margin-bottom: 32px;
-}
-.koed-general-heading h1 {
-  margin: 0;
-  font-size: 26px;
-  font-weight: 600;
-  letter-spacing: -0.65px;
-  line-height: 1.3;
-}
-.koed-general-heading p {
-  margin: 8px 0 0;
-  color: var(--muted-foreground);
-  font-size: 13px;
-}
 .koed-general-group {
   margin-top: 26px;
 }
@@ -202,11 +183,6 @@
   color: var(--muted-foreground);
   line-height: 1.5;
   margin: 4px 0 0;
-}
-.koed-general-row-action {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
 }
 .koed-general-action {
   display: inline-flex;

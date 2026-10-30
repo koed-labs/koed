@@ -783,7 +783,6 @@ export const stageRuntimeComponents = async ({
         variant: "cpu"
       });
       result.privacyCpuRequired = refreshRequiredFiles(result.privacyCpuRoot);
-      result.privacyCudaRoot = result.privacyRoot;
     }
     return result;
   } finally {

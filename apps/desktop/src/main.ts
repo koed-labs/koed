@@ -658,11 +658,7 @@ const bootstrap = async () => {
             return server.privacyInstall.installPrivacy({
               consent: true,
               offlineSource,
-              onProgress: ({ stage }) => {
-                process.stdout.write(
-                  `${JSON.stringify({ event: "koed.desktop.smoke.privacy-progress", stage })}\n`
-                );
-              }
+              onProgress: () => undefined
             });
           }
           if (command === "quit") return server.shutdown();

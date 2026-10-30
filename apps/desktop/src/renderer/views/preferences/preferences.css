@@ -91,14 +91,12 @@
   border-block-end: 1px solid var(--border);
 }
 
-.koed-preference-row strong,
-.koed-theme-options legend {
+.koed-preference-row strong {
   font-size: 13px;
   font-weight: 650;
 }
 
 .koed-preference-row p,
-.koed-theme-options > p,
 .koed-connection-state p,
 .koed-connection-form > p,
 .koed-preference-unavailable p {
@@ -129,41 +127,6 @@
   border-radius: 7px;
   background: var(--background);
   color: var(--foreground);
-}
-
-.koed-theme-options {
-  margin: 0;
-  padding: 18px 0;
-  border: 0;
-  border-block-end: 1px solid var(--border);
-}
-
-.koed-theme-options > div {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-block-start: 14px;
-}
-
-.koed-theme-options label {
-  display: flex;
-  min-block-size: 42px;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.koed-theme-options label:has(input:checked) {
-  border-color: var(--primary);
-  background: color-mix(in oklch, var(--primary) 8%, transparent);
-}
-
-.koed-theme-options input {
-  accent-color: var(--primary);
 }
 
 .koed-preference-unavailable,
