@@ -1,6 +1,6 @@
 import { CommanderError, type Command } from "commander";
 import type { KoedServerCliDependencies } from "./cli-contract.js";
-import { withCliService } from "./cli-service-loader.js";
+import { reportMissingCliService } from "./cli-service-loader.js";
 
 export type ComponentOperation = "status" | "install" | "activate" | "cleanup";
 export interface ComponentOptions {
@@ -77,14 +77,17 @@ export const registerComponentCommands = (
       );
     });
     command.action(async (options: ComponentOptions) => {
+      // Keep the literal import and its consumer together. Release inspection
+      // follows this edge statically without executing candidate package code.
+      let service: typeof import("./cli-component-operations.js");
+      try {
+        service = await import("./cli-component-operations.js");
+      } catch {
+        complete(reportMissingCliService(dependencies, options.json));
+        return;
+      }
       complete(
-        await withCliService(
-          () => import("./cli-component-operations.js"),
-          (service) =>
-            service.runComponentCommand(operation, options, dependencies),
-          dependencies,
-          options.json
-        )
+        await service.runComponentCommand(operation, options, dependencies)
       );
     });
   }

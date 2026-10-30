@@ -28,6 +28,7 @@ export const runCommandTree = async (
   let exitCode = 0;
   const program = new Command()
     .name("koed")
+    .enablePositionalOptions()
     .description("Manage Koed services and AI Client integrations")
     .version(
       resolveKoedControlPlaneVersion(),

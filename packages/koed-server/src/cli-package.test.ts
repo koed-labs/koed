@@ -37,34 +37,35 @@ describe("package command compatibility", () => {
     expect(collectPackageStatus).toHaveBeenCalledExactlyOnceWith(paths);
     expect(JSON.parse(stdout.text())).toMatchObject({ activeVersion: "1.2.3" });
   });
-  it("passes activation options and preserves a failed operation result", async () => {
-    const stdout = output();
-    const paths = {} as never;
-    const activatePackage = vi.fn(
-      () =>
-        ({ ok: false, state: "blocked", message: "activation denied" }) as never
-    );
-    expect(
-      await runKoedServerCli(
-        [
-          "package",
-          "activate",
-          "--version=1.2.3",
-          "--allow-downgrade",
-          "--json"
-        ],
-        { stdout: stdout.stream, resolvePaths: () => paths, activatePackage }
-      )
-    ).toBe(1);
-    expect(activatePackage).toHaveBeenCalledExactlyOnceWith(paths, "1.2.3", {
-      allowDowngrade: true
-    });
-    expect(JSON.parse(stdout.text())).toMatchObject({
-      ok: false,
-      state: "blocked",
-      message: "activation denied"
-    });
-  });
+  it.each([["--version", "1.2.3"], ["--version=1.2.3"]])(
+    "passes activation version %j and preserves a failed operation result",
+    async (...version) => {
+      const stdout = output();
+      const paths = {} as never;
+      const activatePackage = vi.fn(
+        () =>
+          ({
+            ok: false,
+            state: "blocked",
+            message: "activation denied"
+          }) as never
+      );
+      expect(
+        await runKoedServerCli(
+          ["package", "activate", ...version, "--allow-downgrade", "--json"],
+          { stdout: stdout.stream, resolvePaths: () => paths, activatePackage }
+        )
+      ).toBe(1);
+      expect(activatePackage).toHaveBeenCalledExactlyOnceWith(paths, "1.2.3", {
+        allowDowngrade: true
+      });
+      expect(JSON.parse(stdout.text())).toMatchObject({
+        ok: false,
+        state: "blocked",
+        message: "activation denied"
+      });
+    }
+  );
   it("requires a version before activating a package", async () => {
     const stdout = output();
     const activatePackage = vi.fn(() => {

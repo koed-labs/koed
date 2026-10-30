@@ -1485,6 +1485,7 @@ normal backend authorization and enrollment checks apply to every request.
 Run `koed --version` or `koed -V` to print the installed Server version.
 The value comes from `@koed-labs/server/package.json`, which Changesets versions with the Koed product release.
 In a source checkout, use `pnpm koed --version`.
+Subcommand flags keep their own meaning. For example, `components install --version <version>` selects the component version.
 
 Run `koed --help` to list public commands and command groups.
 Each public command group provides help at its own level.

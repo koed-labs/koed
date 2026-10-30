@@ -17,6 +17,28 @@ export const standalonePackageId = "koed-server";
 export const standalonePackageKind = "app-runtime";
 export const packageProvenanceSchemaVersion = 1;
 
+export const writeControlPlanePackageMetadata = ({
+  packageRoot,
+  repoRoot,
+  version,
+  cataloglessDevelopment
+}) => {
+  // A development archive label can be a commit SHA. The CLI still reports the
+  // Changesets-managed product version, not that archive's build identifier.
+  const manifest = {
+    name: "@koed-labs/server",
+    version: cataloglessDevelopment
+      ? readPackageVersion(repoRoot, "packages/koed-server/package.json")
+      : version,
+    private: true,
+    type: "module"
+  };
+  writeFileSync(
+    resolve(packageRoot, "package.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`
+  );
+};
+
 export const requiredRuntimeFiles = [
   "api/dist/index.js",
   "node_modules/@koed/api/dist/browser-approval/index.html",

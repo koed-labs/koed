@@ -29,6 +29,7 @@ import {
   readPackageVersion,
   sha256File,
   validatePackageRoot,
+  writeControlPlanePackageMetadata,
   writePackageManifest,
   writePackageProvenance
 } from "./koed-server-package-lib.mjs";
@@ -279,10 +280,12 @@ const main = async () => {
     // Bundled control-plane modules resolve their package root above this
     // directory, as they do in the public npm package. Keep version metadata
     // there so operational commands can identify this standalone control plane.
-    writeFileSync(
-      resolve(packageRoot, "package.json"),
-      `${JSON.stringify({ name: "@koed-labs/server", version: options.version, private: true, type: "module" }, null, 2)}\n`
-    );
+    writeControlPlanePackageMetadata({
+      packageRoot,
+      repoRoot,
+      version: options.version,
+      cataloglessDevelopment: options.cataloglessDevelopment
+    });
     validatePackagedCli(packageRoot);
     validatePackagedTerminalRuntime(runtimeRoot);
     writeLauncher(packageRoot);

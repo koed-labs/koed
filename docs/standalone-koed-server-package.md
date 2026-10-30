@@ -158,6 +158,8 @@ The trusted standalone control plane lives outside `koed-runtime/`, under
 Its Base runtime copy remains catalog-less rather than authenticating itself.
 The archive root also contains a private `package.json` with the control-plane name and version.
 Operational commands read this metadata, and the archive inventory covers it.
+For catalog-less development archives, the archive label can be a commit SHA.
+The control-plane metadata still contains the Changesets-managed Server version, which `koed --version` reports.
 Assembly exercises nested help and JSON component status with an isolated state directory.
 
 The script stages one private aggregate production deployment with a hoisted
