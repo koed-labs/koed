@@ -1,15 +1,25 @@
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { ChevronRight, ShieldCheck, Terminal } from "lucide-react";
 import type { CliInstallApi } from "../../../cli-install/protocol.js";
 import { InstallSetupDialog, type InstallTool } from "./InstallSetupDialog.js";
 import { getInstallSetupStore } from "./install-setup-store.js";
 import "./cli-install-settings.css";
 
-export function CliInstallSettingsSection({ api }: { api?: CliInstallApi }) {
+type SettingsProps = {
+  api?: CliInstallApi;
+  tools?: readonly InstallTool[];
+  heading?: string;
+};
+
+export function CliInstallSettingsSection({
+  api,
+  tools,
+  heading = "Optional tools"
+}: SettingsProps) {
   if (!api)
     return (
       <section className="koed-general-group">
-        <h2>Optional tools</h2>
+        <h2>{heading}</h2>
         <div
           className="koed-general-card koed-general-appearance"
           role="status"
@@ -18,18 +28,25 @@ export function CliInstallSettingsSection({ api }: { api?: CliInstallApi }) {
         </div>
       </section>
     );
-  return <InstallSettings api={api} />;
+  return <InstallSettings api={api} tools={tools} heading={heading} />;
 }
-function InstallSettings({ api }: { api: CliInstallApi }) {
+function InstallSettings({
+  api,
+  tools = ["privacy", "cli"],
+  heading
+}: SettingsProps & { api: CliInstallApi }) {
   const store = getInstallSetupStore(api);
   const state = useSyncExternalStore(store.subscribe, store.snapshot);
   const [tool, setTool] = useState<InstallTool | null>(null);
   const selected = state[tool ?? "privacy"];
+  useEffect(() => {
+    void store.refresh();
+  }, [store]);
   return (
     <section className="koed-general-group">
-      <h2>Optional tools</h2>
+      <h2>{heading}</h2>
       <div className="koed-general-card">
-        {(["privacy", "cli"] as const).map((kind) => {
+        {tools.map((kind) => {
           const job = state[kind];
           const Icon = kind === "privacy" ? ShieldCheck : Terminal;
           const title = kind === "privacy" ? "Privacy Filter" : "Command line";
@@ -59,7 +76,10 @@ function InstallSettings({ api }: { api: CliInstallApi }) {
                 className="koed-general-action"
                 type="button"
                 aria-label={`${title}: ${job.stage === "progress" ? "View progress" : "Set up or manage"}`}
-                onClick={() => setTool(kind)}
+                onClick={() => {
+                  setTool(kind);
+                  void store.refresh();
+                }}
               >
                 {job.stage === "progress"
                   ? "View progress"

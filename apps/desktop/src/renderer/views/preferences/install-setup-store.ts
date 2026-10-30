@@ -52,6 +52,8 @@ export class InstallSetupStore {
     cancelling: false
   };
   private cancelRequested = false;
+  // Invalidate status reads when a newer read or a mutating operation starts.
+  private revision = { privacy: 0, cli: 0 };
   private listeners = new Set<() => void>();
   constructor(private api: CliInstallApi) {
     api.subscribe((event) => {
@@ -85,7 +87,6 @@ export class InstallSetupStore {
                 : "Activating the verified Privacy Filter components.")
       });
     });
-    void this.refresh();
   }
   snapshot = () => this.state;
   subscribe = (listener: () => void) => {
@@ -105,12 +106,17 @@ export class InstallSetupStore {
     await Promise.all([this.refreshPrivacy(), this.refreshLauncher()]);
   };
   private async refreshPrivacy() {
+    if (this.state.privacy.running) return;
+    const revision = ++this.revision.privacy;
+    this.job("privacy", { checking: true });
     try {
       const status = await this.api.getStatus();
+      if (revision !== this.revision.privacy) return;
       this.update({ privacyStatus: status });
       if (!this.state.privacy.running)
         this.job("privacy", {
           checking: false,
+          heading: undefined,
           unavailable: status.state === "unavailable",
           requiresPackagedApp: status.reason === "packaged_app_required",
           stage:
@@ -132,6 +138,7 @@ export class InstallSetupStore {
                   : undefined
         });
     } catch (cause) {
+      if (revision !== this.revision.privacy) return;
       this.job("privacy", {
         checking: false,
         unavailable: true,
@@ -140,8 +147,12 @@ export class InstallSetupStore {
     }
   }
   private async refreshLauncher() {
+    if (this.state.cli.running) return;
+    const revision = ++this.revision.cli;
+    this.job("cli", { checking: true });
     try {
       const launcher = await this.api.launcher("inspect");
+      if (revision !== this.revision.cli) return;
       this.update({ launcher });
       if (!this.state.cli.running) {
         const ready =
@@ -151,12 +162,15 @@ export class InstallSetupStore {
           (launcher.pathConfigured || launcher.pathVisible);
         this.job("cli", {
           checking: false,
+          heading: undefined,
+          removing: false,
           unavailable: false,
           stage: ready ? "ready" : "idle",
           message: undefined
         });
       }
     } catch (cause) {
+      if (revision !== this.revision.cli) return;
       this.job("cli", {
         checking: false,
         unavailable: true,
@@ -166,12 +180,14 @@ export class InstallSetupStore {
   }
   installPrivacy = async () => {
     if (this.state.privacy.running) return;
+    ++this.revision.privacy;
     this.cancelRequested = false;
     this.job("privacy", {
       stage: "progress",
       step: 0,
       percent: null,
       running: true,
+      checking: false,
       message: undefined,
       heading: undefined
     });
@@ -242,10 +258,12 @@ export class InstallSetupStore {
   };
   installCli = async () => {
     if (this.state.cli.running) return;
+    ++this.revision.cli;
     this.job("cli", {
       stage: "progress",
       step: 0,
       running: true,
+      checking: false,
       message: undefined,
       heading: undefined,
       removing: false
@@ -277,10 +295,12 @@ export class InstallSetupStore {
   };
   removeCli = async () => {
     if (this.state.cli.running) return;
+    ++this.revision.cli;
     this.job("cli", {
       stage: "progress",
       step: 1,
       running: true,
+      checking: false,
       removing: true,
       heading: "Removing command line",
       message: "Removing the Koed-managed PATH entry and launcher."

@@ -25,6 +25,7 @@ import {
   summarizeCapabilities
 } from "../ai-client-card.js";
 import { compactHealthSummary } from "./setup-model.js";
+import { CliInstallSettingsSection } from "../preferences/CliInstallSettingsSection.js";
 import { TrustBoundaryGuide } from "./TrustBoundaryGuide.js";
 import "../ai-client-card.css";
 import "./onboarding.css";
@@ -164,7 +165,8 @@ export function SetupChecklist({
   onComplete,
   // Temporarily skip the memory welcome guide; retain it for re-enabling later.
   showTrustGuide = false,
-  statusStore
+  statusStore,
+  teamCollaborationEnabled = false
 }: SetupChecklistProps) {
   const setupApi = window.koedDesktop?.setup;
   const [snapshot, setSnapshot] = useState<DesktopSetupSnapshot | null>(null);
@@ -290,6 +292,21 @@ export function SetupChecklist({
           <p className="koed-setup-error" role="alert">
             {error ?? snapshot?.error}
           </p>
+        ) : null}
+
+        {teamCollaborationEnabled ? (
+          <>
+            <p>
+              Local Team services require Privacy Filter. Install it before
+              starting or retrying setup. Installation needs separate consent
+              and does not complete setup.
+            </p>
+            <CliInstallSettingsSection
+              api={window.koedDesktop?.cliInstall}
+              tools={["privacy"]}
+              heading="Team setup"
+            />
+          </>
         ) : null}
 
         {!snapshot ? (

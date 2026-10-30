@@ -1306,7 +1306,9 @@ Then use `http://<WSL_IP>:<port>` for the API. Native Windows packaged app suppo
 ### Packaged Desktop first-run
 
 Privacy Filter setup is available in Preferences → General → Optional tools.
-Onboarding does not install optional tools. **Download and install** authorizes
+Team-enabled onboarding also exposes Privacy Filter setup before core setup,
+because local Team services require its runtime and model. Command-line setup
+stays in Preferences. **Download and install** authorizes
 installation of the runtime and the separately pinned model. Opening Preferences
 does not download either asset. The total download size is unknown until each
 transfer supplies its size.

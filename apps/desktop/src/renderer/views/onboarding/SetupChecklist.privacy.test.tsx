@@ -3,7 +3,10 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CliInstallApi } from "../../../cli-install/protocol.js";
+import type {
+  CliInstallApi,
+  PrivacyInstallStatus
+} from "../../../cli-install/protocol.js";
 import type { DesktopSetupSnapshot } from "../../../types.js";
 import { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { SetupChecklist } from "./SetupChecklist.js";
@@ -23,11 +26,13 @@ const makeApi = () =>
       state: "not_installed" as const,
       message: "Privacy Filter assets are missing."
     })),
-    installPrivacy: vi.fn(async () => ({
-      available: true,
-      state: "ready" as const,
-      message: "Ready"
-    })),
+    installPrivacy: vi.fn(
+      async (): Promise<PrivacyInstallStatus> => ({
+        available: true,
+        state: "ready" as const,
+        message: "Ready"
+      })
+    ),
     cancel: vi.fn(async () => undefined),
     selectOffline: vi.fn(async () => ({
       archivePath: "/tmp/privacy.tar.gz",
@@ -111,28 +116,62 @@ const confirmSetup = async () => {
 };
 
 describe("Initial setup optional tools", () => {
-  it.each([true, false])(
-    "keeps optional tools out of initial setup (Team enabled: %s)",
-    async (teamCollaborationEnabled) => {
-      const api = makeApi();
-      const run = await render(teamCollaborationEnabled, api);
-      expect(container.textContent).not.toContain("Optional tools");
-      expect(container.textContent).not.toContain("Privacy Filter");
-      expect(container.textContent).not.toContain("Command line");
-      expect(api.getStatus).not.toHaveBeenCalled();
-      expect(api.launcher).not.toHaveBeenCalled();
-      expect(api.installPrivacy).not.toHaveBeenCalled();
-      expect(run).not.toHaveBeenCalled();
-      await click(button("Set up Koed"));
-      expect(run).not.toHaveBeenCalled();
-      await confirmSetup();
-      expect(run).toHaveBeenCalledTimes(1);
-    }
-  );
+  it("keeps optional tools out of Personal-only initial setup", async () => {
+    const api = makeApi();
+    const run = await render(false, api);
+    expect(container.textContent).not.toContain("Optional tools");
+    expect(container.textContent).not.toContain("Privacy Filter");
+    expect(container.textContent).not.toContain("Command line");
+    expect(api.getStatus).not.toHaveBeenCalled();
+    expect(api.launcher).not.toHaveBeenCalled();
+    expect(api.installPrivacy).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    await click(button("Set up Koed"));
+    expect(run).not.toHaveBeenCalled();
+    await confirmSetup();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
 
-  it("allows core setup without an optional installer bridge", async () => {
+  it("makes required Privacy installation reachable with separate consent before Team setup", async () => {
+    const api = makeApi();
+    const staged = {
+      available: true,
+      state: "not_installed" as const,
+      installationState: "staged" as const,
+      message: "Privacy assets staged. Complete core setup."
+    };
+    vi.mocked(api.installPrivacy).mockResolvedValue(staged);
+    const run = await render(true, api);
+    expect(container.textContent).toContain("Privacy Filter");
+    expect(container.textContent).not.toContain("Optional tools");
+    expect(container.textContent).not.toContain("Command line");
+    expect(api.installPrivacy).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+
+    await click(
+      container.querySelector<HTMLElement>(
+        '[aria-label="Privacy Filter: Set up or manage"]'
+      )!
+    );
+    expect(api.installPrivacy).not.toHaveBeenCalled();
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    const install = [...dialog.querySelectorAll("button")].find(
+      (item) => item.textContent === "Download and install"
+    )!;
+    await click(install);
+    expect(api.installPrivacy).toHaveBeenCalledWith(true);
+    expect(dialog.textContent).toContain(staged.message);
+    expect(run).not.toHaveBeenCalled();
+    expect(button("Continue")).toBeUndefined();
+    await click(dialog.querySelector<HTMLElement>('[aria-label="Close"]')!);
+    await click(button("Set up Koed"));
+    await confirmSetup();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a missing installer bridge without bypassing Team setup", async () => {
     const run = await render(true);
-    expect(container.textContent).not.toContain(
+    expect(container.textContent).toContain(
       "Desktop installer bridge unavailable"
     );
     await click(button("Set up Koed"));

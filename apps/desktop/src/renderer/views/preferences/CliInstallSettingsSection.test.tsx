@@ -4,7 +4,8 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import type {
   CliInstallApi,
-  CliInstallProgressEnvelope
+  CliInstallProgressEnvelope,
+  PrivacyInstallStatus
 } from "../../../cli-install/protocol.js";
 import { CliInstallSettingsSection } from "./CliInstallSettingsSection.js";
 import { getInstallSetupStore } from "./install-setup-store.js";
@@ -57,7 +58,146 @@ function fixture() {
       })
   };
 }
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
 describe("General setup flows", () => {
+  it("refreshes Privacy and launcher status after returning to Preferences and reopening a dialog", async () => {
+    const { api, owned } = fixture();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const openPrivacy = () =>
+      act(async () => {
+        host
+          .querySelector<HTMLElement>(
+            '[aria-label="Privacy Filter: Set up or manage"]'
+          )!
+          .click();
+      });
+    try {
+      await act(async () =>
+        root.render(<CliInstallSettingsSection api={api} />)
+      );
+      expect(host.textContent).toContain("Set up");
+      await act(async () => root.render(null));
+      vi.mocked(api.getStatus).mockResolvedValue({
+        available: true,
+        state: "ready",
+        message: "Filtering is healthy"
+      });
+      vi.mocked(api.launcher).mockResolvedValue({
+        ...owned,
+        pathVisible: true
+      });
+      await act(async () =>
+        root.render(<CliInstallSettingsSection api={api} />)
+      );
+      expect(host.querySelectorAll(".koed-general-action")).toHaveLength(2);
+      expect(
+        [...host.querySelectorAll(".koed-general-action")].every(
+          (button) => button.textContent === "Manage"
+        )
+      ).toBe(true);
+      await openPrivacy();
+      expect(document.body.textContent).toContain("Privacy Filter is ready");
+      await act(async () =>
+        document.body
+          .querySelector<HTMLElement>('[role="dialog"] [aria-label="Close"]')!
+          .click()
+      );
+      vi.mocked(api.getStatus).mockResolvedValue({
+        available: true,
+        state: "failed",
+        message: "Filtering service stopped"
+      });
+      await openPrivacy();
+      const dialog = document.body.querySelector('[role="dialog"]')!;
+      expect(dialog.textContent).toContain("Filtering service stopped");
+      expect(
+        [...dialog.querySelectorAll("button")].some(
+          (button) => button.textContent === "Retry download"
+        )
+      ).toBe(true);
+      expect(api.installPrivacy).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it.each([false, true])(
+    "ignores a late Privacy status response after installation (rejected: %s)",
+    async (rejected) => {
+      const { api } = fixture();
+      const store = getInstallSetupStore(api);
+      await store.refresh();
+      const stale = deferred<PrivacyInstallStatus>();
+      vi.mocked(api.getStatus).mockReturnValueOnce(stale.promise);
+      const refreshing = store.refresh();
+      await store.installPrivacy();
+      if (rejected) stale.reject(new Error("Old status failed"));
+      else
+        stale.resolve({
+          available: true,
+          state: "not_installed",
+          message: "Old missing assets"
+        });
+      await refreshing;
+      expect(store.snapshot().privacy).toMatchObject({
+        stage: "ready",
+        running: false,
+        checking: false,
+        unavailable: false
+      });
+      expect(store.snapshot().privacyStatus?.state).toBe("ready");
+    }
+  );
+
+  it("preserves active progress during refresh and ignores stale launcher status after install and removal", async () => {
+    const { api, owned, emit } = fixture();
+    const store = getInstallSetupStore(api);
+    await store.refresh();
+    const installing = deferred<PrivacyInstallStatus>();
+    vi.mocked(api.installPrivacy).mockReturnValueOnce(installing.promise);
+    const installation = store.installPrivacy();
+    emit({ completedBytes: 46, totalBytes: 100 });
+    const reads = vi.mocked(api.getStatus).mock.calls.length;
+    await store.refresh();
+    expect(api.getStatus).toHaveBeenCalledTimes(reads);
+    expect(store.snapshot().privacy).toMatchObject({
+      stage: "progress",
+      running: true,
+      percent: 46
+    });
+    installing.resolve({ available: true, state: "ready", message: "Ready" });
+    await installation;
+
+    for (const operation of ["install", "remove"] as const) {
+      const stale = deferred<typeof owned>();
+      vi.mocked(api.launcher).mockReturnValueOnce(stale.promise);
+      const refreshing = store.refresh();
+      if (operation === "install") await store.installCli();
+      else await store.removeCli();
+      stale.resolve(owned);
+      await refreshing;
+      expect(store.snapshot().cli).toMatchObject({
+        stage: operation === "install" ? "ready" : "idle",
+        checking: false,
+        running: false
+      });
+      expect(store.snapshot().launcher?.ownership).toBe(
+        operation === "install" ? "koed" : "absent"
+      );
+    }
+  });
+
   it("opens an explicit Privacy install action without consent or offline controls", async () => {
     const { api } = fixture();
     const host = document.createElement("div");

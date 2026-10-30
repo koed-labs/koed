@@ -3,6 +3,8 @@
 The Base Desktop app supports Personal Memory without the Privacy Filter runtime or model.
 Local Team sharing requires the Privacy Filter Service when Team collaboration is enabled.
 One installation action in Preferences or onboarding provisions both optional assets after consent.
+Team-enabled onboarding exposes the required Privacy installer before core setup can finish.
+Preferences refreshes installation status when opened and when a setup dialog opens, without interrupting an active installation.
 The runtime archive and model files remain separate downloads with separate integrity rules.
 
 ## Installation and readiness
