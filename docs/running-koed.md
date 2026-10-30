@@ -1305,9 +1305,9 @@ Then use `http://<WSL_IP>:<port>` for the API. Native Windows packaged app suppo
 
 ### Packaged Desktop first-run
 
-Team-enabled Desktop onboarding exposes the Privacy Filter installer before local
-services are ready. The same installer appears in Preferences. One consent action
-installs the optional runtime and the separately pinned model. Opening onboarding
+Privacy Filter setup is available in Preferences → General → Optional tools.
+Onboarding does not install optional tools. **Download and install** authorizes
+installation of the runtime and the separately pinned model. Opening Preferences
 does not download either asset. The total download size is unknown until each
 transfer supplies its size.
 
@@ -1317,12 +1317,12 @@ installed. If storage or embedding assets are missing, complete **Set up Koed**
 or **Retry setup**. This pending state does not report Privacy Filter as ready.
 Required Team sharing stays blocked until the service passes readiness.
 
-The trusted Desktop control plane supplies the expected manifest hashes.
+The trusted version-matched Desktop control plane supplies the expected manifest hashes.
 Downloaded sidecars cannot replace those pins. The private installer bridge
 accepts offline archive and manifest paths, but Desktop does not expose an
 offline file picker. The model still needs its pinned files in the local cache.
-Personal-only onboarding does not invoke the Privacy Filter installer. External
-services and remote connections do not require these local downloads. See
+Personal-only operation, external services, and remote connections do not
+require these local downloads. See
 [Optional Privacy Filter installation](optional-privacy-installation.md) for
 provider selection, cancellation, retry, and recovery.
 
