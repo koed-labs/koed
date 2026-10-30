@@ -31,9 +31,14 @@ export async function collectDesktopPrivacyInstallStatus(
       localRequired: false,
       downloadBytes: null
     };
+  const config = resolveEffectiveRuntimeConfig(
+    context.paths,
+    context.environment ?? process.env,
+    "packaged"
+  );
   const environment = applyPersistedLocalPorts(
     context.paths,
-    context.environment ?? process.env
+    config.environment
   );
   const model = await collectPrivacyModelStatus(context.paths);
   let service: {
@@ -44,11 +49,6 @@ export async function collectDesktopPrivacyInstallStatus(
   let installation: PrivacyInstallationRecord | null = null;
   let variant: ComponentVariant | undefined;
   if (components.components.privacy === "active") {
-    const config = resolveEffectiveRuntimeConfig(
-      context.paths,
-      environment,
-      "packaged"
-    );
     const runtime = await resolveVerifiedPackagedRuntime(
       context.paths,
       environment,

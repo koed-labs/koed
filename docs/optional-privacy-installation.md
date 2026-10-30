@@ -20,6 +20,7 @@ No private User content enters this example.
 The installer stages a generation, which records one compatible set of runtime components.
 It then stops Koed, activates the generation, and starts Koed again.
 Readiness requires a reachable, authenticated Privacy Filter Service with the pinned classifier and an execution-verified provider.
+Readiness uses the same environment-file settings and credential precedence as service startup.
 An active runtime without its model or healthy service does not count as ready.
 
 During first-run setup, storage or embedding assets can still be missing.
@@ -42,6 +43,7 @@ It reads GPU zero through `nvidia-smi` and examines installed host libraries thr
 It does not download CUDA assets, run inference, or benchmark performance.
 Missing tools, timeout, incompatible versions, and inconclusive results select the CPU archive with a recorded reason.
 An explicit CPU preference skips the GPU probe.
+Installation follows the hardware acceleration preference saved in Preferences unless the Operator environment overrides it.
 Hidden or remapped devices and multiple GPUs select CPU when the default device mapping is inconclusive.
 
 The pinned ONNX Runtime 1.24.3 provider uses CUDA 12.8 and cuDNN 9.

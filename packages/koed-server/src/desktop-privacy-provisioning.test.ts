@@ -9,12 +9,13 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RuntimeIdentity } from "./component-contract.js";
+import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 import type { ComponentManifest } from "./component-contract.js";
 import type { PrivacyModelInstallOptions } from "./privacy-model-runtime.js";
 const operations = vi.hoisted(() => ({
   model: vi.fn(),
   inference: vi.fn(),
+  probe: vi.fn(),
   runtime: undefined as RuntimeIdentity | undefined
 }));
 vi.mock("./component-runtime-identity.js", () => ({
@@ -36,6 +37,20 @@ vi.mock("./privacy-inference.js", async (original) => ({
   ...(await original<Record<string, unknown>>()),
   verifyPrivacyComponentInference: operations.inference
 }));
+vi.mock("./privacy-download-compatibility.js", async (original) => {
+  const actual =
+    await original<typeof import("./privacy-download-compatibility.js")>();
+  return {
+    ...actual,
+    probePrivacyDownloadCompatibility: (
+      input: Parameters<typeof actual.probePrivacyDownloadCompatibility>[0]
+    ) =>
+      actual.probePrivacyDownloadCompatibility({
+        ...input,
+        run: operations.probe
+      })
+  };
+});
 import {
   componentFixture,
   resetFixtureManifestPinCatalog
@@ -43,6 +58,7 @@ import {
 import { createDesktopComponentManagerBridge } from "./desktop-component-manager.js";
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import { resolveKoedServerConfig, writeKoedServerConfig } from "./config.js";
 const roots: string[] = [];
 const fixtures: Awaited<ReturnType<typeof componentFixture>>[] = [];
 afterEach(() => {
@@ -52,7 +68,9 @@ afterEach(() => {
   resetFixtureManifestPinCatalog();
   vi.resetAllMocks();
 });
-const fixture = async () => {
+const fixture = async (
+  target: ArtifactTarget = { platform: "macos", architecture: "arm64" }
+) => {
   mkdirSync("scratch", { recursive: true });
   const root = mkdtempSync(resolve("scratch/privacy-provisioning-"));
   roots.push(root);
@@ -60,7 +78,6 @@ const fixture = async () => {
   mkdirSync(resolve(resources, "koed-runtime/api"), { recursive: true });
   const body = "export {};";
   writeFileSync(resolve(resources, "koed-runtime/api/index.js"), body);
-  const target = { platform: "macos" as const, architecture: "arm64" as const };
   writeFileSync(
     resolve(resources, "koed-runtime/desktop-bundle-manifest.json"),
     JSON.stringify({
@@ -83,6 +100,9 @@ const fixture = async () => {
   const manifestPath = resolve(root, "privacy.manifest.json");
   writeFileSync(manifestPath, component.input.manifestBytes);
   const paths = resolveKoedServerPaths({ KOED_HOME: resolve(root, "home") });
+  const environment: NodeJS.ProcessEnv = {
+    KOED_TEAM_COLLABORATION_ENABLED: "true"
+  };
   const manager = createDesktopComponentManagerBridge({
     capability: verifyDesktopRuntimeBundle(resources),
     paths,
@@ -90,7 +110,7 @@ const fixture = async () => {
     isRunning: false,
     target,
     controlPlaneVersion: "0.8.1",
-    environment: { KOED_TEAM_COLLABORATION_ENABLED: "true" }
+    environment
   });
   const request = {
     requestId: randomUUID(),
@@ -112,9 +132,63 @@ const fixture = async () => {
     proof: "onnx-execution-profile",
     maskingSha256: "a".repeat(64)
   });
-  return { manager, request, paths, manifestPath };
+  operations.probe.mockImplementation(async (command: string) =>
+    command === "nvidia-smi"
+      ? "0, 570.26, 8.6\n"
+      : JSON.stringify({ cudaRuntimeVersion: 12080, cudnnMajor: 9 })
+  );
+  return { manager, request, paths, manifestPath, environment };
 };
 describe("Desktop Privacy provisioning boundary", () => {
+  it("honors and rereads the saved CPU preference on a CUDA-compatible host", async () => {
+    const { manager, paths } = await fixture({
+      platform: "linux",
+      architecture: "x64"
+    });
+    const config = resolveKoedServerConfig(paths, {});
+    writeKoedServerConfig(paths, { ...config, hardwareAcceleration: "cpu" });
+    expect(await manager.prepare()).toMatchObject({
+      variant: "cpu",
+      reason: "explicit_cpu_preference"
+    });
+    expect(operations.probe).not.toHaveBeenCalled();
+
+    writeKoedServerConfig(paths, { ...config, hardwareAcceleration: "auto" });
+    expect(await manager.prepare()).toMatchObject({
+      variant: "cuda",
+      compatible: true
+    });
+    expect(operations.probe).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["provider", "global", "file", "worker"])(
+    "preserves the %s environment override over the saved preference",
+    async (kind) => {
+      const { manager, paths, environment } = await fixture({
+        platform: "linux",
+        architecture: "x64"
+      });
+      writeKoedServerConfig(paths, {
+        ...resolveKoedServerConfig(paths, {}),
+        hardwareAcceleration: "cpu"
+      });
+      if (kind === "global") environment.KOED_HARDWARE_ACCELERATION = "auto";
+      else if (kind === "file") {
+        const envPath = resolve(paths.configDir, "runtime.env");
+        writeFileSync(envPath, "PRIVACY_RUNTIME_PROVIDER=auto\n");
+        environment.KOED_ENV_PATH = envPath;
+      } else {
+        environment.PRIVACY_RUNTIME_PROVIDER = "auto";
+        if (kind === "worker")
+          environment.PRIVACY_RUNTIME_ENGINE = "onnx-worker";
+      }
+      expect(await manager.prepare()).toMatchObject({
+        variant: kind === "worker" ? "cpu" : "cuda"
+      });
+      expect(operations.probe).toHaveBeenCalledTimes(kind === "worker" ? 0 : 2);
+    }
+  );
+
   it("admits runtime and model before inference, then stages without activating", async () => {
     const { manager, request, paths } = await fixture();
     const prepared = await manager.prepare();

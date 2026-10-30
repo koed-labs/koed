@@ -23,6 +23,7 @@ vi.mock("./service-runtime-selection.js", () => ({
 import { collectDesktopPrivacyInstallStatus } from "./desktop-privacy-status.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import type { ComponentCommandContext } from "./component-commands.js";
+import { localServiceSecretsPath } from "./local-service-secrets.js";
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0))
@@ -56,10 +57,17 @@ const fixture = () => {
     }
   };
   const current = { activeProvider: "cpu", verifiedProviders: ["cpu"] };
-  const fetcher = vi.fn(
-    async (url: string) =>
-      new Response(JSON.stringify(url.endsWith("/health") ? health : current))
-  );
+  const authority = { token: "fixture-control-token" };
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+    if (
+      url.endsWith("/v1/runtime/status") &&
+      new Headers(init?.headers).get("x-koed-privacy-token") !== authority.token
+    )
+      return new Response("{}", { status: 401 });
+    return new Response(
+      JSON.stringify(url.endsWith("/health") ? health : current)
+    );
+  });
   vi.stubGlobal("fetch", fetcher);
   const context: ComponentCommandContext = {
     paths,
@@ -83,9 +91,56 @@ const fixture = () => {
     isRunning: true,
     execution: "packaged"
   };
-  return { context, health, current, fetcher };
+  return { context, health, current, fetcher, authority };
 };
 describe("Desktop authenticated Privacy readiness", () => {
+  it.each(["file", "process", "generated"])(
+    "uses the %s authority and service address with startup precedence",
+    async (source) => {
+      const { context, fetcher, authority } = fixture();
+      const environment = context.environment!;
+      delete environment.PRIVACY_RUNTIME_CONTROL_TOKEN;
+      writeFileSync(
+        localServiceSecretsPath(context.paths),
+        JSON.stringify({ PRIVACY_RUNTIME_CONTROL_TOKEN: "generated-token" })
+      );
+      let origin = "http://127.0.0.1:50092";
+      authority.token = "generated-token";
+      if (source !== "generated") {
+        environment.KOED_ENV_PATH = resolve(
+          context.paths.configDir,
+          "runtime.env"
+        );
+        writeFileSync(
+          environment.KOED_ENV_PATH,
+          "PRIVACY_RUNTIME_CONTROL_TOKEN=file-token\nPRIVACY_SERVICE_HOST=127.0.0.2\nPRIVACY_SERVICE_PORT=50123\n"
+        );
+        authority.token = "file-token";
+        origin = "http://127.0.0.2:50123";
+      }
+      if (source === "process") {
+        environment.PRIVACY_RUNTIME_CONTROL_TOKEN = "process-token";
+        environment.PRIVACY_SERVICE_HOST = "127.0.0.3";
+        environment.PRIVACY_SERVICE_PORT = "50124";
+        authority.token = "process-token";
+        origin = "http://127.0.0.3:50124";
+      }
+      expect(await collectDesktopPrivacyInstallStatus(context)).toMatchObject({
+        service: { state: "healthy" }
+      });
+      expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+        `${origin}/health`,
+        `${origin}/v1/runtime/status`
+      ]);
+      expect(fetcher).toHaveBeenCalledWith(
+        `${origin}/v1/runtime/status`,
+        expect.objectContaining({
+          headers: { "x-koed-privacy-token": authority.token }
+        })
+      );
+    }
+  );
+
   it("uses this profile's allocated port and authenticates execution status", async () => {
     const { context, fetcher } = fixture();
     expect(await collectDesktopPrivacyInstallStatus(context)).toMatchObject({

@@ -37,6 +37,7 @@ import { verifyPrivacyComponentInference } from "./privacy-inference.js";
 import { writePrivacyInstallationRecord } from "./privacy-installation-record.js";
 import { collectDesktopPrivacyInstallStatus } from "./desktop-privacy-status.js";
 import { readStoredComponents } from "./component-store.js";
+import { resolveEffectiveRuntimeConfig } from "./effective-runtime-config.js";
 
 const manifestPinCatalogAvailable = (): boolean => {
   if (productionComponentManifestCatalog === null) return false;
@@ -233,19 +234,25 @@ export const createDesktopComponentManagerBridge = (input: {
     environment: input.environment
   };
   const operations = new Map<string, AbortController>();
-  const prepare = (signal?: AbortSignal) =>
-    probePrivacyDownloadCompatibility({
+  const prepare = (signal?: AbortSignal) => {
+    const effective = resolveEffectiveRuntimeConfig(
+      context.paths,
+      context.environment ?? process.env,
+      "packaged"
+    );
+    const environment = effective.environment;
+    return probePrivacyDownloadCompatibility({
       platform: context.target.platform,
       architecture: context.target.architecture,
-      environment: context.environment,
+      environment,
       preference:
-        context.environment?.PRIVACY_RUNTIME_ENGINE === "onnx-worker"
+        environment.PRIVACY_RUNTIME_ENGINE === "onnx-worker"
           ? "cpu"
-          : (context.environment?.PRIVACY_RUNTIME_PROVIDER ??
-            context.environment?.KOED_HARDWARE_ACCELERATION ??
-            "auto"),
+          : (environment.PRIVACY_RUNTIME_PROVIDER ??
+            effective.config.hardwareAcceleration),
       ...(signal ? { signal } : {})
     });
+  };
   const requireRequestId = (requestId: unknown): string => {
     if (
       typeof requestId !== "string" ||
