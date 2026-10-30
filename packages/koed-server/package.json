@@ -32,12 +32,13 @@
   "dependencies": {
     "@koed/shared": "workspace:*",
     "@modelcontextprotocol/client": "2.0.0",
+    "commander": "15.0.0",
     "proper-lockfile": "4.1.2",
     "zod": "^4.1.12"
   },
   "scripts": {
     "prepublishOnly": "node -e \"throw new Error('Publish assembled artifact only; source workspace publication blocked')\"",
-    "build": "node scripts/clean-dist.mjs && tsc -b tsconfig.json --force && node ../../scripts/embed-component-manifest-catalog.mjs",
+    "build": "node scripts/build.mjs && node ../../scripts/embed-component-manifest-catalog.mjs",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "start": "node dist/cli.js start",
     "test": "vitest run --passWithNoTests",

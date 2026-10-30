@@ -19,10 +19,17 @@ test("effective external control plane embeds exact catalog despite stale dist; 
   try {
     const server = resolve(root, "packages/koed-server/dist");
     mkdirSync(server, { recursive: true });
-    writeFileSync(resolve(root, "package.json"), '{"type":"module"}\n');
+    writeFileSync(
+      resolve(root, "package.json"),
+      '{"type":"module","version":"1.2.3"}\n'
+    );
     writeFileSync(
       resolve(server, "cli.js"),
-      'import {pins} from "./component-store.js"; export const runKoedServerCli = async () => { console.log(JSON.stringify(pins)); return 0; }; export const shouldExitPackagedSupervisor = () => false;\n'
+      'import {pins} from "./component-store.js"; import {resolveKoedControlPlaneVersion} from "./app-runtime.js"; export const runKoedServerCli = async (args) => { console.log(args.includes("--version") ? resolveKoedControlPlaneVersion() : JSON.stringify(pins)); return 0; }; export const shouldExitPackagedSupervisor = () => false;\n'
+    );
+    copyFileSync(
+      resolve("packages/koed-server/dist/app-runtime.js"),
+      resolve(server, "app-runtime.js")
     );
     writeFileSync(
       resolve(server, "component-store.js"),
@@ -65,6 +72,13 @@ test("effective external control plane embeds exact catalog despite stale dist; 
     );
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), catalog);
+    const version = spawnSync(
+      process.execPath,
+      [resolve(vendorRoot, "cli.js"), "--version"],
+      { cwd: root, encoding: "utf8" }
+    );
+    assert.equal(version.status, 0, version.stderr);
+    assert.equal(version.stdout, "1.2.3\n");
     const info = spawnSync(
       process.execPath,
       [

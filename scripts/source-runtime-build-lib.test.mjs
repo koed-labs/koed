@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -7,7 +8,6 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, test } from "node:test";
 import {
@@ -36,7 +36,9 @@ const write = (root, path, value = "") => {
 };
 
 const createFixture = () => {
-  const root = mkdtempSync(resolve(tmpdir(), "koed-source-runtime-"));
+  const scratch = resolve(import.meta.dirname, "../scratch");
+  mkdirSync(scratch, { recursive: true });
+  const root = mkdtempSync(resolve(scratch, "koed-source-runtime-"));
   roots.push(root);
   const lock = "lockfileVersion: '9.0'\n";
   write(
@@ -221,6 +223,76 @@ test("keeps the dirty marker after a failed build and source revert", async () =
     existsSync(resolveSourceRuntimeBuildPaths(root).dirtyPath),
     true
   );
+  await assert.rejects(
+    checkSourceRuntime(root, options(spec)),
+    /do not match the current checkout/
+  );
+});
+
+test("an interrupted service rebuild preserves the complete control-plane CLI", async () => {
+  const { root, spec } = createFixture();
+  write(
+    root,
+    "apps/service/package.json",
+    JSON.stringify({
+      name: "@test/service",
+      dependencies: { "@koed-labs/server": "workspace:*" }
+    })
+  );
+  write(
+    root,
+    "packages/koed-server/package.json",
+    JSON.stringify({ name: "@koed-labs/server", type: "module" })
+  );
+  write(root, "packages/koed-server/src/cli.ts", "export {};\n");
+  const cli = resolve(root, "packages/koed-server/dist/cli.js");
+  const tree = resolve(root, "packages/koed-server/dist/cli-command-tree.js");
+  const writeCli = () => {
+    write(
+      root,
+      "packages/koed-server/dist/cli.js",
+      'import { help } from "./cli-command-tree.js"; console.log(help);\n'
+    );
+    write(
+      root,
+      "packages/koed-server/dist/cli-command-tree.js",
+      'export const help = "Usage: koed [command]";\n'
+    );
+  };
+  await prepareSourceRuntime(
+    root,
+    options(spec, {
+      runBuild: () => {
+        writeOutputs(root);
+        writeCli();
+      }
+    })
+  );
+  const previousTree = readFileSync(tree);
+  write(root, "apps/service/src/index.ts", "export const value = 2;\n");
+  await assert.rejects(
+    prepareSourceRuntime(
+      root,
+      options(spec, {
+        runBuild: () => {
+          write(root, "apps/service/dist/index.js", "partial\n");
+          write(
+            root,
+            "packages/koed-server/dist/cli.js",
+            'import { help } from "./cli-command-tree.js"; console.log(help);\n'
+          );
+          throw new Error("service build interrupted");
+        }
+      })
+    ),
+    /service build interrupted/
+  );
+  const help = spawnSync(process.execPath, [cli, "--help"], {
+    encoding: "utf8"
+  });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /Usage: koed/);
+  assert.deepEqual(readFileSync(tree), previousTree);
   await assert.rejects(
     checkSourceRuntime(root, options(spec)),
     /do not match the current checkout/

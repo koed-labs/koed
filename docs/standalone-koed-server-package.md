@@ -117,8 +117,10 @@ The standalone package should contain the JS/service app runtime:
 
 ```text
 koed-server-<version>-<platform>-<arch>/
+  package.json                 # private control-plane version metadata
   koed-server-package-manifest.json
   README.txt
+  control-plane/               # trusted CLI outside the app runtime
   bin/
     koed                              # platform launcher or wrapper
   koed-runtime/
@@ -154,6 +156,11 @@ build input; see [component manifest catalogs](component-manifest-catalog.md).
 The trusted standalone control plane lives outside `koed-runtime/`, under
 `control-plane/`; `bin/koed` and supervisor re-execution retain that entrypoint.
 Its Base runtime copy remains catalog-less rather than authenticating itself.
+The archive root also contains a private `package.json` with the control-plane name and version.
+Operational commands read this metadata, and the archive inventory covers it.
+For catalog-less development archives, the archive label can be a commit SHA.
+The control-plane metadata still contains the Changesets-managed Server version, which `koed --version` reports.
+Assembly exercises nested help and JSON component status with an isolated state directory.
 
 The script stages one private aggregate production deployment with a hoisted
 dependency graph. Deterministic service wrappers preserve the established

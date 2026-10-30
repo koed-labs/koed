@@ -35,6 +35,8 @@ export const SOURCE_RUNTIME_BUILD_SPEC = Object.freeze({
     "scripts/source-runtime-build.mjs"
   ],
   requiredOutputs: [
+    "packages/koed-server/dist/cli.js",
+    "packages/koed-server/dist/cli-command-tree.js",
     "apps/api/dist/index.js",
     "apps/api/dist/browser-approval/index.html",
     "apps/worker/dist/index.js",
@@ -632,6 +634,10 @@ export const prepareSourceRuntime = async (
     // TypeScript leaves outputs behind when a source file is deleted. Remove
     // the previous runtime only after acquiring the lock and rejecting leases.
     for (const workspacePackage of before.calculated.packages) {
+      // The control plane is also an MCP build dependency. Its staged build
+      // owns output replacement and pruning. Service preparation must leave a
+      // usable CLI for help and recovery if another package fails to compile.
+      if (workspacePackage.name === "@koed-labs/server") continue;
       rmSync(resolve(workspacePackage.path, "dist"), {
         recursive: true,
         force: true

@@ -586,24 +586,37 @@ export const startRemoteMcpLocalRuntime = async (
   });
 };
 
-export const runRemoteMcpCommand = async (
-  args: string[],
+export type RemoteOperation =
+  | "login"
+  | "logout"
+  | "start"
+  | "setup"
+  | "check"
+  | "remove";
+export interface RemoteCommandOptions {
+  client?: HeadlessRemoteHarness;
+  backend?: string;
+  consent?: boolean;
+  localRuntime?: boolean;
+  teamRead?: boolean;
+  koedHome?: string;
+  json?: boolean;
+}
+
+export const runRemoteMcpOperation = async (
+  command: RemoteOperation,
+  input: RemoteCommandOptions,
   options: {
     environment?: NodeJS.ProcessEnv;
     stdout: Pick<NodeJS.WriteStream, "write">;
     stderr: Pick<NodeJS.WriteStream, "write">;
   }
 ): Promise<number> => {
-  const flag = (name: string) => {
-    const index = args.indexOf(name);
-    return index < 0 ? undefined : args[index + 1];
-  };
   const environment = {
     ...(options.environment ?? process.env),
-    ...(flag("--koed-home") ? { KOED_HOME: flag("--koed-home") } : {})
+    ...(input.koedHome ? { KOED_HOME: input.koedHome } : {})
   };
-  const consent = args.includes("--consent");
-  const command = args[0];
+  const consent = Boolean(input.consent);
   let output: unknown;
   let ok = true;
   try {
@@ -614,15 +627,15 @@ export const runRemoteMcpCommand = async (
       return 1;
     }
     if (command === "login") {
-      const backendUrl = flag("--backend");
+      const backendUrl = input.backend;
       if (!backendUrl)
         throw new Error("remote login requires --backend HTTPS_URL.");
       output = await loginRemoteMcp({
         environment,
         backendUrl,
         consent,
-        localRuntime: args.includes("--local-runtime"),
-        teamRead: args.includes("--team-read"),
+        localRuntime: Boolean(input.localRuntime),
+        teamRead: Boolean(input.teamRead),
         openAuthorization: (url) => {
           options.stderr.write(`Authorize Koed in your browser: ${url.href}\n`);
           browserOpen(url);
@@ -645,7 +658,7 @@ export const runRemoteMcpCommand = async (
       });
       return 0;
     } else if (["setup", "check", "remove"].includes(command ?? "")) {
-      const harness = args[1] as HeadlessRemoteHarness;
+      const harness = input.client as HeadlessRemoteHarness;
       if (!["codex", "claude", "pi"].includes(harness))
         throw new Error("Select codex, claude, or pi.");
       if (command !== "remove") await remoteMcpAuthorization({ environment });
@@ -678,7 +691,7 @@ export const runRemoteMcpCommand = async (
       ok = (output as { ok: boolean }).ok;
     } else throw new Error("Unknown remote command.");
     options.stdout.write(
-      `${JSON.stringify(output, null, args.includes("--json") ? 2 : undefined)}\n`
+      `${JSON.stringify(output, null, input.json ? 2 : undefined)}\n`
     );
     return ok ? 0 : 1;
   } catch (cause) {
@@ -686,7 +699,7 @@ export const runRemoteMcpCommand = async (
       cause instanceof RemoteMcpAttentionError
         ? cause.message
         : "Remote integration needs attention. Check explicit consent, dedicated KOED_HOME, authentication scopes, and local integration artifacts.";
-    if (args.includes("--json")) {
+    if (input.json) {
       options.stdout.write(
         `${JSON.stringify({ ok: false, state: "needs_attention", error })}\n`
       );
@@ -695,4 +708,21 @@ export const runRemoteMcpCommand = async (
     }
     return 1;
   }
+};
+
+// Preserve the diagnostic callable export while sharing the public parser.
+export const runRemoteMcpCommand = async (
+  args: string[],
+  options: {
+    environment?: NodeJS.ProcessEnv;
+    stdout: Pick<NodeJS.WriteStream, "write">;
+    stderr: Pick<NodeJS.WriteStream, "write">;
+  }
+): Promise<number> => {
+  const { runKoedServerCli } = await import("./cli.js");
+  return runKoedServerCli(["remote", ...args], {
+    stdout: options.stdout,
+    stderr: options.stderr,
+    remoteEnvironment: options.environment
+  });
 };

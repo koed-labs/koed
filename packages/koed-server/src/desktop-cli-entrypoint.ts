@@ -4,7 +4,7 @@ import {
 } from "./desktop-cli-authority.js";
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import { resolveKoedHome } from "./paths.js";
-import type { KoedServerCliDependencies } from "./cli-implementation.js";
+import type { KoedServerCliDependencies } from "./cli-contract.js";
 
 export interface InstalledDesktopCliDependencies {
   moduleUrl?: string;
@@ -71,8 +71,7 @@ export async function runInstalledDesktopCli(
     );
     return 1;
   }
-  const run =
-    runCli ?? (await import("./cli-implementation.js")).runKoedServerCli;
+  const run = runCli ?? (await import("./cli.js")).runKoedServerCli;
   return run(args, dependencies);
 }
 

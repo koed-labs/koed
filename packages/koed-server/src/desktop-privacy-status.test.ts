@@ -61,8 +61,20 @@ const fixture = () => {
       new Response(JSON.stringify(url.endsWith("/health") ? health : current))
   );
   vi.stubGlobal("fetch", fetcher);
-  const context = {
+  const context: ComponentCommandContext = {
     paths,
+    controlPlaneVersion: "0.9.2",
+    target: { platform: "macos", architecture: "arm64" },
+    runtime: {
+      kind: "node",
+      version: "24.14.0",
+      nodeVersion: "24.14.0",
+      modulesAbi: "137",
+      napiVersion: 10,
+      platform: "macos",
+      architecture: "arm64"
+    },
+    owner: { kind: "standalone", installationId: "fixture-standalone" },
     environment: {
       KOED_AUTO_PORTS: "1",
       KOED_TEAM_COLLABORATION_ENABLED: "true",
@@ -70,7 +82,7 @@ const fixture = () => {
     },
     isRunning: true,
     execution: "packaged"
-  } as ComponentCommandContext;
+  };
   return { context, health, current, fetcher };
 };
 describe("Desktop authenticated Privacy readiness", () => {

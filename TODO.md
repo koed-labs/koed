@@ -238,3 +238,9 @@ children share lineage and must not count as independent corroboration.
       product versions and integrate branch-preference behavior after that
       cutover. PDS branch preference must use verified captured observations and
       check the local effective assignment.
+
+## Commander CLI follow-ups
+
+- Investigate the Desktop revocation wrapper. It sends device metadata without
+  the signed transition file descriptors required by the advanced CLI. Preserve
+  protected-input validation and existing authority boundaries.

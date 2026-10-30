@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   readFileSync,
   chmodSync,
@@ -10,8 +11,8 @@ import {
   symlinkSync,
   writeFileSync
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   buildComponentManifest,
@@ -23,6 +24,7 @@ import {
   prunePnpmWorkspaceVirtualStorePaths,
   sha256File,
   validatePackageRoot,
+  writeControlPlanePackageMetadata,
   writePackageManifest
 } from "./koed-server-package-lib.mjs";
 
@@ -30,7 +32,9 @@ const repoRoot = resolve(import.meta.dirname, "..");
 const temps = [];
 
 const tempDir = () => {
-  const dir = mkdtempSync(resolve(tmpdir(), "koed-server-package-test-"));
+  const scratch = resolve(repoRoot, "scratch");
+  mkdirSync(scratch, { recursive: true });
+  const dir = mkdtempSync(resolve(scratch, "koed-server-package-test-"));
   temps.push(dir);
   return dir;
 };
@@ -93,6 +97,44 @@ test.afterEach(() => {
     rmSync(path, { recursive: true, force: true });
   }
 });
+
+for (const cataloglessDevelopment of [false, true])
+  test(`standalone metadata reports the release version for ${cataloglessDevelopment ? "commit-SHA development" : "release"} archives`, () => {
+    const root = tempDir();
+    const checkout = resolve(root, "checkout");
+    const packageRoot = resolve(root, "standalone");
+    writeFile(
+      resolve(checkout, "packages/koed-server/package.json"),
+      JSON.stringify({ version: "1.2.3" })
+    );
+    mkdirSync(packageRoot);
+    writeControlPlanePackageMetadata({
+      packageRoot,
+      repoRoot: checkout,
+      version: cataloglessDevelopment
+        ? "e573897d1c3b9517fe347ccf4678682ebd6dcc6b"
+        : "1.2.3",
+      cataloglessDevelopment
+    });
+    const runtime = resolve(packageRoot, "control-plane/app-runtime.js");
+    writeFile(
+      runtime,
+      readFileSync(
+        resolve(repoRoot, "packages/koed-server/dist/app-runtime.js")
+      )
+    );
+    const inspected = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { resolveKoedControlPlaneVersion } from ${JSON.stringify(pathToFileURL(runtime).href)}; console.log(resolveKoedControlPlaneVersion());`
+      ],
+      { encoding: "utf8" }
+    );
+    assert.equal(inspected.status, 0, inspected.stderr);
+    assert.equal(inspected.stdout, "1.2.3\n");
+  });
 
 test("validates a standalone koed-server package root", () => {
   const root = createPackageRoot();

@@ -61,3 +61,7 @@ failure. Closing a setup dialog lets installation continue; download and
 verification can be cancelled before activation begins. The Preferences UI does
 not offer an offline file picker. Component manifest pins, archive validation,
 and activation checks still apply.
+
+The verified Desktop launcher uses the same command dispatcher as the standalone CLI.
+Public help at every command level therefore uses the same command definitions.
+Installation verification still precedes dispatch, including help requests.
