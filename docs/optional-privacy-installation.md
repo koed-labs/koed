@@ -104,4 +104,3 @@ They cannot establish Linux execution or successful CUDA execution.
 Native Linux x64 acceptance requires CPU and fallback evidence.
 CUDA acceptance requires a compatible NVIDIA host and actual CUDA kernel execution.
 The release remains unqualified until those results pass for the final candidate.
-Use [draft validation](../DRAFT_VALIDATION.md) before publication and [post-publication validation](../POST_VALIDATION.md) afterward.
