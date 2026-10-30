@@ -1,5 +1,13 @@
 # Koed
 
+## 0.10.0
+
+### Minor Changes
+
+- 0808d1a: Improve recall for Projects across Personal Memory and Team-shared Memory.
+  Simplify Desktop Project navigation, creation, and Conversation moves.
+  Improve assignment consistency across capture, Personal Device Sync, sharing, and database upgrades.
+
 ## 0.9.2
 
 ## 0.9.1
