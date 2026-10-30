@@ -136,7 +136,7 @@ describe("koed executable help", () => {
     expect(await runKoedServerCli(["--help"], { stdout: general.stream })).toBe(
       0
     );
-    expect(general.text()).toContain("Usage: koed <command> [options]");
+    expect(general.text()).toContain("Usage: koed [options] [command]");
     expect(general.text()).not.toContain("Usage: koed-server");
 
     const secretProvider = writer();

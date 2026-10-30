@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import { prunePythonEmbeddingRuntimeFiles } from "./native-runtime/manifest-lib.mjs";
@@ -114,13 +120,33 @@ const writeLauncher = (packageRoot) => {
   chmodSync(launcher, 0o755);
 };
 
-const validatePackagedCli = (packageRoot) =>
-  run(
-    "Validate packaged koed-server CLI",
-    process.execPath,
-    [resolve(packageRoot, "control-plane", "cli.js"), "--help"],
-    { cwd: packageRoot, stdio: "pipe" }
-  );
+const validatePackagedCli = (packageRoot) => {
+  const scratchRoot = resolve(repoRoot, "scratch");
+  mkdirSync(scratchRoot, { recursive: true });
+  const home = mkdtempSync(resolve(scratchRoot, "packaged-cli-validation-"));
+  try {
+    for (const args of [
+      ["--help"],
+      ["runtime", "install", "--help"],
+      ["team", "workspace", "link", "--help"],
+      ["components", "status", "--json"]
+    ]) {
+      const result = run(
+        "Validate packaged koed-server CLI",
+        process.execPath,
+        [resolve(packageRoot, "control-plane", "cli.js"), ...args],
+        {
+          cwd: packageRoot,
+          stdio: "pipe",
+          env: { ...process.env, KOED_HOME: home }
+        }
+      );
+      if (args.includes("--json")) JSON.parse(result.stdout);
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+};
 
 const validatePackagedTerminalRuntime = (runtimeRoot) =>
   run(
@@ -250,6 +276,13 @@ const main = async () => {
       catalog,
       cataloglessDevelopment: options.cataloglessDevelopment
     });
+    // Bundled control-plane modules resolve their package root above this
+    // directory, as they do in the public npm package. Keep version metadata
+    // there so operational commands can identify this standalone control plane.
+    writeFileSync(
+      resolve(packageRoot, "package.json"),
+      `${JSON.stringify({ name: "@koed-labs/server", version: options.version, private: true, type: "module" }, null, 2)}\n`
+    );
     validatePackagedCli(packageRoot);
     validatePackagedTerminalRuntime(runtimeRoot);
     writeLauncher(packageRoot);

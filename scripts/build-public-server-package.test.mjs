@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -9,7 +10,6 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
@@ -32,8 +32,9 @@ test("public package builder accepts pnpm argument separators", () => {
 });
 
 test("assembled public package has only koed bin and self-contained control plane", () => {
+  mkdirSync(resolve(repoRoot, "scratch"), { recursive: true });
   const scratch = realpathSync(
-    mkdtempSync(resolve(tmpdir(), "koed public package "))
+    mkdtempSync(resolve(repoRoot, "scratch", "koed public package "))
   );
   try {
     const version = JSON.parse(
@@ -97,6 +98,23 @@ test("assembled public package has only koed bin and self-contained control plan
         "vendor/control-plane.js"
       )
     );
+    for (const args of [
+      ["runtime", "install", "--help"],
+      ["upstream", "enroll", "--help"],
+      ["setup", "codex", "--help"],
+      ["personal-sync", "recovery-kit", "verify", "--help"]
+    ]) {
+      const help = execFileSync(
+        node24,
+        [resolve(packageDir, "bin/koed.js"), ...args],
+        {
+          cwd: scratch,
+          encoding: "utf8",
+          env: { ...process.env, KOED_HOME: resolve(scratch, "isolated-home") }
+        }
+      );
+      assert.ok(help.includes(`Usage: koed ${args.slice(0, -1).join(" ")}`));
+    }
     const components = JSON.parse(
       execFileSync(
         node24,
@@ -109,6 +127,30 @@ test("assembled public package has only koed bin and self-contained control plan
       )
     );
     assert.equal(components.components.base, "missing");
+    const legacyRevocation = spawnSync(
+      node24,
+      [
+        resolve(packageDir, "bin/koed.js"),
+        "personal-sync",
+        "device",
+        "revoke",
+        "--group-id",
+        "group",
+        "--device-id",
+        "device",
+        "--json"
+      ],
+      {
+        cwd: scratch,
+        encoding: "utf8",
+        env: { ...process.env, KOED_HOME: resolve(scratch, "isolated-home") }
+      }
+    );
+    assert.equal(legacyRevocation.status, 1, legacyRevocation.stderr);
+    assert.equal(
+      JSON.parse(legacyRevocation.stdout).error,
+      "--statement-fd is required."
+    );
     const helperEnv = {
       ...process.env,
       KOED_HOME: resolve(scratch, "isolated-home")

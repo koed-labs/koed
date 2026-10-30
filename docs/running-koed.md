@@ -1470,3 +1470,12 @@ collaboration load failure using its existing bounded startup recovery. A stale
 saved verification result or optional setup check does not suppress that retry.
 Setup status still controls onboarding. Permission denials remain nonretryable;
 normal backend authorization and enrollment checks apply to every request.
+
+## CLI help navigation
+
+Run `koed --help` to list public commands and command groups.
+Each public command group provides help at its own level.
+For example, run `koed runtime --help`, `koed runtime install --help`, or `koed models install --help`.
+Installation requires an explicit `--dependency-mode bundled-local` for runtime commands.
+Run `koed setup codex --help` for Codex-specific flags or `koed upstream enroll --help` for enrollment operations.
+For advanced recovery guidance, run `koed personal-sync --help --advanced`.

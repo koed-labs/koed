@@ -45,7 +45,7 @@ describe("lightweight CLI dispatch", () => {
     expect(await runKoedServerCli(["--help"], { stdout: stdout.stream })).toBe(
       0
     );
-    expect(stdout.text()).toContain("components status --json");
+    expect(stdout.text()).toContain("components");
   });
 
   it("returns actionable provisioning guidance when service imports are missing", async () => {
@@ -79,11 +79,10 @@ describe("lightweight CLI dispatch", () => {
     expect(
       await runKoedServerCli(["remote", "--help"], { stdout: stdout.stream })
     ).toBe(0);
-    expect(stdout.text()).toContain(
-      "remote login --backend HTTPS_URL --consent [--local-runtime]"
-    );
-    expect(stdout.text()).toContain("remote start");
-    expect(stdout.text()).toContain("remote logout --consent --json");
+    expect(stdout.text()).toContain("login");
+    expect(stdout.text()).toContain("start");
+    expect(stdout.text()).toContain("logout");
+    expect(stdout.text()).not.toContain("--backend");
     expect(serviceLoads).not.toHaveBeenCalled();
   });
 });

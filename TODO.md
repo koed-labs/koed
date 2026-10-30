@@ -546,3 +546,11 @@ children share lineage and must not count as independent corroboration.
   checkpoint. Preserve their release order after the Project cutover when
   preparing the release. The PDS branch preference uses the verified captured
   observation and checks the local effective assignment.
+
+## Commander CLI migration follow-ups
+
+The 14-ticket migration is complete. Nested help, lightweight status, Desktop authority, protected inputs, and output compatibility pass their acceptance checks.
+The migration acceptance record documents the full-lint heap limit and the pre-existing `CONFIG.md` formatting failure.
+
+- Reconcile unresolved Koed recall when availability permits. A failed acceptance without a task ID is not absent memory.
+- Investigate the existing Desktop revocation wrapper: it sends device metadata without the signed transition file descriptors required by the advanced CLI. The Commander migration retains its flag and validation behavior.

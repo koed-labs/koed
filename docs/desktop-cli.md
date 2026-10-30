@@ -43,3 +43,7 @@ from the selected launcher destination. Removing a launcher, choosing another
 launcher destination, or restarting Desktop does not lose the directory needed
 to remove the existing PATH block. PATH removal requires separate consent and
 does not remove the launcher. Open a new shell to observe PATH changes.
+
+The verified Desktop launcher uses the same command dispatcher as the standalone CLI.
+Public help at every command level therefore uses the same command definitions.
+Installation verification still precedes dispatch, including help requests.
