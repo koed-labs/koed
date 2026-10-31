@@ -11,6 +11,8 @@ import { CliInstallSettingsSection } from "./CliInstallSettingsSection.js";
 import { getInstallSetupStore } from "./install-setup-store.js";
 function fixture() {
   let listener: (event: CliInstallProgressEnvelope) => void = () => {};
+  let installed = false;
+  let pathAdded = false;
   const owned = {
     ownership: "koed" as const,
     target: "valid" as const,
@@ -33,12 +35,16 @@ function fixture() {
     })),
     cancel: vi.fn(async () => {}),
     selectOffline: vi.fn(async () => null),
-    launcher: vi.fn(async (operation) =>
-      operation === "install"
-        ? owned
-        : { ...owned, ownership: "absent" as const }
-    ),
-    updatePath: vi.fn(async () => {}),
+    launcher: vi.fn(async (operation) => {
+      if (operation === "install") installed = true;
+      if (operation === "remove") installed = false;
+      return installed
+        ? { ...owned, pathConfigured: pathAdded }
+        : { ...owned, ownership: "absent" as const };
+    }),
+    updatePath: vi.fn(async (operation) => {
+      pathAdded = operation === "add";
+    }),
     subscribe: vi.fn((callback) => {
       listener = callback;
       return () => {};
@@ -280,7 +286,10 @@ describe("General setup flows", () => {
     await store.installCli();
     expect(store.snapshot().cli).toMatchObject({ stage: "failed", step: 1 });
     expect(store.snapshot().cli.message).toContain("launcher was installed");
-    vi.mocked(api.launcher).mockResolvedValue(owned);
+    vi.mocked(api.launcher).mockResolvedValue({
+      ...owned,
+      pathConfigured: true
+    });
     await store.installCli();
     expect(
       vi
@@ -289,6 +298,46 @@ describe("General setup flows", () => {
     ).toHaveLength(1);
     expect(api.updatePath).toHaveBeenLastCalledWith("add", true);
     expect(store.snapshot().cli.stage).toBe("ready");
+  });
+  it("does not report CLI ready until inspection confirms PATH reaches new shells", async () => {
+    const { api, owned } = fixture();
+    const store = getInstallSetupStore(api);
+    await store.refresh();
+    vi.mocked(api.launcher).mockResolvedValue({
+      ...owned,
+      pathConfigured: false
+    });
+    await store.installCli();
+    expect(api.updatePath).toHaveBeenCalledWith("add", true);
+    expect(store.snapshot().cli).toMatchObject({ stage: "failed", step: 1 });
+    expect(store.snapshot().cli.message).toMatch(/shell startup file/);
+    vi.mocked(api.launcher).mockResolvedValue({
+      ...owned,
+      pathConfigured: true
+    });
+    await store.installCli();
+    expect(store.snapshot().cli.stage).toBe("ready");
+  });
+  it("allows cancellation to be retried after the cancel request fails", async () => {
+    const { api } = fixture();
+    const store = getInstallSetupStore(api);
+    await store.refresh();
+    const install = deferred<PrivacyInstallStatus>();
+    vi.mocked(api.installPrivacy).mockReturnValue(install.promise);
+    const installing = store.installPrivacy();
+    vi.mocked(api.cancel).mockRejectedValueOnce(new Error("bridge busy"));
+    await store.cancelPrivacy();
+    expect(store.snapshot().cancelling).toBe(false);
+    expect(store.snapshot().privacy.message).toContain("bridge busy");
+    await store.cancelPrivacy();
+    expect(api.cancel).toHaveBeenCalledTimes(2);
+    expect(store.snapshot().cancelling).toBe(true);
+    install.reject(new Error("Privacy Filter installation cancelled."));
+    await installing;
+    expect(store.snapshot()).toMatchObject({
+      cancelling: false,
+      privacy: { stage: "idle", running: false }
+    });
   });
   it("does not modify PATH when launcher installation fails", async () => {
     const { api } = fixture();

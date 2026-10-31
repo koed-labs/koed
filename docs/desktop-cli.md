@@ -40,7 +40,12 @@ In Preferences → General → Optional tools, Command line automatically inspec
 its launcher. **Install command line** installs the launcher and adds its
 directory to PATH in one explicit action. The dialog explains the shell startup
 file change before installation. Desktop manages an exact marked block in
-`.zshrc` or `.bashrc`; edited blocks are preserved and reported as conflicts.
+`.zshrc` for zsh. For Bash it manages the block in `.bashrc` and in the login
+startup file that Bash reads: the first of `.bash_profile`, `.bash_login`, and
+`.profile` that exists, or a new `.bash_profile` when none exists. Login shells,
+such as the macOS Terminal default, do not read `.bashrc` on their own. Setup
+reports the command line as ready only after inspection finds the block in
+every required file. Edited blocks are preserved and reported as conflicts.
 The saved managed directory remains independent from the launcher destination.
 
 Setup shows launcher installation and PATH setup as separate progress steps.

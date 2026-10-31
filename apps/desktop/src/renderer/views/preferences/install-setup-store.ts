@@ -251,6 +251,7 @@ export class InstallSetupStore {
       await this.api.cancel();
     } catch (cause) {
       this.cancelRequested = false;
+      this.update({ cancelling: false });
       this.job("privacy", {
         message: `Couldn’t cancel installation: ${errorMessage(cause)}`
       });
@@ -279,6 +280,14 @@ export class InstallSetupStore {
       this.update({ launcher });
       this.job("cli", { step: 1 });
       await this.api.updatePath("add", true);
+      // Report ready only when inspection confirms every shell startup file
+      // that a new terminal reads now carries the PATH entry.
+      const verified = await this.api.launcher("inspect");
+      this.update({ launcher: verified });
+      if (!verified.pathConfigured && !verified.pathVisible)
+        throw new Error(
+          "PATH setup did not reach every shell startup file. Retry, or add the launcher directory to PATH manually."
+        );
       this.job("cli", { stage: "ready" });
     } catch (cause) {
       const partial = this.state.cli.step === 1;
