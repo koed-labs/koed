@@ -45,7 +45,9 @@ startup file that Bash reads: the first of `.bash_profile`, `.bash_login`, and
 `.profile` that exists, or a new `.bash_profile` when none exists. Login shells,
 such as the macOS Terminal default, do not read `.bashrc` on their own. Setup
 reports the command line as ready only after inspection finds the block in
-every required file. Edited blocks are preserved and reported as conflicts.
+every required file. Removal checks `.bashrc` and every regular Bash login
+file, so it still finds the block if a different login file became preferred
+after setup. Edited blocks are preserved and reported as conflicts.
 The saved managed directory remains independent from the launcher destination.
 
 Setup shows launcher installation and PATH setup as separate progress steps.

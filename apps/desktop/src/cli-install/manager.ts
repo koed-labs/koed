@@ -37,25 +37,43 @@ export interface DesktopCliInstallManager extends CliInstallManager {
 // ~/.bashrc only for interactive non-login shells, while login shells (the
 // macOS Terminal default) read the first of ~/.bash_profile, ~/.bash_login and
 // ~/.profile that exists and may never source ~/.bashrc.
+const bashLoginFiles = [".bash_profile", ".bash_login", ".profile"];
+const lstatOrNull = (path: string) => {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
+  }
+};
 export const shellStartupFiles = (
   home: string,
   shell: string | undefined
 ): string[] => {
   if (shell?.endsWith("zsh")) return [join(home, ".zshrc")];
-  const exists = (path: string) => {
-    try {
-      lstatSync(path);
-      return true;
-    } catch {
-      return false;
-    }
-  };
   const login =
-    [".bash_profile", ".bash_login", ".profile"]
+    bashLoginFiles
       .map((name) => join(home, name))
-      .find(exists) ?? join(home, ".bash_profile");
+      .find((path) => lstatOrNull(path) !== null) ??
+    join(home, ".bash_profile");
   return [join(home, ".bashrc"), login];
 };
+
+// The preferred login file can change after setup (for example when the User
+// later creates .bash_profile), so removal checks every Bash login file that
+// could hold the block. Desktop never writes through symlinks, so only regular
+// files are candidates.
+export const shellPathRemovalFiles = (
+  home: string,
+  shell: string | undefined
+): string[] =>
+  shell?.endsWith("zsh")
+    ? [join(home, ".zshrc")]
+    : [
+        join(home, ".bashrc"),
+        ...bashLoginFiles
+          .map((name) => join(home, name))
+          .filter((path) => lstatOrNull(path)?.isFile() === true)
+      ];
 
 export const unavailablePrivacyStatus: PrivacyInstallStatus = {
   available: false,
@@ -197,10 +215,9 @@ export const createDesktopCliInstallManager = (input: {
           : dirname(activeDestination);
       // Each file update is idempotent, so a partial failure is repaired by
       // retrying; inspection reports PATH as configured only when all exist.
-      for (const rcPath of shellStartupFiles(
-        input.homePath ?? homedir(),
-        process.env.SHELL
-      ))
+      for (const rcPath of (operation === "remove"
+        ? shellPathRemovalFiles
+        : shellStartupFiles)(input.homePath ?? homedir(), process.env.SHELL))
         await updateManagedPathBlock({
           rcPath: resolve(rcPath),
           shell,

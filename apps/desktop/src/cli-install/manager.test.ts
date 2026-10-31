@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDesktopCliInstallManager,
+  shellPathRemovalFiles,
   shellStartupFiles,
   unavailablePrivacyStatus
 } from "./manager.js";
@@ -377,6 +378,56 @@ describe("desktop CLI install adapter", () => {
       expect(readFileSync(join(root, name), "utf8")).not.toContain(
         "koed managed PATH"
       );
+  });
+
+  it("removes the PATH block from a login file that is no longer preferred", async () => {
+    vi.stubEnv("SHELL", "/bin/bash");
+    const root = fixture();
+    const destination = join(root, "bin", "koed");
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    writeFileSync(join(root, ".profile"), "export KEEP=1\n");
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "/usr/bin",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => true
+    });
+    await manager.launcher("install", { consent: true, destination });
+    await manager.updatePath("add", true);
+    expect(readFileSync(join(root, ".profile"), "utf8")).toContain(
+      "koed managed PATH"
+    );
+    // The User creates .bash_profile after setup; Bash now prefers it.
+    writeFileSync(join(root, ".bash_profile"), "export OTHER=1\n");
+    await manager.updatePath("remove", true);
+    expect(readFileSync(join(root, ".profile"), "utf8")).toBe(
+      "export KEEP=1\n"
+    );
+    expect(readFileSync(join(root, ".bash_profile"), "utf8")).toBe(
+      "export OTHER=1\n"
+    );
+    expect(shellPathRemovalFiles(root, "/bin/bash")).toEqual([
+      join(root, ".bashrc"),
+      join(root, ".bash_profile"),
+      join(root, ".profile")
+    ]);
+  });
+
+  it("skips symlinked login files during removal because setup never writes them", () => {
+    const root = fixture();
+    writeFileSync(join(root, "dotfiles-profile"), "# managed elsewhere\n");
+    symlinkSync(join(root, "dotfiles-profile"), join(root, ".profile"));
+    expect(shellPathRemovalFiles(root, "/bin/bash")).toEqual([
+      join(root, ".bashrc")
+    ]);
+    expect(shellPathRemovalFiles(root, "/bin/zsh")).toEqual([
+      join(root, ".zshrc")
+    ]);
   });
 
   it("selects the Bash login file that bash actually reads", () => {
