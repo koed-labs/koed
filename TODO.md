@@ -14,6 +14,13 @@ The [installation guide](docs/optional-privacy-installation.md) defines compatib
 
 ## Desktop Preferences design
 
+- [ ] Restart services after a Privacy rollback compare-and-swap conflict
+      (`apps/desktop/src/koed-server/privacy-install.ts`). Recovery currently
+      leaves Koed stopped and says so. Restart only if no explicit stop or
+      other lifecycle operation intervened, for example by passing a token
+      captured after the install's own stop to `requestDaemonStart`. Apply the
+      same rule to the activation-conflict restart.
+
 - [ ] Establish and document a supported location for manually downloaded
       Privacy Filter component files. The current component installer downloads
       into temporary `runtime/components/.stage-*` directories and does not
