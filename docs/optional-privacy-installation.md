@@ -73,8 +73,9 @@ Failure of both providers leaves the previous selection unchanged.
 
 `PRIVACY_RUNTIME_PROVIDER=cpu` preserves explicit CPU operation.
 The existing `KOED_HARDWARE_ACCELERATION` preference applies when no Privacy-specific provider is set.
-Automatic installation selection does not replace explicit runtime error behavior.
-For example, an explicit CUDA runtime request can still fail after an installation probe used CPU fallback.
+An explicit CUDA preference is strict: the Privacy service never falls back to CPU at startup.
+On Linux, installation therefore rejects an explicit CUDA preference when the compatibility probe selects the CPU variant or when inference verification succeeds only on CPU.
+The previous selection is preserved, and the error asks the User to choose Auto or CPU, or to repair the CUDA installation.
 The separate Python engine remains CPU-only and keeps its existing configuration requirements.
 Existing runtime calibration and contention handling remain unchanged.
 

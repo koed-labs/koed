@@ -31,9 +31,15 @@ import {
 import { productionComponentManifestCatalog } from "./component-manifest-catalog-data.js";
 import { validateManifestCatalog } from "./component-manifest-catalog.js";
 import { PINNED_PRIVACY_MODEL_REVISION } from "@koed/shared";
-import { probePrivacyDownloadCompatibility } from "./privacy-download-compatibility.js";
+import {
+  probePrivacyDownloadCompatibility,
+  type PrivacyDownloadCompatibility
+} from "./privacy-download-compatibility.js";
 import { installPrivacyModel } from "./privacy-model-runtime.js";
-import { verifyPrivacyComponentInference } from "./privacy-inference.js";
+import {
+  verifyPrivacyComponentInference,
+  type PrivacyInferenceVerification
+} from "./privacy-inference.js";
 import { writePrivacyInstallationRecord } from "./privacy-installation-record.js";
 import { collectDesktopPrivacyInstallStatus } from "./desktop-privacy-status.js";
 import { readStoredComponents } from "./component-store.js";
@@ -43,6 +49,29 @@ const manifestPinCatalogAvailable = (): boolean => {
   if (productionComponentManifestCatalog === null) return false;
   validateManifestCatalog(productionComponentManifestCatalog);
   return true;
+};
+
+// An explicit CUDA preference is strict in the Privacy service: it never falls
+// back to CPU at startup. Install must therefore refuse to stage a CPU bundle,
+// or a CUDA bundle that only passed inference on CPU, while CUDA is explicitly
+// requested; otherwise activation succeeds and the next start fails.
+export const explicitCudaInstallRejection = (input: {
+  preference: string | undefined;
+  compatibility: PrivacyDownloadCompatibility;
+  verification?: PrivacyInferenceVerification;
+}): string | undefined => {
+  if (
+    input.preference?.trim().toLowerCase() !== "cuda" ||
+    input.compatibility.target !== "linux-x64"
+  )
+    return undefined;
+  const action =
+    "Set hardware acceleration to Auto or CPU, or fix the CUDA installation, then retry. The previous runtime selection was preserved.";
+  if (input.compatibility.variant !== "cuda")
+    return `Hardware acceleration is set to CUDA, but this device cannot run the CUDA Privacy Filter runtime (${input.compatibility.reason}). ${action}`;
+  if (input.verification && input.verification.activeProvider !== "cuda")
+    return `Hardware acceleration is set to CUDA, but Privacy Filter inference only succeeded on CPU (${input.verification.fallbackReason ?? "cuda_unavailable"}). ${action}`;
+  return undefined;
 };
 
 export type DesktopBundleManifest = DesktopRuntimeCapability["manifest"];
@@ -234,22 +263,29 @@ export const createDesktopComponentManagerBridge = (input: {
     environment: input.environment
   };
   const operations = new Map<string, AbortController>();
-  const prepare = (signal?: AbortSignal) => {
+  const privacyPreference = () => {
     const effective = resolveEffectiveRuntimeConfig(
       context.paths,
       context.environment ?? process.env,
       "packaged"
     );
     const environment = effective.environment;
-    return probePrivacyDownloadCompatibility({
-      platform: context.target.platform,
-      architecture: context.target.architecture,
+    return {
       environment,
       preference:
         environment.PRIVACY_RUNTIME_ENGINE === "onnx-worker"
           ? "cpu"
           : (environment.PRIVACY_RUNTIME_PROVIDER ??
-            effective.config.hardwareAcceleration),
+            effective.config.hardwareAcceleration)
+    };
+  };
+  const prepare = (signal?: AbortSignal) => {
+    const { environment, preference } = privacyPreference();
+    return probePrivacyDownloadCompatibility({
+      platform: context.target.platform,
+      architecture: context.target.architecture,
+      environment,
+      preference,
       ...(signal ? { signal } : {})
     });
   };
@@ -345,11 +381,17 @@ export const createDesktopComponentManagerBridge = (input: {
           throw new Error(
             "Required component manifest pins are unavailable for this Desktop runtime."
           );
+        const { preference } = privacyPreference();
         const compatibility = await prepare(controller.signal);
         if (compatibility.target === "unsupported")
           throw new Error(
             "Privacy Filter is unavailable for this device target."
           );
+        const compatibilityRejection = explicitCudaInstallRejection({
+          preference,
+          compatibility
+        });
+        if (compatibilityRejection) throw new Error(compatibilityRejection);
         if (input.variant !== compatibility.variant)
           throw new Error(
             "Privacy compatibility changed. Retry installation to select the matching bundle."
@@ -434,6 +476,12 @@ export const createDesktopComponentManagerBridge = (input: {
           environment: context.environment ?? process.env,
           signal: controller.signal
         });
+        const verificationRejection = explicitCudaInstallRejection({
+          preference,
+          compatibility,
+          verification
+        });
+        if (verificationRejection) throw new Error(verificationRejection);
         if (verification.fallbackReason)
           input.progress?.({
             requestId,
