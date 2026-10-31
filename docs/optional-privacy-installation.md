@@ -85,6 +85,8 @@ Cancellation remains available during runtime download, model download, authenti
 The activation progress message identifies the point after which cancellation is unavailable.
 Activation must finish or restore the previous selection before the operation completes.
 Restart and readiness failures remain visible even when the previous selection returns successfully.
+Desktop rechecks the current selection immediately before stopping Koed and does not stop it when another operation changed the selection.
+If the selection still changes before activation completes, Desktop keeps the newer selection, restarts services that were running before installation, and reports the conflict.
 If recovery cannot establish a safe selection or restart, the error identifies the incomplete recovery.
 If an essential service exits during startup, the supervisor cancels readiness polling and stops its managed resources immediately.
 It releases ownership only after confirmed cleanup, so Desktop can authenticate and restore the previous generation.

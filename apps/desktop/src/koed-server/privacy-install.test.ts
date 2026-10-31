@@ -24,6 +24,7 @@ const fixture = (
     activationConflict?: boolean;
     fresh?: boolean;
     rollbackConflict?: boolean;
+    concurrentDuringInstall?: boolean;
   } = {}
 ) => {
   const events: string[] = [];
@@ -48,6 +49,7 @@ const fixture = (
         `install:${String((args?.source as Record<string, unknown>)?.archiveUrl)}`
       );
       await options.onInstall?.();
+      if (options.concurrentDuringInstall) selected = "concurrent";
       return { state: "staged", generationId: "new" } as T;
     }
   );
@@ -100,8 +102,29 @@ describe("Privacy installation transaction", () => {
   });
   it("does not roll a concurrent activation back after compare-and-swap rejection", async () => {
     const { bridge, events, start } = fixture({ activationConflict: true });
+    await expect(install(bridge)).rejects.toThrow(
+      /selection changed.*newer runtime selection was preserved and Koed was restarted/
+    );
+    expect(events.slice(1)).toEqual(["stop", "activate:new", "start", "ready"]);
+    expect(start).toHaveBeenCalledOnce();
+  });
+  it("leaves a previously stopped installation stopped after compare-and-swap rejection", async () => {
+    const { bridge, events, start } = fixture({
+      activationConflict: true,
+      running: false
+    });
     await expect(install(bridge)).rejects.toThrow("selection changed");
     expect(events.slice(1)).toEqual(["stop", "activate:new"]);
+    expect(start).not.toHaveBeenCalled();
+  });
+  it("does not stop Koed when the selection changes before activation", async () => {
+    const { bridge, events, start } = fixture({
+      concurrentDuringInstall: true
+    });
+    await expect(install(bridge)).rejects.toThrow(
+      /selection changed.*Koed was not stopped/
+    );
+    expect(events.slice(1)).toEqual([]);
     expect(start).not.toHaveBeenCalled();
   });
   it("does not overwrite a newer selection during failed-start recovery", async () => {

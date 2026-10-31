@@ -315,6 +315,14 @@ export function createPrivacyInstallBridge({
             message:
               "Privacy runtime and model are verified. Complete the remaining Koed runtime and embedding setup before activation."
           };
+        // Re-check the selection immediately before stopping so a concurrent
+        // activation is detected while Koed is still running.
+        const latest =
+          await requestPrivacyRpc<Record<string, unknown>>("status");
+        if ((latest.activeGeneration ?? null) !== expectedGeneration)
+          throw new Error(
+            "Runtime selection changed during Privacy installation. Koed was not stopped; retry installation to use the current selection."
+          );
         activationStarted = true;
         onProgress({
           requestId,
@@ -368,8 +376,29 @@ export function createPrivacyInstallBridge({
           return await requireReady(result.generationId);
         } catch (error) {
           // A rejected compare-and-swap did not activate our candidate. Do not
-          // roll a newer selection back or stop another operation's services.
-          if (!activated) throw error;
+          // roll a newer selection back, but restart services we stopped so a
+          // previously running installation keeps running on that selection.
+          if (!activated) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            if (before.running === false || !coreReady) throw error;
+            const restarted = await requestDaemonStart();
+            if (!resultOk(restarted))
+              throw new Error(
+                `${message} The newer runtime selection was preserved but Koed could not restart: ${resultMessage(restarted, "restart failed")}`,
+                { cause: error }
+              );
+            const ready = await pollUntilReady(60);
+            if (!resultOk(ready))
+              throw new Error(
+                `${message} The newer runtime selection was preserved but Koed did not become ready: ${resultMessage(ready, "readiness failed")}`,
+                { cause: error }
+              );
+            throw new Error(
+              `${message} The newer runtime selection was preserved and Koed was restarted with it. Retry installation if Privacy Filter is still required.`,
+              { cause: error }
+            );
+          }
           const message =
             error instanceof Error ? error.message : String(error);
           if (!resultOk(await stop()))
