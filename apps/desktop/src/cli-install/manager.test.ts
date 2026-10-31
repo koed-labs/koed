@@ -358,10 +358,18 @@ describe("desktop CLI install adapter", () => {
       pathConfigured: true
     });
     if (process.platform !== "win32") {
-      const loginPath = execFileSync("bash", ["-lc", 'printf %s "$PATH"'], {
-        env: { HOME: root, PATH: "/usr/bin:/bin" },
-        encoding: "utf8"
-      });
+      // Follow Bash's documented login-shell lookup without the host's
+      // system profile, which CI runner images customize.
+      const loginPath = execFileSync(
+        "bash",
+        [
+          "--noprofile",
+          "--norc",
+          "-c",
+          'for f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do if [ -r "$f" ]; then . "$f"; break; fi; done; printf %s "$PATH"'
+        ],
+        { env: { HOME: root, PATH: "/usr/bin:/bin" }, encoding: "utf8" }
+      );
       expect(loginPath.split(":")).toContain(join(root, "bin dir"));
     }
     await manager.updatePath("remove", true);
