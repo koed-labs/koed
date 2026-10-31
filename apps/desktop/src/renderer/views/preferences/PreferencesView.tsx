@@ -8,7 +8,8 @@ import {
   DialogPopup,
   DialogTitle,
   Input,
-  Spinner
+  Spinner,
+  Switch
 } from "@koed/ui";
 import type { CollaborationSnapshot } from "@koed/shared/collaboration";
 import type { DesktopThemePreference } from "../../../window/theme-preference.js";
@@ -44,6 +45,8 @@ import { CliInstallSettingsSection } from "./CliInstallSettingsSection.js";
 import { useDesktopStatus } from "../../state/use-status.js";
 import "../ai-client-card.css";
 import "./preferences.css";
+import "./general-preferences.css";
+import { GeneralThemeChoices } from "./GeneralThemeChoices.js";
 
 export type PreferencesSection =
   | "general"
@@ -146,27 +149,23 @@ function GeneralSection({
   | "theme"
 >) {
   return (
-    <div className="koed-preference-section">
-      <fieldset className="koed-theme-options">
-        <legend>Theme</legend>
-        <p>Use a light theme, dark theme, or follow this device.</p>
-        <div>
-          {(["light", "dark", "system"] as const).map((option) => (
-            <label key={option}>
-              <input
-                checked={theme === option}
-                name="theme"
-                onChange={() => onThemeChange(option)}
-                type="radio"
-                value={option}
-              />
-              <span>{option[0]!.toLocaleUpperCase() + option.slice(1)}</span>
-            </label>
-          ))}
+    <div className="koed-general">
+      <section className="koed-general-group">
+        <h2>Appearance</h2>
+        <div className="koed-general-card koed-general-appearance">
+          <div className="koed-general-card-title">
+            <strong>Theme</strong>
+          </div>
+          <GeneralThemeChoices theme={theme} onThemeChange={onThemeChange} />
         </div>
-      </fieldset>
-      <LaunchAtStartupSetting api={launchAtStartup} />
-      <HardwareAccelerationSetting api={hardwareAcceleration} />
+      </section>
+      <section className="koed-general-group">
+        <h2>On this device</h2>
+        <div className="koed-general-card">
+          <LaunchAtStartupSetting api={launchAtStartup} />
+          <HardwareAccelerationSetting api={hardwareAcceleration} />
+        </div>
+      </section>
       <CliInstallSettingsSection api={cliInstall} />
     </div>
   );
@@ -203,16 +202,15 @@ function LaunchAtStartupSetting({
   const description =
     state?.supported === false
       ? "Available in a packaged Koed app."
-      : "Start Koed in the background when you sign in. Open it from the system tray or menu bar.";
+      : "Start Koed in the background when you sign in.";
   return (
     <SettingRow description={description} label="Launch Koed at startup">
       <div className="koed-preference-toggle-state">
-        <input
+        <Switch
           aria-label="Launch Koed at startup"
           checked={state?.enabled ?? false}
           disabled={state === null || !state.supported || busy}
-          onChange={(event) => {
-            const enabled = event.currentTarget.checked;
+          onCheckedChange={(enabled) => {
             const previous = state;
             setState({
               enabled,
@@ -230,7 +228,6 @@ function LaunchAtStartupSetting({
               })
               .finally(() => setBusy(false));
           }}
-          type="checkbox"
         />
         {busy ? <Spinner aria-label="Updating launch at startup" /> : null}
         {state?.status === "requires-approval" ? (
@@ -278,17 +275,16 @@ function HardwareAccelerationSetting({
       description={
         state?.managedByEnvironment
           ? "This setting is managed by the Operator environment."
-          : "Use a compatible local GPU for Koed inference. Changing this restarts local Koed services."
+          : "Use your GPU for local inference. Restarts local services."
       }
       label="Hardware acceleration"
     >
       <div className="koed-preference-toggle-state">
-        <input
+        <Switch
           aria-label="Hardware acceleration"
           checked={state?.enabled ?? false}
           disabled={state === null || state.managedByEnvironment || busy}
-          onChange={(event) => {
-            const enabled = event.currentTarget.checked;
+          onCheckedChange={(enabled) => {
             setBusy(true);
             setError(null);
             void api
@@ -299,7 +295,6 @@ function HardwareAccelerationSetting({
               )
               .finally(() => setBusy(false));
           }}
-          type="checkbox"
         />
         {busy ? <Spinner aria-label="Restarting local Koed services" /> : null}
         {error ? <span role="alert">{error}</span> : null}
@@ -1280,56 +1275,62 @@ export function PreferencesView({
 
   return (
     <main className="koed-preferences">
-      <nav aria-label="Preference sections">
-        <h1>Preferences</h1>
-        {visibleSections.map((item) => (
-          <button
-            aria-current={section === item.id ? "page" : undefined}
-            data-active={section === item.id || undefined}
-            key={item.id}
-            onClick={() => selectSection(item.id)}
-            type="button"
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav>
-      <section
-        aria-labelledby="koed-preference-section-title"
-        className="koed-preferences-content"
-      >
-        <header>
-          <h1 id="koed-preference-section-title">{sectionTitle(section)}</h1>
-        </header>
-        {section === "general" ? (
-          <GeneralSection
-            hardwareAcceleration={hardwareAcceleration}
-            launchAtStartup={launchAtStartup}
-            cliInstall={cliInstall}
-            onThemeChange={onThemeChange}
-            theme={theme}
-          />
-        ) : null}
-        {section === "capture" ? <CaptureSection capture={capture} /> : null}
-        {section === "ai-clients" ? (
-          <AiClientsSection
-            localAiClients={localAiClients}
-            statusStore={statusStore}
-          />
-        ) : null}
-        {section === "team-connection" ? (
-          <TeamConnectionSection
-            collaborationClient={collaborationClient}
-            collaborationSnapshot={collaborationSnapshot}
-          />
-        ) : null}
-        {section === "about" ? (
-          <AboutSection acknowledgements={acknowledgements} version={version} />
-        ) : null}
-        {section === "advanced" ? (
-          <AdvancedSection statusStore={statusStore} />
-        ) : null}
-      </section>
+      <div className="koed-preferences-layout">
+        <nav aria-label="Preference sections">
+          <h1>Preferences</h1>
+          {visibleSections.map((item) => (
+            <button
+              aria-current={section === item.id ? "page" : undefined}
+              data-active={section === item.id || undefined}
+              key={item.id}
+              onClick={() => selectSection(item.id)}
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+        <section
+          aria-labelledby="koed-preference-section-title"
+          className="koed-preferences-content"
+          data-general={section === "general" || undefined}
+        >
+          <header>
+            <h1 id="koed-preference-section-title">{sectionTitle(section)}</h1>
+          </header>
+          {section === "general" ? (
+            <GeneralSection
+              hardwareAcceleration={hardwareAcceleration}
+              launchAtStartup={launchAtStartup}
+              cliInstall={cliInstall}
+              onThemeChange={onThemeChange}
+              theme={theme}
+            />
+          ) : null}
+          {section === "capture" ? <CaptureSection capture={capture} /> : null}
+          {section === "ai-clients" ? (
+            <AiClientsSection
+              localAiClients={localAiClients}
+              statusStore={statusStore}
+            />
+          ) : null}
+          {section === "team-connection" ? (
+            <TeamConnectionSection
+              collaborationClient={collaborationClient}
+              collaborationSnapshot={collaborationSnapshot}
+            />
+          ) : null}
+          {section === "about" ? (
+            <AboutSection
+              acknowledgements={acknowledgements}
+              version={version}
+            />
+          ) : null}
+          {section === "advanced" ? (
+            <AdvancedSection statusStore={statusStore} />
+          ) : null}
+        </section>
+      </div>
     </main>
   );
 }

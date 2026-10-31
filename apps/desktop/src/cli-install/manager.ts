@@ -1,3 +1,4 @@
+import { lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -8,7 +9,7 @@ import {
   type LauncherInput,
   type LauncherStatus
 } from "./launcher.js";
-import { updateManagedPathBlock } from "./shell-path.js";
+import { hasManagedPathBlock, updateManagedPathBlock } from "./shell-path.js";
 import {
   validateCliInstallSettings,
   type CliInstallSettings
@@ -31,6 +32,30 @@ export interface DesktopCliInstallManager extends CliInstallManager {
     listener: (progress: PrivacyInstallProgress) => void
   ): void;
 }
+
+// Shell startup files that must carry the managed PATH block. Bash reads
+// ~/.bashrc only for interactive non-login shells, while login shells (the
+// macOS Terminal default) read the first of ~/.bash_profile, ~/.bash_login and
+// ~/.profile that exists and may never source ~/.bashrc.
+export const shellStartupFiles = (
+  home: string,
+  shell: string | undefined
+): string[] => {
+  if (shell?.endsWith("zsh")) return [join(home, ".zshrc")];
+  const exists = (path: string) => {
+    try {
+      lstatSync(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const login =
+    [".bash_profile", ".bash_login", ".profile"]
+      .map((name) => join(home, name))
+      .find(exists) ?? join(home, ".bash_profile");
+  return [join(home, ".bashrc"), login];
+};
 
 export const unavailablePrivacyStatus: PrivacyInstallStatus = {
   available: false,
@@ -131,7 +156,20 @@ export const createDesktopCliInstallManager = (input: {
         throw new Error("CLI launcher is unsupported on Windows.");
       const launcher = launcherInput(options.destination);
       if (operation === "inspect")
-        return inspectLauncher({ ...launcher, probeHelper: input.probeHelper });
+        return {
+          ...(await inspectLauncher({
+            ...launcher,
+            probeHelper: input.probeHelper
+          })),
+          pathConfigured:
+            settings.pathDirectory === dirname(launcher.destination) &&
+            shellStartupFiles(
+              input.homePath ?? homedir(),
+              process.env.SHELL
+            ).every((rcPath) =>
+              hasManagedPathBlock(rcPath, dirname(launcher.destination))
+            )
+        };
       if (operation === "install") {
         const status = await installLauncher({
           ...launcher,
@@ -153,21 +191,23 @@ export const createDesktopCliInstallManager = (input: {
       if (input.platform === "win32")
         throw new Error("Shell PATH management is unsupported on Windows.");
       const shell = process.env.SHELL?.endsWith("zsh") ? "zsh" : "bash";
-      const rcPath = join(
-        input.homePath ?? homedir(),
-        shell === "zsh" ? ".zshrc" : ".bashrc"
-      );
       const directory =
         operation === "remove"
           ? (settings.pathDirectory ?? dirname(activeDestination))
           : dirname(activeDestination);
-      await updateManagedPathBlock({
-        rcPath: resolve(rcPath),
-        shell,
-        operation,
-        consent,
-        launcherDirectory: directory
-      });
+      // Each file update is idempotent, so a partial failure is repaired by
+      // retrying; inspection reports PATH as configured only when all exist.
+      for (const rcPath of shellStartupFiles(
+        input.homePath ?? homedir(),
+        process.env.SHELL
+      ))
+        await updateManagedPathBlock({
+          rcPath: resolve(rcPath),
+          shell,
+          operation,
+          consent,
+          launcherDirectory: directory
+        });
       const remaining = settings.destination
         ? { destination: settings.destination }
         : {};

@@ -23,10 +23,14 @@ import {
   assertNoClaudeAgentSdkPlatformRuntimes,
   removeClaudeAgentSdkPlatformRuntimes
 } from "./provider-runtime-package-policy.mjs";
-import { prunePrivacyRuntimeForTarget } from "./privacy-runtime-package-policy.mjs";
+import {
+  prunePrivacyRuntimeForTarget,
+  prunePrivacyRuntimeVariant
+} from "./privacy-runtime-package-policy.mjs";
 import { pruneTerminalRuntimeForTarget } from "./terminal-runtime-package-policy.mjs";
 import {
   pruneSharedAppRuntimeMetadata,
+  packageDirectories,
   stageSharedAppRuntime
 } from "./app-runtime-staging.mjs";
 
@@ -710,11 +714,24 @@ export const projectRuntimeComponents = ({
     [privacyName],
     excludedPackages
   );
+  const baseNamesPresent = new Set(
+    base.closure.map(({ manifest }) => manifest.name)
+  );
+  const privacyOnlyPackages = [
+    ...new Set(
+      packageDirectories(resolve(sourceRoot, "node_modules")).map(
+        (packageRoot) => readManifest(resolve(packageRoot, "package.json")).name
+      )
+    )
+  ]
+    .filter((name) => !baseNamesPresent.has(name))
+    .sort();
   return {
     baseRoot: base.root,
     privacyRoot: privacy.root,
     baseRequired: base.required,
-    privacyRequired: privacy.required
+    privacyRequired: privacy.required,
+    privacyOnlyPackages
   };
 };
 
@@ -758,6 +775,15 @@ export const stageRuntimeComponents = async ({
     assertTargetPolicies(result.privacyRoot, platform, architecture);
     result.baseRequired = refreshRequiredFiles(result.baseRoot);
     result.privacyRequired = refreshRequiredFiles(result.privacyRoot);
+    if (platform === "linux" && architecture === "x64") {
+      result.privacyCpuRoot = resolve(outputDir, "privacy-cpu");
+      cpSync(result.privacyRoot, result.privacyCpuRoot, { recursive: true });
+      prunePrivacyRuntimeVariant({
+        runtimeRoot: result.privacyCpuRoot,
+        variant: "cpu"
+      });
+      result.privacyCpuRequired = refreshRequiredFiles(result.privacyCpuRoot);
+    }
     return result;
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });

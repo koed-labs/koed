@@ -24,8 +24,12 @@ export const writeComponentManifestCatalog = ({
 };
 
 export const requiredComponentIdentities = Object.freeze([
-  ...["base", "privacy"].map((component) => ({
-    component,
+  ...[
+    { component: "base" },
+    { component: "privacy", variant: "cpu" },
+    { component: "privacy", variant: "cuda" }
+  ].map((identity) => ({
+    ...identity,
     target: {
       platform: "linux",
       architecture: "x64",
@@ -64,6 +68,7 @@ export const buildComponentManifestCatalog = ({
     found.add(key);
     return {
       component: manifest.component,
+      ...(manifest.variant === undefined ? {} : { variant: manifest.variant }),
       target: manifest.target,
       manifestSha256: createHash("sha256").update(bytes).digest("hex")
     };
@@ -75,7 +80,11 @@ export const buildComponentManifestCatalog = ({
   entries.sort((left, right) =>
     componentCatalogKey(left).localeCompare(componentCatalogKey(right))
   );
-  return { schemaVersion: 1, productVersion: version, entries };
+  return {
+    schemaVersion: entries.some((entry) => entry.variant !== undefined) ? 2 : 1,
+    productVersion: version,
+    entries
+  };
 };
 
 if (

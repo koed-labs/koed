@@ -153,3 +153,15 @@ export const updateManagedPathBlock = async (
     rmSync(temporary, { force: true });
   }
 };
+
+// Inspection uses the same exact-block validation as mutation.
+export const hasManagedPathBlock = (
+  rcPath: string,
+  directory: string
+): boolean => {
+  const snapshot = readRc(rcPath);
+  return (
+    snapshot !== null &&
+    buildUpdatedContent(snapshot.contents, "add", directory) === null
+  );
+};

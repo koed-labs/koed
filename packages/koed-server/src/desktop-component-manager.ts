@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
+import type {
+  ArtifactTarget,
+  RuntimeIdentity,
+  ComponentVariant
+} from "./component-contract.js";
 export type { ArtifactTarget, RuntimeIdentity } from "./component-contract.js";
 import type { KoedServerPaths } from "./paths.js";
 import {
@@ -17,16 +21,57 @@ import {
 import type { ComponentSource } from "./component-store.js";
 import {
   stageComponent,
-  stageDesktopPrivacyGeneration
+  stageDesktopPrivacyGeneration,
+  resolveComponentManifestPinTarget
 } from "./component-store.js";
-import { activateGeneration } from "./generation-lifecycle.js";
+import {
+  activateGeneration,
+  stageDesktopBundleForRecovery
+} from "./generation-lifecycle.js";
 import { productionComponentManifestCatalog } from "./component-manifest-catalog-data.js";
 import { validateManifestCatalog } from "./component-manifest-catalog.js";
+import { PINNED_PRIVACY_MODEL_REVISION } from "@koed/shared";
+import {
+  probePrivacyDownloadCompatibility,
+  type PrivacyDownloadCompatibility
+} from "./privacy-download-compatibility.js";
+import { installPrivacyModel } from "./privacy-model-runtime.js";
+import {
+  verifyPrivacyComponentInference,
+  type PrivacyInferenceVerification
+} from "./privacy-inference.js";
+import { writePrivacyInstallationRecord } from "./privacy-installation-record.js";
+import { collectDesktopPrivacyInstallStatus } from "./desktop-privacy-status.js";
+import { readStoredComponents } from "./component-store.js";
+import { resolveEffectiveRuntimeConfig } from "./effective-runtime-config.js";
 
 const manifestPinCatalogAvailable = (): boolean => {
   if (productionComponentManifestCatalog === null) return false;
   validateManifestCatalog(productionComponentManifestCatalog);
   return true;
+};
+
+// An explicit CUDA preference is strict in the Privacy service: it never falls
+// back to CPU at startup. Install must therefore refuse to stage a CPU bundle,
+// or a CUDA bundle that only passed inference on CPU, while CUDA is explicitly
+// requested; otherwise activation succeeds and the next start fails.
+export const explicitCudaInstallRejection = (input: {
+  preference: string | undefined;
+  compatibility: PrivacyDownloadCompatibility;
+  verification?: PrivacyInferenceVerification;
+}): string | undefined => {
+  if (
+    input.preference?.trim().toLowerCase() !== "cuda" ||
+    input.compatibility.target !== "linux-x64"
+  )
+    return undefined;
+  const action =
+    "Set hardware acceleration to Auto or CPU, or fix the CUDA installation, then retry. The previous runtime selection was preserved.";
+  if (input.compatibility.variant !== "cuda")
+    return `Hardware acceleration is set to CUDA, but this device cannot run the CUDA Privacy Filter runtime (${input.compatibility.reason}). ${action}`;
+  if (input.verification && input.verification.activeProvider !== "cuda")
+    return `Hardware acceleration is set to CUDA, but Privacy Filter inference only succeeded on CPU (${input.verification.fallbackReason ?? "cuda_unavailable"}). ${action}`;
+  return undefined;
 };
 
 export type DesktopBundleManifest = DesktopRuntimeCapability["manifest"];
@@ -89,6 +134,13 @@ export const createDesktopPrivacyRpcHandler =
       return true;
     }
     if (
+      message.action === "prepare" &&
+      hasExactKeys(["type", "requestId", "action"])
+    ) {
+      void input.manager.prepare().then(respond, fail);
+      return true;
+    }
+    if (
       message.action === "cancel" &&
       hasExactKeys(["type", "requestId", "action"])
     ) {
@@ -97,23 +149,45 @@ export const createDesktopPrivacyRpcHandler =
     }
     if (
       message.action === "activate" &&
-      hasExactKeys(["type", "requestId", "action", "generationId"]) &&
-      typeof message.generationId === "string"
+      hasExactKeys([
+        "type",
+        "requestId",
+        "action",
+        "generationId",
+        "expectedCurrentGeneration"
+      ]) &&
+      typeof message.generationId === "string" &&
+      (typeof message.expectedCurrentGeneration === "string" ||
+        message.expectedCurrentGeneration === null)
     ) {
-      void input.manager.activate(message.generationId).then(respond, fail);
+      void input.manager
+        .activate(message.generationId, message.expectedCurrentGeneration)
+        .then(respond, fail);
       return true;
     }
     if (
       message.action === "install" &&
-      (hasExactKeys(["type", "requestId", "action", "source"]) ||
-        hasExactKeys(["type", "requestId", "action", "source", "version"])) &&
+      hasExactKeys([
+        "type",
+        "requestId",
+        "action",
+        "source",
+        ...(Object.hasOwn(message, "version") ? ["version"] : []),
+        ...(Object.hasOwn(message, "variant") ? ["variant"] : [])
+      ]) &&
       Object.hasOwn(message, "source") &&
-      (message.version === undefined || typeof message.version === "string")
+      (message.version === undefined || typeof message.version === "string") &&
+      (message.variant === undefined ||
+        message.variant === "cpu" ||
+        message.variant === "cuda")
     ) {
       void input.manager
         .install({
           requestId,
           source: message.source as ComponentSource,
+          ...(message.variant === "cpu" || message.variant === "cuda"
+            ? { variant: message.variant }
+            : {}),
           ...(typeof message.version === "string"
             ? { version: message.version }
             : {}),
@@ -189,6 +263,32 @@ export const createDesktopComponentManagerBridge = (input: {
     environment: input.environment
   };
   const operations = new Map<string, AbortController>();
+  const privacyPreference = () => {
+    const effective = resolveEffectiveRuntimeConfig(
+      context.paths,
+      context.environment ?? process.env,
+      "packaged"
+    );
+    const environment = effective.environment;
+    return {
+      environment,
+      preference:
+        environment.PRIVACY_RUNTIME_ENGINE === "onnx-worker"
+          ? "cpu"
+          : (environment.PRIVACY_RUNTIME_PROVIDER ??
+            effective.config.hardwareAcceleration)
+    };
+  };
+  const prepare = (signal?: AbortSignal) => {
+    const { environment, preference } = privacyPreference();
+    return probePrivacyDownloadCompatibility({
+      platform: context.target.platform,
+      architecture: context.target.architecture,
+      environment,
+      preference,
+      ...(signal ? { signal } : {})
+    });
+  };
   const requireRequestId = (requestId: unknown): string => {
     if (
       typeof requestId !== "string" ||
@@ -228,7 +328,13 @@ export const createDesktopComponentManagerBridge = (input: {
     owner,
     bundleDigest: capability.bundleDigest,
     bundleRoot: resolve(capability.resourcesPath, "koed-runtime"),
-    status: () => runComponentStatus(context),
+    status: () => collectDesktopPrivacyInstallStatus(context),
+    prepare: async () => ({
+      ...(await prepare()),
+      recoveryGenerationId: (
+        await stageDesktopBundleForRecovery(context.paths, capability)
+      ).id
+    }),
     newOperationId: () => randomUUID(),
     cancel: (requestId: string) => {
       const operation = operations.get(requireRequestId(requestId));
@@ -239,6 +345,7 @@ export const createDesktopComponentManagerBridge = (input: {
     install: async (input: {
       requestId: string;
       source: ComponentSource;
+      variant?: ComponentVariant;
       version?: string;
       progress?: (event: {
         requestId: string;
@@ -248,7 +355,7 @@ export const createDesktopComponentManagerBridge = (input: {
       }) => void;
     }): Promise<{ state: "staged" | "active"; generationId: string }> => {
       const requestId = requireRequestId(input.requestId);
-      if (operations.has(requestId))
+      if (operations.size > 0)
         throw new Error("Desktop privacy request is already active");
       if (!manifestPinCatalogAvailable())
         throw new Error(
@@ -274,14 +381,113 @@ export const createDesktopComponentManagerBridge = (input: {
           throw new Error(
             "Required component manifest pins are unavailable for this Desktop runtime."
           );
-        const privacy = await stageComponent(context.paths, source, {
-          expectedComponent: "privacy",
-          expectedVersion: version,
-          target: context.target,
-          runtime: context.runtime,
-          signal: controller.signal,
-          progress: (event) => input.progress?.({ requestId, ...event })
+        const { preference } = privacyPreference();
+        const compatibility = await prepare(controller.signal);
+        if (compatibility.target === "unsupported")
+          throw new Error(
+            "Privacy Filter is unavailable for this device target."
+          );
+        const compatibilityRejection = explicitCudaInstallRejection({
+          preference,
+          compatibility
         });
+        if (compatibilityRejection) throw new Error(compatibilityRejection);
+        if (input.variant !== compatibility.variant)
+          throw new Error(
+            "Privacy compatibility changed. Retry installation to select the matching bundle."
+          );
+        input.progress?.({
+          requestId,
+          phase: "compatibility",
+          transferredBytes: 0
+        });
+        const pinnedTarget = resolveComponentManifestPinTarget(
+          validateManifestCatalog(productionComponentManifestCatalog),
+          {
+            component: "privacy",
+            variant: compatibility.variant,
+            productVersion: version,
+            target: context.target,
+            runtime: context.runtime
+          }
+        );
+        const cached =
+          source.kind === "remote"
+            ? (await readStoredComponents(context.paths, context.runtime)).find(
+                (entry) =>
+                  entry.manifest.component === "privacy" &&
+                  entry.manifest.productVersion === version &&
+                  entry.manifest.variant === compatibility.variant &&
+                  entry.manifest.target.platform === context.target.platform &&
+                  entry.manifest.target.architecture ===
+                    pinnedTarget.architecture &&
+                  entry.manifest.target.libc?.family ===
+                    pinnedTarget.libc?.family &&
+                  entry.manifest.target.libc?.minimumVersion ===
+                    pinnedTarget.libc?.minimumVersion
+              )
+            : undefined;
+        if (cached)
+          input.progress?.({
+            requestId,
+            phase: "runtime-cache",
+            transferredBytes: 0
+          });
+        const privacy =
+          cached ??
+          (await stageComponent(context.paths, source, {
+            expectedComponent: "privacy",
+            expectedVariant: input.variant,
+            expectedVersion: version,
+            target: context.target,
+            runtime: context.runtime,
+            signal: controller.signal,
+            progress: (event) =>
+              input.progress?.({
+                requestId,
+                ...event,
+                phase: `runtime-${event.phase}`
+              })
+          }));
+        const model = await installPrivacyModel(
+          context.paths,
+          context.environment,
+          undefined,
+          {
+            signal: controller.signal,
+            progress: (event) => input.progress?.({ requestId, ...event })
+          }
+        );
+        if (!model.ok)
+          throw new Error(
+            `${model.message}${model.action ? ` ${model.action}` : ""}`
+          );
+        controller.signal.throwIfAborted();
+        input.progress?.({
+          requestId,
+          phase: "inference",
+          transferredBytes: 0
+        });
+        const verification = await verifyPrivacyComponentInference({
+          paths: context.paths,
+          componentRoot: privacy.root,
+          modelPath: model.modelPath,
+          provider: compatibility.variant === "cuda" ? "cuda" : "cpu",
+          environment: context.environment ?? process.env,
+          signal: controller.signal
+        });
+        const verificationRejection = explicitCudaInstallRejection({
+          preference,
+          compatibility,
+          verification
+        });
+        if (verificationRejection) throw new Error(verificationRejection);
+        if (verification.fallbackReason)
+          input.progress?.({
+            requestId,
+            phase: "cpu-fallback",
+            transferredBytes: 0
+          });
         const generation = await stageDesktopPrivacyGeneration(context.paths, {
           resourcesPath: resolve(
             resolve(capability.resourcesPath, "koed-runtime"),
@@ -294,31 +500,56 @@ export const createDesktopComponentManagerBridge = (input: {
         });
         if (controller.signal.aborted)
           throw new Error("component installation cancelled");
-        if (context.isRunning)
-          return { state: "staged", generationId: generation.id };
-        const activated = await activateGeneration(
-          context.paths,
-          generation.id,
-          owner,
-          context.desktopRuntimeCapability
-        );
-        return { state: "active", generationId: activated.id };
+        writePrivacyInstallationRecord(context.paths, {
+          schemaVersion: 1,
+          generationId: generation.id,
+          manifestDigest: privacy.manifestDigest,
+          ...(privacy.manifest.variant
+            ? { variant: privacy.manifest.variant }
+            : {}),
+          modelRevision: PINNED_PRIVACY_MODEL_REVISION,
+          verifiedAt: new Date().toISOString(),
+          compatibility,
+          verification
+        });
+        // Activation is one explicit lifecycle boundary after both downloads and
+        // real inference. A stopped install cannot report runtime-only readiness.
+        return { state: "staged", generationId: generation.id };
+      } catch (error) {
+        if (controller.signal.aborted)
+          throw new Error("Privacy Filter installation cancelled.", {
+            cause: error
+          });
+        if ((error as NodeJS.ErrnoException).code === "ENOSPC")
+          throw new Error(
+            "There is not enough disk space to install Privacy Filter. Free some space and retry; the previous runtime selection was preserved.",
+            { cause: error }
+          );
+        throw error;
       } finally {
         operations.delete(requestId);
       }
     },
-    activate: async (generationId: string) => {
+    activate: async (
+      generationId: string,
+      expectedCurrentGeneration: string | null
+    ) => {
       if (context.isRunning)
         throw new Error(
           "Stop Koed services before activating a component generation."
         );
-      if (!/^[a-f0-9]{64}$/.test(generationId))
+      if (
+        !/^[a-f0-9]{64}$/.test(generationId) ||
+        (expectedCurrentGeneration !== null &&
+          !/^[a-f0-9]{64}$/.test(expectedCurrentGeneration))
+      )
         throw new Error("generation id is invalid");
       return activateGeneration(
         context.paths,
         generationId,
         owner,
-        context.desktopRuntimeCapability
+        context.desktopRuntimeCapability,
+        { expectedCurrentGeneration }
       );
     }
   });

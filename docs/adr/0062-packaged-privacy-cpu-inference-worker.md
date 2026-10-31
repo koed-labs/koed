@@ -1,7 +1,7 @@
 # ADR 0062: Packaged Privacy CPU inference worker
 
 Status: accepted for the Linux x64 candidate, 26 October 2026. Production
-qualification and deployment remain separate gates in `tickets.md`.
+qualification and deployment remain separate gates.
 
 ## Context
 

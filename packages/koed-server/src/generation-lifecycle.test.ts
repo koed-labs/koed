@@ -491,6 +491,37 @@ describe("generation lifecycle", () => {
     await pinned.release();
   });
 
+  it("compares the expected selection under the lifecycle lock before activation or rollback", async () => {
+    const paths = pathsForTest();
+    const previous = await stage(paths, "0.9.0");
+    await activateGeneration(paths, previous.id, owner);
+    const next = await stage(paths, "0.9.1");
+    await expect(
+      activateGeneration(paths, next.id, owner, undefined, {
+        expectedCurrentGeneration: "f".repeat(64)
+      })
+    ).rejects.toThrow("selection changed");
+    expect(
+      (
+        JSON.parse(
+          readFileSync(resolve(paths.componentsDir, "current.json"), "utf8")
+        ) as { generationId: string }
+      ).generationId
+    ).toBe(previous.id);
+    await activateGeneration(paths, next.id, owner, undefined, {
+      expectedCurrentGeneration: previous.id
+    });
+    await expect(
+      activateGeneration(paths, previous.id, owner, undefined, {
+        expectedCurrentGeneration: previous.id
+      })
+    ).rejects.toThrow("selection changed");
+    expect((await readCurrentGeneration(paths)).id).toBe(next.id);
+    expect(existsSync(resolve(paths.runDir, "generation-lifecycle.lock"))).toBe(
+      false
+    );
+  });
+
   it("rejects a genuine downgrade at version guard without changing pointer or retaining locks", async () => {
     const paths = pathsForTest();
     const current = await stage(paths, "0.9.1");

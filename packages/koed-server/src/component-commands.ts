@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import type {
   ArtifactTarget,
   ComponentId,
+  ComponentVariant,
   RuntimeIdentity,
   RuntimeOwner,
   VerifiedGeneration
@@ -95,6 +96,11 @@ const requiredManifestPinsAvailable = (
     try {
       resolveComponentManifestPinTarget(catalog, {
         component,
+        ...(catalog.schemaVersion === 2 &&
+        component === "privacy" &&
+        context.target.platform === "linux"
+          ? { variant: "cpu" }
+          : {}),
         productVersion: context.controlPlaneVersion,
         target: context.target,
         runtime: context.runtime
@@ -246,6 +252,7 @@ export async function runComponentInstall(
   context: ComponentCommandContext,
   options: {
     component: ComponentId;
+    variant?: ComponentVariant;
     version?: string;
     source?: ComponentSource;
     stageOnly?: boolean;
@@ -263,8 +270,18 @@ export async function runComponentInstall(
     throw new Error(
       `${options.component} component is not required by current runtime configuration.`
     );
+  if (
+    options.component === "privacy" &&
+    context.target.platform === "linux" &&
+    productionComponentManifestCatalog?.schemaVersion === 2 &&
+    options.variant === undefined
+  )
+    throw new Error(
+      "Linux Privacy installation requires --variant cpu or cuda with its matching authenticated source."
+    );
   const component = await stageComponent(context.paths, options.source, {
     expectedComponent: options.component,
+    expectedVariant: options.variant,
     expectedVersion: version,
     target: context.target,
     runtime: context.runtime,

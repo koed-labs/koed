@@ -6,6 +6,7 @@ export type ComponentOperation = "status" | "install" | "activate" | "cleanup";
 export interface ComponentOptions {
   json?: boolean;
   component?: string;
+  variant?: string;
   version?: string;
   archive?: string;
   manifest?: string;
@@ -46,6 +47,7 @@ export const registerComponentCommands = (
     if (operation === "install")
       command
         .option("--component <id>", "Component identifier: base or privacy")
+        .option("--variant <variant>", "Linux x64 Privacy bundle: cpu or cuda")
         .option("--version <version>", "Exact component version")
         .option("--archive <path>", "Offline component archive")
         .option("--manifest <path>", "Offline component manifest")

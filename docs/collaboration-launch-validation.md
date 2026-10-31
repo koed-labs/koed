@@ -88,6 +88,70 @@ CI must pass the `Check DB migration files`, `Run DB migration acceptance
 matrix`, `Required acceptance suites`, build, and packaged Desktop smoke jobs
 for the same commit. Do not substitute a local pass for a missing CI job.
 
+## Desktop approval validation
+
+Use the [live Desktop action inventory](desktop-approval-ux.md#live-desktop-action-inventory),
+[ADR 0024](adr/0024-tiered-desktop-action-approval.md), and the
+[action credential matrix](team-collaboration-action-credential-matrix.md).
+The accepted ADR and backend policy take precedence over historical proposal text.
+Use the deterministic fixture or a disposable staged tenant with separate Desktop
+state. Preserve model caches and keep fixture databases separate from test databases.
+
+For every inventory action and risk-sensitive branch, record these boundaries:
+
+1. Start from current authoritative Team, Workspace, invitation, grant, or device state.
+2. Initiate the action through its normal Desktop control.
+3. Check that the backend selects the tier from authoritative action context.
+4. Check that the local edge accepts only that tier and keeps credentials outside renderer state.
+5. Check the ceremony: Direct, exact in-app Native review, or independently authenticated browser Step-up.
+6. Cancel and reject stale or expired reviews before checking successful execution.
+7. Check exact one-use grant consumption or authoritative pre-consumption denial.
+8. Check that Desktop reconciles the result without a stale pending state.
+9. Check that bundled consent and source-download stages remain separately auditable without extra prompts.
+
+Record the selected tier, redacted request status, visible consequence, mutation
+result, and mismatch. Never record credentials or grant secrets. Exercise all
+risk branches rather than using one manual action as proof of the entire inventory.
+Use focused shared-contract, backend approval-policy, local-edge grant-control,
+Desktop reconciliation, and API-hosted browser checks when those boundaries change.
+
+For browser Step-up, the five-minute grant expiry continues during sign-in.
+After expiry, the page must stay inert and show safe-close guidance. Request a
+new exact grant. A stale browser session must authenticate before actionable
+controls appear. Approval cannot override current Team or Workspace authority.
+
+Use the identity providers advertised by `/v1/capabilities`. WorkOS-only deployments
+must return to the same exact activation after verified authentication. Local
+password or developer-profile checks do not qualify a real WorkOS tenant.
+For sharing, check the current single-review flow for consent and durable Pending
+Share acceptance. Exercise detail expansion and reduction separately.
+
+## Sharing performance measurements
+
+From the repository root, run the synthetic package measurement when qualifying
+Approval Activity handling:
+
+```bash
+pnpm approval-activity:measure-sharing
+```
+
+The command uses the production Cross-Identity Sync schema and envelope encryption.
+It checks control digests and record/byte invariants without printing Memory or keys.
+Synthetic measurements do not establish before/after performance for an unavailable
+original Captured Session or a target deployment.
+
+Use content-safe route durations and bounded Pending Share stages, timestamps,
+retry counts, and redacted failure codes to measure acceptance through activation.
+Check that acceptance returns before background activation and that owner-only
+lifecycle events reconcile without polling. Preserve publication authority and
+source/consent bindings through replacement and restart.
+
+Staged qualification must cover two Users, every semantic representation,
+revocation, exact Conversation Source Access, and a two-host network interruption.
+Measure frame time under the target deployment's load against the existing 100 ms
+limit. Track missing comparable-source measurements and unresolved staging gates
+in the backlog rather than treating synthetic or local passes as completion.
+
 ## Staged Remote Probe
 
 Inject values through the staging secret runner. Do not paste them into a

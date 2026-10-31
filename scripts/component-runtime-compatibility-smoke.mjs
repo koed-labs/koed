@@ -22,7 +22,8 @@ for (let index = 2; index < process.argv.length; index += 2) {
     !new Set([
       "--release-dir",
       "--electron-bin",
-      "--privacy-transformers-cache"
+      "--privacy-transformers-cache",
+      "--variant"
     ]).has(name) ||
     !value
   )
@@ -53,7 +54,28 @@ const distributionPath = readdirSync(releaseDir)
   .map((name) => resolve(releaseDir, name));
 assert.equal(distributionPath.length, 1, "expected one distribution manifest");
 const distribution = JSON.parse(readFileSync(distributionPath[0], "utf8"));
-for (const component of ["base", "privacy"]) {
+const isLinux = distribution.target.platform === "linux";
+assert.equal(
+  distribution.target.platform,
+  process.platform === "darwin" ? "macos" : process.platform,
+  "run this smoke on the native artifact target"
+);
+assert.equal(
+  distribution.target.architecture,
+  process.arch,
+  "run this smoke on the native artifact architecture"
+);
+const variant = options.get("--variant") ?? (isLinux ? "cpu" : undefined);
+if (isLinux ? !["cpu", "cuda"].includes(variant) : variant !== undefined)
+  throw new Error("--variant cpu|cuda applies only to Linux x64 components.");
+const privacyIdentity = variant ? `privacy-${variant}` : "privacy";
+const privacyRoot = resolve(
+  releaseDir,
+  "components",
+  variant === "cpu" ? "privacy-cpu" : "privacy"
+);
+const electronSupported = !isLinux;
+for (const component of ["base", privacyIdentity]) {
   const artifact = distribution.components[component];
   const manifest = JSON.parse(
     readFileSync(resolve(releaseDir, artifact.manifest), "utf8")
@@ -67,17 +89,18 @@ for (const component of ["base", "privacy"]) {
     ),
     `${component} is missing the Node 24.14.0 compatibility record`
   );
-  assert.ok(
-    manifest.runtimes.some(
-      (runtime) =>
-        runtime.kind === "electron" &&
-        runtime.runtimeRange === `=${validatedElectronRuntime.version}` &&
-        runtime.nodeRange === `=${validatedElectronRuntime.nodeVersion}` &&
-        runtime.modulesAbi === validatedElectronRuntime.modulesAbi &&
-        runtime.minimumNapi === validatedElectronRuntime.napiVersion
-    ),
-    `${component} is missing the measured Electron compatibility record`
-  );
+  if (electronSupported)
+    assert.ok(
+      manifest.runtimes.some(
+        (runtime) =>
+          runtime.kind === "electron" &&
+          runtime.runtimeRange === `=${validatedElectronRuntime.version}` &&
+          runtime.nodeRange === `=${validatedElectronRuntime.nodeVersion}` &&
+          runtime.modulesAbi === validatedElectronRuntime.modulesAbi &&
+          runtime.minimumNapi === validatedElectronRuntime.napiVersion
+      ),
+      `${component} is missing the measured Electron compatibility record`
+    );
 }
 
 const nativeSmoke = String.raw`
@@ -86,7 +109,7 @@ const path = require('node:path');
 const { createRequire } = require('node:module');
 const root = process.argv[2];
 const base = createRequire(path.join(root, 'components/base/package.json'));
-const privacy = createRequire(path.join(root, 'components/privacy/package.json'));
+const privacy = createRequire(path.join(process.argv[3], 'package.json'));
 (async () => {
   const argon2 = base('argon2');
   const hash = await argon2.hash('compatibility-fixture', { type: argon2.argon2id });
@@ -118,10 +141,12 @@ const scratch = mkdtempSync(resolve(tmpdir(), "koed-component-runtime-"));
 const nativeSmokePath = resolve(scratch, "native-smoke.cjs");
 writeFileSync(nativeSmokePath, nativeSmoke);
 const run = (executable, args, env = process.env) => {
+  const environment = { ...env };
+  delete environment.NODE_PATH;
   const result = spawnSync(executable, args, {
     cwd: scratch,
     encoding: "utf8",
-    env,
+    env: environment,
     maxBuffer: 16 * 1024 * 1024
   });
   if (result.error) throw result.error;
@@ -134,28 +159,37 @@ const run = (executable, args, env = process.env) => {
 
 let completed = false;
 try {
-  const electronIdentity = run(
-    electronBin,
-    [
-      "-p",
-      "JSON.stringify({electron:process.versions.electron,node:process.versions.node,modules:process.versions.modules,napi:Number(process.versions.napi),platform:process.platform,arch:process.arch})"
-    ],
-    { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
-  );
-  assert.deepEqual(
-    {
-      version: electronIdentity.electron,
-      nodeVersion: electronIdentity.node,
-      modulesAbi: electronIdentity.modules,
-      napiVersion: electronIdentity.napi
-    },
-    validatedElectronRuntime
-  );
-  const nodeResult = run(process.execPath, [nativeSmokePath, releaseDir]);
-  const electronResult = run(electronBin, [nativeSmokePath, releaseDir], {
-    ...process.env,
-    ELECTRON_RUN_AS_NODE: "1"
-  });
+  const electronIdentity = electronSupported
+    ? run(
+        electronBin,
+        [
+          "-p",
+          "JSON.stringify({electron:process.versions.electron,node:process.versions.node,modules:process.versions.modules,napi:Number(process.versions.napi),platform:process.platform,arch:process.arch})"
+        ],
+        { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
+      )
+    : null;
+  if (electronSupported)
+    assert.deepEqual(
+      {
+        version: electronIdentity.electron,
+        nodeVersion: electronIdentity.node,
+        modulesAbi: electronIdentity.modules,
+        napiVersion: electronIdentity.napi
+      },
+      validatedElectronRuntime
+    );
+  const nodeResult = run(process.execPath, [
+    nativeSmokePath,
+    releaseDir,
+    privacyRoot
+  ]);
+  const electronResult = electronSupported
+    ? run(electronBin, [nativeSmokePath, releaseDir, privacyRoot], {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1"
+      })
+    : null;
   const nodeIdentity = {
     node: process.versions.node,
     modules: process.versions.modules,
@@ -173,7 +207,7 @@ try {
     const args = [
       validator,
       "--runtime-root",
-      resolve(releaseDir, "components/privacy"),
+      privacyRoot,
       "--transformers-cache",
       cache,
       "--provider",
@@ -181,10 +215,12 @@ try {
     ];
     inference = {
       node: run(process.execPath, args),
-      electron: run(electronBin, args, {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: "1"
-      })
+      electron: electronSupported
+        ? run(electronBin, args, {
+            ...process.env,
+            ELECTRON_RUN_AS_NODE: "1"
+          })
+        : null
     };
   }
   console.log(
@@ -192,6 +228,9 @@ try {
       {
         ok: true,
         releaseDir,
+        variant,
+        privacyRoot,
+        electronSupported,
         archives: Object.fromEntries(
           Object.entries(distribution.components).map(
             ([component, artifact]) => [

@@ -7,11 +7,13 @@ import {
   symlinkSync,
   writeFileSync
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDesktopCliInstallManager,
+  shellStartupFiles,
   unavailablePrivacyStatus
 } from "./manager.js";
 import type { PrivacyInstallBridge } from "./protocol.js";
@@ -23,6 +25,7 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
@@ -320,6 +323,81 @@ describe("desktop CLI install adapter", () => {
     expect(readCliInstallSettings(settingsFile)).toEqual({
       destination: join(root, "different", "koed")
     });
+  });
+
+  it("adds PATH to the Bash login startup file so new login shells find the launcher", async () => {
+    vi.stubEnv("SHELL", "/bin/bash");
+    const root = fixture();
+    const destination = join(root, "bin dir", "koed");
+    writeFileSync(join(root, "cli.js"), "// CLI entry\n");
+    const manager = createDesktopCliInstallManager({
+      appPath: root,
+      helperPath: join(root, "Koed"),
+      cliPath: join(root, "cli.js"),
+      koedHome: join(root, "home"),
+      expectedVersion: "0.9.0",
+      currentPath: "/usr/bin",
+      homePath: root,
+      platform: "darwin",
+      probeHelper: async () => true
+    });
+    await manager.launcher("install", { consent: true, destination });
+    // A .bashrc-only block is not enough for login shells.
+    writeFileSync(
+      join(root, ".bashrc"),
+      `# >>> koed managed PATH >>>\nexport PATH="$PATH:${join(root, "bin dir")}"\n# <<< koed managed PATH <<<\n`
+    );
+    await expect(manager.launcher("inspect")).resolves.toMatchObject({
+      pathConfigured: false
+    });
+    await manager.updatePath("add", true);
+    expect(readFileSync(join(root, ".bash_profile"), "utf8")).toContain(
+      "koed managed PATH"
+    );
+    await expect(manager.launcher("inspect")).resolves.toMatchObject({
+      pathConfigured: true
+    });
+    if (process.platform !== "win32") {
+      // Follow Bash's documented login-shell lookup without the host's
+      // system profile, which CI runner images customize.
+      const loginPath = execFileSync(
+        "bash",
+        [
+          "--noprofile",
+          "--norc",
+          "-c",
+          'for f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do if [ -r "$f" ]; then . "$f"; break; fi; done; printf %s "$PATH"'
+        ],
+        { env: { HOME: root, PATH: "/usr/bin:/bin" }, encoding: "utf8" }
+      );
+      expect(loginPath.split(":")).toContain(join(root, "bin dir"));
+    }
+    await manager.updatePath("remove", true);
+    for (const name of [".bashrc", ".bash_profile"])
+      expect(readFileSync(join(root, name), "utf8")).not.toContain(
+        "koed managed PATH"
+      );
+  });
+
+  it("selects the Bash login file that bash actually reads", () => {
+    const root = fixture();
+    expect(shellStartupFiles(root, "/bin/zsh")).toEqual([join(root, ".zshrc")]);
+    expect(shellStartupFiles(root, "/bin/bash")).toEqual([
+      join(root, ".bashrc"),
+      join(root, ".bash_profile")
+    ]);
+    writeFileSync(join(root, ".profile"), "# existing\n");
+    expect(shellStartupFiles(root, "/bin/bash")[1]).toBe(
+      join(root, ".profile")
+    );
+    writeFileSync(join(root, ".bash_login"), "# existing\n");
+    expect(shellStartupFiles(root, "/bin/bash")[1]).toBe(
+      join(root, ".bash_login")
+    );
+    writeFileSync(join(root, ".bash_profile"), "# existing\n");
+    expect(shellStartupFiles(root, undefined)[1]).toBe(
+      join(root, ".bash_profile")
+    );
   });
 
   it("does not persist failed installs or infer arbitrary file ownership from settings", async () => {

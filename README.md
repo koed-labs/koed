@@ -129,8 +129,7 @@ Personal Projects support direct inclusion, Git Anchor and exact Folder rules,
 and Project-only exclusions. **Add to Project** keeps recorded source context
 and Capture Targets independent. Projects are available directly; no existing-Project
 upgrade or activation step is required. See the
-[Personal selection contract](docs/personal-selection-contract.md) and
-[local validation record](docs/personal-project-validation.md).
+[Personal selection contract](docs/personal-selection-contract.md).
 
 ## Security
 

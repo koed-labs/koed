@@ -12,7 +12,8 @@ import { SupervisedPrivacyRuntime } from "./supervised-runtime.js";
 
 export function createPrivacyRuntime(
   config: PrivacyServiceConfig,
-  provider: PrivacyRuntimeProvider
+  provider: PrivacyRuntimeProvider,
+  verification?: { profilePrefix: string }
 ): LoadablePrivacyRuntime {
   const create = (execution?: PrivacyModelExecution) =>
     new HuggingFacePrivacyRuntime(
@@ -22,7 +23,8 @@ export function createPrivacyRuntime(
       undefined,
       undefined,
       provider,
-      execution
+      execution,
+      verification?.profilePrefix
     );
   if (config.runtimeEngine !== "onnx-worker") return create();
   if (provider !== "cpu")

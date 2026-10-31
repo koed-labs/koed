@@ -24,8 +24,8 @@ import {
   clientVersionLabel,
   summarizeCapabilities
 } from "../ai-client-card.js";
-import { CliInstallSettingsSection } from "../preferences/CliInstallSettingsSection.js";
 import { compactHealthSummary } from "./setup-model.js";
+import { CliInstallSettingsSection } from "../preferences/CliInstallSettingsSection.js";
 import { TrustBoundaryGuide } from "./TrustBoundaryGuide.js";
 import "../ai-client-card.css";
 import "./onboarding.css";
@@ -297,12 +297,15 @@ export function SetupChecklist({
         {teamCollaborationEnabled ? (
           <>
             <p>
-              Team-enabled local services require Privacy Filter assets. Install
-              them with separate consent below before starting or retrying
-              setup. Installing assets does not start setup or bypass
-              verification.
+              Local Team services require Privacy Filter. Install it before
+              starting or retrying setup. Installation needs separate consent
+              and does not complete setup.
             </p>
-            <CliInstallSettingsSection api={window.koedDesktop?.cliInstall} />
+            <CliInstallSettingsSection
+              api={window.koedDesktop?.cliInstall}
+              tools={["privacy"]}
+              heading="Team setup"
+            />
           </>
         ) : null}
 

@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildComponentManifestCatalog } from "./component-manifest-catalog.mjs";
 import { canonicalComponentManifestBytes } from "./koed-server-package-lib.mjs";
+import { componentArchiveName } from "../packages/koed-server/src/component-artifact-identity.mjs";
 import {
   reviewedRuntimeIdentities,
   validateReviewedRuntimeIdentities
@@ -28,7 +29,7 @@ export const verifyFrozenComponentAssets = async ({
     throw new Error("Frozen component catalog mismatch.");
   for (let index = 0; index < manifests.length; index++) {
     const manifest = JSON.parse(manifests[index]);
-    const archiveName = `koed-${manifest.component}-${version}-${manifest.target.platform}-${manifest.target.architecture}.tar.gz`;
+    const archiveName = componentArchiveName(manifest);
     if (
       manifest.archive.name !== archiveName ||
       names[index] !== `${archiveName}.manifest.json`
@@ -55,6 +56,7 @@ export const verifyFrozenComponentAssets = async ({
         manifestCatalog: catalog,
         archivePath: path,
         expectedComponent: manifest.component,
+        expectedVariant: manifest.variant,
         expectedVersion: version,
         target: manifest.target,
         runtime

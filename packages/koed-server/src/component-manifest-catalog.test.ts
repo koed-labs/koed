@@ -22,6 +22,51 @@ const catalog = () => ({
 });
 
 describe("component manifest catalog", () => {
+  it("authenticates CPU and CUDA independently and rejects incomplete or legacy variant catalogs", () => {
+    const entries = (["cpu", "cuda"] as const).map((variant, index) => ({
+      component: "privacy" as const,
+      target,
+      variant,
+      manifestSha256: (index ? "b" : "a").repeat(64)
+    }));
+    const catalog = validateManifestCatalog({
+      schemaVersion: 2,
+      productVersion: "0.9.0",
+      entries
+    });
+    expect(
+      lookupManifestPin(catalog, {
+        ...identity,
+        component: "privacy",
+        variant: "cpu"
+      })
+    ).toBe("a".repeat(64));
+    expect(
+      lookupManifestPin(catalog, {
+        ...identity,
+        component: "privacy",
+        variant: "cuda"
+      })
+    ).toBe("b".repeat(64));
+    expect(() =>
+      lookupManifestPin(catalog, { ...identity, component: "privacy" })
+    ).toThrow(/missing/);
+    expect(() =>
+      validateManifestCatalog({ ...catalog, entries: entries.slice(0, 1) })
+    ).toThrow(/incomplete/);
+    expect(() =>
+      validateManifestCatalog({ ...catalog, schemaVersion: 1 })
+    ).toThrow(/Legacy/);
+    expect(() =>
+      validateManifestCatalog({
+        ...catalog,
+        entries: [
+          ...entries,
+          { component: "privacy", target, manifestSha256: digest }
+        ]
+      })
+    ).toThrow(/ambiguous/);
+  });
   it("looks up exact version, component and complete target identity", () => {
     expect(
       lookupManifestPin(validateManifestCatalog(catalog()), identity)

@@ -25,7 +25,7 @@ test("frozen assets match complete catalog; manifest/archive mutation and missin
   try {
     const componentsRoot = resolve(root, "components");
     const assetsDir = resolve(root, "assets");
-    for (const component of ["base", "privacy"]) {
+    for (const component of ["base", "privacy", "privacy-cpu"]) {
       mkdirSync(resolve(componentsRoot, component), { recursive: true });
       writeFileSync(
         resolve(componentsRoot, component, "main.js"),
@@ -34,7 +34,9 @@ test("frozen assets match complete catalog; manifest/archive mutation and missin
     }
     for (const target of [
       requiredComponentIdentities[0].target,
-      requiredComponentIdentities[2].target
+      requiredComponentIdentities.find(
+        (entry) => entry.target.platform === "macos"
+      ).target
     ])
       buildComponentReleaseSet({
         componentsRoot,

@@ -50,7 +50,7 @@ test("effective external control plane embeds exact catalog despite stale dist; 
       resolve(server, "component-manifest-catalog.js")
     );
     const catalog = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       productVersion: "1.2.3",
       entries: requiredComponentIdentities.map((identity) => ({
         ...identity,

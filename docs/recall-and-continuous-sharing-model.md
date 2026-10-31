@@ -5,15 +5,6 @@ A Project groups Memory without replacing its Git anchor or folder context.
 Sharing includes existing and future members and follows later turns until the
 User pauses or stops it. Resume catches up automatically.
 
-This is the product direction agreed on 19 October 2026. The implementation
-comparison uses branch `codex/repo-targeted-recall` at `8896cc14`.
-That comparison describes the planning baseline. Package 1 is now implemented
-locally, with [executed acceptance](personal-project-validation.md). The User
-chose to omit the recommended minor changeset on 20 October 2026. Package 2
-remains planned. Project integration is new on this branch; the User removed
-the existing-Project upgrade requirement on 20 October 2026. The backlog is in
-[TODO.md](../TODO.md#recall-grouping-and-continuous-sharing).
-
 Delivery is split into two work packages:
 
 | Package                                                                        | Outcome                                                             | Dependency                                       |
@@ -188,10 +179,6 @@ Existing Team sharing must continue to work through this change.
 Compatibility changes needed to preserve its contracts belong in this package.
 New continuous selection and rule-based publication belong in Package 2.
 Team collections are deferred. Package 1 can complete and land independently.
-
-The [Personal Project implementation plan](personal-project-implementation-plan.md)
-records the confirmed decisions, engineering defaults, ordered work items,
-migration rules, and validation criteria. Use that plan to implement this package.
 
 ### Identity and membership
 
@@ -371,16 +358,14 @@ revocation, consent, and current-schema tests pass without widening unauthorized
 ## Implementation decisions
 
 The core membership and continuous sharing behavior is settled.
-Package 1 preparation separates confirmed choices from engineering defaults.
-Package 2 product decisions are confirmed below; its implementation remains planned.
+Personal membership and Team sharing use the same source and membership definitions.
 
 ### Package 1 decisions
 
 The User confirmed exact Folder matching, original context until correction,
 multiple Project membership, and no nesting for Package 1.
-The [implementation plan](personal-project-implementation-plan.md#engineering-defaults)
-defines proposed exclusion behavior, capture-policy compatibility, migration,
-request contracts, and Personal membership synchronization.
+Project-only exclusions, independent Capture Policy, versioned requests, and
+Personal membership synchronization preserve that separation.
 Package 2 must consume the same source and membership definitions.
 
 ### Package 2 decisions
@@ -423,23 +408,13 @@ Each rule retains its destination, detail, policy, and lifecycle state.
 Changing destinations uses separate start and stop actions.
 
 These policies preserve Personal ownership and current Workspace Access requirements.
-The [Package 2 preparation](team-continuous-sharing-preparation.md) records
-the confirmed decisions and examples. The
-[implementation plan](team-continuous-sharing-implementation-plan.md) and
-[local tickets](../tickets.md)
-define the operational alpha milestone approved on 21 October 2026.
-The [archived tickets](archive/2026-10-21-package-2/tickets.md) retain the full
-Package 2 criteria. Deferred capabilities preserve the product rules above.
+Deferred capabilities preserve the product rules above.
 
 ## Acceptance scenarios
 
 These scenarios define the required behavior for implementation validation.
-The current alpha tickets select the scenarios required for the first trial.
-The remaining full-package scenarios apply when deferred work returns to scope.
 Use the existing deterministic recall and Team authorization fixtures where
 they cover the boundary. Extend them for membership and continuous selection.
-The existing [Project cutover results](project-cutover-validation.md) cover the
-current assignment model. They do not establish these new behaviors.
 
 1. Add a Koed Conversation to `Test project`. Recall it through the Project,
    Git Anchor, and applicable Folder without changing its source identity.

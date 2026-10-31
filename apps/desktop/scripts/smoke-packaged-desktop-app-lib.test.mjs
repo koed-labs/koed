@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import {
   existsSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -13,6 +14,9 @@ import test from "node:test";
 import { tmpdir } from "node:os";
 import process from "node:process";
 import { resolve } from "node:path";
+import { inspectDeviceIdentityAtKoedHome } from "../../../packages/shared/dist/index.js";
+import { ensureDeviceIdentity } from "../../../packages/koed-server/dist/device-identity.js";
+import { resolveKoedServerPaths } from "../../../packages/koed-server/dist/paths.js";
 import {
   removeSmokeHome,
   createSmokeHome,
@@ -78,6 +82,30 @@ test("packaged smoke reserves API budget for repeated readiness and doctor probe
     createSmokeEnv("/tmp/koed-smoke-home").API_AUTH_RATE_LIMIT_MAX,
     "1000"
   );
+});
+
+test("packaged smoke verifies host proof beneath a private parent outside its profile", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-smoke-proof-"));
+  try {
+    chmodSync(root, 0o755);
+    const home = resolve(root, "home");
+    const environment = createSmokeEnv(home, { NODE_ENV: "production" });
+    const identity = await ensureDeviceIdentity(
+      resolveKoedServerPaths(environment),
+      { environment }
+    );
+    assert.equal(identity.health, "healthy");
+    assert.equal(
+      inspectDeviceIdentityAtKoedHome({ koedHome: home, environment }).health,
+      "healthy"
+    );
+    assert.equal(
+      environment.KOED_DEVICE_PROOF_DIR.startsWith(home + "/"),
+      false
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("packaged smoke strips untrusted resources path overrides", () => {

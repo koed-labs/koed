@@ -51,7 +51,7 @@ for (const check of [
           version: "1.2.3",
           runtimeIdentities
         });
-        assert.equal(catalog.entries.length, 4);
+        assert.equal(catalog.entries.length, 5);
         for (const identity of runtimeIdentities.filter(
           (item) => item.kind === "node"
         )) {
