@@ -319,6 +319,7 @@ export function createPrivacyInstallBridge({
         // activation is detected while Koed is still running.
         const latest =
           await requestPrivacyRpc<Record<string, unknown>>("status");
+        checkCancelled();
         if ((latest.activeGeneration ?? null) !== expectedGeneration)
           throw new Error(
             "Runtime selection changed during Privacy installation. Koed was not stopped; retry installation to use the current selection."

@@ -25,19 +25,23 @@ const fixture = (
     fresh?: boolean;
     rollbackConflict?: boolean;
     concurrentDuringInstall?: boolean;
+    onStatus?: (call: number) => Promise<void>;
   } = {}
 ) => {
   const events: string[] = [];
   let selected: string | null = options.fresh ? null : "old";
+  let statusCalls = 0;
   const rpc = vi.fn(
     async <T>(action: string, args?: Record<string, unknown>) => {
-      if (action === "status")
+      if (action === "status") {
+        await options.onStatus?.(++statusCalls);
         return {
           ...ready,
           activeGeneration: selected,
           running: options.running ?? true,
           ...(options.serviceFails ? { service: { state: "starting" } } : {})
         } as T;
+      }
       if (action === "prepare")
         return (
           options.target === "linux"
@@ -123,6 +127,21 @@ describe("Privacy installation transaction", () => {
     });
     await expect(install(bridge)).rejects.toThrow(
       /selection changed.*Koed was not stopped/
+    );
+    expect(events.slice(1)).toEqual([]);
+    expect(start).not.toHaveBeenCalled();
+  });
+  it("honours cancellation received while the pre-stop status check is pending", async () => {
+    const pending: { cancel?: () => Promise<void> } = {};
+    const { bridge, events, start } = fixture({
+      // Status call 2 is the selection re-check immediately before stopping.
+      onStatus: async (call) => {
+        if (call === 2) await pending.cancel?.();
+      }
+    });
+    pending.cancel = () => bridge.cancel();
+    await expect(install(bridge)).rejects.toThrow(
+      "Privacy Filter installation cancelled."
     );
     expect(events.slice(1)).toEqual([]);
     expect(start).not.toHaveBeenCalled();
