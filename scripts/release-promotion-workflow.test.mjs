@@ -10,15 +10,19 @@ const release = readFileSync(
   "utf8"
 );
 
-test("candidate verification has read-only permissions and protected build identity dependencies", () => {
+test("candidate verification can read the draft but gets no publication credentials, with protected build identity dependencies", () => {
   const { jobs } = parse(release);
   const identity = jobs["reviewed-release-identity"];
   const verification = jobs["verify-release-candidate"];
   assert.ok(identity, "missing independent build identity job");
+  // Draft releases and their assets are visible only with contents: write.
   assert.deepEqual(verification.permissions, {
-    contents: "read",
+    contents: "write",
     actions: "read"
   });
+  assert.equal(verification.environment, undefined);
+  assert.equal(verification.permissions["id-token"], undefined);
+  assert.equal(JSON.stringify(verification.steps).includes("NPM_TOKEN"), false);
   assert.ok(verification.needs.includes("reviewed-release-identity"));
   assert.ok(jobs["publish-release"].needs.includes("verify-release-candidate"));
   assert.equal(

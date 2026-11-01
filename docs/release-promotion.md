@@ -9,9 +9,10 @@ Component admission uses [versioned manifest catalogs](component-manifest-catalo
 `verifyReleaseCandidate(input, readers)` returns evidence, not permission to publish.
 Its reader interface contains only GitHub/registry GET operations. The
 `--verify-only` entry path does not request OIDC tokens or publication credentials,
-or expose npm publish/dist-tag or GitHub release-update methods. Use a
-read-only token (`contents: read`, `actions: read`); do not provide publication or
-signing credentials to this job.
+or expose npm publish/dist-tag or GitHub release-update methods. Its job token has
+`contents: write` and `actions: read` only because GitHub shows draft releases and
+their assets solely to tokens with write access; the verifier still makes only GET
+requests. Do not provide publication or signing credentials to this job.
 
 The workflow retains frozen catalog/components, app-runtime/npm outputs, native
 runtime assets, release metadata and final Desktop ZIP/DMG bytes as immutable
