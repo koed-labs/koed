@@ -41,6 +41,21 @@ test("active workflows build the renamed public Koed Server package", () => {
   }
 });
 
+test("release verification uses the same lint heap budget as static checks", () => {
+  const ci = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
+  const release = readFileSync(
+    resolve(".github/workflows/release.yml"),
+    "utf8"
+  );
+  const lint = ci.split("- name: Lint")[1].split("- name:")[0];
+  const verify = release
+    .split("- name: Verify release commit")[1]
+    .split("- name:")[0];
+  assert.match(lint, /NODE_OPTIONS: --max-old-space-size=8192/);
+  assert.match(verify, /NODE_OPTIONS: --max-old-space-size=8192/);
+  assert.match(verify, /run: pnpm verify/);
+});
+
 test("packaging path policy excludes documentation and includes runtime consumers", () => {
   assert.equal(packagingRelevant(["docs/running-koed.md", "PLAN.md"]), false);
   for (const file of [
