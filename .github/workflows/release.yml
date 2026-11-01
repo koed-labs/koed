@@ -16,7 +16,7 @@ jobs:
   release:
     name: Version and Release
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     outputs:
       desktop_assets_enabled: ${{ steps.release_assets.outputs.enabled }}
       release_id: ${{ steps.create_release.outputs.release_id || steps.release.outputs.release_id }}
@@ -113,6 +113,8 @@ jobs:
       - name: Verify release commit
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
         env:
+          # Typed lint and test typechecking exceed Node's default heap; match CI.
+          NODE_OPTIONS: --max-old-space-size=8192
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
           KOED_CI_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
           PG_DUMP_BIN: .github/scripts/pg-dump-service.sh
