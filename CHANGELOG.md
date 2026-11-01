@@ -1,5 +1,14 @@
 # Koed
 
+## 0.10.0
+
+### Minor Changes
+
+- 0af257c: Redesign Desktop General Preferences with grouped appearance, device settings, and optional tools. Simplify Privacy Filter installation and combine command-line installation with PATH setup, with progress, retry, and partial failure details. Make Preferences navigation responsive to its available window space. Keep optional tool setup in Preferences instead of initial setup.
+- 0808d1a: Improve recall for Projects across Personal Memory and Team-shared Memory.
+  Simplify Desktop Project navigation, creation, and Conversation moves.
+  Improve assignment consistency across capture, Personal Device Sync, sharing, and database upgrades.
+
 ## 0.9.2
 
 ## 0.9.1
