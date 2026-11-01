@@ -51,6 +51,7 @@ describe("V1Settings", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    delete window.koedDesktop;
   });
   const render = async (
     initialTab: "general" | "agent" | "ai" | "services" = "general",
@@ -84,7 +85,7 @@ describe("V1Settings", () => {
     expect(themeStore.set).toHaveBeenCalledWith("light");
   });
 
-  it("uses supported launch and graphics bridges, and restarts onboarding by callback", async () => {
+  it("uses presentation preferences for window graphics and menu bar", async () => {
     const launch = {
       get: vi.fn(async () => ({
         enabled: false,
@@ -97,17 +98,18 @@ describe("V1Settings", () => {
         supported: true
       }))
     };
-    const graphics = {
-      get: vi.fn(async () => ({ enabled: true, managedByEnvironment: false })),
-      set: vi.fn(async (enabled: boolean) => ({
-        enabled,
-        managedByEnvironment: false
-      }))
+    let preferences = { graphicsAcceleration: true, showMenuBar: false };
+    const presentation = {
+      get: vi.fn(async () => preferences),
+      set: vi.fn(async (value: typeof preferences) => {
+        preferences = value;
+        return preferences;
+      })
     };
     const restart = vi.fn(async () => undefined);
     await render("general", vi.fn(), {
       launchAtStartup: launch,
-      hardwareAcceleration: graphics,
+      presentationPreferences: presentation,
       onRestartOnboarding: restart
     });
     const login = container.querySelector(
@@ -116,12 +118,23 @@ describe("V1Settings", () => {
     const gpu = container.querySelector(
       'button[aria-label="Graphics acceleration"]'
     ) as HTMLButtonElement;
-    expect(login.getAttribute("aria-checked")).toBe("false");
+    const menu = container.querySelector(
+      'button[aria-label="Show Koed in the menu bar"]'
+    ) as HTMLButtonElement;
     expect(gpu.getAttribute("aria-checked")).toBe("true");
+    expect(menu.getAttribute("aria-checked")).toBe("false");
     await act(async () => login.click());
     expect(launch.set).toHaveBeenCalledWith(true);
     await act(async () => gpu.click());
-    expect(graphics.set).toHaveBeenCalledWith(false);
+    expect(presentation.set).toHaveBeenCalledWith({
+      graphicsAcceleration: false,
+      showMenuBar: false
+    });
+    await act(async () => menu.click());
+    expect(presentation.set).toHaveBeenCalledWith({
+      graphicsAcceleration: false,
+      showMenuBar: true
+    });
     await act(async () =>
       (
         container.querySelector(
@@ -131,17 +144,25 @@ describe("V1Settings", () => {
     );
     expect(restart).toHaveBeenCalledOnce();
   });
-  it("keeps operator managed graphics disabled", async () => {
-    const graphics = {
-      get: vi.fn(async () => ({ enabled: true, managedByEnvironment: true })),
-      set: vi.fn()
+  it("keeps the displayed window preference when saving fails", async () => {
+    const presentation = {
+      get: vi.fn(async () => ({
+        graphicsAcceleration: true,
+        showMenuBar: true
+      })),
+      set: vi.fn(async () => {
+        throw new Error("unavailable");
+      })
     };
-    await render("general", vi.fn(), { hardwareAcceleration: graphics });
+    await render("general", vi.fn(), { presentationPreferences: presentation });
     const gpu = container.querySelector(
       'button[aria-label="Graphics acceleration"]'
     ) as HTMLButtonElement;
-    expect(gpu.disabled).toBe(true);
-    expect(graphics.set).not.toHaveBeenCalled();
+    await act(async () => gpu.click());
+    expect(gpu.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "could not be changed"
+    );
   });
   it("saves a capability backed default for new conversations", async () => {
     const assignment = {
@@ -199,12 +220,9 @@ describe("V1Settings", () => {
     };
     await render("ai", vi.fn(), { localAiClients });
     const reasoning = container.querySelector(
-      'select[aria-label="Default conversation reasoning"]'
-    ) as HTMLSelectElement;
-    await act(async () => {
-      reasoning.value = "high";
-      reasoning.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+      '.v1-model-reasoning button[aria-label="High"]'
+    ) as HTMLButtonElement;
+    await act(async () => reasoning.click());
     await act(async () =>
       (
         container.querySelector(
@@ -290,5 +308,80 @@ describe("V1Settings", () => {
     expect(container.textContent).toContain("API ready");
     expect(container.textContent).toContain("Database unavailable");
     expect(container.textContent).toContain("Needs attention");
+  });
+  it("starts stopped services and opens logs through existing commands", async () => {
+    snapshot = {
+      ...snapshot,
+      status: {
+        generatedAt: "2026-01-01T00:00:00Z",
+        api: { state: "needs_attention" }
+      } as never
+    };
+    await render("services");
+    await act(async () =>
+      (
+        container.querySelector(
+          ".v1-service-actions .v1-settings-primary"
+        ) as HTMLButtonElement
+      ).click()
+    );
+    expect(run).toHaveBeenCalledWith("start");
+    await act(async () =>
+      (
+        [...container.querySelectorAll(".v1-service-actions button")].find(
+          (button) => button.textContent === "Open logs"
+        ) as HTMLButtonElement
+      ).click()
+    );
+    expect(run).toHaveBeenCalledWith("open_logs");
+  });
+  it("copies only allowlisted service states in diagnostics", async () => {
+    snapshot = {
+      ...snapshot,
+      status: {
+        generatedAt: "2026-01-01T00:00:00Z",
+        api: { state: "healthy", message: "token=secret" },
+        token: "secret"
+      } as never
+    };
+    const writeText = vi.fn(async (value: string) => value.length);
+    window.koedDesktop = { invoke: vi.fn(), clipboard: { writeText } } as never;
+    await render("services");
+    await act(async () =>
+      (
+        [...container.querySelectorAll(".v1-service-actions button")].find(
+          (button) => button.textContent === "Copy diagnostics"
+        ) as HTMLButtonElement
+      ).click()
+    );
+    expect(writeText).toHaveBeenCalledOnce();
+    const copied = writeText.mock.calls[0]?.[0] as string;
+    expect(copied).toContain('"healthy"');
+    expect(copied).not.toContain("secret");
+    expect(container.textContent).toContain("Diagnostics copied.");
+  });
+  it("reports a restart stop failure without starting or claiming success", async () => {
+    snapshot = {
+      ...snapshot,
+      status: {
+        generatedAt: "2026-01-01T00:00:00Z",
+        api: { state: "healthy" }
+      } as never
+    };
+    const invoke = vi.fn(async () => ({ ok: false, message: "Stop failed" }));
+    window.koedDesktop = { invoke } as never;
+    await render("services");
+    await act(async () =>
+      (
+        container.querySelector(
+          ".v1-service-actions .v1-settings-primary"
+        ) as HTMLButtonElement
+      ).click()
+    );
+    expect(invoke).toHaveBeenCalledWith("stop");
+    expect(run).not.toHaveBeenCalledWith("start");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Stop failed"
+    );
   });
 });

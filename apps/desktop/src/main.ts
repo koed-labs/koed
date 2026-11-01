@@ -1,4 +1,8 @@
 import {
+  readPresentationPreferences,
+  writePresentationPreferences
+} from "./window/presentation-preferences.js";
+import {
   app,
   BrowserWindow,
   clipboard,
@@ -118,6 +122,16 @@ const allowedRendererOrigins = new Set([
 ]);
 
 app.setName(appName);
+const presentationPreferencePath = resolve(
+  app.getPath("userData"),
+  "presentation-preferences.json"
+);
+let presentationPreferences = readPresentationPreferences(
+  presentationPreferencePath
+);
+// Electron window rendering only; never change embedding/privacy runtime policy.
+if (!presentationPreferences.graphicsAcceleration)
+  app.disableHardwareAcceleration();
 
 let themePreference: DesktopThemePreference = "system";
 let koedServer: KoedServerManager | null = null;
@@ -550,6 +564,13 @@ const bootstrap = async () => {
         resolvedDark: nativeTheme.shouldUseDarkColors
       };
     },
+    getPresentationPreferences: () => ({ ...presentationPreferences }),
+    setPresentationPreferences: (value) => {
+      writePresentationPreferences(presentationPreferencePath, value);
+      presentationPreferences = value;
+      configureMenuBar();
+      return { ...value };
+    },
     getHardwareAcceleration: () => server.hardwareAcceleration.get(),
     setHardwareAcceleration: (enabled) =>
       server.hardwareAcceleration.set(enabled),
@@ -573,35 +594,41 @@ const bootstrap = async () => {
       return { canceled: false, result };
     }
   });
-  if (menuBarIconPath && existsSync(menuBarIconPath)) {
-    const menuBarIcon = nativeImage.createFromPath(menuBarIconPath);
-    if (process.platform === "darwin") menuBarIcon.setTemplateImage(true);
-    const tray = new Tray(menuBarIcon);
-    desktopMenuBar = createDesktopMenuBar<Menu>({
-      tray: {
-        destroy: () => tray.destroy(),
-        onClick: (listener) => {
-          tray.on("click", listener);
+  const configureMenuBar = () => {
+    desktopMenuBar?.dispose();
+    desktopMenuBar = null;
+    if (!presentationPreferences.showMenuBar) return;
+    if (menuBarIconPath && existsSync(menuBarIconPath)) {
+      const menuBarIcon = nativeImage.createFromPath(menuBarIconPath);
+      if (process.platform === "darwin") menuBarIcon.setTemplateImage(true);
+      const tray = new Tray(menuBarIcon);
+      desktopMenuBar = createDesktopMenuBar<Menu>({
+        tray: {
+          destroy: () => tray.destroy(),
+          onClick: (listener) => {
+            tray.on("click", listener);
+          },
+          ...(process.platform === "darwin"
+            ? {
+                onRightClick: (listener: () => void) => {
+                  tray.on("right-click", listener);
+                },
+                popUpContextMenu: (menu: Menu) => tray.popUpContextMenu(menu)
+              }
+            : { setContextMenu: (menu: Menu) => tray.setContextMenu(menu) }),
+          setToolTip: (tooltip) => tray.setToolTip(tooltip)
         },
-        ...(process.platform === "darwin"
-          ? {
-              onRightClick: (listener: () => void) => {
-                tray.on("right-click", listener);
-              },
-              popUpContextMenu: (menu: Menu) => tray.popUpContextMenu(menu)
-            }
-          : { setContextMenu: (menu: Menu) => tray.setContextMenu(menu) }),
-        setToolTip: (tooltip) => tray.setToolTip(tooltip)
-      },
-      buildMenu: (template) => Menu.buildFromTemplate(template),
-      getStatus: () => server.handlers.status(),
-      openDesktop: showDesktopWindow,
-      startKoed: () => {
-        void Promise.resolve(server.handlers.start()).catch(() => undefined);
-      },
-      quit: () => app.quit()
-    });
-  }
+        buildMenu: (template) => Menu.buildFromTemplate(template),
+        getStatus: () => server.handlers.status(),
+        openDesktop: showDesktopWindow,
+        startKoed: () => {
+          void Promise.resolve(server.handlers.start()).catch(() => undefined);
+        },
+        quit: () => app.quit()
+      });
+    }
+  };
+  configureMenuBar();
   // One cheap local observer drives both the window and the tray, so an
   // external stop or start is reflected without waiting for full polling.
   server.lifecycle.subscribe(() => {

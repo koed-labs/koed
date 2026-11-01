@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type {
   DesktopSetupSnapshot,
   DesktopSetupStage,
@@ -9,6 +10,7 @@ import { useDesktopStatus } from "../state/use-status.js";
 import {
   AgentLookPicker,
   DEFAULT_AGENT_LOOK,
+  randomAgentLook,
   Pixelkin,
   V1Composer,
   type AgentLook
@@ -42,6 +44,7 @@ export type V1OnboardingProps = {
   onMemoryDemo?: (text: string) => Promise<MemoryDemoResult>;
   statusStore: DesktopStatusStore;
   userName?: string | null;
+  headerTarget?: HTMLElement | null;
 };
 
 type ClientId = "codex" | "claude" | "pi";
@@ -80,6 +83,19 @@ const configured = (id: ClientId, status: KoedServerStatus | null) =>
     : id === "claude"
       ? status?.claudeCode?.configured === true
       : status?.pi?.configured === true;
+const clientReady = (id: ClientId, status: KoedServerStatus | null) => {
+  if (
+    status?.lifecycle?.state === "stopped" ||
+    status?.lifecycle?.state === "unavailable" ||
+    (status?.lifecycle?.state === "starting" && status.api.state !== "healthy")
+  )
+    return false;
+  const readiness = status?.aiClients?.[id];
+  return (
+    readiness?.profile.state === "healthy" &&
+    readiness.authentication === "authenticated"
+  );
+};
 const commandFor = (id: ClientId, status: KoedServerStatus | null) => {
   const item = status?.aiClients?.[id];
   const missingRegistration = item?.capabilities.some((c) =>
@@ -167,28 +183,30 @@ function SetupProgress({
           >
             <span style={{ width: `${percent}%` }} />
           </div>
-          {(snapshot?.state === "failed" ? stages : []).map((stage) => (
-            <div className="v1-ob-stage" key={stage.id}>
-              <span>
-                {stage.state === "complete"
-                  ? "✓"
-                  : stage.state === "failed"
-                    ? "!"
-                    : stage.state === "running"
-                      ? "◌"
-                      : "·"}
-              </span>
-              <span>{stageNames[stage.id]}</span>
-              <small>
-                {stage.state === "running" || stage.state === "failed"
-                  ? stage.message
-                  : stage.state === "complete"
-                    ? "Done"
-                    : "Waiting"}
-              </small>
-            </div>
-          ))}
-          {(error || snapshot?.error) && (
+          {(!busy && snapshot?.state === "failed" ? stages : []).map(
+            (stage) => (
+              <div className="v1-ob-stage" key={stage.id}>
+                <span>
+                  {stage.state === "complete"
+                    ? "✓"
+                    : stage.state === "failed"
+                      ? "!"
+                      : stage.state === "running"
+                        ? "◌"
+                        : "·"}
+                </span>
+                <span>{stageNames[stage.id]}</span>
+                <small>
+                  {stage.state === "running" || stage.state === "failed"
+                    ? stage.message
+                    : stage.state === "complete"
+                      ? "Done"
+                      : "Waiting"}
+                </small>
+              </div>
+            )
+          )}
+          {!busy && (error || snapshot?.error) && (
             <p role="alert" className="v1-ob-error">
               {error || snapshot?.error}
             </p>
@@ -208,7 +226,7 @@ function SetupProgress({
               {snapshot?.state === "failed" ? "Try again" : "Set up Koed"}
             </button>
           )}
-          {snapshot?.state === "failed" && (
+          {!busy && snapshot?.state === "failed" && (
             <p className="v1-ob-muted">
               Completed steps are retained if you retry.
             </p>
@@ -227,7 +245,8 @@ export function V1Onboarding({
   onComplete,
   onMemoryDemo,
   statusStore,
-  userName
+  userName,
+  headerTarget
 }: V1OnboardingProps) {
   const { status } = useDesktopStatus(statusStore);
   const [agent, setAgent] = useState<OnboardingAgent>(
@@ -374,14 +393,7 @@ export function V1Onboarding({
     setup?.state === "complete" &&
     setup.stages.every((s) => s.state === "complete");
   const connected = useMemo(
-    () =>
-      clients.filter(({ id }) => {
-        const readiness = status?.aiClients?.[id];
-        return (
-          readiness?.profile.state === "healthy" &&
-          readiness.authentication === "authenticated"
-        );
-      }),
+    () => clients.filter(({ id }) => clientReady(id, status)),
     [status]
   );
   const saveAgent = async (typedName?: string) => {
@@ -421,13 +433,16 @@ export function V1Onboarding({
     setScanBusy(true);
     setScanned(false);
     setScanError(null);
+    setClientResults({});
     setAiMode("scan");
     setAiActions((current) => [...current, "Look for them"]);
     try {
       const next = await statusStore.refresh();
-      if (!next)
+      if (!next || !next.api.url)
         throw new Error(
-          statusStore.current().error ?? "Could not check AI Clients."
+          next?.api.message ??
+            statusStore.current().error ??
+            "Could not check AI Clients."
         );
       setScanned(true);
     } catch (cause) {
@@ -546,7 +561,7 @@ export function V1Onboarding({
       if (step === "intro") setStep("ai");
       else if (step === "ai") {
         if (aiMode === "intro") void scan();
-        else setStep("memory");
+        else if (connected.length > 0) setStep("memory");
       } else if (step === "memory") setStep("summary");
       else if (step === "summary" && connected.length > 0) void finish();
       else
@@ -604,33 +619,38 @@ export function V1Onboarding({
         : step === "memory"
           ? 3
           : 4;
+  const progressHeader = (
+    <div className="v1-ob-top">
+      <div className="v1-ob-steps" aria-label="Setup progress">
+        {["Your agent", "Your AI", "Memory"].map((label, index) => (
+          <span
+            className={
+              stepNumber > index + 1
+                ? "is-done"
+                : stepNumber === index + 1
+                  ? "is-current"
+                  : ""
+            }
+            aria-current={stepNumber === index + 1 ? "step" : undefined}
+            key={label}
+          >
+            <i>{stepNumber > index + 1 ? "✓" : index + 1}</i>
+            {label}
+          </span>
+        ))}
+      </div>
+      {stepNumber >= 2 && stepNumber <= 3 && (
+        <button type="button" className="v1-ob-skip" onClick={skipSetup}>
+          Skip setup
+        </button>
+      )}
+    </div>
+  );
   return (
     <main className="v1-ob">
-      <div className="v1-ob-top">
-        <div className="v1-ob-steps" aria-label="Setup progress">
-          {["Your agent", "Your AI", "Memory"].map((label, index) => (
-            <span
-              className={
-                stepNumber > index + 1
-                  ? "is-done"
-                  : stepNumber === index + 1
-                    ? "is-current"
-                    : ""
-              }
-              aria-current={stepNumber === index + 1 ? "step" : undefined}
-              key={label}
-            >
-              <i>{stepNumber > index + 1 ? "✓" : index + 1}</i>
-              {label}
-            </span>
-          ))}
-        </div>
-        {stepNumber >= 2 && stepNumber <= 3 && (
-          <button type="button" className="v1-ob-skip" onClick={skipSetup}>
-            Skip setup
-          </button>
-        )}
-      </div>
+      {headerTarget
+        ? createPortal(progressHeader, headerTarget)
+        : progressHeader}
       <div className="v1-ob-thread">
         {skipError && (
           <p role="alert" className="v1-ob-error">
@@ -699,14 +719,29 @@ export function V1Onboarding({
                     {nameError}
                   </p>
                 )}
-                <button
-                  type="button"
-                  className="v1-ob-primary"
-                  disabled={saveBusy}
-                  onClick={() => void saveAgent()}
-                >
-                  {saveBusy ? "Saving…" : "That’s me"}
-                </button>
+                <div className="v1-ob-maker-actions">
+                  <button
+                    type="button"
+                    className="v1-ob-primary"
+                    disabled={saveBusy}
+                    onClick={() => void saveAgent()}
+                  >
+                    {saveBusy ? "Saving…" : "That’s me"}
+                  </button>
+                  <button
+                    type="button"
+                    className="v1-ob-mini"
+                    disabled={saveBusy}
+                    onClick={() =>
+                      setAgent((current) => ({
+                        ...current,
+                        look: randomAgentLook()
+                      }))
+                    }
+                  >
+                    Surprise me
+                  </button>
+                </div>
               </>
             ) : (
               <p>Change my name or look any time in Settings.</p>
@@ -720,7 +755,13 @@ export function V1Onboarding({
               <Pixelkin look={agent.look} size={32} />
               <div>
                 <p>{agent.name} it is. Nice to meet you.</p>
-                <p>While we talk, I’m getting Koed ready on this Mac.</p>
+                <p>
+                  {prepared
+                    ? "Koed is ready on this Mac."
+                    : setupBusy || setup?.state === "running"
+                      ? "While we talk, I’m getting Koed ready on this Mac."
+                      : "Let’s prepare Koed on this Mac."}
+                </p>
               </div>
             </div>
             <SetupProgress
@@ -835,29 +876,27 @@ export function V1Onboarding({
                   const readiness = status?.aiClients?.[id];
                   const result = clientResults[id];
                   const installed = readiness?.installed.state === "healthy";
+                  const installationNeedsAttention =
+                    readiness?.installed.state === "needs_attention";
                   const healthy = readiness?.profile.state === "healthy";
-                  const authenticated =
-                    readiness?.authentication === "authenticated";
-                  const state =
-                    healthy && authenticated
-                      ? "Ready"
-                      : result?.state === "failed"
-                        ? "Needs attention"
-                        : result?.state === "sign-in" ||
-                            (healthy &&
-                              readiness?.authentication === "unauthenticated")
-                          ? "Sign in required"
-                          : result?.state === "unknown-auth" ||
-                              (healthy &&
-                                readiness?.authentication === "unknown")
-                            ? "Check sign-in"
-                            : result?.state === "ready" && !readiness
-                              ? "Not checked"
-                              : installed
-                                ? "Installed"
-                                : scanned
-                                  ? "Not found"
-                                  : "Not checked";
+                  const state = clientReady(id, status)
+                    ? "Ready"
+                    : result?.state === "failed"
+                      ? "Needs attention"
+                      : result?.state === "sign-in" ||
+                          (healthy &&
+                            readiness?.authentication === "unauthenticated")
+                        ? "Sign in required"
+                        : result?.state === "unknown-auth" ||
+                            (healthy && readiness?.authentication === "unknown")
+                          ? "Check sign-in"
+                          : installed
+                            ? "Installed"
+                            : installationNeedsAttention
+                              ? "Needs attention"
+                              : scanned
+                                ? "Availability unknown"
+                                : "Not checked";
                   const guidance = clientAuthenticationGuidance(id, state);
                   return (
                     <div className="v1-ob-client" key={id}>
@@ -868,8 +907,9 @@ export function V1Onboarding({
                             ? `Version ${readiness.version}`
                             : installed
                               ? "Installed"
-                              : scanned
-                                ? "Not installed"
+                              : installationNeedsAttention
+                                ? (readiness.installed.message ??
+                                  "Check availability")
                                 : "Check availability"}
                         </small>
                         {result?.detail && (
@@ -916,6 +956,7 @@ export function V1Onboarding({
                 <button
                   className="v1-ob-primary"
                   type="button"
+                  disabled={connected.length === 0 || scanBusy || !!clientBusy}
                   onClick={() => setStep("memory")}
                 >
                   Next: memory

@@ -117,6 +117,11 @@ describe("V1Onboarding", () => {
   it("saves the agent before revealing setup and retains the completed card", async () => {
     const save = vi.fn(async () => {});
     const { click } = await render(save);
+    expect(
+      [...container.querySelectorAll(".v1-ob-maker-actions button")].map(
+        (button) => button.textContent?.trim()
+      )
+    ).toEqual(["That’s me", "Surprise me"]);
     await click("Mika");
     await click("That’s me");
     expect(save).toHaveBeenCalledWith(
@@ -148,7 +153,15 @@ describe("V1Onboarding", () => {
     expect(setup.run).toHaveBeenCalledOnce();
   });
   it("keeps AI choices and the memory comparison in the transcript", async () => {
-    const { click } = await render();
+    const { click } = await render(vi.fn(), vi.fn(), readySetup, {
+      aiClients: {
+        claude: {
+          installed: { state: "healthy" },
+          profile: { state: "healthy" },
+          authentication: "authenticated"
+        }
+      }
+    });
     await click("Pip");
     await click("That’s me");
     expect(container.textContent).toContain("I’ll call you Pip.");
@@ -199,6 +212,39 @@ describe("V1Onboarding", () => {
     expect(setup.inspect).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain("Koed is ready on this Mac");
   });
+  it("hides an earlier setup failure while its retry is pending", async () => {
+    const failed: DesktopSetupSnapshot = {
+      ...readySetup,
+      state: "failed",
+      error: "Verification timed out",
+      stages: readySetup.stages.map((stage) =>
+        stage.id === "verification"
+          ? { ...stage, state: "failed", message: "Verification timed out" }
+          : stage
+      )
+    };
+    const { click, setup } = await render(vi.fn(), vi.fn(), failed);
+    await click("Juno");
+    await click("That’s me");
+    expect(container.textContent).toContain("Verification timed out");
+    let resolveRun!: (snapshot: DesktopSetupSnapshot) => void;
+    setup.run.mockImplementationOnce(
+      () =>
+        new Promise<DesktopSetupSnapshot>((resolve) => {
+          resolveRun = resolve;
+        })
+    );
+    await click("Try again");
+    const confirm = container.querySelector(
+      "[role='dialog'] button.v1-ob-primary"
+    ) as HTMLButtonElement;
+    await act(async () => confirm.click());
+    expect(container.textContent).toContain("Getting Koed ready");
+    expect(container.querySelector(".v1-ob-error")).toBeNull();
+    expect(container.querySelectorAll(".v1-ob-stage")).toHaveLength(0);
+    await act(async () => resolveRun(readySetup));
+    expect(container.textContent).toContain("Koed is ready on this Mac");
+  });
   it("shows provider-specific sign-in guidance and offers a check", async () => {
     const status = {
       aiClients: {
@@ -233,6 +279,129 @@ describe("V1Onboarding", () => {
       "I need at least one ready AI Client"
     );
     expect(container.textContent).not.toContain("You’re set.");
+  });
+  it("does not advance Your AI until a client is ready", async () => {
+    const { click, send } = await render();
+    await click("Atlas");
+    await click("That’s me");
+    await click("Let’s go");
+    await click("I’ll add them myself");
+    expect(
+      (
+        container.querySelector(
+          ".v1-ob-actions .v1-ob-primary"
+        ) as HTMLButtonElement
+      ).disabled
+    ).toBe(true);
+    await send("yes");
+    expect(container.querySelector(".v1-ob-compare")).toBeNull();
+  });
+  it("lets a ready AI Client advance while a healthy API is observed as starting", async () => {
+    const { click } = await render(vi.fn(), vi.fn(), readySetup, {
+      api: { state: "healthy", url: "http://127.0.0.1:3333" },
+      lifecycle: {
+        state: "starting",
+        message: "Supervisor ownership is still being observed"
+      },
+      aiClients: {
+        claude: {
+          installed: { state: "healthy" },
+          profile: { state: "healthy" },
+          authentication: "authenticated"
+        }
+      }
+    });
+    await click("Atlas");
+    await click("That’s me");
+    await click("Let’s go");
+    await click("I’ll add them myself");
+    expect(
+      (
+        container.querySelector(
+          ".v1-ob-actions .v1-ob-primary"
+        ) as HTMLButtonElement
+      ).disabled
+    ).toBe(false);
+    expect(container.textContent).toContain("Connected Claude Code");
+    await click("Next: memory");
+    expect(container.querySelector(".v1-ob-compare")).toBeTruthy();
+  });
+  it("does not advance on stopped lifecycle with stale client readiness", async () => {
+    const { click } = await render(vi.fn(), vi.fn(), readySetup, {
+      api: { state: "healthy", url: "http://127.0.0.1:3333" },
+      lifecycle: { state: "stopped", message: "Koed stopped" },
+      aiClients: {
+        claude: {
+          installed: { state: "healthy" },
+          profile: { state: "healthy" },
+          authentication: "authenticated"
+        }
+      }
+    });
+    await click("Atlas");
+    await click("That’s me");
+    await click("Let’s go");
+    await click("I’ll add them myself");
+    expect(
+      container.querySelector(".v1-ob-client > span")?.textContent
+    ).not.toBe("Ready");
+    expect(
+      (
+        container.querySelector(
+          ".v1-ob-actions .v1-ob-primary"
+        ) as HTMLButtonElement
+      ).disabled
+    ).toBe(true);
+  });
+  it("reports failed detection without calling unknown clients absent", async () => {
+    const diagnostic = {
+      api: {
+        state: "needs_attention",
+        url: "",
+        message: "Core setup is required"
+      },
+      aiClients: {
+        claude: {
+          installed: {
+            state: "not_configured",
+            message: "Installation is unknown."
+          },
+          profile: { state: "not_configured" },
+          authentication: "unknown"
+        }
+      }
+    };
+    const { click, statusStore } = await render();
+    await click("Atlas");
+    await click("That’s me");
+    await click("Let’s go");
+    vi.mocked(statusStore.refresh).mockResolvedValueOnce(diagnostic as never);
+    await click("Look for them");
+    expect(container.textContent).toContain("Core setup is required");
+    expect(container.textContent).not.toContain("Not installed");
+    expect(container.textContent).not.toContain("Not found");
+  });
+  it("shows unknown availability when a successful scan has no installation proof", async () => {
+    const { click, statusStore } = await render();
+    await click("Atlas");
+    await click("That’s me");
+    await click("Let’s go");
+    vi.mocked(statusStore.refresh).mockResolvedValueOnce({
+      api: { state: "healthy", url: "http://127.0.0.1:3333" },
+      aiClients: {
+        claude: {
+          installed: {
+            state: "not_configured",
+            message: "Installation is unknown."
+          },
+          profile: { state: "not_configured" },
+          authentication: "unknown"
+        }
+      }
+    } as never);
+    await click("Look for them");
+    expect(container.textContent).toContain("Availability unknown");
+    expect(container.textContent).not.toContain("Not installed");
   });
   it("restores completed user actions and Koed explanation from a draft", async () => {
     const draft: OnboardingDraft = {

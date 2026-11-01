@@ -206,6 +206,13 @@ export interface DesktopApi {
       preference: DesktopThemePreference
     ) => Promise<{ preference: DesktopThemePreference; resolvedDark: boolean }>;
   };
+  presentationPreferences?: {
+    get: () => Promise<{ graphicsAcceleration: boolean; showMenuBar: boolean }>;
+    set: (value: {
+      graphicsAcceleration: boolean;
+      showMenuBar: boolean;
+    }) => Promise<{ graphicsAcceleration: boolean; showMenuBar: boolean }>;
+  };
   hardwareAcceleration?: {
     get: () => Promise<{
       enabled: boolean;

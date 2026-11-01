@@ -1,3 +1,8 @@
+import {
+  presentationPreferencesGetChannel,
+  presentationPreferencesSetChannel
+} from "./ipc/protocol.js";
+import type { PresentationPreferences } from "./window/presentation-preferences.js";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   CollaborationCommandResult,
@@ -87,6 +92,12 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     get: () => ipcRenderer.invoke(themePreferenceGetChannel),
     set: (preference: "light" | "dark" | "system") =>
       ipcRenderer.invoke(themePreferenceSetChannel, preference)
+  }),
+  presentationPreferences: Object.freeze({
+    get: (): Promise<PresentationPreferences> =>
+      ipcRenderer.invoke(presentationPreferencesGetChannel),
+    set: (value: PresentationPreferences): Promise<PresentationPreferences> =>
+      ipcRenderer.invoke(presentationPreferencesSetChannel, value)
   }),
   hardwareAcceleration: Object.freeze({
     get: () => ipcRenderer.invoke(hardwareAccelerationGetChannel),

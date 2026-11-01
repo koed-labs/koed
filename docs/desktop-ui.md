@@ -21,6 +21,19 @@ Conversations keep their execution owner, while a new Conversation can choose
 a configured client. Managed execution, approvals, streaming, and draft recovery
 use the existing controller with the new presentation.
 
+Window graphics acceleration is a local Electron preference applied on the next
+app launch. It never changes embedding or privacy inference acceleration. The
+menu-bar preference changes only the tray visibility; existing service lifecycle
+and native menu commands are retained.
+
+AI settings retain the existing single default AI Client, model, and reasoning
+level for new Conversations. Available models and reasoning levels come from
+client capabilities; separate defaults for each provider are not introduced.
+
+A named Project without a Folder uses the existing independent-chat execution
+context. Its captured Conversation is added through the existing versioned
+Project membership commands; execution Folder identity is not rewritten.
+
 Run `pnpm --filter @koed/desktop test:browser:v1` for the isolated Electron
 presentation smoke check. This fixture does not configure local AI Clients or
 certify a live model response or performance measurement.

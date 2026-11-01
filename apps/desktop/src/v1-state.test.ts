@@ -164,6 +164,59 @@ describe("V1 state", () => {
     ).toBe(true);
   });
 
+  it("retains confirmed Project membership across reload and later acknowledgements", async () => {
+    const path = root();
+    const state = owner(path, uuid(1));
+    const intent = {
+      idempotencyKey: "member-one",
+      projectId: "lp_execution",
+      presentationProjectId: uuid(2),
+      aiClientDriverId: "codex" as const,
+      aiClientInstanceId: "codex.default",
+      model: "model",
+      reasoningEffort: null,
+      permissionMode: "supervised" as const,
+      runnerKind: "local_device" as const,
+      createdAt: new Date().toISOString()
+    };
+    await state.request({ operation: "conversation_intent_put", intent });
+    await expect(
+      state.request({
+        operation: "conversation_ack",
+        idempotencyKey: intent.idempotencyKey,
+        executionId: uuid(3),
+        projectMembershipConfirmed: true
+      })
+    ).rejects.toThrow("captured Conversation");
+    await state.request({
+      operation: "conversation_ack",
+      idempotencyKey: intent.idempotencyKey,
+      executionId: uuid(3),
+      capturedSessionId: uuid(4),
+      projectMembershipConfirmed: true
+    });
+    await state.request({
+      operation: "conversation_ack",
+      idempotencyKey: intent.idempotencyKey,
+      executionId: uuid(3)
+    });
+    const reloaded = await owner(path, uuid(1)).request({
+      operation: "provenance_read"
+    });
+    expect(
+      reloaded.operation === "provenance_read" &&
+        reloaded.provenance.conversations[intent.idempotencyKey]
+          ?.projectMembershipConfirmed
+    ).toBe(true);
+    const otherOwner = await owner(path, uuid(9)).request({
+      operation: "provenance_read"
+    });
+    expect(
+      otherOwner.operation === "provenance_read" &&
+        Object.keys(otherOwner.provenance.conversations)
+    ).toEqual([]);
+  });
+
   it("recovers one first-prompt identity after an uncertain send", async () => {
     const path = root();
     const state = owner(path, uuid(1));

@@ -217,7 +217,12 @@ describe("V1App launch integration", () => {
     ].find((button) => button.textContent?.trim() === "Made here");
     expect(rail).toBeDefined();
     await act(async () => rail!.click());
-    expect(container.textContent).toContain("1 local Folder");
+    expect(container.querySelector(".v1-project-header h1")?.textContent).toBe(
+      "Made here"
+    );
+    expect(
+      container.querySelector(".v1-project-folder code")?.textContent
+    ).toBe("/tmp/koed-v1-project");
     expect(container.textContent).toContain("koed-v1-project");
     snapshot.projectsById.delete(namedId);
     (snapshot.inventory.localFolders as unknown[]).length = 0;

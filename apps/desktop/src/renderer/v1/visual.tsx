@@ -59,6 +59,13 @@ export const PIXELKIN_PALETTE: Record<
 };
 const shapes: AgentLook["shape"][] = ["block", "bean", "tall", "wide"];
 const tops: AgentLook["top"][] = ["none", "antenna", "sprout", "ears"];
+export const randomAgentLook = (): AgentLook => ({
+  shape: shapes[Math.floor(Math.random() * shapes.length)]!,
+  color: (Object.keys(PIXELKIN_PALETTE) as AgentLook["color"][])[
+    Math.floor(Math.random() * Object.keys(PIXELKIN_PALETTE).length)
+  ]!,
+  top: tops[Math.floor(Math.random() * tops.length)]!
+});
 const topNames: Record<AgentLook["top"], string> = {
   none: "Nothing on top",
   antenna: "Antenna",
@@ -661,6 +668,7 @@ export type V1HistoryItem = {
   title: string;
   active?: boolean;
   onSelect: () => void;
+  onContextMenu?: () => void;
   action?: ReactNode;
 };
 export type V1HistoryGroup = {
@@ -852,6 +860,14 @@ export function V1Shell({
                   >
                     <button
                       type="button"
+                      onContextMenu={
+                        item.onContextMenu
+                          ? (event) => {
+                              event.preventDefault();
+                              item.onContextMenu?.();
+                            }
+                          : undefined
+                      }
                       onClick={() => {
                         item.onSelect();
                         setDrawer(false);

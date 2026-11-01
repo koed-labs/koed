@@ -155,9 +155,20 @@ export const createV1State = (input: {
           throw new Error(
             "V1 Conversation Session ID conflicts with acknowledged launch."
           );
+        if (
+          value.projectMembershipConfirmed &&
+          (!previous.presentationProjectId ||
+            !(value.capturedSessionId ?? previous.capturedSessionId))
+        )
+          throw new Error(
+            "Project membership requires a Project and captured Conversation."
+          );
         const intent: V1ConversationIntent = {
           ...previous,
           executionId: value.executionId,
+          ...(value.projectMembershipConfirmed
+            ? { projectMembershipConfirmed: true }
+            : {}),
           capturedSessionId:
             value.capturedSessionId ?? previous.capturedSessionId
         };

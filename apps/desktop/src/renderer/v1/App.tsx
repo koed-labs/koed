@@ -17,6 +17,7 @@ import type {
   V1Provenance
 } from "../../ipc/v1-state-protocol.js";
 import type { DesktopProject } from "../../project-memory-ui.js";
+import type { PersonalDesktopProjectThread } from "@koed/shared/personal-desktop";
 import {
   projectForLocalProject,
   sessionSelectionId
@@ -30,6 +31,7 @@ import {
 } from "../views/personal/ConversationSettings.js";
 import {
   appendManagedConversationUpdate,
+  managedConversationUpdatesSince,
   type ManagedConversationUpdateEnvelope
 } from "../state/managed-conversation-runtime.js";
 import { V1Settings, type V1SettingsTab } from "./settings.js";
@@ -40,11 +42,22 @@ import { createCollaborationRendererClient } from "../../collaboration/renderer-
 import { DesktopStatusStore } from "../services/desktop-commands.js";
 import { createRendererPlatform } from "../services/platform.js";
 import { PersonalMemoryStore } from "../state/personal-memory.js";
-import { useManagedConversationLifecycle } from "../state/use-managed-conversation-lifecycle.js";
+import {
+  useManagedConversationLifecycle,
+  type ManagedConversationDraft
+} from "../state/use-managed-conversation-lifecycle.js";
 import { ThemeStore } from "../state/theme.js";
 import { useDesktopStatus } from "../state/use-status.js";
 import { NewConversationComposer } from "../views/personal/NewConversationComposer.js";
 import { StoreConversation } from "../views/personal/PersonalMemoryViews.js";
+import { ConversationProjectsDialog } from "../views/personal/ConversationProjectsDialog.js";
+import {
+  acknowledgeLateV1Capture,
+  confirmV1ProjectMembership,
+  lateV1CaptureSessionId,
+  selectV1ExecutionTarget,
+  useV1ProjectMembershipReconciler
+} from "./project-flow.js";
 import {
   V1Onboarding,
   type OnboardingAgent,
@@ -169,6 +182,86 @@ export const selectV1History = (provenance: V1Provenance) =>
     Boolean(intent.executionId)
   );
 
+export const projectConversationRows = (
+  project: DesktopProject,
+  visibleSessionIds: ReadonlySet<string>
+): PersonalDesktopProjectThread[] =>
+  project.threads
+    .filter(
+      (thread) => !!thread.sessionId && visibleSessionIds.has(thread.sessionId)
+    )
+    .sort((left, right) => right.latestAt.localeCompare(left.latestAt));
+
+export const projectConversationSummary = (
+  thread: PersonalDesktopProjectThread
+) =>
+  thread.sample.trim().replace(/\s+/gu, " ").slice(0, 110) || "No messages yet";
+
+export const projectConversationTime = (iso: string, now = new Date()) => {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const today = date.toDateString() === now.toDateString();
+  if (today)
+    return date.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  return date.toDateString() === yesterday.toDateString()
+    ? "Yesterday"
+    : date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+};
+
+export const projectPageConversations = (
+  projectId: string,
+  captured: readonly PersonalDesktopProjectThread[],
+  intents: readonly V1ConversationIntent[],
+  drafts: ReadonlyMap<string, ManagedConversationDraft>
+) => {
+  const rows = captured.map((thread) => ({
+    key: thread.sessionId ?? thread.id,
+    executionId:
+      intents.find((intent) => intent.capturedSessionId === thread.sessionId)
+        ?.executionId ?? null,
+    title: thread.name || "Conversation",
+    summary: projectConversationSummary(thread),
+    latestAt: thread.latestAt,
+    pendingCapture: false,
+    pendingLabel: null as string | null
+  }));
+  for (const intent of intents) {
+    if (
+      intent.projectMembershipConfirmed ||
+      intent.presentationProjectId !== projectId ||
+      !intent.executionId ||
+      rows.some((row) => row.executionId === intent.executionId)
+    )
+      continue;
+    const draft = drafts.get(intent.executionId);
+    rows.push({
+      key: intent.executionId,
+      executionId: intent.executionId,
+      title: draft?.thread.name || "Conversation",
+      summary:
+        draft?.thread.sample.trim().replace(/\s+/gu, " ").slice(0, 110) ||
+        intent.initialPrompt?.prompt
+          ?.trim()
+          .replace(/\s+/gu, " ")
+          .slice(0, 110) ||
+        "Waiting for capture",
+      latestAt: draft?.thread.latestAt ?? intent.createdAt,
+      pendingCapture: !intent.capturedSessionId,
+      pendingLabel: intent.capturedSessionId
+        ? "Adding to Project"
+        : "Waiting for capture"
+    });
+  }
+  return rows.sort((left, right) =>
+    right.latestAt.localeCompare(left.latestAt)
+  );
+};
+
 export const shouldShowV1Onboarding = (
   profile: V1Profile,
   backendComplete: boolean
@@ -238,6 +331,8 @@ export function V1App({
   const [launchPending, setLaunchPending] = useState(false);
   const [composerGeneration, setComposerGeneration] = useState(0);
   const [newProjectBusy, setNewProjectBusy] = useState(false);
+  const [onboardingHeader, setOnboardingHeader] =
+    useState<HTMLDivElement | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null
   );
@@ -259,9 +354,13 @@ export function V1App({
     useState<DesktopProject | null>(null);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [membershipExecutionId, setMembershipExecutionId] = useState<
+    string | null
+  >(null);
   const [settingsTab, setSettingsTab] = useState<V1SettingsTab>("general");
   const [revision, setRevision] = useState(0);
   const attemptedReconcile = useRef(new Set<string>());
+  const attemptedCaptures = useRef(new Set<string>());
   const lastSelectedGeneration = useRef<number | null>(null);
   const selectedProjectIdRef = useRef<string | null>(null);
   selectedProjectIdRef.current = selectedProjectId;
@@ -373,9 +472,11 @@ export function V1App({
         if (!active || currentGeneration !== generation) return;
         if (scopeKey !== identity.scopeKey) {
           attemptedReconcile.current.clear();
+          attemptedCaptures.current.clear();
           setOwnerId(identity.ownerId);
           setScopeKey(identity.scopeKey);
           setProvenance(emptyProvenance);
+          setRealtime(null);
           setIndependentProject(null);
           setSelectedProjectId(null);
           setRoute({ kind: "home" });
@@ -552,15 +653,65 @@ export function V1App({
     [snapshot]
   );
   const projectForIntent = useCallback(
-    (intent: V1ConversationIntent) =>
-      projects.find((project) => project.id === intent.presentationProjectId) ??
-      (independentProject &&
-      [independentProject.id, independentProject.localProjectId].includes(
-        intent.projectId
+    (intent: V1ConversationIntent) => {
+      const executionFolderProject = snapshot?.inventory
+        ? [
+            projects.find(
+              (project) => project.id === intent.presentationProjectId
+            ),
+            ...projects
+          ]
+            .filter((project): project is DesktopProject => Boolean(project))
+            .find((project) =>
+              projectExecutionFolders(project, snapshot.inventory).some(
+                (folder) => folder.id === intent.projectId
+              )
+            )
+        : null;
+      return (
+        executionFolderProject ??
+        projectForLocalProject(projects, intent.projectId) ??
+        (independentProject &&
+        [independentProject.id, independentProject.localProjectId].includes(
+          intent.projectId
+        )
+          ? independentProject
+          : null)
+      );
+    },
+    [projects, snapshot?.inventory, independentProject]
+  );
+  const confirmProjectMembership = useCallback(
+    async (
+      intent: V1ConversationIntent,
+      executionId: string,
+      sessionId?: string
+    ) => {
+      if (
+        !intent.presentationProjectId ||
+        intent.projectMembershipConfirmed ||
+        !sessionId ||
+        !store ||
+        !personalMemoryApi?.manageProject
       )
-        ? independentProject
-        : null),
-    [projects, independentProject]
+        return;
+      await confirmV1ProjectMembership({
+        intent,
+        executionId,
+        sessionId,
+        scope: scopeKeyRef.current,
+        currentScope: () => scopeKeyRef.current,
+        loadProject: async (id) =>
+          (await store.loadProjects({ silent: true })).projectsById.get(id),
+        manageProject: personalMemoryApi.manageProject,
+        ack: (input) => v1State().ackConversation(input),
+        refresh: async () => {
+          await refreshProvenance();
+          await store.loadProjects({ silent: true });
+        }
+      });
+    },
+    [store, personalMemoryApi, refreshProvenance]
   );
   // A recorded intent is replayed with its original idempotency key after an uncertain response.
   useEffect(() => {
@@ -575,6 +726,7 @@ export function V1App({
     )
       return;
     let active = true;
+    const claimed = new Set<string>();
     const reconcile = async () => {
       setPendingIntentError(null);
       for (const intent of Object.values(provenance.projects)) {
@@ -583,6 +735,7 @@ export function V1App({
         const attemptKey = `project:${reconcileRevision}:${intent.requestId}`;
         if (attemptedReconcile.current.has(attemptKey)) continue;
         attemptedReconcile.current.add(attemptKey);
+        claimed.add(attemptKey);
         try {
           let projectId = intent.projectId;
           if (!projectId) {
@@ -631,11 +784,13 @@ export function V1App({
             setPendingIntentError(
               `Project ${intent.name} is pending: ${cause instanceof Error ? cause.message : String(cause)}`
             );
+        } finally {
+          claimed.delete(attemptKey);
         }
       }
       for (const intent of Object.values(provenance.conversations)) {
         if (!active) return;
-        const attemptKey = `conversation:${reconcileRevision}:${intent.idempotencyKey}`;
+        const attemptKey = `conversation:${reconcileRevision}:${intent.idempotencyKey}:${intent.capturedSessionId ?? "pending"}`;
         if (attemptedReconcile.current.has(attemptKey)) continue;
         const project = projectForIntent(intent);
         if (!project) {
@@ -646,6 +801,7 @@ export function V1App({
           continue;
         }
         attemptedReconcile.current.add(attemptKey);
+        claimed.add(attemptKey);
         try {
           const result = intent.executionId
             ? await managedConversations.inspect(intent.executionId)
@@ -689,12 +845,15 @@ export function V1App({
             setPendingIntentError(
               `Conversation launch is pending: ${cause instanceof Error ? cause.message : String(cause)}`
             );
+        } finally {
+          claimed.delete(attemptKey);
         }
       }
     };
     void reconcile();
     return () => {
       active = false;
+      for (const key of claimed) attemptedReconcile.current.delete(key);
     };
   }, [
     scopeKey,
@@ -710,6 +869,72 @@ export function V1App({
     status?.api.state,
     profile?.onboarding.completed
   ]);
+
+  // Membership is keyed to durable capture identity. Keep it independent of
+  // the launch inspection pass, whose cleanup can be triggered by store loads.
+  useV1ProjectMembershipReconciler({
+    enabled:
+      status?.api.state === "healthy" &&
+      Boolean(
+        profile?.onboarding.completed &&
+        store &&
+        personalMemoryApi?.manageProject
+      ),
+    scopeKey,
+    intents: Object.values(provenance.conversations),
+    retryRevision: reconcileRevision,
+    currentScope: () => scopeKeyRef.current,
+    confirm: (intent) =>
+      confirmProjectMembership(
+        intent,
+        intent.executionId!,
+        intent.capturedSessionId
+      ),
+    onError: (cause) =>
+      setPendingIntentError(
+        `Project membership is pending: ${cause instanceof Error ? cause.message : String(cause)}`
+      )
+  });
+
+  // The captured session may arrive after start/inspect returned. Recording its
+  // runtime ID prompts the normal intent pass to confirm Project membership.
+  useEffect(() => {
+    if (!scopeKey) return;
+    const latestByExecution = new Map<string, string>();
+    for (const entry of realtime
+      ? managedConversationUpdatesSince(realtime, 0).updates
+      : []) {
+      const execution = entry.update.execution;
+      if (execution.sessionId)
+        latestByExecution.set(execution.id, execution.sessionId);
+    }
+    for (const intent of Object.values(provenance.conversations)) {
+      if (!intent.executionId) continue;
+      const sessionId = lateV1CaptureSessionId(
+        intent,
+        latestByExecution.get(intent.executionId),
+        lifecycle.drafts.get(intent.executionId)?.conversation.capturedSessionId
+      );
+      if (!sessionId) continue;
+      const key = `${scopeKey}:${intent.executionId}:${sessionId}`;
+      if (attemptedCaptures.current.has(key)) continue;
+      attemptedCaptures.current.add(key);
+      void acknowledgeLateV1Capture({
+        intent,
+        sessionId,
+        scope: scopeKey,
+        currentScope: () => scopeKeyRef.current,
+        ack: (input) => v1State().ackConversation(input),
+        refresh: refreshProvenance
+      }).catch((cause) => {
+        attemptedCaptures.current.delete(key);
+        if (scopeKeyRef.current === scopeKey)
+          setPendingIntentError(
+            `Conversation capture is pending: ${cause instanceof Error ? cause.message : String(cause)}`
+          );
+      });
+    }
+  }, [scopeKey, realtime, provenance, lifecycle.drafts, refreshProvenance]);
 
   const v1ManagedConversations = useMemo<ManagedConversationDesktopApi | null>(
     () =>
@@ -797,10 +1022,15 @@ export function V1App({
     activeProject && selectedProjectId && snapshot
       ? projectExecutionFolders(activeProject, snapshot.inventory)
       : [];
-  const selectedFolder =
-    folders.find(
-      (folder) => folder.id === folderChoices[selectedProjectId ?? ""]
-    ) ?? (folders.length === 1 ? folders[0] : null);
+  // Reuse main’s independent execution Folder for a named Project with no Folder.
+  const { selectedFolder, executionProject, executionProjectId } =
+    selectV1ExecutionTarget({
+      selectedProjectId,
+      folders,
+      selectedFolderId: folderChoices[selectedProjectId ?? ""],
+      activeProject,
+      independentProject
+    });
   const selectedExecution =
     route.kind === "conversation" ? route.executionId : undefined;
   const selectedIntent = Object.values(provenance.conversations).find(
@@ -823,6 +1053,38 @@ export function V1App({
         selectedDraft?.thread ??
         null)
       : null;
+  const routeProject =
+    route.kind === "project"
+      ? (visibleProjects.find((project) => project.id === route.projectId) ??
+        null)
+      : null;
+  const projectRows = routeProject
+    ? projectPageConversations(
+        routeProject.id,
+        projectConversationRows(routeProject, visibleSessionIds),
+        Object.values(provenance.conversations),
+        lifecycle.drafts
+      )
+    : [];
+  const membershipIntent = Object.values(provenance.conversations).find(
+    (intent) => intent.executionId === membershipExecutionId
+  );
+  const membershipThread = membershipIntent
+    ? (projectForIntent(membershipIntent)?.threads.find(
+        (thread) => thread.sessionId === membershipIntent.capturedSessionId
+      ) ??
+      (membershipIntent.capturedSessionId && membershipIntent.executionId
+        ? (() => {
+            const draft = lifecycle.drafts.get(membershipIntent.executionId!);
+            return draft
+              ? {
+                  ...draft.thread,
+                  sessionId: membershipIntent.capturedSessionId!
+                }
+              : null;
+          })()
+        : null))
+    : null;
   const groups: V1HistoryGroup[] = [
     {
       id: "conversations",
@@ -836,6 +1098,12 @@ export function V1App({
           const captured = project?.threads.find(
             (thread) => thread.sessionId === intent.capturedSessionId
           );
+          const canReviewMembership = Boolean(
+            intent.capturedSessionId &&
+            (captured || draft) &&
+            personalMemoryApi?.manageProject &&
+            store
+          );
           return {
             id: intent.executionId!,
             title: captured?.name || draft?.thread.name || "New Conversation",
@@ -846,7 +1114,35 @@ export function V1App({
               setRoute({
                 kind: "conversation",
                 executionId: intent.executionId
-              })
+              }),
+            ...(canReviewMembership
+              ? {
+                  onContextMenu: () =>
+                    setMembershipExecutionId(intent.executionId!)
+                }
+              : {}),
+            ...(personalMemoryApi?.manageProject && store
+              ? {
+                  action: (
+                    <button
+                      type="button"
+                      className="v1-history-membership"
+                      aria-label={`Projects for ${captured?.name || draft?.thread.name || "Conversation"}`}
+                      title={
+                        canReviewMembership
+                          ? "Projects for this Conversation"
+                          : "Available after capture"
+                      }
+                      disabled={!canReviewMembership}
+                      onClick={() =>
+                        setMembershipExecutionId(intent.executionId!)
+                      }
+                    >
+                      ⋯
+                    </button>
+                  )
+                }
+              : {})
           };
         })
     },
@@ -866,6 +1162,27 @@ export function V1App({
         }))
     }
   ];
+  const chooseProjectFolder = async () => {
+    setNewProjectBusy(true);
+    setError(null);
+    try {
+      const selected = await platform.selectProjectDirectory();
+      if (!selected) return;
+      const fresh = await store?.loadProjects({ silent: true });
+      const folder = fresh?.inventory.localFolders.find(
+        (item) =>
+          item.normalizedPath ===
+          (selected.path.projectRoot ?? selected.path.cwd)
+      );
+      if (!folder)
+        throw new Error("The selected Folder is still loading. Try again.");
+      setNewProjectFolderPath(folder.normalizedPath);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setNewProjectBusy(false);
+    }
+  };
   const createProject = async () => {
     const name = newProjectName.trim();
     if (!name || !personalMemoryApi?.createProject || newProjectBusy) return;
@@ -1001,15 +1318,9 @@ export function V1App({
         key={composerGeneration}
         onPendingChange={setLaunchPending}
         api={v1ManagedConversations}
-        projectId={
-          selectedProjectId
-            ? (selectedFolder?.id ?? null)
-            : (activeProject?.localProjectId ?? activeProject?.id ?? null)
-        }
-        projectRoot={selectedProjectId ? (selectedFolder?.path ?? null) : null}
-        commandProjectId={
-          selectedProjectId ? (selectedFolder?.id ?? null) : null
-        }
+        projectId={executionProjectId}
+        projectRoot={selectedFolder?.path ?? null}
+        commandProjectId={selectedFolder?.id ?? null}
         folderPicker={{
           folders,
           selectedId: selectedFolder?.id ?? null,
@@ -1024,14 +1335,14 @@ export function V1App({
             ? {}
             : { disabledReason: "Chat uses its own Folder." })
         }}
-        contextKind={selectedProjectId ? "project" : "independent"}
+        contextKind={selectedFolder ? "project" : "independent"}
         options={launchOptions}
         selection={selection}
         onChange={setSelection}
         requirePrompt
         showContextHelp={false}
         onStarted={(conversation, status, launch, initialPrompt) => {
-          const project = activeProject;
+          const project = executionProject;
           if (!project) return;
           const routeId = lifecycle.started(
             project,
@@ -1070,8 +1381,15 @@ export function V1App({
     );
   if (shouldShowV1Onboarding(profile, onboardingComplete))
     return (
-      <V1Shell title="Getting started" groups={[]} accountLabel="Koed">
+      <V1Shell
+        title={
+          <div className="v1-onboarding-header" ref={setOnboardingHeader} />
+        }
+        groups={[]}
+        accountLabel="Koed"
+      >
         <V1Onboarding
+          headerTarget={onboardingHeader}
           savedAgent={{
             name: profile.agentName ?? "",
             look: parseLook(profile.agentLook)
@@ -1206,42 +1524,132 @@ export function V1App({
               {route.kind === "project" && (
                 <V1ThreadLayout composer={launchComposer}>
                   <section className="v1-project-page">
-                    <h2>
-                      {visibleProjects.find(
-                        (project) => project.id === route.projectId
-                      )?.name ?? "Project"}
-                    </h2>
-                    <p>
-                      {folders.length
-                        ? `${folders.length} local Folder${folders.length === 1 ? "" : "s"}`
-                        : "No local Folder is attached yet."}
-                    </p>
-                    <ul>
-                      {folders.map((folder) => (
-                        <li key={folder.id}>{folder.path}</li>
-                      ))}
-                    </ul>
-                    {Object.values(provenance.conversations)
-                      .filter(
-                        (intent) =>
-                          intent.presentationProjectId === route.projectId &&
-                          intent.executionId
-                      )
-                      .map((intent) => (
-                        <button
-                          key={intent.idempotencyKey}
-                          type="button"
-                          onClick={() =>
-                            setRoute({
-                              kind: "conversation",
-                              executionId: intent.executionId
-                            })
-                          }
-                        >
-                          {lifecycle.drafts.get(intent.executionId!)?.thread
-                            .name ?? "Conversation"}
-                        </button>
-                      ))}
+                    <header className="v1-project-header">
+                      <span className="v1-project-monogram" aria-hidden="true">
+                        {routeProject?.name.charAt(0).toUpperCase() || "P"}
+                      </span>
+                      <div>
+                        <h1>{routeProject?.name ?? "Project"}</h1>
+                        <p>
+                          {folders.length
+                            ? folders.map((folder) => folder.path).join(" · ")
+                            : "No folder · chats and memory only"}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className="v1-project-new-chat"
+                        onClick={() => {
+                          setSelectedProjectId(route.projectId ?? null);
+                          setLaunchPending(false);
+                          setComposerGeneration((value) => value + 1);
+                          setRoute({ kind: "home" });
+                        }}
+                      >
+                        New chat
+                      </button>
+                    </header>
+                    <button
+                      type="button"
+                      className="v1-project-count"
+                      onClick={() =>
+                        document
+                          .getElementById("v1-project-chats")
+                          ?.scrollIntoView({ block: "nearest" })
+                      }
+                    >
+                      <b>{projectRows.length}</b>{" "}
+                      {projectRows.length === 1 ? "chat" : "chats"}
+                    </button>
+                    <section
+                      className="v1-project-section"
+                      id="v1-project-chats"
+                    >
+                      <h2>
+                        Chats <span>{projectRows.length}</span>
+                      </h2>
+                      {projectRows.length ? (
+                        projectRows.map((thread) => {
+                          return (
+                            <button
+                              className="v1-project-chat"
+                              type="button"
+                              key={thread.key}
+                              onClick={() =>
+                                thread.executionId &&
+                                setRoute({
+                                  kind: "conversation",
+                                  executionId: thread.executionId
+                                })
+                              }
+                            >
+                              <span
+                                className="v1-project-chat-avatar"
+                                aria-hidden="true"
+                              >
+                                {agent.name.charAt(0).toUpperCase()}
+                              </span>
+                              <span className="v1-project-chat-copy">
+                                <b>{thread.title}</b>
+                                <small>{thread.summary}</small>
+                                {thread.pendingLabel && (
+                                  <small>{thread.pendingLabel}</small>
+                                )}
+                              </span>
+                              <time dateTime={thread.latestAt}>
+                                {projectConversationTime(thread.latestAt)}
+                              </time>
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <p className="v1-project-empty">
+                          No chats in {routeProject?.name ?? "this Project"}{" "}
+                          yet. Start one and {agent.name} will use what Koed
+                          remembers about this Project.
+                        </p>
+                      )}
+                    </section>
+                    <section className="v1-project-section">
+                      <h2>Folder</h2>
+                      {folders.length ? (
+                        folders.map((folder) => {
+                          const native =
+                            snapshot?.inventory.localCheckouts.find(
+                              (item) =>
+                                item.path.cwd === folder.path ||
+                                item.path.projectRoot === folder.path
+                            );
+                          return (
+                            <div className="v1-project-folder" key={folder.id}>
+                              <code>{folder.path}</code>
+                              {native && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    void platform
+                                      .revealLocalProject(native.localProjectId)
+                                      .catch((cause) =>
+                                        setError(
+                                          cause instanceof Error
+                                            ? cause.message
+                                            : String(cause)
+                                        )
+                                      )
+                                  }
+                                >
+                                  Show in Finder
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="v1-project-folder">
+                          <span>No folder linked</span>
+                        </div>
+                      )}
+                    </section>
                     {!folders.length &&
                     snapshot?.inventory.localFolders.length ? (
                       <label>
@@ -1296,6 +1704,10 @@ export function V1App({
                         </select>
                       </label>
                     ) : null}
+                    <p className="v1-project-note">
+                      Chats in this Project can use its memory. Use a chat’s
+                      sidebar menu to review which Projects include it.
+                    </p>
                   </section>
                 </V1ThreadLayout>
               )}
@@ -1312,6 +1724,10 @@ export function V1App({
           {newProjectOpen && (
             <div role="dialog" aria-label="Create Project" className="v1-modal">
               <h2>New Project</h2>
+              <p>
+                A place for related chats and memory. Add a folder if you want
+                your agent to work with local files.
+              </p>
               <input
                 aria-label="Project name"
                 value={newProjectName}
@@ -1320,25 +1736,26 @@ export function V1App({
                   if (event.key === "Enter") void createProject();
                 }}
               />
-              <label>
-                Folder (optional)
-                <select
-                  value={newProjectFolderPath}
-                  onChange={(event) =>
-                    setNewProjectFolderPath(event.target.value)
-                  }
+              <div className="v1-project-folder-choice">
+                <span>Folder (optional)</span>
+                <code>{newProjectFolderPath || "No folder linked"}</code>
+                <button
+                  type="button"
+                  disabled={newProjectBusy}
+                  onClick={() => void chooseProjectFolder()}
                 >
-                  <option value="">Add later</option>
-                  {snapshot?.inventory.localFolders.map((folder) => (
-                    <option
-                      key={folder.normalizedPath}
-                      value={folder.normalizedPath}
-                    >
-                      {folder.normalizedPath}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  {newProjectFolderPath ? "Change" : "Choose folder"}
+                </button>
+                {newProjectFolderPath && (
+                  <button
+                    type="button"
+                    disabled={newProjectBusy}
+                    onClick={() => setNewProjectFolderPath("")}
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
               <button
                 type="button"
                 disabled={newProjectBusy || !newProjectName.trim()}
@@ -1354,6 +1771,20 @@ export function V1App({
                 Cancel
               </button>
             </div>
+          )}
+          {membershipThread && personalMemoryApi?.manageProject && store && (
+            <ConversationProjectsDialog
+              thread={membershipThread}
+              projects={visibleProjects.filter(
+                (project) => project.namedProject
+              )}
+              manage={personalMemoryApi.manageProject}
+              store={store}
+              open={Boolean(membershipExecutionId)}
+              onOpenChange={(open) => {
+                if (!open) setMembershipExecutionId(null);
+              }}
+            />
           )}
           {memoryOpen && personalMemoryApi && (
             <V1MemoryPanel

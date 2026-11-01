@@ -520,9 +520,102 @@
 .v1-conversation-defaults .v1-settings-primary {
   margin-top: 4px;
 }
+.v1-service-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.v1-model-card {
+  border: 1px solid var(--v1-hairline);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.v1-model-card-selected {
+  border-color: var(--v1-accent);
+}
+.v1-model-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--v1-hairline);
+}
+.v1-model-heading span {
+  color: var(--v1-muted);
+  font-size: 11px;
+}
+.v1-model-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+}
+.v1-model-reasoning {
+  display: grid;
+  grid-template-columns: 115px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  color: var(--v1-muted);
+  font-size: 13px;
+}
+.v1-model-reasoning > div {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.v1-model-reasoning button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--v1-hairline);
+  border-radius: 9px;
+  padding: 7px 9px;
+  background: var(--v1-surface-hover);
+  color: var(--v1-fg);
+  cursor: pointer;
+  font: inherit;
+}
+.v1-model-reasoning button[aria-pressed="true"] {
+  border-color: var(--v1-accent);
+  background: var(--v1-card);
+}
+.v1-model-reasoning button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.v1-reasoning-bars {
+  display: flex;
+  align-items: end;
+  height: 13px;
+  gap: 2px;
+}
+.v1-reasoning-bars i {
+  display: block;
+  width: 4px;
+  height: 5px;
+  border-radius: 1px;
+  background: var(--v1-muted);
+}
+.v1-reasoning-bars i:nth-child(2) {
+  height: 8px;
+}
+.v1-reasoning-bars i:nth-child(3) {
+  height: 11px;
+}
+.v1-reasoning-bars i:nth-child(4) {
+  height: 13px;
+}
+.v1-model-reasoning button[aria-pressed="true"] i {
+  background: var(--v1-accent);
+}
 @media (max-width: 560px) {
   .v1-conversation-defaults label {
     grid-template-columns: minmax(0, 1fr);
     gap: 4px;
+  }
+  .v1-model-reasoning {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
   }
 }

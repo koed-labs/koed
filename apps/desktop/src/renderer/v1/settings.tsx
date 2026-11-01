@@ -40,7 +40,7 @@ export type V1SettingsProps = {
   initialTab?: V1SettingsTab;
   onRestartOnboarding?: () => Promise<void> | void;
   launchAtStartup?: DesktopApi["launchAtStartup"];
-  hardwareAcceleration?: DesktopApi["hardwareAcceleration"];
+  presentationPreferences?: DesktopApi["presentationPreferences"];
   localAiClients?: DesktopApi["localAiClients"];
 };
 type ClientId = "codex" | "claude" | "pi";
@@ -205,14 +205,14 @@ function LaunchSetting({ api }: { api?: DesktopApi["launchAtStartup"] }) {
     </SettingRow>
   );
 }
-function HardwareSetting({
+function PresentationSettings({
   api
 }: {
-  api?: DesktopApi["hardwareAcceleration"];
+  api?: DesktopApi["presentationPreferences"];
 }) {
   const [state, setState] = useState<{
-    enabled: boolean;
-    managedByEnvironment: boolean;
+    graphicsAcceleration: boolean;
+    showMenuBar: boolean;
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -225,43 +225,58 @@ function HardwareSetting({
         if (active) setState(value);
       })
       .catch(() => {
-        if (active) setError("Hardware acceleration could not be read.");
+        if (active) setError("Window settings could not be read.");
       });
     return () => {
       active = false;
     };
   }, [api]);
   if (!api) return null;
-  const change = async (enabled: boolean) => {
+  const change = async (
+    key: "graphicsAcceleration" | "showMenuBar",
+    enabled: boolean
+  ) => {
+    if (!state) return;
     setBusy(true);
     setError(null);
     try {
-      setState(await api.set(enabled));
+      setState(await api.set({ ...state, [key]: enabled }));
     } catch {
-      setError("Hardware acceleration could not be changed.");
+      setError("Window settings could not be changed.");
     } finally {
       setBusy(false);
     }
   };
   return (
-    <SettingRow
-      title="Graphics acceleration"
-      description={
-        state?.managedByEnvironment
-          ? "This setting is managed by the Operator environment."
-          : "Uses your GPU for local inference. Restarts local services."
-      }
-    >
-      <div className="v1-settings-toggle-wrap">
+    <>
+      <SettingRow
+        title="Show Koed in the menu bar"
+        description="New chat, status and Quit, one click away."
+      >
+        <V1Switch
+          label="Show Koed in the menu bar"
+          checked={state?.showMenuBar ?? false}
+          disabled={!state || busy}
+          onChange={(value) => void change("showMenuBar", value)}
+        />
+      </SettingRow>
+      <SettingRow
+        title="Graphics acceleration"
+        description="Turn off if the window flickers. Takes effect after a restart."
+      >
         <V1Switch
           label="Graphics acceleration"
-          checked={state?.enabled ?? false}
-          disabled={!state || state.managedByEnvironment || busy}
-          onChange={(value) => void change(value)}
+          checked={state?.graphicsAcceleration ?? false}
+          disabled={!state || busy}
+          onChange={(value) => void change("graphicsAcceleration", value)}
         />
-        {error && <small role="alert">{error}</small>}
-      </div>
-    </SettingRow>
+      </SettingRow>
+      {error && (
+        <p className="v1-settings-error" role="alert">
+          {error}
+        </p>
+      )}
+    </>
   );
 }
 function ConversationDefaults({ api }: { api?: DesktopApi["localAiClients"] }) {
@@ -312,7 +327,6 @@ function ConversationDefaults({ api }: { api?: DesktopApi["localAiClients"] }) {
         instance.instanceId === draft.ai_client_instance_id &&
         modelMatches(candidate, draft.model)
     );
-  const efforts = chosen?.candidate.reasoningEfforts ?? [];
   const unavailable =
     model?.defaults.conversations.persistable === false &&
     !model?.settings.some((item) => item.flowKey === "conversations");
@@ -330,100 +344,147 @@ function ConversationDefaults({ api }: { api?: DesktopApi["localAiClients"] }) {
       setBusy(false);
     }
   };
+  const selectModel = (
+    instance: LocalAiClientReadModel["instances"][number],
+    candidate: (typeof choices)[number]["candidate"]
+  ) => {
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            provider: instance.driverId,
+            ai_client_instance_id: instance.instanceId,
+            model: candidate.id,
+            reasoning_effort: candidate.reasoningEfforts.includes(
+              current.reasoning_effort
+            )
+              ? current.reasoning_effort
+              : (candidate.reasoningEfforts[0] ?? "none")
+          }
+        : current
+    );
+  };
   return (
     <div className="v1-conversation-defaults">
-      <h4>New conversations</h4>
+      <h4>New Conversations</h4>
       <p>
-        Choose the default AI Client, model, and reasoning for new
-        Conversations.
+        Koed has one default AI Client, model and reasoning level for new
+        Conversations. You can change these in each Conversation.
       </p>
-      {model && draft && !unavailable ? (
-        <>
-          <label>
-            Default model
-            <select
-              aria-label="Default conversation model"
-              disabled={busy || !choices.length}
-              value={
-                chosen
-                  ? `${chosen.instance.instanceId}\u0000${chosen.candidate.id}`
-                  : ""
-              }
-              onChange={(event) => {
-                const choice = choices.find(
-                  ({ instance, candidate }) =>
-                    `${instance.instanceId}\u0000${candidate.id}` ===
-                    event.target.value
-                );
-                if (!choice) return;
-                const nextEfforts = choice.candidate.reasoningEfforts;
-                setDraft((current) =>
-                  current
-                    ? {
-                        ...current,
-                        provider: choice.instance.driverId,
-                        ai_client_instance_id: choice.instance.instanceId,
-                        model: choice.candidate.id,
-                        reasoning_effort: nextEfforts.includes(
-                          current.reasoning_effort
-                        )
-                          ? current.reasoning_effort
-                          : (nextEfforts[0] ?? "none")
-                      }
-                    : current
-                );
-              }}
-            >
-              <option value="" disabled>
-                Choose model
-              </option>
-              {choices.map(({ instance, candidate }) => (
-                <option
-                  key={`${instance.instanceId}:${candidate.id}`}
-                  value={`${instance.instanceId}\u0000${candidate.id}`}
-                >
-                  {instance.displayName} ·{" "}
-                  {candidate.displayName ?? candidate.id}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Reasoning
-            <select
-              aria-label="Default conversation reasoning"
-              disabled={busy || !chosen || !efforts.length}
-              value={draft.reasoning_effort}
-              onChange={(event) =>
-                setDraft((current) =>
-                  current
-                    ? { ...current, reasoning_effort: event.target.value }
-                    : current
+      {model && draft && !unavailable && choices.length ? (
+        model.instances
+          .filter((instance) =>
+            choices.some(
+              (choice) => choice.instance.instanceId === instance.instanceId
+            )
+          )
+          .map((instance) => {
+            const available = choices.filter(
+              (choice) => choice.instance.instanceId === instance.instanceId
+            );
+            const selected =
+              draft.ai_client_instance_id === instance.instanceId;
+            const selectedModel = selected
+              ? available.find(({ candidate }) =>
+                  modelMatches(candidate, draft.model)
                 )
-              }
-            >
-              {efforts.length ? (
-                efforts.map((effort) => (
-                  <option key={effort} value={effort}>
-                    {effort === "xhigh"
-                      ? "Extra high"
-                      : effort.charAt(0).toUpperCase() + effort.slice(1)}
-                  </option>
-                ))
-              ) : (
-                <option value="none">Default</option>
-              )}
-            </select>
-          </label>
-          <button
-            type="button"
-            className="v1-settings-primary"
-            disabled={busy || !chosen}
-            onClick={() => void save()}
-          >
-            {busy ? "Saving…" : "Save default"}
-          </button>
-        </>
+              : undefined;
+            const availableEfforts =
+              selectedModel?.candidate.reasoningEfforts ?? [];
+            return (
+              <div
+                className={`v1-model-card${selected ? " v1-model-card-selected" : ""}`}
+                key={instance.instanceId}
+              >
+                <div className="v1-model-heading">
+                  <b>{instance.displayName}</b>
+                  {selected && <span>Selected for new Conversations</span>}
+                </div>
+                <div className="v1-model-controls">
+                  <label>
+                    Model
+                    <select
+                      aria-label={`${instance.displayName} model`}
+                      disabled={busy}
+                      value={selectedModel?.candidate.id ?? ""}
+                      onChange={(event) => {
+                        const choice = available.find(
+                          ({ candidate }) => candidate.id === event.target.value
+                        );
+                        if (choice) selectModel(instance, choice.candidate);
+                      }}
+                    >
+                      <option value="" disabled>
+                        Choose model
+                      </option>
+                      {available.map(({ candidate }) => (
+                        <option key={candidate.id} value={candidate.id}>
+                          {candidate.displayName ?? candidate.id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {selectedModel && (
+                    <div className="v1-model-reasoning">
+                      <span>Reasoning</span>
+                      <div
+                        role="group"
+                        aria-label={`${instance.displayName} reasoning`}
+                      >
+                        {availableEfforts.map((effort, index) => (
+                          <button
+                            key={effort}
+                            type="button"
+                            aria-label={
+                              effort === "xhigh"
+                                ? "Extra high"
+                                : effort.charAt(0).toUpperCase() +
+                                  effort.slice(1)
+                            }
+                            aria-pressed={draft.reasoning_effort === effort}
+                            disabled={busy}
+                            onClick={() =>
+                              setDraft((current) =>
+                                current
+                                  ? { ...current, reasoning_effort: effort }
+                                  : current
+                              )
+                            }
+                            title={effort === "xhigh" ? "Extra high" : effort}
+                          >
+                            <span
+                              className="v1-reasoning-bars"
+                              aria-hidden="true"
+                            >
+                              {Array.from({ length: index + 1 }, (_, bar) => (
+                                <i key={bar} />
+                              ))}
+                            </span>
+                            <span>
+                              {effort === "xhigh"
+                                ? "Extra high"
+                                : effort.charAt(0).toUpperCase() +
+                                  effort.slice(1)}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {selected && (
+                    <button
+                      type="button"
+                      className="v1-settings-primary"
+                      disabled={busy || !chosen}
+                      onClick={() => void save()}
+                    >
+                      {busy ? "Saving…" : "Save default"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })
       ) : (
         <p>
           {unavailable
@@ -439,6 +500,7 @@ function ConversationDefaults({ api }: { api?: DesktopApi["localAiClients"] }) {
     </div>
   );
 }
+
 export function V1Settings({
   agent,
   onSaveAgent,
@@ -448,7 +510,7 @@ export function V1Settings({
   initialTab = "general",
   onRestartOnboarding,
   launchAtStartup = window.koedDesktop?.launchAtStartup,
-  hardwareAcceleration = window.koedDesktop?.hardwareAcceleration,
+  presentationPreferences = window.koedDesktop?.presentationPreferences,
   localAiClients = window.koedDesktop?.localAiClients
 }: V1SettingsProps) {
   const [tab, setTab] = useState<V1SettingsTab>(initialTab);
@@ -461,6 +523,9 @@ export function V1Settings({
   const [themeBusy, setThemeBusy] = useState(false);
   const [restartBusy, setRestartBusy] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
+  const [serviceBusy, setServiceBusy] = useState<string | null>(null);
+  const [serviceError, setServiceError] = useState<string | null>(null);
+  const [serviceNotice, setServiceNotice] = useState<string | null>(null);
   const snapshot = useDesktopStatus(statusStore);
   const theme = useSyncExternalStore(
     themeStore.subscribe,
@@ -549,6 +614,71 @@ export function V1Settings({
       setActionError(errorText(cause));
     }
   };
+  const runService = async (
+    action: "start" | "restart" | "open_logs" | "diagnostics"
+  ) => {
+    if (serviceBusy || snapshot.busyCommand) return;
+    setServiceBusy(action);
+    setServiceError(null);
+    setServiceNotice(null);
+    try {
+      if (action === "restart") {
+        const stopped = await window.koedDesktop?.invoke<{
+          ok?: boolean;
+          message?: string;
+          error?: string;
+        }>("stop");
+        if (!stopped || stopped.ok === false)
+          throw new Error(
+            stopped?.message ?? stopped?.error ?? "Koed could not stop."
+          );
+      }
+      if (action === "start" || action === "restart") {
+        const started = await statusStore.run<{
+          ok?: boolean;
+          message?: string;
+          error?: string;
+        }>("start");
+        if (started?.ok === false)
+          throw new Error(
+            started.message ?? started.error ?? "Koed could not start."
+          );
+      } else if (action === "open_logs") {
+        const opened = await statusStore.run<{ ok?: boolean; error?: string }>(
+          "open_logs"
+        );
+        if (opened?.ok === false)
+          throw new Error(opened.error ?? "Logs could not be opened.");
+      } else {
+        const clipboard = window.koedDesktop?.clipboard;
+        if (!clipboard) throw new Error("Clipboard is unavailable.");
+        const current = statusStore.current();
+        const state = current.status;
+        if (!state) throw new Error("Service status is unavailable.");
+        const component = (value?: ComponentStatus | null) =>
+          value ? { state: value.state } : null;
+        const report = {
+          generatedAt: state?.generatedAt ?? null,
+          components: {
+            api: component(state?.api),
+            database: component(state?.database),
+            localAiRuntime: component(state?.localAiRuntime),
+            captureHook: component(state?.captureHook),
+            embeddingService: component(state?.embeddingService),
+            lcmSummaryService: component(state?.lcmSummaryService)
+          }
+        };
+        await clipboard.writeText(JSON.stringify(report, null, 2));
+        setServiceNotice("Diagnostics copied.");
+      }
+      if (action === "start" || action === "restart")
+        await statusStore.refresh();
+    } catch (cause) {
+      setServiceError(errorText(cause));
+    } finally {
+      setServiceBusy(null);
+    }
+  };
   const status = snapshot.status;
   return (
     <div
@@ -608,7 +738,7 @@ export function V1Settings({
                   </div>
                 </SettingRow>
                 <LaunchSetting api={launchAtStartup} />
-                <HardwareSetting api={hardwareAcceleration} />
+                <PresentationSettings api={presentationPreferences} />
                 {onRestartOnboarding && (
                   <SettingRow
                     title="Setup"
@@ -817,6 +947,16 @@ export function V1Settings({
                   {snapshot.error}
                 </p>
               )}
+              {serviceError && (
+                <p className="v1-settings-error" role="alert">
+                  {serviceError}
+                </p>
+              )}
+              {serviceNotice && (
+                <p className="v1-settings-caption" role="status">
+                  {serviceNotice}
+                </p>
+              )}
               <div className="v1-settings-group">
                 <ServiceRow
                   title="Local control plane"
@@ -839,6 +979,44 @@ export function V1Settings({
                   title="LCM summary service"
                   component={status?.lcmSummaryService}
                 />
+              </div>
+              <div className="v1-service-actions">
+                <button
+                  type="button"
+                  className="v1-settings-primary"
+                  disabled={!!serviceBusy || !!snapshot.busyCommand}
+                  onClick={() =>
+                    void runService(
+                      status?.api?.state === "healthy" ? "restart" : "start"
+                    )
+                  }
+                >
+                  {serviceBusy === "start"
+                    ? "Starting…"
+                    : serviceBusy === "restart"
+                      ? "Restarting…"
+                      : status?.api?.state === "healthy"
+                        ? "Restart Koed"
+                        : "Start Koed"}
+                </button>
+                <button
+                  type="button"
+                  className="v1-settings-secondary"
+                  disabled={!!serviceBusy || !!snapshot.busyCommand}
+                  onClick={() => void runService("open_logs")}
+                >
+                  {serviceBusy === "open_logs" ? "Opening…" : "Open logs"}
+                </button>
+                <button
+                  type="button"
+                  className="v1-settings-secondary"
+                  disabled={!!serviceBusy || !!snapshot.busyCommand}
+                  onClick={() => void runService("diagnostics")}
+                >
+                  {serviceBusy === "diagnostics"
+                    ? "Copying…"
+                    : "Copy diagnostics"}
+                </button>
               </div>
               <button
                 type="button"

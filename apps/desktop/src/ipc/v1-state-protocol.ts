@@ -53,6 +53,7 @@ export const v1ConversationIntentSchema = z
       ),
     projectId: id,
     presentationProjectId: uuid.optional(),
+    projectMembershipConfirmed: z.boolean().optional(),
     contextKind: z.enum(["project", "independent"]).optional(),
     aiClientDriverId: z.enum(["codex", "claude", "pi"]),
     aiClientInstanceId: id,
@@ -108,7 +109,8 @@ export const v1StateRequestSchema = z.discriminatedUnion("operation", [
       operation: z.literal("conversation_ack"),
       idempotencyKey: v1ConversationIntentSchema.shape.idempotencyKey,
       executionId: uuid,
-      capturedSessionId: uuid.optional()
+      capturedSessionId: uuid.optional(),
+      projectMembershipConfirmed: z.literal(true).optional()
     })
     .strict(),
   z
@@ -212,6 +214,7 @@ export interface V1StateDesktopApi {
     idempotencyKey: string;
     executionId: string;
     capturedSessionId?: string;
+    projectMembershipConfirmed?: true;
   }): Promise<V1ConversationIntent>;
   putProjectIntent(intent: V1ProjectIntent): Promise<V1ProjectIntent>;
   ackProjectFolder(requestId: string): Promise<V1ProjectIntent>;

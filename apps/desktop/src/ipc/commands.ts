@@ -1,3 +1,8 @@
+import {
+  presentationPreferencesGetChannel,
+  presentationPreferencesSetChannel
+} from "./protocol.js";
+import type { PresentationPreferences } from "../window/presentation-preferences.js";
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
   v1StateChannel,
@@ -178,6 +183,10 @@ export const registerDesktopCommandHandlers = (
     setLaunchAtStartup: (
       enabled: boolean
     ) => Promise<DesktopLaunchAtStartupState>;
+    getPresentationPreferences?: () => PresentationPreferences;
+    setPresentationPreferences?: (
+      value: PresentationPreferences
+    ) => PresentationPreferences;
     selectProjectDirectory?: () => Promise<unknown>;
   }
 ): void => {
@@ -269,6 +278,35 @@ export const registerDesktopCommandHandlers = (
     return options.getThemePreference();
   });
 
+  ipcMain.handle(presentationPreferencesGetChannel, (event) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (!options.getPresentationPreferences)
+      throw new Error("Presentation settings are unavailable.");
+    return options.getPresentationPreferences();
+  });
+  ipcMain.handle(presentationPreferencesSetChannel, (event, value: unknown) => {
+    if (!trustedSender(event, options.allowedRendererOrigins))
+      throw new Error("Untrusted Desktop IPC sender.");
+    if (
+      !value ||
+      typeof value !== "object" ||
+      Object.keys(value).some(
+        (key) => key !== "graphicsAcceleration" && key !== "showMenuBar"
+      ) ||
+      !("graphicsAcceleration" in value) ||
+      typeof value.graphicsAcceleration !== "boolean" ||
+      !("showMenuBar" in value) ||
+      typeof value.showMenuBar !== "boolean"
+    )
+      throw new Error("Invalid presentation preferences.");
+    if (!options.setPresentationPreferences)
+      throw new Error("Presentation settings are unavailable.");
+    return options.setPresentationPreferences({
+      graphicsAcceleration: value.graphicsAcceleration,
+      showMenuBar: value.showMenuBar
+    });
+  });
   ipcMain.handle(themePreferenceSetChannel, async (event, value: unknown) => {
     if (!trustedSender(event, options.allowedRendererOrigins)) {
       throw new Error("Untrusted Desktop IPC sender.");
