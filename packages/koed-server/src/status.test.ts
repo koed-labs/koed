@@ -1784,6 +1784,32 @@ describe("status state aggregation", () => {
     expect(status.apiToken.state).toBe("healthy");
   });
 
+  it("gives the API Token check a longer request timeout", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        MEMORY_API_TOKEN: "local-token"
+      },
+      {
+        fetch: async (url) => {
+          if (String(url).endsWith("/v1/access/check"))
+            throw new DOMException("aborted", "AbortError");
+          return response(true, 200, { checks: [] });
+        },
+        spawnSync: () => spawnResult(""),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.apiToken.state).toBe("needs_attention");
+    expect(JSON.stringify(status.apiToken.details)).toContain(
+      "API request timeout after 15000ms"
+    );
+  });
+
   it("reports local rate-limit retry metadata when Retry-After exceeds cap", async () => {
     const root = tempDir();
     const delay = vi.fn(async () => undefined);

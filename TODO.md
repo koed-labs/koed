@@ -201,6 +201,10 @@ approval checks and content-safe sharing measurements.
   choosing caching, coalescing, or cadence changes. Preserve authentication and
   production rate limits; smoke-only bounded doctor recovery is not this fix.
 
+- Find why `/v1/access/check` exceeded 5s during the packaged Desktop release
+  smoke (Release run 41324692913). Doctor now allows 15s for the API Token
+  check; confirm whether the slow path is token lookup or embedding status.
+
 ## Memory Answer evidence-selection follow-ups
 
 Recall now preserves complete observed references when candidates with the same
