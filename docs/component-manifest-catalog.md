@@ -37,6 +37,8 @@ KOED_COMPONENT_MANIFEST_CATALOG="$FROZEN/component-manifest-hashes.json" pnpm bu
 KOED_COMPONENT_MANIFEST_CATALOG="$FROZEN/component-manifest-hashes.json" pnpm koed-server:package -- --version "$VERSION" --platform macos --arch arm64 --json
 ```
 
+The root `pnpm build` embeds the catalog into the Server's `dist` after every workspace package has built, because later builds that reference the Server (such as the MCP Server's `tsc -b --force`) recompile its `dist` without the catalog. Without `KOED_COMPONENT_MANIFEST_CATALOG`, the embedded catalog is `null`.
+
 Use the actual product version and existing frozen component directory; commands do not generate cross-target components or authorize publication. For temporary local files use repository `scratch/`.
 
 Internal CI/native-runtime testing may explicitly build a standalone artifact with `--catalogless-development`. This mode embeds no catalog authority, rejects a simultaneous release catalog build input, and cannot install components. Public npm packaging has no such mode. It does not provide release-candidate component-admission acceptance.
