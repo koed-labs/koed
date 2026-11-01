@@ -57,6 +57,17 @@ export const runComponentCommand = async (
         if (!component) throw new Error("--component is required.");
         if (component !== "base" && component !== "privacy")
           throw new Error("--component must be base or privacy.");
+        const variant = options.variant;
+        if (
+          variant !== undefined &&
+          (component !== "privacy" ||
+            target.platform !== "linux" ||
+            target.architecture !== "x64" ||
+            (variant !== "cpu" && variant !== "cuda"))
+        )
+          throw new Error(
+            "--variant must be cpu or cuda for Linux x64 Privacy."
+          );
         const hasOffline =
           options.archive !== undefined || options.manifest !== undefined;
         const hasRemote =
@@ -93,6 +104,7 @@ export const runComponentCommand = async (
             };
         result = await handlers.runComponentInstall(context, {
           component,
+          ...(variant === "cpu" || variant === "cuda" ? { variant } : {}),
           version: options.version,
           source,
           stageOnly: Boolean(options.stageOnly)

@@ -100,43 +100,6 @@ Ubuntu 24.04 alone does not establish the Ubuntu 22.04/glibc 2.35 baseline.
 Neither this smoke nor fixture catalog acceptance authorizes npm publication or
 release promotion.
 
-### Historical signed-path Linux x64 acceptance: 2026-10-16
-
-Not pin-only acceptance; no signer retention requirement follows from this record.
-
-Local validation used Ubuntu 24.04 x64 in a full x86_64 Colima/QEMU VM on an
-Apple Silicon host, Node 24.13.1, pnpm 11.1.2, and the pinned native inputs above.
-A clean checkout built successfully and assembled both base and privacy components.
-
-- **Personal: PASSED.** Offline installation outside the checkout, Base/Privacy
-  fixture signature verification, fresh embedding-model provisioning through the
-  installed CLI, and core doctor checks (`api`, `database`, `workerQueues`,
-  `embeddingService`, `privacyService`, `localAiRuntime`, `apiToken`, `mcpServer`,
-  `deviceIdentity`). Healthy supervisor PID 267 stopped; fresh supervisor PID 650
-  stopped successfully. Production test key rejected without activating a component.
-  No AI Client credentials or MCP setup exercised.
-- **Team: BLOCKED.** Fresh embedding and Privacy ONNX provisioning passed. Integrated
-  startup timed out twice with `Privacy Filter Service (starting)` and
-  `Local AI Runtime (needs_attention)`. Privacy Service loaded CPU parity (~100s in
-  emulation) and logged `listening on :48092`; worker reported
-  `privacy_service_unavailable_error` three times. Same Privacy payload run in
-  isolation completed CPU parity (~50s) and returned HTTP 200 from `/health` with
-  `activeProvider:cpu`. The service works alone but fails integrated; root cause
-  remains unresolved. This is not proof of an emulation-only failure. Do not weaken
-  readiness checks or label Team release-ready.
-- **Fault-injection tests:** startup failure blocks before doctor, failed shutdown
-  blocks acceptance, unhealthy restart preserves doctor reports, stale supervisor
-  cannot pass readiness, and restart requires a different supervisor PID. These
-  verifier tests do not replace cold acceptance.
-- **Still unvalidated:** actual WSL2 (requires Windows host), Ubuntu 22.04/glibc
-  2.35, cold packaged native-runtime install/relocation, GPU/CUDA (driver >=
-  550.54.14), and native x64 performance. Emulation does not establish native
-  performance.
-
-These are local fixture results, not a published-release or production-signing
-rehearsal. Keep Team and remaining platform gates blocked until independently
-validated; do not increase timeouts or remove checks merely to obtain a pass.
-
 ## Desktop privacy component lifecycle
 
 Desktop installs privacy components through the private supervisor IPC channel;

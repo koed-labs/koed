@@ -15,6 +15,7 @@ import test from "node:test";
 import {
   appRuntimePackages,
   finalizeStagedAppRuntime,
+  packageDirectories,
   pruneSharedAppRuntimeMetadata
 } from "./app-runtime-staging.mjs";
 
@@ -28,6 +29,26 @@ const write = (path, content = "export {};\n") => {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content);
 };
+
+test("enumerates packages without pnpm lifecycle temporary directories", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-shared-runtime-"));
+  roots.push(root);
+  const modules = resolve(root, "node_modules");
+  const packages = [
+    "argon2",
+    "@koed/shared",
+    "argon2/node_modules/native-addon"
+  ];
+  for (const name of packages)
+    write(resolve(modules, name, "package.json"), "{}\n");
+  for (const name of [".tmp", "argon2/node_modules/.tmp", ".pnpm", ".bin"])
+    mkdirSync(resolve(modules, name), { recursive: true });
+
+  assert.deepEqual(
+    packageDirectories(modules).sort(),
+    packages.map((name) => resolve(modules, name)).sort()
+  );
+});
 
 const requiredSharedFixtures = [
   "node_modules/@koed/api/dist/browser-approval/index.html",

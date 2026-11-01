@@ -651,6 +651,19 @@ export function readDesktopBundleGeneration(
   return Promise.resolve(generation);
 }
 
+// Installation can precede the first start. Persist a verified Base recovery
+// record without selecting or pinning a generation.
+export async function stageDesktopBundleForRecovery(
+  paths: KoedServerPaths,
+  capability: DesktopRuntimeCapability
+): Promise<VerifiedGeneration> {
+  return withStoreLock(paths, async () => {
+    const generation = await readDesktopBundleGeneration(paths, capability);
+    persistDesktopBundleRecord(paths, generation, capability);
+    return generation;
+  });
+}
+
 export async function pinDesktopBundleGenerationForStart(
   paths: KoedServerPaths,
   capability: DesktopRuntimeCapability
@@ -759,17 +772,22 @@ export async function activateGeneration(
   paths: KoedServerPaths,
   id: string,
   requester: RuntimeOwner,
-  capability?: DesktopRuntimeCapability
+  capability?: DesktopRuntimeCapability,
+  selection?: { expectedCurrentGeneration: string | null }
 ): Promise<VerifiedGeneration> {
   const lock = acquireLifecycleLock(paths);
   try {
     return await withStoreLock(paths, async () => {
       assertNoActivePin(paths);
+      const currentId = readCurrentId(paths);
+      if (selection && currentId !== selection.expectedCurrentGeneration)
+        throw new Error(
+          "Runtime selection changed during Privacy installation. Retry from the current selection; no generation was replaced."
+        );
       const candidate = capability
         ? await readDesktopGenerationForCapability(paths, id, capability)
         : await readStagedGeneration(paths, id);
       assertOwner(candidate, requester);
-      const currentId = readCurrentId(paths);
       if (currentId) {
         const current = capability
           ? await readDesktopGenerationForCapability(

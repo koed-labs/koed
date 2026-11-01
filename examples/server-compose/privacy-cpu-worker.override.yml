@@ -1,5 +1,5 @@
 # Linux x64 CPU rollout; requires Docker Compose 2.24.4 or newer.
-# Validate immutable image identities before applying. See docs/privacy-runtime-rollout.md.
+# Validate immutable image identities before applying. See docs/privacy-cpu-worker.md#deployment-and-rollback.
 services:
   koed-server:
     image: ${KOED_TEAM_RUNTIME_IMAGE:?Set the qualified matching backend image}

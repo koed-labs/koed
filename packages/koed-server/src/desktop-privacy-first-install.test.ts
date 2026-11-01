@@ -1,4 +1,7 @@
-import { pinDesktopBundleGenerationForStart } from "./generation-lifecycle.js";
+import {
+  pinDesktopBundleGenerationForStart,
+  readCurrentDesktopGeneration
+} from "./generation-lifecycle.js";
 import {
   realpathSync,
   mkdirSync,
@@ -32,6 +35,20 @@ import {
 import { verifyDesktopRuntimeBundle } from "./desktop-runtime-capability.js";
 import { createDesktopComponentManagerBridge } from "./desktop-component-manager.js";
 import { resolveKoedServerPaths } from "./paths.js";
+vi.mock("./privacy-model-runtime.js", async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  installPrivacyModel: async () => ({ ok: true, modelPath: "/synthetic-model" })
+}));
+vi.mock("./privacy-inference.js", async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  verifyPrivacyComponentInference: async () => ({
+    activeProvider: "cpu",
+    requestedProvider: "cpu",
+    executedProviders: ["CPUExecutionProvider"],
+    proof: "onnx-execution-profile",
+    maskingSha256: "a".repeat(64)
+  })
+}));
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0))
@@ -39,14 +56,15 @@ afterEach(() => {
   trust.runtime = undefined;
   resetFixtureManifestPinCatalog();
 });
-it("installs and activates a pinned first Privacy generation with Team enabled and no running services", async () => {
+it("stages complete first Privacy assets before an explicit stopped activation", async () => {
   const home = realpathSync.native(
     mkdtempSync(resolve(tmpdir(), "koed-privacy-first-"))
   );
   roots.push(home);
   const fixture = await componentFixture({
     component: "privacy",
-    productVersion: "0.8.1"
+    productVersion: "0.8.1",
+    target: { platform: "macos", architecture: "arm64" }
   });
   roots.push(fixture.root);
   trust.runtime = fixture.input.runtime;
@@ -99,6 +117,10 @@ it("installs and activates a pinned first Privacy generation with Team enabled a
       manifestPath
     }
   });
-  expect(installed.state).toBe("active");
-  expect((await manager.status()).components.privacy).toBe("active");
+  expect(installed.state).toBe("staged");
+  expect((await manager.status()).components.privacy).toBe("staged");
+  await manager.activate(installed.generationId, basePin.generation.id);
+  expect((await readCurrentDesktopGeneration(paths, capability)).id).toBe(
+    installed.generationId
+  );
 });

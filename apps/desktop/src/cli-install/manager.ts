@@ -1,3 +1,4 @@
+import { lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -8,7 +9,7 @@ import {
   type LauncherInput,
   type LauncherStatus
 } from "./launcher.js";
-import { updateManagedPathBlock } from "./shell-path.js";
+import { hasManagedPathBlock, updateManagedPathBlock } from "./shell-path.js";
 import {
   validateCliInstallSettings,
   type CliInstallSettings
@@ -31,6 +32,48 @@ export interface DesktopCliInstallManager extends CliInstallManager {
     listener: (progress: PrivacyInstallProgress) => void
   ): void;
 }
+
+// Shell startup files that must carry the managed PATH block. Bash reads
+// ~/.bashrc only for interactive non-login shells, while login shells (the
+// macOS Terminal default) read the first of ~/.bash_profile, ~/.bash_login and
+// ~/.profile that exists and may never source ~/.bashrc.
+const bashLoginFiles = [".bash_profile", ".bash_login", ".profile"];
+const lstatOrNull = (path: string) => {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
+  }
+};
+export const shellStartupFiles = (
+  home: string,
+  shell: string | undefined
+): string[] => {
+  if (shell?.endsWith("zsh")) return [join(home, ".zshrc")];
+  const login =
+    bashLoginFiles
+      .map((name) => join(home, name))
+      .find((path) => lstatOrNull(path) !== null) ??
+    join(home, ".bash_profile");
+  return [join(home, ".bashrc"), login];
+};
+
+// The preferred login file can change after setup (for example when the User
+// later creates .bash_profile), so removal checks every Bash login file that
+// could hold the block. Desktop never writes through symlinks, so only regular
+// files are candidates.
+export const shellPathRemovalFiles = (
+  home: string,
+  shell: string | undefined
+): string[] =>
+  shell?.endsWith("zsh")
+    ? [join(home, ".zshrc")]
+    : [
+        join(home, ".bashrc"),
+        ...bashLoginFiles
+          .map((name) => join(home, name))
+          .filter((path) => lstatOrNull(path)?.isFile() === true)
+      ];
 
 export const unavailablePrivacyStatus: PrivacyInstallStatus = {
   available: false,
@@ -131,7 +174,20 @@ export const createDesktopCliInstallManager = (input: {
         throw new Error("CLI launcher is unsupported on Windows.");
       const launcher = launcherInput(options.destination);
       if (operation === "inspect")
-        return inspectLauncher({ ...launcher, probeHelper: input.probeHelper });
+        return {
+          ...(await inspectLauncher({
+            ...launcher,
+            probeHelper: input.probeHelper
+          })),
+          pathConfigured:
+            settings.pathDirectory === dirname(launcher.destination) &&
+            shellStartupFiles(
+              input.homePath ?? homedir(),
+              process.env.SHELL
+            ).every((rcPath) =>
+              hasManagedPathBlock(rcPath, dirname(launcher.destination))
+            )
+        };
       if (operation === "install") {
         const status = await installLauncher({
           ...launcher,
@@ -153,21 +209,22 @@ export const createDesktopCliInstallManager = (input: {
       if (input.platform === "win32")
         throw new Error("Shell PATH management is unsupported on Windows.");
       const shell = process.env.SHELL?.endsWith("zsh") ? "zsh" : "bash";
-      const rcPath = join(
-        input.homePath ?? homedir(),
-        shell === "zsh" ? ".zshrc" : ".bashrc"
-      );
       const directory =
         operation === "remove"
           ? (settings.pathDirectory ?? dirname(activeDestination))
           : dirname(activeDestination);
-      await updateManagedPathBlock({
-        rcPath: resolve(rcPath),
-        shell,
-        operation,
-        consent,
-        launcherDirectory: directory
-      });
+      // Each file update is idempotent, so a partial failure is repaired by
+      // retrying; inspection reports PATH as configured only when all exist.
+      for (const rcPath of (operation === "remove"
+        ? shellPathRemovalFiles
+        : shellStartupFiles)(input.homePath ?? homedir(), process.env.SHELL))
+        await updateManagedPathBlock({
+          rcPath: resolve(rcPath),
+          shell,
+          operation,
+          consent,
+          launcherDirectory: directory
+        });
       const remaining = settings.destination
         ? { destination: settings.destination }
         : {};

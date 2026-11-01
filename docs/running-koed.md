@@ -193,6 +193,13 @@ relevant `$KOED_HOME/run/generation-lifecycle.lock` or
 `$KOED_HOME/runtime/components.lock`, then retry. Never use an `O_EXCL` check
 followed by rename to reclaim a lock.
 
+The supervisor monitors essential child processes during startup as well as normal operation.
+If a child exits or startup is stopped, it cancels readiness probes and polling delays immediately.
+It stops managed children and its native Postgres before releasing the runtime pin and supervisor lock.
+A dead API cannot become ready through further polling.
+If cleanup cannot confirm that the children stopped, the supervisor retains those ownership protections and reports the failure.
+Desktop recovery must still authenticate the previous generation before restoring it.
+
 `resolveKoedAppRuntime` maps a supplied generation selection to component
 paths; it is not an authentication boundary and does not verify or pin a
 selection. Packaged service launch uses the asynchronous verified selection
@@ -374,10 +381,9 @@ completed stage to distinguish slow loading from an unavailable service.
 
 The separate Linux x64 Team CPU image packages the newer ONNX worker, bounded
 two-worker scheduling and short-field batching. Its qualified service profile,
-resource bounds, qualified publication/rollout results and platform limits are documented in
+resource bounds, deployment/rollback procedures, and platform limits are documented in
 [Packaged Privacy CPU worker](privacy-cpu-worker.md). Native/provider defaults
-remain unchanged. [Qualification replay](privacy-runtime-qualification.md)
-uses isolated synthetic runners and does not modify a running Team backend.
+remain unchanged.
 
 Bundled-local Team startup verifies every pinned Privacy Filter model file once
 before the Privacy Filter process is spawned. Readiness polling then trusts the
@@ -854,7 +860,6 @@ Chat uses its own automatic Conversation Folder.
 
 Run `pnpm --filter @koed/desktop test:browser` for the maintained native browser journeys.
 They use synthetic Memory and simulated AI Clients in disposable Electron profiles.
-See [Project cutover validation](projects-default-view-validation.md) for the route and recorded automated results.
 
 ### Managed Conversation permissions
 
@@ -1300,18 +1305,28 @@ Then use `http://<WSL_IP>:<port>` for the API. Native Windows packaged app suppo
 
 ### Packaged Desktop first-run
 
-Team-enabled Desktop onboarding exposes the same consent-gated Privacy Filter
-installer used in Preferences before local services are ready. If Privacy Filter
-assets are missing, install them there before selecting **Set up Koed** or
-**Retry setup**. Installation requires its own explicit consent; opening onboarding
-never downloads these assets. Offline installation supplies archive and manifest
-files through the same verified installer bridge. The trusted version-matched
-Desktop control plane supplies expected manifest hashes; downloaded sidecars
-cannot replace those pins. Missing
-bridges and installation failures remain visible in onboarding, with retry
-controls; installation does not complete onboarding or bypass service and final
-verification. Start or retry setup explicitly after installation. Personal-only
-onboarding does not show or invoke the Privacy Filter installer.
+Privacy Filter setup is available in Preferences → General → Optional tools.
+Team-enabled onboarding also exposes Privacy Filter setup before core setup,
+because local Team services require its runtime and model. Command-line setup
+stays in Preferences. **Download and install** authorizes
+installation of the runtime and the separately pinned model. Opening Preferences
+does not download either asset. The total download size is unknown until each
+transfer supplies its size.
+
+The installer authenticates both assets and runs a synthetic masking example.
+It then activates the runtime and starts Koed when the remaining core assets are
+installed. If storage or embedding assets are missing, complete **Set up Koed**
+or **Retry setup**. This pending state does not report Privacy Filter as ready.
+Required Team sharing stays blocked until the service passes readiness.
+
+The trusted version-matched Desktop control plane supplies the expected manifest hashes.
+Downloaded sidecars cannot replace those pins. The private installer bridge
+accepts offline archive and manifest paths, but Desktop does not expose an
+offline file picker. The model still needs its pinned files in the local cache.
+Personal-only operation, external services, and remote connections do not
+require these local downloads. See
+[Optional Privacy Filter installation](optional-privacy-installation.md) for
+provider selection, cancellation, retry, and recovery.
 
 Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists the public service and private llama-server child ports in `KOED_HOME/config/local-ports.json`, and uses the same inspect-before-change setup workflow as source Desktop. Allocating the child ports per Koed home allows independent local installations to run concurrently without sharing model processes. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
 

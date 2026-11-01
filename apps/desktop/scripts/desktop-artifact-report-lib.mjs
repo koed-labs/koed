@@ -1,6 +1,7 @@
-import { lstatSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { listPackage, statFile } from "@electron/asar";
+import { inventoryDesktopPayload } from "./privacy-payload-inventory.mjs";
 
 const regularFileBytes = (path) => {
   const stat = statSync(path, { throwIfNoEntry: false });
@@ -53,10 +54,18 @@ export const buildDesktopArtifactReport = ({ appPath, dmgPath, zipPath }) => {
   const appBytes = regularFileBytes(appPath);
   const asarBytes = lstatSync(asarPath).size;
   const asar = classifyAsarEntries(asarEntries(asarPath));
+  const exclusionsPath = resolve(
+    runtimeRoot,
+    "desktop-privacy-exclusions.json"
+  );
+  const exclusions = statSync(exclusionsPath, { throwIfNoEntry: false })
+    ? JSON.parse(readFileSync(exclusionsPath, "utf8")).packages
+    : [];
+  const payload = inventoryDesktopPayload(appPath, exclusions);
   const attributedBytes =
     asarBytes + runtimeBytes + rendererBytes + signatureBytes;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     app: appPath,
     distributions: {
       dmgBytes: dmgPath ? lstatSync(dmgPath).size : null,
@@ -73,12 +82,15 @@ export const buildDesktopArtifactReport = ({ appPath, dmgPath, zipPath }) => {
       nativeRuntimeBytes,
       signatureBytes
     },
-    totalAppBytes: appBytes
+    totalAppBytes: appBytes,
+    payload: { ...payload, files: undefined }
   };
 };
 
 export const evaluateDesktopArtifactPolicy = (report, policy, baseline) => {
   const errors = [];
+  if (report.payload?.privacyFiles.length)
+    errors.push("Desktop Base contains Privacy-only payload.");
   for (const [key, baselineName] of [
     ["dmgBytes", "Koed-0.6.2-arm64.dmg"],
     ["zipBytes", "Koed-0.6.2-arm64.zip"]

@@ -9,6 +9,7 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   existsSync,
   mkdirSync,
@@ -224,24 +225,28 @@ const waitForHealthyOrReady = async ({
   timeoutMs,
   pollIntervalMs,
   collectStatus,
+  signal,
   isReady = (status) => status.ok
 }: {
   environment: NodeJS.ProcessEnv;
   timeoutMs: number;
   pollIntervalMs: number;
   collectStatus: typeof collectKoedServerStartupStatus;
+  signal: AbortSignal;
   isReady?: (
     status: Awaited<ReturnType<typeof collectKoedServerStartupStatus>>
   ) => boolean;
 }) => {
   const startedAt = Date.now();
+  signal.throwIfAborted();
   let lastStatus = await collectStatus(environment);
   while (true) {
+    signal.throwIfAborted();
     if (isReady(lastStatus)) {
       return lastStatus;
     }
     if (Date.now() - startedAt >= timeoutMs) return lastStatus;
-    await new Promise((resolvePoll) => setTimeout(resolvePoll, pollIntervalMs));
+    await delay(pollIntervalMs, undefined, { signal });
     lastStatus = await collectStatus(environment);
   }
 };
@@ -1200,6 +1205,49 @@ export const startKoedServer = async ({
     const shutdownRequested = new Promise<void>((resolveShutdown) => {
       requestShutdown = resolveShutdown;
     });
+    const waitForStartupReadiness = async (
+      isReady?: (
+        status: Awaited<ReturnType<typeof collectKoedServerStartupStatus>>
+      ) => boolean
+    ) => {
+      const controller = new AbortController();
+      // A failed essential child cannot become healthy through more polling.
+      // Interrupt in-flight probes as well as delays before releasing its pin.
+      const interrupted = Promise.race([
+        managedProcessOutcome.then(({ error }) => {
+          throw error ?? new Error("Managed processes stopped during startup.");
+        }),
+        shutdownRequested.then(() => {
+          throw new Error("Koed startup was stopped before readiness.");
+        })
+      ]);
+      try {
+        return await Promise.race([
+          interrupted,
+          waitForHealthyOrReady({
+            environment: refreshedEnv,
+            timeoutMs,
+            pollIntervalMs,
+            signal: controller.signal,
+            collectStatus: (env) =>
+              collectStatus(env, {
+                desktopRuntimeCapability,
+                appRuntime,
+                fetch: (url, init) =>
+                  fetch(url, {
+                    ...init,
+                    signal: init?.signal
+                      ? AbortSignal.any([controller.signal, init.signal])
+                      : controller.signal
+                  })
+              }),
+            ...(isReady ? { isReady } : {})
+          })
+        ]);
+      } finally {
+        controller.abort();
+      }
+    };
     const shutdown = () => {
       stopCapabilityMaintenance();
       requestShutdown();
@@ -1412,16 +1460,11 @@ export const startKoedServer = async ({
         }
       );
 
-      let status = await waitForHealthyOrReady({
-        environment: refreshedEnv,
-        timeoutMs,
-        pollIntervalMs,
-        collectStatus: (env) =>
-          collectStatus(env, { desktopRuntimeCapability, appRuntime }),
-        isReady: (candidate) =>
+      let status = await waitForStartupReadiness(
+        (candidate) =>
           candidate.api.state === "healthy" &&
           candidate.database.state === "healthy"
-      });
+      );
       if (
         status.api.state !== "healthy" ||
         status.database.state !== "healthy"
@@ -1576,13 +1619,7 @@ export const startKoedServer = async ({
         )
       );
 
-      status = await waitForHealthyOrReady({
-        environment: refreshedEnv,
-        timeoutMs,
-        pollIntervalMs,
-        collectStatus: (env) =>
-          collectStatus(env, { desktopRuntimeCapability, appRuntime })
-      });
+      status = await waitForStartupReadiness();
       if (!status.ok) {
         throw new Error(
           `Core services did not become ready before timeout. Blocking checks: ${startupBlockingSummary(status)}. Inspect /ready and koed status --json for details.`

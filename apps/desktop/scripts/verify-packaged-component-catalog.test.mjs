@@ -25,7 +25,7 @@ test("Desktop inspects trusted asar catalog, not catalog-less runtime copy", asy
     const dist = resolve(source, "node_modules/@koed-labs/server/dist");
     mkdirSync(dist, { recursive: true });
     const catalog = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       productVersion: "1.2.3",
       entries: requiredComponentIdentities.map((identity) => ({
         ...identity,
@@ -120,7 +120,7 @@ test("afterPack rejects a catalog-less release asar before signing", async () =>
     writeFileSync(
       catalogPath,
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         productVersion: version,
         entries: requiredComponentIdentities.map((identity) => ({
           ...identity,
@@ -142,6 +142,10 @@ test("afterPack rejects a catalog-less release asar before signing", async () =>
     const appOutDir = resolve(root, "out");
     const resources = resolve(appOutDir, "Koed.app/Contents/Resources");
     mkdirSync(resolve(resources, "koed-runtime"), { recursive: true });
+    writeFileSync(
+      resolve(resources, "koed-runtime", "desktop-privacy-exclusions.json"),
+      JSON.stringify({ schemaVersion: 1, packages: [] })
+    );
     await createAsarFixture(
       createPackage,
       source,

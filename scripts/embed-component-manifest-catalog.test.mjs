@@ -13,7 +13,7 @@ import { requiredComponentIdentities } from "./component-manifest-catalog.mjs";
 
 const version = "1.2.3";
 const catalog = () => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   productVersion: version,
   entries: requiredComponentIdentities.map((identity) => ({
     ...identity,

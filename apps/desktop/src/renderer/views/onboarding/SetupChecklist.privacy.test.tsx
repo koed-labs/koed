@@ -3,7 +3,10 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CliInstallApi } from "../../../cli-install/protocol.js";
+import type {
+  CliInstallApi,
+  PrivacyInstallStatus
+} from "../../../cli-install/protocol.js";
 import type { DesktopSetupSnapshot } from "../../../types.js";
 import { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { SetupChecklist } from "./SetupChecklist.js";
@@ -23,11 +26,13 @@ const makeApi = () =>
       state: "not_installed" as const,
       message: "Privacy Filter assets are missing."
     })),
-    installPrivacy: vi.fn(async () => ({
-      available: true,
-      state: "ready" as const,
-      message: "Ready"
-    })),
+    installPrivacy: vi.fn(
+      async (): Promise<PrivacyInstallStatus> => ({
+        available: true,
+        state: "ready" as const,
+        message: "Ready"
+      })
+    ),
     cancel: vi.fn(async () => undefined),
     selectOffline: vi.fn(async () => ({
       archivePath: "/tmp/privacy.tar.gz",
@@ -101,62 +106,76 @@ const button = (label: string) =>
     (item) => item.textContent === label
   )!;
 const click = async (element: HTMLElement) => act(async () => element.click());
+const confirmSetup = async () => {
+  const dialog = document.body.querySelector('[role="dialog"]');
+  expect(dialog).toBeTruthy();
+  const confirm = [...dialog!.querySelectorAll("button")].find(
+    (item) => item.textContent === "Set up Koed"
+  )!;
+  await click(confirm);
+};
 
-describe("Team onboarding Privacy installer", () => {
-  it("offers pinned installation before services without automatic download or setup", async () => {
+describe("Initial setup optional tools", () => {
+  it("keeps optional tools out of Personal-only initial setup", async () => {
     const api = makeApi();
-    const run = await render(true, api);
-    expect(container.textContent).toContain(
-      "Privacy Filter assets are missing."
-    );
-    expect(button("Install Privacy Filter").disabled).toBe(true);
+    const run = await render(false, api);
+    expect(container.textContent).not.toContain("Optional tools");
+    expect(container.textContent).not.toContain("Privacy Filter");
+    expect(container.textContent).not.toContain("Command line");
+    expect(api.getStatus).not.toHaveBeenCalled();
+    expect(api.launcher).not.toHaveBeenCalled();
     expect(api.installPrivacy).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
-    await click(button("Choose offline component files"));
-    await click(
-      container.querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    );
-    await click(button("Install Privacy Filter"));
-    expect(api.installPrivacy).toHaveBeenCalledWith(true, {
-      archivePath: "/tmp/privacy.tar.gz",
-      manifestPath: "/tmp/privacy.manifest.json"
-    });
+    await click(button("Set up Koed"));
     expect(run).not.toHaveBeenCalled();
+    await confirmSetup();
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps missing installer bridge actionable before onboarding completes", async () => {
-    await render(true);
+  it("makes required Privacy installation reachable with separate consent before Team setup", async () => {
+    const api = makeApi();
+    const staged = {
+      available: true,
+      state: "not_installed" as const,
+      installationState: "staged" as const,
+      message: "Privacy assets staged. Complete core setup."
+    };
+    vi.mocked(api.installPrivacy).mockResolvedValue(staged);
+    const run = await render(true, api);
+    expect(container.textContent).toContain("Privacy Filter");
+    expect(container.textContent).not.toContain("Optional tools");
+    expect(container.textContent).not.toContain("Command line");
+    expect(api.installPrivacy).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+
+    await click(
+      container.querySelector<HTMLElement>(
+        '[aria-label="Privacy Filter: Set up or manage"]'
+      )!
+    );
+    expect(api.installPrivacy).not.toHaveBeenCalled();
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    const install = [...dialog.querySelectorAll("button")].find(
+      (item) => item.textContent === "Download and install"
+    )!;
+    await click(install);
+    expect(api.installPrivacy).toHaveBeenCalledWith(true);
+    expect(dialog.textContent).toContain(staged.message);
+    expect(run).not.toHaveBeenCalled();
+    expect(button("Continue")).toBeUndefined();
+    await click(dialog.querySelector<HTMLElement>('[aria-label="Close"]')!);
+    await click(button("Set up Koed"));
+    await confirmSetup();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a missing installer bridge without bypassing Team setup", async () => {
+    const run = await render(true);
     expect(container.textContent).toContain(
       "Desktop installer bridge unavailable"
     );
-    expect(button("Install Privacy Filter").disabled).toBe(true);
-    expect(button("Set up Koed")).toBeDefined();
-  });
-
-  it("reports failed verification and allows explicit retry without starting services", async () => {
-    const api = makeApi();
-    api.installPrivacy.mockRejectedValueOnce(
-      new Error("component manifest pin mismatch.")
-    );
-    const run = await render(true, api);
-    await click(
-      container.querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    );
-    await click(button("Install Privacy Filter"));
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "component manifest pin mismatch."
-    );
-    await click(button("Retry install"));
-    expect(api.installPrivacy).toHaveBeenCalledTimes(2);
-    expect(run).not.toHaveBeenCalled();
-  });
-
-  it("leaves Personal-only onboarding free of Privacy installation", async () => {
-    const api = makeApi();
-    await render(false, api);
-    expect(container.textContent).not.toContain("Privacy Filter assets");
-    expect(api.getStatus).not.toHaveBeenCalled();
-    expect(api.installPrivacy).not.toHaveBeenCalled();
-    expect(button("Set up Koed")).toBeDefined();
+    await click(button("Set up Koed"));
+    await confirmSetup();
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });

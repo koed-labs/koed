@@ -1,12 +1,9 @@
 # Packaged Privacy CPU worker
 
-The Linux x64 Team candidate uses the existing authenticated TypeScript Privacy
-Service with packaged Python ONNX inference children. Engine, concurrency,
-batching, service adoption, synthetic publication/recovery/denial and isolated
-rollout/rollback have passed Linux CPU qualification. The approved manual rollout, restart, observation and four normally approved
-member publications passed. The User confirmed the authorized Team view opens. See the
-[Operator runbook](privacy-runtime-rollout.md). Their status is tracked in
-[`tickets.md`](../tickets.md); a build alone does not qualify or deploy it.
+The Linux x64 Team CPU image uses the authenticated TypeScript Privacy Service
+with packaged Python ONNX inference children. It supports bounded two-worker
+scheduling and short-field batching. Other native and accelerator paths retain
+their existing implementation. A build alone does not qualify or deploy it.
 See [ADR 0062](adr/0062-packaged-privacy-cpu-inference-worker.md) for the trade-off.
 
 ## Pipeline and trust boundary
@@ -62,11 +59,11 @@ remain in their existing authoritative backend components.
 
 ## Packaging and support
 
-| Platform/profile                        | Model execution                                            | Status                                                         |
-| --------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------- |
-| Linux x64 CPU candidate                 | Packaged CPython 3.11.14, ONNX Runtime 1.31.0, NumPy 2.2.6 | Tickets 01–08 passed; approved manual CPU deployment qualified |
-| General/native Linux, macOS and Windows | Existing Transformers/Node execution                       | Existing support scope retained                                |
-| CUDA, Core ML and DirectML              | Existing provider path                                     | No new hardware qualification claimed                          |
+| Platform/profile                        | Model execution                                            | Status                                |
+| --------------------------------------- | ---------------------------------------------------------- | ------------------------------------- |
+| Linux x64 CPU candidate                 | Packaged CPython 3.11.14, ONNX Runtime 1.31.0, NumPy 2.2.6 | Packaged CPU worker profile           |
+| General/native Linux, macOS and Windows | Existing Transformers/Node execution                       | Existing support scope retained       |
+| CUDA, Core ML and DirectML              | Existing provider path                                     | No new hardware qualification claimed |
 
 `Dockerfile.cpu-worker` pins the Node and Python base manifests by digest.
 `worker/requirements-linux-x64.lock` pins every selected CPython 3.11/Linux x64
@@ -106,8 +103,7 @@ Use four CPUs and a 4 GiB memory/swap limit. `PRIVACY_CPU_WORKERS=2` is the
 candidate image default: two model processes, two intra-op threads each, one
 inter-op thread each, and at most two admitted requests. `PRIVACY_CPU_WORKERS=1`
 selects one four-thread process and one request, with the same short-field
-batching support. The frozen ticket 01 image remains the engine-only benchmark
-control; setting the current image to one worker does not disable batching.
+batching support. Setting the current image to one worker does not disable batching.
 Native/accelerator paths still advertise one. The service/client contract accepts
 exactly one or two as the current profile's capacity. While one pooled worker
 recovers, advertised admission drops to one; when neither is ready, classification
@@ -147,6 +143,118 @@ Service shutdown drains HTTP work for up to five seconds, then closes remaining
 connections to propagate cancellation. It stops recovery backoffs and waits for
 loading/retiring resources to close before exiting.
 
-The later tickets qualify combined adoption and publication. They do
-not widen publication/finalization concurrency. Keep rollout,
-rollback and manual-backend deployment behind their recorded acceptance gates.
+Finalization retains one deployment-wide lease. Increasing inference capacity
+does not increase publication or finalization concurrency.
+
+## Deployment and rollback
+
+Use matching backend/client and Privacy images with independently qualified,
+recorded image identities. The client must accept both one-slot and two-slot
+capacity. A runtime rollback retains that client and changes only the Privacy
+image. It does not authorize a database or API downgrade.
+
+Use a separate volume containing only the six pinned public model files.
+Provide read/traverse access for numeric User `1000:1000` and mount it read-only.
+Preserve existing deployment mounts, data, classification credentials, and separate
+runtime-control credentials. Inference children receive no database or publication
+credentials. Keep the service on the deployment's private network.
+
+Docker Compose 2.24.4 or newer is required for `!override`. From the deployment
+checkout, set the following variables to the approved deployment and retained
+local images. Image tags alone do not establish immutable identity.
+
+```bash
+: "${KOED_DOCKER_CONTEXT:?Set the approved Docker context}"
+: "${KOED_TARGET_PROJECT:?Set the approved Compose project}"
+: "${KOED_DEPLOYMENT_ENV_FILE:?Set the existing private environment file}"
+: "${KOED_DEPLOYMENT_OVERRIDE:?Set the existing deployment override}"
+: "${KOED_TEAM_RUNTIME_IMAGE:?Set the qualified matching backend image}"
+: "${KOED_PRIVACY_CPU_IMAGE:?Set the qualified CPU image}"
+: "${KOED_PRIVACY_ROLLBACK_IMAGE:?Set the qualified previous one-slot image}"
+: "${KOED_PRIVACY_MODEL_VOLUME:?Set the verified public-only model volume}"
+export KOED_TEAM_RUNTIME_IMAGE KOED_PRIVACY_CPU_IMAGE
+export KOED_PRIVACY_ROLLBACK_IMAGE KOED_PRIVACY_MODEL_VOLUME
+
+for artifact in "$KOED_TEAM_RUNTIME_IMAGE" "$KOED_PRIVACY_CPU_IMAGE" "$KOED_PRIVACY_ROLLBACK_IMAGE"; do
+  docker --context "$KOED_DOCKER_CONTEXT" image inspect "$artifact" --format '{{.Id}}'
+done
+
+cpu_compose() {
+  docker --context "$KOED_DOCKER_CONTEXT" compose --env-file "$KOED_DEPLOYMENT_ENV_FILE" \
+    -p "$KOED_TARGET_PROJECT" \
+    -f examples/server-compose/docker-compose.yml \
+    -f "$KOED_DEPLOYMENT_OVERRIDE" \
+    -f examples/server-compose/privacy-cpu-worker.override.yml "$@"
+}
+rollback_compose() {
+  docker --context "$KOED_DOCKER_CONTEXT" compose --env-file "$KOED_DEPLOYMENT_ENV_FILE" \
+    -p "$KOED_TARGET_PROJECT" \
+    -f examples/server-compose/docker-compose.yml \
+    -f "$KOED_DEPLOYMENT_OVERRIDE" \
+    -f examples/server-compose/privacy-cpu-worker.override.yml \
+    -f examples/server-compose/privacy-cpu-rollback.override.yml "$@"
+}
+cpu_compose config --quiet
+rollback_compose config --quiet
+```
+
+Compare each inspected identity with the independently reviewed deployment record.
+Record target containers, current image identities, pending-state counts,
+policy-denied outcomes, and the approved observation window before changing services.
+Do not print rendered secrets or replace keys, approvals, or model assets.
+
+Stop the API/worker before changing capacity. Then drain the Privacy Service and
+start its replacement. Preserve all durable operation identities.
+
+```bash
+cpu_compose stop -t 20 koed-server
+cpu_compose stop -t 10 privacy-service
+cpu_compose up -d --no-deps --no-build privacy-service
+cpu_compose exec -T privacy-service node -e \
+  'fetch("http://127.0.0.1:8092/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'
+```
+
+Before restarting the backend, require model verification, startup parity, and
+authenticated capacity of `maximumConcurrentRequests=2`. Health alone does not
+establish authority or exact masking behavior. Use the normal authenticated
+client for the approved synthetic masking probe and current allowed/denied reads.
+
+```bash
+cpu_compose up -d --no-deps --no-build koed-server
+cpu_compose exec -T koed-server node -e \
+  'fetch("http://127.0.0.1:3300/ready").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'
+```
+
+For restart, repeat the same stop/readiness/start order with preserved volumes.
+For rollback, retain the matching backend and start the qualified one-slot image:
+
+```bash
+cpu_compose stop -t 20 koed-server
+cpu_compose stop -t 10 privacy-service
+rollback_compose up -d --no-deps --no-build privacy-service
+rollback_compose exec -T privacy-service node -e \
+  'fetch("http://127.0.0.1:8092/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'
+```
+
+Require model verification, parity, exact masking, and authenticated capacity of
+one slot before running `rollback_compose up -d --no-deps --no-build koed-server`.
+Then require backend readiness. Never restart a one-slot-only client against the
+two-slot service. Preserve schema, consent, source, credential, and policy bindings.
+Invalidated results and current denials remain unavailable after rollback.
+
+Observe normal durable retry instead of replacing approvals or publications.
+A crash can leave a 120-second claim lease. Process liveness does not renew a
+stalled classification deadline. Record validated stages, cache reuse, errors,
+retry/failure counts, and cgroup memory without content, paths, credentials,
+token IDs, or logits.
+
+Stop admitting work and roll back for masking/parity drift, identity mismatch,
+exhausted inference recovery, OOM, or current-authority failure. Investigate
+sustained memory above 3.2 GiB within the 4 GiB cap or comparable-cohort latency
+regressions. Compare cache state, input sizes, queue age, and input-derived
+deadlines. A policy denial is not an inference performance failure.
+
+For performance qualification, compare exact output fingerprints before timing.
+Report startup and warmup separately, bracket the candidate with baseline runs,
+and record resource bounds and baseline drift. Service benchmarks do not establish
+live publication speedups or qualify another platform or execution provider.

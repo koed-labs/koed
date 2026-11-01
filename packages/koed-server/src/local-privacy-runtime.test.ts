@@ -1,4 +1,8 @@
 import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { PINNED_PRIVACY_MODEL_REVISION } from "@koed/shared";
+import { resolveKoedServerPaths } from "./paths.js";
+import { writePrivacyInstallationRecord } from "./privacy-installation-record.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   collectLocalPrivacyRuntimeHealthStatus,
@@ -8,6 +12,64 @@ import type { KoedServerPaths } from "./paths.js";
 import type { KoedAppRuntime } from "./app-runtime.js";
 
 describe("native Privacy Filter Service runtime", () => {
+  it("retains verified CPU fallback only for the matching CUDA generation and preserves explicit controls", () => {
+    mkdirSync("scratch", { recursive: true });
+    const root = mkdtempSync(resolve("scratch/privacy-cpu-record-"));
+    try {
+      const paths = resolveKoedServerPaths({ KOED_HOME: root });
+      const generationId = "a".repeat(64),
+        manifestDigest = "b".repeat(64);
+      writePrivacyInstallationRecord(paths, {
+        schemaVersion: 1,
+        generationId,
+        manifestDigest,
+        variant: "cuda",
+        modelRevision: PINNED_PRIVACY_MODEL_REVISION,
+        verifiedAt: new Date().toISOString(),
+        compatibility: {
+          variant: "cuda",
+          target: "linux-x64",
+          compatible: true,
+          reason: "fixture",
+          observedAt: new Date().toISOString()
+        },
+        verification: {
+          requestedProvider: "cuda",
+          activeProvider: "cpu",
+          executedProviders: ["CPUExecutionProvider"],
+          proof: "onnx-execution-profile",
+          maskingSha256: "c".repeat(64),
+          fallbackReason: "cuda_initialization_or_inference_failed"
+        }
+      });
+      const runtime = {
+        kind: "packaged",
+        generationId,
+        privacyManifestDigest: manifestDigest,
+        privacyVariant: "cuda"
+      } as KoedAppRuntime;
+      expect(localPrivacyEnv(paths, {}, runtime).PRIVACY_RUNTIME_PROVIDER).toBe(
+        "cpu"
+      );
+      expect(
+        localPrivacyEnv(paths, { PRIVACY_RUNTIME_PROVIDER: "cuda" }, runtime)
+          .PRIVACY_RUNTIME_PROVIDER
+      ).toBe("cuda");
+      expect(
+        localPrivacyEnv(
+          paths,
+          {},
+          { ...runtime, privacyManifestDigest: "d".repeat(64) }
+        ).PRIVACY_RUNTIME_PROVIDER
+      ).toBe("auto");
+      expect(
+        localPrivacyEnv(paths, {}, { ...runtime, privacyVariant: undefined })
+          .PRIVACY_RUNTIME_PROVIDER
+      ).toBe("auto");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it("wires a credential-free local URL and KOED_HOME model cache", () => {
     const paths = {
       koedHome: "/koed",

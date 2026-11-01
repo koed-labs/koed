@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { writeDeterministicTarGz } from "./deterministic-tar-gzip.mjs";
+import { componentArchiveName } from "../packages/koed-server/src/component-artifact-identity.mjs";
 import {
   buildComponentManifest,
   canonicalComponentManifestBytes,
@@ -10,7 +11,6 @@ import {
 } from "./koed-server-package-lib.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
-const components = ["base", "privacy"];
 
 export const buildComponentReleaseSet = ({
   componentsRoot,
@@ -18,15 +18,33 @@ export const buildComponentReleaseSet = ({
   version,
   target,
   runtimes,
-  requiredFiles
+  requiredFiles,
+  privacyCpuRoot
 }) => {
   if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version ?? ""))
     throw new Error("Component release requires valid product version.");
   mkdirSync(outDir, { recursive: true });
   const records = {};
-  for (const component of components) {
-    const componentRoot = resolve(componentsRoot, component);
-    const archiveName = `koed-${component}-${version}-${target.platform}-${target.architecture}.tar.gz`;
+  const components =
+    target.platform === "linux"
+      ? [
+          { component: "base" },
+          { component: "privacy", variant: "cpu" },
+          { component: "privacy", variant: "cuda" }
+        ]
+      : [{ component: "base" }, { component: "privacy" }];
+  for (const { component, variant } of components) {
+    const identity = variant ? `${component}-${variant}` : component;
+    const componentRoot =
+      variant === "cpu"
+        ? resolve(privacyCpuRoot ?? resolve(componentsRoot, "privacy-cpu"))
+        : resolve(componentsRoot, component);
+    const archiveName = componentArchiveName({
+      component,
+      productVersion: version,
+      target,
+      variant
+    });
     const archivePath = resolve(outDir, archiveName);
     writeDeterministicTarGz({
       sourceDir: componentRoot,
@@ -37,10 +55,11 @@ export const buildComponentReleaseSet = ({
       componentRoot,
       archivePath,
       component,
+      variant,
       productVersion: version,
       target,
       runtimes,
-      requiredFiles: requiredFiles[component]
+      requiredFiles: requiredFiles[identity] ?? requiredFiles[component]
     });
     const manifestName = `${archiveName}.manifest.json`;
     const manifestPath = resolve(outDir, manifestName);
@@ -49,7 +68,7 @@ export const buildComponentReleaseSet = ({
     const checksumPath = `${archivePath}.sha256`;
     const archiveSha256 = sha256File(archivePath);
     writeFileSync(checksumPath, `${archiveSha256}  ${basename(archivePath)}\n`);
-    records[component] = {
+    records[identity] = {
       archive: archiveName,
       archiveSha256,
       manifest: manifestName,

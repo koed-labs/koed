@@ -311,7 +311,8 @@ export const createSmokeEnv = (koedHome, extraEnv = {}) => {
     KOED_DEVICE_PROOF_DIR: resolve(
       koedHome,
       "..",
-      `.${basename(koedHome)}-device-proof`
+      `.${basename(koedHome)}-device-proof`,
+      "proof"
     ),
     CODEX_HOME: resolve(koedHome, "codex"),
     CLAUDE_CONFIG_DIR: resolve(koedHome, "claude"),

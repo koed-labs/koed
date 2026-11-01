@@ -1,0 +1,293 @@
+.koed-general-group {
+  margin-top: 26px;
+}
+.koed-general h2 {
+  margin: 0 0 11px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+.koed-general-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--card) 65%, var(--background));
+}
+.koed-general-appearance {
+  padding: 20px;
+}
+.koed-general-card-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.koed-general-card-title strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.koed-general-card-title span {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.koed-general-themes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.koed-general-themes label {
+  position: relative;
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.koed-general-themes label:hover {
+  background: var(--muted);
+}
+.koed-general-themes label[data-selected="true"] {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+.koed-general-themes input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.koed-general-themes label:has(input:focus-visible) {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+}
+.koed-general-theme-preview {
+  display: flex;
+  height: 78px;
+  border: 1px solid #80808033;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #fafbf8;
+  --koed-mini-surface: #ebede7;
+  --koed-mini-line: #c9cec2;
+  --koed-mini-active: #b5d0bc;
+}
+.koed-preview-dark {
+  background: #20211e;
+  --koed-mini-surface: #292c26;
+  --koed-mini-line: #4a5043;
+  --koed-mini-active: #466b50;
+}
+.koed-preview-system {
+  background: linear-gradient(90deg, #fafbf8 50%, #20211e 50%);
+  --koed-mini-surface: #ebede7;
+  --koed-mini-line: #b5bba9;
+  --koed-mini-active: #78a984;
+}
+.koed-mini-rail {
+  display: flex;
+  flex-direction: column;
+  width: 15%;
+  padding: 9px 5px;
+  gap: 7px;
+  border-right: 1px solid #80808025;
+  background: var(--koed-mini-surface);
+}
+.koed-mini-rail i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--koed-mini-line);
+}
+.koed-mini-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 26%;
+  gap: 6px;
+  padding: 10px 5px;
+  background: var(--koed-mini-surface);
+  opacity: 0.75;
+}
+.koed-mini-sidebar i {
+  height: 3px;
+  background: var(--koed-mini-line);
+  border-radius: 2px;
+}
+.koed-mini-sidebar i:first-child {
+  background: var(--koed-mini-active);
+}
+.koed-mini-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 12px 9px;
+  gap: 5px;
+}
+.koed-mini-main > i {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--koed-mini-line);
+  width: 65%;
+}
+.koed-mini-main > i:nth-child(2) {
+  width: 42%;
+  margin-bottom: 5px;
+}
+.koed-mini-main > span {
+  height: 12px;
+  border: 1px solid #8f978850;
+  border-radius: 3px;
+}
+.koed-general-theme-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 5px 5px;
+  font-size: 12px;
+}
+.koed-general-theme-label > svg:last-child:not(:first-child) {
+  margin-left: auto;
+  color: var(--primary);
+}
+.koed-general-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 19px 20px;
+  min-height: 80px;
+}
+.koed-general-row + .koed-general-row {
+  border-top: 1px solid var(--border);
+}
+.koed-general-row-icon {
+  display: grid;
+  place-items: center;
+  color: var(--muted-foreground);
+  width: 22px;
+  flex-shrink: 0;
+}
+.koed-general-row-copy {
+  min-width: 0;
+  flex: 1;
+}
+.koed-general-row strong {
+  font-size: 13px;
+  font-weight: 550;
+}
+.koed-general-row p {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  line-height: 1.5;
+  margin: 4px 0 0;
+}
+.koed-general-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 0 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.koed-general-action svg {
+  color: var(--muted-foreground);
+}
+.koed-general-action:hover {
+  color: var(--primary);
+}
+
+.koed-preferences-content[data-general] {
+  padding-block-end: 24px;
+}
+
+.koed-preferences-content[data-general] > header {
+  padding: 34px 0 6px;
+  border: 0;
+}
+.koed-preferences-content[data-general] > header h1 {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.65px;
+  line-height: 1.3;
+}
+.koed-preferences-content[data-general] > header p {
+  margin: 8px 0 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.koed-general {
+  container: general / inline-size;
+  padding-top: 0;
+}
+.koed-general .koed-preference-row {
+  display: flex;
+  gap: 14px;
+  padding: 19px 20px;
+  min-height: 80px;
+  border: 0;
+}
+.koed-general .koed-preference-row + .koed-preference-row {
+  border-top: 1px solid var(--border);
+}
+.koed-general .koed-preference-row > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.koed-general .koed-preference-control {
+  flex-shrink: 0;
+}
+.koed-general .koed-preference-toggle-state {
+  flex-wrap: wrap;
+}
+.koed-general .koed-preference-toggle-state > span {
+  max-width: 180px;
+}
+@container general (max-width:480px) {
+  .koed-general-card-title {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .koed-general-row,
+  .koed-general .koed-preference-row {
+    padding: 17px 14px;
+    gap: 10px;
+  }
+  .koed-general-row-icon {
+    display: none;
+  }
+  .koed-general-theme-preview {
+    height: 60px;
+  }
+  .koed-general-themes {
+    gap: 8px;
+  }
+  .koed-general-appearance {
+    padding: 14px;
+  }
+}
+
+@container general (max-width: 300px) {
+  .koed-general-themes {
+    gap: 6px;
+  }
+  .koed-general-theme-label {
+    gap: 4px;
+    font-size: 11px;
+    padding-inline: 2px;
+    white-space: nowrap;
+  }
+  .koed-general-theme-label > svg:first-child {
+    display: none;
+  }
+  .koed-general-theme-label > svg:last-child:not(:first-child) {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 1px;
+    border-radius: 50%;
+    background: var(--background);
+  }
+}

@@ -5,7 +5,7 @@ Status: Accepted.
 Related decisions:
 
 - [0008 Explorer-First Auth And Device Enrollment](./0008-explorer-first-auth-and-device-enrollment.md)
-- [0012 Personal Device Sync Protocol](./0012-personal-device-sync-protocol.md)
+- [0012 Symmetric Replicated Personal Memory](./0012-symmetric-replicated-personal-memory.md)
 - [0052 Shared Durable Realtime Client Runtime](./0052-shared-durable-realtime-client-runtime.md)
 - [0053 Realtime Transport Allocation And Negotiation](./0053-realtime-transport-allocation-and-negotiation.md)
 

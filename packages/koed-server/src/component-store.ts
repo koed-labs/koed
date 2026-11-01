@@ -33,6 +33,7 @@ import { pipeline } from "node:stream/promises";
 import type {
   ArtifactTarget,
   ComponentId,
+  ComponentVariant,
   ComponentManifest,
   RuntimeIdentity,
   RuntimeOwner,
@@ -71,6 +72,7 @@ export type ComponentSource =
 
 export interface ComponentInstallContext {
   expectedComponent: ComponentId;
+  expectedVariant?: ComponentVariant;
   expectedVersion: string;
   target: ArtifactTarget;
   runtime: RuntimeIdentity;
@@ -173,18 +175,20 @@ const resolvePinnedTarget = (
   component: ComponentId,
   productVersion: string,
   target: ArtifactTarget,
-  libcVersion?: string
+  libcVersion?: string,
+  variant?: ComponentVariant
 ): ArtifactTarget => {
   if (!catalog) {
-    lookupManifestPin(null, { component, productVersion, target });
+    lookupManifestPin(null, { component, productVersion, target, variant });
     throw new Error("Component manifest pin catalog is unavailable");
   }
   if (catalog.productVersion !== productVersion)
-    lookupManifestPin(catalog, { component, productVersion, target });
+    lookupManifestPin(catalog, { component, productVersion, target, variant });
   if (target.libc) return target;
   const matches = catalog.entries.filter(
     (entry) =>
       entry.component === component &&
+      entry.variant === variant &&
       entry.target.platform === target.platform &&
       entry.target.architecture === target.architecture
   );
@@ -213,13 +217,14 @@ const resolvePinnedTarget = (
     throw new Error(
       "Component manifest pin target is ambiguous; exact libc target is required."
     );
-  lookupManifestPin(catalog, { component, productVersion, target });
+  lookupManifestPin(catalog, { component, productVersion, target, variant });
   throw new Error("Required component manifest pin is missing.");
 };
 export const resolveComponentManifestPinTarget = (
   catalog: ManifestPinCatalog | null,
   input: {
     component: ComponentId;
+    variant?: ComponentVariant;
     productVersion: string;
     target: ArtifactTarget;
     runtime: RuntimeIdentity;
@@ -230,10 +235,12 @@ export const resolveComponentManifestPinTarget = (
     input.component,
     input.productVersion,
     input.target,
-    input.runtime.libcVersion
+    input.runtime.libcVersion,
+    input.variant
   );
   lookupManifestPin(catalog, {
     component: input.component,
+    variant: input.variant,
     productVersion: input.productVersion,
     target
   });
@@ -491,6 +498,7 @@ function targetKey(manifest: ComponentManifest): string {
   return hash(
     canonicalJson({
       component: manifest.component,
+      ...(manifest.variant === undefined ? {} : { variant: manifest.variant }),
       productVersion: manifest.productVersion,
       target: manifest.target
     })
@@ -572,6 +580,7 @@ async function verifyStoredComponent(
 ): Promise<VerifiedManifestPinnedComponent> {
   assertDirectoryChain(home, root);
   const record = readComponentRecord(componentRecordPath(root));
+  validateComponentManifest(record.manifest);
   const manifestBytes = Buffer.from(canonicalJson(record.manifest));
   if (hash(manifestBytes) !== record.manifestDigest)
     throw new Error("stored component manifest digest mismatch");
@@ -581,6 +590,7 @@ async function verifyStoredComponent(
     throw new Error("Component manifest pin catalog is unavailable");
   const target = resolveComponentManifestPinTarget(catalog, {
     component: expected.component,
+    variant: record.manifest.variant,
     productVersion,
     target: expected.target ?? {
       platform: expected.runtime.platform,
@@ -595,6 +605,7 @@ async function verifyStoredComponent(
     manifestCatalog: catalog,
     archivePath,
     expectedComponent: expected.component,
+    expectedVariant: record.manifest.variant,
     expectedVersion: productVersion,
     target,
     runtime: expected.runtime
@@ -649,6 +660,7 @@ async function stageComponentInternal(
       throw new Error("component target does not match actual runtime");
     const target = resolveComponentManifestPinTarget(catalog, {
       component: context.expectedComponent,
+      variant: context.expectedVariant,
       productVersion: context.expectedVersion,
       target: context.target,
       runtime
@@ -657,6 +669,7 @@ async function stageComponentInternal(
       manifestBytes,
       manifestCatalog: catalog,
       expectedComponent: context.expectedComponent,
+      expectedVariant: context.expectedVariant,
       expectedVersion: context.expectedVersion,
       target
     });
@@ -675,11 +688,13 @@ async function stageComponentInternal(
       );
     }
     aborted(context.signal);
+    context.progress?.({ phase: "verify", transferredBytes: 0 });
     await verifyComponent({
       manifestBytes,
       manifestCatalog: catalog,
       archivePath,
       expectedComponent: context.expectedComponent,
+      expectedVariant: context.expectedVariant,
       expectedVersion: context.expectedVersion,
       target,
       runtime
@@ -697,6 +712,7 @@ async function stageComponentInternal(
     const stagedRoot = resolve(tempRoot, "verified");
     const completeRoot = resolve(tempRoot, "complete");
     aborted(context.signal);
+    context.progress?.({ phase: "extract", transferredBytes: 0 });
     await extractVerifiedPackageArchive(archivePath, stagedRoot);
     aborted(context.signal);
     await verifyExtractedComponent(stagedRoot, manifest);

@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   RuntimeOwner,
+  ComponentVariant,
   RuntimeRequirements,
   VerifiedGeneration
 } from "./component-contract.js";
@@ -16,6 +17,9 @@ export interface KoedAppRuntime {
   kind: KoedAppRuntimeKind;
   artifactSource: RuntimeArtifactSource;
   root: string;
+  generationId?: string;
+  privacyManifestDigest?: string;
+  privacyVariant?: ComponentVariant;
   apiEntry: string;
   workerEntry: string;
   embeddingServiceEntry: string;
@@ -171,6 +175,15 @@ const packagedRuntime = (
   return {
     kind: "packaged",
     artifactSource: "verified-generation",
+    ...(selection ? { generationId: selection.id } : {}),
+    ...(selection?.privacy
+      ? {
+          privacyManifestDigest: selection.privacy.manifestDigest,
+          ...(selection.privacy.manifest.variant
+            ? { privacyVariant: selection.privacy.manifest.variant }
+            : {})
+        }
+      : {}),
     root,
     apiEntry,
     workerEntry,

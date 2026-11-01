@@ -18,7 +18,7 @@ test("inspects effective module, not neighboring sidecar or source checkout", ()
     const modulePath = resolve(root, "control-plane.mjs");
     const catalogPath = resolve(root, "catalog.json");
     const catalog = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       productVersion: "1.2.3",
       entries: requiredComponentIdentities.map((identity) => ({
         ...identity,

@@ -63,6 +63,61 @@ afterEach(() => {
 });
 
 describe("pinned Privacy Filter downloads", () => {
+  it("cancels an active model body and retries with no partial publication", async () => {
+    const serverPaths = paths();
+    const controller = new AbortController();
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(stream) {
+              stream.enqueue(new TextEncoder().encode("partial"));
+            }
+          })
+        )
+    );
+    const pending = installPrivacyModel(serverPaths, {}, fetcher, {
+      signal: controller.signal,
+      progress: () => controller.abort()
+    });
+    await expect(pending).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(readdirSync(resolvePrivacyModelPaths(serverPaths).blobsDir)).toEqual(
+      []
+    );
+    expect(
+      await installPrivacyModel(serverPaths, {}, async (url) => respond(url))
+    ).toMatchObject({ ok: true });
+    assertInstalled(serverPaths);
+  });
+
+  it("relaunch reuses a completed blob and ignores an abandoned partial transfer", async () => {
+    const serverPaths = paths();
+    let count = 0;
+    await installPrivacyModel(serverPaths, {}, async (url) =>
+      ++count === 1
+        ? respond(url)
+        : new Response("unavailable", { status: 404 })
+    );
+    const { blobsDir } = resolvePrivacyModelPaths(serverPaths);
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(
+      resolve(blobsDir, `${"a".repeat(64)}.999999.dead.download`),
+      "partial"
+    );
+    const fetcher = vi.fn(async (url: Parameters<typeof fetch>[0]) =>
+      respond(url)
+    );
+    expect(await installPrivacyModel(serverPaths, {}, fetcher)).toMatchObject({
+      ok: true
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(String(fetcher.mock.calls[0]?.[0])).toContain(files[1]!.path);
+    expect(
+      readdirSync(blobsDir).filter((name) => !name.endsWith(".download"))
+    ).toHaveLength(files.length);
+  });
+
   it("retries an interrupted response body and publishes only verified complete files", async () => {
     const serverPaths = paths();
     let first = true;

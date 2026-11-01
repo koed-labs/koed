@@ -44,7 +44,7 @@ test("assembled public package has only koed bin and self-contained control plan
       )
     ).version;
     const catalog = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       productVersion: version,
       entries: requiredComponentIdentities.map((identity) => ({
         ...identity,

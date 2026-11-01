@@ -211,7 +211,7 @@ for (const downloadDrift of [
       }
       const result = await runReleasePromotion(args, adapters);
       assert.equal(result.ok, true);
-      assert.equal(result.verifiedComponents, 4);
+      assert.equal(result.verifiedComponents, 5);
       assert.ok(!downloads.some((name) => name.endsWith(".signature.json")));
       assert.equal(
         mutations.filter(
@@ -227,8 +227,9 @@ for (const downloadDrift of [
       );
       assert.ok(patchAt >= 0 && latestAt > patchAt, "GitHub before npm latest");
       // Published release assets are re-downloaded and re-verified after PATCH.
-      // 11 consumed assets before mutation; complete inventory after publish.
-      assert.equal(downloads.length, 11 + f.expected.assets.length);
+      // Five archive/manifest pairs plus catalog, npm tarball, and identity
+      // before mutation; complete inventory after publish.
+      assert.equal(downloads.length, 13 + f.expected.assets.length);
       mutations.length = 0;
       f.release.draft = true;
       f.contents.set(

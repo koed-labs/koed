@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { updateManagedPathBlock } from "./shell-path.js";
+import { hasManagedPathBlock, updateManagedPathBlock } from "./shell-path.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -11,6 +11,26 @@ afterEach(() => {
 });
 
 describe("managed shell PATH block", () => {
+  it("reports configured PATH only while its exact managed block exists", async () => {
+    const root = mkdtempSync(join(tmpdir(), "koed path "));
+    roots.push(root);
+    const rcPath = join(root, ".zshrc");
+    const directory = join(root, ".local", "bin");
+    expect(hasManagedPathBlock(rcPath, directory)).toBe(false);
+    await updateManagedPathBlock({
+      rcPath,
+      shell: "zsh",
+      operation: "add",
+      consent: true,
+      launcherDirectory: directory
+    });
+    expect(hasManagedPathBlock(rcPath, directory)).toBe(true);
+    writeFileSync(
+      rcPath,
+      readFileSync(rcPath, "utf8").replace("export PATH=", "export OTHER=")
+    );
+    expect(() => hasManagedPathBlock(rcPath, directory)).toThrow(/edited/);
+  });
   it("fails closed on edited or duplicate markers and preserves contents", async () => {
     const root = mkdtempSync(join(tmpdir(), "koed path "));
     roots.push(root);

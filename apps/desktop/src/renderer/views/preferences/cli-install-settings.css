@@ -1,36 +1,172 @@
-.koed-cli-install-settings {
+.koed-setup-dialog {
+  max-width: min(520px, calc(100vw - 32px));
+}
+.koed-setup-dialog-body {
   display: grid;
-  gap: 0.7rem;
+  gap: 18px;
+  margin-top: 20px;
 }
-
-.koed-cli-install-settings h2 {
-  margin: 1rem 0 0;
-  font-size: 1rem;
-}
-
-.koed-cli-install-settings p {
-  margin: 0;
+.koed-setup-removal-note {
+  font-size: 12px;
   color: var(--muted-foreground);
+  line-height: 1.6;
+  margin: 5px 0 0;
 }
-
-.koed-cli-install-actions {
+.koed-setup-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.koed-setup-install-state {
+  padding: 17px;
+  background: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+.koed-setup-install-state-heading {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.koed-setup-install-state-icon {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 22px;
+  color: var(--muted-foreground);
 }
-
-.koed-cli-install-consent {
+.koed-setup-install-state strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.koed-setup-install-state p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
+.koed-setup-install-state[data-stage="progress"] .koed-setup-install-state-icon,
+.koed-setup-install-state[data-stage="ready"] .koed-setup-install-state-icon {
+  color: var(--primary);
+}
+.koed-setup-install-state[data-stage="failed"] {
+  background: color-mix(in srgb, var(--destructive) 6%, var(--background));
+  border-color: color-mix(in srgb, var(--destructive) 25%, var(--border));
+}
+.koed-setup-install-state[data-stage="failed"] .koed-setup-install-state-icon {
+  color: var(--destructive);
+}
+.koed-setup-download-progress {
+  margin: 19px 0 1px 32px;
+}
+.koed-setup-download-progress > div {
   display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
 }
-
-.koed-cli-install-progress {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.koed-cli-install-progress progress {
+.koed-setup-download-progress progress {
+  display: block;
+  appearance: none;
   inline-size: 100%;
+  height: 5px;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--border);
+  accent-color: var(--primary);
+}
+.koed-setup-download-progress progress::-webkit-progress-bar {
+  background: var(--border);
+  border-radius: 8px;
+}
+.koed-setup-download-progress progress::-webkit-progress-value {
+  background: var(--primary);
+  border-radius: 8px;
+  transition: width 300ms ease;
+}
+.koed-setup-download-progress progress::-moz-progress-bar {
+  background: var(--primary);
+  border-radius: 8px;
+}
+.koed-setup-install-steps {
+  display: grid;
+  gap: 14px;
+  list-style: none;
+  margin: 0;
+  padding: 0 4px;
+}
+.koed-setup-install-steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.koed-setup-step-icon {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 10px;
+}
+.koed-setup-install-steps small {
+  font-size: 10px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.koed-setup-install-steps li[data-step="active"] {
+  color: var(--foreground);
+}
+.koed-setup-install-steps li[data-step="active"] .koed-setup-step-icon {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.koed-setup-install-steps li[data-step="complete"] .koed-setup-step-icon {
+  border-color: transparent;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+.koed-setup-install-steps li[data-step="failed"] small,
+.koed-setup-install-steps li[data-step="failed"] .koed-setup-step-icon {
+  color: var(--destructive);
+}
+.koed-setup-install-steps li[data-step="failed"] .koed-setup-step-icon {
+  border-color: transparent;
+}
+.koed-setup-install-background {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+@media (max-width: 400px) {
+  .koed-setup-install-state {
+    padding: 14px;
+  }
+  .koed-setup-install-steps small {
+    display: none;
+  }
+  .koed-setup-download-progress {
+    margin-left: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .koed-setup-download-progress progress::-webkit-progress-value {
+    transition: none;
+  }
+}
+
+.koed-setup-install-state-heading > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }

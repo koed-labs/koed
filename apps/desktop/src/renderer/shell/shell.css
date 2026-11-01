@@ -764,7 +764,7 @@
     inset-block: 0;
     inset-inline-start: 56px;
     inline-size: min(300px, calc(100vw - 56px));
-    transform: translateX(-110%);
+    transform: translateX(calc(-100% - 56px));
     transition: transform 160ms ease-out;
     box-shadow: 8px 0 24px color-mix(in oklch, black 18%, transparent);
   }

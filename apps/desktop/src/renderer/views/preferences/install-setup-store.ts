@@ -1,0 +1,338 @@
+import type {
+  CliInstallApi,
+  PrivacyInstallStatus
+} from "../../../cli-install/protocol.js";
+import type { LauncherStatus } from "../../../cli-install/launcher.js";
+import type { InstallState, InstallTool } from "./InstallSetupDialog.js";
+
+type Job = InstallState & {
+  message?: string;
+  heading?: string;
+  unavailable?: boolean;
+  requiresPackagedApp?: boolean;
+  checking?: boolean;
+  removing?: boolean;
+};
+export type SetupSnapshot = {
+  privacy: Job;
+  cli: Job;
+  launcher: LauncherStatus | null;
+  privacyStatus: PrivacyInstallStatus | null;
+  cancelling: boolean;
+};
+const idle = (): Job => ({
+  stage: "idle",
+  step: 0,
+  percent: null,
+  running: false,
+  checking: true
+});
+const errorMessage = (cause: unknown) =>
+  (cause instanceof Error ? cause.message : String(cause)).replace(
+    /^Error invoking remote method '[^']+': (?:Error: )?/,
+    ""
+  );
+
+// One controller per Desktop bridge keeps operations alive across navigation.
+const stores = new WeakMap<CliInstallApi, InstallSetupStore>();
+export function getInstallSetupStore(api: CliInstallApi) {
+  let store = stores.get(api);
+  if (!store) {
+    store = new InstallSetupStore(api);
+    stores.set(api, store);
+  }
+  return store;
+}
+export class InstallSetupStore {
+  private state: SetupSnapshot = {
+    privacy: idle(),
+    cli: idle(),
+    launcher: null,
+    privacyStatus: null,
+    cancelling: false
+  };
+  private cancelRequested = false;
+  // Invalidate status reads when a newer read or a mutating operation starts.
+  private revision = { privacy: 0, cli: 0 };
+  private listeners = new Set<() => void>();
+  constructor(private api: CliInstallApi) {
+    api.subscribe((event) => {
+      if (!this.state.privacy.running) return;
+      const step = /activation|restart/.test(event.stage)
+        ? 2
+        : /verif|extract|inference|fallback/.test(event.stage)
+          ? 1
+          : 0;
+      const percent =
+        event.totalBytes && event.completedBytes !== null
+          ? Math.max(
+              0,
+              Math.min(
+                100,
+                Math.round((event.completedBytes / event.totalBytes) * 100)
+              )
+            )
+          : null;
+      this.job("privacy", {
+        step,
+        percent,
+        message:
+          event.message ||
+          (step === 0
+            ? "Downloading the components needed on this device."
+            : step === 1
+              ? "Checking files before they are installed."
+              : event.stage === "restart"
+                ? "Restarting local Koed services to activate Privacy Filter."
+                : "Activating the verified Privacy Filter components.")
+      });
+    });
+  }
+  snapshot = () => this.state;
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+  private update(next: Partial<SetupSnapshot>) {
+    this.state = { ...this.state, ...next };
+    this.listeners.forEach((listener) => listener());
+  }
+  private job(tool: InstallTool, next: Partial<Job>) {
+    this.update({ [tool]: { ...this.state[tool], ...next } });
+  }
+  refresh = async () => {
+    await Promise.all([this.refreshPrivacy(), this.refreshLauncher()]);
+  };
+  private async refreshPrivacy() {
+    if (this.state.privacy.running) return;
+    const revision = ++this.revision.privacy;
+    this.job("privacy", { checking: true });
+    try {
+      const status = await this.api.getStatus();
+      if (revision !== this.revision.privacy) return;
+      this.update({ privacyStatus: status });
+      if (!this.state.privacy.running)
+        this.job("privacy", {
+          checking: false,
+          heading: undefined,
+          unavailable: status.state === "unavailable",
+          requiresPackagedApp: status.reason === "packaged_app_required",
+          stage:
+            status.state === "ready"
+              ? "ready"
+              : status.state === "failed"
+                ? "failed"
+                : status.state === "installing"
+                  ? "progress"
+                  : "idle",
+          message:
+            status.state === "ready"
+              ? this.privacyMessage(status)
+              : status.state === "unavailable" || status.state === "failed"
+                ? status.message
+                : status.installationState === "staged" ||
+                    status.installationState === "starting"
+                  ? status.message
+                  : undefined
+        });
+    } catch (cause) {
+      if (revision !== this.revision.privacy) return;
+      this.job("privacy", {
+        checking: false,
+        unavailable: true,
+        message: errorMessage(cause)
+      });
+    }
+  }
+  private async refreshLauncher() {
+    if (this.state.cli.running) return;
+    const revision = ++this.revision.cli;
+    this.job("cli", { checking: true });
+    try {
+      const launcher = await this.api.launcher("inspect");
+      if (revision !== this.revision.cli) return;
+      this.update({ launcher });
+      if (!this.state.cli.running) {
+        const ready =
+          launcher.ownership === "koed" &&
+          launcher.target === "valid" &&
+          launcher.template === "current" &&
+          (launcher.pathConfigured || launcher.pathVisible);
+        this.job("cli", {
+          checking: false,
+          heading: undefined,
+          removing: false,
+          unavailable: false,
+          stage: ready ? "ready" : "idle",
+          message: undefined
+        });
+      }
+    } catch (cause) {
+      if (revision !== this.revision.cli) return;
+      this.job("cli", {
+        checking: false,
+        unavailable: true,
+        message: errorMessage(cause)
+      });
+    }
+  }
+  installPrivacy = async () => {
+    if (this.state.privacy.running) return;
+    ++this.revision.privacy;
+    this.cancelRequested = false;
+    this.job("privacy", {
+      stage: "progress",
+      step: 0,
+      percent: null,
+      running: true,
+      checking: false,
+      message: undefined,
+      heading: undefined
+    });
+    try {
+      const status = await this.api.installPrivacy(true);
+      this.update({ privacyStatus: status });
+      this.job("privacy", {
+        stage:
+          status.state === "ready"
+            ? "ready"
+            : status.state === "not_installed"
+              ? "idle"
+              : "failed",
+        message:
+          status.state === "ready"
+            ? this.privacyMessage(status)
+            : status.message
+      });
+    } catch (cause) {
+      this.job("privacy", {
+        stage:
+          this.cancelRequested && /cancelled/i.test(errorMessage(cause))
+            ? "idle"
+            : "failed",
+        heading:
+          this.cancelRequested && /cancelled/i.test(errorMessage(cause))
+            ? undefined
+            : "Couldn’t install Privacy Filter",
+        message: errorMessage(cause)
+      });
+    } finally {
+      this.job("privacy", { running: false });
+      this.update({ cancelling: false });
+    }
+  };
+  private privacyMessage(status: PrivacyInstallStatus): string {
+    return [
+      status.message,
+      status.bundleVariant
+        ? `Installed runtime: ${status.bundleVariant === "cuda" ? "CUDA with CPU fallback" : "CPU"}.`
+        : "",
+      status.activeProvider
+        ? `Active provider: ${status.activeProvider.toUpperCase()}.`
+        : "",
+      status.fallbackReason
+        ? status.fallbackReason === "insufficient_measured_benefit"
+          ? "CPU filtering is active because local acceleration did not improve inference."
+          : status.bundleVariant === "cuda"
+            ? "CPU filtering is active after CUDA became unavailable or failed verification."
+            : "CPU filtering is active after local acceleration became unavailable or failed verification."
+        : ""
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  cancelPrivacy = async () => {
+    if (this.state.cancelling || this.state.privacy.step >= 2) return;
+    this.cancelRequested = true;
+    this.update({ cancelling: true });
+    try {
+      await this.api.cancel();
+    } catch (cause) {
+      this.cancelRequested = false;
+      this.update({ cancelling: false });
+      this.job("privacy", {
+        message: `Couldn’t cancel installation: ${errorMessage(cause)}`
+      });
+    }
+  };
+  installCli = async () => {
+    if (this.state.cli.running) return;
+    ++this.revision.cli;
+    this.job("cli", {
+      stage: "progress",
+      step: 0,
+      running: true,
+      checking: false,
+      message: undefined,
+      heading: undefined,
+      removing: false
+    });
+    try {
+      const observed = await this.api.launcher("inspect");
+      const launcher =
+        observed.ownership === "koed" &&
+        observed.target === "valid" &&
+        observed.template === "current"
+          ? observed
+          : await this.api.launcher("install", { consent: true });
+      this.update({ launcher });
+      this.job("cli", { step: 1 });
+      await this.api.updatePath("add", true);
+      // Report ready only when inspection confirms every shell startup file
+      // that a new terminal reads now carries the PATH entry.
+      const verified = await this.api.launcher("inspect");
+      this.update({ launcher: verified });
+      if (!verified.pathConfigured && !verified.pathVisible)
+        throw new Error(
+          "PATH setup did not reach every shell startup file. Retry, or add the launcher directory to PATH manually."
+        );
+      this.job("cli", { stage: "ready" });
+    } catch (cause) {
+      const partial = this.state.cli.step === 1;
+      this.job("cli", {
+        stage: "failed",
+        heading: partial
+          ? "Couldn’t update PATH"
+          : "Couldn’t install command line",
+        message: `${partial ? "The launcher was installed, but PATH setup failed. " : ""}${errorMessage(cause)}`
+      });
+    } finally {
+      this.job("cli", { running: false });
+    }
+  };
+  removeCli = async () => {
+    if (this.state.cli.running) return;
+    ++this.revision.cli;
+    this.job("cli", {
+      stage: "progress",
+      step: 1,
+      running: true,
+      checking: false,
+      removing: true,
+      heading: "Removing command line",
+      message: "Removing the Koed-managed PATH entry and launcher."
+    });
+    try {
+      await this.api.updatePath("remove", true);
+      const launcher = await this.api.launcher("remove");
+      this.update({ launcher });
+      this.job("cli", {
+        stage: "idle",
+        removing: false,
+        step: 0,
+        heading: undefined,
+        message: undefined
+      });
+    } catch (cause) {
+      this.job("cli", {
+        stage: "failed",
+        heading: "Couldn’t remove command line",
+        message: `${errorMessage(cause)} Review setup before trying again.`
+      });
+    } finally {
+      this.job("cli", { running: false });
+    }
+  };
+}

@@ -112,7 +112,7 @@ test("pin-only candidate verifies real npm/Desktop inventories without executing
   try {
     const result = await candidate.verifyReleaseCandidate(f.input, f.readers);
     assert.equal(result.kind, "verified-release-candidate");
-    assert.equal(result.components, 4);
+    assert.equal(result.components, 5);
     assert.equal(result.npm.integrity, f.identity.npm.integrity);
     assert.equal(result.repository, "org/repo");
     assert.equal(result.desktop.catalogVerified, true);

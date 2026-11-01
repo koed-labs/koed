@@ -312,7 +312,10 @@ const child = (pid: number) => {
   return value as never;
 };
 
-const cleanShutdownSignal = (): AbortSignal => AbortSignal.timeout(0);
+const cleanShutdownAfterReady = () => {
+  const controller = new AbortController();
+  return { signal: controller.signal, onReady: () => controller.abort() };
+};
 
 const controlledChild = (pid: number) => {
   const signals: NodeJS.Signals[] = [];
@@ -371,6 +374,7 @@ const closeServer = (server: Server): Promise<void> =>
   new Promise((resolveClose) => server.close(() => resolveClose()));
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
   }
@@ -400,7 +404,7 @@ describe("start supervisor", () => {
     let statusCollections = 0;
     try {
       await startKoedServer({
-        signal: cleanShutdownSignal(),
+        ...cleanShutdownAfterReady(),
         environment: {
           KOED_HOME: root,
           KOED_REPO_ROOT: root,
@@ -852,6 +856,83 @@ describe("start supervisor", () => {
     expect(live.listenerCount("error")).toBe(0);
   });
 
+  it.each(["api", "worker", "stop"])(
+    "interrupts a blocked startup probe on %s failure or stop and releases ownership",
+    async (failure) => {
+      const root = tempDir();
+      const controller = new AbortController();
+      const api = controlledChild(1);
+      const localAiRuntime = controlledChild(2);
+      const worker = controlledChild(3);
+      const spawned = [api, localAiRuntime, worker];
+      let statusCollections = 0;
+      let probeAborted = false;
+      const onReady = vi.fn();
+      vi.spyOn(globalThis, "fetch").mockImplementation(
+        async (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => {
+                probeAborted = true;
+                reject(new Error("probe aborted"));
+              },
+              { once: true }
+            );
+          })
+      );
+      const running = startKoedServer({
+        signal: controller.signal,
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "external",
+          DATABASE_URL: "postgres://operator/db",
+          REDIS_URL: "redis://operator:6379",
+          EMBEDDING_SERVICE_URL: "http://operator:8000",
+          MEMORY_API_TOKEN: "test-runtime-token"
+        },
+        onReady,
+        timeoutMs: 180_000,
+        pollIntervalMs: 60_000,
+        spawnSync: () => spawnResult(),
+        spawn: () => spawned.shift()!.process,
+        collectStatus: async (_environment, dependencies) => {
+          statusCollections++;
+          if (failure === "worker" && statusCollections === 1)
+            return healthyStatus(root);
+          setImmediate(() =>
+            failure === "stop"
+              ? controller.abort()
+              : (failure === "api" ? api : worker).exit(1)
+          );
+          await dependencies?.fetch?.("http://probe.invalid");
+          return healthyStatus(root);
+        }
+      });
+      await expect(running).rejects.toThrow(
+        failure === "stop"
+          ? "Koed startup was stopped before readiness"
+          : `Essential managed child ${failure} exited unexpectedly with code 1`
+      );
+      expect(probeAborted).toBe(true);
+      expect(onReady).not.toHaveBeenCalled();
+      expect(api.signals).toEqual(failure === "api" ? [] : ["SIGTERM"]);
+      if (failure === "worker") {
+        expect(localAiRuntime.signals).toEqual(["SIGTERM"]);
+        expect(worker.signals).toEqual([]);
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      expect(statusCollections).toBe(failure === "worker" ? 2 : 1);
+      expect(existsSync(resolve(root, "run/koed-server.json"))).toBe(false);
+      const next = acquireKoedServerSupervisorLock(
+        resolveKoedServerPaths({ KOED_HOME: root, KOED_REPO_ROOT: root })
+      );
+      expect(next.acquired).toBe(true);
+      releaseKoedServerSupervisorLock(next);
+    }
+  );
+
   it("coordinates sibling shutdown and rejects when one essential child exits", async () => {
     const root = tempDir();
     const api = controlledChild(1);
@@ -1042,7 +1123,7 @@ describe("start supervisor", () => {
     let runtime: { apiUrl?: string } | undefined;
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1132,7 +1213,7 @@ describe("start supervisor", () => {
     let runtime: { dependencyMode?: string; services?: string[] } | undefined;
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1250,7 +1331,7 @@ describe("start supervisor", () => {
       | undefined;
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1419,7 +1500,7 @@ describe("start supervisor", () => {
     }> = [];
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1490,7 +1571,7 @@ describe("start supervisor", () => {
     const commands: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1514,7 +1595,7 @@ describe("start supervisor", () => {
     const spawned: Array<{ command: string; args: string[] }> = [];
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_DEPENDENCY_MODE: "external",
         KOED_HOME: root,
@@ -1550,7 +1631,7 @@ describe("start supervisor", () => {
 
     try {
       await startKoedServer({
-        signal: cleanShutdownSignal(),
+        ...cleanShutdownAfterReady(),
         environment: {
           KOED_HOME: root,
           KOED_REPO_ROOT: root,
@@ -1656,7 +1737,7 @@ describe("start supervisor", () => {
     const spawned: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1714,7 +1795,7 @@ describe("start supervisor", () => {
     const commands: string[] = [];
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1749,7 +1830,7 @@ describe("start supervisor", () => {
 
     await expect(
       startKoedServer({
-        signal: cleanShutdownSignal(),
+        ...cleanShutdownAfterReady(),
         environment: {
           KOED_HOME: root,
           KOED_REPO_ROOT: root,
@@ -1784,7 +1865,7 @@ describe("start supervisor", () => {
 
     await expect(
       startKoedServer({
-        signal: cleanShutdownSignal(),
+        ...cleanShutdownAfterReady(),
         environment: {
           KOED_HOME: root,
           KOED_REPO_ROOT: root,
@@ -1825,7 +1906,7 @@ describe("start supervisor", () => {
     }> = [];
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -1926,7 +2007,7 @@ describe("start supervisor", () => {
     let provisionCalls = 0;
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
@@ -2178,7 +2259,7 @@ describe("start supervisor", () => {
     const spawned: Array<{ command: string; args: string[] }> = [];
 
     await startKoedServer({
-      signal: cleanShutdownSignal(),
+      ...cleanShutdownAfterReady(),
       environment: {
         KOED_DEPENDENCY_MODE: "external",
         KOED_HOME: root,

@@ -2,18 +2,22 @@
 /* global console, process */
 import { createHash } from "node:crypto";
 import { canonicalArtifactBytes } from "../../../packages/koed-server/src/artifact-canonical-json.mjs";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
 import {
   inventoryRuntime,
   writeDesktopBundleManifest
 } from "./finalize-runtime-manifests.mjs";
-import {
-  pruneSharedAppRuntimeMetadata,
-  stageSharedAppRuntime
-} from "../../../scripts/app-runtime-staging.mjs";
-import { prunePrivacyRuntimeForTarget } from "../../../scripts/privacy-runtime-package-policy.mjs";
-import { removeClaudeAgentSdkPlatformRuntimes } from "../../../scripts/provider-runtime-package-policy.mjs";
+import { stageRuntimeComponents } from "../../../scripts/component-assembly.mjs";
+import { assertNoPrivacyPayload } from "./privacy-payload-inventory.mjs";
 import {
   prunePythonEmbeddingRuntimeFiles,
   writeRuntimeAssetManifest
@@ -29,15 +33,27 @@ const writeNativeManifest = () => writeRuntimeAssetManifest({ runtimeRoot });
 rmSync(runtimeRoot, { recursive: true, force: true });
 mkdirSync(runtimeRoot, { recursive: true });
 
-stageSharedAppRuntime({ repoRoot, runtimeRoot });
-removeClaudeAgentSdkPlatformRuntimes(runtimeRoot);
-prunePrivacyRuntimeForTarget({
-  repoRoot,
-  runtimeRoot,
-  platform: process.platform === "darwin" ? "macos" : process.platform,
-  architecture: process.arch
-});
-pruneSharedAppRuntimeMetadata(runtimeRoot);
+mkdirSync(resolve(repoRoot, "scratch"), { recursive: true });
+const componentsRoot = mkdtempSync(
+  resolve(repoRoot, "scratch/desktop-components-")
+);
+let privacyOnlyPackages;
+try {
+  const staged = await stageRuntimeComponents({
+    repoRoot,
+    outputDir: componentsRoot,
+    platform: process.platform === "darwin" ? "macos" : process.platform,
+    architecture: process.arch
+  });
+  cpSync(staged.baseRoot, runtimeRoot, { recursive: true });
+  privacyOnlyPackages = staged.privacyOnlyPackages;
+  writeFileSync(
+    resolve(runtimeRoot, "desktop-privacy-exclusions.json"),
+    `${JSON.stringify({ schemaVersion: 1, packages: privacyOnlyPackages }, null, 2)}\n`
+  );
+} finally {
+  rmSync(componentsRoot, { recursive: true, force: true });
+}
 const nativeRuntimeSource = process.env.KOED_NATIVE_RUNTIME_SOURCE_DIR?.trim();
 if (nativeRuntimeSource) {
   if (!existsSync(nativeRuntimeSource)) {
@@ -48,10 +64,7 @@ if (nativeRuntimeSource) {
   copyNativeRuntimeSource(resolve(nativeRuntimeSource), runtimeRoot);
 }
 prunePythonEmbeddingRuntimeFiles(runtimeRoot);
-rmSync(resolve(runtimeRoot, "privacy-service"), {
-  recursive: true,
-  force: true
-});
+assertNoPrivacyPayload(runtimeRoot, privacyOnlyPackages);
 const nativeAssets = writeNativeManifest();
 if (nativeRuntimeSource && nativeAssets.length === 0) {
   throw new Error(

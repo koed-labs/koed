@@ -228,6 +228,7 @@ export const buildComponentManifest = ({
   componentRoot,
   archivePath,
   component,
+  variant,
   productVersion,
   target,
   runtimes,
@@ -247,9 +248,10 @@ export const buildComponentManifest = ({
     });
   const archive = readFileSync(archivePath);
   return {
-    schemaVersion: 1,
+    schemaVersion: variant === undefined ? 1 : 2,
     productVersion,
     component,
+    ...(variant === undefined ? {} : { variant }),
     target,
     runtimes,
     archive: {

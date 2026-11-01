@@ -34,7 +34,7 @@ test("global npm control plane admits only pinned components without checkout im
     ).version;
     const componentsRoot = resolve(scratch, "component-inputs");
     const assetsDir = resolve(scratch, "component-assets");
-    for (const component of ["base", "privacy"]) {
+    for (const component of ["base", "privacy", "privacy-cpu"]) {
       mkdirSync(resolve(componentsRoot, component), { recursive: true });
       writeFileSync(
         resolve(componentsRoot, component, "ready.js"),
@@ -43,7 +43,9 @@ test("global npm control plane admits only pinned components without checkout im
     }
     for (const target of [
       requiredComponentIdentities[0].target,
-      requiredComponentIdentities[2].target
+      requiredComponentIdentities.find(
+        (entry) => entry.target.platform === "macos"
+      ).target
     ])
       buildComponentReleaseSet({
         componentsRoot,

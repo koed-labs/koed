@@ -335,7 +335,9 @@ export const verifyReleaseCandidate = async (input, readers) => {
         ...asset,
         id: release.assets.find((a) => a.name === asset.name).id
       })),
-      components: 4,
+      components: expected.assets.filter((asset) =>
+        /^koed-(?:base|privacy)-.*\.tar\.gz\.manifest\.json$/.test(asset.name)
+      ).length,
       npm,
       desktop,
       registry: registry ? "verified" : "unpublished"

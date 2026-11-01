@@ -64,13 +64,15 @@ export const candidateFixture = ({
   const root = mkdtempSync(resolve("scratch/candidate-test-"));
   const assetsDir = resolve(root, "assets");
   const componentsRoot = resolve(root, "components");
-  for (const component of ["base", "privacy"]) {
+  for (const component of ["base", "privacy", "privacy-cpu"]) {
     mkdirSync(resolve(componentsRoot, component), { recursive: true });
     writeFileSync(resolve(componentsRoot, component, "main.js"), payload);
   }
   for (const target of [
     requiredComponentIdentities[0].target,
-    requiredComponentIdentities[2].target
+    requiredComponentIdentities.find(
+      (entry) => entry.target.platform === "macos"
+    ).target
   ])
     buildComponentReleaseSet({
       componentsRoot,

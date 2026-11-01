@@ -9,6 +9,7 @@ import {
 } from "./privacy-model-runtime.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import type { KoedAppRuntime } from "./app-runtime.js";
+import { readPrivacyInstallationRecord } from "./privacy-installation-record.js";
 
 type SpawnLike = (
   command: string,
@@ -33,19 +34,35 @@ const trim = (value: string | undefined): string | undefined =>
 
 export const localPrivacyEnv = (
   paths: KoedServerPaths,
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  selectedRuntime?: KoedAppRuntime
 ): NodeJS.ProcessEnv => {
   const host = trim(environment.PRIVACY_SERVICE_HOST) ?? "127.0.0.1";
   const port = trim(environment.PRIVACY_SERVICE_PORT) ?? "8092";
+  const preference =
+    trim(environment.PRIVACY_RUNTIME_PROVIDER) ??
+    trim(environment.KOED_HARDWARE_ACCELERATION) ??
+    "auto";
+  const installation =
+    selectedRuntime?.generationId && selectedRuntime.privacyManifestDigest
+      ? readPrivacyInstallationRecord(
+          paths,
+          selectedRuntime.generationId,
+          selectedRuntime.privacyManifestDigest
+        )
+      : null;
+  const recoveredCpu =
+    preference === "auto" &&
+    selectedRuntime?.privacyVariant === "cuda" &&
+    installation?.verification.activeProvider === "cpu" &&
+    installation.verification.fallbackReason ===
+      "cuda_initialization_or_inference_failed";
   return {
     PRIVACY_SERVICE_HOST: host,
     PRIVACY_SERVICE_PORT: port,
     PRIVACY_SERVICE_URL: `http://${host}:${port}`,
     KOED_PRIVACY_TRANSFORMERS_CACHE: resolvePrivacyModelPaths(paths).cacheDir,
-    PRIVACY_RUNTIME_PROVIDER:
-      trim(environment.PRIVACY_RUNTIME_PROVIDER) ??
-      trim(environment.KOED_HARDWARE_ACCELERATION) ??
-      "auto",
+    PRIVACY_RUNTIME_PROVIDER: recoveredCpu ? "cpu" : preference,
     PRIVACY_GPU_IDLE_UNLOAD_SECONDS:
       trim(environment.PRIVACY_GPU_IDLE_UNLOAD_SECONDS) ?? "300"
   };
@@ -84,7 +101,7 @@ const collectLocalPrivacyHealth = async (
   includeDiagnostics = true
 ): Promise<LocalPrivacyRuntimeStatus> => {
   const exists = dependencies.existsSync ?? existsSync;
-  const env = localPrivacyEnv(paths, environment);
+  const env = localPrivacyEnv(paths, environment, dependencies.appRuntime);
   const runtime = runtimePaths(paths, environment, dependencies.appRuntime);
   const missing = [
     ...(runtime.entry ? [runtime.entry] : ["authenticated privacy generation"]),
@@ -219,7 +236,10 @@ export const startLocalPrivacyRuntime = async (
     appRuntime?: KoedAppRuntime;
   } = {}
 ): Promise<LocalPrivacyRuntimeStartResult> => {
-  const env = { ...environment, ...localPrivacyEnv(paths, environment) };
+  const env = {
+    ...environment,
+    ...localPrivacyEnv(paths, environment, dependencies.appRuntime)
+  };
   const runtime = runtimePaths(paths, environment, dependencies.appRuntime);
   const exists = dependencies.existsSync ?? existsSync;
   if (!runtime.entry || !exists(runtime.entry) || !exists(runtime.bootstrap)) {

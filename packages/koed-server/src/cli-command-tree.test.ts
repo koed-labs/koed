@@ -71,7 +71,8 @@ describe("Commander help and lightweight actions", () => {
       "--password-fd",
       "--provider"
     ],
-    [["components", "install", "--help"], "--manifest-url", "--password"]
+    [["components", "install", "--help"], "--manifest-url", "--password"],
+    [["components", "install", "--help"], "--variant", "--password"]
   ])(
     "shows scoped help without invoking actions for %j",
     async (args, included, excluded) => {
@@ -197,7 +198,8 @@ describe("Commander help and lightweight actions", () => {
 
   it.each([
     [["--json"], "--json"],
-    [["--component", "base", "--component", "privacy"], "--component"]
+    [["--component", "base", "--component", "privacy"], "--component"],
+    [["--variant", "cpu", "--variant", "cuda"], "--variant"]
   ] as [string[], string][])(
     "rejects duplicate component options before resolving paths for %j",
     async (flags, flag) => {

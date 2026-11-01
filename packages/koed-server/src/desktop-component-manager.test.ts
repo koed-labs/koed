@@ -14,6 +14,7 @@ import { resolveKoedServerPaths } from "./paths.js";
 import {
   createDesktopComponentManagerBridge,
   createDesktopPrivacyRpcHandler,
+  explicitCudaInstallRejection,
   validateDesktopBundle
 } from "./desktop-component-manager.js";
 import {
@@ -343,5 +344,88 @@ describe("Desktop bundled component capability", () => {
         "0.8.1"
       )
     ).toThrow("Desktop runtime bundle manifest path is invalid");
+  });
+});
+
+describe("explicit CUDA Privacy install", () => {
+  const linux = {
+    target: "linux-x64" as const,
+    observedAt: "2026-10-31T00:00:00.000Z"
+  };
+  const cudaCompatible = {
+    ...linux,
+    variant: "cuda" as const,
+    compatible: true,
+    reason: "cuda_compatibility_established"
+  };
+  const cudaInference = {
+    activeProvider: "cuda" as const,
+    requestedProvider: "cuda" as const,
+    executedProviders: ["CUDAExecutionProvider"],
+    proof: "onnx-execution-profile" as const,
+    maskingSha256: "a".repeat(64)
+  };
+
+  it("rejects a CPU bundle selected because CUDA libraries are missing", () => {
+    const compatibility = {
+      ...linux,
+      variant: "cpu" as const,
+      compatible: false,
+      reason: "missing_library:libcudnn.so.9"
+    };
+    expect(
+      explicitCudaInstallRejection({ preference: "cuda", compatibility })
+    ).toMatch(
+      /set to CUDA.*cannot run the CUDA Privacy Filter runtime \(missing_library:libcudnn\.so\.9\).*Auto or CPU/
+    );
+    expect(
+      explicitCudaInstallRejection({ preference: "auto", compatibility })
+    ).toBeUndefined();
+  });
+
+  it("rejects a CUDA bundle whose verification fell back to CPU inference", () => {
+    const verification = {
+      ...cudaInference,
+      activeProvider: "cpu" as const,
+      executedProviders: ["CPUExecutionProvider"],
+      fallbackReason: "cuda_initialization_or_inference_failed"
+    };
+    expect(
+      explicitCudaInstallRejection({
+        preference: " CUDA ",
+        compatibility: cudaCompatible,
+        verification
+      })
+    ).toMatch(
+      /set to CUDA.*only succeeded on CPU \(cuda_initialization_or_inference_failed\)/
+    );
+    expect(
+      explicitCudaInstallRejection({
+        preference: "auto",
+        compatibility: cudaCompatible,
+        verification
+      })
+    ).toBeUndefined();
+  });
+
+  it("accepts verified CUDA inference and ignores non-Linux targets", () => {
+    expect(
+      explicitCudaInstallRejection({
+        preference: "cuda",
+        compatibility: cudaCompatible,
+        verification: cudaInference
+      })
+    ).toBeUndefined();
+    expect(
+      explicitCudaInstallRejection({
+        preference: "cuda",
+        compatibility: {
+          target: "macos-arm64",
+          compatible: true,
+          reason: "macos_provider_selection_unchanged",
+          observedAt: linux.observedAt
+        }
+      })
+    ).toBeUndefined();
   });
 });

@@ -287,16 +287,16 @@ describe("PreferencesView", () => {
       managedByEnvironment: false
     }));
     await renderPreferences({ hardwareAcceleration: { get, set } });
-    const toggle = container.querySelector<HTMLInputElement>(
-      'input[aria-label="Hardware acceleration"]'
+    const toggle = container.querySelector<HTMLElement>(
+      '[role="switch"][aria-label="Hardware acceleration"]'
     );
     expect(toggle).toBeTruthy();
-    expect(toggle!.checked).toBe(true);
+    expect(toggle!.getAttribute("aria-checked")).toBe("true");
 
     await act(async () => toggle!.click());
 
     expect(set).toHaveBeenCalledWith(false);
-    expect(toggle!.checked).toBe(false);
+    expect(toggle!.getAttribute("aria-checked")).toBe("false");
   });
 
   it("disables hardware acceleration controlled by the Operator environment", async () => {
@@ -309,10 +309,10 @@ describe("PreferencesView", () => {
         set: vi.fn()
       }
     });
-    const toggle = container.querySelector<HTMLInputElement>(
-      'input[aria-label="Hardware acceleration"]'
+    const toggle = container.querySelector<HTMLElement>(
+      '[role="switch"][aria-label="Hardware acceleration"]'
     );
-    expect(toggle!.disabled).toBe(true);
+    expect(toggle!.getAttribute("aria-disabled")).toBe("true");
     expect(container.textContent).toContain("managed by the Operator");
   });
 
@@ -328,16 +328,16 @@ describe("PreferencesView", () => {
       supported: true
     }));
     await renderPreferences({ launchAtStartup: { get, set } });
-    const toggle = container.querySelector<HTMLInputElement>(
-      'input[aria-label="Launch Koed at startup"]'
+    const toggle = container.querySelector<HTMLElement>(
+      '[role="switch"][aria-label="Launch Koed at startup"]'
     );
 
     expect(toggle).toBeTruthy();
-    expect(toggle!.checked).toBe(false);
+    expect(toggle!.getAttribute("aria-checked")).toBe("false");
     await act(async () => toggle!.click());
 
     expect(set).toHaveBeenCalledWith(true);
-    expect(toggle!.checked).toBe(true);
+    expect(toggle!.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).toContain(
       "Start Koed in the background when you sign in."
     );
@@ -368,10 +368,10 @@ describe("PreferencesView", () => {
         set: vi.fn()
       }
     });
-    const toggle = container.querySelector<HTMLInputElement>(
-      'input[aria-label="Launch Koed at startup"]'
+    const toggle = container.querySelector<HTMLElement>(
+      '[role="switch"][aria-label="Launch Koed at startup"]'
     );
-    expect(toggle!.disabled).toBe(true);
+    expect(toggle!.getAttribute("aria-disabled")).toBe("true");
     expect(container.textContent).toContain(
       "Available in a packaged Koed app."
     );
@@ -390,13 +390,13 @@ describe("PreferencesView", () => {
         })
       }
     });
-    const toggle = container.querySelector<HTMLInputElement>(
-      'input[aria-label="Launch Koed at startup"]'
+    const toggle = container.querySelector<HTMLElement>(
+      '[role="switch"][aria-label="Launch Koed at startup"]'
     );
 
     await act(async () => toggle!.click());
 
-    expect(toggle!.checked).toBe(false);
+    expect(toggle!.getAttribute("aria-checked")).toBe("false");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "could not be changed"
     );

@@ -18,9 +18,14 @@ import { createGunzip } from "node:zlib";
 import type {
   ArtifactTarget,
   ComponentId,
+  ComponentVariant,
   ComponentManifest,
   RuntimeIdentity
 } from "./component-contract.js";
+import {
+  componentArchiveName,
+  validateComponentVariantIdentity
+} from "./component-artifact-identity.mjs";
 import {
   lookupManifestPin,
   type ManifestPinCatalog
@@ -40,6 +45,7 @@ export interface ComponentVerificationInput {
   manifestCatalog: ManifestPinCatalog | null;
   archivePath: string;
   expectedComponent: ComponentId;
+  expectedVariant?: ComponentVariant;
   expectedVersion: string;
   target: ArtifactTarget;
   runtime: RuntimeIdentity;
@@ -91,15 +97,19 @@ export function validateComponentManifest(
     "runtimes",
     "archive",
     "requiredFiles",
-    "files"
+    "files",
+    ...(value && typeof value === "object" && Object.hasOwn(value, "variant")
+      ? ["variant"]
+      : [])
   ]);
   const manifest = value as unknown as ComponentManifest;
   if (
-    manifest.schemaVersion !== 1 ||
+    ![1, 2].includes(manifest.schemaVersion) ||
     !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.productVersion) ||
     !["base", "privacy"].includes(manifest.component)
   )
     throw new Error("component manifest identity is invalid");
+  validateComponentVariantIdentity(manifest);
   assertRecord(
     manifest.target,
     "component target",
@@ -137,6 +147,11 @@ export function validateComponentManifest(
     !isHash(manifest.archive.sha256)
   )
     throw new Error("component archive metadata is invalid");
+  if (
+    manifest.variant !== undefined &&
+    manifest.archive.name !== componentArchiveName(manifest)
+  )
+    throw new Error("Component archive variant identity mismatch.");
   if (
     !Array.isArray(manifest.runtimes) ||
     manifest.runtimes.length === 0 ||
@@ -259,6 +274,8 @@ function verifyCompatibility(
 ): void {
   if (manifest.component !== input.expectedComponent)
     throw new Error("component mismatch");
+  if (manifest.variant !== input.expectedVariant)
+    throw new Error("component variant mismatch");
   if (manifest.productVersion !== input.expectedVersion)
     throw new Error("product version mismatch");
   if (canonicalJson(manifest.target) !== canonicalJson(input.target))
@@ -457,6 +474,7 @@ export function verifyComponentManifestPin(
     | "manifestBytes"
     | "manifestCatalog"
     | "expectedComponent"
+    | "expectedVariant"
     | "expectedVersion"
     | "target"
   >
@@ -476,6 +494,9 @@ export function verifyComponentManifestPin(
     throw new Error("component manifest is not canonical");
   const pinnedDigest = lookupManifestPin(input.manifestCatalog, {
     component: input.expectedComponent,
+    ...(input.expectedVariant === undefined
+      ? {}
+      : { variant: input.expectedVariant }),
     productVersion: input.expectedVersion,
     target: input.target
   });
@@ -483,6 +504,8 @@ export function verifyComponentManifestPin(
     throw new Error("component manifest pin mismatch");
   if (manifest.component !== input.expectedComponent)
     throw new Error("component mismatch");
+  if (manifest.variant !== input.expectedVariant)
+    throw new Error("component variant mismatch");
   if (manifest.productVersion !== input.expectedVersion)
     throw new Error("product version mismatch");
   if (canonicalJson(manifest.target) !== canonicalJson(input.target))

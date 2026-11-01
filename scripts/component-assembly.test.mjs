@@ -1120,3 +1120,47 @@ test("remote MCP dynamic contract import requires its concrete component target"
   );
   assert.match(classify(edge, []).error, /entrypoint is absent/);
 });
+
+test("Privacy inference imports remain limited to the authenticated three-module boundary", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "koed-inference-policy-"));
+  roots.push(root);
+  const closure = [
+    { manifest: { name: "@koed-labs/server" }, packageRoot: root }
+  ];
+  const classify = (file, argumentText, packages = closure) =>
+    classifyRuntimeException(
+      "@koed-labs/server",
+      file,
+      { kind: "dynamic", loader: "import", argumentText },
+      packages
+    );
+  assert.match(
+    classify("dist/privacy-inference-probe.js", 'moduleUrl("config.js")').error,
+    /authenticated component/
+  );
+  for (const name of [
+    "privacy-inference",
+    "component-store",
+    "privacy-model-runtime"
+  ])
+    write(resolve(root, `dist/${name}.js`), "export {};\n");
+  for (const name of ["config", "runtime-factory", "runtime-manager"])
+    assert.equal(
+      classify("dist/privacy-inference-probe.js", `moduleUrl("${name}.js")`)
+        .owner,
+      "authenticated-privacy-inference-modules"
+    );
+  for (const value of [
+    'moduleUrl("index.js")',
+    'moduleUrl("../config.js")',
+    "moduleUrl(file)",
+    'otherModule("config.js")'
+  ])
+    assert.equal(classify("dist/privacy-inference-probe.js", value), null);
+  assert.equal(classify("dist/unrelated.js", 'moduleUrl("config.js")'), null);
+  assert.match(
+    classify("dist/privacy-inference-probe.js", 'moduleUrl("config.js")', [])
+      .error,
+    /authenticated component/
+  );
+});

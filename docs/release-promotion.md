@@ -128,27 +128,3 @@ A safe recovery path requires all of the following before any mutation:
 For a draft failure, a rerun of the same workflow attempt is forbidden by the first-attempt approval policy. A new protected release run and fresh independent review may promote the draft only if its reviewed build matches every existing immutable draft asset and all normal checks pass; rebuilding is not proof of the original reviewed bytes. If no such new run can be started or matching evidence cannot be established, leave the draft unchanged and escalate to repository/environment and npm administrators. These are prerequisites, not an authorization to bypass the checks. No live configuration, approval, artifact availability or registry state was verified by this document.
 
 Candidate publication uses `candidate-<version>` (for example, `candidate-0.9.0`), which npm accepts as a dist-tag. Canonical manifest bytes have no trailing newline. Promotion statically inspects the effective packed control-plane catalog; a detached catalog file alone cannot establish admission authority.
-
-## Historical signed-path lifecycle evidence — not pin acceptance
-
-On 2026-10-14, fresh macOS arm64 Base and Privacy Filter component archives were
-signed with KMS key version 1 (`koed-components-2026-01`) using the v2 message.
-The public control-plane npm tarball was installed offline outside the checkout,
-with its embedded production trust roots unchanged. Component installation and
-generation activation passed in isolated homes, followed by healthy Personal and
-Team startup, shutdown, restart and final shutdown. Team diagnostics verified the
-API, database, queues, embedding and Privacy services, Local AI Runtime, API Token,
-MCP Server and device identity. No test service processes remained afterward.
-
-This historical run used preinstalled native PostgreSQL and llama.cpp binaries
-and cached pinned model files. It is not pin-only acceptance and does not validate
-native dependency installation, a fresh Desktop GUI handshake, other platform
-targets, upgrade or rollback migration, or production publication. Publication
-remained disabled. It imposes no component-signer retention requirement.
-Apple Developer ID signing/notarization, unrelated hosted/encryption KMS and
-legacy app-runtime provenance remain unchanged.
-
-Assembly audits account for the remote MCP client's exact dynamic import of the
-selected MCP runtime contracts. That exception requires the concrete
-`@koed/mcp-server` contracts entrypoint in the component dependency closure;
-unowned dynamic imports continue to fail closed.

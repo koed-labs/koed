@@ -36,6 +36,8 @@ export interface LauncherStatus {
   // "legacy" launchers are unchanged v1 files that installation upgrades.
   template: "current" | "legacy" | null;
   pathVisible: boolean;
+  // A managed shell PATH block exists for the active launcher directory.
+  pathConfigured?: boolean;
   fingerprint: string | null;
 }
 

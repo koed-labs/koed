@@ -88,6 +88,15 @@ describe("desktop provider runtime packaging policy", () => {
       writeFileSync(resolve(packageRoot, "LICENSE.md"), "fixture");
       writeFileSync(resolve(packageRoot, "claude"), "fixture", { mode: 0o755 });
 
+      writeFileSync(
+        resolve(
+          packagedResourcesRoot(context),
+          "koed-runtime",
+          "desktop-privacy-exclusions.json"
+        ),
+        JSON.stringify({ schemaVersion: 1, packages: [] })
+      );
+
       await afterPack(context);
 
       assert.equal(existsSync(packageRoot), false);

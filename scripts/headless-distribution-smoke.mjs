@@ -113,14 +113,21 @@ const fixturePins = buildComponentManifestCatalog({
   manifests: Object.values(manifest.components).map((entry) =>
     readFileSync(resolve(release, entry.manifest))
   ),
-  required: ["base", "privacy"].map((component) => ({
-    component,
-    target: manifest.target
-  }))
+  required: Object.values(manifest.components).map((entry) => {
+    const value = JSON.parse(
+      readFileSync(resolve(release, entry.manifest), "utf8")
+    );
+    return {
+      component: value.component,
+      target: value.target,
+      ...(value.variant ? { variant: value.variant } : {})
+    };
+  })
 });
 // Other targets are deliberately unusable fixture entries, not release evidence.
 const catalog = {
   ...fixturePins,
+  schemaVersion: 2,
   entries: requiredComponentIdentities.map(
     (identity) =>
       fixturePins.entries.find(
@@ -366,7 +373,12 @@ try {
   });
   const onlineHome = resolve(scratch, "online-home");
   for (const component of ["base", "privacy"]) {
-    const artifact = manifest.components[component];
+    const variant =
+      component === "privacy" && manifest.target.platform === "linux"
+        ? "cpu"
+        : undefined;
+    const artifact =
+      manifest.components[variant ? `privacy-${variant}` : component];
     run(
       executable,
       [
@@ -374,6 +386,7 @@ try {
         "install",
         "--component",
         component,
+        ...(variant ? ["--variant", variant] : []),
         "--archive-url",
         `https://localhost:${port}/${artifact.archive}`,
         "--manifest-url",
@@ -408,7 +421,12 @@ try {
   artifactServer.kill();
 }
 for (const component of ["base", "privacy"]) {
-  const artifact = manifest.components[component];
+  const variant =
+    component === "privacy" && manifest.target.platform === "linux"
+      ? "cpu"
+      : undefined;
+  const artifact =
+    manifest.components[variant ? `privacy-${variant}` : component];
   run(
     executable,
     [
@@ -416,6 +434,7 @@ for (const component of ["base", "privacy"]) {
       "install",
       "--component",
       component,
+      ...(variant ? ["--variant", variant] : []),
       "--archive",
       resolve(release, artifact.archive),
       "--manifest",

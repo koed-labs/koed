@@ -104,6 +104,7 @@ const main = async () => {
     componentsRoot,
     outDir: options.outDir,
     version: options.version,
+    privacyCpuRoot: staged.privacyCpuRoot,
     target: {
       platform: options.platform,
       architecture: options.architecture,
@@ -117,7 +118,10 @@ const main = async () => {
     }),
     requiredFiles: {
       base: staged.baseRequired,
-      privacy: staged.privacyRequired
+      privacy: staged.privacyRequired,
+      ...(staged.privacyCpuRequired
+        ? { "privacy-cpu": staged.privacyCpuRequired }
+        : {})
     }
   });
   console.log(JSON.stringify({ ok: true, ...result }, null, 2));

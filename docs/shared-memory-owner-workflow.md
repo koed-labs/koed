@@ -9,18 +9,13 @@ grants no access until its entire approved representation is validated and
 published. Progress uses the existing owner-authorized Shares reads and refresh;
 it does not expose captured text or a new Team read capability.
 
-The [production plan](../tickets.md) restores rule content-policy editing after
-local acceptance of P2-09A and P2-09B. Conversation, Git Anchor, Folder, and
-Project rules use the same reviewed amendment and durable delivery boundaries.
+Conversation, Git Anchor, Folder, and Project rules support content-policy editing
+through the same reviewed amendment and durable delivery boundaries.
 Restrictive changes remove unsupported access immediately. Broader changes
 require fresh approval against current owner, Team, and Workspace permissions.
 Stopped rules remain stopped.
 
-The [accepted alpha](archive/2026-10-21-operational-alpha/tickets.md) disabled
-these editors. That restriction describes the archived build. Current policy
-editing is enabled through Desktop, HTTP, native approval, and browser approval.
-The [validation record](team-continuous-sharing-validation.md) records the local
-evidence and the outstanding combined native acceptance gate.
+Policy editing is enabled through Desktop, HTTP, native approval, and browser approval.
 
 Captured Session sharing also requires the upstream Sync route policy and a
 current device enrollment that includes `sync`, in addition to Share Grant
@@ -1128,8 +1123,6 @@ detail. An unresolved selector admission retains its immutable evidence. The
 publisher adopts the new scope and re-admits that source through the existing
 versioned replacement path; obsolete admission work cannot activate under the
 new rule version. Paused rules wait for an explicit resume before new admission.
-Local acceptance is recorded in the [P2-08 validation record](team-continuous-sharing-validation.md#p2-08-local-acceptance).
-The combined native package journey remains open.
 
 ## Rule content policy
 
@@ -1199,12 +1192,6 @@ The worker can reuse classification spans for unchanged source and classifier
 bindings, then produce a fresh sanitized payload. A content amendment releases
 old processing leases, including when the content policy later returns to the
 same hash.
-
-Focused local checks cover active and paused publication, future revisions,
-independent reasons, immediate recall and cached expansion denial, exact delivery
-receipt recovery and stopped-state preservation. See the
-[production validation record](team-continuous-sharing-validation.md#p2-09a-and-p2-09b-reviewed-content-policy-operation).
-The combined native package journey remains open.
 
 Historical preparation now has a storage link to the exact original publication.
 Its source proof checks the revision, representation and content hashes when

@@ -5,6 +5,33 @@ const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const platformDirectory = (platform) =>
   platform === "macos" ? "darwin" : platform === "windows" ? "win32" : platform;
 
+export const prunePrivacyRuntimeVariant = ({ runtimeRoot, variant }) => {
+  if (!["cpu", "cuda"].includes(variant))
+    throw new Error("Unknown Linux Privacy variant.");
+  const nativeRoot = resolve(
+    runtimeRoot,
+    "node_modules/onnxruntime-node/bin/napi-v6/linux/x64"
+  );
+  const gpuFiles = [
+    "libonnxruntime_providers_cuda.so",
+    "libonnxruntime_providers_shared.so",
+    "libonnxruntime_providers_tensorrt.so"
+  ];
+  const expected = [
+    "libonnxruntime.so.1",
+    "onnxruntime_binding.node",
+    ...gpuFiles
+  ].sort();
+  const actual = readdirSync(nativeRoot).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected))
+    throw new Error(
+      "Linux Privacy native files changed; review the CPU/CUDA boundary."
+    );
+  if (variant === "cpu")
+    for (const file of gpuFiles) rmSync(resolve(nativeRoot, file));
+  return readdirSync(nativeRoot).sort();
+};
+
 export const prunePrivacyRuntimeForTarget = ({
   repoRoot,
   runtimeRoot,

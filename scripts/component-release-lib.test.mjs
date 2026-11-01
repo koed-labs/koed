@@ -30,7 +30,7 @@ for (const target of [
     try {
       const componentsRoot = resolve(root, "components");
       const outDir = resolve(root, "release");
-      for (const component of ["base", "privacy"]) {
+      for (const component of ["base", "privacy", "privacy-cpu"]) {
         write(
           resolve(componentsRoot, component, "service.js"),
           `export {}; // ${component}\n`
@@ -50,11 +50,13 @@ for (const target of [
         ],
         requiredFiles: { base: ["service.js"], privacy: ["service.js"] }
       };
-      for (const component of ["base", "privacy"]) {
+      for (const component of target.platform === "linux"
+        ? ["base", "privacy-cpu", "privacy-cuda"]
+        : ["base", "privacy"]) {
         write(
           resolve(
             outDir,
-            `koed-${component}-1.2.3-${target.platform}-${target.architecture}.tar.gz.signature.json`
+            `koed-${component.split("-")[0]}-1.2.3-${target.platform}-${target.architecture}${component.includes("-") ? `-${component.split("-")[1]}` : ""}.tar.gz.signature.json`
           ),
           '{"status":"unsigned-placeholder"}\n'
         );
@@ -71,12 +73,14 @@ for (const target of [
       ]);
       assert.equal(distribution.version, "1.2.3");
       assert.equal(result.productionReady, undefined);
-      assert.deepEqual(Object.keys(distribution.components).sort(), [
-        "base",
-        "privacy"
-      ]);
+      assert.deepEqual(
+        Object.keys(distribution.components).sort(),
+        target.platform === "linux"
+          ? ["base", "privacy-cpu", "privacy-cuda"]
+          : ["base", "privacy"]
+      );
       const expectedFiles = [result.distributionManifest.split("/").at(-1)];
-      for (const component of ["base", "privacy"]) {
+      for (const component of Object.keys(distribution.components)) {
         const entry = distribution.components[component];
         assert.deepEqual(Object.keys(entry).sort(), [
           "archive",
@@ -91,7 +95,8 @@ for (const target of [
           manifestBytes,
           canonicalComponentManifestBytes(manifest)
         );
-        assert.equal(manifest.component, component);
+        assert.equal(manifest.component, component.split("-")[0]);
+        assert.equal(manifest.variant, component.split("-")[1]);
         assert.equal(manifest.archive.sha256, entry.archiveSha256);
         assert.equal(
           sha256(readFileSync(resolve(outDir, entry.archive))),
