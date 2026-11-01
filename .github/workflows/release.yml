@@ -924,8 +924,12 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [release, reviewed-release-identity]
     if: needs.release.outputs.desktop_assets_enabled == 'true'
+    # GitHub shows draft releases and their assets only to tokens with write
+    # access, so a contents: read token gets HTTP 403 on the release draft.
+    # The verifier itself stays GET-only and receives no publication or
+    # signing credentials.
     permissions:
-      contents: read
+      contents: write
       actions: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
