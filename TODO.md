@@ -9,6 +9,12 @@ Publication remains a separate decision.
 - [ ] Bind all native reports, frozen components, and the complete embedded catalog to the final reviewed release candidate.
 - [ ] Complete signed/notarized clean-Mac launch and downloaded native-code acceptance using the final signed artifacts.
 - [ ] Complete required release CI and exact public runtime-URL installation against that candidate.
+- [ ] Before publishing a resumed draft release, verify that its tag and target
+      commit match the commit the release assets were built from.
+- [ ] Stop the MCP Server's `tsc -b --force` from recompiling the Server, which
+      overwrites its embedded release catalog and bypasses the Server's staged
+      build. Add coverage that a full build keeps the catalog, with and without
+      `KOED_COMPONENT_MANIFEST_CATALOG`.
 
 The [installation guide](docs/optional-privacy-installation.md) defines compatibility selection, filtering readiness, and CPU fallback.
 

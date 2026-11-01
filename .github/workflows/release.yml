@@ -307,6 +307,14 @@ jobs:
         run: |
           pnpm build
           node scripts/verify-frozen-component-assets.mjs release-components "${KOED_COMPONENT_MANIFEST_CATALOG}" "${{ needs.release.outputs.version }}"
+          # Fail here, not at qualification, if a later workspace build replaced
+          # the Server's embedded release catalog.
+          node --input-type=module -e '
+            import assert from "node:assert/strict";
+            import { readFileSync } from "node:fs";
+            const { productionComponentManifestCatalog } = await import("./packages/koed-server/dist/component-manifest-catalog-data.js");
+            assert.deepEqual(productionComponentManifestCatalog, JSON.parse(readFileSync(process.env.KOED_COMPONENT_MANIFEST_CATALOG, "utf8")), "Server dist does not embed the frozen release catalog");
+          '
 
       - name: Build standalone koed-server package
         env:
