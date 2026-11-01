@@ -180,7 +180,7 @@ jobs:
             runner: ubuntu-24.04
           - platform: macos
             arch: arm64
-            runner: macos-14
+            runner: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -274,7 +274,7 @@ jobs:
             runner: ubuntu-24.04
           - platform: macos
             arch: arm64
-            runner: macos-14
+            runner: macos-15
 
     steps:
       - name: Checkout
@@ -608,7 +608,7 @@ jobs:
 
   signed-desktop-release-assets:
     name: Signed Desktop release assets
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 150
     needs: [release, component-manifest-catalog]
     if: github.ref == 'refs/heads/main' && needs.release.outputs.desktop_assets_enabled == 'true'

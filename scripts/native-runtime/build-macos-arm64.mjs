@@ -27,6 +27,11 @@ import {
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 
+// Source-built components (OpenSSL, PostgreSQL, pgvector) otherwise target the
+// build host's macOS version, so a newer CI runner would silently raise the
+// minimum macOS the packaged runtime supports. Keep the macOS 14 floor.
+process.env.MACOSX_DEPLOYMENT_TARGET ??= "14.0";
+
 const parseArgs = (argv) => {
   const options = { json: false };
   for (let i = 0; i < argv.length; i += 1) {

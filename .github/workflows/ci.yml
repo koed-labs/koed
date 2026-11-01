@@ -230,7 +230,7 @@ jobs:
     name: Relevant packaged Desktop app smoke
     needs: changes
     if: needs.changes.outputs.run_app_smoke == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:
@@ -353,7 +353,7 @@ jobs:
       - tests
       - build
     if: needs.changes.outputs.run_full_validation == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
 
     steps:
