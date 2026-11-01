@@ -82,12 +82,9 @@ const make = () => {
       }
     },
     compatibility: {
-      variant: stage === "linux-cuda" ? "cuda" : "cpu",
-      compatible: stage === "linux-cuda",
-      reason:
-        stage === "linux-cuda"
-          ? "cuda_compatibility_established"
-          : "probe_tool_unavailable"
+      variant: "cpu",
+      compatible: false,
+      reason: "probe_tool_unavailable"
     },
     cases: items
   });
@@ -102,71 +99,56 @@ const make = () => {
       report("linux-cpu", "linux", "x64", [
         cases("cpu", 1),
         cases("cuda-fallback", 2)
-      ]),
-      report("linux-cuda", "linux", "x64", [
-        cases("cuda", 2),
-        cases("cuda-fallback", 2)
       ])
     ]
   };
 };
 
-test("requires all native stages with matching frozen identities and masking", () => {
+test("requires macOS and Linux CPU stages with matching frozen identities and masking", () => {
   assert.equal(verifyPrivacyReleaseReports(make()).ok, true);
 });
 for (const [name, modify] of [
-  ["missing CUDA stage", (input) => input.reports.pop()],
-  ["duplicate native stage", (input) => (input.reports[2] = input.reports[1])],
+  ["missing Linux CPU stage", (input) => input.reports.pop()],
+  ["duplicate native stage", (input) => (input.reports[1] = input.reports[0])],
   [
     "stale source revision",
-    (input) => (input.reports[2].sourceRevision = "e".repeat(40))
+    (input) => (input.reports[1].sourceRevision = "e".repeat(40))
   ],
   [
     "wrong catalog",
-    (input) => (input.reports[2].catalogSha256 = "e".repeat(64))
+    (input) => (input.reports[1].catalogSha256 = "e".repeat(64))
   ],
   [
     "emulated or unconfirmed host",
-    (input) => (input.reports[2].environment.nativeHost = false)
+    (input) => (input.reports[1].environment.nativeHost = false)
   ],
   [
     "wrong native architecture",
-    (input) => (input.reports[2].environment.runtime.architecture = "arm64")
+    (input) => (input.reports[1].environment.runtime.architecture = "arm64")
   ],
   [
     "wrong archive",
-    (input) => (input.reports[2].cases[0].archiveSha256 = "e".repeat(64))
-  ],
-  [
-    "CPU execution disguised as CUDA",
-    (input) =>
-      (input.reports[2].cases[0].verification.executedProviders = [
-        "CPUExecutionProvider"
-      ])
+    (input) => (input.reports[1].cases[0].archiveSha256 = "e".repeat(64))
   ],
   [
     "missing CPU recovery proof",
-    (input) => delete input.reports[2].cases[1].verification.fallbackReason
+    (input) => delete input.reports[1].cases[1].verification.fallbackReason
   ],
   [
     "unready service",
-    (input) => (input.reports[2].cases[1].service.ok = false)
+    (input) => (input.reports[1].cases[1].service.ok = false)
   ],
   [
     "wrong service classifier",
     (input) =>
-      (input.reports[2].cases[0].service.classifier.classifierHash = "e".repeat(
+      (input.reports[1].cases[0].service.classifier.classifierHash = "e".repeat(
         64
       ))
   ],
   [
     "masking mismatch",
     (input) =>
-      (input.reports[2].cases[0].verification.maskingSha256 = "e".repeat(64))
-  ],
-  [
-    "incompatible hardware probe",
-    (input) => (input.reports[2].compatibility.variant = "cpu")
+      (input.reports[1].cases[0].verification.maskingSha256 = "e".repeat(64))
   ],
   [
     "missing accelerated reload",
@@ -180,7 +162,7 @@ for (const [name, modify] of [
     assert.throws(() => verifyPrivacyReleaseReports(input));
   });
 
-test("publication and reviewed identity require protected frozen-component GPU qualification", () => {
+test("publication and reviewed identity require hosted native Privacy qualification without a self-hosted GPU", () => {
   const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
   const jobs = workflow.jobs;
   assert.ok(
@@ -196,35 +178,10 @@ test("publication and reviewed identity require protected frozen-component GPU q
       "privacy-release-qualification"
     )
   );
-  assert.ok(
-    jobs["privacy-release-qualification"].needs.includes(
-      "privacy-native-cuda-qualification"
-    )
-  );
-  assert.deepEqual(jobs["privacy-native-cuda-qualification"]["runs-on"], [
-    "self-hosted",
-    "linux",
-    "x64",
-    "koed-cuda"
-  ]);
-  assert.match(
-    jobs["privacy-native-cuda-qualification"].if,
-    /github.ref == 'refs\/heads\/main'/
-  );
-  assert.ok(
-    jobs["privacy-native-cuda-qualification"].needs.includes(
-      "component-manifest-catalog"
-    )
-  );
-  assert.ok(
-    jobs["privacy-native-cuda-qualification"].steps.some((step) =>
-      step.run?.includes("--stage linux-cuda")
-    )
-  );
-  assert.equal(
-    jobs["privacy-native-cuda-qualification"].steps.some((step) =>
-      step.run?.includes("build-koed-component-release")
-    ),
-    false
-  );
+  assert.equal(jobs["privacy-native-cuda-qualification"], undefined);
+  for (const [name, job] of Object.entries(jobs))
+    assert.ok(
+      !JSON.stringify(job["runs-on"] ?? "").includes("self-hosted"),
+      `${name} must not require a self-hosted runner`
+    );
 });

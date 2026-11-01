@@ -213,7 +213,9 @@ inference with CPU parity and VRAM evidence, and runs the exact standalone
 Privacy Filter payload through CUDA initialization, classification, provider
 switching, parity, idle unload/reload, and fail-closed unavailable-provider
 checks. The evidence artifact is retained for 30 days. Hosted policy CI and a
-runner without those labels cannot claim this proof.
+runner without those labels cannot claim this proof. The Release workflow does
+not wait for this evidence: its Privacy gate requires only the hosted macOS and
+Linux CPU qualification stages.
 
 Desktop release and recovery workflows also publish
 `desktop-artifact-size-report.json`. It separates the Electron framework and

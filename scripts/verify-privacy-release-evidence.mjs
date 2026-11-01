@@ -11,15 +11,14 @@ import {
 } from "../packages/shared/dist/privacy-classifier-generation.js";
 import { isPrivacyInferenceVerification } from "../packages/koed-server/dist/privacy-inference.js";
 
+// Release qualification runs on hosted runners. CUDA execution is proven
+// separately by the manual Trusted Linux CUDA package validation workflow; the
+// Linux CPU stage still runs the CUDA archive through its CPU fallback.
 const stages = new Map([
   ["macos", { platform: "macos", architecture: "arm64", cases: ["macos"] }],
   [
     "linux-cpu",
     { platform: "linux", architecture: "x64", cases: ["cpu", "cuda-fallback"] }
-  ],
-  [
-    "linux-cuda",
-    { platform: "linux", architecture: "x64", cases: ["cuda", "cuda-fallback"] }
   ]
 ]);
 const digest = /^[a-f0-9]{64}$/;
@@ -36,7 +35,7 @@ export function verifyPrivacyReleaseReports({
   assert.equal(
     reports.length,
     stages.size,
-    "All three native stages are required"
+    "All native release stages are required"
   );
   assert.equal(
     new Set(reports.map((report) => report.stage)).size,
@@ -82,14 +81,6 @@ export function verifyPrivacyReleaseReports({
     );
     if (report.stage === "linux-cpu")
       assert.equal(report.compatibility?.variant, "cpu");
-    if (report.stage === "linux-cuda") {
-      assert.equal(report.compatibility?.variant, "cuda");
-      assert.equal(report.compatibility.compatible, true);
-      assert.equal(
-        report.compatibility.reason,
-        "cuda_compatibility_established"
-      );
-    }
     for (const item of report.cases) {
       const variant =
         item.name === "macos"
@@ -173,8 +164,8 @@ if (
   const [assetsDir, catalogPath, version, sourceRevision, ...paths] =
     process.argv.slice(2);
   assert.ok(
-    assetsDir && catalogPath && version && sourceRevision && paths.length === 3,
-    "Usage: verify-privacy-release-evidence <frozen-assets> <catalog> <version> <source-sha> <macos-report> <linux-cpu-report> <linux-cuda-report>"
+    assetsDir && catalogPath && version && sourceRevision && paths.length === 2,
+    "Usage: verify-privacy-release-evidence <frozen-assets> <catalog> <version> <source-sha> <macos-report> <linux-cpu-report>"
   );
   const catalog = await verifyFrozenComponentAssets({
     assetsDir,

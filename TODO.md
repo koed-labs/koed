@@ -9,6 +9,11 @@ Publication remains a separate decision.
 - [ ] Bind all native reports, frozen components, and the complete embedded catalog to the final reviewed release candidate.
 - [ ] Complete signed/notarized clean-Mac launch and downloaded native-code acceptance using the final signed artifacts.
 - [ ] Complete required release CI and exact public runtime-URL installation against that candidate.
+- [ ] Find a long-term way to prove CUDA execution for each release. The
+      Release workflow no longer waits for a self-hosted `koed-cuda` GPU runner,
+      so the CUDA Privacy archive ships with CPU-fallback qualification only.
+      Options include a hosted or Blacksmith GPU runner, or making the manual
+      Trusted Linux CUDA package validation a tracked pre-publish step.
 - [ ] Before publishing a resumed draft release, verify that its tag and target
       commit match the commit the release assets were built from.
 - [ ] Stop the MCP Server's `tsc -b --force` from recompiling the Server, which

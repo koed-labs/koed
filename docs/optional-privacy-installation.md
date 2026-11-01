@@ -111,3 +111,5 @@ They cannot establish Linux execution or successful CUDA execution.
 Native Linux x64 acceptance requires CPU and fallback evidence.
 CUDA acceptance requires a compatible NVIDIA host and actual CUDA kernel execution.
 The release remains unqualified until those results pass for the final candidate.
+The Release workflow qualifies the frozen components on hosted macOS arm64 and Linux x64 CPU runners; the Linux stage also runs the CUDA archive through its CPU fallback.
+It does not require a GPU runner, so CUDA kernel execution is proven separately by the manual Trusted Linux CUDA package validation workflow when a `koed-cuda` runner is available.
