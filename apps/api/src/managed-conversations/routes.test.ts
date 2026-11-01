@@ -2324,11 +2324,34 @@ describe("managed Conversation routes", () => {
         idempotencyKey: "phase7-start-binding"
       }
     });
+    const mismatchedName = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations",
+      payload: {
+        projectId,
+        ...launchSelection,
+        chiefOfStaffName: "Ada Lovelace",
+        idempotencyKey: "phase7-named-start"
+      }
+    });
+    const invalidName = await app.inject({
+      method: "POST",
+      url: "/v1/managed-conversations",
+      payload: {
+        projectId,
+        ...launchSelection,
+        chiefOfStaffName: "   ",
+        idempotencyKey: "phase7-invalid-name"
+      }
+    });
     await app.close();
 
     expect(response.statusCode).toBe(202);
     expect(retry.statusCode).toBe(202);
-    expect(upstreamCalls).toHaveLength(2);
+    expect(mismatchedName.statusCode).toBe(502);
+    // This bare Fastify fixture has no API Zod error mapper; production maps it to 400.
+    expect(invalidName.statusCode).toBe(500);
+    expect(upstreamCalls).toHaveLength(3);
     expect(upstreamCalls[0]?.body).toEqual({
       projectId,
       contextKind: "project",

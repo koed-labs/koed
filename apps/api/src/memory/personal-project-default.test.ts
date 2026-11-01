@@ -141,6 +141,38 @@ describe.skipIf(!databaseUrl)("persistent source default Projects", () => {
     await admin.end();
   });
 
+  it("replays an optional Project creation request through the API", async () => {
+    const actor = await owner();
+    const app = Fastify();
+    registerPersonalProjectRoutes(app, {
+      requireRepository: () => repo,
+      auth: { authenticate: async () => ({ id: actor.userId }) },
+      rateLimit: {
+        memoryRead: async () => undefined,
+        memoryWrite: async () => undefined
+      }
+    } as unknown as ApiRouteContext);
+    try {
+      const requestId = randomUUID();
+      const create = (name: string) =>
+        app.inject({
+          method: "POST",
+          url: "/v1/personal/projects",
+          payload: { name, requestId }
+        });
+      const first = await create("API recovery");
+      expect(first.statusCode).toBe(201);
+      const replay = await create("API recovery");
+      expect(replay.statusCode).toBe(201);
+      expect(replay.json().project.projectId).toBe(
+        first.json().project.projectId
+      );
+      expect((await create("Different")).statusCode).toBe(409);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("demonstrates two checkouts, later capture, rename, rule removal, restart, explicit inclusion and deletion through real API and Desktop inventories", async () => {
     const actor = await owner();
     await capture(actor);

@@ -121,6 +121,20 @@ function fixture(startupDelayMs = 0, bundled = false) {
 }
 
 describe("Pi managed RPC conversation", () => {
+  it("passes the persisted name only to the managed RPC host", async () => {
+    const f = fixture();
+    const session = new PiManagedConversationSession({
+      ...f.config,
+      chiefOfStaffName: "Ada Lovelace"
+    });
+    await session.start();
+    const args = mocks.spawn.mock.calls[0]?.[1] as string[];
+    const config = JSON.parse(args.at(-1)!) as {
+      chiefOfStaffName: string;
+    };
+    expect(config.chiefOfStaffName).toBe("Ada Lovelace");
+    await session.closeAndWait();
+  });
   it.each(["outside", "symlink"])(
     "requires a contained resume transcript before launching (%s)",
     async (kind) => {

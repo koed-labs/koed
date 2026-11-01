@@ -88,6 +88,18 @@ const startSchema = z
       .max(128)
       .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/),
     model: z.string().trim().min(1).max(512),
+    chiefOfStaffName: z
+      .string()
+      .refine((value) => !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value))
+      .transform((value) => value.replace(/\s+/gu, " ").trim())
+      .pipe(
+        z
+          .string()
+          .min(1)
+          .max(80)
+          .regex(/^[\p{L}\p{M}\p{N} .'’-]+$/u)
+      )
+      .optional(),
     reasoningEffort: z.string().trim().min(1).max(64).nullable(),
     permissionMode: z.enum(["supervised", "auto_edit", "auto", "full_access"]),
     runnerKind: z.literal("local_device"),
@@ -132,6 +144,7 @@ const proxiedStartResponseSchema = z
           .min(1)
           .max(128)
           .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$/),
+        chiefOfStaffName: startSchema.shape.chiefOfStaffName.nullable(),
         executionGeneration: z.number().int().safe().positive()
       })
       .passthrough(),
@@ -452,6 +465,7 @@ const publicExecution = (
     provider: string;
     aiClientInstanceId: string;
     model: string;
+    chiefOfStaffName: string | null;
     reasoningEffort: string | null;
     permissionMode: string;
     runnerKind: string;
@@ -483,6 +497,7 @@ const publicExecution = (
   provider: execution.provider,
   aiClientInstanceId: execution.aiClientInstanceId,
   model: execution.model,
+  chiefOfStaffName: execution.chiefOfStaffName,
   reasoningEffort: execution.reasoningEffort,
   permissionMode: execution.permissionMode,
   runnerKind: execution.runnerKind,
@@ -2015,6 +2030,8 @@ export const registerManagedConversationRoutes = (
           parsed.data.execution.provider !== input.provider ||
           parsed.data.execution.aiClientInstanceId !==
             input.aiClientInstanceId ||
+          (parsed.data.execution.chiefOfStaffName ?? null) !==
+            (input.chiefOfStaffName ?? null) ||
           !projectPath
         ) {
           throw Object.assign(
@@ -2037,6 +2054,7 @@ export const registerManagedConversationRoutes = (
           provider: input.provider,
           aiClientInstanceId: input.aiClientInstanceId,
           model: input.model,
+          chiefOfStaffName: input.chiefOfStaffName,
           reasoningEffort: input.reasoningEffort,
           permissionMode: input.permissionMode,
           runnerKind: input.runnerKind,

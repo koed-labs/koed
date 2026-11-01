@@ -587,6 +587,22 @@ describe("Koed server desktop manager", () => {
           input: { name: "  Planning  " }
         })
       ).toMatchObject({ ok: true, data: { projectId: project.projectId } });
+      const requestId = "5a439f0d-8f85-4cb8-ae6c-b27fcf54476b";
+      expect(
+        await manager.personalMemory({
+          contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+          operation: "personal.projects.create",
+          input: { name: "Planning", requestId }
+        })
+      ).toMatchObject({ ok: true, data: { projectId: project.projectId } });
+      expect(
+        personalMemoryFetch.mock.calls.some(
+          ([url, init]) =>
+            new URL(String(url)).pathname === "/v1/personal/projects" &&
+            init?.method === "POST" &&
+            JSON.parse(String(init.body)).requestId === requestId
+        )
+      ).toBe(true);
       const beforeInitial = personalMemoryFetch.mock.calls.length;
       expect(
         await manager.personalMemory({

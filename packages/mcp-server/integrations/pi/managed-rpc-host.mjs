@@ -1,5 +1,6 @@
 import { recordCaptureFolderContext } from "./runtime-client.mjs";
 import { resolveInstalledKoedHome } from "./koed-home.mjs";
+import { managedChiefOfStaffPromptOptions } from "./managed-persona.mjs";
 import fs from "node:fs";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL, URL } from "node:url";
@@ -56,7 +57,8 @@ async function main() {
         additionalExtensionPaths: [
           fileURLToPath(new URL("./extensions/koed.mjs", import.meta.url)),
           fileURLToPath(new URL("./managed-permissions.mjs", import.meta.url))
-        ]
+        ],
+        ...managedChiefOfStaffPromptOptions(config.chiefOfStaffName)
       }
     });
     if (services.resourceLoader.getExtensions().errors.length)

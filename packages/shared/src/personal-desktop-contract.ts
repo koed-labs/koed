@@ -553,7 +553,10 @@ export const personalDesktopSessionTitleInputSchema = z
   .strict();
 
 export const personalDesktopProjectCreateInputSchema = z
-  .object({ name: z.string().trim().min(1).max(160) })
+  .object({
+    name: z.string().trim().min(1).max(160),
+    requestId: z.uuid().optional()
+  })
   .strict();
 
 export const personalDesktopAskTurnSchema = z

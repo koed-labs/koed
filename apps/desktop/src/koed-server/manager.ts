@@ -3316,6 +3316,9 @@ export const createKoedServerManager = ({
               provider: request.aiClientDriverId,
               aiClientInstanceId: request.aiClientInstanceId,
               model: request.model,
+              ...(request.chiefOfStaffName
+                ? { chiefOfStaffName: request.chiefOfStaffName }
+                : {}),
               reasoningEffort: request.reasoningEffort,
               permissionMode: request.permissionMode,
               runnerKind: request.runnerKind,

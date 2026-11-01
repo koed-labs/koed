@@ -376,16 +376,52 @@ export const createPersonalMembershipRepository = (
   return {
     async createNamedPersonalProject(
       actor: ActorContext,
-      raw: { name: string }
+      raw: { name: string; requestId?: string }
     ): Promise<PersonalNamedProject> {
       const input = personalProjectCreateSchema.parse(raw);
       return transact(actor, async (client) => {
         const projectId = randomUUID(),
           revisionId = randomUUID();
-        const result = await client.query<ProjectRow>(
-          `insert into personal_named_projects(owner_user_id,project_id,name,head_revision_id) values($1,$2,$3,$4) returning *`,
-          [actor.userId, projectId, input.name, revisionId]
-        );
+        const result = input.requestId
+          ? await client.query<ProjectRow>(
+              `insert into personal_named_projects(owner_user_id,project_id,name,head_revision_id,create_request_id,create_request_name)
+               values($1,$2,$3,$4,$5,$6)
+               on conflict (owner_user_id,create_request_id) where create_request_id is not null do nothing
+               returning *`,
+              [
+                actor.userId,
+                projectId,
+                input.name,
+                revisionId,
+                input.requestId,
+                input.name
+              ]
+            )
+          : await client.query<ProjectRow>(
+              `insert into personal_named_projects(owner_user_id,project_id,name,head_revision_id) values($1,$2,$3,$4) returning *`,
+              [actor.userId, projectId, input.name, revisionId]
+            );
+        if (!result.rows[0]) {
+          const existing = await client.query<
+            ProjectRow & { create_request_name: string }
+          >(
+            `select * from personal_named_projects where owner_user_id=$1 and create_request_id=$2`,
+            [actor.userId, input.requestId]
+          );
+          if (
+            !existing.rows[0] ||
+            existing.rows[0].create_request_name !== input.name
+          )
+            throw Object.assign(
+              new Error(
+                "Project creation request conflicts with its original name"
+              ),
+              {
+                statusCode: 409
+              }
+            );
+          return mapPersonalNamedProject(existing.rows[0]);
+        }
         await appendPersonalMembershipRevision(
           client,
           actor,

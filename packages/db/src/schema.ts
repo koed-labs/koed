@@ -3950,6 +3950,7 @@ export const managedConversationExecutions = pgTable(
     provider: text("provider").notNull().default("codex"),
     aiClientInstanceId: text("ai_client_instance_id").notNull(),
     model: text("model").notNull(),
+    chiefOfStaffName: text("chief_of_staff_name"),
     reasoningEffort: text("reasoning_effort"),
     permissionMode: text("permission_mode").notNull(),
     runnerKind: text("runner_kind").notNull(),
@@ -4015,6 +4016,12 @@ export const managedConversationExecutions = pgTable(
       "managed_conversation_executions_ai_client_instance_check",
       sql`char_length(${table.aiClientInstanceId}) <= 128
         and ${table.aiClientInstanceId} ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$'`
+    ),
+    check(
+      "managed_conversation_executions_chief_of_staff_name_check",
+      sql`${table.chiefOfStaffName} is null or (char_length(${table.chiefOfStaffName}) between 1 and 80
+        and ${table.chiefOfStaffName} = btrim(${table.chiefOfStaffName})
+        and ${table.chiefOfStaffName} !~ '[[:cntrl:]]')`
     ),
     check(
       "managed_conversation_executions_generation_check",
@@ -15095,6 +15102,8 @@ export const personalNamedProjects = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     projectId: uuid("project_id").notNull().defaultRandom(),
     name: text("name").notNull(),
+    createRequestId: uuid("create_request_id"),
+    createRequestName: text("create_request_name"),
     version: integer("version").notNull().default(1),
     headRevisionId: uuid("head_revision_id").notNull(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
@@ -15108,6 +15117,13 @@ export const personalNamedProjects = pgTable(
       sql`length(trim(${table.name})) between 1 and 160`
     ),
     check("personal_named_projects_version_check", sql`${table.version}>0`),
+    check(
+      "personal_named_projects_create_request_pair_check",
+      sql`(${table.createRequestId} is null) = (${table.createRequestName} is null)`
+    ),
+    uniqueIndex("personal_named_projects_owner_create_request_uidx")
+      .on(table.ownerUserId, table.createRequestId)
+      .where(sql`${table.createRequestId} is not null`),
     index("personal_named_projects_owner_active_idx").on(
       table.ownerUserId,
       table.deletedAt

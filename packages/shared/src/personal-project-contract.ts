@@ -86,7 +86,10 @@ export type PersonalProjectMembershipExplanation = z.infer<
 >;
 
 export const personalProjectCreateSchema = z
-  .object({ name: z.string().trim().min(1).max(160) })
+  .object({
+    name: z.string().trim().min(1).max(160),
+    requestId: z.uuid().optional()
+  })
   .strict();
 export const personalProjectUpdateSchema = z
   .object({

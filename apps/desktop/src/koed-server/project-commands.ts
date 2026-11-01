@@ -175,7 +175,10 @@ export const createProjectCommands = (deps: ProjectCommandsDeps) => {
     }
   };
 
-  const createPersonalProject = async (input: { name: string }) => {
+  const createPersonalProject = async (input: {
+    name: string;
+    requestId?: string;
+  }) => {
     await deps.requireAccess();
     const payload = await deps.personalRequest("/v1/personal/projects", {
       method: "POST",

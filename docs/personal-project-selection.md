@@ -145,6 +145,14 @@ read–modify–write operation. Each writer reads the latest state while holdin
 lock and replaces the file through a unique temporary file. A busy lock fails
 within five seconds rather than overwriting another process's changes.
 
+Named Personal Project creation accepts an optional UUID `requestId`. A caller
+that saves this ID before sending `POST /v1/personal/projects` can retry after
+losing a response and receive the same Project. The ID is unique within the
+owning User. Reusing it with a different original name returns a conflict,
+including if the Project was renamed after creation. The request identity and
+original name are committed with the Project and its membership revision.
+Callers that omit `requestId` retain independent creation for each request.
+
 Discovery stores the current remote list and selected repository identity.
 Historical remote aliases and the redundant common-directory hash are removed
 from cached metadata when it is read. Repository matching continues to use the

@@ -168,11 +168,20 @@ describe("Personal Memory preload bridge", () => {
       operation: "personal.projects.create",
       input: { name: "Planning" }
     });
+    const requestId = "5a439f0d-8f85-4cb8-ae6c-b27fcf54476b";
+    await api.createProject!({ name: "Planning", requestId });
+    expect(invoke.mock.calls[1]?.[1]).toMatchObject({
+      operation: "personal.projects.create",
+      input: { name: "Planning", requestId }
+    });
+    await expect(
+      api.createProject!({ name: "Planning", requestId: "bad" })
+    ).rejects.toThrow();
     await expect(api.createProject!({ name: "" })).rejects.toThrow();
     await expect(
       api.createProject!({ name: "Planning", path: "/unexpected" } as never)
     ).rejects.toThrow();
-    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledTimes(2);
   });
 
   it("exposes exact methods and constructs the IPC request internally", async () => {
