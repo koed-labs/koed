@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { App } from "./App.js";
+import { V1App as App } from "./v1/App.js";
 import "./index.css";
 
 function DesktopRoot() {
@@ -44,9 +44,6 @@ function DesktopRoot() {
         setOnboardingComplete(true);
       }}
       onboardingComplete={onboardingComplete}
-      teamCollaborationEnabled={
-        window.koedDesktop?.featureFlags?.teamCollaborationEnabled ?? false
-      }
     />
   );
 }

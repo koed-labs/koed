@@ -294,6 +294,7 @@ export interface KoedServerManager {
     set: (enabled: boolean) => Promise<HardwareAccelerationState>;
   };
   managedConversation: ManagedConversationDesktopHandler;
+  v1StateIdentity: () => Promise<{ apiOrigin: string; ownerUserId: string }>;
   managedProject: ManagedProjectDesktopHandler;
   discoverProject: (cwd: string) => Promise<unknown>;
   subscribePersonalMemory: (
@@ -6116,6 +6117,23 @@ export const createKoedServerManager = ({
       set: setHardwareAcceleration
     },
     managedConversation,
+    v1StateIdentity: async () => {
+      const [access, identity] = await Promise.all([
+        personalMemoryAccess(),
+        authenticatedPersonalMemoryRequest(
+          ({ apiOrigin }) => ({
+            url: new URL("/v1/managed-conversations/access", apiOrigin),
+            init: { method: "GET" }
+          }),
+          64 * 1_024
+        )
+      ]);
+      const user = objectValue(identity.user);
+      if (typeof user?.id !== "string" || !user.id) {
+        throw new PersonalMemoryBoundaryError("invalid_response", false);
+      }
+      return { apiOrigin: access.apiOrigin, ownerUserId: user.id };
+    },
     managedProject,
     discoverProject: (cwd) =>
       runJson(["project", "discover", "--cwd", cwd], 30_000),

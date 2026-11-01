@@ -9,6 +9,7 @@ import type {
 import type { PersonalDevicePairingProgress } from "./ipc/personal-device-pairing-protocol.js";
 import type { DesktopThemePreference } from "./window/theme-preference.js";
 import type { ManagedConversationDesktopApi } from "./ipc/managed-conversation-protocol.js";
+import type { V1StateDesktopApi } from "./ipc/v1-state-protocol.js";
 import type {
   LocalAiClientFlowKey,
   LocalAiClientResponse
@@ -171,6 +172,7 @@ export interface DesktopApi {
   ) => Promise<T>;
   personalMemory?: PersonalDesktopApi;
   managedConversations?: ManagedConversationDesktopApi;
+  v1State?: V1StateDesktopApi;
   localAiClients?: {
     list: () => Promise<LocalAiClientResponse>;
     refresh: () => Promise<LocalAiClientResponse>;

@@ -10,6 +10,7 @@ import {
   collaborationRendererEventSchema
 } from "@koed/shared/collaboration";
 import { createPersonalMemoryPreloadApi } from "./ipc/personal-memory-preload.js";
+import { createV1StatePreloadApi } from "./ipc/v1-state-preload.js";
 import { createManagedConversationPreloadApi } from "./ipc/managed-conversation-preload.js";
 import { createLocalAiClientPreloadApi } from "./ipc/local-ai-client-preload.js";
 import { createManagedProjectPreloadApi } from "./ipc/managed-project-preload.js";
@@ -45,6 +46,9 @@ contextBridge.exposeInMainWorld("koedDesktop", {
     }
     return ipcRenderer.invoke(invokeChannel, command, args);
   },
+  v1State: createV1StatePreloadApi((channel, value) =>
+    ipcRenderer.invoke(channel, value)
+  ),
   personalMemory: createPersonalMemoryPreloadApi(
     (channel, value) => ipcRenderer.invoke(channel, value),
     {

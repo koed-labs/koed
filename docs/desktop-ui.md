@@ -1,5 +1,39 @@
 # Koed Desktop
 
+## Solo V1 interface
+
+The solo interface starts with Chief of Staff appearance and name, AI Client
+configuration, and Personal Memory. It runs the existing local setup and client
+commands; it does not replace service startup, authentication, capture, or recall.
+Setup progress comes from the real setup workflow. Failure leaves selections
+saved and offers a retry. A saved onboarding note is identified as saved or
+preparing, rather than presented as a simulated recall answer.
+
+Its chat and Project lists contain identities created through this interface.
+Existing AI Client conversations continue to feed Personal Memory under the
+existing Capture Policy, but do not populate those lists. Team, scheduled jobs,
+the phone companion, attachments, and additional memory-management semantics
+are outside this interface. Their stored data and backend authority are not
+changed by hiding their controls.
+
+The model and reasoning picker reads current AI Client capabilities. Existing
+Conversations keep their execution owner, while a new Conversation can choose
+a configured client. Managed execution, approvals, streaming, and draft recovery
+use the existing controller with the new presentation.
+
+Run `pnpm --filter @koed/desktop test:browser:v1` for the isolated Electron
+presentation smoke check. This fixture does not configure local AI Clients or
+certify a live model response or performance measurement.
+
+The reference design’s prototype controls (Restart setup, Fill with examples,
+and other prototype-only shortcuts) are deliberately excluded. The Settings
+command to run onboarding again preserves existing data.
+
+## Full desktop capabilities (baseline reference)
+
+The following describes the original full interface. Its hidden controls are
+not exposed by Solo V1.
+
 Koed Desktop presents Personal Memory, Personal chat, Team collaboration, and
 Team-shared Memory in one application without merging their authority or
 lifecycle. This document describes the User-facing model, supported workflows,

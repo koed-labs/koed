@@ -32,7 +32,8 @@
     "test:packaged-smoke": "node --test scripts/smoke-packaged-desktop-app-lib.test.mjs scripts/smoke-packaged-doctor.test.mjs scripts/packaged-desktop-lifecycle.test.mjs",
     "test": "pnpm test:packaged-smoke && node --test scripts/desktop-artifact-report-lib.test.mjs scripts/smoke-packaged-renderer-faults.test.mjs scripts/desktop-bundle-manifest.test.mjs scripts/prepare-macos-signing.test.mjs scripts/verify-macos-package.test.mjs scripts/sign-macos-runtime.test.mjs scripts/packaged-shared-lifecycle.test.mjs scripts/verify-packaged-component-catalog.test.mjs && vitest run --passWithNoTests",
     "test:browser": "pnpm build && pnpm build:validation && electron scripts/validate-project-workspace.mjs && electron scripts/validate-projects-default.mjs && electron scripts/validate-project-transfer.mjs && electron scripts/validate-conversation-cards.mjs && electron scripts/validate-collaboration-interactions.mjs && electron scripts/validate-managed-preview.mjs",
-    "build:validation": "vite build --mode validation"
+    "build:validation": "vite build --mode validation",
+    "test:browser:v1": "vite build --mode v1-validation && electron scripts/validate-v1-ui.mjs"
   },
   "dependencies": {
     "@koed-labs/server": "workspace:*",

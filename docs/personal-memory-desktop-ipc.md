@@ -92,3 +92,23 @@ browser storage, DOM access, or generic navigation operation. Preview requests
 are limited to the verified origin and its matching hot-reload WebSocket;
 permissions, downloads, popups, other local services, private networks, and
 external origins fail closed. Detach destroys the view and clears its storage.
+
+## Solo desktop presentation state
+
+The solo desktop uses a separate typed `koed:v1-state:command` bridge for local
+appearance, onboarding progress, and the provenance of chats and Projects
+created through that interface. Main validates requests and results and stores
+the state encrypted under the Electron profile. It derives the provenance scope
+from the authenticated Personal User and backend origin; neither credentials
+nor the backend URL are exposed to the renderer.
+
+The renderer saves a creation intent before starting a Conversation or creating
+a Project, then acknowledges the returned identity. Recovery reuses the same
+request key. The registry determines frontend visibility only. It does not
+change Capture Policy, historical ingestion, Projection, recall, or source
+retention. Capacity errors are explicit and never silently discard records.
+
+The solo presentation retains the existing managed Conversation controller for
+streaming, approval, draft recovery and command delivery. Its model and reasoning
+controls use the same capabilities, and its onboarding uses the existing local
+setup and AI Client commands with their existing consent requirements.

@@ -42,6 +42,7 @@ import {
   resolveAppProtocolRequest
 } from "./window/app-protocol.js";
 import { createManagedConversationDraftStore } from "./managed-conversation-draft-store.js";
+import { createV1State, v1OwnerScope } from "./v1-state.js";
 import { createPdsDesktopSecretStore } from "./pds-secure-provider.js";
 import { PDS_DESKTOP_AUTHORITY_SECRET_REFERENCE } from "./pds-authority.js";
 import { resolveKoedHome as resolveApplicationKoedHome } from "@koed-labs/server";
@@ -512,7 +513,18 @@ const bootstrap = async () => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send(channel, value);
   });
+  const v1State = createV1State({
+    userDataPath: app.getPath("userData"),
+    ownerIdentity: async () => {
+      const identity = await server.v1StateIdentity();
+      return {
+        ownerId: identity.ownerUserId,
+        scopeKey: v1OwnerScope(identity.apiOrigin, identity.ownerUserId)
+      };
+    }
+  });
   registerDesktopCommandHandlers(ipcMain, server.handlers, {
+    v1State: v1State.request,
     allowedRendererOrigins,
     localAiClients: server.localAiClients,
     personalMemory: server.personalMemory,

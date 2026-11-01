@@ -1,0 +1,97 @@
+.v1-launch {
+  width: 100%;
+}
+.v1-launch > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0.5rem 0.75rem 0;
+  font-size: 0.8rem;
+  color: var(--v1-muted, #777);
+}
+.v1-launch select,
+.v1-modal input {
+  min-width: 10rem;
+  max-width: 18rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 0.55rem;
+  color: inherit;
+  background: var(--v1-surface, transparent);
+}
+.v1-launch .personal-new-conversation-composer {
+  width: 100%;
+}
+.v1-launch .personal-managed-meta-row {
+  display: none;
+}
+.v1-modal {
+  position: fixed;
+  z-index: 90;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(28rem, calc(100vw - 2rem));
+  padding: 1.5rem;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 1rem;
+  background: var(--v1-card);
+  box-shadow: 0 1rem 4rem #0003;
+}
+.v1-modal h2 {
+  width: 100%;
+  margin: 0;
+}
+.v1-modal input {
+  flex: 1 1 100%;
+  max-width: none;
+}
+.v1-modal button {
+  padding: 0.5rem 0.9rem;
+  border-radius: 0.5rem;
+}
+.v1-project-picker {
+  position: relative;
+  margin-bottom: 0.6rem;
+}
+.v1-project-picker > button {
+  padding: 0.35rem 0.65rem;
+  border-radius: 0.5rem;
+  color: inherit;
+  background: transparent;
+}
+.v1-project-picker [role="menu"] {
+  position: absolute;
+  z-index: 20;
+  bottom: 100%;
+  left: 0;
+  display: grid;
+  min-width: 13rem;
+  padding: 0.35rem;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 0.65rem;
+  background: var(--v1-card);
+  box-shadow: 0 0.8rem 2rem #0002;
+}
+.v1-project-picker [role="menu"] button {
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  border-radius: 0.4rem;
+}
+.v1-project-picker [role="menu"] button:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.v1-project-page {
+  padding: 2rem;
+}
+.v1-project-page ul {
+  padding-left: 1.2rem;
+}
+.v1-project-page > button {
+  display: block;
+  margin: 0.4rem 0;
+}

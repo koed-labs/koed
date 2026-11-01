@@ -86,6 +86,10 @@
     "./personal-project-default": {
       "types": "./dist/personal-project-default.d.ts",
       "import": "./dist/personal-project-default.js"
+    },
+    "./personal-source": {
+      "types": "./dist/personal-source-contract.d.ts",
+      "import": "./dist/personal-source-contract.js"
     }
   },
   "files": [

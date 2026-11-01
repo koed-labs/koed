@@ -1,5 +1,12 @@
 import { LocalApiRateLimitError } from "../local-api-errors.js";
 import {
+  v1StateChannel,
+  v1StateRequestSchema,
+  v1StateResponseSchema,
+  type V1StateRequest,
+  type V1StateResponse
+} from "./v1-state-protocol.js";
+import {
   collaborationCommandResultSchema,
   collaborationRendererCommandSchema,
   collaborationRendererEventSchema,
@@ -139,6 +146,7 @@ export const registerDesktopCommandHandlers = (
   handlers: Record<DesktopCommandName, DesktopCommandHandler>,
   options: {
     allowedRendererOrigins: ReadonlySet<string>;
+    v1State?: (request: V1StateRequest) => Promise<V1StateResponse>;
     localAiClients?: LocalAiClientDesktopHandler;
     personalMemory: PersonalMemoryDesktopHandler;
     managedConversation: (
@@ -422,6 +430,15 @@ export const registerDesktopCommandHandlers = (
       return result;
     }
   );
+
+  ipcMain.handle(v1StateChannel, async (event, value) => {
+    if (!trustedSender(event, options.allowedRendererOrigins)) {
+      throw new Error("Untrusted Desktop IPC sender.");
+    }
+    if (!options.v1State) throw new Error("V1 state is unavailable.");
+    const request = v1StateRequestSchema.parse(value);
+    return v1StateResponseSchema.parse(await options.v1State(request));
+  });
 
   ipcMain.handle(managedProjectCommandChannel, async (event, value) => {
     if (!trustedSender(event, options.allowedRendererOrigins)) {
