@@ -47,7 +47,14 @@ const SAFE_NON_PACKAGING_FILES = new Set([
   "LICENSE",
   "PLAN.md",
   "README.md",
-  "TODO.md"
+  "TODO.md",
+  ".github/scripts/ci-policy.mjs",
+  "scripts/ci-policy.test.mjs",
+  "scripts/product-changelog.mjs",
+  "scripts/product-changelog.test.mjs",
+  "scripts/product-release-notes.mjs",
+  "scripts/product-release-notes.test.mjs",
+  "scripts/sync-product-release.mjs"
 ]);
 
 export const fileAffectsPackaging = (file) => {

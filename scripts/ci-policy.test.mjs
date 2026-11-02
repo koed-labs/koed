@@ -62,6 +62,30 @@ test("packaging path policy excludes documentation and includes runtime consumer
   }
 });
 
+test("release-note and CI policy tooling does not select packaged smoke", () => {
+  const files = [
+    ".github/scripts/ci-policy.mjs",
+    "scripts/ci-policy.test.mjs",
+    "scripts/product-changelog.mjs",
+    "scripts/product-changelog.test.mjs",
+    "scripts/product-release-notes.mjs",
+    "scripts/product-release-notes.test.mjs",
+    "scripts/sync-product-release.mjs"
+  ];
+  for (const file of files) {
+    assert.equal(fileAffectsPackaging(file), false, file);
+  }
+  assert.equal(
+    evaluateCiPolicy({
+      eventName: "pull_request",
+      event: pullRequest(),
+      changedFiles: files
+    }).run_app_smoke,
+    "false"
+  );
+  assert.equal(fileAffectsPackaging("scripts/new-release-tool.mjs"), true);
+});
+
 test("backend workspace source alone does not select packaged smoke", () => {
   for (const file of [
     "apps/api/src/index.ts",
