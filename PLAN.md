@@ -1,7 +1,10 @@
-# Evaluate Oxlint and Oxfmt
+# Oxlint and Oxfmt migration
 
-Decide whether replacing ESLint and Prettier reduces CI time and peak RAM while
-preserving our existing checks. This evaluation does not commit us to migration.
+Both tools are migrated together and pass the
+[combined qualification](https://github.com/koed-labs/koed/actions/runs/41452153956).
+The measured formatting/lint pair is 80.6% faster and uses 34.1% less peak memory
+than Oxfmt plus ESLint. The final section records the implementation and results.
+Earlier sections retain the original evaluation plan and historical decisions.
 
 ## Scope
 
@@ -52,11 +55,12 @@ and environment. Record the commit, exact tool versions, runner, and commands.
 - Record complete static-check job duration and peak memory for both setups,
   including installation and unchanged typechecks. Identify remaining bottlenecks.
 
-## 3. Record the decision
+## 3. Original evaluation decision
 
-The recommendation is Oxfmt only, subject to separate adoption approval.
-The viable candidate below uses Oxfmt with unchanged ESLint. Typed Oxlint has no
-valid equivalent repository benchmark because its workspace configuration fails.
+The original evaluation recommended Oxfmt only, subject to separate adoption
+approval. At that stage, the viable candidate used Oxfmt with unchanged ESLint.
+Typed Oxlint lacked a valid repository benchmark because its configuration failed.
+The qualified combined migration at the end of this file supersedes this decision.
 
 | Metric                                             | Prettier + ESLint         | Oxfmt + unchanged ESLint  | Reduction                       |
 | -------------------------------------------------- | ------------------------- | ------------------------- | ------------------------------- |
@@ -72,7 +76,7 @@ safety cases. Typed repository execution still fails. The trial formatting chang
 touches 32 files with 140 added and 193 deleted lines. The evidence below records
 the configuration blockers, remaining diagnostic differences, and prerequisites.
 The official-migrator follow-up below confirms the same repository blockers after
-correcting the generated test scopes. The Oxfmt-only recommendation remains unchanged.
+correcting the generated test scopes. That stage retained the Oxfmt-only recommendation.
 The later configuration-only experiment removes all 31 configuration errors while
 retaining TypeScript 6.0.3 and passing the existing checks. Typed Oxlint still has
 226 diagnostics after declaration builds. The remaining work concerns project
@@ -546,7 +550,7 @@ that retained checks pass. The completed run above includes the explicit fallbac
 and passes all retained controls. Production configuration remains unchanged.
 Architecture documentation needs no update for this evaluation.
 
-## Final Oxlint compatibility pass, 2026-11-02
+## Native compatibility pass before adoption, 2026-11-02
 
 The [final compatibility run](https://github.com/koed-labs/koed/actions/runs/41446353334)
 uses evaluation head `8255c056551519bf32b79c04a6c82b4f3b170b1d`. It retains the
@@ -702,7 +706,71 @@ pass against the actual configuration. Full local formatting identifies only the
 pre-existing untracked `CONFIG.md`. The tracked migration-file checks pass. The
 32-file formatter change follows the previously reviewed trial output.
 
-PR-runner checks, complete typed coverage probes, DB-backed route tests, and the
-qualified incremental/full-job measurements remain pending. The qualification
-workflow compares a fresh original ESLint control with the combined migration.
-No production or test check is removed to obtain a clean result.
+The [combined qualification](https://github.com/koed-labs/koed/actions/runs/41452153956)
+passes at implementation head `123500e17c48965eb0348057107c079f9ee58e5a`.
+It uses Node 24.13.1, pnpm 11.1.2, and the same Blacksmith four-vCPU PR runner
+class. The control source remains `f22c4f3bc7b0aaf3c74a2776c00f591c6ea677bf`.
+No production or test check is removed to obtain the clean result.
+
+The four earlier one-off evaluation workflows are retired from the current tree.
+Their recorded evaluation heads retain the original scripts and dependencies.
+The combined qualification workflow covers the implemented migration.
+
+### Qualified combined results
+
+The candidate reports zero warnings and errors across 2,056 files and 96 rules.
+The original ESLint control checks 2,055 files. All 2,054 shared original source
+files remain. The old ESLint configuration is removed, and two tooling scripts
+are added. All 1,754 executable typed-file probes are detected and restored.
+The 110 scope/rule/suppression cases pass. All 49 OAuth and terminal-route tests
+pass, with zero failures and skips. Production, test, Electron, and browser
+TypeScript checks also pass.
+
+The incremental control uses Oxfmt with unchanged ESLint. This isolates the gain
+from adopting Oxlint after formatting already uses Oxfmt. Each tool receives an
+unmeasured warm-up. Five measured pairs alternate control and candidate order.
+Lint caches are disabled. Native plugin workers and the Go engine contribute to
+sampled simultaneous RSS across the full process tree. Sampling uses 10 ms
+intervals. Each combined peak is the larger formatter or lint command peak.
+
+| Formatting plus lint measure | Oxfmt + ESLint | Oxfmt + Oxlint | Reduction |
+| ---------------------------- | -------------: | -------------: | --------: |
+| Median elapsed seconds       |          65.89 |          12.77 |     80.6% |
+| Elapsed range, seconds       |    59.68–70.44 |    12.30–15.95 |           |
+| Median sampled peak, MiB     |         6250.3 |         4118.7 |     34.1% |
+| Sampled peak range, MiB      |  6214.3–6314.6 |  3818.5–4179.7 |           |
+
+The ranges do not overlap. Even the slowest candidate against the fastest control
+reduces time by 73.3%. The largest candidate peak against the smallest control peak
+reduces memory by 32.7%. The 50% time and 30% memory targets therefore pass for
+these five paired measurements, independently of the earlier formatter gain.
+
+The complete-job comparison restores the original Prettier source and includes
+dependency installation, environment/ADR checks, formatting, lint, production/test
+typechecks, and the Electron/browser checks. Dependency directories and TypeScript
+build-info files are removed before each sequence. The shared pnpm store remains
+warm. The candidate runs the production check once through `pnpm lint`.
+
+| Complete static sequence  | Original Prettier + ESLint | Combined Oxc | Reduction |
+| ------------------------- | -------------------------: | -----------: | --------: |
+| Elapsed seconds           |                     154.40 |        74.98 |     51.4% |
+| Sampled process peak, MiB |                     6391.4 |       4219.7 |     34.0% |
+| Exit status               |                          0 |            0 |           |
+
+Complete-job values come from one paired sequence, rather than five samples.
+They include the required declaration build and installed tooling dependencies.
+They do not measure a cold network install or application runtime performance.
+The five-pair comparison supplies the repeated evidence for the migration gates.
+
+The combined migration now qualifies under the evaluated safety, coverage, time,
+and memory criteria. Adopt both tools together as requested. Retain the four-rule
+ESLint library bridge and the one documented `Promise.finally` exception until
+native implementations cover those cases. Future rule changes must pass the
+committed compatibility suite. The compiler remains TypeScript 6.
+
+The `oxc-migration-qualification` artifact retains commands, measurements, route-test
+results, coverage data, and the measurement scripts for 14 days. The workflow and
+tested commit retain the reproducible setup. Later changes only record findings
+and retire the superseded evaluation workflows. The 32-file formatting commit is
+separate from the tooling implementation. No architecture documentation update is
+needed. The User confirmed omission of a release changeset for this migration.

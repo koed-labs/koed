@@ -14,11 +14,16 @@ prior results and the current qualification evidence.
 - [x] Return the Fastify reply from the hijacked async OAuth callback. Preserve
       terminal cleanup with one explained native false-positive suppression.
 - [x] Pass repository lint and the 110 rule/scope/suppression regression cases.
-- [ ] Complete production/test/browser/Electron checks and DB-backed route tests
+- [x] Complete production/test/browser/Electron checks and DB-backed route tests
       on the PR runner. Probe all 1,754 executable typed files and restore them.
-- [ ] Measure Oxfmt plus Oxlint against Oxfmt plus ESLint, with all plugin workers
+- [x] Measure Oxfmt plus Oxlint against Oxfmt plus ESLint, with all plugin workers
       included. Measure complete static jobs with declaration prerequisites and
       dependency installation. Record remaining TypeScript memory costs.
+      Five pairs show 80.6% less time and 34.1% less peak memory. The complete
+      static sequence also passes. The combined migration is qualified.
+- [ ] When native parity is available, reevaluate the four ESLint compatibility
+      rules and the `Promise.finally` exception against the committed safety suite
+      before removing the bridge or suppression.
 
 ## Optional Privacy runtime release gates
 

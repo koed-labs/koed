@@ -1,7 +1,9 @@
 # Oxlint and Oxfmt evaluation tickets
 
-Approved work package, based on [PLAN.md](PLAN.md). Evaluate only;
-adoption is a separate decision. Keep production and test typechecking unchanged.
+The original work package covered evaluation only. The User later requested both
+tools together. That combined migration is now complete and qualified, as recorded
+at the end of this file and in [PLAN.md](PLAN.md). Production and test typechecks
+remain in place. Earlier tickets retain the original evaluation outcomes.
 
 Tickets 01 and 02 can start independently. Ticket 03 follows both evaluations,
 including a documented incompatibility outcome if either candidate cannot run.
@@ -27,7 +29,7 @@ compatibility, review cost, time saved, and RAM saved.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** complete, Oxfmt compatible and recommended independently
+**Status:** complete, Oxfmt compatible and now adopted with Oxlint
 
 - [x] Match existing formatting options, including 80-column width, file coverage,
       and ignores such as authored prompts; disable optional sorting.
@@ -45,7 +47,7 @@ whether existing lint protection survives and quantifying time and RAM savings.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** evaluated, incompatible with the current workspace configuration
+**Status:** original incompatibility evaluated, superseded by the qualified combined migration
 
 - [x] Map every effective ESLint rule and option across JS, TS, TSX, production,
       tests, and configuration files. Preserve overrides, globals, ignores, and
@@ -68,7 +70,7 @@ to switch fully, adopt Oxfmt only, or defer.
 
 **Blocked by:** 01 and 02.
 
-**Status:** complete, recommend Oxfmt only
+**Status:** original evaluation complete, superseded by the qualified combined migration
 
 - [x] Record combined formatting/lint elapsed time and the larger command memory
       peak per measured pair; report medians, ranges, and percentage reductions.
@@ -154,13 +156,23 @@ qualified Oxlint benchmark is included.
 
 ## Combined migration
 
-**Status:** in progress, both tools requested together
+**Status:** complete, both tools migrated and qualified together
 
 - [x] Implement both formatter and linter changes with pinned versions.
 - [x] Retain compiler checks, align native test discovery, and preserve missing
       core rules through the JavaScript compatibility plugin.
 - [x] Resolve both remaining native lint reports and pass 110 focused checks.
-- [ ] Qualify the current implementation on the PR runner, including DB-backed
+- [x] Qualify the current implementation on the PR runner, including DB-backed
       OAuth/terminal tests and complete typed coverage.
-- [ ] Record incremental lint and complete-job measurements, including the
+- [x] Record incremental lint and complete-job measurements, including the
       compatibility plugin and declaration prerequisites.
+
+The [combined qualification](https://github.com/koed-labs/koed/actions/runs/41452153956)
+passes. It verifies all 1,754 typed probes, 110 focused compatibility cases, and
+49 route tests with no skips. Five measured pairs show 80.6% less combined
+formatting/lint time and 34.1% less sampled peak memory against Oxfmt plus ESLint.
+The complete original static sequence takes 154.40 seconds versus 74.98 seconds
+for the combined migration. Both sequences pass every retained check. The repeated
+comparison clears the 50% time and 30% memory targets. The separate formatting
+commit contains the previously reviewed 32-file change. The User confirmed no
+release changeset.
