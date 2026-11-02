@@ -186,6 +186,10 @@ const main = async () => {
     name: "@koed-labs/server",
     version: sourceManifest.version,
     description: "Koed Self-Hosted control plane",
+    repository: {
+      type: "git",
+      url: "https://github.com/koed-labs/koed.git"
+    },
     license: sourceManifest.license,
     type: "module",
     private: false,
