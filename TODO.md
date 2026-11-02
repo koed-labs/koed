@@ -1,5 +1,25 @@
 # Implementation backlog
 
+## Oxc evaluation follow-ups
+
+The [evaluation plan](PLAN.md) records compatibility and performance evidence.
+Adoption requires a separate decision.
+
+- [ ] If Oxfmt adoption is approved, pin the evaluated version, preserve the
+      80-column configuration and authored-prompt ignores, and disable sorting.
+      Ignore the Harbor TOML file to retain the evaluated formatting scope.
+      Review the 32-file formatting change separately from tooling changes.
+      Select the same formatter in local scripts, CI, and editors.
+- [ ] Before reconsidering typed Oxlint, preserve all effective ESLint rules,
+      options, globals, suppressions, and module parsing. Resolve the two missing
+      rule mappings, translate the 26 inline-global declarations, and explain
+      the optional-chain and assignment diagnostic differences.
+- [ ] Establish typed Oxlint workspace coverage without changing production or
+      test typechecking. Resolve `baseUrl`, rebase Desktop declaration paths,
+      cover tests through an explicit lint-project strategy, and measure any
+      required declaration builds. Repeat equivalent lint and complete-job
+      measurements only after repository execution succeeds.
+
 ## Optional Privacy runtime release gates
 
 The optional runtime implementation and development qualification are complete.
