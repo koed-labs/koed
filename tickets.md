@@ -88,3 +88,21 @@ Results and measurement limits are recorded in [PLAN.md](PLAN.md). The corrected
 [PR-runner evaluation](https://github.com/koed-labs/koed/actions/runs/41423567035)
 passes. Typed Oxlint has a documented incompatibility outcome. No adoption or
 production CI change is included.
+
+## Official migrator follow-up
+
+**Status:** complete, recommendation unchanged
+
+- [x] Generate candidates with `@oxlint/migrate 1.90.0`, `--type-aware`,
+      `--details`, and the additional `--with-nursery` comparison.
+- [x] Compare rule settings, actual file lists, and repository diagnostics with
+      the original evaluation source and clean ESLint baseline.
+- [x] Exercise migrated production/test overrides through the safety fixtures.
+      Correct the dropped test exclusion in an isolated candidate and reassess
+      the remaining blockers before benchmarking.
+- [x] Record findings in the plan and update implementation follow-ups.
+
+The [completed migrator cross-check](https://github.com/koed-labs/koed/actions/runs/41431837454)
+retains all 2,055 lint files. Generated test scopes pass 90/100 safety cases.
+The corrected scopes pass 100/100, while repository lint retains the same
+`baseUrl` and relative-path errors. No equivalent typed-Oxlint benchmark is added.

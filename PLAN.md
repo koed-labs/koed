@@ -71,6 +71,8 @@ The candidate maps 94 of 96 enabled rule names and passes 100 of 100 targeted
 safety cases. Typed repository execution still fails. The trial formatting change
 touches 32 files with 140 added and 193 deleted lines. The evidence below records
 the configuration blockers, remaining diagnostic differences, and prerequisites.
+The official-migrator follow-up below confirms the same repository blockers after
+correcting the generated test scopes. The Oxfmt-only recommendation remains unchanged.
 
 **Proposed full-switch gates:**
 
@@ -344,3 +346,87 @@ Changed-file formatting and workflow syntax checks pass locally. A full local
 Prettier scan reports only the pre-existing, untracked `CONFIG.md`. The corrected
 runner uses the pinned tracked source and completes all static checks. The User
 approved omitting a changeset because this evaluation changes no shipped behavior.
+
+## Official migrator cross-check, 2026-11-02
+
+The [completed compatibility run](https://github.com/koed-labs/koed/actions/runs/41431837454)
+uses `@oxlint/migrate 1.90.0`, matching Oxlint `1.90.0`, and
+oxlint-tsgolint `7.0.2005`. It checks the original source commit
+`f22c4f3bc7b0aaf3c74a2776c00f591c6ea677bf` on the same PR runner class,
+Node `24.13.1`, and pnpm `11.1.2`. The evaluation head is
+`5ffc903eedc5df8ca0056d2e51d95c0520418a24`.
+
+The [official migrator](https://github.com/oxc-project/oxlint-migrate) runs first
+with `--type-aware --details`, then with `--with-nursery` added. The comparison
+also tests a copy of the second output with the production/test boundary restored.
+Each configuration resides at the isolated snapshot root so its relative globs
+apply correctly. Root and package-local dependencies receive complete installations.
+
+The ESLint baseline checks 2,055 files with zero errors and zero warnings.
+Every candidate traverses exactly those files, with zero missing or additional
+files. The integrity check confirms that migration leaves the original source
+entries unchanged. The `oxlint-migrate-evaluation` artifact contains generated
+configurations, full diagnostics, command arguments, rule comparisons, and fixtures.
+The workflow retains it for 14 days. Local evidence remains in the designated
+scratch directory. No equivalent typed-lint benchmark becomes available.
+
+| Candidate                                   | Mapped enabled rule names | Safety cases matching ESLint | Repository typed lint |
+| ------------------------------------------- | ------------------------: | ---------------------------: | --------------------- |
+| Default migration flags                     |                   92 / 96 |                     90 / 100 | Fails configuration   |
+| With `--with-nursery`                       |                   94 / 96 |                     90 / 100 | Fails configuration   |
+| With nursery rules and restored test scopes |                   94 / 96 |                    100 / 100 | Fails configuration   |
+
+The default command skips `no-undef` and `no-useless-assignment` because the
+migrator classifies them as nursery rules. Adding `--with-nursery` retains them.
+Both commands skip `no-dupe-args` and `no-octal`, with the explanation that strict
+mode supersedes them. That classification does not resolve the previously observed
+CJS module-parsing difference. The supported name mappings agree with the earlier
+manual candidate. This repository's enabled rule declarations contain no custom
+option arrays.
+
+The migrator warns that `ignore list inside overrides is not supported`.
+It drops the production override's test exclusion. Seven safety-rule settings
+then differ across 393 test files. Four unsafe-value rules become enabled in
+152 files that exclude them under ESLint. Three other rules become enabled in
+all 393 affected test files. These produce 1,787 file/rule severity differences.
+The runtime fixtures reproduce the boundary error: ten cases fail because rules
+run in test scopes where ESLint disables them.
+
+The corrected configuration inserts a test override immediately after the
+production override. It disables that override's seven rules for these patterns:
+
+```json
+[
+  "apps/api/src/**/*.{test,spec}.ts",
+  "apps/worker/src/**/*.{test,spec}.ts",
+  "packages/*/src/**/*.{test,spec}.ts"
+]
+```
+
+The existing selected-test override then re-enables its four unsafe-value rules.
+This preserves glob-based coverage for future files and restores all 100 targeted
+safety cases. The rule comparison expands generated globs across the baseline
+manifest, and runtime fixtures exercise repository-shaped paths. After this repair,
+the only remaining rule/severity differences are the two unsupported core rules.
+
+All three repository executions exit with status 1. Each reports the same 13
+removed-`baseUrl` errors and 18 non-relative-path errors. The corrected candidate
+also reports the same 13,106 unsafe-type diagnostics, 13 optional-chain differences,
+and two assignment differences as the earlier manual candidate. Excluding 195
+known inline-global diagnostics, the candidates have identical diagnostic counts
+by rule, file, and message: 13,152 matching records. This comparison excludes
+positions because the earlier candidate uses the Oxfmt-formatted snapshot.
+
+The tested invocation leaves source comments unchanged. Its 195 inline-global
+diagnostics still need the earlier per-file globals treatment or another verified
+conversion. The optional `--replace-eslint-comments` path is not exercised here.
+The TypeScript configuration failures remain after the test-scope repair, so the
+migrator does not remove the runtime blocker. The earlier recommendation stands:
+use Oxfmt independently and retain ESLint while typed-workspace compatibility is
+unresolved. The performance table above remains unchanged.
+
+Three earlier helper attempts stopped during dependency resolution, directory-link
+hashing, or the ESLint baseline's default heap limit. They supply no compatibility
+result. The completed run uses the repository's existing 8 GiB heap setting and
+passes the baseline, source-integrity, and result-consistency checks. This follow-up
+changes evaluation evidence only. Architecture documentation needs no update.

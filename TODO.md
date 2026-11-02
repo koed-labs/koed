@@ -14,6 +14,11 @@ Adoption requires a separate decision.
       options, globals, suppressions, and module parsing. Resolve the two missing
       rule mappings, translate the 26 inline-global declarations, and explain
       the optional-chain and assignment diagnostic differences.
+      Start with the evaluated official migrator, `--type-aware`, `--details`,
+      and `--with-nursery`. Restore the production override's test exclusions before
+      checking equivalence. The direct migration output passes 90/100 scope
+      fixtures; the corrected test scopes pass 100/100. Repository lint still
+      fails the TypeScript configuration checks.
 - [ ] Establish typed Oxlint workspace coverage without changing production or
       test typechecking. Resolve `baseUrl`, rebase Desktop declaration paths,
       cover tests through an explicit lint-project strategy, and measure any
