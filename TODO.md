@@ -1,39 +1,24 @@
 # Implementation backlog
 
-## Oxc evaluation follow-ups
+## Combined Oxfmt and Oxlint migration
 
-The [evaluation plan](PLAN.md) records compatibility and performance evidence.
-Adoption requires a separate decision.
+The User requested both tools together. The [evaluation plan](PLAN.md) retains
+prior results and the current qualification evidence.
 
-- [ ] If Oxfmt adoption is approved, pin the evaluated version, preserve the
-      80-column configuration and authored-prompt ignores, and disable sorting.
-      Ignore the Harbor TOML file to retain the evaluated formatting scope.
-      Review the 32-file formatting change separately from tooling changes.
-      Select the same formatter in local scripts, CI, and editors.
-- [ ] Before reconsidering typed Oxlint, decide whether the evaluated four-rule
-      JavaScript bridge is acceptable. It restores the two missing rule mappings
-      and removes the 15 core-rule differences, but retains ESLint dependencies
-      and requires namespaced suppression comments. Keep the official migrator's
-      nursery rules, repaired test exclusions, and 26 per-file globals overrides.
-      Resolve the native `Promise.finally` false positive without disabling the
-      rule across other callbacks. Review the OAuth callback adaptation for the
-      newly detected `require-await` case before changing application behavior.
-- [ ] If configuration cleanup is approved, retain the evaluated three-file
-      TypeScript 7-compatible configuration and explicit lookup fallbacks. It
-      passes the existing TypeScript 6 checks and preserves module resolution.
-      Add the evaluated MCP test project by extending the existing lint project.
-      This removes all 209 unsafe-type reports without changing lint rules.
-      Keep the production and test check commands. Treat the flat-project
-      experiment as diagnostic evidence, not a replacement for production
-      project boundaries. Native compiler diagnostics additionally need the API
-      test globals, CSS context, Desktop inference difference, and existing Vite
-      overload error addressed if that optional check is adopted.
-- [ ] After an equivalent Oxlint candidate passes repository lint, repeat the
-      original safety and coverage checks and benchmark against Oxfmt plus
-      ESLint. Include the JavaScript plugin and declaration prerequisites.
-      Reorder the existing production typecheck if declarations are required.
-      Measure the complete job as well as lint time and memory. Apply the
-      existing 50% combined time and 30% peak-memory targets before adoption.
+- [x] Pin both Oxc packages and the typed engine. Replace the formatter and lint
+      scripts, preserve formatting options and ignores, and configure the editor.
+- [x] Preserve the effective rule scopes, globals, and suppression policy. Retain
+      four ESLint rule implementations inside Oxlint with namespaced comments.
+- [x] Apply the TypeScript 7-compatible configuration while retaining TypeScript 6
+      and existing checks. Add the MCP test project for native project discovery.
+- [x] Return the Fastify reply from the hijacked async OAuth callback. Preserve
+      terminal cleanup with one explained native false-positive suppression.
+- [x] Pass repository lint and the 110 rule/scope/suppression regression cases.
+- [ ] Complete production/test/browser/Electron checks and DB-backed route tests
+      on the PR runner. Probe all 1,754 executable typed files and restore them.
+- [ ] Measure Oxfmt plus Oxlint against Oxfmt plus ESLint, with all plugin workers
+      included. Measure complete static jobs with declaration prerequisites and
+      dependency installation. Record remaining TypeScript memory costs.
 
 ## Optional Privacy runtime release gates
 

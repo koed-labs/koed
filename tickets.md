@@ -151,3 +151,16 @@ reports remain: a native `Promise.finally` false positive and an OAuth callback
 that ESLint overlooks because its reply parameter is promise-like. Compiler
 upgrades alone do not resolve these rule differences. No production adoption or
 qualified Oxlint benchmark is included.
+
+## Combined migration
+
+**Status:** in progress, both tools requested together
+
+- [x] Implement both formatter and linter changes with pinned versions.
+- [x] Retain compiler checks, align native test discovery, and preserve missing
+      core rules through the JavaScript compatibility plugin.
+- [x] Resolve both remaining native lint reports and pass 110 focused checks.
+- [ ] Qualify the current implementation on the PR runner, including DB-backed
+      OAuth/terminal tests and complete typed coverage.
+- [ ] Record incremental lint and complete-job measurements, including the
+      compatibility plugin and declaration prerequisites.

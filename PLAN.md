@@ -675,3 +675,34 @@ rule names cannot appear even with severity off, the plugin adds a source file
 unless excluded, and fixtures under ignored paths need an isolated working root.
 They do not establish a passing compatibility result. Production tooling and
 application code remain unchanged. Architecture documentation needs no update.
+
+## Combined migration implementation, 2026-11-02
+
+The User requests Oxfmt and Oxlint together. This supersedes the earlier
+Oxfmt-only recommendation as the intended adoption scope. The implementation pins
+Oxfmt 0.75.0, Oxlint 1.90.0, and oxlint-tsgolint 7.0.2005. It removes Prettier and
+typescript-eslint from the root development dependencies. ESLint 10.4.0 remains
+pinned for the four compatibility rule implementations. Oxlint runs them in its
+JavaScript plugin worker, without a separate ESLint pass.
+
+`pnpm lint` now runs the existing production typecheck before typed Oxlint. CI
+and `pnpm verify` retain the check once through that command and retain the
+separate test typecheck. The compiler remains TypeScript 6.0.3. The native engine
+uses the three validated configuration repairs and the small MCP test project.
+`tsconfig.lint.json` replaces the former ESLint-named lint project.
+
+The OAuth callback now returns the Fastify reply after handing the response to
+the SDK. This follows Fastify's documented async-handler pattern. The terminal
+cleanup keeps its returned promise and error handling. One explained native
+suppression covers only the known `Promise.finally` false positive. The ordinary
+unsafe void-callback example remains detected in the regression suite.
+
+Repository native lint reports zero diagnostics. The 110 focused regression cases
+pass against the actual configuration. Full local formatting identifies only the
+pre-existing untracked `CONFIG.md`. The tracked migration-file checks pass. The
+32-file formatter change follows the previously reviewed trial output.
+
+PR-runner checks, complete typed coverage probes, DB-backed route tests, and the
+qualified incremental/full-job measurements remain pending. The qualification
+workflow compares a fresh original ESLint control with the combined migration.
+No production or test check is removed to obtain a clean result.

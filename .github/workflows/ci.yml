@@ -97,13 +97,10 @@ jobs:
       - name: Check formatting
         run: pnpm fmt:check
 
-      - name: Lint
+      - name: Typecheck production sources and lint
         env:
           NODE_OPTIONS: --max-old-space-size=8192
         run: pnpm lint
-
-      - name: Typecheck production sources
-        run: pnpm typecheck
 
       - name: Typecheck test sources
         run: pnpm typecheck:test

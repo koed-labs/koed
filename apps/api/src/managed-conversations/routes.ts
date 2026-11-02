@@ -2849,6 +2849,7 @@ export const registerManagedConversationRoutes = (
             clearInterval(heartbeat);
             unsubscribe();
             void processing
+              // oxlint-disable-next-line typescript/no-misused-promises -- Promise.finally awaits this cleanup promise.
               .finally(() => attachment.close())
               .catch(() => undefined);
           });
