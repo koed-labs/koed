@@ -2,7 +2,7 @@
 
 Both tools are migrated together. The current simplification removes the ESLint
 bridge under a User-approved policy that retires three rules and keeps native
-optional-chain checking. The latest section records that change and validation.
+optional-chain checking. The latest section records that change and its successful validation.
 The earlier [combined qualification](https://github.com/koed-labs/koed/actions/runs/41452153956)
 measured the bridge implementation. Its performance results remain historical,
 rather than measurements of the simplified rule set. Earlier sections retain the
@@ -800,9 +800,25 @@ removed. The `Promise.finally` exception remains separate and unchanged.
 
 Local native lint reports zero diagnostics across 2,055 files. The removed bridge
 script accounts for the one-file reduction from the previous implementation.
-The 104 safety cases and source-policy test pass. PR-runner checks for the five
-affected test files, compiler checks, and complete typed coverage remain pending.
+The 104 safety cases and source-policy test pass. The
+[native-only qualification](https://github.com/koed-labs/koed/actions/runs/41459999923)
+passes at implementation head `33a464702b549c7476264134b19f769920516bd9`. It
+retains Node 24.13.1, pnpm 11.1.2, TypeScript 6.0.3, and the PR runner class.
+All production, test, Electron, and browser compiler checks pass. All 158 tests
+across the five affected application test files pass, along with the 49 OAuth and
+terminal-route tests. There are no failed or skipped application tests. All 1,754
+typed probes are detected and restored. All 2,054 shared original source files
+remain. The current 2,055-file lint scope adds the native safety test and removes
+the original ESLint configuration. Removing ESLint prunes 47 packages from the current root dependency graph. No application test is removed.
 The existing benchmark covers the bridge implementation with the stricter rule
 policy. It does not establish new performance figures for this simplification.
 Performance comparisons now require an explicit manual workflow input. Routine
 qualification retains compiler, regression, route, and typed-coverage checks.
+
+The native-only implementation now passes its approved rule policy and validation.
+This intentionally supersedes exact parity with the former 96-rule setup. The
+current setup enables 93 native rules and retains all ten explicit typed rules.
+The original benchmark remains tied to its recorded bridge implementation. No
+new performance claim is made for the changed rule set. Contributor documentation
+records the native rules and source-file policy. No architecture documentation
+update is needed. The confirmed changeset omission remains in effect.

@@ -7,26 +7,28 @@ prior results and the current qualification evidence.
 
 - [x] Pin both Oxc packages and the typed engine. Replace the formatter and lint
       scripts, preserve formatting options and ignores, and configure the editor.
-- [x] Preserve the effective rule scopes, globals, and suppression policy. Retain
-      four ESLint rule implementations inside Oxlint with namespaced comments.
+- [x] Preserve typed-rule scopes, globals, and suppression policy. Keep native
+      optional-chain checks under the User-approved retirement of three rules.
 - [x] Apply the TypeScript 7-compatible configuration while retaining TypeScript 6
       and existing checks. Add the MCP test project for native project discovery.
 - [x] Return the Fastify reply from the hijacked async OAuth callback. Preserve
       terminal cleanup with one explained native false-positive suppression.
-- [x] Pass repository lint and the 110 rule/scope/suppression regression cases.
+- [x] Pass repository lint, the 104 retained safety cases, and the source-policy test.
 - [x] Complete production/test/browser/Electron checks and DB-backed route tests
       on the PR runner. Probe all 1,754 executable typed files and restore them.
-- [x] Measure Oxfmt plus Oxlint against Oxfmt plus ESLint, with all plugin workers
+- [x] Measure the earlier bridge implementation against Oxfmt plus ESLint, with all plugin workers
       included. Measure complete static jobs with declaration prerequisites and
       dependency installation. Record remaining TypeScript memory costs.
       Five pairs show 80.6% less time and 34.1% less peak memory. The complete
-      static sequence also passes. The combined migration is qualified.
+      static sequence also passes. Those measurements cover the earlier bridge
+      policy, not the current native-only simplification.
 - [x] Remove the four-rule ESLint bridge under the User-approved simpler policy.
       Retire duplicate-argument, legacy-octal, and useless-assignment checks. Keep
       native optional-chain checking and repair the affected test expressions.
       Keep the typed-safety cases and enforce the `.mjs`/`.tsx` source policy.
-- [ ] Validate the native-only setup on the PR runner, including the five affected
-      application test files and complete typed coverage.
+- [x] Validate the native-only setup on the PR runner, including the five affected
+      application test files and complete typed coverage. All 158 affected tests,
+      49 route tests, compiler checks, and 1,754 probes pass without skipped tests.
 - [ ] Reevaluate the native `Promise.finally` exception when upstream parity is
       available, using the committed safety suite before removing its suppression.
 

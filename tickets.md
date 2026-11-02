@@ -179,16 +179,24 @@ release changeset.
 
 ## Native-only simplification
 
-**Status:** in progress, User-approved rule-policy change
+**Status:** complete, native-only setup validated under the approved rule policy
 
 - [x] Remove the ESLint dependency and four-rule bridge.
 - [x] Retire duplicate-argument, octal, and useless-assignment rules. Keep native
       optional-chain checking and the existing application tests.
 - [x] Repair the 13 affected test expressions. Pass the 104 safety cases and the
       JavaScript source-policy test.
-- [ ] Validate compiler checks, affected application tests, and complete typed
+- [x] Validate compiler checks, affected application tests, and complete typed
       coverage on the PR runner.
 
 The earlier benchmark remains evidence for the previous bridge implementation.
 This simplification intentionally retires three checks and requires no claim of
 exact rule parity with the original ESLint setup.
+
+The [native-only qualification](https://github.com/koed-labs/koed/actions/runs/41459999923)
+passes. It verifies the 104 retained safety cases, source-file policy, all 158
+application tests in the five affected files, 49 route tests, compiler checks,
+and all 1,754 executable typed probes. There are no failed or skipped application
+tests. ESLint and the compatibility plugin are removed. The current configuration
+uses 93 native rules. The previous benchmark remains tied to the earlier bridge
+implementation and its original rule policy.
