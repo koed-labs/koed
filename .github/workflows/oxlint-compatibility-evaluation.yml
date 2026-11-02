@@ -162,6 +162,8 @@ jobs:
 
           JS
           node scratch/oxc-evaluation/ts7config-check.mjs
+
+          node -e 'const s=require("./scratch/oxc-evaluation/ts7config-evaluation/summary.json");if(s.typedCoverage.missing.length)throw Error("Typed files skipped");'
       - name: Compare native project contexts and ESLint rule plugins
         run: |
           cat > scratch/oxc-evaluation/compatibility-check.mjs <<'JS'
@@ -190,12 +192,12 @@ jobs:
            const rules=['no-dupe-args','no-octal','no-unsafe-optional-chaining','no-useless-assignment'];
            fs.writeFileSync(path.join(workspace,'.oxlint-compat.mjs'),`import {builtinRules} from 'eslint/use-at-your-own-risk'; export default {rules:Object.fromEntries(${JSON.stringify(rules)}.map(k=>[k,builtinRules.get(k)]))};\n`);
            const config=JSON.parse(fs.readFileSync(path.join(workspace,'.oxlintrc.json')));config.jsPlugins=[{name:'eslint-compat',specifier:'./.oxlint-compat.mjs'}];
-           for(const rule of rules){config.rules[rule]='off';config.rules['eslint-compat/'+rule]='error';}
+           for(const rule of rules){if(Object.hasOwn(config.rules,rule))config.rules[rule]='off';config.rules['eslint-compat/'+rule]='error';}
            config.overrides.push({files:['**/*.{ts,tsx,mts,cts}'],rules:{'eslint-compat/no-dupe-args':'off'}});
            fs.writeFileSync(path.join(workspace,'.oxlint-compat.json'),JSON.stringify(config,null,2));
            fs.copyFileSync(path.join(workspace,'.oxlint-compat.json'),path.join(out,'oxlint-compat.json'));fs.copyFileSync(path.join(workspace,'.oxlint-compat.mjs'),path.join(out,'oxlint-compat.mjs'));
            native('flat-project-js-compat','.oxlint-compat.json');
-           const dir=path.join(workspace,'scratch-compatibility-probes');fs.mkdirSync(dir,{recursive:true});
+           const dir=path.join(workspace,'scratch/compatibility-probes');fs.mkdirSync(dir,{recursive:true});
            const cases=[
            ['duplicate.cjs','function f(a,a) { return a; }','no-dupe-args'],
            ['octal.cjs','const value=012;','no-octal'],
@@ -206,16 +208,31 @@ jobs:
            const probeConfig={categories:Object.fromEntries(['correctness','suspicious','pedantic','perf','style','restriction','nursery'].map(k=>[k,'off'])),plugins:[],jsPlugins:config.jsPlugins,rules:Object.fromEntries(rules.map(k=>['eslint-compat/'+k,'error']))};
            fs.writeFileSync(path.join(workspace,'.oxlint-compat-probes.json'),JSON.stringify(probeConfig));
            for(const [file,code,rule]of cases){fs.writeFileSync(path.join(dir,file),code+'\n');if(rule){const ext=path.extname(file),stem=file.slice(0,-ext.length);fs.writeFileSync(path.join(dir,stem+'-legacy-suppressed'+ext),`/* eslint-disable ${rule} */\n`+code+'\n');fs.writeFileSync(path.join(dir,stem+'-alias-suppressed'+ext),`/* eslint-disable eslint-compat/${rule} */\n`+code+'\n');}}
-           const probes=run('js-compat-probes',path.join(tools,'.bin/oxlint'),['--no-ignore','-c','.oxlint-compat-probes.json','-f','json','scratch-compatibility-probes']);const data=JSON.parse(probes.stdout);
+           const probes=run('js-compat-probes',path.join(tools,'.bin/oxlint'),['--no-ignore','-c','.oxlint-compat-probes.json','-f','json','scratch/compatibility-probes']);const data=JSON.parse(probes.stdout);
            results.pluginProbes={status:probes.status,files:data.number_of_files,diagnostics:data.diagnostics.map(d=>({file:path.basename(d.filename),code:d.code,message:d.message}))};
            fs.rmSync(dir,{recursive:true,force:true});
           }finally{for(const [f,b]of saved)fs.writeFileSync(path.join(workspace,f),b);for(const f of ['.oxlint-compat.mjs','.oxlint-compat.json','.oxlint-compat-probes.json'])fs.rmSync(path.join(workspace,f),{force:true});}
           const after=hash(),changes=sourceFiles.filter(f=>before[f]!==after[f]);if(changes.length)throw Error('Unrestored project changes: '+changes);
+          if((results['mcp-leaf-project'].counts['typescript(no-unsafe-assignment)']??0)||(results['mcp-leaf-project'].counts['typescript(no-unsafe-member-access)']??0))throw Error('MCP test context remains broken');
           results.restored=true;fs.writeFileSync(path.join(out,'summary.json'),JSON.stringify(results,null,2));console.log(JSON.stringify(results,null,2));
           if(Object.entries(results).filter(([k])=>['mcp-leaf-project','flat-project','flat-project-js-compat'].includes(k)).some(([,v])=>v.files!==2055))throw Error('Lint file coverage changed');
 
           JS
           node scratch/oxc-evaluation/compatibility-check.mjs
+      - name: Reproduce typed rule differences independently
+        run: |
+          cat > scratch/oxc-evaluation/typed-difference-probe.mjs <<'JS'
+          import fs from 'node:fs';import path from 'node:path';import {spawnSync}from'node:child_process';import {ESLint}from'../../node_modules/eslint/lib/api.js';import tseslint from '../../node_modules/typescript-eslint/dist/index.js';
+          const dir=path.resolve('scratch/oxc-evaluation/typed-difference-probes');fs.mkdirSync(dir,{recursive:true});spawnSync('git',['init','--quiet',dir]);
+          fs.writeFileSync(path.join(dir,'tsconfig.json'),JSON.stringify({compilerOptions:{strict:true,noEmit:true,target:'ES2022',module:'NodeNext',types:[],skipLibCheck:true},include:['*.ts']}));
+          const cases={plain:'export const callback = async (request: unknown, reply: unknown) => { console.log(request, reply); };',thenableParameter:'export const callback = async (request: unknown, reply: PromiseLike<void>) => { console.log(request, reply); };',finally:'declare const processing: Promise<void>; declare const close: () => Promise<void>; processing.finally(() => close()).catch(() => undefined);',voidCallback:'declare function f(callback: () => void): void; declare const close: () => Promise<void>; f(() => close());'};
+          for(const[k,v]of Object.entries(cases))fs.writeFileSync(path.join(dir,k+'.ts'),v+'\n');
+          const eslint=new ESLint({cwd:dir,overrideConfigFile:true,overrideConfig:[{files:['*.ts'],languageOptions:{parser:tseslint.parser,parserOptions:{project:'./tsconfig.json',tsconfigRootDir:dir}},plugins:{ts:tseslint.plugin},rules:{'ts/require-await':'error','ts/no-misused-promises':'error'}}]});const baseline=await eslint.lintFiles(['*.ts']);fs.writeFileSync(path.join(dir,'eslint.json'),JSON.stringify(baseline,null,2));
+          fs.writeFileSync(path.join(dir,'oxlint.json'),JSON.stringify({plugins:['typescript'],categories:{correctness:'off'},rules:{'typescript/require-await':'error','typescript/no-misused-promises':'error'}}));
+          const tools=path.resolve('scratch/oxc-evaluation/tools/node_modules');const r=spawnSync(path.join(tools,'.bin/oxlint'),['--type-aware','-c','oxlint.json','-f','json','.'],{cwd:dir,env:{...process.env,PATH:path.join(tools,'.bin')+path.delimiter+process.env.PATH},encoding:'utf8'});fs.writeFileSync(path.join(dir,'oxlint.json.log'),r.stdout);const native=JSON.parse(r.stdout);console.log(JSON.stringify({baseline:baseline.map(x=>({file:path.basename(x.filePath),messages:x.messages.map(d=>({rule:d.ruleId,message:d.message}))})),native:native.diagnostics},null,2));
+
+          JS
+          node scratch/oxc-evaluation/typed-difference-probe.mjs
       - name: Retain compatibility evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -227,6 +244,8 @@ jobs:
             scratch/oxc-evaluation/tools/package-lock.json
             scratch/oxc-evaluation/compatibility-evaluation/
             scratch/oxc-evaluation/compatibility-check.mjs
+            scratch/oxc-evaluation/typed-difference-probe.mjs
+            scratch/oxc-evaluation/typed-difference-probes/
           retention-days: 14
     env:
       NODE_OPTIONS: --max-old-space-size=8192
