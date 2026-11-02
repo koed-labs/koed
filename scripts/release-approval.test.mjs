@@ -14,10 +14,17 @@ const approval = {
   environments: [{ name: "production" }]
 };
 
-test("only independent production approvals on first stable attempt authorize publication", () => {
-  assert.equal(verifyApproval(context, [approval]), true);
+test("independent production approvals authorize any valid workflow attempt", () => {
+  for (const attempt of ["1", "2", "17"])
+    assert.equal(verifyApproval({ ...context, attempt }, [approval]), true);
+});
+
+test("publication still rejects invalid attempts and non-independent approval evidence", () => {
   for (const [ctx, evidence] of [
-    [{ ...context, attempt: "2" }, [approval]],
+    [{ ...context, attempt: "0" }, [approval]],
+    [{ ...context, attempt: "01" }, [approval]],
+    [{ ...context, attempt: "2.5" }, [approval]],
+    [{ ...context, attempt: 2 }, [approval]],
     [{ ...context, version: "1.2.3-beta.1" }, [approval]],
     [{ ...context, actor: "" }, [approval]],
     [{ ...context, triggeringActor: "" }, [approval]],

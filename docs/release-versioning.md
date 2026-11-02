@@ -3,7 +3,11 @@
 Koed uses one product release version. Changesets applies the SemVer bump to the
 `@koed/koed` release manifest, and the release-version command synchronizes the
 root package, `@koed-labs/server`, standalone Koed distribution, and Desktop
-application metadata before the version pull request is merged.
+application metadata before the version pull request is merged. After Changesets
+versions packages, release synchronization adds the matching Desktop changelog
+heading and merges the current product and server release notes into the root
+changelog. Existing history is retained and repeated synchronization does not
+repeat entries.
 
 ## Version categories
 

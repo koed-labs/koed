@@ -203,6 +203,29 @@ test("assembled public package has only koed bin and self-contained control plan
     const packedFiles = execFileSync("tar", ["-tzf", tarball], {
       encoding: "utf8"
     }).split("\n");
+    const packedReadme = execFileSync(
+      "tar",
+      ["-xOzf", tarball, "package/README.md"],
+      {
+        encoding: "utf8"
+      }
+    );
+    assert.ok(
+      packedReadme.includes(`npm install --global @koed-labs/server@${version}`)
+    );
+    assert.match(packedReadme, /koed components install --component base/);
+    for (const target of ["linux-x64", "macos-arm64"]) {
+      const asset = `koed-base-${version}-${target}.tar.gz`;
+      assert.ok(
+        packedReadme.includes(`/releases/download/v${version}/${asset}`)
+      );
+      assert.ok(packedReadme.includes(`${asset}.manifest.json`));
+    }
+    assert.match(packedReadme, /koed setup core --json/);
+    assert.match(packedReadme, /koed doctor --json/);
+    assert.match(packedReadme, /koed setup codex --json/);
+    assert.match(packedReadme, /koed models install --kind embedding --json/);
+    assert.match(packedReadme, /https:\/\/github\.com\/koed-labs\/koed/);
     assert.ok(packedFiles.some((file) => file.endsWith("/bin/koed.js")));
     for (const helper of [
       "README.md",

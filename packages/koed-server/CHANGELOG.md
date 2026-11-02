@@ -1,5 +1,13 @@
 # @koed/koed-server
 
+## 0.10.2
+
+## 0.10.1
+
+### Patch Changes
+
+- e3cdae1: Add a user-focused package README with headless setup steps and version-matched component download commands.
+
 ## 0.10.0
 
 ### Minor Changes

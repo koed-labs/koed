@@ -2,16 +2,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { markers } from "./product-changelog.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const changelogPath = path.join(root, "CHANGELOG.md");
 
 export const extractReleaseNotes = (changelog, version) => {
-  const sections = [...changelog.matchAll(/^##\s+(.+)\s*$/gm)];
+  const sections = markers(changelog, /^##\s+(.+)\s*$/);
   if (sections.length === 0)
     throw new Error("CHANGELOG.md does not contain a release section.");
   const selected = version
-    ? sections.find((section) => section[1].trim() === version)
+    ? sections.find(
+        (section) => section.text.replace(/^##\s+/, "").trim() === version
+      )
     : sections[0];
   if (!selected)
     throw new Error(`CHANGELOG.md has no release section for ${version}.`);
@@ -21,7 +24,7 @@ export const extractReleaseNotes = (changelog, version) => {
     .trim();
   if (!notes)
     throw new Error(
-      `Could not extract release notes for ${version ?? selected[1]}.`
+      `Could not extract release notes for ${version ?? selected.text.replace(/^##\s+/, "")}.`
     );
   return notes;
 };
