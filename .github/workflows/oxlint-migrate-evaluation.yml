@@ -72,7 +72,7 @@ jobs:
           const migrator=path.join(tools,'@oxlint/migrate/dist/bin/oxlint-migrate.mjs');
           const oxlint=path.join(tools,'.bin/oxlint');
           const sourceFiles=JSON.parse(fs.readFileSync(path.join(out,'source-files.json')));
-          const hashes=()=>Object.fromEntries(sourceFiles.map(f=>[f,crypto.createHash('sha256').update(fs.readFileSync(path.join(workspace,f))).digest('hex')]));
+          const hashes=()=>Object.fromEntries(sourceFiles.map(f=>{const file=path.join(workspace,f);const data=fs.lstatSync(file).isSymbolicLink()?Buffer.from('symlink:'+fs.readlinkSync(file)):fs.readFileSync(file);return [f,crypto.createHash('sha256').update(data).digest('hex')];}));
           const before=hashes();
           for(const [name,extra] of [['default',[]],['nursery',['--with-nursery']]]){
            const output='.oxlintrc.'+name+'.json';
