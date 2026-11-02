@@ -1,8 +1,10 @@
 name: Oxc evaluation
 on:
   push:
-    branches: [eval/oxc-tooling]
-    paths: [.github/workflows/oxc-evaluation.yml]
+    branches:
+      - eval/oxc-tooling
+    paths:
+      - .github/workflows/oxc-evaluation.yml
 permissions:
   contents: read
 jobs:
@@ -56,7 +58,7 @@ jobs:
             if(!/\.(js|mjs|cjs|ts|tsx|jsx|mts|cts)$/.test(file)||await eslint.isPathIgnored(file))continue;
             const c=await eslint.calculateConfigForFile(file);
             if(!c)continue;
-            const config={rules:c.rules,globals:c.languageOptions.globals??{},ecmaVersion:c.languageOptions.ecmaVersion,sourceType:c.languageOptions.sourceType,parserOptions:c.languageOptions.parserOptions};
+            const config={rules:c.rules,linterOptions:c.linterOptions,globals:c.languageOptions.globals??{},ecmaVersion:c.languageOptions.ecmaVersion,sourceType:c.languageOptions.sourceType,parserOptions:c.languageOptions.parserOptions};
             const key=crypto.createHash('sha256').update(JSON.stringify(config)).digest('hex');
             if(!groups.has(key))groups.set(key,{key,config,files:[]});
             groups.get(key).files.push(file);
@@ -91,9 +93,10 @@ jobs:
           fs.writeFileSync(path.join(out,'lint-files.json'),JSON.stringify([...groups.values()].flatMap(g=>g.files).sort(),null,2));
           fs.writeFileSync(path.join(out,'oxlint.json'),JSON.stringify(candidate,null,2));
           console.log(JSON.stringify({formatFiles:formats.length,lintFiles:[...groups.values()].reduce((n,g)=>n+g.files.length,0),groups:groups.size,enabledUnique:new Set(mapping.map(x=>x.rule)).size,supportedUnique:new Set(mapping.filter(x=>x.supported).map(x=>x.rule)).size,gaps:[...new Set(mapping.filter(x=>!x.supported).map(x=>x.rule))]},null,2));
+
           JS
           cat > scratch/oxc-evaluation/measure.py <<'PY'
-          import os, sys, json, time, subprocess, pathlib, statistics, hashlib, difflib
+          import os, sys, json, time, subprocess, pathlib, statistics, hashlib, difflib, shutil
 
           ROOT=pathlib.Path.cwd()
           OUT=ROOT/'scratch/oxc-evaluation'
@@ -139,13 +142,13 @@ jobs:
           for name in ['baseline','candidate']:
               d=OUT/name
               subprocess.run(['git','init','--quiet',str(d)],check=True)
-              if not (d/'node_modules').exists():
-                  (d/'node_modules').symlink_to(ROOT/'node_modules',target_is_directory=True)
               subprocess.run(['git','add','.'],cwd=d,check=True)
               subprocess.run(['git','-c','user.name=Evaluation','-c','user.email=eval@localhost','commit','--quiet','-m','Source snapshot'],cwd=d,check=True)
 
           (OUT/'candidate/.oxfmtrc.json').write_text((OUT/'oxfmt.json').read_text())
           (OUT/'candidate/.oxlintrc.json').write_text((OUT/'oxlint.json').read_text())
+          for name in ['baseline','candidate']:
+              assert run(name+'-prepare-dependencies',['pnpm','install','--frozen-lockfile'],OUT/name,False,{'CI':'true'})==0
           run('baseline-format-write',[prettier,'--write',*files],OUT/'baseline',False)
           run('candidate-format-write',[oxfmt,'--write','-c','.oxfmtrc.json',*files],OUT/'candidate',False)
           churn=[]
@@ -166,14 +169,14 @@ jobs:
                   f.writelines(difflib.unified_diff(a,b,fromfile='a/'+name,tofile='b/'+name))
 
           fmt={'prettier':([prettier,'--check',*files],OUT/'baseline'),'oxfmt':([oxfmt,'--check','-c','.oxfmtrc.json',*files],OUT/'candidate')}
-          for name,(cmd,cwd) in fmt.items():run(name+'-warmup',cmd,cwd,False)
+          for name,(cmd,cwd) in fmt.items():assert run(name+'-warmup',cmd,cwd,False)==0
           for name in ['baseline','candidate']:
-              run(name+'-lint-warmup',[eslint,'.','--no-cache'],OUT/name,False)
+              assert run(name+'-lint-warmup',[eslint,'.','--no-cache'],OUT/name,False)==0
           for i in range(5):
               for name in (['prettier','oxfmt'] if i%2==0 else ['oxfmt','prettier']):
-                  cmd,cwd=fmt[name];run(name+'-'+str(i+1),cmd,cwd)
+                  cmd,cwd=fmt[name];assert run(name+'-'+str(i+1),cmd,cwd)==0
                   snapshot='baseline' if name=='prettier' else 'candidate'
-                  run(snapshot+'-lint-'+str(i+1),[eslint,'.','--no-cache'],OUT/snapshot)
+                  assert run(snapshot+'-lint-'+str(i+1),[eslint,'.','--no-cache'],OUT/snapshot)==0
 
           # Compatibility attempts are explicitly excluded from performance evidence.
           run('eslint-diagnostics',[eslint,'.','--no-cache','-f','json','-o',str(OUT/'eslint-diagnostics.json')],OUT/'baseline',False)
@@ -185,7 +188,9 @@ jobs:
           static=[]
           for name in ['baseline','candidate']:
               d=OUT/name
-              (d/'node_modules').unlink()
+              for modules in [d/'node_modules',*d.glob('apps/*/node_modules'),*d.glob('packages/*/node_modules')]:
+                  if modules.is_symlink():modules.unlink()
+                  elif modules.exists():shutil.rmtree(modules)
               script='''import subprocess,sys,os
           commands=[['pnpm','install','--frozen-lockfile'],*EXTRA,['pnpm','env:sync:check'],['pnpm','docs:adr:check'],FORMAT,['pnpm','lint'],['pnpm','typecheck'],['pnpm','typecheck:test']]
           failed=False
@@ -211,6 +216,115 @@ jobs:
           summary['churn']={'files':len(churn),'added':sum(r['added'] for r in churn),'deleted':sum(r['deleted'] for r in churn)}
           (OUT/'summary.json').write_text(json.dumps(summary,indent=2))
           print(json.dumps(summary,indent=2),flush=True)
+
+          PY
+          cat > scratch/oxc-evaluation/safety.mjs <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import {spawnSync} from 'node:child_process';
+          import {ESLint} from '../../node_modules/eslint/lib/api.js';
+          const out=path.resolve('scratch/oxc-evaluation');
+          const dir=path.join(out,'safety');fs.mkdirSync(dir,{recursive:true});
+          spawnSync('git',['init','--quiet',dir]);
+          const samples={
+           'await-thenable':'export async function f() { await 1; }',
+           'no-floating-promises':'Promise.resolve(1); export {};',
+           'no-misused-promises':'export function f() { [1].forEach(async () => { await Promise.resolve(); }); }',
+           'no-unsafe-argument':'declare const value: any; function takes(x: string) {return x;} export const result = takes(value);',
+           'no-unsafe-assignment':'declare const value: any; export const result: string = value;',
+           'no-unsafe-member-access':'declare const value: any; export const result = value.foo;',
+           'no-unsafe-return':'declare const value: any; export function f(): string { return value; }',
+           'no-base-to-string':'export const result = String({});',
+           'prefer-promise-reject-errors':'Promise.reject("bad").catch(() => {}); export {};',
+           'require-await':'export async function f() { return 1; }'
+          };
+          const scopes={production:'apps/api/src/analytics/index.ts',selectedTest:'apps/api/src/server.test.ts',otherTest:'apps/api/src/auth/remote-mcp-oauth-routes.test.ts',tsx:'apps/api/src/browser-approval/AuthPanel.tsx',configuration:'vitest.config.ts'};
+          const groups=JSON.parse(fs.readFileSync(path.join(out,'eslint-effective.json')));
+          fs.writeFileSync(path.join(dir,'tsconfig.json'),JSON.stringify({compilerOptions:{target:'ES2022',module:'NodeNext',strict:true,noEmit:true,types:[],skipLibCheck:true},include:['*.ts']},null,2));
+          const original=new ESLint({cwd:process.cwd(),cache:false});
+          const overrides=[];const cases=[];
+          for(const [scope,representative] of Object.entries(scopes)){
+           const effective=await original.calculateConfigForFile(representative);
+           const rules=Object.fromEntries(Object.keys(samples).map(r=>['@typescript-eslint/'+r,effective.rules['@typescript-eslint/'+r]??[0]]));
+           for(const [rule,code] of Object.entries(samples)){
+             for(const suppressed of [false,true]){
+               const file=`${scope}-${rule}-${suppressed?'suppressed':'failing'}.ts`;
+               fs.writeFileSync(path.join(dir,file),(suppressed?`/* eslint-disable @typescript-eslint/${rule} */\n`:'')+code+'\n');
+               cases.push({scope,representative,rule,file,suppressed,enabled:!!rules['@typescript-eslint/'+rule][0]});
+             }
+           }
+           overrides.push({files:[`${scope}-*.ts`],rules});
+          }
+          const tseslint=(await import('../../node_modules/typescript-eslint/dist/index.js')).default;
+          const eslint=new ESLint({cwd:dir,overrideConfigFile:true,cache:false,overrideConfig:[{files:['*.ts'],languageOptions:{parser:tseslint.parser,parserOptions:{project:'./tsconfig.json',tsconfigRootDir:dir}},plugins:{'@typescript-eslint':tseslint.plugin}},...overrides,{linterOptions:{reportUnusedDisableDirectives:false}}]});
+          const baseline=await eslint.lintFiles(['*.ts']);fs.writeFileSync(path.join(out,'safety-eslint.json'),JSON.stringify(baseline,null,2));
+          const candidate={plugins:['typescript'],categories:Object.fromEntries(['correctness','suspicious','pedantic','perf','style','restriction','nursery'].map(k=>[k,'off'])),overrides:overrides.map(o=>({files:o.files,rules:Object.fromEntries(Object.entries(o.rules).map(([k,v])=>[k.replace('@typescript-eslint/','typescript/'),v]))}))};
+          fs.writeFileSync(path.join(dir,'oxlint.json'),JSON.stringify(candidate,null,2));
+          const result=spawnSync(path.join(out,'tools/node_modules/.bin/oxlint'),['--type-aware','-c','oxlint.json','-f','json','.'],{cwd:dir,encoding:'utf8',env:{...process.env,PATH:path.join(out,'tools/node_modules/.bin')+path.delimiter+process.env.PATH}});
+          fs.writeFileSync(path.join(out,'safety-oxlint.json'),result.stdout);fs.writeFileSync(path.join(out,'safety-oxlint.stderr'),result.stderr);
+          const ox=JSON.parse(result.stdout);
+          for(const c of cases){
+           const expected=c.enabled&&!c.suppressed;
+           const b=baseline.find(x=>path.basename(x.filePath)===c.file);
+           c.eslintDetected=b.messages.some(x=>x.ruleId==='@typescript-eslint/'+c.rule);
+           c.oxlintDetected=ox.diagnostics.some(x=>path.basename(x.filename)===c.file&&x.code==='typescript('+c.rule+')');
+           c.pass=c.eslintDetected===expected&&c.oxlintDetected===expected;
+          }
+          fs.writeFileSync(path.join(out,'safety-results.json'),JSON.stringify(cases,null,2));
+          console.log(JSON.stringify({passing:cases.filter(c=>c.pass).length,total:cases.length,failures:cases.filter(c=>!c.pass),engineStatus:result.status},null,2));
+
+          JS
+          cat > scratch/oxc-evaluation/editor-probe.py <<'PY'
+          import subprocess,json,pathlib,os,select,time
+          p=pathlib.Path('scratch/oxc-evaluation').resolve()
+
+          def probe(tool,root,document,text,formatting=False):
+           env=os.environ.copy();env['PATH']=str(p/'tools/node_modules/.bin')+os.pathsep+env['PATH']
+           proc=subprocess.Popen([str(p/'tools/node_modules/.bin'/tool),'--lsp'],cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=env)
+           messages=[];buffer=b''
+           def send(m):
+            data=json.dumps({'jsonrpc':'2.0',**m}).encode();proc.stdin.write(f'Content-Length: {len(data)}\r\n\r\n'.encode()+data);proc.stdin.flush()
+           def receive(wanted,timeout=15):
+            nonlocal buffer
+            deadline=time.monotonic()+timeout
+            while time.monotonic()<deadline:
+             if b'\r\n\r\n' in buffer:
+              head,body=buffer.split(b'\r\n\r\n',1);size=int(head.decode().split('Content-Length: ')[1].split('\r\n')[0])
+              if len(body)>=size:
+               msg=json.loads(body[:size]);buffer=body[size:];messages.append(msg)
+               if 'id' in msg and 'method' in msg:send({'id':msg['id'],'result':None})
+               if wanted(msg):return msg
+               continue
+             ready,_,_=select.select([proc.stdout],[],[],max(0,deadline-time.monotonic()))
+             if ready:
+              data=os.read(proc.stdout.fileno(),65536)
+              if not data:break
+              buffer+=data
+            return None
+           send({'id':1,'method':'initialize','params':{'processId':None,'rootUri':root.as_uri(),'capabilities':{'textDocument':{'publishDiagnostics':{'relatedInformation':True}}},'workspaceFolders':[{'uri':root.as_uri(),'name':'evaluation'}]}})
+           initialized=receive(lambda m:m.get('id')==1)
+           send({'method':'initialized','params':{}})
+           uri=(root/document).as_uri()
+           send({'method':'textDocument/didOpen','params':{'textDocument':{'uri':uri,'languageId':'typescript','version':1,'text':text}}})
+           if formatting:
+            send({'id':2,'method':'textDocument/formatting','params':{'textDocument':{'uri':uri},'options':{'tabSize':2,'insertSpaces':True}}})
+            response=receive(lambda m:m.get('id')==2)
+           else:response=receive(lambda m:m.get('method')=='textDocument/publishDiagnostics' and m.get('params',{}).get('uri')==uri and m['params'].get('diagnostics'))
+           send({'id':3,'method':'shutdown','params':None});receive(lambda m:m.get('id')==3,3)
+           send({'method':'exit','params':None})
+           try:proc.wait(timeout=3)
+           except subprocess.TimeoutExpired:proc.kill();proc.wait()
+           stderr=proc.stderr.read().decode()
+           return {'tool':tool,'initialize':initialized,'response':response,'messages':messages,'stderr':stderr,'exit':proc.returncode}
+
+          r=[]
+          r.append(probe('oxfmt',p/'candidate','editor-probe.ts','const x={foo:1,bar:"two"}\n',True))
+          c=json.loads((p/'safety/oxlint.json').read_text());c['options']={'typeAware':True};(p/'safety/.oxlintrc.json').write_text(json.dumps(c))
+          doc='production-no-floating-promises-failing.ts'
+          r.append(probe('oxlint',p/'safety',doc,(p/'safety'/doc).read_text()))
+          (p/'editor-results.json').write_text(json.dumps(r,indent=2))
+          print(json.dumps([{'tool':x['tool'],'response':x['response'],'exit':x['exit']} for x in r],indent=2))
+
           PY
           cat > scratch/oxc-evaluation/oxfmt.json <<'JSON'
           {
@@ -231,6 +345,8 @@ jobs:
         run: |
           node scratch/oxc-evaluation/inventory.mjs > scratch/oxc-evaluation/inventory-summary.json
           python3 scratch/oxc-evaluation/measure.py
+          node scratch/oxc-evaluation/safety.mjs > scratch/oxc-evaluation/safety-summary.json
+          python3 scratch/oxc-evaluation/editor-probe.py > scratch/oxc-evaluation/editor-summary.json
       - name: Retain raw evaluation evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
