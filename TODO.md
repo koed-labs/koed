@@ -20,10 +20,15 @@ Adoption requires a separate decision.
       fixtures; the corrected test scopes pass 100/100. Repository lint still
       fails the TypeScript configuration checks.
 - [ ] Establish typed Oxlint workspace coverage without changing production or
-      test typechecking. Resolve `baseUrl`, rebase Desktop declaration paths,
-      cover tests through an explicit lint-project strategy, and measure any
-      required declaration builds. Repeat equivalent lint and complete-job
-      measurements only after repository execution succeeds.
+      test typechecking. The isolated three-file configuration candidate removes
+      `baseUrl` errors and passes TypeScript 6.0.3 checks. Preserve its explicit
+      root lookup fallback if the configuration cleanup is adopted; alias
+      rebasing alone breaks declaration emission. Align native test contexts
+      with the existing lint/test projects, including `vi`, `@koed/db`, and CSS
+      declarations. Investigate the remaining two compiler diagnostics and 17
+      other lint differences. Account for declaration availability and ordering
+      in later measurements. Repeat equivalent lint and complete-job measurements
+      only after repository execution succeeds.
 
 ## Optional Privacy runtime release gates
 

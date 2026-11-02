@@ -106,3 +106,24 @@ The [completed migrator cross-check](https://github.com/koed-labs/koed/actions/r
 retains all 2,055 lint files. Generated test scopes pass 90/100 safety cases.
 The corrected scopes pass 100/100, while repository lint retains the same
 `baseUrl` and relative-path errors. No equivalent typed-Oxlint benchmark is added.
+
+## TypeScript 7-compatible configuration follow-up
+
+**Status:** complete, configuration cleanup validated with TypeScript 6
+
+- [x] Remove legacy configuration options and rebase aliases in an isolated
+      snapshot while keeping the compiler and existing check commands.
+- [x] Resolve the declaration-emission regression by preserving the old lookup
+      root through explicit wildcard paths.
+- [x] Pass production, test, Desktop Electron, browser, and ESLint checks.
+      Compare import resolution and retain the same lint file coverage.
+- [x] Compare native diagnostics before and after declaration builds. Probe
+      promise-rule execution throughout the executable typed-file scope.
+- [x] Record remaining native project-context and rule differences in the plan
+      and implementation backlog before reconsidering benchmarks.
+
+The [completed configuration experiment](https://github.com/koed-labs/koed/actions/runs/41438422137)
+retains TypeScript 6.0.3, passes all retained checks, and removes all 31 native
+configuration errors. It detects all 1,754 promise probes and changes none of
+37,568 tested import-resolution targets. Native lint still reports 226 diagnostics
+after declaration builds, so a full lint switch remains unqualified.

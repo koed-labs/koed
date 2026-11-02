@@ -73,6 +73,10 @@ touches 32 files with 140 added and 193 deleted lines. The evidence below record
 the configuration blockers, remaining diagnostic differences, and prerequisites.
 The official-migrator follow-up below confirms the same repository blockers after
 correcting the generated test scopes. The Oxfmt-only recommendation remains unchanged.
+The later configuration-only experiment removes all 31 configuration errors while
+retaining TypeScript 6.0.3 and passing the existing checks. Typed Oxlint still has
+226 diagnostics after declaration builds. The remaining work concerns project
+context and rule behavior, rather than the removed configuration options.
 
 **Proposed full-switch gates:**
 
@@ -430,3 +434,111 @@ hashing, or the ESLint baseline's default heap limit. They supply no compatibili
 result. The completed run uses the repository's existing 8 GiB heap setting and
 passes the baseline, source-integrity, and result-consistency checks. This follow-up
 changes evaluation evidence only. Architecture documentation needs no update.
+
+## TypeScript 7-compatible configuration with TypeScript 6, 2026-11-02
+
+The [completed configuration experiment](https://github.com/koed-labs/koed/actions/runs/41438422137)
+keeps TypeScript `6.0.3`, all production/test checks, Node `24.13.1`, and pnpm
+`11.1.2`. It uses the same PR runner class and pinned Oxc versions. The source
+revision remains `f22c4f3bc7b0aaf3c74a2776c00f591c6ea677bf`. The evaluation head
+is `3506c4c3073f827cca3f107baea0d863e05122bd`.
+
+Only the isolated snapshot receives configuration edits. The experiment removes
+`baseUrl` and its `ignoreDeprecations: "6.0"` entry. It makes root path targets
+explicitly relative and rebases both Desktop configurations. The changed files
+are `tsconfig.base.json`, `apps/desktop/tsconfig.json`, and
+`apps/desktop/tsconfig.electron.json`. Compiler versions, strictness, file scopes,
+declaration settings, and check commands stay unchanged.
+
+Simply removing `baseUrl` and rebasing aliases causes eight TypeScript 6
+declaration-emission errors, all TS2883. The affected exported functions expose
+inferred types from internal Server declarations. This reveals an existing
+dependency on the implicit lookup root, even though source import targets stay
+the same. A small standalone reproduction shows the same failure and repair.
+
+The successful candidate preserves that lookup through explicit wildcard paths:
+
+| Configuration                  | Added fallback     |
+| ------------------------------ | ------------------ |
+| Root base configuration        | `"*": ["./*"]`     |
+| Desktop configuration          | `"*": ["../../*"]` |
+| Desktop Electron configuration | `"*": ["../../*"]` |
+
+This follows the documented migration approach for preserving existing lookup
+behavior. See [Microsoft's TypeScript 6 migration notes](https://devblogs.microsoft.com/typescript/announcing-typescript-6-0/).
+The fallback restores declaration portability without source annotations or
+disabled checks. All 19 configurations parse, and none inherits `baseUrl`.
+
+| Retained check or compatibility measure | Result                                |
+| --------------------------------------- | ------------------------------------- |
+| Compiler                                | TypeScript 6.0.3, unchanged           |
+| ESLint                                  | 2,055 files, zero errors and warnings |
+| `pnpm typecheck`                        | Pass                                  |
+| `pnpm typecheck:test`                   | Pass                                  |
+| Desktop Electron check with `--noEmit`  | Pass                                  |
+| API browser check with `--noEmit`       | Pass                                  |
+| Import-resolution comparisons           | 37,568, zero changed targets          |
+| Native Oxlint configuration errors      | Zero, previously 31                   |
+| Executable typed-file promise probes    | 1,754 / 1,754 detected                |
+
+The resolution comparison uses the existing compiler across project configurations
+in both import and require modes. Existing unresolved lookups remain unchanged:
+7,832 in each control. These include lookups that do not produce a physical
+module result through this API. The result establishes no changed targets for
+the tested inputs, rather than claiming that every lookup resolves to a file.
+
+The coverage probe appends an unhandled `globalThis.Promise.resolve(...)` call
+to each executable file in the explicit typed-rule scope. Oxlint reports the
+expected `no-floating-promises` diagnostic at every inserted call. The remaining
+file in the 1,755-file typed scope is a declaration file and receives no executable
+probe. Every probe is restored afterward. The source-integrity check confirms
+that only the three intended configuration files differ from the original source.
+
+The experiment retains the official migrator's nursery rules, corrected test
+exclusions, and per-file globals for the 26 inline-global declarations. Oxlint
+traverses all 2,055 lint files before and after declaration builds. The existing
+production typecheck supplies those declarations. This is a prerequisite-order
+finding, not a new production CI change.
+
+| Native diagnostic category                                 | Before declarations | After declarations |
+| ---------------------------------------------------------- | ------------------: | -----------------: |
+| Configuration errors                                       |                   0 |                  0 |
+| Unsafe argument, assignment, member, or return diagnostics |              13,106 |                209 |
+| Optional-chain and assignment differences                  |                  15 |                 15 |
+| Additional typed-rule differences                          |                   2 |                  2 |
+| Total lint diagnostics                                     |              13,123 |                226 |
+
+The 209 remaining unsafe-type diagnostics occur in four MCP Server test files.
+They coincide with unresolved `vi` or `@koed/db` types in native program contexts.
+The two additional typed-rule diagnostics concern `no-misused-promises` in
+`apps/api/src/managed-conversations/routes.ts` and `require-await` in
+`apps/api/src/auth/remote-mcp-oauth-routes.ts`. These differences still require
+explanation against the clean ESLint control.
+
+Enabling native compiler diagnostics reports 47 additional errors: 42 missing
+`vi` names, two unresolved `@koed/db` imports, one CSS side-effect import, one
+Desktop event-mapping argument error, and one Vite configuration overload error.
+The clean TypeScript 6 production/test/browser/Electron checks do not report them.
+The test globals, aliases, and CSS declarations show that native program context
+still differs from the custom lint/test projects. The two other compiler errors
+need separate investigation.
+
+Promise probes establish rule execution with standard promise types throughout
+the executable scope. They do not establish correct resolution of every global
+or imported type. Therefore the successful coverage result does not clear the
+remaining native project-context failures or establish full lint equivalence.
+
+The configuration-only approach is viable with the existing compiler and checks.
+It removes the previously blocking legacy-option errors. It does not yet qualify
+typed Oxlint for adoption, so no equivalent performance benchmark is added.
+The next work is native lint/test project alignment and the remaining rule-level
+differences. A full TypeScript compiler upgrade is not required for this tested
+configuration cleanup and is not evaluated here.
+
+The `oxlint-ts7config-evaluation` artifact retains the configuration diff, command
+logs, module-resolution comparison, native diagnostics, and coverage results for
+14 days. Raw evidence also remains in the designated scratch area. The first
+configuration attempt records the TS2883 regression and is excluded from claims
+that retained checks pass. The completed run above includes the explicit fallback
+and passes all retained controls. Production configuration remains unchanged.
+Architecture documentation needs no update for this evaluation.
