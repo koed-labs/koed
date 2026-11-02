@@ -1637,7 +1637,16 @@ then materializes read-only raw source before compatible portable artifact
 import or fallback local Projection, embedding, and LCM dispatch. Equal source
 fingerprint/closure converges observations;
 different closure quarantines every synchronized representation before Projection
-or Recall. PDS data-plane tables remain separate from directed sync tables.
+or Recall. PDS data-plane tables remain separate from directed sync tables. Each active
+worker pass checks Authority lifecycle first, reconciles personal configuration,
+Project selections and artifacts, then polls and stages inbound packages before
+publishing the durable checkpoint outbox. If polling rejects, the pass processes
+the checkpoint outbox and backs off poll retries. Full checkpoint batches continue
+to drain during that backoff, with lifecycle checks before each pass; new wakeups
+wait for the retry deadline once draining finishes. A stalled poll or artifact
+reconciliation can still delay publication; a stalled
+publication can delay later work and subsequent passes. Work remains driven by
+local and relay wakeups and durable retry deadlines, not periodic polling.
 
 PDS protocol is [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 Same-network Desktop enrollment is a narrow transport over these existing
