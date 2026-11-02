@@ -191,13 +191,13 @@ jobs:
            const control=run('flat-project-ts6',path.join(workspace,'node_modules/.bin/tsc'),['-p','tsconfig.eslint.json','--pretty','false']);results.flatTypeScript6={status:control.status};
            const rules=['no-dupe-args','no-octal','no-unsafe-optional-chaining','no-useless-assignment'];
            fs.writeFileSync(path.join(workspace,'.oxlint-compat.mjs'),`import {builtinRules} from 'eslint/use-at-your-own-risk'; export default {rules:Object.fromEntries(${JSON.stringify(rules)}.map(k=>[k,builtinRules.get(k)]))};\n`);
-           const config=JSON.parse(fs.readFileSync(path.join(workspace,'.oxlintrc.json')));config.jsPlugins=[{name:'eslint-compat',specifier:'./.oxlint-compat.mjs'}];
+           const config=JSON.parse(fs.readFileSync(path.join(workspace,'.oxlintrc.json')));config.jsPlugins=[{name:'eslint-compat',specifier:'./.oxlint-compat.mjs'}];config.ignorePatterns.push('.oxlint-compat.mjs');
            for(const rule of rules){if(Object.hasOwn(config.rules,rule))config.rules[rule]='off';config.rules['eslint-compat/'+rule]='error';}
            config.overrides.push({files:['**/*.{ts,tsx,mts,cts}'],rules:{'eslint-compat/no-dupe-args':'off'}});
            fs.writeFileSync(path.join(workspace,'.oxlint-compat.json'),JSON.stringify(config,null,2));
            fs.copyFileSync(path.join(workspace,'.oxlint-compat.json'),path.join(out,'oxlint-compat.json'));fs.copyFileSync(path.join(workspace,'.oxlint-compat.mjs'),path.join(out,'oxlint-compat.mjs'));
            native('flat-project-js-compat','.oxlint-compat.json');
-           const dir=path.join(workspace,'scratch/compatibility-probes');fs.mkdirSync(dir,{recursive:true});
+           const dir=path.join(out,'probes');fs.mkdirSync(dir,{recursive:true});spawnSync('git',['init','--quiet',dir]);
            const cases=[
            ['duplicate.cjs','function f(a,a) { return a; }','no-dupe-args'],
            ['octal.cjs','const value=012;','no-octal'],
@@ -208,9 +208,11 @@ jobs:
            const probeConfig={categories:Object.fromEntries(['correctness','suspicious','pedantic','perf','style','restriction','nursery'].map(k=>[k,'off'])),plugins:[],jsPlugins:config.jsPlugins,rules:Object.fromEntries(rules.map(k=>['eslint-compat/'+k,'error']))};
            fs.writeFileSync(path.join(workspace,'.oxlint-compat-probes.json'),JSON.stringify(probeConfig));
            for(const [file,code,rule]of cases){fs.writeFileSync(path.join(dir,file),code+'\n');if(rule){const ext=path.extname(file),stem=file.slice(0,-ext.length);fs.writeFileSync(path.join(dir,stem+'-legacy-suppressed'+ext),`/* eslint-disable ${rule} */\n`+code+'\n');fs.writeFileSync(path.join(dir,stem+'-alias-suppressed'+ext),`/* eslint-disable eslint-compat/${rule} */\n`+code+'\n');}}
-           const probes=run('js-compat-probes',path.join(tools,'.bin/oxlint'),['--no-ignore','-c','.oxlint-compat-probes.json','-f','json','scratch/compatibility-probes']);const data=JSON.parse(probes.stdout);
+           const probes=run('js-compat-probes',path.join(tools,'.bin/oxlint'),['--no-ignore','-c',path.join(workspace,'.oxlint-compat-probes.json'),'-f','json','.'],dir);const data=JSON.parse(probes.stdout);
            results.pluginProbes={status:probes.status,files:data.number_of_files,diagnostics:data.diagnostics.map(d=>({file:path.basename(d.filename),code:d.code,message:d.message}))};
-           fs.rmSync(dir,{recursive:true,force:true});
+           if(data.number_of_files!==13)throw Error('Compatibility probes were skipped');
+           for(const [, , rule]of cases.filter(c=>c[2])){if(!data.diagnostics.some(d=>d.code==='eslint-compat('+rule+')'&&!d.filename.includes('suppressed')))throw Error('Compatibility rule did not detect its example: '+rule);}
+           if(data.diagnostics.some(d=>d.filename.includes('alias-suppressed')))throw Error('Aliased suppression failed');
           }finally{for(const [f,b]of saved)fs.writeFileSync(path.join(workspace,f),b);for(const f of ['.oxlint-compat.mjs','.oxlint-compat.json','.oxlint-compat-probes.json'])fs.rmSync(path.join(workspace,f),{force:true});}
           const after=hash(),changes=sourceFiles.filter(f=>before[f]!==after[f]);if(changes.length)throw Error('Unrestored project changes: '+changes);
           if((results['mcp-leaf-project'].counts['typescript(no-unsafe-assignment)']??0)||(results['mcp-leaf-project'].counts['typescript(no-unsafe-member-access)']??0))throw Error('MCP test context remains broken');
