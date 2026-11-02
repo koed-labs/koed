@@ -176,3 +176,19 @@ for the combined migration. Both sequences pass every retained check. The repeat
 comparison clears the 50% time and 30% memory targets. The separate formatting
 commit contains the previously reviewed 32-file change. The User confirmed no
 release changeset.
+
+## Native-only simplification
+
+**Status:** in progress, User-approved rule-policy change
+
+- [x] Remove the ESLint dependency and four-rule bridge.
+- [x] Retire duplicate-argument, octal, and useless-assignment rules. Keep native
+      optional-chain checking and the existing application tests.
+- [x] Repair the 13 affected test expressions. Pass the 104 safety cases and the
+      JavaScript source-policy test.
+- [ ] Validate compiler checks, affected application tests, and complete typed
+      coverage on the PR runner.
+
+The earlier benchmark remains evidence for the previous bridge implementation.
+This simplification intentionally retires three checks and requires no claim of
+exact rule parity with the original ESLint setup.

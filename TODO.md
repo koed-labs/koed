@@ -21,9 +21,14 @@ prior results and the current qualification evidence.
       dependency installation. Record remaining TypeScript memory costs.
       Five pairs show 80.6% less time and 34.1% less peak memory. The complete
       static sequence also passes. The combined migration is qualified.
-- [ ] When native parity is available, reevaluate the four ESLint compatibility
-      rules and the `Promise.finally` exception against the committed safety suite
-      before removing the bridge or suppression.
+- [x] Remove the four-rule ESLint bridge under the User-approved simpler policy.
+      Retire duplicate-argument, legacy-octal, and useless-assignment checks. Keep
+      native optional-chain checking and repair the affected test expressions.
+      Keep the typed-safety cases and enforce the `.mjs`/`.tsx` source policy.
+- [ ] Validate the native-only setup on the PR runner, including the five affected
+      application test files and complete typed coverage.
+- [ ] Reevaluate the native `Promise.finally` exception when upstream parity is
+      available, using the committed safety suite before removing its suppression.
 
 ## Optional Privacy runtime release gates
 

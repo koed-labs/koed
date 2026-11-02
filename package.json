@@ -103,7 +103,6 @@
     "@vitejs/plugin-react": "^6.0.2",
     "enhanced-resolve": "^5.22.2",
     "esbuild": "0.28.0",
-    "eslint": "10.4.0",
     "oxfmt": "0.75.0",
     "oxlint": "1.90.0",
     "oxlint-tsgolint": "7.0.2005",

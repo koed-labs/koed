@@ -16,6 +16,15 @@ on:
       - tsconfig*.json
       - apps/desktop/tsconfig*.json
       - packages/mcp-server/tests/tsconfig.json
+      - packages/mcp-server/tests/*.test.ts
+      - packages/shared/src/envelope-encryption.test.ts
+      - apps/desktop/src/renderer/views/personal/ManagedProjectCockpit.test.tsx
+  workflow_dispatch:
+    inputs:
+      benchmark:
+        description: Run the historical baseline performance comparison
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -67,13 +76,16 @@ jobs:
           pnpm typecheck:test
           pnpm exec tsc -p apps/desktop/tsconfig.electron.json --noEmit
           pnpm exec tsc -p apps/api/tsconfig.browser.json --noEmit
-          node --test scripts/oxlint-compatibility.test.mjs
+          node --test scripts/oxlint-safety.test.mjs
       - name: Exercise OAuth and terminal routes
         env:
           KOED_OAUTH_TEST_DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
         run: |
           pnpm --filter @koed-labs/server build > scratch/oxc-migration/results/server-test-build.log 2>&1
           pnpm exec vitest run apps/api/src/auth/remote-mcp-oauth-routes.test.ts apps/api/src/managed-conversations/routes.test.ts --reporter=json --outputFile=scratch/oxc-migration/results/routes-tests.json
+      - name: Run tests corrected for native optional-chain checking
+        run: |
+          pnpm exec vitest run packages/mcp-server/tests/answer-worker.test.ts packages/mcp-server/tests/authorization-provider.test.ts packages/mcp-server/tests/pi-managed-conversation.test.ts packages/shared/src/envelope-encryption.test.ts apps/desktop/src/renderer/views/personal/ManagedProjectCockpit.test.tsx --reporter=json --outputFile=scratch/oxc-migration/results/native-optional-chain-tests.json
       - name: Verify complete typed source coverage
         run: |
           cat > scratch/oxc-migration/coverage.mjs <<'JS'
@@ -163,6 +175,7 @@ jobs:
 
           PY
           python3 scratch/oxc-migration/benchmark.py
+        if: github.event_name == 'workflow_dispatch' && inputs.benchmark
       - name: Retain migration evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

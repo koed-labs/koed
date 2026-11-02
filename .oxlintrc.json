@@ -74,11 +74,10 @@
     "no-unreachable": "error",
     "no-unsafe-finally": "error",
     "no-unsafe-negation": "error",
-    "no-unsafe-optional-chaining": "off",
+    "no-unsafe-optional-chaining": "error",
     "no-unused-labels": "error",
     "no-unused-private-class-members": "error",
     "no-unused-vars": "error",
-    "no-useless-assignment": "off",
     "no-useless-backreference": "error",
     "no-useless-catch": "error",
     "no-useless-escape": "error",
@@ -105,11 +104,7 @@
     "typescript/no-wrapper-object-types": "error",
     "typescript/prefer-as-const": "error",
     "typescript/prefer-namespace-keyword": "error",
-    "typescript/triple-slash-reference": "error",
-    "eslint-compat/no-dupe-args": "error",
-    "eslint-compat/no-octal": "error",
-    "eslint-compat/no-unsafe-optional-chaining": "error",
-    "eslint-compat/no-useless-assignment": "error"
+    "typescript/triple-slash-reference": "error"
   },
   "overrides": [
     {
@@ -489,18 +484,6 @@
       "globals": {
         "window": "readonly"
       }
-    },
-    {
-      "files": ["**/*.{ts,tsx,mts,cts}"],
-      "rules": {
-        "eslint-compat/no-dupe-args": "off"
-      }
-    }
-  ],
-  "jsPlugins": [
-    {
-      "name": "eslint-compat",
-      "specifier": "./scripts/oxlint-eslint-compat.mjs"
     }
   ]
 }

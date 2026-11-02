@@ -61,7 +61,7 @@ const scopes = [
   { prefix: "probe-", suffix: ".config.ts", rules: common }
 ];
 
-test("Oxlint preserves typed scopes, suppressions, and the four compatibility rules", () => {
+test("Oxlint preserves typed scopes, suppressions, and native optional-chain checks", () => {
   const scratch = path.join(root, "scratch");
   mkdirSync(scratch, { recursive: true });
   const dir = mkdtempSync(path.join(scratch, "oxlint-safety-"));
@@ -76,10 +76,6 @@ test("Oxlint preserves typed scopes, suppressions, and the four compatibility ru
     const config = JSON.parse(
       readFileSync(path.join(root, ".oxlintrc.json"), "utf8")
     );
-    config.jsPlugins = config.jsPlugins.map((plugin) => ({
-      ...plugin,
-      specifier: path.resolve(root, plugin.specifier)
-    }));
     writeFileSync(path.join(dir, ".oxlintrc.json"), JSON.stringify(config));
     writeFileSync(
       path.join(dir, "tsconfig.json"),
@@ -112,33 +108,18 @@ test("Oxlint preserves typed scopes, suppressions, and the four compatibility ru
         }
       }
     }
-    for (const [name, source, rule] of [
-      ["duplicate.cjs", "function f(a,a) { return a; }", "no-dupe-args"],
-      ["octal.cjs", "const n=012;", "no-octal"],
-      [
-        "optional.ts",
-        "declare const x: {value:()=>void}|undefined; (x?.value)();",
-        "no-unsafe-optional-chaining"
-      ],
-      [
-        "assignment.js",
-        "let n=0; n=1; console.log(n);",
-        "no-useless-assignment"
-      ]
-    ]) {
-      for (const suppressed of [false, true]) {
-        const ext = path.extname(name);
-        add(
-          "packages/shared/src/probes/" +
-            name.slice(0, -ext.length) +
-            (suppressed ? "-suppressed" : "") +
-            ext,
-          (suppressed ? `/* eslint-disable eslint-compat/${rule} */\n` : "") +
-            source,
-          `eslint-compat(${rule})`,
-          !suppressed
-        );
-      }
+    for (const suppressed of [false, true]) {
+      add(
+        "packages/shared/src/probes/optional" +
+          (suppressed ? "-suppressed" : "") +
+          ".ts",
+        (suppressed
+          ? "/* eslint-disable no-unsafe-optional-chaining */\n"
+          : "") +
+          "declare const x: {value:()=>void}|undefined; (x?.value as () => void)();",
+        "eslint(no-unsafe-optional-chaining)",
+        !suppressed
+      );
     }
     add(
       "apps/api/src/probes/finally.ts",
@@ -173,8 +154,26 @@ test("Oxlint preserves typed scopes, suppressions, and the four compatibility ru
       );
       assert.equal(found, c.expected, `${c.file}: ${c.rule}`);
     }
-    assert.equal(cases.length, 110);
+    assert.equal(cases.length, 104);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("tracked JavaScript uses .mjs so parser strict-mode checks apply", () => {
+  const result = spawnSync(
+    "git",
+    ["ls-files", "-z", "--", "*.js", "*.jsx", "*.cjs"],
+    {
+      cwd: root,
+      encoding: "utf8"
+    }
+  );
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(
+    result.stdout.split("\0").filter(Boolean),
+    [],
+    "Use .mjs for JavaScript and .tsx for JSX, or explicitly review and replace the retired syntax checks."
+  );
 });

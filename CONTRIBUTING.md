@@ -45,15 +45,24 @@ The workspace selects it for supported web and documentation formats and disable
 the ESLint editor runner. Run `pnpm lint` after a fresh checkout or changes to
 workspace exports so editor checks can use current declarations.
 
-Oxlint loads four ESLint rule implementations through
-`scripts/oxlint-eslint-compat.mjs`. ESLint remains a pinned development dependency
-for these rules. It does not run a separate lint pass. Suppression comments for
-these four rules use `eslint-compat/<rule>`. Existing typescript-eslint suppression
-comments remain supported. Declare new globals in `.oxlintrc.json`, because native
-Oxlint does not honor the existing `/* global ... */` comments. The configuration
-already records the globals from those comments.
+Oxlint runs native rules only. There is no ESLint plugin or package dependency.
+The native optional-chain rule stays enabled. The duplicate-argument, legacy-octal,
+and useless-assignment rules are deliberately retired. This reduces rule coverage
+from the exact-parity migration rather than preserving those three checks.
+
+Use `.mjs` for tracked JavaScript and `.tsx` for JSX. A source-policy test rejects
+tracked `.js`, `.jsx`, and `.cjs` files. This keeps JavaScript under native parser
+strict-mode checks after the duplicate-argument and octal rules are retired.
+Generated JavaScript in ignored build directories is unaffected. Before adding a
+different JavaScript source extension, explicitly review and replace the retired
+syntax checks.
+
+Existing typescript-eslint suppression comments remain supported. Declare new
+globals in `.oxlintrc.json`, because native Oxlint does not honor the existing
+`/* global ... */` comments. The configuration already records those globals.
 
 The MCP Server test project extends `tsconfig.lint.json` to supply the existing
 aliases and test globals. The production and test projects retain their current
-file scopes and checks. `scripts/oxlint-compatibility.test.mjs` checks typed rules,
-production/test overrides, compatibility rules, and suppression behavior.
+file scopes and checks. `scripts/oxlint-safety.test.mjs` checks typed rules,
+production/test overrides, native optional-chain checks, suppression behavior, and
+the JavaScript source-file policy.

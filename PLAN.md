@@ -1,10 +1,12 @@
 # Oxlint and Oxfmt migration
 
-Both tools are migrated together and pass the
-[combined qualification](https://github.com/koed-labs/koed/actions/runs/41452153956).
-The measured formatting/lint pair is 80.6% faster and uses 34.1% less peak memory
-than Oxfmt plus ESLint. The final section records the implementation and results.
-Earlier sections retain the original evaluation plan and historical decisions.
+Both tools are migrated together. The current simplification removes the ESLint
+bridge under a User-approved policy that retires three rules and keeps native
+optional-chain checking. The latest section records that change and validation.
+The earlier [combined qualification](https://github.com/koed-labs/koed/actions/runs/41452153956)
+measured the bridge implementation. Its performance results remain historical,
+rather than measurements of the simplified rule set. Earlier sections retain the
+original evaluation plan and decisions.
 
 ## Scope
 
@@ -774,3 +776,33 @@ tested commit retain the reproducible setup. Later changes only record findings
 and retire the superseded evaluation workflows. The 32-file formatting commit is
 separate from the tooling implementation. No architecture documentation update is
 needed. The User confirmed omission of a release changeset for this migration.
+
+## Native-only policy simplification, 2026-11-02
+
+The User approved removal of the compatibility bridge and a deliberate change to
+the exact-parity requirement. Retire `no-dupe-args`, `no-octal`, and
+`no-useless-assignment`. Keep Oxlint's native `no-unsafe-optional-chaining` rule.
+Remove the ESLint package, plugin file, plugin configuration, and six obsolete
+rule fixtures. The focused suite retains 104 cases and adds a JavaScript source
+policy test. Existing typed safety rules and application tests stay in place.
+
+The repository contains no tracked `.js`, `.jsx`, or `.cjs` files. Use `.mjs` for
+JavaScript and `.tsx` for JSX. The source-policy test enforces this choice so
+future files cannot silently escape the native parser's strict-mode protection.
+The policy does not affect generated JavaScript in ignored output directories.
+Retiring useless-assignment checking is an accepted loss of that quality guard.
+
+Native optional-chain checking identifies 13 test expressions across five files.
+The changes keep their existing assertions. Safe access now continues past type
+assertions around optional values. The PI fixture and Desktop preview test also
+assert that required values exist before reading them. No application test is
+removed. The `Promise.finally` exception remains separate and unchanged.
+
+Local native lint reports zero diagnostics across 2,055 files. The removed bridge
+script accounts for the one-file reduction from the previous implementation.
+The 104 safety cases and source-policy test pass. PR-runner checks for the five
+affected test files, compiler checks, and complete typed coverage remain pending.
+The existing benchmark covers the bridge implementation with the stricter rule
+policy. It does not establish new performance figures for this simplification.
+Performance comparisons now require an explicit manual workflow input. Routine
+qualification retains compiler, regression, route, and typed-coverage checks.
