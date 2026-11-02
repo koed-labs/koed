@@ -186,3 +186,5 @@ jobs:
             scratch/oxc-evaluation/migrate-check.mjs
             scratch/oxc-evaluation/tools/package-lock.json
           retention-days: 14
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
