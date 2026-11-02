@@ -200,6 +200,15 @@ test("assembled public package has only koed bin and self-contained control plan
       ).length,
       1
     );
+    const packedManifest = JSON.parse(
+      execFileSync("tar", ["-xOzf", tarball, "package/package.json"], {
+        encoding: "utf8"
+      })
+    );
+    assert.deepEqual(packedManifest.repository, {
+      type: "git",
+      url: "https://github.com/koed-labs/koed.git"
+    });
     const packedFiles = execFileSync("tar", ["-tzf", tarball], {
       encoding: "utf8"
     }).split("\n");
