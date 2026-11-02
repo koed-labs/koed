@@ -338,7 +338,7 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     `claude auth login` and refreshing makes execution capabilities ready without
     profile reinstall. Claude Desktop authentication and Anthropic API keys are
     outside this flow and are never inspected or reused. `koed setup pi
---json` independently installs Koed's stable local package and registers
+    --json` independently installs Koed's stable local package and registers
     `pi.default` after canonical executable/version checks. Authenticated-model
     discovery is advisory for profile setup: no-model setup succeeds with
     structured partial readiness, while Pi execution remains unavailable until
@@ -352,7 +352,7 @@ See [managed Conversation AI Client routing](managed-conversation-ai-client-rout
     optional independently consented multi-select client setup with defer,
     per-client check/repair/remove for stale local config, and
     provision the embedding model through `koed models status/install
---json` in bundled-local mode without requiring the Operator to invoke
+    --json` in bundled-local mode without requiring the Operator to invoke
     repo-local scripts directly. Its Project and Captured Session navigation is
     native to the Desktop renderer. Selecting a Captured Session requests
     paginated Memory Events from the API and renders the raw Conversation

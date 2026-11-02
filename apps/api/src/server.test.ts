@@ -5280,15 +5280,13 @@ const createFakeRepository = () => {
           memory.summaryText.toLowerCase().includes(input.query.toLowerCase())
         )
         .slice(0, input.limit ?? 10)
-        .map(
-          (memory): MemorySearchResult => ({
-            nodeId: memory.id,
-            visibility: memory.visibility,
-            summaryText: memory.summaryText,
-            score: 1,
-            citation: { nodeId: memory.id, visibility: memory.visibility }
-          })
-        );
+        .map((memory): MemorySearchResult => ({
+          nodeId: memory.id,
+          visibility: memory.visibility,
+          summaryText: memory.summaryText,
+          score: 1,
+          citation: { nodeId: memory.id, visibility: memory.visibility }
+        }));
       return {
         results,
         metadata: {
@@ -5369,8 +5367,8 @@ const createFakeRepository = () => {
             position
           })
         ),
-        sources: (nodeSources.get(nodeId) ?? []).map(
-          (eventId) => events.find((event) => event.id === eventId)!
+        sources: (nodeSources.get(nodeId) ?? []).map((eventId) =>
+          events.find((event) => event.id === eventId)!
         )
       } satisfies ExpandedMemoryNode;
     }
@@ -15622,11 +15620,7 @@ describe("account and access flows", () => {
       actor.userId === ownerUserId
         ? [rule, ...(folderRule ? [folderRule] : [])]
         : [];
-    repository.listPersonalProjectMembershipReasons = async (
-      actor,
-      pid,
-      ids
-    ) =>
+    repository.listPersonalProjectMembershipReasons = async (actor, pid, ids) =>
       actor.userId === ownerUserId && pid === project.projectId
         ? ids.map((id) => ({
             sessionId: id,

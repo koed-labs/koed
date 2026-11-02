@@ -1095,25 +1095,23 @@ export const parseTranscriptRecords = (
             (item) =>
               Boolean(item.rawText) && item.projectionStatus === "pending"
           )
-          .map(
-            (item): CaptureItem => ({
-              actor: /function_call/.test(String(item.metadata.transcriptType))
-                ? "tool"
-                : rawRecordPayload(record)?.item &&
-                    isRecord(rawRecordPayload(record)?.item) &&
-                    (rawRecordPayload(record)!.item as Record<string, unknown>)
-                      .type === "UserMessage"
-                  ? context.threadKind === "subagent"
-                    ? "agent"
-                    : "user"
-                  : context.threadKind === "subagent"
-                    ? "subagent"
-                    : "agent",
-              eventType: `codex_transcript_${item.metadata.transcriptType}`,
-              content: item.rawText!,
-              metadata: item.metadata
-            })
-          );
+          .map((item): CaptureItem => ({
+            actor: /function_call/.test(String(item.metadata.transcriptType))
+              ? "tool"
+              : rawRecordPayload(record)?.item &&
+                  isRecord(rawRecordPayload(record)?.item) &&
+                  (rawRecordPayload(record)!.item as Record<string, unknown>)
+                    .type === "UserMessage"
+                ? context.threadKind === "subagent"
+                  ? "agent"
+                  : "user"
+                : context.threadKind === "subagent"
+                  ? "subagent"
+                  : "agent",
+            eventType: `codex_transcript_${item.metadata.transcriptType}`,
+            content: item.rawText!,
+            metadata: item.metadata
+          }));
       }
       return extractTranscriptItems(record, index + indexOffset, {
         preferEventMessages,

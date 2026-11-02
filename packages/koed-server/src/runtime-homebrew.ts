@@ -262,9 +262,7 @@ const candidatePgvectorControlPaths = (
       : undefined
   ].filter((value): value is string => Boolean(value));
 
-const candidatePgvectorSqlPaths = (
-  controlPath: string | undefined
-): string[] =>
+const candidatePgvectorSqlPaths = (controlPath: string | undefined): string[] =>
   controlPath ? [resolve(dirname(controlPath), "vector--*.sql")] : [];
 
 const pgSharedir = (

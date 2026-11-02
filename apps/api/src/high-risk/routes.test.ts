@@ -1419,9 +1419,8 @@ describe("high-risk action grant routes", () => {
   );
 
   it("does not let another User inspect or decide an activation", async () => {
-    const getBrowserActivation = vi.fn(
-      async (input: { ownerUserId: string }) =>
-        input.ownerUserId === ids.alice ? binding : null
+    const getBrowserActivation = vi.fn(async (input: { ownerUserId: string }) =>
+      input.ownerUserId === ids.alice ? binding : null
     );
     const decideBrowserActivation = vi.fn(
       async (input: { ownerUserId: string }) =>

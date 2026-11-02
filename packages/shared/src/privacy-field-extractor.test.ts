@@ -258,9 +258,8 @@ describe("privacy field extractor", () => {
     const reconstructed = reconstructPrivacyTextFields({
       source,
       schema,
-      fields: classifiedFields(
-        extracted,
-        (field) => replacements.get(field.path)!
+      fields: classifiedFields(extracted, (field) =>
+        replacements.get(field.path)!
       )
     });
 

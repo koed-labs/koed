@@ -27,11 +27,7 @@ body {
   background-color: var(--app-chrome-background);
   color: var(--foreground);
   font-family:
-    "DM Sans",
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
+    "DM Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
