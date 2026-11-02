@@ -139,17 +139,23 @@ const createIdentity = (fixture, input) => {
   return identity.createReviewedBuildIdentity(input);
 };
 
-test("createReviewedBuildIdentity binds approved build outputs and independent runtime matrix", () => {
+test("createReviewedBuildIdentity binds approved outputs to the current attempt and runtime matrix", () => {
   const f = candidateFixture();
   try {
     writeFileSync(
       resolve(f.assetsDir, "Koed-1.2.3-arm64.zip"),
       "protected zip"
     );
-    const result = createIdentity(f, buildInput(f));
-    assert.deepEqual(result.runtimeIdentities, runtimeIdentities);
-    assert.equal(result.artifacts.length, 6);
-    assert.deepEqual(result.npm, f.identity.npm);
+    const firstAttempt = createIdentity(f, buildInput(f));
+    const retryInput = buildInput(f);
+    retryInput.runAttempt = 2;
+    const retriedBuild = createIdentity(f, retryInput);
+
+    assert.equal(firstAttempt.runAttempt, 1);
+    assert.equal(retriedBuild.runAttempt, 2);
+    assert.deepEqual(retriedBuild.runtimeIdentities, runtimeIdentities);
+    assert.equal(retriedBuild.artifacts.length, 6);
+    assert.deepEqual(retriedBuild.npm, f.identity.npm);
   } finally {
     f.cleanup();
   }
