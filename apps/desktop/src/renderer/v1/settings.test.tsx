@@ -250,7 +250,7 @@ describe("V1Settings", () => {
     await act(async () =>
       (
         container.querySelector(
-          'button[aria-label="mint"]'
+          'button[aria-label="Mint"]'
         ) as HTMLButtonElement
       ).click()
     );
@@ -261,7 +261,10 @@ describe("V1Settings", () => {
     );
     expect(save).toHaveBeenCalledWith({
       name: "Pip",
-      look: { ...DEFAULT_AGENT_LOOK, color: "mint" }
+      look: {
+        ...DEFAULT_AGENT_LOOK,
+        palette: { ...DEFAULT_AGENT_LOOK.palette, base: "#55cca3" }
+      }
     });
   });
   it("requires explicit consent before changing an AI Client profile", async () => {

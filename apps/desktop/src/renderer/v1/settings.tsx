@@ -26,6 +26,7 @@ import type {
 } from "../services/desktop-commands.js";
 import type { ThemeStore } from "../state/theme.js";
 import { useDesktopStatus } from "../state/use-status.js";
+import { sameAgentLook } from "./pixelkin/agent-kin.js";
 import { AgentLookPicker, Pixelkin, type AgentLook } from "./visual.js";
 import "./settings.css";
 
@@ -783,7 +784,7 @@ export function V1Settings({
               </p>
               <div className="v1-agent-card">
                 <div className="v1-agent-preview">
-                  <Pixelkin look={draft.look} size={112} />
+                  <Pixelkin look={draft.look} size={112} hopOnChange />
                   <b>{draft.name.trim() || "Koed"}</b>
                   <span>Your chief of staff</span>
                 </div>
@@ -815,9 +816,7 @@ export function V1Settings({
                     disabled={
                       savingAgent ||
                       (draft.name === agent.name &&
-                        draft.look.shape === agent.look.shape &&
-                        draft.look.color === agent.look.color &&
-                        draft.look.top === agent.look.top)
+                        sameAgentLook(draft.look, agent.look))
                     }
                     onClick={() => void saveAgent()}
                   >

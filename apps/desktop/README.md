@@ -228,6 +228,12 @@ packaging, signing, runtime distribution, or packaged smoke support.
   for isolated validation, but installation and shell PATH editing remain
   unavailable until packaged Electron helper/fuse compatibility and mutation
   safety are validated on supported target.
+- The agent's Pixelkin comes from the Pixelkin engine in the `pixelkin-lab`
+  repository. Until that repository is public, the renderer keeps a copy in
+  `src/renderer/v1/pixelkin/vendor/`. Do not edit it by hand: change
+  `pixelkin-lab`, then run
+  `pnpm --filter @koed/desktop pixelkin:sync <path to pixelkin-lab>`. A test
+  fails if the copy differs from the commit recorded in `vendor/SOURCE.json`.
 
 ### Privacy asset management before startup
 

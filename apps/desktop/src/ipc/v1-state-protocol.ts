@@ -5,7 +5,8 @@ export const v1StateChannel = "koed:v1-state:command";
 const id = z.string().trim().min(1).max(512);
 const uuid = z.uuid();
 const name = z.string().trim().min(1).max(80);
-const look = z.string().trim().min(1).max(64);
+// A Create your Kin JSON file is about 500 characters; leave room for growth.
+const look = z.string().trim().min(1).max(4096);
 const optionalText = z.string().trim().min(1).max(512);
 
 export const v1ProfileSchema = z

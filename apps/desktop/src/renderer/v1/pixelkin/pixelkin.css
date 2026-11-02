@@ -1,0 +1,143 @@
+.v1-pixelkin {
+  display: block;
+  flex: none;
+  image-rendering: pixelated;
+}
+/* Shown when WebGL2 is unavailable, so the agent still has a body and face. */
+.v1-pixelkin-fallback {
+  position: relative;
+}
+.v1-pixelkin-fallback::before {
+  content: "";
+  position: absolute;
+  inset: 14% 10% 10%;
+  border-radius: 12%;
+  background: var(--v1-kin);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.55);
+}
+.v1-pixelkin-fallback[data-kin-shape="roundedBox"]::before {
+  border-radius: 26%;
+}
+.v1-pixelkin-fallback[data-kin-shape="sphere"]::before {
+  border-radius: 50%;
+}
+.v1-pixelkin-fallback[data-kin-shape="capsule"]::before {
+  inset: 8% 20% 8%;
+  border-radius: 999px;
+}
+.v1-pixelkin-fallback i {
+  position: absolute;
+  top: 36%;
+  width: 16%;
+  height: 20%;
+  border-radius: 50%;
+  background: radial-gradient(circle, #05070a 0 42%, #fff 46%);
+}
+.v1-pixelkin-fallback i:first-child {
+  left: 30%;
+}
+.v1-pixelkin-fallback i:last-child {
+  right: 30%;
+}
+
+.v1-look-picker {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.v1-look-picker select {
+  width: 100%;
+}
+.v1-kin-segment {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.v1-kin-segment button,
+.v1-kin-chip,
+.v1-kin-tab {
+  all: unset;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  text-align: center;
+  cursor: pointer;
+  background: var(--v1-surface);
+  color: var(--v1-fg2);
+}
+.v1-kin-segment button:hover,
+.v1-kin-chip:hover,
+.v1-kin-tab:hover {
+  background: var(--v1-surface-hover);
+}
+.v1-kin-segment button[aria-pressed="true"],
+.v1-kin-chip[aria-pressed="true"] {
+  background: var(--v1-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--v1-accent);
+  color: var(--v1-fg);
+}
+.v1-kin-tab[aria-pressed="true"] {
+  background: var(--v1-fg);
+  color: var(--v1-bg);
+}
+.v1-swatches {
+  gap: 8px;
+}
+.v1-swatch {
+  all: unset;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.v1-swatch[aria-pressed="true"],
+.v1-swatch-custom[data-active] {
+  box-shadow:
+    0 0 0 2px var(--v1-bg),
+    0 0 0 4px var(--v1-fg);
+}
+.v1-swatch-custom {
+  position: relative;
+  display: grid;
+  place-items: center;
+  background: var(--v1-surface);
+  color: var(--v1-fg2);
+}
+.v1-swatch-custom input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.v1-swatch-custom:focus-within {
+  outline: 2px solid var(--v1-accent);
+  outline-offset: 2px;
+}
+.v1-kin-disclosure {
+  border-radius: 12px;
+  background: var(--v1-surface);
+  padding: 0 12px;
+}
+.v1-kin-disclosure summary {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 0;
+  font-size: 13px;
+  cursor: pointer;
+}
+.v1-kin-disclosure summary span {
+  color: var(--v1-muted);
+}
+.v1-kin-disclosure[open] {
+  padding-bottom: 12px;
+}
+.v1-kin-disclosure .v1-options + .v1-options {
+  margin-top: 8px;
+}
+.v1-kin-disclosure .v1-kin-chip,
+.v1-kin-disclosure .v1-kin-tab {
+  background: var(--v1-surface-hover);
+}

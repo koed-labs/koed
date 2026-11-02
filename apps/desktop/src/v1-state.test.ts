@@ -125,6 +125,34 @@ describe("V1 state", () => {
     ).toBe("Ada");
   });
 
+  it("stores an agent Kin file and rejects oversized looks", async () => {
+    const a = owner(root(), uuid(1));
+    const agentLook = JSON.stringify({
+      schema: "pixelkin",
+      version: 1,
+      name: "Ada",
+      role: "R".repeat(80),
+      body: { shape: "capsule", colour: "#55cca3", width: 1.3, height: 1.9 },
+      face: { eyeSize: 1.4, browThickness: 1.7, mouthSize: 1 },
+      personality: "positive",
+      accessories: { hat: "beanie", glasses: "none", halloween: "none" }
+    });
+    const write = (look: string) =>
+      a.request({
+        operation: "profile_write",
+        profile: {
+          agentName: "Ada",
+          agentLook: look,
+          onboarding: { selections: {}, completed: true }
+        }
+      });
+    await write(agentLook);
+    const profile = await a.request({ operation: "profile_read" });
+    expect(
+      profile.operation === "profile_read" && profile.profile.agentLook
+    ).toBe(agentLook);
+    await expect(write("x".repeat(4097))).rejects.toThrow();
+  });
   it("marks initial Folder setup complete so later removal is not replayed", async () => {
     const state = owner(root(), uuid(1));
     const requestId = uuid(20);
