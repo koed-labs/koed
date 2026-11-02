@@ -55,7 +55,7 @@ jobs:
           const out=path.resolve('scratch/oxc-evaluation/migrate-evaluation');
           const workspace=path.resolve('scratch/oxc-evaluation/migrate-workspace');
           const tools=path.resolve('scratch/oxc-evaluation/tools/node_modules');
-          const require=createRequire(path.join(root,'node_modules/eslint/package.json'));
+          const require=createRequire(fs.realpathSync(path.join(root,'node_modules/eslint/package.json')));
           const {Minimatch}=require('minimatch');
           const env={...process.env,PATH:path.join(tools,'.bin')+path.delimiter+process.env.PATH,NODE_OPTIONS:'--max-old-space-size=8192'};
           fs.mkdirSync(out,{recursive:true});
@@ -80,6 +80,12 @@ jobs:
            if(result.status!==0)throw Error('Migration failed: '+name);
            fs.copyFileSync(path.join(workspace,output),path.join(out,name+'.json'));
           }
+          const restored=JSON.parse(fs.readFileSync(path.join(out,'nursery.json')));
+          const productionIndex=restored.overrides.findIndex(o=>o.rules?.['typescript/no-base-to-string']==='error'&&o.rules?.['typescript/require-await']==='error');
+          if(productionIndex<0)throw Error('Production override not found');
+          restored.overrides.splice(productionIndex+1,0,{files:['apps/api/src/**/*.{test,spec}.ts','apps/worker/src/**/*.{test,spec}.ts','packages/*/src/**/*.{test,spec}.ts'],rules:Object.fromEntries(Object.keys(restored.overrides[productionIndex].rules).map(k=>[k,'off']))});
+          fs.writeFileSync(path.join(out,'scopes-restored.json'),JSON.stringify(restored,null,2));
+          fs.copyFileSync(path.join(out,'scopes-restored.json'),path.join(workspace,'.oxlintrc.scopes-restored.json'));
           const eslint=new ESLint({cwd:workspace,cache:false});
           const baseline=await eslint.lintFiles(['.']);
           fs.writeFileSync(path.join(out,'eslint-diagnostics.json'),JSON.stringify(baseline,null,2));
@@ -96,7 +102,7 @@ jobs:
            return r;
           }
           const ruleDifferences={},coverage={},diagnostics={};
-          for(const name of ['default','nursery']){
+          for(const name of ['default','nursery','scopes-restored']){
            const c=JSON.parse(fs.readFileSync(path.join(out,name+'.json'))),overrides=compile(c);const differences=[];
            for(const f of files){
             const actual=effective(c,overrides,f);const expected={};
@@ -153,7 +159,7 @@ jobs:
           const fixtureBaseline=await fixtureEslint.lintFiles(['apps','packages','*.config.ts']);
           for(const c of cases){const result=fixtureBaseline.find(x=>path.relative(probe,x.filePath)===c.file);c.eslintDetected=result.messages.some(m=>m.ruleId==='@typescript-eslint/'+c.rule);if(c.eslintDetected!==c.expected)throw Error('Fixture baseline mismatch: '+c.file);}
           const fixtureResults={};
-          for(const name of ['default','nursery']){
+          for(const name of ['default','nursery','scopes-restored']){
            const configName='.oxlintrc.'+name+'.json';fs.copyFileSync(path.join(out,name+'.json'),path.join(probe,configName));
            const result=run(name+'-fixtures',oxlint,['--type-aware','-c',configName,'-f','json','.'],probe);
            const data=JSON.parse(result.stdout);
