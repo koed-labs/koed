@@ -224,11 +224,14 @@ names work in the safety probes. ESLint also warns about unused suppression
 comments by default. Equivalent Oxlint invocation requires
 `--report-unused-disable-directives-severity warn`.
 
-`no-dupe-args` and `no-octal` lack direct candidate rule mappings. Both parsers
-reject the failing MJS examples. The CJS examples expose a gap: this ESLint
-configuration forces module parsing, while Oxlint accepts the examples as
-CommonJS. No tracked CJS file exists in the measured source. That fact does not
-establish preserved future file coverage.
+`no-dupe-args` and `no-octal` lack direct native rule mappings. The original
+parser-only probes reject failing MJS examples and accept failing CJS examples
+under Oxlint. A later check with the complete ESLint configuration corrects the
+parser comparison: it uses typescript-eslint for JavaScript too. ESLint rejects
+duplicate CJS parameters through rules and octal literals through parsing.
+Therefore strict-mode assumptions alone do not establish equivalent protection.
+No tracked CJS file exists in the measured source. The final compatibility pass
+below tests both missing rules through ESLint implementations loaded by Oxlint.
 
 The ten explicit typed rules are `await-thenable`, `no-floating-promises`,
 `no-misused-promises`, `no-unsafe-argument`, `no-unsafe-assignment`,
@@ -383,8 +386,8 @@ scratch directory. No equivalent typed-lint benchmark becomes available.
 The default command skips `no-undef` and `no-useless-assignment` because the
 migrator classifies them as nursery rules. Adding `--with-nursery` retains them.
 Both commands skip `no-dupe-args` and `no-octal`, with the explanation that strict
-mode supersedes them. That classification does not resolve the previously observed
-CJS module-parsing difference. The supported name mappings agree with the earlier
+mode supersedes them. That classification does not establish equivalent
+protection for the CJS examples. The supported name mappings agree with the earlier
 manual candidate. This repository's enabled rule declarations contain no custom
 option arrays.
 
@@ -542,3 +545,133 @@ configuration attempt records the TS2883 regression and is excluded from claims
 that retained checks pass. The completed run above includes the explicit fallback
 and passes all retained controls. Production configuration remains unchanged.
 Architecture documentation needs no update for this evaluation.
+
+## Final Oxlint compatibility pass, 2026-11-02
+
+The [final compatibility run](https://github.com/koed-labs/koed/actions/runs/41446353334)
+uses evaluation head `8255c056551519bf32b79c04a6c82b4f3b170b1d`. It retains the
+same source revision, runner class, tool versions, compiler, and configuration
+cleanup as the preceding experiment. The evaluation passes its assertions about
+compatibility failures. Oxlint itself still exits with errors. Production
+configuration stays unchanged. The workflow is `.github/workflows/oxlint-compatibility-evaluation.yml`.
+
+### Native project selection
+
+Oxlint's typed engine discovers conventional `tsconfig.json` files. Its
+`--tsconfig tsconfig.eslint.json` argument does not select that engine's project.
+The [Oxlint CLI documentation](https://oxc.rs/docs/guide/usage/linter/cli.html)
+explicitly distinguishes import resolution from typed-rule project discovery.
+
+A single additional file fixes the MCP test context in the isolated snapshot:
+
+```json
+{
+  "extends": "../../../tsconfig.eslint.json",
+  "include": ["./**/*.ts"],
+  "exclude": []
+}
+```
+
+The file belongs at `packages/mcp-server/tests/tsconfig.json`. It reuses the
+existing lint project's aliases and ambient types. It removes all 209 unsafe-type
+reports, the 41 missing `vi` names in MCP tests, and both missing `@koed/db`
+imports. It changes no lint rules. Native lint then reports the 15 core-rule
+differences and the two additional typed-rule differences.
+
+A separate diagnostic experiment temporarily removes conventional project files
+and exposes the existing flat lint project through the root `tsconfig.json`.
+This also removes the API test's missing `vi` name and the browser CSS error.
+All project files are restored afterward. This experiment establishes the cause
+of the context errors. Replacing production project boundaries this way is not
+an adoption proposal.
+
+### Core rules through JavaScript plugins
+
+Oxlint can load the installed ESLint implementations of `no-dupe-args`,
+`no-octal`, `no-unsafe-optional-chaining`, and `no-useless-assignment`. The small
+plugin exports those four rules from `eslint/use-at-your-own-risk`, under the
+`eslint-compat` namespace. Native optional-chain and assignment rules are disabled
+in this trial. The duplicate-argument rule retains its JavaScript-only scope.
+
+This removes all 15 core-rule differences in the flat-project experiment. It
+also detects the four deliberately invalid examples. The trial excludes the
+added plugin implementation from the measured source set, which retains 2,055
+files. The plugin does not resolve typed-rule differences.
+
+Suppression syntax needs attention. All four examples remain reported when a
+comment uses its original rule name. Comments using `eslint-compat/<rule>` suppress
+them. No tracked source comment names these four rules, so this experiment needs
+no suppression edits to existing source. That result does not establish general
+compatibility for unchanged future suppression comments.
+
+The [Oxlint JavaScript plugin documentation](https://oxc.rs/docs/guide/usage/linter/js-plugins.html)
+labels the API alpha and excludes rules that need TypeScript type information.
+This bridge therefore retains ESLint as a dependency and cannot host the two
+remaining typescript-eslint rules. It is a compatibility option with maintenance
+cost, rather than a full removal of ESLint dependencies.
+
+### Remaining typed-rule differences
+
+Focused examples reproduce both differences without repository imports or project
+references. The unchanged ESLint control also remains clean for both affected
+API source files.
+
+`no-misused-promises` reports a promise returned by the callback passed to
+`Promise.finally`. The installed typescript-eslint implementation explicitly
+exempts `Promise.finally`, which handles returned promises. Native Oxlint reports
+the small example and the repository's terminal-attachment cleanup. Both engines
+still detect the ordinary unsafe `() => void` callback example. This is a native
+false positive relative to the retained rule behavior. A compiler upgrade does
+not supply the missing rule exception.
+
+`require-await` reports the async OAuth route callback with no await or returned
+promise. typescript-eslint accepts a minimal version when one parameter has a
+promise-like type. Its arrow-function selector also visits parameters and marks
+the function as having an await. The repository callback receives a promise-like
+Fastify reply. Oxlint reports both the ordinary and promise-like-parameter cases.
+This identifies an existing ESLint detection gap. Any route adaptation still
+needs a separate behavior review. Adding a meaningless await is not a migration
+repair.
+
+### Compiler diagnostics and decision
+
+| Isolated setup                     | Lint reports | Additional compiler reports |
+| ---------------------------------- | -----------: | --------------------------: |
+| Validated configuration cleanup    |          226 |                          47 |
+| Plus the MCP test project          |           17 |                           4 |
+| Flat lint project instead          |           17 |                           2 |
+| Flat project plus four-rule plugin |            2 |                           2 |
+
+With the flat project context, native `--type-check` retains two errors. The
+Desktop `flatMap` inference error is absent from the TypeScript 6 flat-project
+control. The Vite configuration overload error also occurs in that control.
+The latter is an existing error in a configuration file outside the retained
+production/test check commands. Neither finding justifies removing an existing
+check. Native compiler diagnostics are an additional experiment, not an existing
+lint requirement or a completed TypeScript 7 compiler migration.
+
+The retained ESLint and TypeScript 6 production, test, Electron, and browser checks
+pass again. The preceding configuration assertions retain 37,568 unchanged
+resolution comparisons and detect all 1,754 executable promise probes. Project
+experiments restore every tracked file to that validated configuration candidate.
+
+The largest compatibility obstacle now has a small configuration repair. Four
+core rules also have a working JavaScript bridge. Adoption still needs a deliberate
+choice about that dependency and suppression syntax, a repair or narrowly reviewed
+handling of the native `Promise.finally` false positive, and a reviewed OAuth
+callback adaptation. The flat-project experiment alone does not establish a
+maintainable replacement for native project discovery throughout the workspace.
+
+The recommendation remains Oxfmt independently, with ESLint retained. No qualified
+Oxlint performance claim is added while repository lint still reports the two
+typed-rule differences. If those differences receive acceptable repairs, measure
+the full candidate, including the JavaScript plugin and declaration prerequisites,
+against Oxfmt plus ESLint. The existing time and memory gates still apply.
+
+The `oxlint-compatibility-evaluation` artifact retains source controls, native
+outputs, project and plugin configurations, focused examples, and command records
+for 14 days. Earlier attempts expose evaluation setup failures: absent native
+rule names cannot appear even with severity off, the plugin adds a source file
+unless excluded, and fixtures under ignored paths need an isolated working root.
+They do not establish a passing compatibility result. Production tooling and
+application code remain unchanged. Architecture documentation needs no update.

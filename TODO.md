@@ -10,25 +10,30 @@ Adoption requires a separate decision.
       Ignore the Harbor TOML file to retain the evaluated formatting scope.
       Review the 32-file formatting change separately from tooling changes.
       Select the same formatter in local scripts, CI, and editors.
-- [ ] Before reconsidering typed Oxlint, preserve all effective ESLint rules,
-      options, globals, suppressions, and module parsing. Resolve the two missing
-      rule mappings, translate the 26 inline-global declarations, and explain
-      the optional-chain and assignment diagnostic differences.
-      Start with the evaluated official migrator, `--type-aware`, `--details`,
-      and `--with-nursery`. Restore the production override's test exclusions before
-      checking equivalence. The direct migration output passes 90/100 scope
-      fixtures; the corrected test scopes pass 100/100. Repository lint still
-      fails the TypeScript configuration checks.
-- [ ] Establish typed Oxlint workspace coverage without changing production or
-      test typechecking. The isolated three-file configuration candidate removes
-      `baseUrl` errors and passes TypeScript 6.0.3 checks. Preserve its explicit
-      root lookup fallback if the configuration cleanup is adopted; alias
-      rebasing alone breaks declaration emission. Align native test contexts
-      with the existing lint/test projects, including `vi`, `@koed/db`, and CSS
-      declarations. Investigate the remaining two compiler diagnostics and 17
-      other lint differences. Account for declaration availability and ordering
-      in later measurements. Repeat equivalent lint and complete-job measurements
-      only after repository execution succeeds.
+- [ ] Before reconsidering typed Oxlint, decide whether the evaluated four-rule
+      JavaScript bridge is acceptable. It restores the two missing rule mappings
+      and removes the 15 core-rule differences, but retains ESLint dependencies
+      and requires namespaced suppression comments. Keep the official migrator's
+      nursery rules, repaired test exclusions, and 26 per-file globals overrides.
+      Resolve the native `Promise.finally` false positive without disabling the
+      rule across other callbacks. Review the OAuth callback adaptation for the
+      newly detected `require-await` case before changing application behavior.
+- [ ] If configuration cleanup is approved, retain the evaluated three-file
+      TypeScript 7-compatible configuration and explicit lookup fallbacks. It
+      passes the existing TypeScript 6 checks and preserves module resolution.
+      Add the evaluated MCP test project by extending the existing lint project.
+      This removes all 209 unsafe-type reports without changing lint rules.
+      Keep the production and test check commands. Treat the flat-project
+      experiment as diagnostic evidence, not a replacement for production
+      project boundaries. Native compiler diagnostics additionally need the API
+      test globals, CSS context, Desktop inference difference, and existing Vite
+      overload error addressed if that optional check is adopted.
+- [ ] After an equivalent Oxlint candidate passes repository lint, repeat the
+      original safety and coverage checks and benchmark against Oxfmt plus
+      ESLint. Include the JavaScript plugin and declaration prerequisites.
+      Reorder the existing production typecheck if declarations are required.
+      Measure the complete job as well as lint time and memory. Apply the
+      existing 50% combined time and 30% peak-memory targets before adoption.
 
 ## Optional Privacy runtime release gates
 

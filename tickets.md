@@ -127,3 +127,27 @@ retains TypeScript 6.0.3, passes all retained checks, and removes all 31 native
 configuration errors. It detects all 1,754 promise probes and changes none of
 37,568 tested import-resolution targets. Native lint still reports 226 diagnostics
 after declaration builds, so a full lint switch remains unqualified.
+
+## Final native compatibility follow-up
+
+**Status:** complete, project-context repair validated and rule differences explained
+
+- [x] Compare a small MCP test project with native discovery and the existing
+      flat lint program. Restore all diagnostic-only project changes afterward.
+- [x] Test the four ESLint core implementations through Oxlint's JavaScript
+      plugin API, including deliberate violations and suppression comments.
+- [x] Reproduce both remaining typed-rule differences independently of workspace
+      imports. Distinguish the native false positive from the existing ESLint gap.
+- [x] Compare optional native compiler errors with a TypeScript 6 flat-project
+      control, without dropping existing production/test checks.
+- [x] Record the remaining adoption requirements and retain the Oxfmt-only
+      recommendation until an equivalent lint candidate qualifies for measurement.
+
+The [final compatibility pass](https://github.com/koed-labs/koed/actions/runs/41446353334)
+finds that one MCP test project removes all 209 unsafe-type reports. The four-rule
+JavaScript bridge removes all 15 core-rule differences and restores missing rule
+implementations, with dependency and suppression-syntax costs. The two typed-rule
+reports remain: a native `Promise.finally` false positive and an OAuth callback
+that ESLint overlooks because its reply parameter is promise-like. Compiler
+upgrades alone do not resolve these rule differences. No production adoption or
+qualified Oxlint benchmark is included.
