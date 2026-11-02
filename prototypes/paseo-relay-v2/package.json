@@ -1,0 +1,16 @@
+{
+  "name": "paseo-relay-v2-prototype",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=30000 test.mjs"
+  },
+  "dependencies": {
+    "@getpaseo/relay": "0.14.0",
+    "wrangler": "4.156.1",
+    "ws": "8.22.1"
+  }
+}

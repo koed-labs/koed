@@ -1,0 +1,9 @@
+{
+  "name": "paseo-relay-v2-local-prototype",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-05-04",
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY", "class_name": "RelayDurableObject" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayDurableObject"] }]
+}
