@@ -2,9 +2,6 @@
 
 ## Combined Oxfmt and Oxlint migration
 
-The User requested both tools together. The [evaluation plan](PLAN.md) retains
-prior results and the current qualification evidence.
-
 - [x] Pin both Oxc packages and the typed engine. Replace the formatter and lint
       scripts, preserve formatting options and ignores, and configure the editor.
 - [x] Preserve typed-rule scopes, globals, and suppression policy. Keep native

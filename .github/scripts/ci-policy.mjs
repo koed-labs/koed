@@ -45,7 +45,6 @@ const SAFE_NON_PACKAGING_FILES = new Set([
   "AGENTS.md",
   "CONTEXT.md",
   "LICENSE",
-  "PLAN.md",
   "README.md",
   "TODO.md",
   ".github/scripts/ci-policy.mjs",

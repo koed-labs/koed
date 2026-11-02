@@ -42,7 +42,7 @@ test("active workflows build the renamed public Koed Server package", () => {
 });
 
 test("packaging path policy excludes documentation and includes runtime consumers", () => {
-  assert.equal(packagingRelevant(["docs/running-koed.md", "PLAN.md"]), false);
+  assert.equal(packagingRelevant(["docs/running-koed.md", "README.md"]), false);
   for (const file of [
     "apps/desktop/src/main.ts",
     "apps/api/package.json",
