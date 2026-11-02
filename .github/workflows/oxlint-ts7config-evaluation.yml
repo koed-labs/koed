@@ -83,6 +83,8 @@ jobs:
            if(options.paths){
             const base=originalConfigs[file].options.baseUrl??path.dirname(full);
             for(const [alias,targets]of Object.entries(options.paths))options.paths[alias]=targets.map(target=>{let relative=path.relative(path.dirname(full),path.resolve(base,target)).split(path.sep).join('/');if(!relative.startsWith('.'))relative='./'+relative;return relative;});
+            // Preserve the old baseUrl lookup root, including inferred declaration names.
+            if(originalConfigs[file].options.baseUrl&&!Object.hasOwn(options.paths,'*')){let prefix=path.relative(path.dirname(full),base).split(path.sep).join('/');if(!prefix)prefix='.';else if(!prefix.startsWith('.'))prefix='./'+prefix;options.paths['*']=[prefix+'/*'];}
             changed=true;
            }
            if(Object.hasOwn(options,'baseUrl')){delete options.baseUrl;changed=true;}
