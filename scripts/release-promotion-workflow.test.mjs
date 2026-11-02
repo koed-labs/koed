@@ -149,6 +149,47 @@ test("production gate precedes dependency installation", () => {
   assert.ok(gate >= 0 && install > gate);
 });
 
+test("targeted asset retries regenerate a reviewed identity for the current attempt before production approval", () => {
+  const { jobs } = parse(release);
+  const catalog = jobs["component-manifest-catalog"];
+  const identity = jobs["reviewed-release-identity"];
+  const verification = jobs["verify-release-candidate"];
+  const publication = jobs["publish-release"];
+
+  assert.ok(catalog.needs.includes("frozen-component-release-assets"));
+  for (const job of [
+    "component-manifest-catalog",
+    "standalone-koed-server-release-assets",
+    "standalone-koed-server-release-metadata",
+    "native-runtime-linux-x64-release-assets",
+    "signed-desktop-release-assets",
+    "privacy-release-qualification"
+  ])
+    assert.ok(identity.needs.includes(job), `identity must wait for ${job}`);
+  assert.ok(verification.needs.includes("reviewed-release-identity"));
+  assert.ok(publication.needs.includes("reviewed-release-identity"));
+  assert.ok(publication.needs.includes("verify-release-candidate"));
+  assert.equal(publication.environment, "production");
+
+  const identityScript = readFileSync(
+    resolve(root, "scripts/reviewed-build-identity.mjs"),
+    "utf8"
+  );
+  assert.match(
+    identityScript,
+    /runAttempt: Number\(process\.env\.GITHUB_RUN_ATTEMPT\)/
+  );
+  for (const job of [verification, publication]) {
+    const command = job.steps.find((step) =>
+      step.run?.includes("--approved-run-attempt")
+    );
+    assert.match(
+      command.run,
+      /--approved-run-attempt '\$\{\{ github\.run_attempt \}\}'/
+    );
+  }
+});
+
 test("asset jobs only run for absent releases or resumable drafts", () => {
   assert.match(
     release,
