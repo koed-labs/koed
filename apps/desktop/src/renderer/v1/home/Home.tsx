@@ -8,7 +8,7 @@ import {
 import {
   AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
   AUTOMATIC_HISTORICAL_WINDOW_DAYS
-} from "@koed/shared";
+} from "@koed/shared/historical-ingestion-progress";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { AiClientLogo } from "../../views/personal/AiClientLogo.js";
 import { Pixelkin } from "../pixelkin/Pixelkin.js";

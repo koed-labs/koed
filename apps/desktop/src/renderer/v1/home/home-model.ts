@@ -1,4 +1,4 @@
-import type { HistoricalIngestionLifecycle } from "@koed/shared";
+import type { HistoricalIngestionLifecycle } from "@koed/shared/historical-ingestion-progress";
 import type { ComponentStatus, KoedServerStatus } from "../../../types.js";
 import {
   projectLatestAt,

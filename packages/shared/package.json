@@ -31,6 +31,10 @@
       "types": "./dist/durable-realtime.d.ts",
       "import": "./dist/durable-realtime.js"
     },
+    "./historical-ingestion-progress": {
+      "types": "./dist/historical-ingestion-progress.d.ts",
+      "import": "./dist/historical-ingestion-progress.js"
+    },
     "./personal-desktop": {
       "types": "./dist/personal-desktop-contract.d.ts",
       "import": "./dist/personal-desktop-contract.js"
