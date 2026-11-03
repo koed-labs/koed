@@ -10,7 +10,8 @@ import { loadRendererValidation } from "./renderer-validation-assets.mjs";
 import {
   terminateChild,
   trustedClick,
-  waitForRendererTarget
+  waitForRendererTarget,
+  waitFor
 } from "./smoke-packaged-renderer-faults.mjs";
 
 test("packaged fault fixtures preserve the trusted renderer origin and serve only their separate assets", async (t) => {
@@ -201,4 +202,50 @@ test("renderer child termination escalates and waits for exit", async () => {
       child.kill("SIGKILL");
     }
   }
+});
+
+test("cold setup inspection can use a longer bounded wait without relaxing readiness", async () => {
+  let time = 0;
+  let calls = 0;
+  const evaluate = async () => {
+    calls++;
+    return time >= 10500;
+  };
+  const clock = {
+    now: () => time,
+    delayImpl: async (ms) => {
+      time += ms;
+    }
+  };
+  await assert.rejects(
+    waitFor(evaluate, "enabled", "setup", undefined, clock),
+    /Timed out/
+  );
+  assert.equal(time, 5000);
+  time = 0;
+  assert.equal(
+    await waitFor(evaluate, "enabled", "setup", undefined, {
+      ...clock,
+      timeoutMs: 30000
+    }),
+    true
+  );
+  assert.equal(time, 10500);
+  assert.ok(calls > 200);
+});
+test("cold setup wait still fails at its deadline with disabled-control diagnostics", async () => {
+  let time = 0;
+  const evaluate = async (expression) =>
+    expression === "diagnostic" ? { disabled: true } : false;
+  await assert.rejects(
+    waitFor(evaluate, "enabled", "setup", "diagnostic", {
+      timeoutMs: 30000,
+      now: () => time,
+      delayImpl: async (ms) => {
+        time += ms;
+      }
+    }),
+    /Timed out.*disabled.*true/
+  );
+  assert.equal(time, 30000);
 });

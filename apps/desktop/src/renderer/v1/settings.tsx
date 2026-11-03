@@ -1,10 +1,22 @@
 import {
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode
 } from "react";
-import { Check, ChevronRight, RotateCw, X } from "lucide-react";
+import {
+  Activity,
+  Check,
+  ChevronRight,
+  Info,
+  RefreshCw,
+  RotateCw,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  X
+} from "lucide-react";
 import type {
   KoedServerStatus,
   ComponentStatus,
@@ -28,7 +40,19 @@ import type { ThemeStore } from "../state/theme.js";
 import { useDesktopStatus } from "../state/use-status.js";
 import { sameAgentLook } from "./pixelkin/agent-kin.js";
 import { AgentLookPicker, Pixelkin, type AgentLook } from "./visual.js";
+import { useSettingsFocus } from "./settings-focus.js";
 import "./settings.css";
+import "./settings-parity.css";
+import {
+  useSettingsNavigation,
+  type V1SettingsPage
+} from "./settings-navigation.js";
+import { SettingsToolPage, SettingsTools } from "./settings-tools.js";
+import {
+  SettingsServicePage,
+  SettingsServicesOverview,
+  settingsServiceComponents
+} from "./settings-services.js";
 
 export type V1SettingsAgent = { name: string; look: AgentLook };
 export type V1SettingsTab = "general" | "agent" | "ai" | "services" | "about";
@@ -39,6 +63,8 @@ export type V1SettingsProps = {
   themeStore: ThemeStore;
   onClose: () => void;
   initialTab?: V1SettingsTab;
+  initialPage?: V1SettingsPage;
+  cliInstall?: DesktopApi["cliInstall"];
   onRestartOnboarding?: () => Promise<void> | void;
   launchAtStartup?: DesktopApi["launchAtStartup"];
   presentationPreferences?: DesktopApi["presentationPreferences"];
@@ -59,12 +85,16 @@ const names: Record<ClientId, string> = {
   claude: "Claude Code",
   pi: "Pi"
 };
-const tabNames: readonly { id: V1SettingsTab; label: string }[] = [
-  { id: "general", label: "General" },
-  { id: "agent", label: "Your agent" },
-  { id: "ai", label: "AI models" },
-  { id: "services", label: "Services" },
-  { id: "about", label: "About" }
+const tabNames: readonly {
+  id: V1SettingsTab;
+  label: string;
+  Icon: typeof Check;
+}[] = [
+  { id: "general", label: "General", Icon: SlidersHorizontal },
+  { id: "agent", label: "Your agent", Icon: ShieldCheck },
+  { id: "ai", label: "AI models", Icon: Settings2 },
+  { id: "services", label: "Services", Icon: Activity },
+  { id: "about", label: "About", Icon: Info }
 ];
 const errorText = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
@@ -99,24 +129,6 @@ function SettingRow({
       </div>
       {children}
     </div>
-  );
-}
-function ServiceRow({
-  title,
-  component
-}: {
-  title: string;
-  component?: ComponentStatus | null;
-}) {
-  return (
-    <SettingRow title={title} description={component?.message}>
-      <span
-        className={`v1-status-pill v1-state-${component?.state ?? "not_configured"}`}
-      >
-        <i />
-        {stateLabel(component)}
-      </span>
-    </SettingRow>
   );
 }
 function V1Switch({
@@ -509,14 +521,19 @@ export function V1Settings({
   themeStore,
   onClose,
   initialTab = "general",
+  initialPage,
+  cliInstall = window.koedDesktop?.cliInstall,
   onRestartOnboarding,
   launchAtStartup = window.koedDesktop?.launchAtStartup,
   presentationPreferences = window.koedDesktop?.presentationPreferences,
   localAiClients = window.koedDesktop?.localAiClients
 }: V1SettingsProps) {
-  const [tab, setTab] = useState<V1SettingsTab>(initialTab);
+  const navigation = useSettingsNavigation(initialTab, initialPage);
+  const { tab, page, setTab } = navigation;
   const [draft, setDraft] = useState<V1SettingsAgent>(agent);
   const [pending, setPending] = useState<Mutation | null>(null);
+  const sheetRef = useRef<HTMLDivElement>(null);
+  useSettingsFocus(sheetRef, pending !== null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [savingAgent, setSavingAgent] = useState(false);
@@ -543,12 +560,32 @@ export function V1Settings({
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (pending) setPending(null);
+        else if (page) navigation.back();
         else onClose();
       }
     };
     document.addEventListener("keydown", key);
     return () => document.removeEventListener("keydown", key);
-  }, [pending, onClose]);
+  }, [pending, onClose, page, navigation.back]);
+  useEffect(() => {
+    if (tab === "services") void statusStore.refresh();
+  }, [tab, page, statusStore]);
+  const servicesStarting =
+    tab === "services" &&
+    settingsServiceComponents(snapshot.status).some(
+      ([, component]) => component.state === "starting"
+    );
+  useEffect(() => {
+    if (!servicesStarting || snapshot.error || snapshot.busyCommand) return;
+    const timeout = setTimeout(() => void statusStore.refresh(), 1500);
+    return () => clearTimeout(timeout);
+  }, [
+    servicesStarting,
+    snapshot.revision,
+    snapshot.error,
+    snapshot.busyCommand,
+    statusStore
+  ]);
   const setTheme = async (preference: "system" | "light" | "dark") => {
     setThemeError(null);
     setThemeBusy(true);
@@ -616,7 +653,7 @@ export function V1Settings({
     }
   };
   const runService = async (
-    action: "start" | "restart" | "open_logs" | "diagnostics"
+    action: "start" | "restart" | "open_logs" | "diagnostics" | "doctor"
   ) => {
     if (serviceBusy || snapshot.busyCommand) return;
     setServiceBusy(action);
@@ -650,6 +687,19 @@ export function V1Settings({
         );
         if (opened?.ok === false)
           throw new Error(opened.error ?? "Logs could not be opened.");
+      } else if (action === "doctor") {
+        const result = await statusStore.run<{
+          ok?: boolean;
+          message?: string;
+          error?: string;
+        }>("doctor");
+        if (!result || result.ok === false)
+          throw new Error(
+            result?.error ??
+              result?.message ??
+              "Diagnostics found issues that need attention."
+          );
+        setServiceNotice("Diagnostics completed.");
       } else {
         const clipboard = window.koedDesktop?.clipboard;
         if (!clipboard) throw new Error("Clipboard is unavailable.");
@@ -689,36 +739,88 @@ export function V1Settings({
       }}
     >
       <div
-        className="v1-settings-sheet"
+        ref={sheetRef}
+        className="v1-settings-sheet v1-settings-parity"
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
       >
-        <nav className="v1-settings-nav" aria-label="Settings sections">
+        <nav
+          className="v1-settings-nav"
+          role="tablist"
+          aria-label="Settings sections"
+          onKeyDown={(event) => {
+            const direction =
+              event.key === "ArrowDown" || event.key === "ArrowRight"
+                ? 1
+                : event.key === "ArrowUp" || event.key === "ArrowLeft"
+                  ? -1
+                  : 0;
+            if (!direction && event.key !== "Home" && event.key !== "End")
+              return;
+            event.preventDefault();
+            const index =
+              event.key === "Home"
+                ? 0
+                : event.key === "End"
+                  ? tabNames.length - 1
+                  : (tabNames.findIndex((item) => item.id === tab) +
+                      direction +
+                      tabNames.length) %
+                    tabNames.length;
+            const next = tabNames[index]!;
+            setTab(next.id);
+            setActionError(null);
+            event.currentTarget
+              .querySelector<HTMLButtonElement>(`#v1-settings-tab-${next.id}`)
+              ?.focus();
+          }}
+        >
           <h2>Settings</h2>
           {tabNames.map((item) => (
             <button
               key={item.id}
               type="button"
               role="tab"
+              id={`v1-settings-tab-${item.id}`}
+              aria-controls="v1-settings-panel"
+              tabIndex={tab === item.id ? 0 : -1}
               aria-selected={tab === item.id}
               onClick={() => {
                 setTab(item.id);
                 setActionError(null);
               }}
             >
+              <item.Icon size={17} aria-hidden="true" />
               {item.label}
             </button>
           ))}
         </nav>
-        <div className="v1-settings-body" role="tabpanel">
-          {tab === "general" && (
+        <div
+          ref={navigation.bodyRef}
+          className="v1-settings-body"
+          role="tabpanel"
+          id="v1-settings-panel"
+          aria-labelledby={`v1-settings-tab-${tab}`}
+          key={`${tab}-${page ?? "overview"}`}
+        >
+          {(page === "privacy" || page === "cli") && (
+            <SettingsToolPage
+              tool={page}
+              api={cliInstall}
+              onBack={navigation.back}
+            />
+          )}
+          {tab === "general" && !page && (
             <>
-              <h3>General</h3>
-              <div className="v1-settings-group">
+              <header className="v1-parity-heading">
+                <h3>General</h3>
+                <p>Make Koed feel at home on this Mac.</p>
+              </header>
+              <div className="v1-parity-appearance">
                 <SettingRow
-                  title="Theme"
-                  description="System follows your Mac."
+                  title="Appearance"
+                  description="Choose how Koed looks."
                 >
                   <div
                     className="v1-settings-segment"
@@ -738,31 +840,36 @@ export function V1Settings({
                     ))}
                   </div>
                 </SettingRow>
-                <LaunchSetting api={launchAtStartup} />
-                <PresentationSettings api={presentationPreferences} />
-                {onRestartOnboarding && (
-                  <SettingRow
-                    title="Setup"
-                    description="Check local setup and reconnect your AI Clients. Your data stays in Koed."
-                  >
-                    <button
-                      type="button"
-                      className="v1-settings-secondary"
-                      disabled={restartBusy}
-                      onClick={() => {
-                        setRestartError(null);
-                        setRestartBusy(true);
-                        void Promise.resolve()
-                          .then(onRestartOnboarding)
-                          .catch((cause) => setRestartError(errorText(cause)))
-                          .finally(() => setRestartBusy(false));
-                      }}
-                    >
-                      {restartBusy ? "Opening…" : "Run setup again"}
-                    </button>
-                  </SettingRow>
-                )}
               </div>
+              <section className="v1-parity-group">
+                <h4>On this device</h4>
+                <div className="v1-parity-card">
+                  <LaunchSetting api={launchAtStartup} />
+                  <PresentationSettings api={presentationPreferences} />
+                  {onRestartOnboarding && (
+                    <SettingRow
+                      title="Setup"
+                      description="Check local setup and reconnect your AI Clients. Your data stays in Koed."
+                    >
+                      <button
+                        type="button"
+                        className="v1-settings-secondary"
+                        disabled={restartBusy}
+                        onClick={() => {
+                          setRestartError(null);
+                          setRestartBusy(true);
+                          void Promise.resolve()
+                            .then(onRestartOnboarding)
+                            .catch((cause) => setRestartError(errorText(cause)))
+                            .finally(() => setRestartBusy(false));
+                        }}
+                      >
+                        {restartBusy ? "Opening…" : "Run setup again"}
+                      </button>
+                    </SettingRow>
+                  )}
+                </div>
+              </section>
               {(themeError || theme.error) && (
                 <p className="v1-settings-error" role="alert">
                   {themeError || theme.error}
@@ -773,6 +880,7 @@ export function V1Settings({
                   {restartError}
                 </p>
               )}
+              <SettingsTools api={cliInstall} onOpen={navigation.openPage} />
             </>
           )}
           {tab === "agent" && (
@@ -937,10 +1045,18 @@ export function V1Settings({
           )}
           {tab === "services" && (
             <>
-              <h3>Services</h3>
-              <p className="v1-settings-lead">
-                Current state of Koed on this Mac.
-              </p>
+              {page === "health" || page === "embedding" ? (
+                <SettingsServicePage
+                  page={page}
+                  status={snapshot.error ? null : status}
+                  onBack={navigation.back}
+                />
+              ) : (
+                <header className="v1-parity-heading">
+                  <h3>Services</h3>
+                  <p>Current state of Koed on this Mac.</p>
+                </header>
+              )}
               {snapshot.error && (
                 <p className="v1-settings-error" role="alert">
                   {snapshot.error}
@@ -956,29 +1072,13 @@ export function V1Settings({
                   {serviceNotice}
                 </p>
               )}
-              <div className="v1-settings-group">
-                <ServiceRow
-                  title="Local control plane"
-                  component={status?.api}
+              {!page && (
+                <SettingsServicesOverview
+                  status={snapshot.error ? null : status}
+                  embeddingSupported={status?.embeddingState !== undefined}
+                  onOpen={navigation.openPage}
                 />
-                <ServiceRow title="Database" component={status?.database} />
-                <ServiceRow
-                  title="Memory engine"
-                  component={status?.localAiRuntime}
-                />
-                <ServiceRow
-                  title="Memory capture"
-                  component={status?.captureHook}
-                />
-                <ServiceRow
-                  title="Search index"
-                  component={status?.embeddingService}
-                />
-                <ServiceRow
-                  title="LCM summary service"
-                  component={status?.lcmSummaryService}
-                />
-              </div>
+              )}
               <div className="v1-service-actions">
                 <button
                   type="button"
@@ -1002,6 +1102,16 @@ export function V1Settings({
                   type="button"
                   className="v1-settings-secondary"
                   disabled={!!serviceBusy || !!snapshot.busyCommand}
+                  onClick={() => void runService("doctor")}
+                >
+                  {serviceBusy === "doctor"
+                    ? "Running diagnostics…"
+                    : "Run diagnostics"}
+                </button>
+                <button
+                  type="button"
+                  className="v1-settings-secondary"
+                  disabled={!!serviceBusy || !!snapshot.busyCommand}
                   onClick={() => void runService("open_logs")}
                 >
                   {serviceBusy === "open_logs" ? "Opening…" : "Open logs"}
@@ -1016,15 +1126,17 @@ export function V1Settings({
                     ? "Copying…"
                     : "Copy diagnostics"}
                 </button>
+                <button
+                  type="button"
+                  className="v1-settings-secondary v1-service-refresh"
+                  aria-label="Refresh status"
+                  title="Refresh status"
+                  disabled={!!snapshot.busyCommand}
+                  onClick={() => void statusStore.refresh()}
+                >
+                  <RefreshCw size={15} aria-hidden="true" />
+                </button>
               </div>
-              <button
-                type="button"
-                className="v1-settings-secondary"
-                disabled={!!snapshot.busyCommand}
-                onClick={() => void statusStore.refresh()}
-              >
-                Refresh status
-              </button>
               {status && (
                 <p className="v1-settings-caption">
                   Updated {new Date(status.generatedAt).toLocaleString()}

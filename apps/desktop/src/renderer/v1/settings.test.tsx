@@ -136,11 +136,9 @@ describe("V1Settings", () => {
       showMenuBar: true
     });
     await act(async () =>
-      (
-        container.querySelector(
-          ".v1-settings-group button.v1-settings-secondary"
-        ) as HTMLButtonElement
-      ).click()
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Run setup again")!
+        .click()
     );
     expect(restart).toHaveBeenCalledOnce();
   });
@@ -307,8 +305,11 @@ describe("V1Settings", () => {
         database: { state: "needs_attention", message: "Database unavailable" }
       } as never
     };
-    await render("services");
-    expect(container.textContent).toContain("API ready");
+    await render("services", vi.fn(), { initialPage: "health" });
+    expect(
+      container.querySelector('[aria-label="Service health"]')?.textContent
+    ).toContain("APIHealthy");
+    expect(container.querySelector("details")).toBeNull();
     expect(container.textContent).toContain("Database unavailable");
     expect(container.textContent).toContain("Needs attention");
   });
@@ -386,5 +387,192 @@ describe("V1Settings", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "Stop failed"
     );
+  });
+  it("opens command line as a nested page and returns to General on Escape", async () => {
+    await render("general", vi.fn(), { initialPage: "cli" });
+    expect(container.querySelector(".v1-settings-back")?.textContent).toBe(
+      "General"
+    );
+    expect(container.querySelector(".v1-settings-body h3")?.textContent).toBe(
+      "Command line"
+    );
+    expect(container.querySelector(".koed-setup-dialog")).toBeNull();
+    expect(container.textContent).toContain(
+      "Desktop installer bridge unavailable"
+    );
+    await act(async () =>
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      )
+    );
+    expect(container.querySelector(".v1-settings-body h3")?.textContent).toBe(
+      "General"
+    );
+    const sections = [
+      ...container.querySelectorAll(".v1-settings-body > section > h4")
+    ].map((element) => element.textContent);
+    expect(sections).toEqual(["On this device", "Optional tools"]);
+  });
+
+  it("keeps command-line installation alive while navigating away and shows verified completion", async () => {
+    let finishInstall!: () => void;
+    let installed = false;
+    let pathConfigured = false;
+    const api: NonNullable<ComponentProps<typeof V1Settings>["cliInstall"]> = {
+      getStatus: async () => ({
+        available: true,
+        state: "not_installed",
+        message: "Optional"
+      }),
+      subscribe: () => () => {},
+      cancel: async () => {},
+      selectOffline: async () => null,
+      installPrivacy: vi.fn(),
+      launcher: vi.fn<
+        NonNullable<ComponentProps<typeof V1Settings>["cliInstall"]>["launcher"]
+      >(async (operation) => {
+        if (operation === "install") {
+          await new Promise<void>((resolve) => {
+            finishInstall = resolve;
+          });
+          installed = true;
+        }
+        return {
+          ownership: installed ? "koed" : "absent",
+          target: installed ? "valid" : "missing",
+          template: installed ? "current" : null,
+          helper: "supported",
+          version: null,
+          pathVisible: pathConfigured,
+          pathConfigured,
+          fingerprint: null
+        };
+      }),
+      updatePath: vi.fn(async () => {
+        pathConfigured = true;
+      })
+    };
+    await render("general", vi.fn(), { cliInstall: api, initialPage: "cli" });
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Install command line")!
+        .click()
+    );
+    await act(async () =>
+      [
+        ...container.querySelectorAll<HTMLButtonElement>(
+          ".v1-settings-nav button"
+        )
+      ]
+        .find((button) => button.textContent === "Services")!
+        .click()
+    );
+    await act(async () => finishInstall());
+    await act(async () =>
+      [
+        ...container.querySelectorAll<HTMLButtonElement>(
+          ".v1-settings-nav button"
+        )
+      ]
+        .find((button) => button.textContent === "General")!
+        .click()
+    );
+    expect(
+      container.querySelector('[data-settings-page="cli"]')?.textContent
+    ).toContain("Installed");
+    await act(async () =>
+      (
+        container.querySelector(
+          '[data-settings-page="cli"]'
+        ) as HTMLButtonElement
+      ).click()
+    );
+    expect(container.textContent).toContain("Command line is ready");
+    expect(api.launcher).toHaveBeenCalledWith("install", { consent: true });
+    expect(api.updatePath).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".koed-setup-dialog")).toBeNull();
+  });
+  it("runs diagnostics through the desktop command and reports an unsuccessful result", async () => {
+    run.mockResolvedValueOnce({ ok: false, error: "Database probe failed" });
+    await render("services");
+    await act(async () =>
+      [
+        ...container.querySelectorAll<HTMLButtonElement>(
+          ".v1-service-actions button"
+        )
+      ]
+        .find((button) => button.textContent === "Run diagnostics")!
+        .click()
+    );
+    expect(run).toHaveBeenCalledWith("doctor");
+    expect(container.textContent).toContain("Database probe failed");
+    expect(container.textContent).not.toContain("Diagnostics completed.");
+  });
+  it("does not present an old healthy snapshot as current after a refresh failure", async () => {
+    snapshot = {
+      ...snapshot,
+      error: "Status refresh failed",
+      status: {
+        generatedAt: "2026-11-03T10:00:00Z",
+        api: { state: "healthy" },
+        embeddingState: null
+      } as never
+    };
+    await render("services");
+    expect(container.textContent).toContain("Status refresh failed");
+    expect(container.textContent).toContain("Service status unavailable");
+    expect(container.textContent).not.toContain("All services are healthy");
+    expect(
+      container.querySelector('[data-settings-page="embedding"]')
+    ).not.toBeNull();
+  });
+  it("contains keyboard focus, supports arrow navigation, and restores the opener on close", async () => {
+    const opener = document.createElement("button");
+    document.body.append(opener);
+    opener.focus();
+    await render();
+    const general = container.querySelector<HTMLButtonElement>(
+      '[role="tab"][aria-selected="true"]'
+    )!;
+    expect(document.activeElement).toBe(general);
+    await act(async () =>
+      general.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      )
+    );
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "Close settings"
+    );
+    await act(async () =>
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          bubbles: true,
+          cancelable: true
+        })
+      )
+    );
+    expect(document.activeElement).toBe(general);
+    await act(async () =>
+      general.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowDown",
+          bubbles: true,
+          cancelable: true
+        })
+      )
+    );
+    expect(document.activeElement?.textContent).toBe("Your agent");
+    expect(
+      container.querySelector('[role="tab"][aria-selected="true"]')?.textContent
+    ).toBe("Your agent");
+    await act(async () => root.render(null));
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
   });
 });
