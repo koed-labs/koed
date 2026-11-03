@@ -64,6 +64,23 @@ export function useSetup() {
       unsubscribe?.();
     };
   }, [api, inspect, accept]);
+  // Reopened windows can inspect an existing run without owning its IPC
+  // response or progress subscription. Keep observing until that run ends.
+  useEffect(() => {
+    if (snapshot?.state !== "running" || busy || error || locked.current)
+      return;
+    let disposed = false;
+    let timer: number;
+    const poll = async () => {
+      await inspect();
+      if (!disposed) timer = window.setTimeout(() => void poll(), 1000);
+    };
+    timer = window.setTimeout(() => void poll(), 1000);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [snapshot, busy, error, inspect]);
   const run = async () => {
     if (!api || locked.current) return;
     locked.current = true;

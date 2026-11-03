@@ -1315,7 +1315,10 @@ streams from the installer into Desktop with a transferred-byte readout. The bar
 uses fractional progress between percentage labels; steps without a known total
 show an activity indicator within the current step instead of a timed estimate.
 Checksum verification remains part of setup and completion requires its success. Retry retains
-completed installation work, and reopening during a run shows its current state.
+completed installation work. Reopening during a run inspects its current state
+and continues checking until it ends, even when the original window's progress
+subscription is gone. Long setup errors and expanded connection details scroll
+within the window so recovery controls remain reachable.
 After core setup, detected Codex, Claude Code, and Pi installations are initially
 selected for connection. Selection and discovery do not configure them. **Connect**
 authorizes changes to the selected AI Clients only. Failed connections and sign-in
@@ -1333,7 +1336,8 @@ completion. **Let’s go** checks setup and client readiness concurrently; concu
 status requests share one in-flight probe, with no completed-result cache. AI Client
 setup, repair, and checks refresh capabilities only for that client’s driver.
 A targeted refresh waits for earlier discovery to finish before checking the new
-configuration; the regular background refresh still discovers all instances.
+configuration. A full refresh that overlaps a targeted refresh waits and then
+discovers all instances, keeping other AI Clients' snapshots current.
 Fresh installation evidence allows an AI Client to be selected before its first
 capability snapshot exists. Connection must still confirm current capabilities
 and authentication before that client can satisfy the completion requirement.

@@ -88,12 +88,13 @@ export function installOnboardingValidation() {
     };
     publish();
   }
-  function fail() {
+  function fail(
+    message = "Memory models couldn’t finish setting up. Let’s try that step again."
+  ) {
     snapshot = {
       ...snapshot,
       state: "failed",
-      error:
-        "Memory models couldn’t finish setting up. Let’s try that step again.",
+      error: message,
       stages: snapshot.stages.map((s) =>
         s.id === snapshot.activeStage ? { ...s, state: "failed" } : s
       )
@@ -203,7 +204,9 @@ export function installOnboardingValidation() {
           throw new Error(`Unexpected validation command ${command}`);
         if (
           outcome === "failure" ||
-          ((outcome === "partial" || outcome === "details") &&
+          ((outcome === "partial" ||
+            outcome === "details" ||
+            outcome === "long-details") &&
             id === "claude" &&
             !failed.has(id))
         ) {
@@ -211,8 +214,10 @@ export function installOnboardingValidation() {
           return {
             ok: false,
             message:
-              outcome === "details"
-                ? "Could not update the Claude Code profile: the settings file is not writable. Check its permissions and try again."
+              outcome === "details" || outcome === "long-details"
+                ? "Could not update the Claude Code profile: the settings file is not writable. Check its permissions and try again. ".repeat(
+                    outcome === "long-details" ? 40 : 1
+                  )
                 : "Couldn’t connect. Try again."
           };
         }

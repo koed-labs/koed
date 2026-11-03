@@ -19,10 +19,15 @@
   --lp-error: light-dark(#a62d3b, #f3a0a8);
   --lp-error-surface: light-dark(#f5e3e6, #38262c);
   --lp-error-border: light-dark(#d9a1aa, #89515e);
-  min-height: 100svh;
+  height: 100svh;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 28px 24px 48px;
   display: grid;
   place-items: center;
+  align-items: safe center;
   background: var(--lp-background);
   color: var(--lp-text);
   font-family: var(--lp-font);

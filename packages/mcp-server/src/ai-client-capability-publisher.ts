@@ -235,22 +235,26 @@ export const startAiClientCapabilityPublisher = (
   );
   let stopped = false;
   let refreshing: Promise<AiClientCapabilityPublication[]> | undefined;
+  let refreshingDriver: "codex" | "claude" | "pi" | undefined;
   const refresh = (
     driverId?: "codex" | "claude" | "pi"
   ): Promise<AiClientCapabilityPublication[]> => {
     if (stopped) return Promise.resolve([]);
     // A manual, targeted refresh must observe the configuration just written,
     // rather than reuse discovery that began before that mutation.
+    // A full refresh must also follow a targeted one to cover other drivers.
     if (refreshing) {
-      return driverId
+      return driverId || refreshingDriver
         ? refreshing.catch(() => []).then(() => refresh(driverId))
         : refreshing;
     }
+    refreshingDriver = driverId;
     refreshing = publishAiClientCapabilities(apiClient, environment, {
       driverId,
       isActive: () => !stopped
     }).finally(() => {
       refreshing = undefined;
+      refreshingDriver = undefined;
     });
     return refreshing;
   };

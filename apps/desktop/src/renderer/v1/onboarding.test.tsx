@@ -81,6 +81,7 @@ describe("prototype onboarding", () => {
   afterEach(async () => {
     if (root) await act(async () => root.unmount());
     container?.remove();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
   async function render(
@@ -254,6 +255,65 @@ describe("prototype onboarding", () => {
     await act(async () => inspection.resolve(setupSnapshot()));
     expect(progress()).toBe("0");
     expect(text()).not.toContain("Your Koed is ready.");
+  });
+  it.each(["complete", "ready", "failed"] as const)(
+    "observes a reopened setup until it becomes %s without progress events",
+    async (state) => {
+      vi.useFakeTimers();
+      const running = setupSnapshot("running", "existing-run");
+      running.activeStage = "model";
+      const { setup } = await render({ snapshot: running });
+      const terminal = {
+        ...setupSnapshot(state),
+        error: state === "failed" ? "Setup was interrupted." : null
+      };
+      setup.inspect
+        .mockResolvedValueOnce(running)
+        .mockResolvedValueOnce(terminal);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(setup.inspect).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(text()).toContain(
+        state === "complete"
+          ? "Your Koed is ready."
+          : state === "failed"
+            ? "Retry step"
+            : "Get Started"
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(setup.inspect).toHaveBeenCalledTimes(3);
+      expect(setup.run).not.toHaveBeenCalled();
+    }
+  );
+  it("stops observing a reopened setup after an inspection failure or unmount", async () => {
+    vi.useFakeTimers();
+    const { setup, click } = await render({
+      snapshot: setupSnapshot("running")
+    });
+    setup.inspect.mockRejectedValueOnce(new Error("Inspection disconnected"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(text()).toContain("Check again");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(setup.inspect).toHaveBeenCalledTimes(2);
+    setup.inspect.mockResolvedValueOnce(setupSnapshot("running", "resumed"));
+    await click("Check again");
+    expect(setup.inspect).toHaveBeenCalledTimes(3);
+    await act(async () => root.unmount());
+    root = undefined as unknown as Root;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(setup.inspect).toHaveBeenCalledTimes(3);
   });
   it("recovers inspection failure without treating clients as absent", async () => {
     const { setup, click } = await render({

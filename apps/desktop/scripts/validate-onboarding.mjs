@@ -173,6 +173,47 @@ const run = async () => {
       await evaluate("document.querySelectorAll('.lp-client-details').length"),
       0
     );
+    const verifyScrollableRecovery = async (label) => {
+      assert.equal(
+        await evaluate(`(() => {
+        const workspace = document.querySelector('.lp-workspace');
+        workspace.scrollTop = 0;
+        return workspace.clientHeight <= innerHeight &&
+          workspace.scrollHeight > workspace.clientHeight &&
+          document.querySelector('.lp-loader').getBoundingClientRect().top >= 0;
+      })()`),
+        true,
+        `${label}: bounded scrolling with reachable top`
+      );
+      assert.equal(
+        await evaluate(`(() => {
+        const workspace = document.querySelector('.lp-workspace');
+        const button = [...workspace.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('Retry'));
+        button.scrollIntoView({ block: 'end' });
+        const bounds = button.getBoundingClientRect();
+        return workspace.scrollTop > 0 && bounds.top >= 0 && bounds.bottom <= innerHeight;
+      })()`),
+        true,
+        `${label}: recovery button reachable by scrolling`
+      );
+      await capture(label);
+    };
+    await load("clients", "dark", "long-details");
+    await click("Connect");
+    await waitFor("!!document.querySelector('.lp-client-details')");
+    await evaluate("document.querySelector('.lp-client-details').open = true");
+    await verifyScrollableRecovery("compact-dark-long-client-details");
+    await click("Retry failed");
+    await waitFor("document.body.innerText.includes('Everyone’s connected.')");
+    await load("setup-error");
+    await evaluate(
+      `window.onboardingValidation.fail('Download failed. Check the connection and retry. '.repeat(60))`
+    );
+    await verifyScrollableRecovery("compact-light-long-setup-error");
+    await click("Retry step");
+    await waitFor(
+      "window.onboardingValidation.calls().some(c=>c.command==='setup_run')"
+    );
     window.setContentSize(1280, 720);
     await load("clients", "dark", "failure");
     await waitFor(
@@ -470,6 +511,8 @@ const run = async () => {
             "complete",
             "finish",
             "setup-error",
+            "long-client-details-scroll",
+            "long-setup-error-scroll",
             "running",
             "full-failure",
             "consent",

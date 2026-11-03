@@ -228,6 +228,79 @@ describe("AI Client capability publisher", () => {
     }
   });
 
+  it.each([false, true])(
+    "queues full discovery behind a targeted refresh (stop=%s)",
+    async (stop) => {
+      const root = fs.mkdtempSync(
+        path.join(os.tmpdir(), "koed-publisher-full-")
+      );
+      roots.push(root);
+      const registryPath = path.join(root, "instances.json");
+      const ids = ["claude", "codex"] as const;
+      fs.writeFileSync(
+        registryPath,
+        JSON.stringify({
+          version: 1,
+          instances: ids.map((id) => ({
+            instanceId: `${id}.default`,
+            driverId: id,
+            displayName: id,
+            executablePath: executable(root, id)
+          }))
+        })
+      );
+      const originals = new Map(aiClientDriverRegistry);
+      const seen: Array<{ instanceId: string }> = [];
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      for (const id of ids) {
+        const base = driver(id, seen);
+        aiClientDriverRegistry.set(id, {
+          ...base,
+          discover: async (input) => {
+            const result = await base.discover(input);
+            await gate;
+            return result;
+          }
+        });
+      }
+      const publisher = startAiClientCapabilityPublisher(
+        {
+          upsertAiClientInstance: vi.fn(),
+          recordAiClientCapabilitySnapshot: vi.fn()
+        } as unknown as MemoryApiClient,
+        { KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath }
+      );
+      try {
+        const targeted = publisher.refresh("claude");
+        const full = publisher.refresh();
+        const duplicate = publisher.refresh();
+        expect(seen.map(({ instanceId }) => instanceId)).toEqual([
+          "claude.default"
+        ]);
+        if (stop) publisher.stop();
+        release();
+        const [, result, duplicateResult] = await Promise.all([
+          targeted,
+          full,
+          duplicate
+        ]);
+        expect(result.map(({ instanceId }) => instanceId)).toEqual(
+          stop ? [] : ids.map((id) => `${id}.default`)
+        );
+        expect(duplicateResult).toEqual(result);
+        expect(seen).toHaveLength(stop ? 1 : 3);
+      } finally {
+        release();
+        publisher.stop();
+        for (const [id, original] of originals)
+          aiClientDriverRegistry.set(id, original);
+      }
+    }
+  );
+
   it("publishes only explicitly configured instances", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-publisher-"));
     roots.push(root);
