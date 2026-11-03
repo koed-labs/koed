@@ -62,6 +62,7 @@ If you are making code changes, keep using the contributor guidance below.
 - When a developer asks you to work on a Linear ticket, assign the developer to that ticket before starting work.
 - Move the Linear ticket to In Progress when starting work.
 - If a developer asks you to create a PR for work tied to a Linear ticket, include the appropriate Linear closing keyword in the PR description, such as `Closes KOED-123`, so the ticket state change is captured by Linear.
+- If working from a local tickets file (e.g. tickets.md, plan.md), do not commit this with changes unless explicity asked to do so.
 
 ## Pull Requests
 
