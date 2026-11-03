@@ -106,6 +106,8 @@ The workflow verifies canonical manifest bytes against the complete version-matc
 
 The Desktop draft-asset recovery workflow is disabled: its draft-selected source has not been authenticated before privileged execution. Production promotion requires a fresh protected release run and its reviewed identity. Missing approval, missing or mismatched pins, incomplete assets, changed bytes or registry mismatch fail the workflow. A failure before publication leaves the release as a draft; a failure after publication can leave a public GitHub release without a matching `latest` promotion.
 
+After publishing an npm candidate, promotion polls for registry visibility with a five-minute deadline and exponential backoff starting at one second and capped at ten seconds. Each request is limited to ten seconds or the remaining deadline, whichever is shorter. It retries transient network, rate-limit, and server errors, and fails immediately on permanent registry errors or candidate identity/integrity mismatch. Candidate and `latest` tag writes are also read back with the same bounded polling. A readback timeout can occur after a successful mutation: inspect registry state before recovery. Readback detects some unexpected states but does not prevent concurrent writers or provide compare-and-swap. Published assets are downloaded, verified, and removed one at a time to reduce temporary disk use.
+
 ### Operator fallback after a partial release
 
 1. Stop further promotion and investigate which GitHub and npm mutations actually succeeded. Record the version, workflow run, approval and artifact evidence, registry state, and any possible user exposure. Preserve the original evidence while it remains available; involve the repository and npm owners.
