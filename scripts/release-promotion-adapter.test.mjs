@@ -18,6 +18,34 @@ import {
   parseArgs
 } from "./release-promotion-adapter.mjs";
 
+test("candidate polling backs off with a cap and respects its overall deadline", async () => {
+  let now = 0;
+  const delays = [];
+  const budgets = [];
+  await assert.rejects(
+    waitForNpmCandidate(
+      { packageName: "pkg", version: "1.2.3", integrity: "good" },
+      async (_name, _version, budget) => {
+        budgets.push(budget);
+        return undefined;
+      },
+      {
+        timeoutMs: 7000,
+        now: () => now,
+        sleep: async (ms) => {
+          delays.push(ms);
+          now += ms;
+        },
+        initialDelayMs: 1000,
+        maxDelayMs: 2000
+      }
+    ),
+    /missing from registry/
+  );
+  assert.deepEqual(delays, [1000, 2000, 2000, 2000]);
+  assert.deepEqual(budgets, [7000, 6000, 4000, 2000]);
+});
+
 test("registry body transport errors are transient but malformed JSON is permanent", async () => {
   const bodyError = new TypeError("connection reset");
   await assert.rejects(
