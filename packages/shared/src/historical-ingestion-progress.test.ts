@@ -38,7 +38,8 @@ describe("summarizeHistoricalIngestionState", () => {
       completed: 1,
       skipped: 1,
       updatedAt: at(1_000),
-      lastErrorCode: null
+      lastErrorCode: null,
+      failingSince: null
     });
   });
 
@@ -60,14 +61,16 @@ describe("summarizeHistoricalIngestionState", () => {
           updatedAt: at(1_000),
           lastProgressAt: at(60_000),
           lastErrorCode: "historical_ingestion_pass_failed",
-          lastErrorAt: at(1_000)
+          lastErrorAt: at(1_000),
+          failingSince: at(30_000)
         }
       }),
       now
     );
     expect(summary).toMatchObject({
       lifecycle: "failed",
-      lastErrorCode: "historical_ingestion_pass_failed"
+      lastErrorCode: "historical_ingestion_pass_failed",
+      failingSince: at(30_000)
     });
   });
 

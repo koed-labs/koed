@@ -325,7 +325,8 @@ describe("provider-owned historical discovery", () => {
       lastBatchState: "progress",
       lastProgressAt: "2026-08-18T00:00:00.000Z",
       lastErrorCode: "historical_batch_rejected",
-      lastErrorAt: "2026-08-18T00:00:00.000Z"
+      lastErrorAt: "2026-08-18T00:00:00.000Z",
+      failingSince: "2026-08-18T00:00:00.000Z"
     });
     await coordinator.stop();
   });

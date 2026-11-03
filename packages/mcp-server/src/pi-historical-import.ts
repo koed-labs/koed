@@ -27,7 +27,7 @@ import {
   automaticHistoricalPolicyAdmits,
   completeAutomaticHistoricalRun,
   completeAutomaticHistoricalSource,
-  createAutomaticHistoricalRun,
+  createHistoricalSourceInOpenRun,
   historicalObjectValue,
   resolveAutomaticHistoricalJournalBatchBytes,
   selectRecentHistoricalCandidates,
@@ -736,16 +736,16 @@ export const createPiHistoricalProviderAdapter = (input: {
       source ??= await lookupHistoricalSource(input.client, artifactId);
       let activeRunId = source?.runId ?? runId;
       if (!source) {
-        activeRunId ??= await createAutomaticHistoricalRun(input.client);
-        await input.client.createHistoricalImportSource({
-          runId: activeRunId,
-          artifactId,
-          aiClient: "pi",
-          detectedProject: {
-            path: candidate.cwd,
-            cwd: candidate.cwd
-          }
-        });
+        activeRunId = (
+          await createHistoricalSourceInOpenRun(input.client, activeRunId, {
+            artifactId,
+            aiClient: "pi",
+            detectedProject: {
+              path: candidate.cwd,
+              cwd: candidate.cwd
+            }
+          })
+        ).runId;
         return {
           state: "progress",
           selection: currentSelection,

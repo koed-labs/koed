@@ -252,6 +252,10 @@ children share lineage and must not count as independent corroboration.
       notification permission and platform support are verified.
 - [ ] Report ingested message counts for historical ingestion. Each importer
       counts differently today, so Home shows finished Conversations only.
+- [ ] Stop completion reconciliation from closing an automatic historical run
+      while the coordinator still has selections to add. Providers now start a
+      new run when that happens, which works but leaves one run per batch of
+      Conversations; a run needs a record of pending selections to fix it.
 - [ ] Release the Project cutover as one coordinated change. Preserve coordinated
       product versions and integrate branch-preference behavior after that
       cutover. PDS branch preference must use verified captured observations and

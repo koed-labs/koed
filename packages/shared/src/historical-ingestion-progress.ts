@@ -21,6 +21,8 @@ export interface HistoricalIngestionProgressRecord {
   lastProgressAt?: string;
   lastErrorCode?: string;
   lastErrorAt?: string;
+  /** First failure since the last progress; cleared when progress resumes. */
+  failingSince?: string;
 }
 
 export type HistoricalIngestionLifecycle =
@@ -41,6 +43,8 @@ export interface HistoricalIngestionProgress {
   skipped: number;
   updatedAt: string | null;
   lastErrorCode: string | null;
+  /** Set while failing: when the current run of failures began. */
+  failingSince: string | null;
 }
 
 const unknownProgress: HistoricalIngestionProgress = {
@@ -49,7 +53,8 @@ const unknownProgress: HistoricalIngestionProgress = {
   completed: 0,
   skipped: 0,
   updatedAt: null,
-  lastErrorCode: null
+  lastErrorCode: null,
+  failingSince: null
 };
 
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -71,7 +76,8 @@ export const readHistoricalIngestionProgressRecord = (
     ...text("lastBatchState"),
     ...text("lastProgressAt"),
     ...text("lastErrorCode"),
-    ...text("lastErrorAt")
+    ...text("lastErrorAt"),
+    ...text("failingSince")
   } as HistoricalIngestionProgressRecord;
 };
 
@@ -100,7 +106,8 @@ export function summarizeHistoricalIngestionState(
     completed,
     skipped,
     updatedAt: progress?.updatedAt ?? null,
-    lastErrorCode: progress?.lastErrorCode ?? null
+    lastErrorCode: progress?.lastErrorCode ?? null,
+    failingSince: null
   };
   if (value.runCompleted === true || selections.length === 0)
     return { ...base, lifecycle: "completed" };
@@ -112,7 +119,11 @@ export function summarizeHistoricalIngestionState(
   const errorAt = timestamp(progress.lastErrorAt);
   const progressAt = timestamp(progress.lastProgressAt);
   if (errorAt !== null && (progressAt === null || errorAt > progressAt))
-    return { ...base, lifecycle: "failed" };
+    return {
+      ...base,
+      lifecycle: "failed",
+      failingSince: progress.failingSince ?? progress.lastErrorAt ?? null
+    };
   if (progress.lastBatchState === "waiting")
     return { ...base, lifecycle: "idle" };
   return { ...base, lifecycle: "running" };

@@ -309,11 +309,21 @@ retried, or incomplete without delaying live append capture.
 The automatic historical coordinator for each AI Client keeps its selection in
 `KOED_HOME/state/<client>-historical-ingestion.json`, with a `progress` record
 of when it last wrote, its last batch outcome, its last progress, and its last
-pass failure. Koed status summarises that file without starting or changing
+pass failure, plus when the current run of failures began (cleared by any
+progress). Koed status summarises that file without starting or changing
 ingestion: Conversations count as finished only at a completed or skipped
 outcome, skipped is reported separately, and an unfinished run with no write
 for 15 minutes is reported as idle, never as resumed. Desktop Home uses this
-summary for its ingestion screen.
+summary for its ingestion screen and raises a warning once a run has failed
+without progress for 10 minutes.
+
+The coordinator adds a source to its import run only when it reaches that
+Conversation, so completion reconciliation can close the run while later
+selections are still waiting. Creating a source in a closed or missing run
+returns `historical_import_run_not_found`, and the provider then starts a new
+run for that source. A run that is still open but cannot accept the artifact
+returns `historical_import_artifact_unavailable` instead, which does not start
+a run.
 
 Before each page,
 Koed compares cursor offset with bounded SHA-256 first/last prefix sentinels.

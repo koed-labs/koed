@@ -186,10 +186,18 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   const record = (
     update: Omit<HistoricalIngestionProgressRecord, "updatedAt">
   ): void => {
-    state.progress = { ...state.progress, ...update, updatedAt: nowIso() };
+    const next = { ...state.progress, ...update, updatedAt: nowIso() };
+    // Any progress ends a run of failures.
+    if (update.lastProgressAt) delete next.failingSince;
+    state.progress = next;
   };
   const reportError = (code: string): void => {
-    record({ lastErrorCode: code, lastErrorAt: nowIso() });
+    const at = nowIso();
+    record({
+      lastErrorCode: code,
+      lastErrorAt: at,
+      failingSince: state.progress?.failingSince ?? at
+    });
     save();
     input.onError?.(code);
   };

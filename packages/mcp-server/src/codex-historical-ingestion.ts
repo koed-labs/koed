@@ -6,6 +6,7 @@ import type { HistoricalAdmissionDecision } from "@koed/shared";
 import {
   completeAutomaticHistoricalRun,
   completeAutomaticHistoricalSource,
+  createHistoricalSourceInOpenRun,
   type HistoricalCompletionResult
 } from "./automatic-historical-provider.js";
 import {
@@ -202,19 +203,6 @@ const rawAdmission = async (
     return response as HistoricalAdmissionDecision;
   }
   throw new Error("historical_admission_response_invalid");
-};
-
-const transitionRunToImporting = async (
-  client: MemoryApiClient,
-  runId: string
-): Promise<void> => {
-  for (const [expectedState, state] of [
-    ["discovered", "eligible"],
-    ["eligible", "queued"],
-    ["queued", "importing"]
-  ] as const) {
-    await client.transitionHistoricalImportRun(runId, { expectedState, state });
-  }
 };
 
 const transitionSourceOneStep = async (
@@ -544,16 +532,6 @@ const importNextBatch = async (input: {
   return true;
 };
 
-const createRun = async (client: MemoryApiClient): Promise<string> => {
-  const run = objectValue<{ id: string }>(
-    await client.createHistoricalImportRun(),
-    "run",
-    "historical_run_response_missing"
-  );
-  await transitionRunToImporting(client, run.id);
-  return run.id;
-};
-
 // A single complete JSONL record that itself exceeds maxBatchRows/
 // maxBatchBytes can never fit a batch, no matter how many times it is
 // retried: buildCodexHistoricalBatch only throws this on the batch's first
@@ -712,10 +690,10 @@ export const createCodexHistoricalProviderAdapter = (input: {
         const source = await lookupSource(input.client, artifactId);
         let activeRunId = source?.runId ?? runId;
         if (!source) {
-          if (!activeRunId) activeRunId = await createRun(input.client);
-          objectValue<HistoricalSource>(
-            await input.client.createHistoricalImportSource({
-              runId: activeRunId,
+          const created = await createHistoricalSourceInOpenRun(
+            input.client,
+            activeRunId,
+            {
               artifactId,
               aiClient: "codex",
               detectedProject: {
@@ -734,10 +712,14 @@ export const createCodexHistoricalProviderAdapter = (input: {
                     }
                   : {})
               }
-            }),
+            }
+          );
+          objectValue<HistoricalSource>(
+            created.response,
             "source",
             "historical_source_response_missing"
           );
+          activeRunId = created.runId;
           return {
             state: "progress",
             selection: currentSelection,

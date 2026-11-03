@@ -59,6 +59,21 @@ describe("selectHomeView", () => {
     });
   });
 
+  it("leaves a stale diagnostics result out of Home", () => {
+    expect(
+      selectHomeView(
+        homeStatus({
+          lastVerification: {
+            state: "needs_attention",
+            message: "API is not ready",
+            checkedAt: null
+          }
+        }),
+        []
+      )
+    ).toEqual({ kind: "empty", warnings: [] });
+  });
+
   it("shows other problems as warnings above Projects", () => {
     const view = selectHomeView(
       homeStatus({
@@ -92,7 +107,8 @@ describe("ingestion", () => {
     completed,
     skipped,
     updatedAt: null,
-    lastErrorCode: null
+    lastErrorCode: null,
+    failingSince: null as string | null
   });
 
   it("shows the hatching screen only while a run is running or retrying", () => {
@@ -116,6 +132,31 @@ describe("ingestion", () => {
       historicalIngestion: { codex: progress("idle", 10, 3) }
     } as Partial<KoedServerStatus>);
     expect(selectHomeView(idle, []).kind).toBe("empty");
+  });
+
+  it("warns once a failing run has made no progress for a while", () => {
+    const failing = (minutesAgo: number) =>
+      homeStatus({
+        historicalIngestion: {
+          codex: {
+            ...progress("failed", 50, 1),
+            lastErrorCode: "historical_ingestion_pass_failed",
+            failingSince: new Date(
+              Date.now() - minutesAgo * 60_000
+            ).toISOString()
+          }
+        }
+      } as Partial<KoedServerStatus>);
+    expect(selectHomeView(failing(2), null)).toMatchObject({
+      kind: "ingesting",
+      warnings: [],
+      ingestion: { clients: [{ stuck: false }] }
+    });
+    expect(selectHomeView(failing(15), null)).toMatchObject({
+      kind: "ingesting",
+      warnings: [{ id: "ingestion-codex" }],
+      ingestion: { clients: [{ stuck: true }] }
+    });
   });
 
   it("leaves the total unknown until every selection is known", () => {

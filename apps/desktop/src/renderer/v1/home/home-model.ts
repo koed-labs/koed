@@ -41,8 +41,12 @@ const problemFromStep = (step: SetupStep): HomeProblem => ({
 
 export const homeProblems = (status: KoedServerStatus): HomeProblem[] => {
   const problems = setupStepsFromStatus(status)
+    // The health step repeats the last diagnostics run, which may be stale;
+    // Home reports the live components instead.
     .filter(
-      ({ state }) => state === "needs_attention" || state === "not_configured"
+      ({ id, state }) =>
+        id !== "health" &&
+        (state === "needs_attention" || state === "not_configured")
     )
     .map(problemFromStep);
   for (const { id, label } of clients) {
@@ -107,6 +111,19 @@ export function selectHomeView(
     };
   }
   const ingestion = homeIngestion(status);
+  for (const client of ingestion.clients) {
+    if (!client.stuck) continue;
+    problems.push({
+      id: `ingestion-${client.id}`,
+      title: `${client.name} history isn’t progressing`,
+      message: `Processing recent ${client.name} history keeps failing (${client.lastErrorCode ?? "unknown error"}). New conversations are still captured.`,
+      action: {
+        command: "doctor",
+        label: "Run diagnostics",
+        requiresConsent: false
+      }
+    });
+  }
   if (ingestion.active)
     return { kind: "ingesting", warnings: problems, ingestion };
   if (!projects) return { kind: "loading" };
@@ -123,7 +140,11 @@ export type HomeIngestionClient = {
   completed: number;
   skipped: number;
   lastErrorCode: string | null;
+  // Failing with no progress for HOME_STUCK_MS: retries alone won't fix it.
+  stuck: boolean;
 };
+
+export const HOME_STUCK_MS = 10 * 60 * 1_000;
 
 export type HomeIngestion = {
   // Running or retrying; idle and unknown never hold Home on this screen.
@@ -135,7 +156,10 @@ export type HomeIngestion = {
   selected: number | null;
 };
 
-export function homeIngestion(status: KoedServerStatus): HomeIngestion {
+export function homeIngestion(
+  status: KoedServerStatus,
+  now = Date.now()
+): HomeIngestion {
   const listed = clients.flatMap(({ id, label: name }) => {
     const progress = status.historicalIngestion?.[id];
     if (!progress || progress.lifecycle === "unknown") return [];
@@ -147,7 +171,11 @@ export function homeIngestion(status: KoedServerStatus): HomeIngestion {
         selected: progress.selected,
         completed: progress.completed,
         skipped: progress.skipped,
-        lastErrorCode: progress.lastErrorCode
+        lastErrorCode: progress.lastErrorCode,
+        stuck:
+          progress.lifecycle === "failed" &&
+          progress.failingSince !== null &&
+          now - Date.parse(progress.failingSince) >= HOME_STUCK_MS
       }
     ];
   });
@@ -202,7 +230,11 @@ export function homeClients(status: KoedServerStatus | null): HomeClient[] {
         name,
         state,
         label: state === "attention" ? health.description : clientLabels[state],
-        version: state === "detected" ? health.version : null
+        // "2.1.312 (Claude Code)" repeats the name beside it.
+        version:
+          state === "detected"
+            ? (health.version?.replace(/\s*\(.*\)$/, "") ?? null)
+            : null
       }
     ];
   });
