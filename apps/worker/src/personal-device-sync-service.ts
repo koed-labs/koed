@@ -199,9 +199,12 @@ export const createPdsLocalSyncService = (input: {
     await peerRouteRefreshInFlight;
   };
 
-  const processOnce = async (): Promise<{
+  const processOnce = async (
+    checkpointDrainOnly = false
+  ): Promise<{
     failed: boolean;
     needsDrain: boolean;
+    pollFailed?: boolean;
   }> => {
     let needsDrain = false;
     try {
@@ -247,7 +250,23 @@ export const createPdsLocalSyncService = (input: {
       const stagedArtifacts =
         (await input.secureRuntime.reconcileArtifacts?.()) ?? 0;
       needsDrain ||= stagedArtifacts >= 50;
-      const incomingPackages = await input.secureRuntime.poll();
+      let pollFailure: { error: unknown } | undefined;
+      const incomingPackages = checkpointDrainOnly
+        ? []
+        : await input.secureRuntime.poll().catch((error: unknown) => {
+            pollFailure = { error };
+            input.logger.warn(
+              {
+                event: {
+                  name: "worker.pds.reconciliation.failed",
+                  category: "pds"
+                },
+                err: error
+              },
+              "PDS local reconciliation failed"
+            );
+            return [];
+          });
       needsDrain ||= incomingPackages.length >= 50;
       for (const incoming of incomingPackages) {
         await input.repository.receivePdsInbox(incoming);
@@ -305,6 +324,16 @@ export const createPdsLocalSyncService = (input: {
             retryAt: retryAt(entry.attemptCount)
           });
         }
+      }
+      if (pollFailure) {
+        return {
+          failed: true,
+          needsDrain: outbox.length >= 10,
+          pollFailed: true
+        };
+      }
+      if (checkpointDrainOnly) {
+        return { failed: false, needsDrain: outbox.length >= 10 };
       }
       const artifactOutbox = await input.repository.claimPdsArtifactOutbox({
         workerId
@@ -676,22 +705,28 @@ export const createPdsLocalSyncService = (input: {
     void (async () => {
       do {
         runAgain = false;
-        const outcome = await processOnce();
+        const checkpointDrainOnly = Boolean(reconciliationRetryTimer);
+        const outcome = await processOnce(checkpointDrainOnly);
+        if (stopped) break;
         if (outcome.failed) {
-          const delayMs = Math.min(
-            1_000 * 2 ** reconciliationFailureAttempt,
-            30_000
-          );
-          reconciliationFailureAttempt += 1;
-          reconciliationRetryTimer = setTimeout(() => {
-            reconciliationRetryTimer = null;
-            requestProcessing();
-          }, delayMs);
-          reconciliationRetryTimer.unref?.();
-          break;
+          if (!reconciliationRetryTimer) {
+            const delayMs = Math.min(
+              1_000 * 2 ** reconciliationFailureAttempt,
+              30_000
+            );
+            reconciliationFailureAttempt += 1;
+            reconciliationRetryTimer = setTimeout(() => {
+              reconciliationRetryTimer = null;
+              requestProcessing();
+            }, delayMs);
+            reconciliationRetryTimer.unref?.();
+          }
+          if (!outcome.pollFailed || !outcome.needsDrain) break;
+          runAgain = true;
+        } else {
+          if (!checkpointDrainOnly) reconciliationFailureAttempt = 0;
+          if (outcome.needsDrain) runAgain = true;
         }
-        reconciliationFailureAttempt = 0;
-        if (outcome.needsDrain) runAgain = true;
       } while (!stopped && runAgain);
       if (!reconciliationRetryTimer) await scheduleDueWake();
       scheduleRemoteWake();

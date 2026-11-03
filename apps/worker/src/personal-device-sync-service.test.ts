@@ -70,6 +70,361 @@ describe("Personal Device Sync service", () => {
     expect(repository.markPdsInboxFailure).not.toHaveBeenCalled();
   });
 
+  it("publishes checkpoints after an inbound poll rejection and logs the failure", async () => {
+    const pollError = new Error("relay unavailable");
+    const failureLogger = { warn: vi.fn() } as unknown as Logger;
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn().mockResolvedValue([
+        {
+          id: "outbox",
+          groupId: "group",
+          closureId: "closure",
+          packageId: "package",
+          sourceManifestHash: "hash",
+          attemptCount: 1
+        }
+      ]),
+      beginPdsOutboxNetworkAction: vi.fn().mockResolvedValue(true),
+      completePdsOutbox: vi.fn().mockResolvedValue(undefined)
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      pollLifecycle: vi.fn().mockResolvedValue(undefined),
+      reconcilePersonalConfiguration: vi.fn().mockResolvedValue(0),
+      reconcileProjectSelections: vi.fn().mockResolvedValue(0),
+      reconcileArtifacts: vi.fn().mockResolvedValue(0),
+      poll: vi.fn().mockRejectedValue(pollError),
+      publish: vi
+        .fn()
+        .mockResolvedValue({ state: "committed", transportId: "transport" }),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+
+    await createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool,
+      logger: failureLogger,
+      workerId: "worker"
+    }).run();
+
+    expect(repository.completePdsOutbox).toHaveBeenCalledWith({
+      workerId: "worker",
+      outboxId: "outbox",
+      state: "committed",
+      transportId: "transport"
+    });
+    expect(secureRuntime.poll).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(secureRuntime.reconcileArtifacts!).mock.invocationCallOrder[0]
+    ).toBeLessThan(vi.mocked(secureRuntime.poll).mock.invocationCallOrder[0]!);
+    expect(
+      vi.mocked(secureRuntime.poll).mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      vi.mocked(secureRuntime.publish).mock.invocationCallOrder[0]!
+    );
+    expect(failureLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: pollError }),
+      expect.any(String)
+    );
+    expect(
+      vi.mocked(secureRuntime.pollLifecycle!).mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      vi.mocked(secureRuntime.publish).mock.invocationCallOrder[0]!
+    );
+    expect(
+      vi.mocked(secureRuntime.reconcilePersonalConfiguration!).mock
+        .invocationCallOrder[0]
+    ).toBeLessThan(
+      vi.mocked(secureRuntime.publish).mock.invocationCallOrder[0]!
+    );
+    expect(
+      vi.mocked(secureRuntime.reconcileProjectSelections!).mock
+        .invocationCallOrder[0]
+    ).toBeLessThan(
+      vi.mocked(secureRuntime.publish).mock.invocationCallOrder[0]!
+    );
+  });
+
+  it("drains checkpoint batches while repeated poll failures back off", async () => {
+    vi.useFakeTimers();
+    const wakeClient = {
+      query: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      removeAllListeners: vi.fn(),
+      release: vi.fn()
+    };
+    const entries = Array.from({ length: 21 }, (_, index) => ({
+      id: `outbox-${index}`,
+      groupId: "group",
+      closureId: `closure-${index}`,
+      packageId: `package-${index}`,
+      sourceManifestHash: "hash",
+      attemptCount: 1
+    }));
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn(async () => entries.splice(0, 10)),
+      beginPdsOutboxNetworkAction: vi.fn().mockResolvedValue(true),
+      completePdsOutbox: vi.fn().mockResolvedValue(undefined),
+      getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      pollLifecycle: vi.fn().mockResolvedValue(undefined),
+      poll: vi.fn().mockRejectedValue(new Error("relay unavailable")),
+      publish: vi
+        .fn()
+        .mockResolvedValue({ state: "committed", transportId: "transport" }),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+    const service = createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool: { connect: vi.fn().mockResolvedValue(wakeClient) },
+      logger: { warn: vi.fn() } as unknown as Logger,
+      workerId: "worker"
+    });
+
+    try {
+      service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(repository.completePdsOutbox).toHaveBeenCalledTimes(21);
+      expect(secureRuntime.poll).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(secureRuntime.poll).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(secureRuntime.poll).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(secureRuntime.poll).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(secureRuntime.poll).toHaveBeenCalledTimes(3);
+    } finally {
+      await service.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("resumes polling when the retry deadline passes during checkpoint publication", async () => {
+    vi.useFakeTimers();
+    let releasePublish = () => {};
+    const heldPublish = new Promise<void>((resolve) => {
+      releasePublish = resolve;
+    });
+    const entries = Array.from({ length: 11 }, (_, index) => ({
+      id: `outbox-${index}`,
+      groupId: "group",
+      closureId: `closure-${index}`,
+      packageId: `package-${index}`,
+      sourceManifestHash: "hash",
+      attemptCount: 1
+    }));
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn(async () => entries.splice(0, 10)),
+      beginPdsOutboxNetworkAction: vi.fn().mockResolvedValue(true),
+      completePdsOutbox: vi.fn().mockResolvedValue(undefined),
+      getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      poll: vi.fn().mockRejectedValue(new Error("relay unavailable")),
+      publish: vi.fn(async ({ outboxId }: { outboxId: string }) => {
+        if (outboxId === "outbox-10") await heldPublish;
+        return { state: "committed" as const, transportId: "transport" };
+      }),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+    const service = createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool: {
+        connect: vi.fn().mockResolvedValue({
+          query: vi.fn().mockResolvedValue(undefined),
+          on: vi.fn(),
+          removeAllListeners: vi.fn(),
+          release: vi.fn()
+        })
+      },
+      logger: { warn: vi.fn() } as unknown as Logger,
+      workerId: "worker"
+    });
+
+    try {
+      service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(secureRuntime.publish).toHaveBeenCalledTimes(11);
+      expect(repository.completePdsOutbox).toHaveBeenCalledTimes(10);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(secureRuntime.poll).toHaveBeenCalledTimes(1);
+      releasePublish();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(repository.completePdsOutbox).toHaveBeenCalledTimes(11);
+      expect(secureRuntime.poll).toHaveBeenCalledTimes(2);
+    } finally {
+      releasePublish();
+      await service.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores local wakes until the poll retry deadline", async () => {
+    vi.useFakeTimers();
+    const listeners = new Map<string, (value: never) => void>();
+    const wakeClient = {
+      query: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn((event: string, listener: (value: never) => void) =>
+        listeners.set(event, listener)
+      ),
+      removeAllListeners: vi.fn(),
+      release: vi.fn()
+    };
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn().mockResolvedValue([]),
+      getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      poll: vi.fn().mockRejectedValue(new Error("relay unavailable")),
+      publish: vi.fn(),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+    const service = createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool: { connect: vi.fn().mockResolvedValue(wakeClient) },
+      logger: { warn: vi.fn() } as unknown as Logger,
+      workerId: "worker"
+    });
+    try {
+      service.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(listeners.has("notification")).toBe(true);
+      listeners.get("notification")!({
+        channel: "koed_pds_local_sync"
+      } as never);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(secureRuntime.poll).toHaveBeenCalledTimes(1);
+      expect(repository.claimPdsOutbox).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(secureRuntime.poll).toHaveBeenCalledTimes(2);
+    } finally {
+      await service.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["lifecycle", "repository"])(
+    "keeps the original poll retry after a %s failure during checkpoint drain",
+    async (failure) => {
+      vi.useFakeTimers();
+      let rejectDrain: (error: Error) => void = () => {};
+      const heldDrain = new Promise<never>((_, reject) => {
+        rejectDrain = reject;
+      });
+      const drainError = new Error(`${failure} unavailable`);
+      const entries = Array.from({ length: 10 }, (_, index) => ({
+        id: `outbox-${index}`,
+        groupId: "group",
+        closureId: `closure-${index}`,
+        packageId: `package-${index}`,
+        sourceManifestHash: "hash",
+        attemptCount: 1
+      }));
+      const claim = vi.fn().mockResolvedValueOnce(entries);
+      if (failure === "repository") claim.mockReturnValueOnce(heldDrain);
+      claim.mockResolvedValue([]);
+      const lifecycle = vi.fn().mockResolvedValueOnce(undefined);
+      if (failure === "lifecycle") lifecycle.mockReturnValueOnce(heldDrain);
+      lifecycle.mockResolvedValue(undefined);
+      const repository = {
+        heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+        claimPdsOutbox: claim,
+        beginPdsOutboxNetworkAction: vi.fn().mockResolvedValue(true),
+        completePdsOutbox: vi.fn().mockResolvedValue(undefined),
+        getPdsLocalSyncWakeAt: vi.fn().mockResolvedValue(null)
+      } as unknown as MemorySourceRepository;
+      const secureRuntime = {
+        heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+        pollLifecycle: lifecycle,
+        poll: vi.fn().mockRejectedValue(new Error("relay unavailable")),
+        publish: vi
+          .fn()
+          .mockResolvedValue({ state: "committed", transportId: "transport" }),
+        outboundState: vi.fn(),
+        materialize: vi.fn()
+      } as PdsWorkerSecureRuntime;
+      const failureLogger = { warn: vi.fn() } as unknown as Logger;
+      const service = createPdsLocalSyncService({
+        repository,
+        secureRuntime,
+        wakePool: {
+          connect: vi.fn().mockResolvedValue({
+            query: vi.fn().mockResolvedValue(undefined),
+            on: vi.fn(),
+            removeAllListeners: vi.fn(),
+            release: vi.fn()
+          })
+        },
+        logger: failureLogger,
+        workerId: "worker"
+      });
+      try {
+        service.start();
+        await vi.advanceTimersByTimeAsync(500);
+        expect(secureRuntime.publish).toHaveBeenCalledTimes(10);
+        rejectDrain(drainError);
+        await vi.advanceTimersByTimeAsync(499);
+        expect(failureLogger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ err: drainError }),
+          expect.any(String)
+        );
+        expect(secureRuntime.poll).toHaveBeenCalledTimes(1);
+        expect(secureRuntime.publish).toHaveBeenCalledTimes(10);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(secureRuntime.poll).toHaveBeenCalledTimes(2);
+      } finally {
+        rejectDrain(drainError);
+        await service.stop();
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it("does not publish checkpoints when lifecycle authorization fails", async () => {
+    const repository = {
+      heartbeatPdsWorker: vi.fn().mockResolvedValue(undefined),
+      claimPdsOutbox: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const secureRuntime = {
+      heartbeatGroups: vi.fn().mockResolvedValue(["group"]),
+      pollLifecycle: vi
+        .fn()
+        .mockRejectedValue(new Error("lifecycle unavailable")),
+      poll: vi.fn(),
+      publish: vi.fn(),
+      outboundState: vi.fn(),
+      materialize: vi.fn()
+    } as PdsWorkerSecureRuntime;
+
+    await createPdsLocalSyncService({
+      repository,
+      secureRuntime,
+      wakePool,
+      logger,
+      workerId: "worker"
+    }).run();
+
+    expect(repository.claimPdsOutbox).not.toHaveBeenCalled();
+    expect(secureRuntime.publish).not.toHaveBeenCalled();
+  });
+
   it("stays idle before a device has joined a Personal Device Group", async () => {
     const repository = {
       heartbeatPdsWorker: vi.fn(),
