@@ -40,10 +40,15 @@ const pendingItems = (state: EmbeddingStateSnapshot): number =>
     ? state.backlog.pendingMemoryEvents + state.backlog.pendingMemoryNodes
     : 0;
 
-const summaryLabel = (state: EmbeddingStateSnapshot | null): string => {
+export const embeddingSummaryLabel = (
+  state: EmbeddingStateSnapshot | null
+): string => {
   if (!state) return "Embedding state unavailable";
   if (state.activity === "unavailable") return "Embedding is unavailable";
-  if (state.activity === "idle") return "Embedding is up to date";
+  if (state.activity === "idle")
+    return state.backlog
+      ? "Embedding is up to date"
+      : "Embedding progress unknown";
   if (state.activity === "unknown") return "Embedding progress unknown";
   const pending = pendingItems(state);
   return pending > 0
@@ -85,37 +90,47 @@ function Row({
 }
 
 export function EmbeddingStateDetails({
-  state
+  state,
+  presentation = "disclosure"
 }: {
   state: EmbeddingStateSnapshot | null;
+  presentation?: "disclosure" | "page";
 }) {
   const summaryState = !state
     ? "needs_attention"
-    : state.activity === "unavailable" || state.activity === "unknown"
+    : state.activity === "unavailable" ||
+        state.activity === "unknown" ||
+        (state.activity === "idle" && !state.backlog)
       ? "needs_attention"
       : state.activity === "working"
         ? "working"
         : "healthy";
   const pending = state ? pendingItems(state) : 0;
 
+  const Container = presentation === "page" ? "div" : "details";
   return (
-    <details className="koed-diagnostics">
-      <summary>
-        <span
-          className="koed-diagnostics-summary-status"
-          data-state={summaryState}
-        >
-          {summaryState === "healthy" ? (
-            <CircleCheck aria-hidden="true" />
-          ) : summaryState === "working" ? (
-            <Activity aria-hidden="true" />
-          ) : (
-            <CircleAlert aria-hidden="true" />
-          )}
-          {summaryLabel(state)}
-        </span>
-        <ChevronDown aria-hidden="true" className="koed-diagnostics-chevron" />
-      </summary>
+    <Container className="koed-diagnostics">
+      {presentation === "disclosure" && (
+        <summary>
+          <span
+            className="koed-diagnostics-summary-status"
+            data-state={summaryState}
+          >
+            {summaryState === "healthy" ? (
+              <CircleCheck aria-hidden="true" />
+            ) : summaryState === "working" ? (
+              <Activity aria-hidden="true" />
+            ) : (
+              <CircleAlert aria-hidden="true" />
+            )}
+            {embeddingSummaryLabel(state)}
+          </span>
+          <ChevronDown
+            aria-hidden="true"
+            className="koed-diagnostics-chevron"
+          />
+        </summary>
+      )}
       {!state ? (
         <p role="status">
           Koed could not read embedding state. Check that the API is running,
@@ -193,6 +208,6 @@ export function EmbeddingStateDetails({
           />
         </dl>
       )}
-    </details>
+    </Container>
   );
 }
