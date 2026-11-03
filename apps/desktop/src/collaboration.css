@@ -16,11 +16,7 @@
   --collab-focus: var(--ring);
   color: var(--collab-text);
   font-family:
-    "DM Sans",
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
+    "DM Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     sans-serif;
 }
 

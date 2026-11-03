@@ -8,18 +8,19 @@
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "paths": {
-      "@koed-labs/server": ["packages/koed-server/dist/index.d.ts"],
-      "@koed/shared": ["packages/shared/dist/index.d.ts"],
+      "@koed-labs/server": ["../../packages/koed-server/dist/index.d.ts"],
+      "@koed/shared": ["../../packages/shared/dist/index.d.ts"],
       "@koed/shared/collaboration": [
-        "packages/shared/dist/collaboration-contract.d.ts"
+        "../../packages/shared/dist/collaboration-contract.d.ts"
       ],
       "@koed/shared/personal-desktop": [
-        "packages/shared/dist/personal-desktop-contract.d.ts"
+        "../../packages/shared/dist/personal-desktop-contract.d.ts"
       ],
       "@koed/shared/private-network": [
-        "packages/shared/dist/private-network.d.ts"
+        "../../packages/shared/dist/private-network.d.ts"
       ],
-      "@koed/ui/theme": ["packages/ui/dist/theme.d.ts"]
+      "@koed/ui/theme": ["../../packages/ui/dist/theme.d.ts"],
+      "*": ["../../*"]
     },
     "outDir": "dist-types",
     "rootDir": "src"

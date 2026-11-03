@@ -7341,8 +7341,8 @@ pnpm test
             : null
       };
     });
-    personalMemoryApi.loadNote = vi.fn(
-      async ({ noteId }) => notes.find((note) => note.noteId === noteId)!
+    personalMemoryApi.loadNote = vi.fn(async ({ noteId }) =>
+      notes.find((note) => note.noteId === noteId)!
     );
     await render(client, personalMemoryApi);
     await click(container, "Notes");
@@ -7372,8 +7372,8 @@ pnpm test
       notes,
       nextBeforeSequence: null
     }));
-    personalMemoryApi.loadNote = vi.fn(
-      async ({ noteId }) => notes.find((note) => note.noteId === noteId)!
+    personalMemoryApi.loadNote = vi.fn(async ({ noteId }) =>
+      notes.find((note) => note.noteId === noteId)!
     );
     await render(client, personalMemoryApi);
     await click(container, "Notes");
@@ -7833,8 +7833,8 @@ pnpm test
         };
         return delivery;
       });
-      vi.mocked(client.listSharingRuleDeliveries).mockImplementation(
-        async () => (delivery ? [delivery] : [])
+      vi.mocked(client.listSharingRuleDeliveries).mockImplementation(async () =>
+        delivery ? [delivery] : []
       );
       await act(async () =>
         root.render(

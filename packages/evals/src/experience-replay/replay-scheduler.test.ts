@@ -27,20 +27,18 @@ describe("experience replay scheduler", () => {
     const starts: string[] = [];
     let active = 0;
     let maximumActive = 0;
-    const jobs = pending.map(
-      (item, index): ReplaySchedulerJob<number> => ({
-        id: `job-${index}`,
-        maximumCostUsd: 2,
-        run: async () => {
-          starts.push(`job-${index}`);
-          active += 1;
-          maximumActive = Math.max(maximumActive, active);
-          const value = await item.promise;
-          active -= 1;
-          return { value, observedCostUsd: 1 };
-        }
-      })
-    );
+    const jobs = pending.map((item, index): ReplaySchedulerJob<number> => ({
+      id: `job-${index}`,
+      maximumCostUsd: 2,
+      run: async () => {
+        starts.push(`job-${index}`);
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        const value = await item.promise;
+        active -= 1;
+        return { value, observedCostUsd: 1 };
+      }
+    }));
     const scheduled = scheduleReplayJobs({
       mode: "paid",
       concurrency: 2,

@@ -124,18 +124,16 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
           left.node.summaryText.localeCompare(right.node.summaryText)
       )
       .slice(0, input.limit ?? 10)
-      .map(
-        ({ node, score }): MemorySearchResult => ({
+      .map(({ node, score }): MemorySearchResult => ({
+        nodeId: node.id,
+        visibility: node.visibility,
+        summaryText: node.summaryText,
+        score,
+        citation: {
           nodeId: node.id,
-          visibility: node.visibility,
-          summaryText: node.summaryText,
-          score,
-          citation: {
-            nodeId: node.id,
-            visibility: node.visibility
-          }
-        })
-      );
+          visibility: node.visibility
+        }
+      }));
     return Promise.resolve({
       results,
       metadata: {

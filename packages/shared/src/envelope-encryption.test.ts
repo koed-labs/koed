@@ -792,7 +792,7 @@ describe("createHttpManagedKmsKeyring", () => {
       "https://kms.koed.example/v1/unwrap"
     ]);
     expect(
-      (requests[0]?.init.headers as Record<string, string>).authorization
+      (requests[0]?.init.headers as Record<string, string>)?.authorization
     ).toBe("Bearer kms-secret-token");
     expect(JSON.stringify(requests)).not.toContain("apiToken");
     expect(status).toEqual({

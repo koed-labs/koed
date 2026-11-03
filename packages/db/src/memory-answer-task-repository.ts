@@ -230,10 +230,7 @@ const mapTask = (
   expiresAt: row.expires_at.toISOString()
 });
 
-const positiveInteger = (
-  value: number | undefined,
-  fallback: number
-): number =>
+const positiveInteger = (value: number | undefined, fallback: number): number =>
   Number.isInteger(value) && value !== undefined && value > 0
     ? value
     : fallback;

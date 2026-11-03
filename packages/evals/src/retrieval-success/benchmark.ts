@@ -384,16 +384,14 @@ export const idealRetrievalSuccessRun = (
   const requiredSet = new Set(requiredIds);
   const evidence = benchmarkCase.seed
     .filter((item) => requiredSet.has(item.id))
-    .map(
-      (item): RetrievalSuccessEvidence => ({
-        sourceId: item.id,
-        nodeId: item.sourceType === "memory_node" ? item.id : undefined,
-        sourceType: item.sourceType,
-        retrievalStage: item.retrievalStage,
-        summaryText: item.text,
-        relevance: "directly supports the benchmark answer"
-      })
-    );
+    .map((item): RetrievalSuccessEvidence => ({
+      sourceId: item.id,
+      nodeId: item.sourceType === "memory_node" ? item.id : undefined,
+      sourceType: item.sourceType,
+      retrievalStage: item.retrievalStage,
+      summaryText: item.text,
+      relevance: "directly supports the benchmark answer"
+    }));
   const answerMarkdown =
     benchmarkCase.expected.memoryStatus === "not_found"
       ? "No matching memory decision was found."

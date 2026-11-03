@@ -282,7 +282,7 @@ export const completeTranscriptBoundary = (
     if (finalByte[0] === 0x0a) return size;
     const segments: Buffer[] = [finalByte];
     let scanned = 1;
-    for (let end = size - 1; end > 0; ) {
+    for (let end = size - 1; end > 0;) {
       const length = Math.min(BOUNDARY_SCAN_BYTES, end, maxRecordBytes);
       const start = end - length;
       const buffer = Buffer.allocUnsafe(length);

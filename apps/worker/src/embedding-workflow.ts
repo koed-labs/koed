@@ -246,7 +246,7 @@ const splitEmbeddingText = (
 ): Array<{ text: string; characterCount: number }> => {
   const normalized = text.trim();
   const segments: Array<{ text: string; characterCount: number }> = [];
-  for (let start = 0; start < normalized.length; ) {
+  for (let start = 0; start < normalized.length;) {
     let end = Math.min(start + maxCharacters, normalized.length);
     if (
       end < normalized.length &&
@@ -472,7 +472,7 @@ export const createEmbeddingWorkflow = (
       Array<EmbeddedChunk & { segmentIndex: number }>
     >();
     const measuredTokensBySource = new Map<number, number>();
-    for (let offset = 0; offset < transportSegments.length; ) {
+    for (let offset = 0; offset < transportSegments.length;) {
       const requestSegments: EmbeddingTransportSegment[] = [];
       let requestCharacters = 0;
       while (
@@ -794,7 +794,7 @@ export const createEmbeddingWorkflow = (
         ).filter((source): source is EmbeddableSourceRecord => source !== null);
         missingSources.push(...missingBatch);
       }
-      for (let offset = 0; offset < missingSources.length; ) {
+      for (let offset = 0; offset < missingSources.length;) {
         const first = missingSources[offset]!;
         const batchLimit =
           first.sourceType === "memory_node"
