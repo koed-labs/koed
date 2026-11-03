@@ -72,8 +72,17 @@ const useNow = (intervalMs: number) => {
   return now;
 };
 
-function Keycaps({ clients }: { clients: readonly HomeClient[] }) {
+function Keycaps({
+  clients,
+  ingestion
+}: {
+  clients: readonly HomeClient[];
+  ingestion?: HomeIngestion;
+}) {
   if (!clients.length) return null;
+  const progress = new Map(
+    ingestion?.clients.map((client) => [client.id, client])
+  );
   return (
     <ul className="v1-home-keycaps" aria-label="AI Clients">
       {clients.map((client) => (
@@ -85,11 +94,25 @@ function Keycaps({ clients }: { clients: readonly HomeClient[] }) {
           >
             <AiClientLogo id={client.id} />
           </span>
-          <strong>
-            {client.name}
-            {client.version && <span> {client.version}</span>}
-          </strong>
-          <span className="v1-home-pill">{client.label}</span>
+          <strong>{client.name}</strong>
+          {progress.has(client.id) ? (
+            <span
+              className="v1-home-pill"
+              data-lifecycle={progress.get(client.id)!.lifecycle}
+              data-stuck={progress.get(client.id)!.stuck || undefined}
+            >
+              {ingestionLine(progress.get(client.id)!)}
+            </span>
+          ) : (
+            <span className="v1-home-pill">{client.label}</span>
+          )}
+          {client.state === "detected" && (
+            <small>
+              {progress.has(client.id) ? "Not connected" : null}
+              {client.version && progress.has(client.id) ? " · " : null}
+              {client.version}
+            </small>
+          )}
         </li>
       ))}
     </ul>
@@ -359,61 +382,80 @@ function ProjectsStage({
 }
 
 const ingestionLine = (client: HomeIngestionClient) => {
+  const finished = client.completed + client.skipped;
   const of =
     client.selected === null
-      ? `${client.completed} conversations`
-      : `${client.completed} of ${client.selected} conversations`;
-  const skipped = client.skipped ? ` · ${client.skipped} skipped` : "";
+      ? `${finished}`
+      : `${finished} of ${client.selected}`;
   switch (client.lifecycle) {
     case "running":
-      return `Reading · ${of}${skipped}`;
+      return `Reading ${of}`;
     case "completed":
-      return `Done · ${of}${skipped}`;
+      return "Done";
+    // A failed pass retries on its own; it is not something to act on here.
     case "failed":
-      return `Hit a problem, will retry · ${of}${skipped}`;
+      return client.stuck ? `Stuck · ${of}` : `Retrying · ${of}`;
     case "cancelled":
-      return `Stopped · ${of}${skipped}`;
+      return `Stopped · ${of}`;
     default:
-      return `Paused · ${of}${skipped}`;
+      return `Waiting · ${of}`;
   }
 };
 
+// Around the Koed Kin in the middle of the stage, nearest first.
+const hatchSlots: ReadonlyArray<{ x: number; y: number; size: number }> = [
+  { x: 26, y: 18, size: 76 },
+  { x: 74, y: 18, size: 76 },
+  { x: 12, y: 8, size: 60 },
+  { x: 88, y: 8, size: 60 },
+  { x: 38, y: 4, size: 56 },
+  { x: 62, y: 4, size: 56 }
+];
+
 function HatchingStage({
   entries,
+  ingestion,
+  agent,
   onOpenProject
 }: {
   entries: readonly HomeProjectEntry[];
+  ingestion: HomeIngestion;
+  agent: { name: string; look: AgentLook };
   onOpenProject: (projectId: string) => void;
 }) {
   const reduced = useReducedMotion();
   // Projects present on the first render were found before this screen opened.
   const seen = useRef<Set<string> | null>(null);
   seen.current ??= new Set(entries.map(({ id }) => id));
-  const shown = rankHomeProjects(entries).slice(0, HOME_STAGE_LIMIT - 2);
+  const shown = rankHomeProjects(entries).slice(0, hatchSlots.length - 1);
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const slotStyle = (rank: number) => {
+    const slot = hatchSlots[rank]!;
+    return {
+      "--kin-x": `${slot.x}%`,
+      "--kin-y": `${slot.y}%`,
+      "--kin-size": `${slot.size}px`
+    } as CSSProperties;
+  };
   return (
-    <section className="v1-home-stage" aria-label="Projects found so far">
+    <section
+      className="v1-home-stage v1-home-stage-hatching"
+      aria-label="Projects found so far"
+    >
+      <div className="v1-home-spot" aria-hidden="true" />
       {shown.map((id, rank) => {
         const entry = byId.get(id)!;
-        const slot = slots[rank]!;
         return (
           <button
             key={id}
             type="button"
             className="v1-home-kin"
-            data-front={rank < 3 || undefined}
             data-hatch={(!reduced && !seen.current!.has(id)) || undefined}
-            style={
-              {
-                "--kin-x": `${slot.x}%`,
-                "--kin-y": `${slot.y}%`,
-                "--kin-size": `${slot.size}px`
-              } as CSSProperties
-            }
+            style={slotStyle(rank)}
             aria-label={`Open Project ${entry.name}`}
             onClick={() => onOpenProject(id)}
           >
-            <Pixelkin look={projectKinLook(id)} size={slot.size} />
+            <Pixelkin look={projectKinLook(id)} size={hatchSlots[rank]!.size} />
             <span className="v1-home-kin-shadow" aria-hidden="true" />
             <span className="v1-home-kin-label">
               <strong>{entry.name}</strong>
@@ -421,26 +463,28 @@ function HatchingStage({
           </button>
         );
       })}
-      {[shown.length, shown.length + 1].map((rank) => {
-        const slot = slots[rank]!;
-        return (
-          <span
-            key={`egg-${rank}`}
-            className="v1-home-egg"
-            aria-hidden="true"
-            style={
-              {
-                "--kin-x": `${slot.x}%`,
-                "--kin-y": `${slot.y}%`,
-                "--kin-size": `${slot.size}px`
-              } as CSSProperties
-            }
-          >
-            <i>?</i>
-            <span>finding…</span>
-          </span>
-        );
-      })}
+      <span
+        className="v1-home-egg"
+        aria-hidden="true"
+        style={slotStyle(shown.length)}
+      >
+        <i />
+      </span>
+      <div className="v1-home-host">
+        <Pixelkin look={agent.look} size={128} expression="happy" />
+        <span className="v1-home-kin-shadow" aria-hidden="true" />
+      </div>
+      <div className="v1-home-caption">
+        <h1>Hatching your Projects</h1>
+        <p
+          className="v1-home-sub"
+          title={`Up to ${AUTOMATIC_HISTORICAL_CONVERSATION_CAP} conversations per AI Client from the last ${AUTOMATIC_HISTORICAL_WINDOW_DAYS} days.`}
+        >
+          {agent.name} is reading your recent conversations. Projects appear as
+          they’re found.
+        </p>
+        <IngestionProgress ingestion={ingestion} />
+      </div>
     </section>
   );
 }
@@ -453,25 +497,62 @@ function IngestionProgress({ ingestion }: { ingestion: HomeIngestion }) {
       : null;
   return (
     <div className="v1-home-progress">
-      <div className="v1-home-progress-label">
-        <span>
-          {total === null
-            ? "Choosing conversations to process…"
-            : `${ingestion.finished} of ${total} selected conversations processed`}
-        </span>
-        {percent !== null && <span>{percent}%</span>}
-      </div>
       <div
         role="progressbar"
         aria-label="Recent history processed"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent ?? undefined}
+        aria-valuetext={
+          total === null
+            ? `${ingestion.finished} conversations so far`
+            : `${ingestion.finished} of ${total} conversations`
+        }
         className="v1-home-progress-track"
         data-indeterminate={percent === null || undefined}
       >
         <span style={{ width: `${percent ?? 30}%` }} />
       </div>
+      <span className="v1-home-progress-label">
+        {total === null
+          ? `${ingestion.finished} conversations so far`
+          : `${ingestion.finished} of ${total} conversations`}
+      </span>
+    </div>
+  );
+}
+
+// Non-blocking problems stay out of the way: a chip that opens the list.
+function HomeWarnings({
+  problems,
+  statusStore
+}: {
+  problems: readonly HomeProblem[];
+  statusStore: DesktopStatusStore;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!problems.length) return null;
+  return (
+    <div className="v1-home-warnings">
+      <button
+        type="button"
+        className="v1-home-chip"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="v1-home-dot" aria-hidden="true" />
+        {problems.length === 1
+          ? problems[0]!.title
+          : `${problems.length} things to check`}
+      </button>
+      {open && (
+        <ProblemList
+          problems={problems}
+          primary={null}
+          statusStore={statusStore}
+          compact
+        />
+      )}
     </div>
   );
 }
@@ -517,43 +598,20 @@ export function Home({
         />
       </section>
     );
-  const warnings = view.warnings.length ? (
-    <div className="v1-home-warnings" role="status">
-      <ProblemList
-        problems={view.warnings}
-        primary={null}
-        statusStore={statusStore}
-        compact
-      />
-    </div>
-  ) : null;
+  const warnings = (
+    <HomeWarnings problems={view.warnings} statusStore={statusStore} />
+  );
   if (view.kind === "ingesting")
     return (
-      <section className="v1-home" data-mood="ingesting">
+      <section className="v1-home v1-home-fill" data-mood="ingesting">
         {warnings}
-        <header className="v1-home-header">
-          <Pixelkin look={agent.look} size={48} expression="happy" />
-          <div>
-            <h1>Hatching your Projects</h1>
-            <p className="v1-home-sub">
-              {agent.name} is processing selected recent history: up to{" "}
-              {AUTOMATIC_HISTORICAL_CONVERSATION_CAP} conversations per AI
-              Client from the last {AUTOMATIC_HISTORICAL_WINDOW_DAYS} days.
-              Projects appear as they’re found.
-            </p>
-          </div>
-        </header>
-        <Keycaps clients={clients} />
-        <ul className="v1-home-ingest" aria-label="Recent history by AI Client">
-          {view.ingestion.clients.map((client) => (
-            <li key={client.id} data-lifecycle={client.lifecycle}>
-              <strong>{client.name}</strong>
-              <span>{ingestionLine(client)}</span>
-            </li>
-          ))}
-        </ul>
-        <HatchingStage entries={entries} onOpenProject={onOpenProject} />
-        <IngestionProgress ingestion={view.ingestion} />
+        <Keycaps clients={clients} ingestion={view.ingestion} />
+        <HatchingStage
+          entries={entries}
+          ingestion={view.ingestion}
+          agent={agent}
+          onOpenProject={onOpenProject}
+        />
       </section>
     );
   if (view.kind === "empty")

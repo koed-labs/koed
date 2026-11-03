@@ -1428,20 +1428,25 @@ export function V1App({
           railFooter={
             <button
               type="button"
+              className="v1-rail-status"
+              data-state={status?.state ?? "stopped"}
               aria-label="Open service status"
               onClick={() => {
                 setSettingsTab("services");
                 setSettingsOpen(true);
               }}
             >
-              Koed{" "}
-              {status?.state === "healthy"
-                ? "ready"
-                : status?.state === "needs_attention"
-                  ? "needs attention"
-                  : status?.state === "starting"
-                    ? "starting"
-                    : "stopped"}
+              <i aria-hidden="true" />
+              <span className="v1-wide-only">
+                Koed{" "}
+                {status?.state === "healthy"
+                  ? "ready"
+                  : status?.state === "needs_attention"
+                    ? "needs attention"
+                    : status?.state === "starting"
+                      ? "starting"
+                      : "stopped"}
+              </span>
             </button>
           }
           topActions={

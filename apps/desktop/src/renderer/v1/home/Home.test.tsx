@@ -130,6 +130,22 @@ describe("Home", () => {
   it("shows ingestion counts with an indeterminate bar until the total is known", async () => {
     await render({
       entries: [entry("koed", "2026-11-03T11:00:00Z")],
+      clients: [
+        {
+          id: "codex",
+          name: "Codex",
+          state: "connected",
+          label: "Connected",
+          version: null
+        },
+        {
+          id: "claude",
+          name: "Claude Code",
+          state: "detected",
+          label: "Detected · not connected",
+          version: "2.1.312"
+        }
+      ],
       view: {
         kind: "ingesting",
         warnings: [],
@@ -145,7 +161,8 @@ describe("Home", () => {
               selected: null,
               completed: 2,
               skipped: 0,
-              lastErrorCode: null
+              lastErrorCode: null,
+              stuck: false
             },
             {
               id: "claude",
@@ -154,17 +171,22 @@ describe("Home", () => {
               selected: 8,
               completed: 1,
               skipped: 1,
-              lastErrorCode: "historical_ingestion_pass_failed"
+              lastErrorCode: "historical_ingestion_pass_failed",
+              stuck: false
             }
           ]
         }
       }
     });
-    expect(container.textContent).toContain("up to 50 conversations");
-    expect(container.textContent).toContain("Reading · 2 conversations");
-    expect(container.textContent).toContain(
-      "Hit a problem, will retry · 1 of 8 conversations · 1 skipped"
+    expect(container.querySelector("[title]")?.getAttribute("title")).toContain(
+      "Up to 50 conversations"
     );
+    const pills = [...container.querySelectorAll(".v1-home-pill")].map(
+      (pill) => pill.textContent
+    );
+    expect(pills).toEqual(["Reading 2", "Retrying · 2 of 8"]);
+    expect(container.textContent).toContain("Not connected · 2.1.312");
+    expect(container.textContent).toContain("2 conversations so far");
     const bar = container.querySelector('[role="progressbar"]')!;
     expect(bar.hasAttribute("aria-valuenow")).toBe(false);
     expect(bar.hasAttribute("data-indeterminate")).toBe(true);

@@ -253,6 +253,43 @@
   margin-top: auto;
   padding: 8px 8px 0;
 }
+.v1-rail-status {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 6px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--v1-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.v1-app.v1-wide .v1-rail-status {
+  justify-content: flex-start;
+}
+.v1-rail-status:hover {
+  background: var(--v1-surface);
+}
+.v1-rail-status i {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--v1-faint);
+}
+.v1-rail-status[data-state="healthy"] i {
+  background: var(--v1-heat-2);
+}
+.v1-rail-status[data-state="needs_attention"] i {
+  background: var(--v1-heat-4);
+}
+.v1-rail-status[data-state="starting"] i {
+  background: var(--v1-heat-3);
+}
 .v1-account {
   all: unset;
   box-sizing: border-box;

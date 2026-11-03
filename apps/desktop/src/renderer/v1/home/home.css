@@ -58,7 +58,7 @@
   list-style: none;
 }
 .v1-home-keycaps li {
-  width: 150px;
+  min-width: 120px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -409,82 +409,170 @@
   }
 }
 
-.v1-home-ingest {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 8px 24px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: 13px;
-}
-.v1-home-ingest li {
-  display: flex;
-  gap: 8px;
-}
-.v1-home-ingest span {
-  color: var(--v1-muted);
-}
-.v1-home-ingest li[data-lifecycle="failed"] span {
-  color: var(--v1-heat-3);
-}
-.v1-home-ingest li[data-lifecycle="completed"] span {
-  color: var(--v1-heat-2);
-}
 .v1-home-kin[data-hatch] .v1-pixelkin {
   animation: v1-home-hatch 900ms ease both;
+}
+.v1-home-fill {
+  overflow: hidden;
+}
+.v1-home-fill .v1-home-stage {
+  flex: 1;
+  height: auto;
+  min-height: 340px;
+}
+.v1-home-stage-hatching {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 24px 28px;
+  text-align: center;
+}
+.v1-home-spot {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 22% 60% at 50% 0%,
+    color-mix(in srgb, #fff0c8 14%, transparent),
+    transparent 75%
+  );
+}
+.v1-home-stage-hatching .v1-home-kin {
+  bottom: calc(var(--kin-y) + 150px);
+}
+.v1-home-host {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  --kin-size: 128px;
+  --kin-heat: var(--v1-accent);
+  margin-bottom: 20px;
+}
+.v1-home-caption {
+  position: relative;
+  z-index: 2;
+  width: min(460px, 100%);
+}
+.v1-home-caption h1 {
+  font-size: 26px;
 }
 .v1-home-egg {
   position: absolute;
   left: var(--kin-x);
-  bottom: var(--kin-y);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
+  bottom: calc(var(--kin-y) + 150px + 26px);
   transform: translateX(-50%);
-  font-size: 12px;
-  color: var(--v1-faint);
 }
 .v1-home-egg i {
-  width: var(--kin-size);
-  height: var(--kin-size);
-  display: grid;
-  place-items: center;
-  box-sizing: border-box;
-  border: 2px dashed var(--v1-border);
-  border-radius: 28%;
-  font-style: normal;
-  font-size: calc(var(--kin-size) * 0.35);
-  font-weight: 700;
-  animation: v1-home-breathe 2.4s ease-in-out infinite;
+  display: block;
+  width: calc(var(--kin-size) * 0.7);
+  height: calc(var(--kin-size) * 0.85);
+  border-radius: 50% 50% 46% 46% / 58% 58% 42% 42%;
+  background: radial-gradient(
+    ellipse at 35% 30%,
+    color-mix(in srgb, var(--v1-fg) 22%, transparent),
+    color-mix(in srgb, var(--v1-fg) 6%, transparent) 70%
+  );
+  animation: v1-home-wobble 2.4s ease-in-out infinite;
+  transform-origin: 50% 100%;
 }
 .v1-home-progress {
   display: grid;
   gap: 8px;
+  margin-top: 18px;
 }
 .v1-home-progress-label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 13px;
-  color: var(--v1-muted);
+  font-size: 12px;
+  color: var(--v1-faint);
 }
 .v1-home-progress-track {
-  height: 6px;
+  height: 3px;
   overflow: hidden;
-  border-radius: 3px;
+  border-radius: 2px;
   background: var(--v1-surface);
 }
 .v1-home-progress-track span {
   display: block;
   height: 100%;
-  border-radius: 3px;
+  border-radius: 2px;
   background: linear-gradient(90deg, var(--v1-accent), var(--v1-accent-text));
   transition: width 600ms ease;
 }
 .v1-home-progress-track[data-indeterminate] span {
   animation: v1-home-indeterminate 1.6s ease-in-out infinite;
+}
+.v1-home-keycaps small {
+  font-size: 11px;
+  color: var(--v1-faint);
+}
+.v1-home-pill {
+  white-space: nowrap;
+}
+.v1-home-keycaps li .v1-home-pill[data-lifecycle] {
+  color: var(--v1-muted);
+  background: var(--v1-surface);
+}
+.v1-home-keycaps li .v1-home-pill[data-lifecycle="running"] {
+  color: var(--v1-accent-text);
+  background: color-mix(in srgb, var(--v1-accent) 16%, transparent);
+}
+.v1-home-keycaps li .v1-home-pill[data-stuck] {
+  color: var(--v1-heat-3);
+  background: color-mix(in srgb, var(--v1-heat-3) 14%, transparent);
+}
+.v1-home-keycaps li .v1-home-pill[data-lifecycle="completed"] {
+  color: var(--v1-heat-2);
+  background: color-mix(in srgb, var(--v1-heat-2) 14%, transparent);
+}
+.v1-home-warnings {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  z-index: 5;
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  width: auto;
+  max-width: min(520px, calc(100% - 40px));
+}
+.v1-home {
+  position: relative;
+}
+.v1-home-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--v1-border);
+  border-radius: 999px;
+  background: var(--v1-card);
+  color: var(--v1-fg2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.v1-home-chip .v1-home-dot {
+  width: 7px;
+  height: 7px;
+}
+@keyframes v1-home-wobble {
+  0%,
+  70%,
+  100% {
+    transform: rotate(0);
+  }
+  78% {
+    transform: rotate(-6deg);
+  }
+  86% {
+    transform: rotate(5deg);
+  }
+  94% {
+    transform: rotate(-2deg);
+  }
 }
 @keyframes v1-home-hatch {
   0% {
@@ -497,15 +585,6 @@
   }
   100% {
     transform: scale(1);
-  }
-}
-@keyframes v1-home-breathe {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-  50% {
-    opacity: 0.8;
   }
 }
 @keyframes v1-home-indeterminate {
