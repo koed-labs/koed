@@ -12,7 +12,10 @@ import {
   aiClientDriverRegistry,
   type AiClientDriver
 } from "../src/ai-client-runner.js";
-import { publishAiClientCapabilities } from "../src/ai-client-capability-publisher.js";
+import {
+  publishAiClientCapabilities,
+  startAiClientCapabilityPublisher
+} from "../src/ai-client-capability-publisher.js";
 
 const roots: string[] = [];
 
@@ -94,9 +97,13 @@ describe("AI Client capability publisher", () => {
     expect(apiClient.recordAiClientCapabilitySnapshot).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])(
-    "discovers clients concurrently and respects stop (%s)",
-    async (stop) => {
+  it.each([
+    { stop: false, driverId: undefined },
+    { stop: true, driverId: undefined },
+    { stop: false, driverId: "claude" as const }
+  ])(
+    "discovers only requested clients and respects stop ($driverId, $stop)",
+    async ({ stop, driverId }) => {
       const root = fs.mkdtempSync(
         path.join(os.tmpdir(), "koed-publisher-parallel-")
       );
@@ -141,12 +148,14 @@ describe("AI Client capability publisher", () => {
         const pending = publishAiClientCapabilities(
           apiClient,
           { KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath },
-          { isActive: () => active }
+          { isActive: () => active, driverId }
         );
         await Promise.resolve();
         try {
           expect(seen.map((item) => item.instanceId)).toEqual(
-            ids.map((id) => `${id}.default`)
+            ids
+              .filter((id) => !driverId || id === driverId)
+              .map((id) => `${id}.default`)
           );
         } finally {
           active = !stop;
@@ -155,13 +164,69 @@ describe("AI Client capability publisher", () => {
         }
         expect(
           apiClient.recordAiClientCapabilitySnapshot
-        ).toHaveBeenCalledTimes(stop ? 0 : 3);
+        ).toHaveBeenCalledTimes(stop ? 0 : driverId ? 1 : 3);
       } finally {
         for (const [id, original] of originals)
           aiClientDriverRegistry.set(id, original);
       }
     }
   );
+
+  it("runs targeted discovery after an older refresh instead of reusing it", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-publisher-fresh-")
+    );
+    roots.push(root);
+    const registryPath = path.join(root, "instances.json");
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        instances: [
+          {
+            instanceId: "claude.default",
+            driverId: "claude",
+            displayName: "Claude",
+            executablePath: executable(root, "claude")
+          }
+        ]
+      })
+    );
+    const original = aiClientDriverRegistry.get("claude")!;
+    const seen: Array<{ instanceId: string }> = [];
+    const base = driver("claude", seen);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    aiClientDriverRegistry.set("claude", {
+      ...base,
+      discover: async (input) => {
+        const result = await base.discover(input);
+        if (seen.length === 1) await gate;
+        return result;
+      }
+    });
+    const publisher = startAiClientCapabilityPublisher(
+      {
+        upsertAiClientInstance: vi.fn(),
+        recordAiClientCapabilitySnapshot: vi.fn()
+      } as unknown as MemoryApiClient,
+      { KOED_AI_CLIENT_INSTANCE_REGISTRY: registryPath }
+    );
+    try {
+      const old = publisher.refresh();
+      const fresh = publisher.refresh("claude");
+      expect(seen).toHaveLength(1);
+      release();
+      await Promise.all([old, fresh]);
+      expect(seen).toHaveLength(2);
+    } finally {
+      release();
+      publisher.stop();
+      aiClientDriverRegistry.set("claude", original);
+    }
+  });
 
   it("publishes only explicitly configured instances", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "koed-publisher-"));

@@ -36,7 +36,9 @@ export interface AiClientCapabilityPublication {
 }
 
 export interface AiClientCapabilityPublisherHandle {
-  refresh(): Promise<AiClientCapabilityPublication[]>;
+  refresh(
+    driverId?: "codex" | "claude" | "pi"
+  ): Promise<AiClientCapabilityPublication[]>;
   stop(): void;
 }
 
@@ -169,6 +171,7 @@ export const publishAiClientCapabilities = async (
   apiClient: MemoryApiClient,
   environment: NodeJS.ProcessEnv = process.env,
   options: {
+    driverId?: "codex" | "claude" | "pi";
     now?: () => Date;
     snapshotTtlMs?: number;
     isActive?: () => boolean;
@@ -208,7 +211,9 @@ export const publishAiClientCapabilities = async (
     }
   };
   const results: AiClientCapabilityPublication[] = [];
-  const instances = instancesFor(environment);
+  const instances = instancesFor(environment).filter(
+    (instance) => !options.driverId || instance.driverId === options.driverId
+  );
   // Limit concurrent CLI discovery while keeping independent clients off each other's critical path.
   for (let offset = 0; offset < instances.length; offset += 3) {
     if (options.isActive && !options.isActive()) break;
@@ -230,10 +235,19 @@ export const startAiClientCapabilityPublisher = (
   );
   let stopped = false;
   let refreshing: Promise<AiClientCapabilityPublication[]> | undefined;
-  const refresh = (): Promise<AiClientCapabilityPublication[]> => {
+  const refresh = (
+    driverId?: "codex" | "claude" | "pi"
+  ): Promise<AiClientCapabilityPublication[]> => {
     if (stopped) return Promise.resolve([]);
-    if (refreshing) return refreshing;
+    // A manual, targeted refresh must observe the configuration just written,
+    // rather than reuse discovery that began before that mutation.
+    if (refreshing) {
+      return driverId
+        ? refreshing.catch(() => []).then(() => refresh(driverId))
+        : refreshing;
+    }
     refreshing = publishAiClientCapabilities(apiClient, environment, {
+      driverId,
       isActive: () => !stopped
     }).finally(() => {
       refreshing = undefined;

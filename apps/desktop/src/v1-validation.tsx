@@ -8,11 +8,17 @@ import {
   DEFAULT_AGENT_LOOK,
   type V1ModelSelection
 } from "./renderer/v1/visual.js";
+import { V1App } from "./renderer/v1/App.js";
 import { V1Onboarding } from "./renderer/v1/onboarding.js";
+import { installOnboardingValidation } from "./onboarding-validation.js";
 import { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
 import "./renderer/index.css";
 import "./renderer/v1/app.css";
 
+const validation =
+  new URLSearchParams(location.search).get("onboarding") === "1"
+    ? installOnboardingValidation()
+    : null;
 const statusStore = new DesktopStatusStore();
 const providers = [
   {
@@ -29,6 +35,21 @@ const providers = [
     ]
   }
 ];
+function FullAppValidation() {
+  const [backendComplete, setBackendComplete] = useState(
+    localStorage.getItem("onboarding-backend-complete") === "true"
+  );
+  return (
+    <V1App
+      statusStore={statusStore}
+      onboardingComplete={backendComplete}
+      completeOnboarding={async () => {
+        localStorage.setItem("onboarding-backend-complete", "true");
+        setBackendComplete(true);
+      }}
+    />
+  );
+}
 function Validation() {
   const [selection, setSelection] = useState<V1ModelSelection>({
     providerId: "codex",
@@ -53,6 +74,27 @@ function Validation() {
       }
     />
   );
+  if (onboarding)
+    return (
+      <V1Onboarding
+        statusStore={statusStore}
+        savedDraft={
+          validation?.scene === "clients"
+            ? { version: 2, step: "clients" }
+            : undefined
+        }
+        onSaveDraft={async (draft) => {
+          if (validation) validation.fixture.draft = draft;
+        }}
+        onSaveAgent={async (agent) => {
+          if (validation) validation.fixture.savedAgent = agent;
+        }}
+        onComplete={async () => {
+          if (validation) validation.fixture.complete = true;
+          setOnboarding(false);
+        }}
+      />
+    );
   return (
     <V1Shell
       title={onboarding ? "Getting started" : ""}
@@ -63,21 +105,19 @@ function Validation() {
       onHome={() => setOnboarding(false)}
       groups={[]}
     >
-      {onboarding ? (
-        <V1Onboarding
-          statusStore={statusStore}
-          onSaveAgent={async () => {}}
-          onComplete={async () => setOnboarding(false)}
-        />
-      ) : (
-        <V1EmptyHero
-          agentName="Juno"
-          look={DEFAULT_AGENT_LOOK}
-          composer={composer}
-        />
-      )}
+      <V1EmptyHero
+        agentName="Juno"
+        look={DEFAULT_AGENT_LOOK}
+        composer={composer}
+      />
     </V1Shell>
   );
 }
 document.documentElement.classList.add("light");
-createRoot(document.querySelector("#root")!).render(<Validation />);
+createRoot(document.querySelector("#root")!).render(
+  new URLSearchParams(location.search).get("full") === "1" ? (
+    <FullAppValidation />
+  ) : (
+    <Validation />
+  )
+);

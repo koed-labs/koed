@@ -3,7 +3,7 @@
 Koed Desktop is the Electron control surface for Koed.
 
 It wraps the same local `koed-server` command surface, shows service status,
-runs mandatory client-neutral core setup, optional AI Client onboarding, and health checks, and provides
+runs client-neutral core setup, AI Client onboarding, and health checks, and provides
 the local Project, Captured Session, and raw Conversation UI in one window.
 
 The main Desktop experience is Project-first. On wide windows it uses a
@@ -126,15 +126,41 @@ API, Postgres, and Embedding Service ports while avoiding common
 local development or Docker port collisions. First-run setup inspects package,
 runtime, model, service, Koed core integration, and final verification state
 before making changes. Core setup never selects or edits an AI Client. After
-core completion, optional onboarding offers Codex, Claude Code, and Pi as
-independent multi-select choices plus **Set up later**. Detection reports
-availability only; it never auto-selects. Each selected client gets its own
-consent prompt and setup result, so cancellation or one broken client does not
-undo core setup or affect another client. Desktop runs only incomplete stages
-in order and stops at the first failure. The model stage reports actual
-downloaded and total bytes from the pinned artifact response before checksum
-verification. Retrying re-inspects local state and resumes from the first
-incomplete stage.
+core completion, onboarding offers Codex, Claude Code, and Pi as independent
+multi-select choices. Confirmed detected AI Clients are initially selected;
+the User can change that selection. Discovery does not configure an integration.
+**Connect** authorizes Koed profile, MCP Server, and Capture Hook configuration
+for the selected AI Clients only. A queue reports each result independently;
+failed connections can be retried without rerunning successful ones. A configured
+profile that needs sign-in is shown with client-specific recovery guidance.
+At least one currently ready, authenticated AI Client is required to continue.
+
+The setup presentation uses the staged Pixelkin prototype design: a large Kin,
+real setup progress, client discovery and connection, and a final celebration.
+The renderer and expressions come from Desktop's vendored Pixelkin engine;
+no website scripts are loaded. Reduced motion and a WebGL fallback preserve
+usable status feedback. Theme changes use the existing persisted preference.
+Setup begins only after **Get Started** authorizes local installation. Desktop
+runs only incomplete stages in order and stops at the first failure. The model
+stage reports actual downloaded and total bytes before checksum verification.
+Unknown stage durations do not advance progress using a timer. Retrying
+re-inspects local state and resumes from the first incomplete stage. Reopening
+while a run is active attaches to its current snapshot without restarting it.
+
+**Let’s go** rechecks setup and AI Client readiness concurrently, saves onboarding completion,
+and enters the app. Profile-save failures remain retryable. Old chat-onboarding
+drafts enter live prerequisite inspection; saved identity and appearance are
+retained. Agent customization stays in Settings, alongside **Run setup again**.
+The onboarding transcript, mandatory agent maker, and memory demonstration are
+replaced by this staged flow. Restarting setup preserves Personal Memory,
+Projects, Conversations, and saved customization.
+
+For isolated renderer checks, `pnpm --filter @koed/desktop test:browser:v1`
+builds the validation entry and runs Electron checks, including deterministic
+bridge scenarios for setup failure/retry, client connection outcomes, completion,
+and Settings restart. These fixtures are excluded from the production entry.
+Validation artifacts are written under the repository's gitignored scratch area;
+fixture success does not establish native installation success on a clean device.
 
 Desktop verifies that the supported Codex MCP block points at the thin adapter
 with the active `KOED_HOME`, and separately checks the credential-free Capture

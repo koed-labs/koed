@@ -2370,6 +2370,27 @@ describe("Koed server desktop manager", () => {
     rmSync(koedHome, { recursive: true, force: true });
   });
 
+  it("shares concurrent status probes without caching later checks", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({ command: "/node", args, env: {} }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push([...args]);
+        callback(null, JSON.stringify(healthyLocalServiceStatus()), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+    await Promise.all([manager.handlers.status!(), manager.handlers.status!()]);
+    expect(calls.filter((args) => args[0] === "status")).toHaveLength(1);
+    await manager.handlers.status!();
+    expect(calls.filter((args) => args[0] === "status")).toHaveLength(2);
+  });
+
   it("allows a cold-start status inspection to use the two-minute budget", async () => {
     let timeout: number | undefined;
     const manager = createKoedServerManager({
@@ -5424,6 +5445,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
 
   it("installs every required local model during Team Desktop setup", async () => {
     const calls: string[][] = [];
+    const updates: unknown[] = [];
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
@@ -5436,6 +5458,22 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       existsSync: () => true,
       execFile: (_command, args, _options, callback) => {
         calls.push(args);
+        if (args.includes("--progress-json")) {
+          const stderr = new EventEmitter();
+          queueMicrotask(() => {
+            stderr.emit(
+              "data",
+              'KOED_MODEL_PROGRESS {"phase":"downloading","completedBytes":50,'
+            );
+            stderr.emit("data", '"totalBytes":100}\n');
+            callback(
+              null,
+              JSON.stringify({ ok: true, state: "installed" }),
+              ""
+            );
+          });
+          return { stderr };
+        }
         const isModelStatus =
           args.includes("models") && args.includes("status");
         const payload =
@@ -5461,17 +5499,30 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
         ownerId: "setup-test",
         signal: new AbortController().signal,
         emitCollaborationEvent: () => undefined,
-        emitSetupProgress: () => undefined
+        emitSetupProgress: (value) => updates.push(value)
       }
     );
 
     expect(result).toMatchObject({ state: "complete" });
+    expect(updates).toContainEqual(
+      expect.objectContaining({
+        stages: expect.arrayContaining([
+          expect.objectContaining({
+            id: "model",
+            state: "running",
+            completedBytes: 100,
+            totalBytes: 200
+          })
+        ])
+      })
+    );
     expect(calls).toContainEqual([
       "/repo/cli.js",
       "models",
       "install",
       "--kind",
       "embedding",
+      "--progress-json",
       "--json"
     ]);
     expect(calls).toContainEqual([
@@ -5480,6 +5531,7 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       "install",
       "--kind",
       "privacy",
+      "--progress-json",
       "--json"
     ]);
   });

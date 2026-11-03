@@ -32,6 +32,27 @@ const runtimeHome = (): string => {
 };
 
 describe("Local AI Client capability refresh", () => {
+  it("targets capability refresh to the connecting client", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            publications: [
+              { instanceId: "claude.default", published: true, error: null }
+            ]
+          })
+        )
+    );
+    await refreshLocalAiRuntime({
+      fetch,
+      koedHome: runtimeHome(),
+      driverId: "claude"
+    });
+    expect(String(fetch.mock.calls[0]![0])).toBe(
+      "http://127.0.0.1:43123/v1/capabilities/refresh?driver=claude"
+    );
+  });
   it("preserves publication failure context from a 503 response", async () => {
     const fetch = vi.fn(
       async () =>

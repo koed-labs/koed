@@ -129,6 +129,7 @@ export type DesktopSetupStageState =
   | "failed";
 
 export interface DesktopSetupStage {
+  progressPhase?: "downloading" | "verifying" | "complete";
   completedBytes: number | null;
   detectedAiClients?: readonly string[];
   id: DesktopSetupStageId;

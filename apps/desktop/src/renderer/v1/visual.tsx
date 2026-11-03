@@ -29,11 +29,7 @@ import "./visual.css";
 import { DEFAULT_AGENT_LOOK, type AgentLook } from "./pixelkin/agent-kin.js";
 import { Pixelkin } from "./pixelkin/Pixelkin.js";
 
-export {
-  DEFAULT_AGENT_LOOK,
-  randomAgentLook,
-  type AgentLook
-} from "./pixelkin/agent-kin.js";
+export { DEFAULT_AGENT_LOOK, type AgentLook } from "./pixelkin/agent-kin.js";
 export { AgentLookPicker } from "./pixelkin/AgentLookPicker.js";
 export { Pixelkin };
 

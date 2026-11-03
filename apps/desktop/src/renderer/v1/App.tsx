@@ -63,7 +63,7 @@ import {
   type OnboardingAgent,
   type OnboardingDraft
 } from "./onboarding.js";
-import { saveOnboardingMemory, V1MemoryPanel } from "./memory.js";
+import { V1MemoryPanel } from "./memory.js";
 import {
   V1AgentContext,
   V1ConversationSurface,
@@ -306,8 +306,6 @@ export function V1App({
   const [launchPending, setLaunchPending] = useState(false);
   const [composerGeneration, setComposerGeneration] = useState(0);
   const [newProjectBusy, setNewProjectBusy] = useState(false);
-  const [onboardingHeader, setOnboardingHeader] =
-    useState<HTMLDivElement | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null
   );
@@ -1356,33 +1354,17 @@ export function V1App({
     );
   if (shouldShowV1Onboarding(profile, onboardingComplete))
     return (
-      <V1Shell
-        title={
-          <div className="v1-onboarding-header" ref={setOnboardingHeader} />
-        }
-        groups={[]}
-        accountLabel="Koed"
-      >
-        <V1Onboarding
-          headerTarget={onboardingHeader}
-          savedAgent={{
-            name: profile.agentName ?? "",
-            look: parseAgentLook(profile.agentLook)
-          }}
-          savedDraft={
-            (profile.onboarding.draft as OnboardingDraft | undefined) ?? null
-          }
-          onSaveDraft={onSaveDraft}
-          onSaveAgent={onSaveAgent}
-          onComplete={onComplete}
-          onMemoryDemo={
-            personalMemoryApi
-              ? (text) => saveOnboardingMemory(personalMemoryApi, text)
-              : undefined
-          }
-          statusStore={statusStore}
-        />
-      </V1Shell>
+      <V1Onboarding
+        savedAgent={{
+          name: profile.agentName ?? "",
+          look: parseAgentLook(profile.agentLook)
+        }}
+        savedDraft={profile.onboarding.draft}
+        onSaveDraft={onSaveDraft}
+        onSaveAgent={onSaveAgent}
+        onComplete={onComplete}
+        statusStore={statusStore}
+      />
     );
   // The prototype debug restart panel is excluded; Settings owns "Run setup again".
   return (

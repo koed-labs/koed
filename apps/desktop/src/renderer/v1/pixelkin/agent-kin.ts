@@ -4,7 +4,6 @@ import {
   clone,
   editKin,
   kinToJson,
-  randomKin,
   readKin,
   type Kin,
   type KinShape
@@ -90,24 +89,3 @@ export const serializeAgentLook = (look: AgentLook, name: string) =>
 
 export const sameAgentLook = (a: AgentLook, b: AgentLook) =>
   JSON.stringify(kinToJson(a)) === JSON.stringify(kinToJson(b));
-
-export function randomAgentLook(): AgentLook {
-  const look = clone(DEFAULT_AGENT_LOOK);
-  randomKin(look, Math.floor(1000 + Math.random() * 999998999));
-  withAgentShape(look, look.body.shape);
-  // Keep a surprise within the options the builder offers.
-  if (!SHOW_LOOK_EXTRAS)
-    for (const [path, value] of [
-      ["face.hat", "none"],
-      ["face.glasses", "none"],
-      ["face.halloween", "none"],
-      ["face.christmas", "none"],
-      ["body.arms", false],
-      ["body.stripes", false],
-      ["body.shininess", 0],
-      ["body.glitter", 0],
-      ["palette.gradient", false]
-    ] as const)
-      editKin(look, path, value);
-  return look;
-}

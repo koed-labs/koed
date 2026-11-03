@@ -742,7 +742,12 @@ export const startLocalAiRuntime = async ({
             });
             return;
           }
-          const publications = await services.capabilityPublisher.refresh();
+          const driver = z
+            .enum(["codex", "claude", "pi"])
+            .optional()
+            .parse(requestUrl.searchParams.get("driver") ?? undefined);
+          const publications =
+            await services.capabilityPublisher.refresh(driver);
           const failed = publications.filter(
             (publication) => !publication.published
           );
