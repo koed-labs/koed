@@ -7,12 +7,8 @@ import {
   setupStepsFromStatus,
   type SetupStep
 } from "../../views/onboarding/setup-model.js";
-import {
-  clientDetected,
-  clientReady,
-  clients,
-  type ClientId
-} from "../onboarding/model.js";
+import { aiClientHealth } from "../client-health.js";
+import { clients, type ClientId } from "../onboarding/model.js";
 
 export type HomeProblem = {
   id: string;
@@ -47,6 +43,20 @@ export const homeProblems = (status: KoedServerStatus): HomeProblem[] => {
       ({ state }) => state === "needs_attention" || state === "not_configured"
     )
     .map(problemFromStep);
+  for (const { id, label } of clients) {
+    const health = aiClientHealth(id, status);
+    if (!health.needsAttention) continue;
+    problems.push({
+      id: `client-${id}`,
+      title: label,
+      message: health.description,
+      action: {
+        command: `repair_${id}`,
+        label: `Repair ${label}`,
+        requiresConsent: true
+      }
+    });
+  }
   if (unhealthy(status.captureHook))
     problems.push({
       id: "capture-hook",
@@ -116,33 +126,27 @@ const clientLabels: Record<HomeClient["state"], string> = {
 };
 
 // Detected or configured AI Clients; a configured client stays listed even
-// when detection is unavailable.
+// when detection is unavailable. Health matches Settings via aiClientHealth.
 export function homeClients(status: KoedServerStatus | null): HomeClient[] {
   if (!status) return [];
   return clients.flatMap(({ id, label: name }) => {
-    const client = status.aiClients?.[id];
-    if (!client) return [];
-    const configured = client.profile.state !== "not_configured";
-    const detected = clientDetected(id, status);
-    if (!configured && !detected) return [];
-    const uncertain =
-      client.snapshotState === "stale" || client.snapshotState === "unknown";
-    const state: HomeClient["state"] = clientReady(id, status)
-      ? "connected"
-      : client.profile.state === "needs_attention"
+    const health = aiClientHealth(id, status);
+    if (!health.installed && !health.configured) return [];
+    const snapshot = status.aiClients?.[id]?.snapshotState;
+    const state: HomeClient["state"] = !health.configured
+      ? "detected"
+      : health.needsAttention
         ? "attention"
-        : uncertain
+        : snapshot === "stale" || snapshot === "unknown"
           ? "unsure"
-          : configured
-            ? "attention"
-            : "detected";
+          : "connected";
     return [
       {
         id,
         name,
         state,
-        label: clientLabels[state],
-        version: state === "detected" ? client.version : null
+        label: state === "attention" ? health.description : clientLabels[state],
+        version: state === "detected" ? health.version : null
       }
     ];
   });

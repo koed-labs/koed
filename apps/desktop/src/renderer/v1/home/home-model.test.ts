@@ -113,7 +113,10 @@ describe("homeClients", () => {
 
   it("keeps a configured client whose detection is stale", () => {
     const status = homeStatus(
-      {},
+      {
+        codex: { state: "not_configured", configured: false },
+        pi: { state: "healthy", configured: true }
+      } as Partial<KoedServerStatus>,
       {
         pi: {
           installed: { state: "not_configured" },
@@ -124,6 +127,49 @@ describe("homeClients", () => {
     expect(homeClients(status)).toEqual([
       expect.objectContaining({ id: "pi", state: "unsure" })
     ]);
+  });
+
+  it("flags a connected client whose automatic capture isn’t ready", () => {
+    const status = homeStatus(
+      {
+        codex: { state: "not_configured", configured: false },
+        claudeCode: { state: "healthy", configured: true }
+      } as Partial<KoedServerStatus>,
+      {
+        claude: {
+          capabilities: [
+            {
+              id: "automatic_capture",
+              support: "supported",
+              readiness: "not_ready",
+              diagnostics: [
+                {
+                  code: "watcher_stopped",
+                  message: "The transcript watcher stopped.",
+                  severity: "error"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    );
+    expect(homeClients(status)).toEqual([
+      expect.objectContaining({
+        id: "claude",
+        state: "attention",
+        label: "The transcript watcher stopped."
+      })
+    ]);
+    expect(selectHomeView(status, [])).toMatchObject({
+      kind: "empty",
+      warnings: [
+        {
+          id: "client-claude",
+          action: { command: "repair_claude", requiresConsent: true }
+        }
+      ]
+    });
   });
 });
 

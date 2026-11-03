@@ -1,3 +1,4 @@
+import { aiClientHealth } from "./client-health.js";
 import {
   useEffect,
   useState,
@@ -6,7 +7,6 @@ import {
 } from "react";
 import { Check, ChevronRight, RotateCw, X } from "lucide-react";
 import type {
-  KoedServerStatus,
   ComponentStatus,
   DesktopApi,
   DesktopLaunchAtStartupState
@@ -68,12 +68,6 @@ const tabNames: readonly { id: V1SettingsTab; label: string }[] = [
 ];
 const errorText = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
-const clientStatus = (id: ClientId, status: KoedServerStatus | null) =>
-  id === "codex"
-    ? status?.codex
-    : id === "claude"
-      ? status?.claudeCode
-      : status?.pi;
 const stateLabel = (component?: ComponentStatus | null) =>
   component?.state === "healthy"
     ? "Running"
@@ -850,30 +844,9 @@ export function V1Settings({
               )}
               <div className="v1-client-list">
                 {clients.map(({ id, label }) => {
-                  const client = clientStatus(id, status),
-                    readiness = status?.aiClients?.[id],
-                    configured = client?.configured === true;
-                  const installed =
-                    readiness?.installed.state === "healthy" ||
-                    (id === "claude"
-                      ? status?.claudeCode?.detected
-                      : id === "pi"
-                        ? status?.pi?.detected
-                        : undefined);
-                  const auth = readiness?.authentication;
-                  const description = !status
-                    ? "Checking…"
-                    : !installed && !configured
-                      ? "Not installed"
-                      : configured && auth === "unauthenticated"
-                        ? "Sign in required"
-                        : configured && auth === "unknown"
-                          ? "Authentication unknown"
-                          : configured && client?.state === "healthy"
-                            ? "Connected"
-                            : configured
-                              ? (client?.message ?? "Needs attention")
-                              : "Not connected";
+                  const health = aiClientHealth(id, status),
+                    client = health.integration,
+                    { installed, configured, description } = health;
                   const command: Mutation = `${configured ? "repair" : "setup"}_${id}`;
                   return (
                     <div className="v1-client-card" key={id}>
@@ -925,8 +898,8 @@ export function V1Settings({
                           </button>
                         )}
                       </div>
-                      {readiness?.version && (
-                        <p className="v1-client-version">{readiness.version}</p>
+                      {health.version && (
+                        <p className="v1-client-version">{health.version}</p>
                       )}
                     </div>
                   );

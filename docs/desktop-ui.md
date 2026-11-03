@@ -55,11 +55,13 @@ never starts a Conversation (New chat opens its own composer route).
   the window is focused and the pointer is over the stage; the sidebar order
   is independent. Reduced motion keeps re-ranking without movement or tile
   drops.
-- **AI Client keycaps** list clients that are detected or configured, from
-  `status.aiClients`. A configured client stays listed when detection is stale,
-  shown as unsure; the version is shown for a detected client that is not
-  connected. Capture health is system-wide (`status.captureHook`), so a keycap
-  does not claim that its messages are flowing.
+- **AI Client keycaps** list clients that are detected or configured. Their
+  health comes from the same reading as Settings: the client's integration
+  check (`status.codex`, `status.claudeCode`, `status.pi`) and its
+  `automatic_capture` readiness. A client needing attention also appears as a
+  warning offering its existing repair command. A configured client stays
+  listed when its snapshot is stale, shown as unsure; the version is shown for
+  a detected client that is not connected.
 
 Historical ingestion progress is not shown yet: the coordinator's state is not
 exposed to Desktop.

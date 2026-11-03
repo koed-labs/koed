@@ -254,8 +254,6 @@ children share lineage and must not count as independent corroboration.
       messages counted only once ingested. Show an indeterminate bar until a
       total is known and no time estimate. Defer "Notify me when done" until
       Desktop notification support is verified.
-- [ ] Report Capture Hook health for each AI Client, so a Home keycap can
-      warn about one client instead of the system-wide `captureHook` status.
 - [ ] Release the Project cutover as one coordinated change. Preserve coordinated
       product versions and integrate branch-preference behavior after that
       cutover. PDS branch preference must use verified captured observations and
