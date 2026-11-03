@@ -840,30 +840,6 @@ export function V1Settings({
                     ))}
                   </div>
                 </SettingRow>
-                <LaunchSetting api={launchAtStartup} />
-                <PresentationSettings api={presentationPreferences} />
-                {onRestartOnboarding && (
-                  <SettingRow
-                    title="Setup"
-                    description="Check local setup and reconnect your AI Clients. Your data stays in Koed."
-                  >
-                    <button
-                      type="button"
-                      className="v1-settings-secondary"
-                      disabled={restartBusy}
-                      onClick={() => {
-                        setRestartError(null);
-                        setRestartBusy(true);
-                        void Promise.resolve()
-                          .then(onRestartOnboarding)
-                          .catch((cause) => setRestartError(errorText(cause)))
-                          .finally(() => setRestartBusy(false));
-                      }}
-                    >
-                      {restartBusy ? "Opening…" : "Run setup again"}
-                    </button>
-                  </SettingRow>
-                )}
               </div>
               <section className="v1-parity-group">
                 <h4>On this device</h4>

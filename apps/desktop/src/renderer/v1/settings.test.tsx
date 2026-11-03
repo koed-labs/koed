@@ -112,6 +112,27 @@ describe("V1Settings", () => {
       presentationPreferences: presentation,
       onRestartOnboarding: restart
     });
+    const deviceSection = [...container.querySelectorAll("section")].find(
+      (section) => section.querySelector("h4")?.textContent === "On this device"
+    )!;
+    for (const label of [
+      "Open Koed at login",
+      "Graphics acceleration",
+      "Show Koed in the menu bar"
+    ]) {
+      const controls = container.querySelectorAll(
+        `button[aria-label="${label}"]`
+      );
+      expect(controls).toHaveLength(1);
+      expect(deviceSection.contains(controls[0]!)).toBe(true);
+    }
+    const setupButtons = [
+      ...container.querySelectorAll<HTMLButtonElement>("button")
+    ].filter((button) => button.textContent === "Run setup again");
+    expect(setupButtons).toHaveLength(1);
+    expect(deviceSection.contains(setupButtons[0]!)).toBe(true);
+    expect(launch.get).toHaveBeenCalledOnce();
+    expect(presentation.get).toHaveBeenCalledOnce();
     const login = container.querySelector(
       'button[aria-label="Open Koed at login"]'
     ) as HTMLButtonElement;
