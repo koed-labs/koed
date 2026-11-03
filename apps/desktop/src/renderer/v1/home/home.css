@@ -408,3 +408,117 @@
     display: none;
   }
 }
+
+.v1-home-ingest {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.v1-home-ingest li {
+  display: flex;
+  gap: 8px;
+}
+.v1-home-ingest span {
+  color: var(--v1-muted);
+}
+.v1-home-ingest li[data-lifecycle="failed"] span {
+  color: var(--v1-heat-3);
+}
+.v1-home-ingest li[data-lifecycle="completed"] span {
+  color: var(--v1-heat-2);
+}
+.v1-home-kin[data-hatch] .v1-pixelkin {
+  animation: v1-home-hatch 900ms ease both;
+}
+.v1-home-egg {
+  position: absolute;
+  left: var(--kin-x);
+  bottom: var(--kin-y);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  font-size: 12px;
+  color: var(--v1-faint);
+}
+.v1-home-egg i {
+  width: var(--kin-size);
+  height: var(--kin-size);
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  border: 2px dashed var(--v1-border);
+  border-radius: 28%;
+  font-style: normal;
+  font-size: calc(var(--kin-size) * 0.35);
+  font-weight: 700;
+  animation: v1-home-breathe 2.4s ease-in-out infinite;
+}
+.v1-home-progress {
+  display: grid;
+  gap: 8px;
+}
+.v1-home-progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--v1-muted);
+}
+.v1-home-progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--v1-surface);
+}
+.v1-home-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--v1-accent), var(--v1-accent-text));
+  transition: width 600ms ease;
+}
+.v1-home-progress-track[data-indeterminate] span {
+  animation: v1-home-indeterminate 1.6s ease-in-out infinite;
+}
+@keyframes v1-home-hatch {
+  0% {
+    transform: scale(0.2) translateY(30px);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.15, 0.85);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes v1-home-breathe {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+@keyframes v1-home-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(340%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .v1-home-egg i,
+  .v1-home-progress-track[data-indeterminate] span {
+    animation: none;
+  }
+}

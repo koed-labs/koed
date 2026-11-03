@@ -1,3 +1,4 @@
+import type { HistoricalIngestionLifecycle } from "@koed/shared";
 import type { ComponentStatus, KoedServerStatus } from "../../../types.js";
 import {
   projectLatestAt,
@@ -22,6 +23,7 @@ export type HomeProblem = {
 export type HomeView =
   | { kind: "loading" }
   | { kind: "attention"; problems: HomeProblem[]; primary: HomeProblem | null }
+  | { kind: "ingesting"; warnings: HomeProblem[]; ingestion: HomeIngestion }
   | { kind: "empty"; warnings: HomeProblem[] }
   | { kind: "projects"; warnings: HomeProblem[] };
 
@@ -104,10 +106,64 @@ export function selectHomeView(
       primary: listed.find(({ action }) => action) ?? null
     };
   }
+  const ingestion = homeIngestion(status);
+  if (ingestion.active)
+    return { kind: "ingesting", warnings: problems, ingestion };
   if (!projects) return { kind: "loading" };
   return projects.length
     ? { kind: "projects", warnings: problems }
     : { kind: "empty", warnings: problems };
+}
+
+export type HomeIngestionClient = {
+  id: ClientId;
+  name: string;
+  lifecycle: HistoricalIngestionLifecycle;
+  selected: number | null;
+  completed: number;
+  skipped: number;
+  lastErrorCode: string | null;
+};
+
+export type HomeIngestion = {
+  // Running or retrying; idle and unknown never hold Home on this screen.
+  active: boolean;
+  clients: HomeIngestionClient[];
+  // Finished Conversations (completed or skipped) out of the selection; the
+  // total is null until every listed client knows its selection.
+  finished: number;
+  selected: number | null;
+};
+
+export function homeIngestion(status: KoedServerStatus): HomeIngestion {
+  const listed = clients.flatMap(({ id, label: name }) => {
+    const progress = status.historicalIngestion?.[id];
+    if (!progress || progress.lifecycle === "unknown") return [];
+    return [
+      {
+        id,
+        name,
+        lifecycle: progress.lifecycle,
+        selected: progress.selected,
+        completed: progress.completed,
+        skipped: progress.skipped,
+        lastErrorCode: progress.lastErrorCode
+      }
+    ];
+  });
+  return {
+    active: listed.some(
+      ({ lifecycle }) => lifecycle === "running" || lifecycle === "failed"
+    ),
+    clients: listed,
+    finished: listed.reduce(
+      (sum, client) => sum + client.completed + client.skipped,
+      0
+    ),
+    selected: listed.every(({ selected }) => selected !== null)
+      ? listed.reduce((sum, client) => sum + (client.selected ?? 0), 0)
+      : null
+  };
 }
 
 export type HomeClient = {

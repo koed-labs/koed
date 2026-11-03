@@ -4,6 +4,7 @@ import type {
   AiClientCapabilityDescriptor,
   CollaborationRendererEvent,
   EmbeddingStateSnapshot,
+  HistoricalIngestionProgress,
   PersonalDesktopApi
 } from "@koed/shared";
 import type { PersonalDevicePairingProgress } from "./ipc/personal-device-pairing-protocol.js";
@@ -94,6 +95,7 @@ export interface KoedServerStatus {
   aiClientInstances?: Record<string, AiClientReadiness>;
   aiClientFlowReadiness?: Record<string, ComponentStatus>;
   lcmSummaryService: ComponentStatus;
+  historicalIngestion?: Record<string, HistoricalIngestionProgress>;
   embeddingState?: EmbeddingStateSnapshot | null;
   personalDeviceSync?: ComponentStatus;
   upstreamBackends: ComponentStatus & {

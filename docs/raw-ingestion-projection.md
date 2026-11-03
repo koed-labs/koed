@@ -304,7 +304,18 @@ A file created after activation uses a zero frontier and is live from its first
 complete record. Post-frontier ranges, including restart recovery, advance the
 durable `canonical_live` cursor independently while selected pre-frontier bytes
 advance `canonical_historical`. History can therefore be paused, skipped,
-retried, or incomplete without delaying live append capture. Before each page,
+retried, or incomplete without delaying live append capture.
+
+The automatic historical coordinator for each AI Client keeps its selection in
+`KOED_HOME/state/<client>-historical-ingestion.json`, with a `progress` record
+of when it last wrote, its last batch outcome, its last progress, and its last
+pass failure. Koed status summarises that file without starting or changing
+ingestion: Conversations count as finished only at a completed or skipped
+outcome, skipped is reported separately, and an unfinished run with no write
+for 15 minutes is reported as idle, never as resumed. Desktop Home uses this
+summary for its ingestion screen.
+
+Before each page,
 Koed compares cursor offset with bounded SHA-256 first/last prefix sentinels.
 Partial trailing JSONL holds the cursor; malformed complete records, truncation,
 and sentinel-covered prefix mutation fail visibly without advancement.

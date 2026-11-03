@@ -1,5 +1,9 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import {
+  readHistoricalIngestionProgressRecord,
+  type HistoricalIngestionProgressRecord
+} from "@koed/shared";
 
 const STATE_VERSION = 1;
 
@@ -70,6 +74,8 @@ export interface HistoricalIngestionCoordinatorState {
   runCompleted: boolean;
   runId?: string;
   selections: HistoricalCandidateSelection[];
+  // Read by Koed status for Desktop; never used to decide what to process.
+  progress?: HistoricalIngestionProgressRecord;
 }
 
 export interface HistoricalIngestionCoordinatorHandle<Candidate> {
@@ -129,12 +135,14 @@ const loadState = (statePath: string): HistoricalIngestionCoordinatorState => {
     ) {
       return emptyState();
     }
+    const progress = readHistoricalIngestionProgressRecord(value.progress);
     return {
       version: STATE_VERSION,
       selectionFrozen: value.selectionFrozen,
       runCompleted: value.runCompleted === true,
       ...(typeof value.runId === "string" ? { runId: value.runId } : {}),
-      selections: value.selections
+      selections: value.selections,
+      ...(progress ? { progress } : {})
     };
   } catch {
     return emptyState();
@@ -173,7 +181,18 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
   let discovery: Promise<void> | null = null;
   let discoveryTimer: NodeJS.Timeout | undefined;
 
+  const nowIso = () => (input.now?.() ?? new Date()).toISOString();
   const save = (): void => persistState(statePath, state);
+  const record = (
+    update: Omit<HistoricalIngestionProgressRecord, "updatedAt">
+  ): void => {
+    state.progress = { ...state.progress, ...update, updatedAt: nowIso() };
+  };
+  const reportError = (code: string): void => {
+    record({ lastErrorCode: code, lastErrorAt: nowIso() });
+    save();
+    input.onError?.(code);
+  };
   const schedule = (delayMs = 0): void => {
     if (stopped) return;
     requested = true;
@@ -211,6 +230,14 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
             : result.selection;
       }
       if (result.runId) state.runId = result.runId;
+      record({
+        lastBatchState: result.state,
+        ...(result.state === "progress" ||
+        result.state === "completed" ||
+        result.state === "skipped"
+          ? { lastProgressAt: nowIso() }
+          : {})
+      });
       if (result.diagnosticCode) input.onError?.(result.diagnosticCode);
       if (result.state === "progress") progressed = true;
       if (result.state !== "completed" && result.state !== "skipped") {
@@ -237,7 +264,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
         const progressed = await pass();
         if (progressed) requested = true;
       } catch (error) {
-        input.onError?.(
+        reportError(
           error instanceof Error && /^[a-z0-9_.:-]+$/.test(error.message)
             ? error.message
             : "historical_ingestion_pass_failed"
@@ -268,6 +295,7 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
           input.now?.() ?? new Date()
         )
       };
+      record({});
       save();
     }
     schedule();

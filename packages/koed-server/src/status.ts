@@ -59,6 +59,7 @@ import {
   nodeCliInvocation,
   nodeCliProcessEnvironment,
   resolveTeamCollaborationEnabled,
+  summarizeHistoricalIngestionState,
   type AiClientCapabilityDescriptor,
   type EmbeddingStateSnapshot,
   type LocalAiClientDefault,
@@ -1883,6 +1884,36 @@ const localSynthesisReadiness = (
   return current;
 };
 
+const historicalIngestionClients = ["codex", "claude", "pi"] as const;
+
+// Reads the coordinator's own state files; never starts or changes ingestion.
+export const inspectHistoricalIngestion = (
+  paths: { koedHome: string },
+  deps: Pick<
+    Required<KoedServerStatusDependencies>,
+    "existsSync" | "readFileSync" | "now"
+  >
+): KoedServerStatus["historicalIngestion"] => {
+  const now = deps.now().getTime();
+  return Object.fromEntries(
+    historicalIngestionClients.map((client) => {
+      const file = resolve(
+        paths.koedHome,
+        "state",
+        `${client}-historical-ingestion.json`
+      );
+      let value: unknown;
+      try {
+        if (deps.existsSync(file))
+          value = JSON.parse(String(deps.readFileSync(file, "utf8")));
+      } catch {
+        value = undefined;
+      }
+      return [client, summarizeHistoricalIngestionState(value, now)];
+    })
+  ) as KoedServerStatus["historicalIngestion"];
+};
+
 export const inspectAiClientReadiness = (input: {
   codex: KoedServerStatus["codex"];
   claudeCode: KoedServerStatus["claudeCode"];
@@ -3136,6 +3167,7 @@ export const collectKoedServerStatus = async (
     aiClientInstances,
     aiClientFlowReadiness,
     lcmSummaryService,
+    historicalIngestion: inspectHistoricalIngestion(paths, deps),
     embeddingState,
     deviceIdentity,
     upstreamBackends,

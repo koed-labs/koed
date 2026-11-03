@@ -248,12 +248,10 @@ children share lineage and must not count as independent corroboration.
       30 days. Keep selection controls separate from fresh-import Project assignment
       and preserve the migration cutoff for previously captured history.
       Desktop Home should state these limits when it shows ingestion progress.
-- [ ] Expose historical ingestion progress to Desktop Home: a lifecycle of
-      unknown, idle, running, completed, failed or cancelled; Conversations
-      counted only at a terminal outcome with failures reported separately; and
-      messages counted only once ingested. Show an indeterminate bar until a
-      total is known and no time estimate. Defer "Notify me when done" until
-      Desktop notification support is verified.
+- [ ] Add a Desktop notification when historical ingestion finishes, once
+      notification permission and platform support are verified.
+- [ ] Report ingested message counts for historical ingestion. Each importer
+      counts differently today, so Home shows finished Conversations only.
 - [ ] Release the Project cutover as one coordinated change. Preserve coordinated
       product versions and integrate branch-preference behavior after that
       cutover. PDS branch preference must use verified captured observations and

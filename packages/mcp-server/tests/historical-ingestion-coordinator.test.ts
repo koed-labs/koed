@@ -277,6 +277,59 @@ describe("provider-owned historical discovery", () => {
     await coordinator.stop();
   });
 
+  it("records progress and pass failures for status readers", async () => {
+    let calls = 0;
+    const koedHome = temporaryDirectory();
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "progress-provider",
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "progress-provider",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        calls += 1;
+        if (calls === 1) return { state: "progress", selection };
+        throw new Error("historical_batch_rejected");
+      }
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome,
+      retryMs: 60_000,
+      now: () => new Date("2026-08-18T00:00:00.000Z")
+    });
+    coordinator.offerCandidates([{ id: "conversation" }]);
+
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().progress?.lastErrorCode).toBe(
+        "historical_batch_rejected"
+      )
+    );
+    const saved = JSON.parse(
+      readFileSync(
+        path.join(
+          koedHome,
+          "state",
+          "progress-provider-historical-ingestion.json"
+        ),
+        "utf8"
+      )
+    );
+    expect(saved.progress).toEqual({
+      updatedAt: "2026-08-18T00:00:00.000Z",
+      lastBatchState: "progress",
+      lastProgressAt: "2026-08-18T00:00:00.000Z",
+      lastErrorCode: "historical_batch_rejected",
+      lastErrorAt: "2026-08-18T00:00:00.000Z"
+    });
+    await coordinator.stop();
+  });
+
   it("retries transient discovery failures before freezing the cohort", async () => {
     let discoveryAttempts = 0;
     const errors: string[] = [];

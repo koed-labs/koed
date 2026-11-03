@@ -5,6 +5,10 @@ import {
   useState,
   type CSSProperties
 } from "react";
+import {
+  AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
+  AUTOMATIC_HISTORICAL_WINDOW_DAYS
+} from "@koed/shared";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { AiClientLogo } from "../../views/personal/AiClientLogo.js";
 import { Pixelkin } from "../pixelkin/Pixelkin.js";
@@ -16,6 +20,8 @@ import {
   homeHeat,
   rankHomeProjects,
   type HomeClient,
+  type HomeIngestion,
+  type HomeIngestionClient,
   type HomeProblem,
   type HomeProjectEntry,
   type HomeView
@@ -352,6 +358,124 @@ function ProjectsStage({
   );
 }
 
+const ingestionLine = (client: HomeIngestionClient) => {
+  const of =
+    client.selected === null
+      ? `${client.completed} conversations`
+      : `${client.completed} of ${client.selected} conversations`;
+  const skipped = client.skipped ? ` · ${client.skipped} skipped` : "";
+  switch (client.lifecycle) {
+    case "running":
+      return `Reading · ${of}${skipped}`;
+    case "completed":
+      return `Done · ${of}${skipped}`;
+    case "failed":
+      return `Hit a problem, will retry · ${of}${skipped}`;
+    case "cancelled":
+      return `Stopped · ${of}${skipped}`;
+    default:
+      return `Paused · ${of}${skipped}`;
+  }
+};
+
+function HatchingStage({
+  entries,
+  onOpenProject
+}: {
+  entries: readonly HomeProjectEntry[];
+  onOpenProject: (projectId: string) => void;
+}) {
+  const reduced = useReducedMotion();
+  // Projects present on the first render were found before this screen opened.
+  const seen = useRef<Set<string> | null>(null);
+  seen.current ??= new Set(entries.map(({ id }) => id));
+  const shown = rankHomeProjects(entries).slice(0, HOME_STAGE_LIMIT - 2);
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  return (
+    <section className="v1-home-stage" aria-label="Projects found so far">
+      {shown.map((id, rank) => {
+        const entry = byId.get(id)!;
+        const slot = slots[rank]!;
+        return (
+          <button
+            key={id}
+            type="button"
+            className="v1-home-kin"
+            data-front={rank < 3 || undefined}
+            data-hatch={(!reduced && !seen.current!.has(id)) || undefined}
+            style={
+              {
+                "--kin-x": `${slot.x}%`,
+                "--kin-y": `${slot.y}%`,
+                "--kin-size": `${slot.size}px`
+              } as CSSProperties
+            }
+            aria-label={`Open Project ${entry.name}`}
+            onClick={() => onOpenProject(id)}
+          >
+            <Pixelkin look={projectKinLook(id)} size={slot.size} />
+            <span className="v1-home-kin-shadow" aria-hidden="true" />
+            <span className="v1-home-kin-label">
+              <strong>{entry.name}</strong>
+            </span>
+          </button>
+        );
+      })}
+      {[shown.length, shown.length + 1].map((rank) => {
+        const slot = slots[rank]!;
+        return (
+          <span
+            key={`egg-${rank}`}
+            className="v1-home-egg"
+            aria-hidden="true"
+            style={
+              {
+                "--kin-x": `${slot.x}%`,
+                "--kin-y": `${slot.y}%`,
+                "--kin-size": `${slot.size}px`
+              } as CSSProperties
+            }
+          >
+            <i>?</i>
+            <span>finding…</span>
+          </span>
+        );
+      })}
+    </section>
+  );
+}
+
+function IngestionProgress({ ingestion }: { ingestion: HomeIngestion }) {
+  const total = ingestion.selected;
+  const percent =
+    total && total > 0
+      ? Math.min(100, Math.round((100 * ingestion.finished) / total))
+      : null;
+  return (
+    <div className="v1-home-progress">
+      <div className="v1-home-progress-label">
+        <span>
+          {total === null
+            ? "Choosing conversations to process…"
+            : `${ingestion.finished} of ${total} selected conversations processed`}
+        </span>
+        {percent !== null && <span>{percent}%</span>}
+      </div>
+      <div
+        role="progressbar"
+        aria-label="Recent history processed"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent ?? undefined}
+        className="v1-home-progress-track"
+        data-indeterminate={percent === null || undefined}
+      >
+        <span style={{ width: `${percent ?? 30}%` }} />
+      </div>
+    </div>
+  );
+}
+
 export function Home({
   view,
   clients,
@@ -403,6 +527,35 @@ export function Home({
       />
     </div>
   ) : null;
+  if (view.kind === "ingesting")
+    return (
+      <section className="v1-home" data-mood="ingesting">
+        {warnings}
+        <header className="v1-home-header">
+          <Pixelkin look={agent.look} size={48} expression="happy" />
+          <div>
+            <h1>Hatching your Projects</h1>
+            <p className="v1-home-sub">
+              {agent.name} is processing selected recent history: up to{" "}
+              {AUTOMATIC_HISTORICAL_CONVERSATION_CAP} conversations per AI
+              Client from the last {AUTOMATIC_HISTORICAL_WINDOW_DAYS} days.
+              Projects appear as they’re found.
+            </p>
+          </div>
+        </header>
+        <Keycaps clients={clients} />
+        <ul className="v1-home-ingest" aria-label="Recent history by AI Client">
+          {view.ingestion.clients.map((client) => (
+            <li key={client.id} data-lifecycle={client.lifecycle}>
+              <strong>{client.name}</strong>
+              <span>{ingestionLine(client)}</span>
+            </li>
+          ))}
+        </ul>
+        <HatchingStage entries={entries} onOpenProject={onOpenProject} />
+        <IngestionProgress ingestion={view.ingestion} />
+      </section>
+    );
   if (view.kind === "empty")
     return (
       <section className="v1-home v1-home-centred" data-mood="empty">

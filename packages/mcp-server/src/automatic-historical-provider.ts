@@ -1,10 +1,17 @@
-import type { HistoricalAdmissionDecision } from "@koed/shared";
+import {
+  AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
+  AUTOMATIC_HISTORICAL_WINDOW_DAYS,
+  type HistoricalAdmissionDecision
+} from "@koed/shared";
 
 import type { HistoricalCandidateSelection } from "./historical-ingestion-coordinator.js";
 import { MemoryApiClient, MemoryApiError } from "./index.js";
 
-export const AUTOMATIC_HISTORICAL_WINDOW_DAYS = 30;
-export const AUTOMATIC_HISTORICAL_CONVERSATION_CAP = 50;
+// Shared so Desktop can describe the same limits.
+export {
+  AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
+  AUTOMATIC_HISTORICAL_WINDOW_DAYS
+};
 
 export const resolveAutomaticHistoricalJournalBatchBytes = (
   env: NodeJS.ProcessEnv = process.env

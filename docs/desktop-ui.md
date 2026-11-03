@@ -63,8 +63,12 @@ never starts a Conversation (New chat opens its own composer route).
   listed when its snapshot is stale, shown as unsure; the version is shown for
   a detected client that is not connected.
 
-Historical ingestion progress is not shown yet: the coordinator's state is not
-exposed to Desktop.
+- **Hatching** shows while any AI Client's automatic historical ingestion is
+  running or retrying after a failure, from `status.historicalIngestion`. It
+  states the selection limits (recent history only), counts finished
+  Conversations per client with skipped ones apart, and keeps the progress bar
+  indeterminate until every selection is known. It shows no time estimate and
+  no completion notification. Idle or unknown ingestion never holds Home here.
 
 Run `pnpm --filter @koed/desktop test:browser:v1` for the isolated Electron
 presentation smoke check. This fixture does not configure local AI Clients or

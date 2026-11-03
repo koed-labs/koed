@@ -127,6 +127,52 @@ describe("Home", () => {
     expect(kin("a").getAttribute("aria-label")).toContain("14 captured events");
   });
 
+  it("shows ingestion counts with an indeterminate bar until the total is known", async () => {
+    await render({
+      entries: [entry("koed", "2026-11-03T11:00:00Z")],
+      view: {
+        kind: "ingesting",
+        warnings: [],
+        ingestion: {
+          active: true,
+          finished: 2,
+          selected: null,
+          clients: [
+            {
+              id: "codex",
+              name: "Codex",
+              lifecycle: "running",
+              selected: null,
+              completed: 2,
+              skipped: 0,
+              lastErrorCode: null
+            },
+            {
+              id: "claude",
+              name: "Claude Code",
+              lifecycle: "failed",
+              selected: 8,
+              completed: 1,
+              skipped: 1,
+              lastErrorCode: "historical_ingestion_pass_failed"
+            }
+          ]
+        }
+      }
+    });
+    expect(container.textContent).toContain("up to 50 conversations");
+    expect(container.textContent).toContain("Reading · 2 conversations");
+    expect(container.textContent).toContain(
+      "Hit a problem, will retry · 1 of 8 conversations · 1 skipped"
+    );
+    const bar = container.querySelector('[role="progressbar"]')!;
+    expect(bar.hasAttribute("aria-valuenow")).toBe(false);
+    expect(bar.hasAttribute("data-indeterminate")).toBe(true);
+    expect(
+      container.querySelector('button[aria-label="Open Project koed"]')
+    ).not.toBeNull();
+  });
+
   it("asks before running a command that needs consent", async () => {
     const statusStore = new DesktopStatusStore();
     const run = vi.spyOn(statusStore, "run").mockResolvedValue(undefined);

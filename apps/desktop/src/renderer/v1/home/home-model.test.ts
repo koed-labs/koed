@@ -80,6 +80,56 @@ describe("selectHomeView", () => {
   });
 });
 
+describe("ingestion", () => {
+  const progress = (
+    lifecycle: string,
+    selected: number | null,
+    completed = 0,
+    skipped = 0
+  ) => ({
+    lifecycle,
+    selected,
+    completed,
+    skipped,
+    updatedAt: null,
+    lastErrorCode: null
+  });
+
+  it("shows the hatching screen only while a run is running or retrying", () => {
+    const running = homeStatus({
+      historicalIngestion: {
+        codex: progress("running", 10, 3, 1),
+        claude: progress("completed", 5, 5),
+        pi: progress("unknown", null)
+      }
+    } as Partial<KoedServerStatus>);
+    expect(selectHomeView(running, null)).toMatchObject({
+      kind: "ingesting",
+      ingestion: {
+        active: true,
+        finished: 9,
+        selected: 15,
+        clients: [{ id: "codex" }, { id: "claude" }]
+      }
+    });
+    const idle = homeStatus({
+      historicalIngestion: { codex: progress("idle", 10, 3) }
+    } as Partial<KoedServerStatus>);
+    expect(selectHomeView(idle, []).kind).toBe("empty");
+  });
+
+  it("leaves the total unknown until every selection is known", () => {
+    const status = homeStatus({
+      historicalIngestion: {
+        codex: progress("running", null),
+        claude: progress("running", 4)
+      }
+    } as Partial<KoedServerStatus>);
+    const view = selectHomeView(status, null);
+    expect(view.kind === "ingesting" && view.ingestion.selected).toBeNull();
+  });
+});
+
 describe("homeClients", () => {
   it("lists detected or configured AI Clients only", () => {
     const status = homeStatus(
