@@ -297,7 +297,7 @@ export const smokePackagedRendererFaults = async ({
     console.error("[packaged-renderer] setup surface started");
     await waitFor(
       evaluate,
-      `document.querySelector('.koed-setup-card h1')?.textContent?.trim() === 'Set up Koed'`,
+      `[...document.querySelectorAll('.lp-workspace button')].some((button) => button.textContent?.trim() === 'Get Started' && !button.disabled)`,
       "setup surface",
       `(() => ({
         title: document.querySelector('h1')?.textContent ?? null,

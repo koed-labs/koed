@@ -808,33 +808,40 @@ describe("Local AI Runtime", () => {
     ).toThrow();
   });
 
-  it("refreshes capabilities through authenticated bounded runtime client", async () => {
-    const koedHome = tempHome();
-    const refresh = vi.fn(async () => [
-      {
-        instanceId: "codex.default",
-        driverId: "codex",
-        published: true,
-        error: null
+  it.each([undefined, "claude"] as const)(
+    "refreshes capabilities through authenticated bounded runtime client (%s)",
+    async (driverId) => {
+      const koedHome = tempHome();
+      const refresh = vi.fn(async () => [
+        {
+          instanceId: "codex.default",
+          driverId: "codex",
+          published: true,
+          error: null
+        }
+      ]);
+      const runtime = await startLocalAiRuntime({
+        environment: { KOED_HOME: koedHome },
+        serviceFactory: async () => ({
+          executor: defaultExecutor(),
+          capabilityPublisher: { refresh, stop: vi.fn() },
+          close: vi.fn(async () => undefined)
+        })
+      });
+      try {
+        await expect(
+          new LocalAiRuntimeClient({ KOED_HOME: koedHome }).refreshCapabilities(
+            undefined,
+            5000,
+            driverId
+          )
+        ).resolves.toMatchObject({ protocolVersion: 1 });
+        expect(refresh).toHaveBeenCalledWith(driverId);
+      } finally {
+        await runtime.close();
       }
-    ]);
-    const runtime = await startLocalAiRuntime({
-      environment: { KOED_HOME: koedHome },
-      serviceFactory: async () => ({
-        executor: defaultExecutor(),
-        capabilityPublisher: { refresh, stop: vi.fn() },
-        close: vi.fn(async () => undefined)
-      })
-    });
-    try {
-      await expect(
-        new LocalAiRuntimeClient({ KOED_HOME: koedHome }).refreshCapabilities()
-      ).resolves.toMatchObject({ protocolVersion: 1 });
-      expect(refresh).toHaveBeenCalledTimes(1);
-    } finally {
-      await runtime.close();
     }
-  });
+  );
 
   it("reports capability publication failures as unavailable", async () => {
     const koedHome = tempHome();

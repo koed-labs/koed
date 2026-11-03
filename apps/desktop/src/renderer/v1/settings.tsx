@@ -743,7 +743,7 @@ export function V1Settings({
                 {onRestartOnboarding && (
                   <SettingRow
                     title="Setup"
-                    description="Meet your agent and connect your AI again. Your data stays in Koed."
+                    description="Check local setup and reconnect your AI Clients. Your data stays in Koed."
                   >
                     <button
                       type="button"

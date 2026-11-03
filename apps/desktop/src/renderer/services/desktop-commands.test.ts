@@ -59,6 +59,62 @@ describe("invokeDesktop", () => {
 });
 
 describe("DesktopStatusStore", () => {
+  it("returns the operation's authoritative status without a second probe", async () => {
+    const result = { ok: true };
+    const fresh = status();
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockResolvedValueOnce(result)
+      .mockResolvedValueOnce(fresh);
+    window.koedDesktop = { invoke } as DesktopApi;
+    await expect(
+      new DesktopStatusStore().runWithStatus("setup_codex")
+    ).resolves.toEqual({ result, status: fresh });
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "setup_codex",
+      "status"
+    ]);
+  });
+
+  it("returns no verified status when the post-operation refresh fails", async () => {
+    const invoke = vi
+      .fn<DesktopApi["invoke"]>()
+      .mockResolvedValueOnce(status())
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(new Error("Status unavailable"));
+    window.koedDesktop = { invoke } as DesktopApi;
+    const store = new DesktopStatusStore();
+    await store.refresh();
+    await expect(store.runWithStatus("repair_codex")).resolves.toEqual({
+      result: { ok: true },
+      status: null
+    });
+    expect(store.current().error).toBe("Status unavailable");
+  });
+
+  it("does not reuse a probe started before configuration completed", async () => {
+    const resolvers: Array<(value: KoedServerStatus) => void> = [];
+    const invoke = vi.fn(async (command: string) => {
+      if (command !== "status") return { ok: true };
+      return new Promise<KoedServerStatus>((resolve) =>
+        resolvers.push(resolve)
+      );
+    });
+    window.koedDesktop = { invoke } as DesktopApi;
+    const store = new DesktopStatusStore();
+    const oldProbe = store.refresh();
+    const operation = store.runWithStatus("setup_codex");
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    resolvers[0]!(status(false));
+    await vi.waitFor(() => expect(resolvers).toHaveLength(2));
+    resolvers[1]!(status());
+    await oldProbe;
+    await expect(operation).resolves.toEqual({
+      result: { ok: true },
+      status: status()
+    });
+  });
+
   it("deduplicates concurrent status refreshes", async () => {
     let resolve!: (value: KoedServerStatus) => void;
     const invoke = vi.fn(
@@ -149,7 +205,9 @@ describe("DesktopStatusStore", () => {
     });
     window.koedDesktop = { invoke } as DesktopApi;
     const store = new DesktopStatusStore();
-    await store.run("check_claude");
+    await expect(store.runWithStatus("check_claude")).resolves.toMatchObject({
+      status: checkedStatus
+    });
     expect(invoke.mock.calls.map(([command]) => command)).toEqual([
       "check_claude"
     ]);
@@ -166,7 +224,9 @@ describe("DesktopStatusStore", () => {
       capabilityRefresh: { refreshed: false }
     });
     window.koedDesktop = { invoke } as DesktopApi;
-    await new DesktopStatusStore().run("check_claude");
+    await expect(
+      new DesktopStatusStore().runWithStatus("check_claude")
+    ).resolves.toMatchObject({ status: null });
     expect(invoke.mock.calls.map(([command]) => command)).toEqual([
       "check_claude"
     ]);

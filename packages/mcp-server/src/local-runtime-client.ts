@@ -181,10 +181,13 @@ export class LocalAiRuntimeClient {
 
   async refreshCapabilities(
     signal?: AbortSignal,
-    timeoutMs = 5_000
+    timeoutMs = 5_000,
+    driverId?: "codex" | "claude" | "pi"
   ): Promise<Record<string, unknown>> {
     return this.request(
-      "/v1/capabilities/refresh",
+      driverId
+        ? `/v1/capabilities/refresh?driver=${driverId}`
+        : "/v1/capabilities/refresh",
       { method: "POST" },
       signal,
       timeoutMs

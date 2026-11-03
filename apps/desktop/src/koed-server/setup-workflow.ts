@@ -27,6 +27,7 @@ export type DesktopSetupActionResult = {
 };
 
 export type DesktopSetupStageProgress = {
+  progressPhase?: "downloading" | "verifying" | "complete";
   completedBytes: number | null;
   message: string;
   totalBytes: number | null;
@@ -68,8 +69,10 @@ export const createDesktopSetupWorkflow = ({
   runStage
 }: DesktopSetupWorkflowDependencies) => {
   let activeRun: Promise<DesktopSetupSnapshot> | null = null;
+  let activeSnapshot: DesktopSetupSnapshot | null = null;
 
   const inspect = async (): Promise<DesktopSetupSnapshot> => {
+    if (activeRun && activeSnapshot) return cloneSnapshot(activeSnapshot);
     const runId = randomId();
     const checks = await Promise.all(
       desktopSetupStageIds.map(async (stage) => ({
@@ -120,6 +123,7 @@ export const createDesktopSetupWorkflow = ({
     const publish = () => {
       sequence += 1;
       snapshot = { ...snapshot, sequence };
+      activeSnapshot = cloneSnapshot(snapshot);
       emit(cloneSnapshot(snapshot));
     };
     publish();
@@ -212,6 +216,7 @@ export const createDesktopSetupWorkflow = ({
       if (!activeRun) {
         activeRun = execute(emit, signal).finally(() => {
           activeRun = null;
+          activeSnapshot = null;
         });
       }
       return activeRun;

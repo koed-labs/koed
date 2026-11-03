@@ -1305,8 +1305,45 @@ Then use `http://<WSL_IP>:<port>` for the API. Native Windows packaged app suppo
 
 ### Packaged Desktop first-run
 
+Personal Desktop onboarding proceeds through local setup, AI Client connection,
+and completion. The opening screen shows Kin and **Get Started**; status text and
+progress appear once setup begins. Onboarding follows the system appearance with
+no theme toggle. Kin can be dragged to spin; a fast spin briefly startles it.
+Reduced motion disables release momentum. **Get Started** authorizes the existing six-stage local workflow;
+progress reflects completed steps and actual download bytes. Download progress
+streams from the installer into Desktop with a transferred-byte readout. The bar
+uses fractional progress between percentage labels; steps without a known total
+show an activity indicator within the current step instead of a timed estimate.
+Checksum verification remains part of setup and completion requires its success. Retry retains
+completed installation work. Reopening during a run inspects its current state
+and continues checking until it ends, even when the original window's progress
+subscription is gone. Long setup errors and expanded connection details scroll
+within the window so recovery controls remain reachable.
+After core setup, detected Codex, Claude Code, and Pi installations are initially
+selected for connection. Selection and discovery do not configure them. **Connect**
+authorizes changes to the selected AI Clients only. Failed connections and sign-in
+requirements remain visible and can be retried independently. At least one ready,
+authenticated AI Client is required before **Let’s go** saves completion. Settings
+retains agent customization and **Run setup again**; the earlier onboarding chat
+and memory demonstration are no longer part of this flow. Capture, recall, and
+service ordering retain their existing implementations.
+
+Client connection errors show a short recovery message; **Details** reveals
+diagnostic text when available. Sign-in guidance stays visible. Onboarding uses
+the status returned by the command store's post-operation check, without a second
+aggregate scan. A failed check cannot reuse earlier healthy status to allow
+completion. **Let’s go** checks setup and client readiness concurrently; concurrent
+status requests share one in-flight probe, with no completed-result cache. AI Client
+setup, repair, and checks refresh capabilities only for that client’s driver.
+A targeted refresh waits for earlier discovery to finish before checking the new
+configuration. A full refresh that overlaps a targeted refresh waits and then
+discovers all instances, keeping other AI Clients' snapshots current.
+Fresh installation evidence allows an AI Client to be selected before its first
+capability snapshot exists. Connection must still confirm current capabilities
+and authentication before that client can satisfy the completion requirement.
+
 Privacy Filter setup is available in Preferences → General → Optional tools.
-Team-enabled onboarding also exposes Privacy Filter setup before core setup,
+The legacy Team-enabled setup screen also exposes Privacy Filter setup before core setup,
 because local Team services require its runtime and model. Command-line setup
 stays in Preferences. **Download and install** authorizes
 installation of the runtime and the separately pinned model. Opening Preferences
@@ -1315,7 +1352,7 @@ transfer supplies its size.
 
 The installer authenticates both assets and runs a synthetic masking example.
 It then activates the runtime and starts Koed when the remaining core assets are
-installed. If storage or embedding assets are missing, complete **Set up Koed**
+installed. If storage or embedding assets are missing, complete **Get Started**
 or **Retry setup**. This pending state does not report Privacy Filter as ready.
 Required Team sharing stays blocked until the service passes readiness.
 

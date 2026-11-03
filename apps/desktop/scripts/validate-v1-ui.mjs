@@ -62,18 +62,14 @@ const run = async () => {
     await capture("model-picker-dark");
     await window.loadFile(page, { query: { onboarding: "1" } });
     await paint();
-    assert.ok(
-      await evaluate(
-        "!!document.querySelector('input[placeholder=\"Give me a name\"]')"
-      )
-    );
+    assert.ok(await evaluate("!!document.querySelector('.lp-workspace')"));
     assert.equal(
       await evaluate(
-        "(()=>{const b=document.querySelector('.v1-ob-primary');return getComputedStyle(b).color!==getComputedStyle(b).backgroundColor;})()"
+        "(()=>{const b=document.querySelector('.lp-primary-button');return getComputedStyle(b).color!==getComputedStyle(b).backgroundColor;})()"
       ),
       true
     );
-    await capture("onboarding-maker");
+    await capture("onboarding-ready");
     assert.deepEqual(errors, []);
     console.log("V1 Electron presentation checks passed; captures:", scratch);
   } finally {

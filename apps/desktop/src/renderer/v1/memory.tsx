@@ -10,40 +10,6 @@ import { createRendererPlatform } from "../services/platform.js";
 const errorMessage = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
 
-/** Repeating the onboarding action cannot create duplicate notes after a lost response. */
-export async function saveOnboardingMemory(
-  api: PersonalDesktopApi,
-  text: string
-) {
-  if (!api.createNote)
-    throw new Error(
-      "Personal Memory is unavailable. Check local services and retry."
-    );
-  const body = text.trim();
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(body)
-  );
-  const key = Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0")
-  ).join("");
-  const note = await api.createNote({
-    body,
-    idempotencyKey: `v1-onboarding:${key}`
-  });
-  if (note.projectionState === "failed")
-    throw new Error(
-      "Your note was saved, but memory preparation needs attention. Retry after checking local services."
-    );
-  return {
-    message:
-      note.projectionState === "available"
-        ? "Saved to your Personal Memory."
-        : "Your note is saved. Koed is preparing it for recall.",
-    evidence: body
-  };
-}
-
 export function V1MemoryPanel({
   api,
   onClose
