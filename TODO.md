@@ -20,10 +20,13 @@ Publication remains a separate decision.
       on a 16 GB Mac. The settings candidate tested with official v0.10.3 pins
       passed download, model verification, synthetic filtering, and activation;
       the automatic-provider startup was interrupted by a User restart. A later
-      CPU-only recovery exceeded the test’s 5 GiB aggregate process-RSS budget
-      and was stopped. Measure memory by service during model loading and
-      provider calibration before attributing the cause. Preserve the native
-      readiness gate and distinguish shared RSS pages from physical pressure.
+      CPU-only recovery hit the conservative 5 GiB process-RSS cutoff. A
+      User-approved retry with a 6.5 GiB cutoff and system-pressure guards passed
+      native service and nested-page readiness: peak aggregate RSS 6,449 MiB,
+      system memory availability at least 55%, and normal kernel pressure.
+      Measure memory by service during model loading and provider calibration
+      before attributing the original exhaustion. The CPU result does not qualify
+      automatic-provider behavior; shared RSS pages are not physical pressure.
 
 The [installation guide](docs/optional-privacy-installation.md) defines compatibility selection, filtering readiness, and CPU fallback.
 
