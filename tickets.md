@@ -106,7 +106,7 @@ Retain evidence with the candidate commit and baseline identifier: paired screen
 
 **Blocked by:** 01 — its General layout, nested navigation, and shared setup presentation/lifecycle are the integration surface.
 
-**Status:** in-progress
+**Status:** blocked — compatible approved v0.10.0 component manifest catalog required for live packaged installation/readiness validation.
 
 - [x] The Privacy Filter card and nested page match the approved B reference, including title, description, status panel, setup steps, download progress, action placement, and back behavior. Optional tools remains the final General section.
 - [x] Use the existing Privacy installation bridge and shared job state. Entering the page only inspects status; downloading/installation starts only through the explicit install action. Missing bridge or packaged-app-only operation gets an accurate status-only treatment rather than a futile action.
@@ -159,7 +159,7 @@ Retain evidence with the candidate commit and baseline identifier: paired screen
 
 **Blocked by:** 02 — Privacy Filter journey; 04 — completed Services/embedding journey. Their prerequisites already include 01 and 03.
 
-**Status:** in-progress
+**Status:** blocked — ticket 02’s live Privacy Filter installation/readiness gate remains unresolved.
 
 - [x] Run the shared visual comparison matrix against the preserved final B baseline for all six screens. Specifically prove the final General order and nested-page behavior; stale popup/disclosure references or screenshots with Optional tools above device settings are not valid evidence.
 - [x] Complete an integrated journey: change and reload preferences; enter each Optional tools page; begin setup, return to General, inspect Services, and revisit progress/readiness; inspect service and embedding details; exercise Back, Escape, close/reopen, and browser history where supported. Verify focus/scroll restoration and no duplicate operations or lost state.
@@ -204,4 +204,6 @@ The production sheet omits the prototype toolbar, preview-state controls, and ex
 
 The new Desktop settings guide and updated Privacy installation guide describe the delivered navigation and background continuation. Service boundaries, ingestion, storage, embedding policy, and AI Client integration flow are unchanged, so no architecture-documentation update or new ADR is required. The User approved omitting the changeset. No release was published.
 
-**Completion gate:** do not mark this package complete until a compatible approved manifest catalog is available and the live Privacy installation/readiness check passes, the complete acceptance result is recorded against the identified candidate. Do not replace those checks with simulated success or weaken manifest verification.
+**Completion gate:** do not mark this package complete until a compatible approved manifest catalog is available and the live Privacy installation/readiness check passes, and the complete acceptance result is recorded against the identified candidate. Do not replace those checks with simulated success or weaken manifest verification.
+
+**Blocked audit:** current packaged v0.10.0 Server code exports `productionComponentManifestCatalog = null`. All 15 implementation-source hashes still match candidate `72e35c36`; the working tree contains no implementation drift. The same catalog prerequisite remains unresolved after repeated goal turns, and the User has confirmed that no approved compatible artifact is available. Resume tickets 02 and 05 when that release input becomes available; preserve manifest verification and the existing exact-version requirement.
