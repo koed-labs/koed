@@ -16,6 +16,15 @@ Publication remains a separate decision.
       build. Add coverage that a full build keeps the catalog, with and without
       `KOED_COMPONENT_MANIFEST_CATALOG`.
 
+- [ ] Investigate macOS host-memory exhaustion during packaged Privacy startup
+      on a 16 GB Mac. The settings candidate tested with official v0.10.3 pins
+      passed download, model verification, synthetic filtering, and activation;
+      the automatic-provider startup was interrupted by a User restart. A later
+      CPU-only recovery exceeded the test’s 5 GiB aggregate process-RSS budget
+      and was stopped. Measure memory by service during model loading and
+      provider calibration before attributing the cause. Preserve the native
+      readiness gate and distinguish shared RSS pages from physical pressure.
+
 The [installation guide](docs/optional-privacy-installation.md) defines compatibility selection, filtering readiness, and CPU fallback.
 
 ## Desktop Preferences design
