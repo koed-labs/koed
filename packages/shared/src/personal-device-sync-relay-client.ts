@@ -196,9 +196,12 @@ export class PdsRelayClient {
   private async request<T>(
     method: "GET" | "POST" | "PUT",
     target: string,
-    payload?: unknown
+    payload?: unknown,
+    signal?: AbortSignal
   ): Promise<T> {
-    return (await (await this.response(method, target, payload)).json()) as T;
+    return (await (
+      await this.response(method, target, payload, signal)
+    ).json()) as T;
   }
 
   async initialize(
@@ -479,10 +482,12 @@ export class PdsRelayClient {
     await (await this.response("GET", target, undefined, signal)).json();
   }
 
-  transport(transportId: string): Promise<unknown> {
+  transport(transportId: string, signal?: AbortSignal): Promise<unknown> {
     return this.request(
       "GET",
-      `${relayPath}/transports/${encodeURIComponent(transportId)}`
+      `${relayPath}/transports/${encodeURIComponent(transportId)}`,
+      undefined,
+      signal
     );
   }
 

@@ -204,7 +204,12 @@ const recordClosure = (
 /** Local data plane. It never accepts PDS private/group keys or plaintext packages. */
 export interface PersonalDeviceSyncLocalRepository {
   wakePdsLocalSync(reason: string): Promise<void>;
-  getPdsLocalSyncWakeAt(): Promise<string | null>;
+  getPdsLocalSyncWakeAt(input?: {
+    excludeSourceAcknowledgements?: boolean;
+    excludeArtifactAcknowledgements?: boolean;
+    excludeSourceOutboxIds?: string[];
+    excludeArtifactOutboxIds?: string[];
+  }): Promise<string | null>;
   getPdsClosureSource(input: {
     userId: string;
     groupId: string;
@@ -259,6 +264,7 @@ export interface PersonalDeviceSyncLocalRepository {
   }): Promise<PdsClaimedOutboxEntry[]>;
   claimPdsCommittedOutbox(input: {
     workerId: string;
+    excludeIds?: string[];
     limit?: number;
     leaseSeconds?: number;
   }): Promise<PdsClaimedCommittedOutboxEntry[]>;
@@ -460,15 +466,26 @@ export const createPersonalDeviceSyncLocalRepository = (
     ]);
   },
 
-  async getPdsLocalSyncWakeAt() {
+  async getPdsLocalSyncWakeAt(input) {
     const result = await pool.query<{ wake_at: Date | null }>(
       `select min(wake_at) as wake_at from (
          select greatest(o.retry_at,coalesce(o.lease_until,o.retry_at)) as wake_at
          from pds_outbox_entries o
          join pds_session_closures c on c.id=o.closure_id
          join personal_sync_policies p on p.group_id=c.group_id
-         where o.state in ('pending','uploading') and c.source_profile_epoch=1
+         where ((o.state in ('pending','uploading') and c.source_profile_epoch=1
+                   and p.publication_paused=false)
+                or (o.state='committed' and o.transport_id is not null and not $1::boolean and not (o.id = any($3::uuid[]))))
+           and p.enabled=true
+         union all
+         select greatest(o.retry_at,coalesce(o.lease_until,o.retry_at)) as wake_at
+         from pds_artifact_outbox_entries o
+         join pds_portable_artifacts a on a.id=o.artifact_id
+         join personal_sync_policies p on p.group_id=a.group_id
+         where (o.state in ('pending','uploading') or (o.state='committed' and not $2::boolean and not (o.id = any($4::uuid[]))))
            and p.enabled=true and p.publication_paused=false
+           and a.state in ('ready','published')
+           and a.semantic_claim_completed_at is not null
          union all
          select greatest(o.retry_at,coalesce(o.lease_until,o.retry_at)) as wake_at
          from pds_project_selection_outbox o
@@ -497,7 +514,13 @@ export const createPersonalDeviceSyncLocalRepository = (
          from pds_inbox_entries i
          where i.state in ('pending','downloading','verifying','processing','failed')
            and i.attempt_count<8
-       ) work`
+       ) work`,
+      [
+        input?.excludeSourceAcknowledgements ?? false,
+        input?.excludeArtifactAcknowledgements ?? false,
+        input?.excludeSourceOutboxIds ?? [],
+        input?.excludeArtifactOutboxIds ?? []
+      ]
     );
     return result.rows[0]?.wake_at?.toISOString() ?? null;
   },
@@ -811,15 +834,16 @@ export const createPersonalDeviceSyncLocalRepository = (
          select o.id from pds_outbox_entries o
          join pds_session_closures s on s.id=o.closure_id
          join personal_sync_policies p on p.group_id=s.group_id
-         where o.state='committed' and o.transport_id is not null
+         where o.state='committed' and o.transport_id is not null and o.retry_at<=now()
+           and not (o.id = any($4::uuid[]))
            and (o.lease_until is null or o.lease_until<now()) and p.enabled=true
-         order by o.updated_at,o.id for update of o,p skip locked limit $1
+         order by o.retry_at,o.id for update of o,p skip locked limit $1
        ) update pds_outbox_entries o
        set lease_owner=$2,lease_until=now()+($3::text || ' seconds')::interval,updated_at=now()
        from claimed c,pds_session_closures s,personal_device_groups g
        where o.id=c.id and s.id=o.closure_id and g.id=s.group_id
        returning o.id,g.group_id as "groupId",o.transport_id as "transportId"`,
-      [limit, input.workerId, leaseSeconds]
+      [limit, input.workerId, leaseSeconds, input.excludeIds ?? []]
     );
     return rows.rows;
   },
@@ -847,7 +871,7 @@ export const createPersonalDeviceSyncLocalRepository = (
 
   async completePdsOutbox(input) {
     const result = await pool.query(
-      `update pds_outbox_entries set state=$3,transport_id=coalesce($4,transport_id),lease_owner=null,lease_until=null,updated_at=now()
+      `update pds_outbox_entries set state=$3,transport_id=coalesce($4,transport_id),retry_at=now(),lease_owner=null,lease_until=null,updated_at=now()
        where id=$1 and lease_owner=$2 and lease_until>=now()`,
       [input.outboxId, input.workerId, input.state, input.transportId ?? null]
     );
@@ -856,7 +880,7 @@ export const createPersonalDeviceSyncLocalRepository = (
 
   async releasePdsCommittedOutbox(input) {
     const result = await pool.query(
-      `update pds_outbox_entries set lease_owner=null,lease_until=null,updated_at=now()
+      `update pds_outbox_entries set lease_owner=null,lease_until=null,retry_at=now()+interval '30 seconds',updated_at=now()
        where id=$1 and state='committed' and lease_owner=$2 and lease_until>=now()`,
       [input.outboxId, input.workerId]
     );

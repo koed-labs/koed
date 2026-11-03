@@ -1,4 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import {
   PdsRelayClient,
@@ -35,6 +37,109 @@ describe("PDS relay URL boundary", () => {
   ])("rejects a non-origin or unsafe relay URL %s", (input) => {
     expect(() => normalizePdsRelayBaseUrl(input)).toThrow();
   });
+
+  it.each(["fetch", "body"] as const)(
+    "aborts a stalled transport %s with the caller's signal",
+    async (stage) => {
+      const keys = generateKeyPairSync("ed25519");
+      const controller = new AbortController();
+      let observedSignal: AbortSignal | null | undefined;
+      let started!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const fetcher: typeof fetch = async (_url, init) => {
+        observedSignal = init?.signal;
+        if (stage === "fetch") {
+          started();
+          return await new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new Error("aborted"))
+            );
+          });
+        }
+        return new Response(
+          new ReadableStream({
+            start(stream) {
+              init?.signal?.addEventListener("abort", () =>
+                stream.error(new Error("aborted"))
+              );
+              started();
+            }
+          })
+        );
+      };
+      const client = new PdsRelayClient({
+        baseUrl: "http://127.0.0.1:3310",
+        identity: {
+          certificate: "{}",
+          deviceId: "AAAAAAAAAAAAAAAAAAAAAA",
+          signingKeyId: "AQEBAQEBAQEBAQEBAQEBAQ",
+          signingPublicKey: keys.publicKey.export({ format: "jwk" }).x!,
+          signingPrivateSeed: keys.privateKey.export({ format: "jwk" }).d!
+        },
+        fetch: fetcher
+      });
+      const result = client.transport("transport", controller.signal);
+      await ready;
+      expect(observedSignal).toBe(controller.signal);
+      controller.abort();
+      await expect(result).rejects.toThrow("aborted");
+    }
+  );
+
+  it.each(["headers", "body"] as const)(
+    "aborts native fetch while waiting for %s",
+    async (stage) => {
+      let ready!: () => void;
+      const started = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      let headersReceived!: () => void;
+      const received = new Promise<void>((resolve) => {
+        headersReceived = resolve;
+      });
+      const server = createServer((_request, response) => {
+        if (stage === "body") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.write("{");
+        }
+        ready();
+      });
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", resolve)
+      );
+      const keys = generateKeyPairSync("ed25519");
+      const controller = new AbortController();
+      const client = new PdsRelayClient({
+        baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        identity: {
+          certificate: "{}",
+          deviceId: "AAAAAAAAAAAAAAAAAAAAAA",
+          signingKeyId: "AQEBAQEBAQEBAQEBAQEBAQ",
+          signingPublicKey: keys.publicKey.export({ format: "jwk" }).x!,
+          signingPrivateSeed: keys.privateKey.export({ format: "jwk" }).d!
+        },
+        fetch: async (url, init) => {
+          const response = await fetch(url, init);
+          headersReceived();
+          return response;
+        }
+      });
+      try {
+        const result = client.transport("transport", controller.signal);
+        await started;
+        if (stage === "body") await received;
+        controller.abort();
+        await expect(result).rejects.toMatchObject({ name: "AbortError" });
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        );
+      }
+    }
+  );
 
   it("uses a signed long-lived request for relay wakeups", async () => {
     const keys = generateKeyPairSync("ed25519");
