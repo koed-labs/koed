@@ -9,6 +9,9 @@
   gap: 24px;
   scrollbar-width: thin;
 }
+.v1-settings-parity .v1-settings-body:has(> .v1-parity-appearance) {
+  gap: 16px;
+}
 .v1-settings-parity .v1-settings-nav {
   padding: 25px 12px 18px;
   gap: 4px;
@@ -48,7 +51,7 @@
   overflow: hidden;
 }
 .v1-parity-card .v1-setting-row {
-  padding: 14px 16px;
+  padding: 12px 16px;
   gap: 16px;
 }
 .v1-settings-parity .v1-setting-copy b {
@@ -91,16 +94,21 @@
   border: 1px solid var(--v1-border);
   border-radius: 14px;
   background: var(--v1-field);
-  padding: 20px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
   cursor: pointer;
   min-width: 0;
 }
 .v1-tool-card:hover {
   border-color: var(--v1-accent);
   background: color-mix(in srgb, var(--v1-accent) 3%, var(--v1-field));
+}
+.v1-tool-card .v1-tool-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
 }
 .v1-tool-mark {
   width: 40px;
@@ -115,8 +123,7 @@
 .v1-tool-copy {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  min-height: 64px;
+  gap: 5px;
 }
 .v1-tool-copy strong {
   font-size: 15px;
