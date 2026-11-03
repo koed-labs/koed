@@ -319,7 +319,7 @@ describe("provider-owned historical discovery", () => {
         ),
         "utf8"
       )
-    );
+    ) as { progress?: unknown };
     expect(saved.progress).toEqual({
       updatedAt: "2026-08-18T00:00:00.000Z",
       lastBatchState: "progress",
