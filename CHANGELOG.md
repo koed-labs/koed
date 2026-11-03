@@ -1,5 +1,11 @@
 # Koed
 
+## 0.10.3
+
+### Patch Changes
+
+- 69065f0: Fix npm provenance verification by including the source repository in the published server package.
+
 ## 0.10.2
 
 ### Patch Changes
