@@ -87,7 +87,9 @@ async function freePort() {
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
-function transport(ws) {
+const transports = new WeakMap();
+export function transport(ws) {
+  if (transports.has(ws)) return transports.get(ws);
   const t = {
     onmessage: null,
     onclose: null,
@@ -97,28 +99,96 @@ function transport(ws) {
     close: (code, reason) => ws.close(code, reason)
   };
   const pending = [];
-  ws.on("message", (data, binary) => {
-    const msg = {
-      data: binary ? Uint8Array.from(data).buffer : data.toString(),
-      isBinary: binary
-    };
-    if (t.onmessage) {
-      for (const item of pending.splice(0)) t.onmessage(item);
-      t.onmessage(msg);
-    } else pending.push(msg);
+  let bytes = 0,
+    closed = false,
+    deliveredClose,
+    overflow = false,
+    handshake = false,
+    gateMessages = false;
+  let onclose = null;
+  Object.defineProperty(t, "onclose", {
+    get: () => onclose,
+    set: (handler) => {
+      onclose = handler;
+      if (handler && deliveredClose) handler(...deliveredClose);
+    }
   });
-  ws.on("close", (code, reason) => t.onclose?.(code, reason.toString()));
-  ws.on("error", (error) => t.onerror?.(error));
-  t.flush = () => {
-    for (const item of pending.splice(0)) t.onmessage?.(item);
+  t.isClosed = () => closed || overflow;
+  t.beginHandshake = () => {
+    handshake = true;
   };
+  t.endHandshake = () => {
+    handshake = false;
+    gateMessages = false;
+    t.flush();
+  };
+  t.flush = () => {
+    while (pending.length) {
+      let index = pending.findIndex(
+        ([handler]) => t[handler] && !(gateMessages && handler === "onmessage")
+      );
+      if (index < 0) break;
+      if (index && pending[index][0] === "onmessage") break;
+      const removed = pending.splice(0, index + 1);
+      for (const event of removed) bytes -= event[2];
+      const [handler, args] = removed.at(-1);
+      if (handler === "onclose") deliveredClose = args;
+      if (handler === "onmessage" && handshake) gateMessages = true;
+      t[handler](...args);
+    }
+  };
+  const queue = (handler, args, size = 0) => {
+    if (overflow && handler !== "onclose") return;
+    if (
+      handler !== "onclose" &&
+      (pending.length >= 256 || bytes + size > 1048576)
+    ) {
+      overflow = true;
+      pending.length = 0;
+      bytes = 0;
+      ws.close(1009, "buffer limit exceeded");
+      return;
+    }
+    pending.push([handler, args, size]);
+    bytes += size;
+    t.flush();
+  };
+  ws.on("message", (data, binary) => {
+    if (overflow) return;
+    if (pending.length >= 256 || bytes + data.length > 1048576) {
+      overflow = true;
+      pending.length = 0;
+      bytes = 0;
+      ws.close(1009, "buffer limit exceeded");
+      return;
+    }
+    queue(
+      "onmessage",
+      [
+        {
+          data: binary ? Uint8Array.from(data).buffer : data.toString(),
+          isBinary: binary
+        }
+      ],
+      data.length
+    );
+  });
+  ws.on("close", (code, reason) => {
+    closed = true;
+    queue("onclose", [code, reason.toString()]);
+  });
+  ws.on("error", (error) => queue("onerror", [error]));
+  transports.set(ws, t);
   return t;
 }
-async function connect(port, session, role, id, sockets) {
+export async function connect(port, session, role, id, sockets) {
   const query = new URLSearchParams({ v: "2", serverId: session, role });
   if (id) query.set("connectionId", id);
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?${query}`);
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?${query}`, {
+    maxPayload: 1048576
+  });
   sockets.add(ws);
+  transport(ws);
   await new Promise((resolve, reject) => {
     ws.once("open", resolve);
     ws.once("error", reject);
@@ -267,35 +337,69 @@ async function launchDocker(port) {
     throw error;
   }
 }
+export async function openDaemonEndpoint(t, key, events = {}) {
+  t.beginHandshake();
+  const handshake = openDaemonSecureChannel(t, {
+    daemonKeyPair: key,
+    minimumMode: "protected",
+    events: {
+      ...events,
+      onopen: () => {
+        if (!t.isClosed()) events.onopen?.();
+      }
+    }
+  });
+  t.flush();
+  const channel = await handshake;
+  if (t.isClosed()) {
+    channel.close();
+    throw new Error("Connection closed during handshake");
+  }
+  t.endHandshake();
+  return channel;
+}
+export async function acceptDaemonEndpoint(ws, key, events = {}) {
+  try {
+    return await openDaemonEndpoint(transport(ws), key, events);
+  } catch (error) {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.close(
+        error.closeCode ?? 1008,
+        error.closeReason ?? "handshake rejected"
+      );
+    throw error;
+  }
+}
 async function setup(port, sockets, key = generateKeyPair()) {
   const session = randomUUID();
   const endpoints = new Map();
   const control = await connect(port, session, "server", null, sockets);
-  control.on("message", async (data) => {
+  const controlTransport = transport(control);
+  controlTransport.onmessage = async ({ data }) => {
     const message = JSON.parse(data.toString());
     if (message.type !== "connected") return;
     const id = message.connectionId;
     let ws;
     try {
       ws = await connect(port, session, "server", id, sockets);
-      const t = transport(ws);
       const messages = [];
-      const channel = await openDaemonSecureChannel(t, {
-        daemonKeyPair: key,
-        minimumMode: "protected",
-        events: { onmessage: (data) => messages.push(data), onerror: () => {} }
+      const channel = await acceptDaemonEndpoint(ws, key, {
+        onmessage: (data) => messages.push(data),
+        onerror: () => {}
       });
+      if (transport(ws).isClosed()) {
+        channel.close();
+        throw new Error("Connection closed during handshake");
+      }
       endpoints.set(id, { channel, messages, ws });
-      t.flush();
     } catch (error) {
       endpoints.set(id, { error });
-      if (ws?.readyState === WebSocket.OPEN)
-        ws.close(
-          error.closeCode ?? 1008,
-          error.closeReason ?? "handshake rejected"
-        );
     }
-  });
+  };
+  controlTransport.onerror = (error) =>
+    console.error("Control socket error:", error);
+  controlTransport.onclose = () => {};
+  controlTransport.flush();
   return { session, key, endpoints };
 }
 async function client(port, setup, sockets, key = setup.key, legacy = false) {
@@ -314,10 +418,11 @@ async function client(port, setup, sockets, key = setup.key, legacy = false) {
       onopen: () => opens.push(true)
     }
   };
-  const channel = legacy
-    ? await createClientChannel(t, options.daemonPublicKeyB64, options.events)
-    : await openClientSecureChannel(t, options);
+  const handshake = legacy
+    ? createClientChannel(t, options.daemonPublicKeyB64, options.events)
+    : openClientSecureChannel(t, options);
   t.flush();
+  const channel = await handshake;
   return { id, ws, t, channel, messages, errors, opens };
 }
 export async function runScenario() {
@@ -431,7 +536,8 @@ export async function runScenario() {
     // Simulate an old responder on a real v2 data socket to exercise client policy.
     const oldSession = randomUUID();
     const oldControl = await connect(port, oldSession, "server", null, sockets);
-    oldControl.on("message", async (data) => {
+    const oldControlTransport = transport(oldControl);
+    oldControlTransport.onmessage = async ({ data }) => {
       const msg = JSON.parse(data.toString());
       if (msg.type !== "connected") return;
       const old = await connect(
@@ -441,8 +547,17 @@ export async function runScenario() {
         msg.connectionId,
         sockets
       );
-      old.on("message", () => old.send(JSON.stringify({ type: "e2ee_ready" })));
-    });
+      const t = transport(old);
+      t.onmessage = () => old.send(JSON.stringify({ type: "e2ee_ready" }));
+      t.onerror = (error) =>
+        console.error("Old responder socket error:", error);
+      t.onclose = () => {};
+      t.flush();
+    };
+    oldControlTransport.onerror = (error) =>
+      console.error("Old control socket error:", error);
+    oldControlTransport.onclose = () => {};
+    oldControlTransport.flush();
     const old = await client(
       port,
       { session: oldSession, key: s.key },
@@ -477,7 +592,8 @@ export async function runScenario() {
         throw new Error("Malformed hello opened channel");
       const session = randomUUID();
       const control = await connect(port, session, "server", null, sockets);
-      control.on("message", async (data) => {
+      const controlTransport = transport(control);
+      controlTransport.onmessage = async ({ data }) => {
         const msg = JSON.parse(data.toString());
         if (msg.type !== "connected") return;
         const ws = await connect(
@@ -490,7 +606,11 @@ export async function runScenario() {
         ws.send(
           JSON.stringify({ type: "e2ee_ready", protected: protectedValue })
         );
-      });
+      };
+      controlTransport.onerror = (error) =>
+        console.error("Control socket error:", error);
+      controlTransport.onclose = () => {};
+      controlTransport.flush();
       const bad = await client(port, { session, key: s.key }, sockets);
       await until(
         () => bad.errors.length && bad.ws.readyState >= WebSocket.CLOSING,
