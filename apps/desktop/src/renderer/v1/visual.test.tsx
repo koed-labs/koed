@@ -36,21 +36,24 @@ describe("v1 presentation primitives", () => {
         </>
       )
     );
+    // happy-dom has no WebGL2, so the Kin falls back to its CSS body.
     expect(
-      container.querySelector('svg.v1-pixelkin rect[fill="#9d93fb"]')
+      container.querySelector(
+        `.v1-pixelkin-fallback[data-kin-shape="cube"][data-kin-colour="${DEFAULT_AGENT_LOOK.palette.base}"]`
+      )
     ).not.toBeNull();
     await act(async () =>
       (
         container.querySelector(
-          'button[aria-label="mint"]'
+          'button[aria-label="Mint"]'
         ) as HTMLButtonElement
       ).click()
     );
     expect(onChange).toHaveBeenCalledWith({
       ...DEFAULT_AGENT_LOOK,
-      color: "mint"
+      palette: { ...DEFAULT_AGENT_LOOK.palette, base: "#55cca3" }
     });
-    expect(DEFAULT_AGENT_LOOK.color).toBe("violet");
+    expect(DEFAULT_AGENT_LOOK.palette.base).toBe("#7658e8");
   });
   it("offers only supplied models, limits provider changes, and changes reasoning by keyboard", async () => {
     const onChange = vi.fn(),

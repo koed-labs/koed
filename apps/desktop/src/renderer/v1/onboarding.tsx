@@ -15,6 +15,7 @@ import {
   V1Composer,
   type AgentLook
 } from "./visual.js";
+import { normalizeAgentLook } from "./pixelkin/agent-kin.js";
 import "./onboarding.css";
 
 export type OnboardingAgent = { name: string; look: AgentLook };
@@ -249,9 +250,13 @@ export function V1Onboarding({
   headerTarget
 }: V1OnboardingProps) {
   const { status } = useDesktopStatus(statusStore);
-  const [agent, setAgent] = useState<OnboardingAgent>(
-    savedDraft?.agent ?? savedAgent ?? { name: "", look: DEFAULT_AGENT_LOOK }
-  );
+  const [agent, setAgent] = useState<OnboardingAgent>(() => {
+    const restored = savedDraft?.agent ?? savedAgent;
+    // Drafts saved before the Pixelkin engine hold an older look.
+    return restored
+      ? { ...restored, look: normalizeAgentLook(restored.look) }
+      : { name: "", look: DEFAULT_AGENT_LOOK };
+  });
   const [step, setStep] = useState<OnboardingDraft["step"]>(
     savedDraft?.step ?? "maker"
   );
@@ -681,7 +686,11 @@ export function V1Onboarding({
           className={`v1-ob-card v1-ob-maker ${step !== "maker" ? "is-done" : ""}`}
         >
           <div className="v1-ob-preview">
-            <Pixelkin look={agent.look} size={step === "maker" ? 112 : 40} />
+            <Pixelkin
+              look={agent.look}
+              size={step === "maker" ? 112 : 40}
+              hopOnChange={step === "maker"}
+            />
             <strong>{agent.name || "Your agent"}</strong>
           </div>
           <div className="v1-ob-maker-controls">

@@ -75,12 +75,12 @@ import {
   saveV1Profile,
   v1State
 } from "./state.js";
+import { parseAgentLook, serializeAgentLook } from "./pixelkin/agent-kin.js";
 import {
   DEFAULT_AGENT_LOOK,
   V1EmptyHero,
   V1Shell,
   V1ThreadLayout,
-  type AgentLook,
   type V1HistoryGroup
 } from "./visual.js";
 
@@ -97,31 +97,6 @@ const emptyProfile: V1Profile = {
 const fallbackAgent: OnboardingAgent = {
   name: "Koed",
   look: DEFAULT_AGENT_LOOK
-};
-const parseLook = (value: string | undefined): AgentLook => {
-  try {
-    const parsed: unknown = JSON.parse(value ?? "");
-    if (!parsed || typeof parsed !== "object") return DEFAULT_AGENT_LOOK;
-    const look = parsed as Record<string, unknown>;
-    if (
-      !["block", "bean", "tall", "wide"].includes(String(look.shape)) ||
-      ![
-        "violet",
-        "blue",
-        "mint",
-        "lime",
-        "sun",
-        "coral",
-        "pink",
-        "slate"
-      ].includes(String(look.color)) ||
-      !["none", "antenna", "sprout", "ears"].includes(String(look.top))
-    )
-      return DEFAULT_AGENT_LOOK;
-    return look as AgentLook;
-  } catch {
-    return DEFAULT_AGENT_LOOK;
-  }
 };
 const launchIntent = (
   input: Parameters<ManagedConversationDesktopApi["start"]>[0],
@@ -388,7 +363,7 @@ export function V1App({
       profile
         ? {
             name: profile.agentName ?? fallbackAgent.name,
-            look: parseLook(profile.agentLook)
+            look: parseAgentLook(profile.agentLook)
           }
         : fallbackAgent,
     [profile]
@@ -1245,7 +1220,7 @@ export function V1App({
     await saveProfile((current) => ({
       ...current,
       agentName: next.name,
-      agentLook: JSON.stringify(next.look)
+      agentLook: serializeAgentLook(next.look, next.name)
     }));
   };
   const onSaveDraft = async (draft: OnboardingDraft) => {
@@ -1392,7 +1367,7 @@ export function V1App({
           headerTarget={onboardingHeader}
           savedAgent={{
             name: profile.agentName ?? "",
-            look: parseLook(profile.agentLook)
+            look: parseAgentLook(profile.agentLook)
           }}
           savedDraft={
             (profile.onboarding.draft as OnboardingDraft | undefined) ?? null

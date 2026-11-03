@@ -17,6 +17,7 @@ export default tseslint.config(
       "apps/desktop/dist-types/**",
       "apps/desktop/release/**",
       "apps/desktop/.koed-runtime/**",
+      "apps/desktop/src/renderer/v1/pixelkin/vendor/**",
       "**/coverage/**",
       "**/target/**",
       "node_modules/**",
