@@ -90,20 +90,26 @@ export function selectHomeView(
   if (!status) return { kind: "loading" };
   const problems = homeProblems(status);
   if (blocking(status)) {
-    const listed = problems.length
-      ? problems
-      : [
-          {
-            id: "services",
-            title: "Koed services",
-            message: "Koed isn’t running, so your Projects can’t load.",
-            action: {
-              command: "start",
-              label: "Start Koed",
-              requiresConsent: false
-            }
-          } satisfies HomeProblem
-        ];
+    // While Koed is stopped every component reports that; one row with the
+    // real fix beats a list of symptoms.
+    const stopped =
+      status.lifecycle?.state === "stopped" ||
+      status.lifecycle?.state === "unavailable";
+    const listed =
+      problems.length && !stopped
+        ? problems
+        : [
+            {
+              id: "services",
+              title: "Koed services",
+              message: "Koed isn’t running. Starting it brings your Projects back.",
+              action: {
+                command: "start",
+                label: "Start Koed",
+                requiresConsent: false
+              }
+            } satisfies HomeProblem
+          ];
     return {
       kind: "attention",
       problems: listed,

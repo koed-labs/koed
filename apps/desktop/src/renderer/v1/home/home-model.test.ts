@@ -59,6 +59,26 @@ describe("selectHomeView", () => {
     });
   });
 
+  it("shows one Start Koed row while Koed is stopped", () => {
+    const view = selectHomeView(
+      homeStatus({
+        lifecycle: { state: "stopped" },
+        api: { state: "needs_attention", message: "Koed is not running." },
+        database: { state: "needs_attention", message: "Koed is not running." },
+        captureHook: {
+          state: "needs_attention",
+          message: "Koed is not running."
+        }
+      } as Partial<KoedServerStatus>),
+      null
+    );
+    expect(view).toMatchObject({
+      kind: "attention",
+      problems: [{ id: "services", action: { command: "start" } }]
+    });
+    expect(view.kind === "attention" && view.problems).toHaveLength(1);
+  });
+
   it("leaves a stale diagnostics result out of Home", () => {
     expect(
       selectHomeView(
