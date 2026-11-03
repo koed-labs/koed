@@ -41,12 +41,15 @@ never starts a Conversation (New chat opens its own composer route).
 
 - **Attention** replaces Home only when the local API or its database is down,
   or Koed is stopped, because Projects cannot load. Other setup problems and an
-  unhealthy Capture Hook show as warnings above the normal content. A problem
+  unhealthy Capture Hook show as a warning chip above the normal content. While
+  Koed is stopped, attention shows one Start Koed step instead of each
+  component's symptom. A problem
   offers its existing setup command, keeping that command's consent step, or
   its status message as manual guidance.
 - **Quiet stage** shows when Projects have loaded and none exist.
 - **Projects** shows a Kin for each named Project the sidebar lists, up to eight
-  on the stage, plus an All Projects list. Counts are the Project summary's
+  on the stage with the most recent in the spotlight; the caption says how many
+  more are in the sidebar, which is the full list. Counts are the Project summary's
   stored captured events, and ranking uses its latest thread activity, then
   name, then id. `conversation_events_changed` refreshes the summaries through
   `PersonalMemoryStore`; a rise in a summary's count plays one coalesced

@@ -62,18 +62,26 @@ describe("Home", () => {
       `button[aria-label^="Open Project ${name},"]`
     )!;
   const front = (name: string) =>
-    kin(name).style.getPropertyValue("--kin-x") === "50%";
+    kin(name).style.getPropertyValue("--kin-size") === "144px";
 
-  it("opens a Project from its Kin and from the All Projects list", async () => {
+  it("opens a Project from its Kin", async () => {
     const onOpenProject = vi.fn();
     await render({
       entries: [entry("koed", "2026-11-03T11:59:00Z")],
       onOpenProject
     });
     await act(async () => kin("koed").click());
-    const listed = [...container.querySelectorAll(".v1-home-all button")];
-    await act(async () => (listed[0] as HTMLButtonElement).click());
-    expect(onOpenProject.mock.calls).toEqual([["koed"], ["koed"]]);
+    expect(onOpenProject.mock.calls).toEqual([["koed"]]);
+  });
+
+  it("points to the sidebar for Projects that don't fit on the stage", async () => {
+    await render({
+      entries: Array.from({ length: 10 }, (_, i) =>
+        entry(`p${i}`, `2026-11-03T1${i % 10}:00:00Z`)
+      )
+    });
+    expect(container.textContent).toContain("10 Projects");
+    expect(container.textContent).toContain("2 more in the sidebar");
   });
 
   it("puts the most recently active Project in front", async () => {

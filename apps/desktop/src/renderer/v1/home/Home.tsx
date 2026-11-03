@@ -3,7 +3,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties
+  type CSSProperties,
+  type ReactNode
 } from "react";
 import {
   AUTOMATIC_HISTORICAL_CONVERSATION_CAP,
@@ -217,22 +218,31 @@ function ProblemList({
 
 type Feed = { key: number; added: number; at: number };
 
+// Bottom offsets are a share of the stage above the caption; the most
+// recently active Project stands in the spotlight.
 const slots: ReadonlyArray<{ x: number; y: number; size: number }> = [
-  { x: 50, y: 4, size: 120 },
-  { x: 24, y: 10, size: 96 },
-  { x: 76, y: 10, size: 96 },
-  { x: 10, y: 46, size: 64 },
-  { x: 30, y: 50, size: 64 },
-  { x: 50, y: 52, size: 64 },
-  { x: 70, y: 50, size: 64 },
-  { x: 90, y: 46, size: 64 }
+  { x: 50, y: 4, size: 144 },
+  { x: 27, y: 10, size: 100 },
+  { x: 73, y: 10, size: 100 },
+  { x: 33, y: 46, size: 68 },
+  { x: 67, y: 46, size: 68 },
+  { x: 10, y: 38, size: 68 },
+  { x: 90, y: 38, size: 68 },
+  { x: 50, y: 58, size: 60 }
+];
+// Two Projects share the spotlight instead of leaving one side empty.
+const pairSlots: typeof slots = [
+  { x: 39, y: 4, size: 144 },
+  { x: 61, y: 8, size: 112 }
 ];
 
 function ProjectsStage({
   entries,
+  caption,
   onOpenProject
 }: {
   entries: readonly HomeProjectEntry[];
+  caption: ReactNode;
   onOpenProject: (projectId: string) => void;
 }) {
   const reduced = useReducedMotion();
@@ -292,92 +302,64 @@ function ProjectsStage({
     });
   }, [entries, reduced]);
 
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const onStage = shown.slice(0, HOME_STAGE_LIMIT);
-  const listed = shown
-    .map((id) => byId.get(id))
-    .filter((entry): entry is HomeProjectEntry => Boolean(entry));
   // Kin render in a fixed order so a re-rank moves them instead of remounting.
   const stageKin = entries.filter(({ id }) => onStage.includes(id));
   return (
-    <>
-      <section
-        className="v1-home-stage"
-        aria-label="Most active Projects"
-        data-reduced-motion={reduced || undefined}
-        onPointerEnter={() => setPointerOver(true)}
-        onPointerLeave={() => setPointerOver(false)}
-      >
-        {stageKin.map((entry) => {
-          const rank = onStage.indexOf(entry.id);
-          const slot = slots[rank]!;
-          const feed = feeds.get(entry.id);
-          const ago = formatHomeAgo(entry.latestAt, now);
-          return (
-            <button
-              key={entry.id}
-              type="button"
-              className="v1-home-kin"
-              data-front={rank < 3 || undefined}
-              data-heat={homeHeat(entry.latestAt, now)}
-              style={
-                {
-                  "--kin-x": `${slot.x}%`,
-                  "--kin-y": `${slot.y}%`,
-                  "--kin-size": `${slot.size}px`
-                } as CSSProperties
-              }
-              aria-label={`Open Project ${entry.name}, ${entry.eventCount} captured events, active ${ago}`}
-              onClick={() => onOpenProject(entry.id)}
-            >
-              {feed && (
-                <span
-                  key={feed.key}
-                  className="v1-home-feed"
-                  aria-hidden="true"
-                >
-                  <i />
-                  <b>+{feed.added}</b>
-                </span>
-              )}
-              <Pixelkin
-                look={projectKinLook(entry.id)}
-                size={slot.size}
-                expression={
-                  homeHeat(entry.latestAt, now) === 3 ? "happy" : null
-                }
-                hopKey={feed?.key}
-              />
-              <span className="v1-home-kin-shadow" aria-hidden="true" />
-              <span className="v1-home-kin-label">
-                <strong>{entry.name}</strong>
-                <span>
-                  {entry.eventCount.toLocaleString()} events · {ago}
-                </span>
+    <section
+      className="v1-home-stage v1-home-stage-projects"
+      aria-label="Most active Projects"
+      data-reduced-motion={reduced || undefined}
+      onPointerEnter={() => setPointerOver(true)}
+      onPointerLeave={() => setPointerOver(false)}
+    >
+      <div className="v1-home-spot" aria-hidden="true" />
+      {stageKin.map((entry) => {
+        const rank = onStage.indexOf(entry.id);
+        const slot = (onStage.length === 2 ? pairSlots : slots)[rank]!;
+        const feed = feeds.get(entry.id);
+        const ago = formatHomeAgo(entry.latestAt, now);
+        return (
+          <button
+            key={entry.id}
+            type="button"
+            className="v1-home-kin"
+            data-front={rank < 3 || undefined}
+            data-heat={homeHeat(entry.latestAt, now)}
+            style={
+              {
+                "--kin-x": `${slot.x}%`,
+                "--kin-y": `${slot.y}%`,
+                "--kin-size": `${slot.size}px`
+              } as CSSProperties
+            }
+            aria-label={`Open Project ${entry.name}, ${entry.eventCount} captured events, active ${ago}`}
+            onClick={() => onOpenProject(entry.id)}
+          >
+            {feed && (
+              <span key={feed.key} className="v1-home-feed" aria-hidden="true">
+                <i />
+                <b>+{feed.added}</b>
               </span>
-            </button>
-          );
-        })}
-      </section>
-      <nav className="v1-home-all" aria-label="All Projects">
-        <h2>All Projects</h2>
-        <ul>
-          {listed.map((entry) => (
-            <li key={entry.id}>
-              <button type="button" onClick={() => onOpenProject(entry.id)}>
-                <span
-                  className="v1-home-dot"
-                  data-heat={homeHeat(entry.latestAt, now)}
-                  aria-hidden="true"
-                />
-                <strong>{entry.name}</strong>
-                <span>{formatHomeAgo(entry.latestAt, now)}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </nav>
-    </>
+            )}
+            <Pixelkin
+              look={projectKinLook(entry.id)}
+              size={slot.size}
+              expression={homeHeat(entry.latestAt, now) === 3 ? "happy" : null}
+              hopKey={feed?.key}
+            />
+            <span className="v1-home-kin-shadow" aria-hidden="true" />
+            <span className="v1-home-kin-label">
+              <strong>{entry.name}</strong>
+              <span>
+                {entry.eventCount.toLocaleString()} events · {ago}
+              </span>
+            </span>
+          </button>
+        );
+      })}
+      <div className="v1-home-caption">{caption}</div>
+    </section>
   );
 }
 
@@ -542,7 +524,7 @@ function HomeWarnings({
       >
         <span className="v1-home-dot" aria-hidden="true" />
         {problems.length === 1
-          ? problems[0]!.title
+          ? `Check ${problems[0]!.title}`
           : `${problems.length} things to check`}
       </button>
       {open && (
@@ -630,21 +612,27 @@ export function Home({
       </section>
     );
   const total = entries.reduce((sum, entry) => sum + entry.eventCount, 0);
+  const offStage = entries.length - HOME_STAGE_LIMIT;
   return (
-    <section className="v1-home" data-mood="projects">
+    <section className="v1-home v1-home-fill" data-mood="projects">
       {warnings}
-      <header className="v1-home-header">
-        <Pixelkin look={agent.look} size={48} />
-        <div>
-          <h1>Your Projects</h1>
-          <p className="v1-home-sub">
-            {entries.length} Projects · {total.toLocaleString()} captured
-            events. The most recently active step into the spotlight.
-          </p>
-        </div>
-      </header>
       <Keycaps clients={clients} />
-      <ProjectsStage entries={entries} onOpenProject={onOpenProject} />
+      <ProjectsStage
+        entries={entries}
+        onOpenProject={onOpenProject}
+        caption={
+          <>
+            <h1>Your Projects</h1>
+            <p className="v1-home-sub">
+              {entries.length === 1
+                ? "1 Project"
+                : `${entries.length} Projects`}{" "}
+              · {total.toLocaleString()} captured events
+              {offStage > 0 && ` · ${offStage} more in the sidebar`}
+            </p>
+          </>
+        }
+      />
     </section>
   );
 }

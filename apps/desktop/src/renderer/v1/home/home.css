@@ -356,53 +356,16 @@
   }
 }
 
-.v1-home-all h2 {
-  margin: 0 0 10px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--v1-muted);
+.v1-home-stage-projects .v1-home-kin {
+  bottom: calc(var(--kin-y) + 120px);
 }
-.v1-home-all ul {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.v1-home-stage-projects .v1-home-caption {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  text-align: center;
 }
-.v1-home-all button {
-  width: 100%;
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 14px;
-  border: 1px solid var(--v1-hairline);
-  border-radius: 12px;
-  background: var(--v1-card);
-  color: var(--v1-fg);
-  font: inherit;
-  font-size: 14px;
-  text-align: left;
-}
-.v1-home-all button:hover {
-  background: var(--v1-surface-hover);
-}
-.v1-home-all button strong {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 500;
-}
-.v1-home-all button span:last-child {
-  font-size: 12px;
-  color: var(--v1-muted);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .v1-home-feed {
     display: none;
