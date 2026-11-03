@@ -24,6 +24,8 @@ export type PixelkinActor = {
   rest: ReturnType<typeof kinRestFrame>;
   personality: Personality;
   expression: string;
+  // A screen-chosen mood (for example Home's states) overrides the personality.
+  pinnedExpression: string | null;
   painted: number;
 };
 
@@ -76,6 +78,7 @@ export function createPixelkinActor(
     visible: true,
     hopAt: null,
     gaze: [0, 0],
+    pinnedExpression: null,
     painted: clock
   } as Partial<PixelkinActor> as PixelkinActor;
   setPixelkinKin(actor, kin);
@@ -90,6 +93,14 @@ export function setPixelkinKin(actor: PixelkinActor, kin: Kin) {
   actor.personality ??= new PixelkinPersonalities.Controller();
   actor.personality.select(kin.face.personality);
   actor.expression = actor.personality.update(0) ?? "neutral";
+}
+
+export function setPixelkinExpression(
+  actor: PixelkinActor,
+  expression: string | null
+) {
+  actor.pinnedExpression = expression;
+  wakePixelkins();
 }
 
 function aim(actor: PixelkinActor): [number, number] {
@@ -126,7 +137,7 @@ function paint(actor: PixelkinActor, gl: CrowdGLRenderer) {
   const breathing = motion ? Math.sin(phase) * 0.025 * IDLE : 0;
   const scale = actor.rest.visualScale;
   setKinPose(actor.member, {
-    expression: air > 0 ? "joy" : actor.expression,
+    expression: air > 0 ? "joy" : (actor.pinnedExpression ?? actor.expression),
     armSwing: motion ? Math.sin(phase) * 0.035 * IDLE : 0
   });
   // Without a fixed value the renderer blinks on its own.

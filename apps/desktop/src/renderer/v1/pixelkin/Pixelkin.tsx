@@ -5,6 +5,7 @@ import {
   createPixelkinActor,
   hopPixelkin,
   pixelkinEngineAvailable,
+  setPixelkinExpression,
   setPixelkinKin,
   wakePixelkins,
   type PixelkinActor
@@ -15,12 +16,18 @@ export function Pixelkin({
   look = DEFAULT_AGENT_LOOK,
   size = 28,
   className = "",
-  hopOnChange = false
+  hopOnChange = false,
+  expression = null,
+  hopKey
 }: {
   look?: AgentLook;
   size?: number;
   className?: string;
   hopOnChange?: boolean;
+  // Holds one expression instead of the personality's changing moods.
+  expression?: "neutral" | "surprised" | "happy" | null;
+  // Each change makes the Kin hop once.
+  hopKey?: number;
 }) {
   const [engine] = useState(pixelkinEngineAvailable);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -51,12 +58,23 @@ export function Pixelkin({
     wakePixelkins();
     // lookKey captures every look field.
   }, [lookKey, size, hopOnChange]);
+  useEffect(() => {
+    const actor = actorRef.current;
+    if (actor) setPixelkinExpression(actor, expression);
+  }, [expression, engine]);
+  const firstHop = useRef(hopKey);
+  useEffect(() => {
+    const actor = actorRef.current;
+    if (!actor || hopKey === undefined || hopKey === firstHop.current) return;
+    hopPixelkin(actor);
+  }, [hopKey]);
   if (!engine)
     return (
       <span
         className={`v1-pixelkin v1-pixelkin-fallback ${className}`}
         data-kin-shape={look.body.shape}
         data-kin-colour={look.palette.base}
+        data-expression={expression ?? "neutral"}
         style={
           {
             width: size,
@@ -68,6 +86,7 @@ export function Pixelkin({
       >
         <i />
         <i />
+        <b />
       </span>
     );
   return (

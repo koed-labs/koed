@@ -21,6 +21,7 @@ const localProject = {
   name: "Chats",
   localProjectId: "lp_00000000000000000000000000000001",
   path: null,
+  eventCount: 0,
   threads: []
 } as unknown as DesktopProject;
 const externalProject = {
@@ -74,11 +75,11 @@ vi.mock("../../collaboration/renderer-client.js", () => ({
     dispose: () => undefined
   })
 }));
-vi.mock("../state/use-status.js", () => ({
-  useDesktopStatus: () => ({
-    status: { state: "healthy", api: { state: "healthy" } }
-  })
-}));
+vi.mock("../state/use-status.js", async () => {
+  const { homeStatus } = await import("./home/home-status.fixture.js");
+  const status = homeStatus();
+  return { useDesktopStatus: () => ({ status }) };
+});
 vi.mock("../views/personal/PersonalMemoryViews.js", () => ({
   StoreConversation: () => <div>Conversation opened</div>
 }));
@@ -151,6 +152,7 @@ describe("V1App launch integration", () => {
       inclusionRules: [
         { target: { kind: "folder", folder: reference }, removedAt: null }
       ],
+      eventCount: 0,
       threads: []
     } as unknown as DesktopProject;
     snapshot.projectsById.set(namedId, named);
@@ -376,6 +378,11 @@ describe("V1App launch integration", () => {
     });
     expect(container.textContent).not.toContain(
       "External captured Conversation"
+    );
+    await act(async () =>
+      container!
+        .querySelector<HTMLButtonElement>('button[aria-label="New chat"]')
+        ?.click()
     );
     const projectButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Select Project"]'

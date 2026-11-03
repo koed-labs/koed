@@ -1,0 +1,159 @@
+import { describe, expect, it } from "vitest";
+import type { KoedServerStatus } from "../../../types.js";
+import { homeStatus } from "./home-status.fixture.js";
+import {
+  formatHomeAgo,
+  holdHomeOrder,
+  homeClients,
+  homeHeat,
+  rankHomeProjects,
+  selectHomeView,
+  type HomeProjectEntry
+} from "./home-model.js";
+
+const entry = (
+  id: string,
+  latestAt: string | null,
+  name = id
+): HomeProjectEntry => ({ id, name, eventCount: 1, latestAt });
+
+describe("selectHomeView", () => {
+  it("waits for status and for the first Project load", () => {
+    expect(selectHomeView(null, [])).toEqual({ kind: "loading" });
+    expect(selectHomeView(homeStatus(), null)).toEqual({ kind: "loading" });
+  });
+
+  it("chooses Projects or the quiet stage from loaded Projects", () => {
+    expect(selectHomeView(homeStatus(), []).kind).toBe("empty");
+    expect(selectHomeView(homeStatus(), [entry("a", null)]).kind).toBe(
+      "projects"
+    );
+  });
+
+  it("takes over the screen only when the API or database is down", () => {
+    const view = selectHomeView(
+      homeStatus({
+        database: { state: "needs_attention", message: "Postgres stopped." }
+      }),
+      null
+    );
+    expect(view.kind).toBe("attention");
+    if (view.kind !== "attention") return;
+    expect(view.problems[0]).toMatchObject({
+      id: "runtime",
+      message: "Postgres stopped."
+    });
+    expect(view.primary?.action?.command).toBe("runtime_install");
+  });
+
+  it("explains a stopped Koed even when every component looks healthy", () => {
+    const view = selectHomeView(
+      homeStatus({
+        lifecycle: { state: "stopped" }
+      } as Partial<KoedServerStatus>),
+      []
+    );
+    expect(view).toMatchObject({
+      kind: "attention",
+      primary: { action: { command: "start" } }
+    });
+  });
+
+  it("shows other problems as warnings above Projects", () => {
+    const view = selectHomeView(
+      homeStatus({
+        captureHook: { state: "needs_attention", message: "Hook is quiet." }
+      }),
+      [entry("a", null)]
+    );
+    expect(view).toEqual({
+      kind: "projects",
+      warnings: [
+        {
+          id: "capture-hook",
+          title: "Capture Hook",
+          message: "Hook is quiet.",
+          action: null
+        }
+      ]
+    });
+  });
+});
+
+describe("homeClients", () => {
+  it("lists detected or configured AI Clients only", () => {
+    const status = homeStatus(
+      {},
+      {
+        codex: {},
+        claude: {
+          authentication: "unknown",
+          profile: { state: "not_configured" }
+        },
+        pi: {
+          installed: { state: "not_configured" },
+          profile: { state: "not_configured" }
+        }
+      }
+    );
+    expect(homeClients(status)).toEqual([
+      expect.objectContaining({
+        id: "codex",
+        state: "connected",
+        version: null
+      }),
+      expect.objectContaining({
+        id: "claude",
+        state: "detected",
+        version: "1.2.3",
+        label: "Detected · not connected"
+      })
+    ]);
+  });
+
+  it("keeps a configured client whose detection is stale", () => {
+    const status = homeStatus(
+      {},
+      {
+        pi: {
+          installed: { state: "not_configured" },
+          snapshotState: "stale"
+        }
+      }
+    );
+    expect(homeClients(status)).toEqual([
+      expect.objectContaining({ id: "pi", state: "unsure" })
+    ]);
+  });
+});
+
+describe("Project ranking", () => {
+  it("orders by latest activity, then name, then id", () => {
+    expect(
+      rankHomeProjects([
+        entry("old", "2026-11-01T00:00:00Z"),
+        entry("none", null),
+        entry("b", "2026-11-03T00:00:00Z", "same"),
+        entry("a", "2026-11-03T00:00:00Z", "same"),
+        entry("new", "2026-11-03T10:00:00Z")
+      ])
+    ).toEqual(["new", "a", "b", "old", "none"]);
+  });
+
+  it("holds the shown order, dropping removed and appending new Projects", () => {
+    expect(holdHomeOrder(["a", "b", "c"], ["d", "c", "a"])).toEqual([
+      "a",
+      "c",
+      "d"
+    ]);
+  });
+
+  it("describes activity age and heat", () => {
+    const now = Date.parse("2026-11-03T12:00:00Z");
+    expect(formatHomeAgo("2026-11-03T11:59:40Z", now)).toBe("just now");
+    expect(formatHomeAgo("2026-11-03T11:30:00Z", now)).toBe("30m ago");
+    expect(formatHomeAgo(null, now)).toBe("no activity yet");
+    expect(homeHeat("2026-11-03T11:58:00Z", now)).toBe(3);
+    expect(homeHeat("2026-10-01T00:00:00Z", now)).toBe(0);
+  });
+});

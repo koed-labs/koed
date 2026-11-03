@@ -34,6 +34,36 @@ A named Project without a Folder uses the existing independent-chat execution
 context. Its captured Conversation is added through the existing versioned
 Project membership commands; execution Folder identity is not rewritten.
 
+### Home
+
+Home is a read-only stage over existing state; it adds no backend calls and
+never starts a Conversation (New chat opens its own composer route).
+
+- **Attention** replaces Home only when the local API or its database is down,
+  or Koed is stopped, because Projects cannot load. Other setup problems and an
+  unhealthy Capture Hook show as warnings above the normal content. A problem
+  offers its existing setup command, keeping that command's consent step, or
+  its status message as manual guidance.
+- **Quiet stage** shows when Projects have loaded and none exist.
+- **Projects** shows a Kin for each named Project the sidebar lists, up to eight
+  on the stage, plus an All Projects list. Counts are the Project summary's
+  stored captured events, and ranking uses its latest thread activity, then
+  name, then id. `conversation_events_changed` refreshes the summaries through
+  `PersonalMemoryStore`; a rise in a summary's count plays one coalesced
+  animation, so a missed or repeated change event never alters a count. Window
+  focus refreshes status and Projects. Re-ranking is throttled and holds while
+  the window is focused and the pointer is over the stage; the sidebar order
+  is independent. Reduced motion keeps re-ranking without movement or tile
+  drops.
+- **AI Client keycaps** list clients that are detected or configured, from
+  `status.aiClients`. A configured client stays listed when detection is stale,
+  shown as unsure; the version is shown for a detected client that is not
+  connected. Capture health is system-wide (`status.captureHook`), so a keycap
+  does not claim that its messages are flowing.
+
+Historical ingestion progress is not shown yet: the coordinator's state is not
+exposed to Desktop.
+
 Run `pnpm --filter @koed/desktop test:browser:v1` for the isolated Electron
 presentation smoke check. This fixture does not configure local AI Clients or
 certify a live model response or performance measurement.

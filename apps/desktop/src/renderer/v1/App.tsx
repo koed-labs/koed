@@ -35,6 +35,12 @@ import {
   type ManagedConversationUpdateEnvelope
 } from "../state/managed-conversation-runtime.js";
 import { V1Settings, type V1SettingsTab } from "./settings.js";
+import { Home } from "./home/Home.js";
+import {
+  homeClients,
+  homeProjectEntries,
+  selectHomeView
+} from "./home/home-model.js";
 import "./app-layout.css";
 import "./app.css";
 import { ConversationPresentationContext } from "../conversation-presentation.js";
@@ -295,7 +301,7 @@ export function V1App({
   const [provenance, setProvenance] = useState<V1Provenance>(emptyProvenance);
   const [error, setError] = useState<string | null>(null);
   const [route, setRoute] = useState<{
-    kind: "home" | "project" | "conversation";
+    kind: "home" | "compose" | "project" | "conversation";
     projectId?: string;
     executionId?: string;
   }>({ kind: "home" });
@@ -428,6 +434,16 @@ export function V1App({
     void statusStore.refresh();
     void themeStore.load();
   }, [statusStore, themeStore]);
+  // Change events can be missed while the window is in the background.
+  useEffect(() => {
+    if (!store || status?.api.state !== "healthy") return;
+    const refresh = () => {
+      void statusStore.refresh();
+      void store.loadProjects({ silent: true }).catch(() => undefined);
+    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [store, statusStore, status?.api.state]);
   useEffect(() => {
     if (
       !personalMemoryApi ||
@@ -987,6 +1003,17 @@ export function V1App({
     )
   );
   const visibleProjects = selectV1Projects(projects, provenance);
+  const homeEntries = useMemo(
+    () => homeProjectEntries(selectV1Projects(projects, provenance)),
+    [projects, provenance]
+  );
+  const homeEntriesLoaded = Boolean(
+    snapshot && (snapshot.revision > 0 || snapshot.error)
+  );
+  const openProject = (projectId: string) => {
+    setSelectedProjectId(projectId);
+    setRoute({ kind: "project", projectId });
+  };
   const activeProject = selectedProjectId
     ? (visibleProjects.find((project) => project.id === selectedProjectId) ??
       null)
@@ -1128,10 +1155,7 @@ export function V1App({
           id: project.id,
           title: project.name,
           active: route.kind === "project" && route.projectId === project.id,
-          onSelect: () => {
-            setSelectedProjectId(project.id);
-            setRoute({ kind: "project", projectId: project.id });
-          }
+          onSelect: () => openProject(project.id)
         }))
     }
   ];
@@ -1398,7 +1422,7 @@ export function V1App({
             setSelectedProjectId(null);
             setLaunchPending(false);
             setComposerGeneration((value) => value + 1);
-            setRoute({ kind: "home" });
+            setRoute({ kind: "compose" });
           }}
           onNewProject={() => setNewProjectOpen(true)}
           railFooter={
@@ -1500,7 +1524,7 @@ export function V1App({
                           setSelectedProjectId(route.projectId ?? null);
                           setLaunchPending(false);
                           setComposerGeneration((value) => value + 1);
-                          setRoute({ kind: "home" });
+                          setRoute({ kind: "compose" });
                         }}
                       >
                         New chat
@@ -1668,12 +1692,25 @@ export function V1App({
                   </section>
                 </V1ThreadLayout>
               )}
-              {route.kind === "home" && (
+              {route.kind === "compose" && (
                 <V1EmptyHero
                   agentName={agent.name}
                   look={agent.look}
                   subtitle="Your AI Client, with memory."
                   composer={launchComposer}
+                />
+              )}
+              {route.kind === "home" && (
+                <Home
+                  view={selectHomeView(
+                    status,
+                    homeEntriesLoaded ? homeEntries : null
+                  )}
+                  clients={homeClients(status)}
+                  entries={homeEntries}
+                  agent={agent}
+                  statusStore={statusStore}
+                  onOpenProject={openProject}
                 />
               )}
             </>

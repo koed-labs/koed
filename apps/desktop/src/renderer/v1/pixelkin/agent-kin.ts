@@ -89,3 +89,26 @@ export const serializeAgentLook = (look: AgentLook, name: string) =>
 
 export const sameAgentLook = (a: AgentLook, b: AgentLook) =>
   JSON.stringify(kinToJson(a)) === JSON.stringify(kinToJson(b));
+
+const projectShapes: readonly KinShape[] = [
+  "roundedBox",
+  "cube",
+  "sphere",
+  "capsule"
+];
+
+// Each Project gets a stable Kin from its id until Projects can choose a look.
+export function projectKinLook(projectId: string): AgentLook {
+  let hash = 2166136261;
+  for (const char of projectId)
+    hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  const value = hash >>> 0;
+  const look = withAgentShape(
+    clone(DEFAULT_AGENT_LOOK),
+    projectShapes[value % projectShapes.length]!
+  );
+  const colour = KIN_COLOURS[(value >>> 8) % KIN_COLOURS.length];
+  if (colour) editKin(look, "palette.base", colour.hex);
+  look.seed = value % 100000;
+  return look;
+}

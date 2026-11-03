@@ -36,8 +36,37 @@
 .v1-pixelkin-fallback i:first-child {
   left: 30%;
 }
-.v1-pixelkin-fallback i:last-child {
+.v1-pixelkin-fallback i:nth-child(2) {
   right: 30%;
+}
+.v1-pixelkin-fallback b {
+  position: absolute;
+  top: 62%;
+  left: 50%;
+  width: 18%;
+  height: 4%;
+  min-height: 2px;
+  border-radius: 999px;
+  background: #05070a;
+  transform: translateX(-50%);
+}
+.v1-pixelkin-fallback[data-expression="surprised"] i {
+  top: 32%;
+  width: 18%;
+  height: 22%;
+  background: radial-gradient(circle, #05070a 0 26%, #fff 30%);
+}
+.v1-pixelkin-fallback[data-expression="surprised"] b {
+  top: 60%;
+  width: 12%;
+  height: 14%;
+  border-radius: 50%;
+}
+.v1-pixelkin-fallback[data-expression="happy"] b {
+  top: 58%;
+  width: 24%;
+  height: 12%;
+  border-radius: 0 0 999px 999px;
 }
 
 .v1-look-picker {
