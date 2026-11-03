@@ -52,8 +52,9 @@ Embedding Service or incompatible model needs attention. Historical import can
 pause while live capture has priority; its displayed reason describes admission,
 not deletion or completion of pending history.
 
-Refresh status requests a current snapshot. Transitional service states refresh
-while Services is open. Start or Restart Koed, Run diagnostics, Open logs, and
-Copy diagnostics use the existing desktop operations. Failures remain visible;
+Refresh status requests a current snapshot. While Services is open, extra startup
+refreshes run for up to one minute. Use Refresh status to check a longer startup
+and begin another refresh window. Start or Restart Koed, Run diagnostics, Open
+logs, and Copy diagnostics use the existing desktop operations. Failures remain visible;
 a failed stop prevents restart from proceeding to start. Copied diagnostics
 include only the existing allowlisted service states and timestamp.

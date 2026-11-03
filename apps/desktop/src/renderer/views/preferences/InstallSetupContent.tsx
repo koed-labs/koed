@@ -210,9 +210,7 @@ export function InstallSetupContent({
 
       {busy && !nested && (
         <p className="koed-setup-install-background">
-          {nested
-            ? "You can go back. Setup will continue in the background."
-            : "You can close this window. Setup will continue in the background."}
+          You can close this window. Setup will continue in the background.
         </p>
       )}
       {ready && !privacy && !nested && (

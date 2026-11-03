@@ -50,6 +50,7 @@ describe("V1Settings", () => {
   });
   afterEach(async () => {
     await act(async () => root.unmount());
+    vi.useRealTimers();
     container.remove();
     delete window.koedDesktop;
   });
@@ -333,6 +334,54 @@ describe("V1Settings", () => {
     expect(container.querySelector("details")).toBeNull();
     expect(container.textContent).toContain("Database unavailable");
     expect(container.textContent).toContain("Needs attention");
+    expect(
+      [...container.querySelectorAll("p")].filter((paragraph) =>
+        paragraph.textContent?.startsWith("Updated ")
+      )
+    ).toHaveLength(1);
+  });
+  it("bounds startup refreshes and lets manual refresh start another window", async () => {
+    vi.useFakeTimers();
+    snapshot = {
+      ...snapshot,
+      status: {
+        generatedAt: "2026-01-01T00:00:00Z",
+        api: { state: "starting" }
+      } as never
+    };
+    const listeners = new Set<() => void>();
+    statusStore.subscribe = (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    };
+    const refresh = vi.fn(async () => {
+      snapshot = { ...snapshot, revision: snapshot.revision + 1 };
+      for (const listener of listeners) listener();
+      return snapshot.status;
+    });
+    statusStore.refresh = refresh;
+    await render("services");
+    const initialRequests = refresh.mock.calls.length;
+    for (let tick = 0; tick < 40; tick++)
+      await act(async () => vi.advanceTimersByTimeAsync(1500));
+    expect(refresh).toHaveBeenCalledTimes(initialRequests + 40);
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(refresh).toHaveBeenCalledTimes(initialRequests + 40);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Refresh status"]')!
+        .click()
+    );
+    expect(refresh).toHaveBeenCalledTimes(initialRequests + 41);
+    await act(async () => vi.advanceTimersByTimeAsync(1500));
+    expect(refresh).toHaveBeenCalledTimes(initialRequests + 42);
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+        .find((button) => button.textContent === "General")!
+        .click()
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(refresh).toHaveBeenCalledTimes(initialRequests + 42);
   });
   it("starts stopped services and opens logs through existing commands", async () => {
     snapshot = {

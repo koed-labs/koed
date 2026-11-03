@@ -544,6 +544,7 @@ export function V1Settings({
   const [serviceBusy, setServiceBusy] = useState<string | null>(null);
   const [serviceError, setServiceError] = useState<string | null>(null);
   const [serviceNotice, setServiceNotice] = useState<string | null>(null);
+  const servicesRefreshDeadline = useRef<number | null>(null);
   const snapshot = useDesktopStatus(statusStore);
   const theme = useSyncExternalStore(
     themeStore.subscribe,
@@ -576,7 +577,19 @@ export function V1Settings({
       ([, component]) => component.state === "starting"
     );
   useEffect(() => {
-    if (!servicesStarting || snapshot.error || snapshot.busyCommand) return;
+    if (!servicesStarting) {
+      servicesRefreshDeadline.current = null;
+      return;
+    }
+    // A service can remain "starting" indefinitely; keep extra UI polling bounded.
+    const now = Date.now();
+    servicesRefreshDeadline.current ??= now + 60_000;
+    if (
+      snapshot.error ||
+      snapshot.busyCommand ||
+      now + 1500 > servicesRefreshDeadline.current
+    )
+      return;
     const timeout = setTimeout(() => void statusStore.refresh(), 1500);
     return () => clearTimeout(timeout);
   }, [
@@ -722,8 +735,10 @@ export function V1Settings({
         await clipboard.writeText(JSON.stringify(report, null, 2));
         setServiceNotice("Diagnostics copied.");
       }
-      if (action === "start" || action === "restart")
+      if (action === "start" || action === "restart") {
+        servicesRefreshDeadline.current = null;
         await statusStore.refresh();
+      }
     } catch (cause) {
       setServiceError(errorText(cause));
     } finally {
@@ -1132,7 +1147,10 @@ export function V1Settings({
                   aria-label="Refresh status"
                   title="Refresh status"
                   disabled={!!snapshot.busyCommand}
-                  onClick={() => void statusStore.refresh()}
+                  onClick={() => {
+                    servicesRefreshDeadline.current = null;
+                    void statusStore.refresh();
+                  }}
                 >
                   <RefreshCw size={15} aria-hidden="true" />
                 </button>

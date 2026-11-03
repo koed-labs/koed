@@ -203,11 +203,6 @@ export function SettingsServicePage({
           />
         </div>
       )}
-      {status && (
-        <p className="v1-settings-caption">
-          Updated {new Date(status.generatedAt).toLocaleString()}
-        </p>
-      )}
     </>
   );
 }
