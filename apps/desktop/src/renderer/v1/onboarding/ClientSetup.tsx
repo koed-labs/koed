@@ -93,14 +93,17 @@ export function ClientSetup({
   const selectionCallback = useRef(onSelection);
   selectionCallback.current = onSelection;
   const detected = clients.filter((c) => clientDetected(c.id, status));
+  // Results for deselected clients must not drive retries or readiness.
+  const resultFor = (id: ClientId) =>
+    selected.includes(id) ? results[id] : undefined;
   const successful = clients.filter(
-    (c) => results[c.id]?.state === "success" && clientReady(c.id, status)
+    (c) => resultFor(c.id)?.state === "success" && clientReady(c.id, status)
   );
   const unresolved = clients.filter(
     (c) =>
-      results[c.id] &&
-      results[c.id]?.state !== "queued" &&
-      results[c.id]?.state !== "connecting" &&
+      resultFor(c.id) &&
+      resultFor(c.id)?.state !== "queued" &&
+      resultFor(c.id)?.state !== "connecting" &&
       !successful.includes(c)
   );
   const hasFailure = unresolved.length > 0;
@@ -248,7 +251,7 @@ export function ClientSetup({
           const observed = status?.aiClients?.[client.id];
           const found = scanned && clientDetected(client.id, status);
           const choosing = phase === "choose";
-          const result = results[client.id];
+          const result = resultFor(client.id);
           const success =
             result?.state === "success" && clientReady(client.id, status);
           const failed =

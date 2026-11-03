@@ -139,7 +139,8 @@ The setup presentation uses the staged Pixelkin prototype design: a large Kin,
 real setup progress, client discovery and connection, and a final celebration.
 The renderer and expressions come from Desktop's vendored Pixelkin engine;
 no website scripts are loaded. Reduced motion and a WebGL fallback preserve
-usable status feedback. Theme changes use the existing persisted preference.
+usable status feedback. Onboarding follows the system appearance and does not
+change the persisted theme preference.
 Setup begins only after **Get Started** authorizes local installation. Desktop
 runs only incomplete stages in order and stops at the first failure. The model
 stage reports actual downloaded and total bytes before checksum verification.

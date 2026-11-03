@@ -502,6 +502,44 @@ describe("prototype onboarding", () => {
     ).toHaveLength(1);
     expect(text()).toContain("Everyone’s connected.");
   });
+  it("never retries or reports a client deselected after it failed", async () => {
+    const { invoke, click } = await render();
+    const original = invoke.getMockImplementation()!;
+    let failPi = true;
+    invoke.mockImplementation(async (command) => {
+      if (command === "setup_claude") throw new Error("Claude failed");
+      if (command === "setup_pi" && failPi) {
+        failPi = false;
+        throw new Error("Pi failed");
+      }
+      return original(command);
+    });
+    const toggle = (label: string) =>
+      act(async () =>
+        (
+          container.querySelector(
+            `[aria-label="Enable ${label}"]`
+          ) as HTMLInputElement
+        ).click()
+      );
+    await click("Next");
+    await toggle("Pi");
+    await click("Connect");
+    expect(text()).toContain("Claude failed");
+    await click("Change selection");
+    await toggle("Claude Code");
+    await toggle("Pi");
+    await click("Connect");
+    expect(text()).not.toContain("Claude failed");
+    await click("Retry failed");
+    expect(
+      invoke.mock.calls.filter(([cmd]) => cmd === "setup_claude")
+    ).toHaveLength(1);
+    expect(
+      invoke.mock.calls.filter(([cmd]) => cmd === "setup_pi")
+    ).toHaveLength(2);
+    expect(text()).toContain("Everyone’s connected.");
+  });
   it("blocks full failure and preserves an actionable command error", async () => {
     const { invoke, click } = await render();
     const original = invoke.getMockImplementation()!;
