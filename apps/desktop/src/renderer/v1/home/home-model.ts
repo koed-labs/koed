@@ -102,7 +102,8 @@ export function selectHomeView(
             {
               id: "services",
               title: "Koed services",
-              message: "Koed isn’t running. Starting it brings your Projects back.",
+              message:
+                "Koed isn’t running. Starting it brings your Projects back.",
               action: {
                 command: "start",
                 label: "Start Koed",
