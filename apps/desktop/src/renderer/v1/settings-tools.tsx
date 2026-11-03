@@ -92,13 +92,15 @@ export function SettingsTools({
                   <ChevronRight size={14} />
                 </span>
                 <small>
-                  {job?.stage === "ready"
-                    ? "Installed"
-                    : job?.stage === "progress"
-                      ? "Installing"
-                      : !job || job.unavailable
-                        ? "Unavailable"
-                        : ""}
+                  {job?.checking
+                    ? "Checking…"
+                    : !job || job.unavailable
+                      ? "Unavailable"
+                      : job.stage === "ready"
+                        ? "Installed"
+                        : job.stage === "progress"
+                          ? "Installing"
+                          : ""}
                 </small>
               </span>
             </button>
