@@ -42,7 +42,7 @@ cheap CI-equivalent gates:
 corepack enable
 pnpm install --frozen-lockfile
 pnpm build
-pnpm fmt:prettier:check
+pnpm fmt:check
 pnpm lint
 pnpm typecheck
 pnpm typecheck:test

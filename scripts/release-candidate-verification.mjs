@@ -27,7 +27,7 @@ export const hashFileSync = (path, algorithm = "sha256", encoding = "hex") => {
   const chunk = Buffer.allocUnsafe(1024 * 1024);
   const fd = openSync(path, "r");
   try {
-    for (let read; (read = readSync(fd, chunk, 0, chunk.length, null)) > 0; )
+    for (let read; (read = readSync(fd, chunk, 0, chunk.length, null)) > 0;)
       hash.update(chunk.subarray(0, read));
   } finally {
     closeSync(fd);

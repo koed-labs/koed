@@ -217,6 +217,7 @@ export const registerRemoteMcpOAuthRoutes = (
         raw.body = request.body;
         reply.hijack();
         sdkApp(raw, reply.raw);
+        return reply;
       });
     }
 

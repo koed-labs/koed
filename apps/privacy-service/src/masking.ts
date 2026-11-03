@@ -157,14 +157,12 @@ export const maskClassification = (
     })
   );
   const union = unionSpans(candidates);
-  const spans = union.map(
-    (span): PrivacyDetectedSpan => ({
-      label: span.label,
-      detectors: detectorNames(span.sources),
-      startByte: span.start,
-      endByte: span.end
-    })
-  );
+  const spans = union.map((span): PrivacyDetectedSpan => ({
+    label: span.label,
+    detectors: detectorNames(span.sources),
+    startByte: span.start,
+    endByte: span.end
+  }));
 
   const source = Buffer.from(text, "utf8");
   const output: Buffer[] = [];

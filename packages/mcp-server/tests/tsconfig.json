@@ -1,0 +1,5 @@
+{
+  "extends": "../../../tsconfig.lint.json",
+  "include": ["./**/*.ts"],
+  "exclude": []
+}

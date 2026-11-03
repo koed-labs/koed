@@ -388,17 +388,14 @@ describe("ManagedProjectCockpit", () => {
     expect(container.textContent).toContain("Preview 1");
     expect(JSON.stringify(command.mock.calls)).not.toContain("127.0.0.1");
 
+    const previewRequest = command.mock.calls
+      .map(([request]) => request)
+      .find((request) => request.operation === "preview_attach");
+    expect(previewRequest).toBeDefined();
     await act(async () => {
       subscribed?.({
         kind: "preview",
-        surfaceId: (
-          command.mock.calls.find(
-            ([request]) => request.operation === "preview_attach"
-          )?.[0] as Extract<
-            ManagedProjectRequest,
-            { operation: "preview_attach" }
-          >
-        ).surfaceId,
+        surfaceId: previewRequest!.surfaceId,
         previewId,
         lifecycleGeneration: 1,
         state: "ready"

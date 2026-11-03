@@ -278,16 +278,14 @@ const createFakeRepository = (): MemoryEngineRepository => {
           return node.visibility === input.scope;
         })
         .filter((node) => node.summaryText.includes(input.query))
-        .map(
-          (node): MemorySearchResult => ({
-            nodeId: node.id,
-            visibility: node.visibility,
-            summaryText: node.summaryText,
-            lcmNodeSummaryStatus: node.lcmNodeSummaryStatus,
-            score: 1,
-            citation: { nodeId: node.id, visibility: node.visibility }
-          })
-        );
+        .map((node): MemorySearchResult => ({
+          nodeId: node.id,
+          visibility: node.visibility,
+          summaryText: node.summaryText,
+          lcmNodeSummaryStatus: node.lcmNodeSummaryStatus,
+          score: 1,
+          citation: { nodeId: node.id, visibility: node.visibility }
+        }));
       return {
         results,
         metadata: {
@@ -341,8 +339,8 @@ const createFakeRepository = (): MemoryEngineRepository => {
           sourceId: eventId,
           position
         })),
-        sources: node.sourceEventIds.map(
-          (eventId) => events.find((event) => event.id === eventId)!
+        sources: node.sourceEventIds.map((eventId) =>
+          events.find((event) => event.id === eventId)!
         )
       } satisfies ExpandedMemoryNode;
     }

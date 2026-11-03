@@ -26,13 +26,11 @@ const makeApi = () =>
       state: "not_installed" as const,
       message: "Privacy Filter assets are missing."
     })),
-    installPrivacy: vi.fn(
-      async (): Promise<PrivacyInstallStatus> => ({
-        available: true,
-        state: "ready" as const,
-        message: "Ready"
-      })
-    ),
+    installPrivacy: vi.fn(async (): Promise<PrivacyInstallStatus> => ({
+      available: true,
+      state: "ready" as const,
+      message: "Ready"
+    })),
     cancel: vi.fn(async () => undefined),
     selectOffline: vi.fn(async () => ({
       archivePath: "/tmp/privacy.tar.gz",

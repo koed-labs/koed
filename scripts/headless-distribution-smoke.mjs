@@ -40,7 +40,7 @@ const supportedFlags = new Set([
   "--out-dir"
 ]);
 const switches = new Set(["--team", "--install-models"]);
-for (let i = 2; i < process.argv.length; ) {
+for (let i = 2; i < process.argv.length;) {
   if (switches.has(process.argv[i])) {
     flags.set(process.argv[i], "true");
     i += 1;

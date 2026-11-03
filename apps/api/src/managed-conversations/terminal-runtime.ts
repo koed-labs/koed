@@ -241,7 +241,7 @@ const terminalEnvironment = (shell: string): Record<string, string> => {
 const splitOutput = (value: string): Buffer[] => {
   const data = Buffer.from(value, "utf8");
   const chunks: Buffer[] = [];
-  for (let offset = 0; offset < data.byteLength; ) {
+  for (let offset = 0; offset < data.byteLength;) {
     let end = Math.min(
       offset + MANAGED_TERMINAL_MAX_DATA_BYTES,
       data.byteLength

@@ -1956,7 +1956,7 @@ process.stdin.once("data", () => {
             };
           };
         }
-      ).trace;
+      )?.trace;
       expect(retryTrace?.budgets?.consumed?.promptTokens).toBeGreaterThan(
         response.localMemoryWorker.promptTokenEstimate ?? 0
       );
@@ -2442,7 +2442,7 @@ process.stdin.once("data", () => {
         response.evidenceBundle?.retrieval as {
           trace?: { budgets?: { exhausted?: unknown[] } };
         }
-      ).trace?.budgets?.exhausted;
+      )?.trace?.budgets?.exhausted;
       expect(exhausted).toContain("candidates");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
@@ -2524,7 +2524,7 @@ process.stdin.once("data", () => {
           response.evidenceBundle?.retrieval as {
             trace?: { budgets?: { exhausted?: unknown[] } };
           }
-        ).trace?.budgets?.exhausted;
+        )?.trace?.budgets?.exhausted;
         expect(exhausted).toContain(testCase.name);
       } finally {
         fs.rmSync(directory, { recursive: true, force: true });
@@ -2738,7 +2738,7 @@ process.stdin.once("data", () => {
         response.evidenceBundle?.retrieval as {
           trace?: { budgets?: { exhausted?: unknown[] } };
         }
-      ).trace?.budgets?.exhausted;
+      )?.trace?.budgets?.exhausted;
       expect(exhausted).toContain("expansions");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
@@ -3076,7 +3076,7 @@ process.stdin.once("data", () => {
         response.evidenceBundle?.retrieval as {
           trace?: { budgets?: { exhausted?: unknown[] } };
         }
-      ).trace?.budgets?.exhausted;
+      )?.trace?.budgets?.exhausted;
       expect(exhausted).toContain("searches");
       expect(exhausted).toContain("attempts");
       expect(searches).toHaveLength(1);
@@ -3136,7 +3136,7 @@ process.stdin.once("data", () => {
         response.evidenceBundle?.retrieval as {
           trace?: { budgets?: { exhausted?: unknown[] } };
         }
-      ).trace?.budgets?.exhausted;
+      )?.trace?.budgets?.exhausted;
       expect(exhausted).toEqual(["searches"]);
       expect(searches).toHaveLength(1);
     } finally {
@@ -3235,7 +3235,7 @@ process.stdin.once("data", () => {
             };
           };
         }
-      ).trace;
+      )?.trace;
       expect(typeof trace?.attempts?.[0]?.model).toBe("string");
       expect(typeof trace?.modelMetadata?.configuredModel).toBe("string");
       expect(typeof trace?.modelMetadata?.promptTokenEstimate).toBe("number");

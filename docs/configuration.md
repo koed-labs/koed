@@ -998,7 +998,7 @@ policy, or full URLs containing customer content.
   of MiB of transient heap, so additional concurrent finalizations are not
   admitted without new measured capacity evidence.
 - `koed models status --kind privacy --json` and `koed models
-install --kind privacy --json`: verify or install the pinned local Privacy
+  install --kind privacy --json`: verify or install the pinned local Privacy
   Service model, tokenizer, decoder, and calibration assets in Koed's
   content-addressed model cache. Runtime configuration cannot silently select a
   different classifier generation.

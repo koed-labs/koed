@@ -585,9 +585,8 @@ const unavailableConnection = (
   protocolVersion: COLLABORATION_CONTRACT_VERSION
 });
 
-const teamIdForSelection = (
-  selection: CollaborationSelection
-): string | null => ("teamId" in selection ? selection.teamId : null);
+const teamIdForSelection = (selection: CollaborationSelection): string | null =>
+  "teamId" in selection ? selection.teamId : null;
 
 const selectionIdentity = (selection: CollaborationSelection): string => {
   switch (selection.kind) {

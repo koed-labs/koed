@@ -290,7 +290,7 @@ const nameStatus = async (root: string, from: string, to: string) => {
   );
   const entries: Array<{ code: string; path: string; previousPath?: string }> =
     [];
-  for (let index = 0; index < fields.length; ) {
+  for (let index = 0; index < fields.length;) {
     const code = fields[index++]!;
     if (code.startsWith("R") || code.startsWith("C")) {
       const previousPath = safeRelativePath(fields[index++]!);

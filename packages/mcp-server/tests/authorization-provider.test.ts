@@ -23,7 +23,7 @@ describe("Memory API authorization provider", () => {
     expect(
       fetch.mock.calls.map(
         ([, options]) =>
-          (options?.headers as Record<string, string>).authorization
+          (options?.headers as Record<string, string>)?.authorization
       )
     ).toEqual(["Bearer first", "Bearer renewed"]);
   });
@@ -44,7 +44,7 @@ describe("Memory API authorization provider", () => {
     expect(authorizationProvider).not.toHaveBeenCalled();
     expect(
       (fetch.mock.calls[0]?.[1]?.headers as Record<string, string>)
-        .authorization
+        ?.authorization
     ).toBe("Bearer explicit");
   });
 
@@ -77,7 +77,7 @@ describe("Memory API authorization provider", () => {
     }).accessCheck();
     expect(
       (fetch.mock.calls[0]?.[1]?.headers as Record<string, string>)
-        .authorization
+        ?.authorization
     ).toBe("Bearer existing");
   });
 });
