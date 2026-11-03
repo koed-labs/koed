@@ -1,5 +1,13 @@
 # @koed/koed
 
+## 0.10.3
+
+## 0.10.2
+
+### Patch Changes
+
+- 16d6621: Include Server changes in product release notes and keep Desktop changelog versions aligned with product releases.
+
 ## 0.10.1
 
 ## 0.10.0
