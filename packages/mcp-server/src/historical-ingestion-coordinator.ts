@@ -294,7 +294,17 @@ export const startHistoricalIngestionCoordinator = <Candidate>(input: {
       try {
         const progressed = await pass();
         if (progressed) requested = true;
+        // A pass that ran cleanly ends a run of failures even when it had
+        // nothing to import, such as while sources finish downstream.
+        if (state.progress?.failingSince) {
+          const progress = { ...state.progress };
+          delete progress.failingSince;
+          state.progress = progress;
+          save();
+        }
       } catch (error) {
+        // Stopping aborts work in flight; that isn't a failing pass.
+        if (stopped) return;
         reportError(historicalPassErrorCode(error));
       }
     })().finally(() => {

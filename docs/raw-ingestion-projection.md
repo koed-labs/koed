@@ -312,7 +312,8 @@ The automatic historical coordinator for each AI Client keeps its selection in
 `KOED_HOME/state/<client>-historical-ingestion.json`, with a `progress` record
 of when it last wrote, its last batch outcome, its last progress, and its last
 pass failure, plus when the current run of failures began (cleared by any
-progress). A pass failure records the most specific safe code available,
+progress or by a pass that runs without failing, such as while selected
+sources finish downstream; stopping the runtime is not a failure). A pass failure records the most specific safe code available,
 including the Memory API's code for a rejected request, rather than a generic
 pass failure. Koed status summarises that file without starting or changing
 ingestion: Conversations count as finished only at a completed or skipped

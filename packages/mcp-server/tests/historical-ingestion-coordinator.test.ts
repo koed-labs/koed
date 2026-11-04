@@ -332,6 +332,43 @@ describe("provider-owned historical discovery", () => {
     await coordinator.stop();
   });
 
+  it("ends a run of failures on a clean pass with nothing to import", async () => {
+    let calls = 0;
+    const adapter: HistoricalProviderAdapter<{ id: string }> = {
+      aiClient: "recovering-provider",
+      candidateId: (entry) => entry.id,
+      selectCandidates: (entries) =>
+        entries.map((entry) => ({
+          aiClient: "recovering-provider",
+          candidateId: entry.id,
+          frontierOffset: 10,
+          frontierLine: 1,
+          latestActivityAt: "2026-08-17T00:00:00.000Z"
+        })),
+      async processNextBatch({ selection }) {
+        calls += 1;
+        if (calls === 1) throw new Error("historical_batch_rejected");
+        // Waiting on downstream completion: no progress, but no failure.
+        return { state: "source_exhausted", selection };
+      }
+    };
+    const coordinator = startHistoricalIngestionCoordinator({
+      adapter,
+      koedHome: temporaryDirectory(),
+      retryMs: 1
+    });
+    coordinator.offerCandidates([{ id: "conversation" }]);
+
+    await vi.waitFor(() => expect(calls).toBeGreaterThan(1));
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().progress?.failingSince).toBeUndefined()
+    );
+    expect(coordinator.snapshot().progress?.lastErrorCode).toBe(
+      "historical_batch_rejected"
+    );
+    await coordinator.stop();
+  });
+
   it("retries transient discovery failures before freezing the cohort", async () => {
     let discoveryAttempts = 0;
     const errors: string[] = [];
