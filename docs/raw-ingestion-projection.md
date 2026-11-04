@@ -259,8 +259,18 @@ and segment transfer have an independent local rate-limit bucket so a large
 first discovery cannot consume the interactive Memory read/write allowance used
 by Desktop and the MCP Server.
 
+Koed reads an AI Client only while the User has connected it, meaning its
+Supported AI Client Integration is set up. Each time Koed Server checks the
+integrations (any status check, and once after startup) it records which
+clients are connected in `KOED_HOME/state/ai-client-connections.json`; a check
+that fails keeps the previous value. The Local AI Runtime rechecks that record
+every 10 seconds and starts or stops each client's Transcript Watcher and
+automatic history to match, so connecting or disconnecting needs no restart. A
+client that was never recorded is not read. Stopping keeps the coordinator's
+state, so a client that is connected again resumes its frozen cohort.
+
 The first successful bounded full discovery cycle establishes activation and
-freezes an automatic-history cohort for each enabled supported AI Client.
+freezes an automatic-history cohort for each connected supported AI Client.
 Codex, Claude Code, and Pi each discover their own source-of-truth transcripts;
 the provider-neutral coordinators select Conversations by latest source
 activity in the inclusive previous 30 days, cap each provider cohort at the

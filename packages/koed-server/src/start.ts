@@ -68,6 +68,7 @@ import { allocateAndPersistLocalPorts } from "./ports.js";
 import { ensureDeviceIdentity } from "./device-identity.js";
 import {
   collectKoedServerStartupStatus,
+  collectKoedServerStatus,
   koedServerStartupBlockingComponentIds,
   type KoedServerStartupBlockingComponentId
 } from "./status.js";
@@ -1632,6 +1633,20 @@ export const startKoedServer = async ({
         });
       }
       emitStartupMilestone("core_services_ready");
+      // The Local AI Runtime reads only connected AI Clients. A full status
+      // check records which they are, so capture starts without waiting for a
+      // client such as Koed Desktop to ask for status. Skipped when startup
+      // status is substituted (tests).
+      if (
+        localAiRuntimeEnabled &&
+        collectStatus === collectKoedServerStartupStatus
+      )
+        void collectKoedServerStatus(refreshedEnv, {
+          desktopRuntimeCapability,
+          appRuntime
+        }).catch(() =>
+          console.warn("AI Client connection check will retry with status.")
+        );
       startupReady = true;
       onReady?.();
       console.log(JSON.stringify(status, null, 2));

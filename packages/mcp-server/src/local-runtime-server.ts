@@ -56,7 +56,16 @@ import {
   type LocalRuntimeRegistration,
   type LocalRuntimeToolName
 } from "./local-runtime-protocol.js";
+import {
+  AI_CLIENT_CONNECTION_IDS,
+  isAiClientConnected,
+  readAiClientConnections,
+  type AiClientConnectionId
+} from "@koed/shared/ai-client-connections";
 import { logger } from "./logger.js";
+
+// How often the runtime rechecks which AI Clients are connected.
+const AI_CLIENT_CONNECTION_POLL_MS = 10_000;
 import {
   rateLimitSourceFrom,
   type RateLimitSource
@@ -427,18 +436,17 @@ export const startDefaultLocalAiRuntimeServices = async (
   let curatedMemoryReviewService: ReturnType<
     typeof startCuratedMemoryReviewService
   > | null = null;
-  let codexTranscriptWatcher: ReturnType<
-    typeof startCodexTranscriptWatcher
-  > | null = null;
-  let codexHistoricalIngestion: ReturnType<
-    typeof startHistoricalIngestionCoordinator
-  > | null;
-  const historicalIngestions: Array<{ stop(): Promise<void> }> = [];
-  let claudeTranscriptWatcher: ReturnType<
-    typeof startClaudeTranscriptWatcher
-  > | null = null;
-  let piTranscriptWatcher: ReturnType<typeof startPiTranscriptWatcher> | null =
-    null;
+  // Each connected AI Client's Transcript Watcher and automatic history.
+  const captures = new Map<AiClientConnectionId, { stop(): Promise<void> }>();
+  let connectionTimer: NodeJS.Timeout | undefined;
+  let reconciling: Promise<void> = Promise.resolve();
+  const stopCaptures = async () => {
+    clearInterval(connectionTimer);
+    await reconciling;
+    const running = [...captures.values()];
+    captures.clear();
+    await Promise.all(running.map((capture) => capture.stop()));
+  };
   let capabilityPublisher: AiClientCapabilityPublisherHandle | null = null;
   try {
     lcmWorkWatcher = lcmSummaryService
@@ -473,87 +481,106 @@ export const startDefaultLocalAiRuntimeServices = async (
     // so independently resumed AI Clients cannot produce historical batches
     // concurrently.
     const historicalBatchScheduler = createHistoricalBatchScheduler();
-    codexHistoricalIngestion =
-      historicalEnabled && codexWatcherEnabled
-        ? startHistoricalIngestionCoordinator({
-            adapter: createCodexHistoricalProviderAdapter({
-              client: backgroundClient,
-              config: resolveCodexHistoricalIngestionConfig(environment)
-            }),
-            koedHome,
-            retryMs: 1_000,
-            batchScheduler: historicalBatchScheduler,
-            onError: (code) =>
-              logger.warn(
-                { code },
-                "automatic historical ingestion pass failed"
-              )
-          })
-        : null;
-    if (codexHistoricalIngestion) {
-      historicalIngestions.push(codexHistoricalIngestion);
-    }
-    if (
-      historicalEnabled &&
-      claudeWatcherEnabled &&
-      dependencies.createClaudeHistoricalProviderAdapter
-    ) {
-      historicalIngestions.push(
-        startHistoricalIngestionCoordinator({
-          adapter: dependencies.createClaudeHistoricalProviderAdapter({
-            client: backgroundClient,
-            env: environment
-          }),
-          koedHome,
-          retryMs: 1_000,
-          batchScheduler: historicalBatchScheduler,
-          onError: (code) =>
-            logger.warn(
-              { aiClient: "claude", code },
-              "automatic historical ingestion pass failed"
+    const startHistory = (
+      aiClient: AiClientConnectionId,
+      adapter: Parameters<
+        typeof startHistoricalIngestionCoordinator
+      >[0]["adapter"]
+    ) =>
+      startHistoricalIngestionCoordinator({
+        adapter,
+        koedHome,
+        retryMs: 1_000,
+        batchScheduler: historicalBatchScheduler,
+        onError: (code) =>
+          logger.warn(
+            { aiClient, code },
+            "automatic historical ingestion pass failed"
+          )
+      });
+    const watcherEnabled: Record<AiClientConnectionId, boolean> = {
+      codex: codexWatcherEnabled,
+      claude: claudeWatcherEnabled,
+      pi: piWatcherEnabled
+    };
+    const startCapture = (
+      aiClient: AiClientConnectionId
+    ): { stop(): Promise<void> } => {
+      if (aiClient === "codex") {
+        const history = historicalEnabled
+          ? startHistory(
+              "codex",
+              createCodexHistoricalProviderAdapter({
+                client: backgroundClient,
+                config: resolveCodexHistoricalIngestionConfig(environment)
+              })
             )
-        })
-      );
-    }
-    if (
-      historicalEnabled &&
-      piWatcherEnabled &&
-      dependencies.createPiHistoricalProviderAdapter
-    ) {
-      historicalIngestions.push(
-        startHistoricalIngestionCoordinator({
-          adapter: dependencies.createPiHistoricalProviderAdapter({
-            client: backgroundClient,
-            env: environment
-          }),
-          koedHome,
-          retryMs: 1_000,
-          batchScheduler: historicalBatchScheduler,
-          onError: (code) =>
-            logger.warn(
-              { aiClient: "pi", code },
-              "automatic historical ingestion pass failed"
-            )
-        })
-      );
-    }
-    codexTranscriptWatcher = !codexWatcherEnabled
-      ? null
-      : dependencies.startCodexTranscriptWatcher(
+          : null;
+        const watcher = dependencies.startCodexTranscriptWatcher(
           backgroundClient,
           resolveCodexTranscriptWatcherConfig(environment),
-          codexHistoricalIngestion ?? undefined
+          history ?? undefined
         );
-    claudeTranscriptWatcher = !claudeWatcherEnabled
-      ? null
-      : dependencies.startClaudeTranscriptWatcher(
-          backgroundClient,
-          environment
-        );
-    piTranscriptWatcher =
-      !piWatcherEnabled || !dependencies.startPiTranscriptWatcher
-        ? null
-        : dependencies.startPiTranscriptWatcher(backgroundClient, environment);
+        return {
+          stop: async () => {
+            await Promise.all([watcher.stop(), history?.stop()]);
+          }
+        };
+      }
+      const createAdapter =
+        aiClient === "claude"
+          ? dependencies.createClaudeHistoricalProviderAdapter
+          : dependencies.createPiHistoricalProviderAdapter;
+      const history =
+        historicalEnabled && createAdapter
+          ? startHistory(
+              aiClient,
+              createAdapter({ client: backgroundClient, env: environment })
+            )
+          : null;
+      const watcher =
+        aiClient === "claude"
+          ? dependencies.startClaudeTranscriptWatcher(
+              backgroundClient,
+              environment
+            )
+          : dependencies.startPiTranscriptWatcher!(
+              backgroundClient,
+              environment
+            );
+      return {
+        stop: async () => {
+          await Promise.all([watcher.stop(), history?.stop()]);
+        }
+      };
+    };
+    // Koed reads an AI Client only while the User has connected it. Koed
+    // Server records connections when it checks integrations; follow that
+    // record so connecting or disconnecting takes effect without a restart.
+    const reconcileCaptures = async () => {
+      const connections = readAiClientConnections(koedHome);
+      for (const aiClient of AI_CLIENT_CONNECTION_IDS) {
+        const wanted =
+          watcherEnabled[aiClient] &&
+          isAiClientConnected(connections, aiClient);
+        const running = captures.get(aiClient);
+        if (wanted && !running) {
+          captures.set(aiClient, startCapture(aiClient));
+          logger.info({ aiClient }, "AI Client capture started");
+        } else if (!wanted && running) {
+          captures.delete(aiClient);
+          await running.stop();
+          logger.info({ aiClient }, "AI Client capture stopped");
+        }
+      }
+    };
+    await reconcileCaptures();
+    connectionTimer = setInterval(() => {
+      reconciling = reconciling.then(reconcileCaptures).catch((error) => {
+        logger.warn({ err: error }, "AI Client capture update failed");
+      });
+    }, AI_CLIENT_CONNECTION_POLL_MS);
+    connectionTimer.unref();
     if (dependencies.startAiClientCapabilityPublisher) {
       capabilityPublisher = dependencies.startAiClientCapabilityPublisher(
         apiClient,
@@ -579,12 +606,7 @@ export const startDefaultLocalAiRuntimeServices = async (
         lcmWorkWatcher?.stop();
         lcmSummaryService?.stop();
         curatedMemoryReviewService?.stop();
-        await Promise.all([
-          codexTranscriptWatcher?.stop(),
-          claudeTranscriptWatcher?.stop(),
-          piTranscriptWatcher?.stop(),
-          ...historicalIngestions.map((coordinator) => coordinator.stop())
-        ]);
+        await stopCaptures();
       }
     };
   } catch (error) {
@@ -593,12 +615,7 @@ export const startDefaultLocalAiRuntimeServices = async (
     lcmSummaryService?.stop();
     curatedMemoryReviewService?.stop();
     capabilityPublisher?.stop();
-    await Promise.all([
-      codexTranscriptWatcher?.stop(),
-      claudeTranscriptWatcher?.stop(),
-      piTranscriptWatcher?.stop(),
-      ...historicalIngestions.map((coordinator) => coordinator.stop())
-    ]);
+    await stopCaptures();
     throw error;
   }
 };

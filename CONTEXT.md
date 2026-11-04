@@ -386,6 +386,7 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - The **Local AI Runtime** is supervised by **Koed Server Control Plane** and owns persistent local AI-client work
 - A **Diagnostic Memory Tool** is hidden unless explicitly enabled
 - The **Transcript Watcher** owns transcript-growth capture correctness
+- A **Transcript Watcher** reads an **AI Client** only while the User has set up its **Supported AI Client Integration**; Koed reads nothing from an AI Client it has only detected
 - The **Supported Capture Hook** is the TypeScript hook configured for the selected supported AI client
 - A **Supported Capture Hook** may wake the **Transcript Watcher** without providing transcript content
 - Missing, duplicate, delayed, or reordered **Supported Capture Hook** signals do not create capture gaps or duplicate **Memory Events**

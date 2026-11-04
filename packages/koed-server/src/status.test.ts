@@ -318,6 +318,42 @@ describe("startup status", () => {
     }
   );
 
+  it("records which AI Clients are connected for the Local AI Runtime", async () => {
+    const root = tempDir();
+    writeStartupRuntime(root, "external");
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    const recordAiClientConnections = vi.fn();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_RUNTIME_MODE: "external",
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/database",
+        REDIS_URL: "redis://operator:6379",
+        EMBEDDING_SERVICE_URL: "http://embedding:8000"
+      },
+      {
+        fetch: healthyStartupFetcher(),
+        spawnSync: () => spawnResult("", 0),
+        checkPid: (pid: number) => [42, 43, 44].includes(pid),
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+        recordAiClientConnections
+      }
+    );
+
+    expect(recordAiClientConnections).toHaveBeenCalledWith(
+      root,
+      {
+        codex: status.codex.configured === true,
+        claude: status.claudeCode.configured === true,
+        pi: status.pi.configured === true
+      },
+      new Date("2026-01-01T00:00:00.000Z")
+    );
+  });
+
   it("keeps full external core status healthy while reporting a missing Personal API Token", async () => {
     const root = tempDir();
     writeStartupRuntime(root, "external");

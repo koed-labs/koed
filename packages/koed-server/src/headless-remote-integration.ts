@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { recordAiClientConnections } from "@koed/shared/ai-client-connections";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -238,7 +239,8 @@ const inspectHarness = async (
     checkPid: isProcessRunning,
     delay: (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
-    now: () => new Date()
+    now: () => new Date(),
+    recordAiClientConnections
   };
   const profile = await (harness === "codex"
     ? inspectCodex(

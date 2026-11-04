@@ -156,6 +156,7 @@ describe("ingestion", () => {
 
   it("shows the hatching screen only while a run is running or retrying", () => {
     const running = homeStatus({
+      claudeCode: { state: "healthy", configured: true, detected: true },
       historicalIngestion: {
         codex: progress("running", 10, 3, 1),
         claude: progress("completed", 5, 5),
@@ -175,6 +176,15 @@ describe("ingestion", () => {
       historicalIngestion: { codex: progress("idle", 10, 3) }
     } as Partial<KoedServerStatus>);
     expect(selectHomeView(idle, []).kind).toBe("empty");
+  });
+
+  it("ignores history progress from an AI Client that isn't connected", () => {
+    // Koed reads only connected clients; this is left from before.
+    const disconnected = homeStatus({
+      pi: { state: "not_configured", configured: false, detected: true },
+      historicalIngestion: { pi: progress("running", 31, 11) }
+    } as Partial<KoedServerStatus>);
+    expect(selectHomeView(disconnected, []).kind).toBe("empty");
   });
 
   it("warns once a failing run has made no progress for a while", () => {

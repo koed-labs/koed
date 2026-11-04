@@ -81,8 +81,11 @@ scrolls, only when the caption needs more room than the window leaves.
   pill. Keycaps offer no actions while Attention is shown, since Koed must be
   running again first.
 
-- **Hatching** shows while any AI Client's automatic historical ingestion is
-  running or retrying after a failure, from `status.historicalIngestion`. It
+- **Hatching** shows while any connected AI Client's automatic historical
+  ingestion is running or retrying after a failure, from
+  `status.historicalIngestion`. Koed reads only connected clients, so progress
+  left from a client that is no longer connected is ignored and its keycap
+  offers Connect. It
   states the selection limits (recent history only), counts finished
   Conversations per client with skipped ones apart, and keeps the progress bar
   indeterminate until every selection is known. It shows no time estimate and

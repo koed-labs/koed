@@ -190,6 +190,9 @@ export function homeIngestion(
   const listed = clients.flatMap(({ id, label: name }) => {
     const progress = status.historicalIngestion?.[id];
     if (!progress || progress.lifecycle === "unknown") return [];
+    // Koed reads only connected AI Clients; progress left from before a
+    // client was disconnected isn't ingestion happening now.
+    if (!aiClientHealth(id, status).configured) return [];
     return [
       {
         id,

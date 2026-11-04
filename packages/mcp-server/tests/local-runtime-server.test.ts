@@ -1,4 +1,5 @@
 import { createServer } from "node:net";
+import { recordAiClientConnections } from "@koed/shared/ai-client-connections";
 import {
   ensureDeviceIdentity,
   readSourceFolderObservation,
@@ -37,6 +38,15 @@ const tempHome = (): string => {
   const root = mkdtempSync(resolve(tmpdir(), "koed-local-ai-runtime-"));
   roots.push(root);
   return root;
+};
+
+// The runtime reads only AI Clients Koed Server has recorded as connected.
+const connectedHome = (
+  connected: Parameters<typeof recordAiClientConnections>[1]
+): string => {
+  const home = tempHome();
+  recordAiClientConnections(home, connected);
+  return home;
 };
 
 afterEach(() => {
@@ -467,7 +477,11 @@ describe("Local AI Runtime", () => {
     });
 
     const services = await startDefaultLocalAiRuntimeServices(
-      { apiClient, environment: {}, koedHome: tempHome() },
+      {
+        apiClient,
+        environment: {},
+        koedHome: connectedHome({ codex: true, claude: true })
+      },
       dependencies
     );
 
@@ -532,7 +546,9 @@ describe("Local AI Runtime", () => {
       apiUrl: "http://127.0.0.1:3300",
       apiToken: "test-token"
     });
-    const environment = { KOED_HOME: tempHome() };
+    const environment = {
+      KOED_HOME: connectedHome({ codex: true, claude: true, pi: true })
+    };
 
     const services = await startDefaultLocalAiRuntimeServices(
       { apiClient, environment, koedHome: environment.KOED_HOME },
@@ -549,6 +565,40 @@ describe("Local AI Runtime", () => {
       client: backgroundClient,
       env: environment
     });
+    await services.close();
+  });
+
+  it("reads only the AI Clients the User has connected", async () => {
+    const createClaudeHistoricalProviderAdapter = vi.fn();
+    const dependencies = {
+      startLcmSummaryService: vi.fn(() => null),
+      watchKoedLocalWork: vi.fn(),
+      startCuratedMemoryReviewService: vi.fn(() => ({ stop: vi.fn() })),
+      startCodexTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startClaudeTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      startPiTranscriptWatcher: vi.fn(() => ({ stop: vi.fn() })),
+      createClaudeHistoricalProviderAdapter,
+      createExecutor: vi.fn(() => defaultExecutor())
+    } as unknown as LocalAiRuntimeServiceDependencies;
+    const apiClient = new MemoryApiClient({
+      apiUrl: "http://127.0.0.1:3300",
+      apiToken: "test-token"
+    });
+
+    const services = await startDefaultLocalAiRuntimeServices(
+      {
+        apiClient,
+        environment: {},
+        // Claude Code detected but not connected; Pi never recorded.
+        koedHome: connectedHome({ codex: true, claude: false })
+      },
+      dependencies
+    );
+
+    expect(dependencies.startCodexTranscriptWatcher).toHaveBeenCalledTimes(1);
+    expect(dependencies.startClaudeTranscriptWatcher).not.toHaveBeenCalled();
+    expect(dependencies.startPiTranscriptWatcher).not.toHaveBeenCalled();
+    expect(createClaudeHistoricalProviderAdapter).not.toHaveBeenCalled();
     await services.close();
   });
 

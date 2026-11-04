@@ -6,6 +6,7 @@ import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
+import { recordAiClientConnections } from "@koed/shared/ai-client-connections";
 import { resolveKoedServerConfig } from "./config.js";
 import { resolveActiveIntegrationApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl } from "./env-file.js";
@@ -124,6 +125,7 @@ export interface KoedServerStatusDependencies {
   checkPid?: (pid: number) => boolean;
   delay?: (milliseconds: number) => Promise<void>;
   now?: () => Date;
+  recordAiClientConnections?: typeof recordAiClientConnections;
 }
 
 const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
@@ -139,7 +141,8 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   checkPid: isProcessRunning,
   delay: (milliseconds) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds)),
-  now: () => new Date()
+  now: () => new Date(),
+  recordAiClientConnections
 });
 
 // The lifetime is exactly one collection. Rejected selections are shared too;
@@ -2936,6 +2939,29 @@ export const collectKoedServerStatus = async (
       }),
     { state: "needs_attention", configured: false, detected: false }
   );
+  // The Local AI Runtime reads an AI Client only while it is connected. An
+  // inspection that failed says nothing either way, so it keeps the last value.
+  const connection = (inspected: {
+    configured?: boolean;
+    details?: unknown;
+  }) =>
+    (inspected.details as { kind?: unknown } | undefined)?.kind ===
+    "inspection_error"
+      ? undefined
+      : inspected.configured === true;
+  try {
+    deps.recordAiClientConnections(
+      paths.koedHome,
+      {
+        codex: connection(codex),
+        claude: connection(claudeCode),
+        pi: connection(pi)
+      },
+      deps.now()
+    );
+  } catch {
+    // Recording is best effort; status still reports the integrations.
+  }
   const captureHook = await inspectSafely(
     "Supported Capture Hook",
     () => inspectCaptureHook(runtimeEnvironment, paths, deps),
