@@ -1,0 +1,505 @@
+.v1-settings-parity {
+  width: min(900px, 100%);
+  height: min(736px, 100%);
+  grid-template-columns: 190px minmax(0, 1fr);
+  border: 1px solid var(--v1-border);
+}
+.v1-settings-parity .v1-settings-body {
+  padding: 28px 30px 30px;
+  gap: 24px;
+  scrollbar-width: thin;
+}
+.v1-settings-parity .v1-settings-body:has(> .v1-parity-appearance) {
+  gap: 16px;
+}
+.v1-settings-parity .v1-settings-nav {
+  padding: 25px 12px 18px;
+  gap: 4px;
+}
+.v1-settings-parity .v1-settings-nav h2 {
+  margin: 0 0 20px 10px;
+}
+.v1-settings-parity .v1-settings-nav button {
+  font-size: 13px;
+}
+.v1-parity-heading h3 {
+  font-size: 21px;
+  letter-spacing: -0.035em;
+  line-height: 1.3;
+}
+.v1-parity-heading p {
+  color: var(--v1-muted);
+  font-size: 13px;
+  margin: 6px 0 0;
+  line-height: 1.65;
+}
+.v1-parity-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.v1-parity-group h4 {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--v1-muted);
+}
+.v1-parity-card {
+  border: 1px solid var(--v1-border);
+  border-radius: 14px;
+  background: var(--v1-field);
+  overflow: hidden;
+}
+.v1-parity-card .v1-setting-row {
+  padding: 12px 16px;
+  gap: 16px;
+}
+.v1-settings-parity .v1-setting-copy b {
+  font-size: 13px;
+}
+.v1-settings-parity .v1-setting-copy span {
+  margin-top: 2px;
+  font-size: 11.5px;
+}
+.v1-parity-appearance .v1-setting-row {
+  padding: 0;
+}
+.v1-parity-appearance .v1-settings-segment {
+  min-width: 200px;
+}
+.v1-settings-back {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--v1-muted);
+  font-size: 12px;
+  cursor: pointer;
+  margin: 0 0 22px -6px;
+  padding: 4px 6px;
+  border-radius: 7px;
+}
+.v1-settings-back:hover {
+  color: var(--v1-fg);
+  background: var(--v1-surface);
+}
+.v1-tool-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.v1-tool-card {
+  all: unset;
+  box-sizing: border-box;
+  border: 1px solid var(--v1-border);
+  border-radius: 14px;
+  background: var(--v1-field);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  cursor: pointer;
+  min-width: 0;
+}
+.v1-tool-card:hover {
+  border-color: var(--v1-accent);
+  background: color-mix(in srgb, var(--v1-accent) 3%, var(--v1-field));
+}
+.v1-tool-card .v1-tool-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+}
+.v1-tool-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--v1-accent-soft);
+  color: var(--v1-accent-text);
+  flex-shrink: 0;
+}
+.v1-tool-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.v1-tool-copy strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+.v1-tool-copy > span {
+  font-size: 11.5px;
+  color: var(--v1-muted);
+  line-height: 1.6;
+}
+.v1-tool-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  width: 100%;
+}
+.v1-tool-action {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  border: 1px solid var(--v1-border);
+  border-radius: 8px;
+  background: var(--v1-surface);
+  padding: 6px 8px;
+}
+.v1-tool-footer small {
+  color: var(--v1-muted);
+  font-size: 10px;
+}
+.v1-tool-content {
+  --border: var(--v1-border);
+  --background: var(--v1-field);
+  --foreground: var(--v1-fg);
+  --muted: var(--v1-surface);
+  --muted-foreground: var(--v1-muted);
+  --primary: var(--v1-accent);
+  --primary-foreground: var(--v1-btn-fg);
+  --ring: var(--v1-accent);
+}
+.v1-tool-content .koed-setup-dialog-body {
+  margin-top: 0;
+  gap: 24px;
+}
+.v1-tool-content .koed-setup-install-state {
+  padding: 22px;
+  border: 1px solid var(--v1-border);
+  border-radius: 14px;
+  background: var(--v1-field);
+}
+.v1-tool-content .koed-setup-install-state-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--v1-accent-soft);
+  color: var(--v1-accent-text);
+}
+.v1-tool-content .koed-setup-install-state strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+.v1-tool-content .koed-setup-dialog-actions {
+  justify-content: flex-start;
+}
+@media (max-width: 760px) {
+  .v1-settings-parity {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .v1-settings-parity .v1-settings-nav {
+    padding: 10px 48px 10px 10px;
+  }
+  .v1-settings-parity .v1-settings-body {
+    padding: 22px 18px;
+  }
+  .v1-parity-card .v1-setting-row {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+  }
+  .v1-tool-grid {
+    grid-template-columns: 1fr;
+  }
+  .v1-tool-card {
+    padding: 16px;
+  }
+}
+
+.v1-tool-plan-heading {
+  margin: 0;
+  color: var(--v1-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.v1-tool-command {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--v1-muted);
+}
+.v1-tool-command code {
+  display: block;
+  padding: 17px 18px;
+  background: var(--v1-surface);
+  border: 1px solid var(--v1-border);
+  border-radius: 12px;
+  font-size: 13px;
+  color: var(--v1-fg);
+}
+.v1-tool-command code span {
+  color: var(--v1-muted);
+  margin-right: 8px;
+}
+.v1-service-metrics {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  padding: 18px 0;
+  border-top: 1px solid var(--v1-border);
+  border-bottom: 1px solid var(--v1-border);
+  gap: 18px;
+}
+.v1-service-metrics > div {
+  display: flex;
+  flex-direction: column;
+}
+.v1-service-metrics span,
+.v1-service-metrics small {
+  font-size: 10.5px;
+  color: var(--v1-muted);
+}
+.v1-service-metrics b {
+  font-size: 27px;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  line-height: 1.5;
+}
+.v1-service-metrics > div + div {
+  padding-left: 18px;
+  border-left: 1px solid var(--v1-border);
+}
+.v1-service-links {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.v1-service-link {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 16px;
+  border: 1px solid var(--v1-border);
+  background: var(--v1-field);
+  border-radius: 14px;
+  cursor: pointer;
+}
+.v1-service-link:hover {
+  border-color: var(--v1-accent);
+}
+.v1-service-link > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.v1-service-link b {
+  font-size: 13px;
+  font-weight: 500;
+  display: block;
+}
+.v1-service-link small {
+  display: block;
+  color: var(--v1-muted);
+  font-size: 11px;
+  margin-top: 3px;
+}
+.v1-service-link > svg {
+  color: var(--v1-muted);
+  flex-shrink: 0;
+}
+.v1-service-link .v1-tool-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+.v1-service-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--v1-muted);
+  margin: 0;
+}
+.v1-service-readout,
+.v1-embedding-readout .koed-diagnostics {
+  border: 1px solid var(--v1-border);
+  background: var(--v1-field);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.v1-service-readout,
+.v1-embedding-readout dl {
+  margin: 0;
+  padding: 6px 16px;
+  font-size: 12px;
+}
+.v1-service-readout > div,
+.v1-embedding-readout dl > div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  align-items: start;
+  padding: 12px 0;
+  border-top: 1px solid var(--v1-hairline);
+}
+.v1-service-readout > div:first-child,
+.v1-embedding-readout dl > div:first-child {
+  border-top: 0;
+}
+.v1-service-readout dt,
+.v1-embedding-readout dt {
+  color: var(--v1-muted);
+}
+.v1-service-readout dd,
+.v1-embedding-readout dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.v1-service-readout dd strong,
+.v1-embedding-readout dd strong {
+  font-weight: 500;
+  color: var(--v1-fg);
+}
+.v1-service-readout dd span,
+.v1-embedding-readout dd span {
+  display: block;
+  color: var(--v1-muted);
+  font-size: 11px;
+  font-weight: 400;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.v1-service-readout [data-state="healthy"] {
+  color: #18815f;
+}
+.v1-service-readout [data-state="needs_attention"] {
+  color: #ae730c;
+}
+.v1-embedding-readout .koed-diagnostics > p {
+  padding: 16px;
+  color: var(--v1-muted);
+  font-size: 12px;
+  margin: 0;
+}
+:root.dark .v1-service-readout [data-state="healthy"] {
+  color: #65c6a1;
+}
+:root.dark .v1-service-readout [data-state="needs_attention"] {
+  color: #e7b250;
+}
+@media (max-width: 760px) {
+  .v1-service-metrics {
+    gap: 10px;
+  }
+  .v1-service-metrics > div + div {
+    padding-left: 10px;
+  }
+  .v1-service-metrics b {
+    font-size: 22px;
+  }
+}
+.v1-settings-modal:has(.v1-settings-parity) {
+  padding: 28px 24px;
+  background: rgba(5, 5, 7, 0.38);
+  backdrop-filter: blur(3px);
+}
+.v1-settings-parity .v1-settings-nav button {
+  gap: 10px;
+}
+.v1-settings-parity .v1-service-actions button {
+  min-height: 32px;
+  font-size: 11px;
+}
+.v1-settings-parity .v1-service-refresh {
+  padding: 6px 8px;
+}
+.v1-service-link .v1-service-health-mark[data-state="healthy"] {
+  color: #18815f;
+  background: #18815f12;
+}
+.v1-service-link .v1-service-health-mark[data-state="needs_attention"] {
+  color: #ae730c;
+  background: #ae730c12;
+}
+:root.dark .v1-service-link .v1-service-health-mark[data-state="healthy"] {
+  color: #65c6a1;
+}
+:root.dark
+  .v1-service-link
+  .v1-service-health-mark[data-state="needs_attention"] {
+  color: #e7b250;
+}
+@media (max-width: 760px) {
+  .v1-settings-modal:has(.v1-settings-parity) {
+    padding: 12px;
+  }
+}
+.v1-tool-content .koed-setup-install-state-heading {
+  gap: 14px;
+}
+.v1-tool-content .koed-setup-install-steps {
+  gap: 0;
+  padding: 0;
+}
+.v1-tool-content .koed-setup-install-steps li {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 4px 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--v1-hairline);
+  color: var(--v1-fg);
+}
+.v1-tool-content .koed-setup-step-icon {
+  grid-row: 1 / span 2;
+  width: 26px;
+  height: 26px;
+}
+.v1-tool-content .koed-setup-install-steps small {
+  display: block;
+  grid-column: 2;
+  margin-left: 0;
+  color: var(--v1-muted);
+  white-space: normal;
+}
+.v1-tool-content .koed-setup-install-steps li[data-step="pending"] small {
+  display: none;
+}
+.v1-tool-content
+  .koed-setup-install-steps
+  li[data-step="active"]
+  .koed-setup-step-icon {
+  background: var(--v1-accent-soft);
+  color: var(--v1-accent-text);
+  border-color: var(--v1-accent);
+}
+.v1-tool-content
+  .koed-setup-dialog-body:has(.koed-setup-install-state[data-stage="idle"])
+  .koed-setup-install-steps
+  small {
+  display: none;
+}
+.v1-tool-footnote {
+  color: var(--v1-muted);
+  font-size: 11px;
+  line-height: 1.7;
+  margin: 0;
+}
+.v1-parity-heading p {
+  max-width: 500px;
+}
+.v1-parity-heading:has(.v1-settings-back) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+@media (prefers-reduced-motion: reduce) {
+  .v1-settings-parity,
+  .v1-settings-parity *,
+  .v1-settings-parity *::before,
+  .v1-settings-parity *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}
