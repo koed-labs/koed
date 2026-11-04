@@ -198,7 +198,7 @@ describe("ingestion", () => {
     });
   });
 
-  it("counts the conversations the sidebar lists, not subagent work", () => {
+  it("counts the conversations the sidebar lists and leaves off Projects with none", () => {
     const thread = (
       threadKind: "conversation" | "subagent",
       eventCount: number,
@@ -227,15 +227,7 @@ describe("ingestion", () => {
         id: "mixed",
         name: "mixed",
         eventCount: 5,
-        latestAt: "2026-11-01T00:00:00Z",
-        conversationCount: 1
-      },
-      {
-        id: "subagents-only",
-        name: "subagents-only",
-        eventCount: 0,
-        latestAt: null,
-        conversationCount: 0
+        latestAt: "2026-11-01T00:00:00Z"
       }
     ]);
   });

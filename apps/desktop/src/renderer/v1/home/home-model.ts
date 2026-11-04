@@ -288,35 +288,36 @@ export type HomeProjectEntry = {
   // Stored captured events (messages and tool events) for the Project.
   eventCount: number;
   latestAt: string | null;
-  // Conversations the sidebar lists for the Project; unknown when absent.
-  conversationCount?: number;
 };
 
-// Matches the sidebar's Project list so a Kin and its sidebar row agree.
+// Named Projects with a conversation to open. The sidebar doesn't list
+// subagent conversations on their own, so Home counts the same conversations
+// it does, and leaves off a Project with none to view (the sidebar still
+// lists it).
 export const homeProjectEntries = (
   projects: readonly DesktopProject[]
 ): HomeProjectEntry[] =>
   projects
     .filter((project) => project.namedProject)
-    .map((project) => {
-      // The sidebar doesn't list subagent conversations on their own, so
-      // Home counts the same conversations it does; otherwise a Project
-      // holding only subagent work shows events but no conversations.
+    .flatMap((project) => {
       const conversations = project.threads.filter(
         (thread) => thread.threadKind !== "subagent"
       );
-      return {
-        id: project.id,
-        name: project.name,
-        // A conversation read before its counts arrive has none yet.
-        eventCount: conversations.reduce(
-          (sum, thread) =>
-            sum + (Number.isFinite(thread.eventCount) ? thread.eventCount : 0),
-          0
-        ),
-        latestAt: projectLatestAt({ ...project, threads: conversations }),
-        conversationCount: conversations.length
-      };
+      if (!conversations.length) return [];
+      return [
+        {
+          id: project.id,
+          name: project.name,
+          // A conversation read before its counts arrive has none yet.
+          eventCount: conversations.reduce(
+            (sum, thread) =>
+              sum +
+              (Number.isFinite(thread.eventCount) ? thread.eventCount : 0),
+            0
+          ),
+          latestAt: projectLatestAt({ ...project, threads: conversations })
+        }
+      ];
     });
 
 const time = (value: string | null) => {

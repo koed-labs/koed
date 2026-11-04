@@ -25,6 +25,8 @@ type Props = {
   route: NavigationRoute;
   scopeKey: string | null;
   title?: string;
+  // A Project for the sidebar to expand; see ProjectSidebar.
+  revealProject?: { projectId: string; key: number } | null;
   projectName?: string;
   profileName: string;
   onSelect: (route: NavigationRoute) => void;
@@ -157,6 +159,7 @@ function ShellContent(props: Props) {
           loading={props.loading}
           error={props.error}
           onRetry={props.onRetry}
+          reveal={props.revealProject ?? null}
         />
       </Sidebar>
       <SidebarInset className="v1-navigation-main" ref={mainRef} tabIndex={-1}>

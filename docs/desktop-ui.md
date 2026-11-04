@@ -62,11 +62,13 @@ leaves.
   design units and scaled to fit the window, so Kin grow and shrink with it
   while their labels keep a fixed size; the spotlight follows the lead Kin, and
   the back row stays out of its beam and shows names only. There is no Project
-  page, so a Kin opens its Project's most recent conversation in the sidebar.
+  page, so a Kin opens its Project's most recent conversation and the sidebar
+  expands that Project to show it highlighted, scrolling to it when the sidebar
+  is showing; a hidden sidebar stays hidden.
   Counts are the stored captured events of the conversations the sidebar lists
   for the Project; subagent conversations are not listed on their own, so they
-  are not counted either, and a Project with no listed conversation says "No
-  conversations yet". The Projects list is read again, up to three times, when
+  are not counted either, and a Project with no listed conversation is left off
+  Home (the sidebar still lists it). The Projects list is read again, up to three times, when
   the API reports that membership changed mid-read, as it does constantly while
   history imports; only a list that keeps changing reports a failed load.
   Ranking uses those conversations' latest activity, then name, then id.

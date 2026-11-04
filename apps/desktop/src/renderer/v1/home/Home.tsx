@@ -609,9 +609,7 @@ function ProjectsStage({
             title={
               front
                 ? undefined
-                : entry.conversationCount === 0
-                  ? `${entry.name} · No conversations yet`
-                  : `${entry.name} · ${entry.eventCount.toLocaleString()} events · ${ago}`
+                : `${entry.name} · ${entry.eventCount.toLocaleString()} events · ${ago}`
             }
             aria-label={`Open Project ${entry.name}, ${entry.eventCount} captured events, active ${ago}`}
             onClick={() => onOpenProject(entry.id)}
@@ -634,9 +632,7 @@ function ProjectsStage({
               {/* Back-row Kin carry just a name; the rest is in the tooltip. */}
               {front && (
                 <span>
-                  {entry.conversationCount === 0
-                    ? "No conversations yet"
-                    : `${entry.eventCount.toLocaleString()} events · ${ago}`}
+                  {entry.eventCount.toLocaleString()} events · {ago}
                 </span>
               )}
             </span>
@@ -749,8 +745,8 @@ function SoloStage({
 // koed.ai: they drop from that client's keycap and land on the Kin in the
 // spotlight, which hops. One update from a client drops a few coins at most.
 const COINS_PER_UPDATE = 3;
-const COIN_STAGGER_MS = 140;
-const COIN_FLIGHT_MS = 900;
+const COIN_STAGGER_MS = 260;
+const COIN_FLIGHT_MS = 1_600;
 const COIN_ROWS = [
   "..XXXX..",
   ".XHGGGX.",

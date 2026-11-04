@@ -27,15 +27,18 @@ const projects: SidebarProject[] = [
 ];
 function Harness({
   scope = "owner-a",
-  data = projects
+  data = projects,
+  reveal = null
 }: {
   scope?: string;
   data?: SidebarProject[];
+  reveal?: { projectId: string; key: number } | null;
 }) {
   const navigation = useNavigationHistory(scope);
   return (
     <NavigationShell
       projects={data}
+      revealProject={reveal}
       scopeKey={scope}
       route={navigation.route}
       onSelect={navigation.navigate}
@@ -76,6 +79,35 @@ afterEach(async () => {
 });
 
 describe("Project sidebar interactions", () => {
+  it("expands a Project Home reveals, so its open conversation shows", async () => {
+    const second: SidebarProject = {
+      id: "second",
+      name: "Second",
+      latestAt: "2026-10-28T12:00:00Z",
+      conversations: [
+        {
+          key: "session:two",
+          aliases: ["session:two"],
+          title: "Opened from Home",
+          client: "codex",
+          latestAt: "2026-10-28T12:00:00Z",
+          route: { kind: "conversation", projectId: "second", threadId: "two" },
+          projectName: "Second"
+        }
+      ]
+    };
+    const data = [...projects, second];
+    await act(async () => root.render(<Harness data={data} />));
+    // Only the first Project starts expanded.
+    expect(container.textContent).not.toContain("Opened from Home");
+    await act(async () =>
+      root.render(
+        <Harness data={data} reveal={{ projectId: "second", key: 1 }} />
+      )
+    );
+    expect(container.textContent).toContain("Opened from Home");
+  });
+
   it("persists pins across remounts, isolates owners, and supports unpinning", async () => {
     await act(async () => root.render(<Harness />));
     await act(async () => button("Pin Captured from Claude").click());

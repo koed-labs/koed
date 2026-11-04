@@ -56,7 +56,8 @@ export function ProjectSidebar({
   searchRef,
   loading,
   error,
-  onRetry
+  onRetry,
+  reveal
 }: {
   projects: readonly SidebarProject[];
   route: NavigationRoute;
@@ -66,6 +67,9 @@ export function ProjectSidebar({
   loading?: boolean;
   error?: string | null;
   onRetry: () => void;
+  // A Project to expand, such as one whose conversation Home just opened.
+  // A new key reveals it again.
+  reveal?: { projectId: string; key: number } | null;
 }) {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -83,6 +87,25 @@ export function ProjectSidebar({
       setExpanded(new Set([projects[0]!.id]));
     }
   }, [projects]);
+  // Expanding the Project shows the open conversation's highlight. A hidden
+  // sidebar stays hidden; when it is showing, the row is scrolled into view.
+  useEffect(() => {
+    if (!reveal) return;
+    setExpanded((previous) =>
+      previous.has(reveal.projectId)
+        ? previous
+        : new Set(previous).add(reveal.projectId)
+    );
+    const frame = requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(
+        '.v1-navigation-sidebar [aria-current="page"]'
+      );
+      const rect = row?.getBoundingClientRect();
+      if (row && rect && rect.width > 0 && rect.right > 0)
+        row.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [reveal]);
   const visible = useMemo(
     () => filterSidebar(projects, query),
     [projects, query]

@@ -775,14 +775,24 @@ export function V1App({
   const homeEntriesLoaded = Boolean(
     snapshot && (snapshot.revision > 0 || snapshot.error)
   );
-  // There is no Project page: a Project's Kin opens its latest conversation.
+  // There is no Project page: a Project's Kin opens its latest conversation,
+  // and the sidebar expands that Project so the open conversation shows.
+  const [revealProject, setRevealProject] = useState<{
+    projectId: string;
+    key: number;
+  } | null>(null);
   const openProject = (projectId: string) => {
     const latest = sidebarProjects
       .find((project) => project.id === projectId)
       ?.conversations.reduce<
         (typeof sidebarProjects)[number]["conversations"][number] | null
       >((newest, conversation) => (!newest || conversation.latestAt > newest.latestAt ? conversation : newest), null);
-    if (latest) setRoute(latest.route);
+    if (!latest) return;
+    setRoute(latest.route);
+    setRevealProject((previous) => ({
+      projectId,
+      key: (previous?.key ?? 0) + 1
+    }));
   };
   const selectedExecution =
     route.kind === "conversation" ? route.executionId : undefined;
@@ -886,6 +896,7 @@ export function V1App({
       >
         <NavigationShell
           projects={sidebarProjects}
+          revealProject={revealProject}
           route={route}
           scopeKey={scopeKey}
           title={
