@@ -503,6 +503,36 @@
   font-size: 12px;
   color: var(--v1-muted);
 }
+.v1-home-skip-help {
+  position: relative;
+  display: inline-block;
+}
+.v1-home-skip-help button {
+  border: 1px solid currentColor;
+  color: inherit;
+  background: transparent;
+  border-radius: 50%;
+  width: 1.25em;
+  height: 1.25em;
+  padding: 0;
+  font: inherit;
+  line-height: 1;
+  cursor: help;
+}
+.v1-home-skip-help [role="tooltip"] {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 240px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--v1-surface);
+  color: var(--v1-fg);
+  box-shadow: 0 4px 18px #0003;
+  text-align: left;
+}
 .v1-home-progress-track {
   height: 4px;
   overflow: hidden;

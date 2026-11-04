@@ -38,6 +38,7 @@ describe("summarizeHistoricalIngestionState", () => {
       completed: 1,
       skipped: 1,
       updatedAt: at(1_000),
+      lastProgressAt: null,
       lastErrorCode: null,
       failingSince: null
     });
@@ -88,7 +89,7 @@ describe("summarizeHistoricalIngestionState", () => {
         state({ progress: { updatedAt: at(1), lastBatchState: "waiting" } }),
         now
       ).lifecycle
-    ).toBe("idle");
+    ).toBe("waiting");
     expect(
       summarizeHistoricalIngestionState(state({ progress: undefined }), now)
         .lifecycle

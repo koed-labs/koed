@@ -75,6 +75,22 @@ describe("Home", () => {
     ).not.toBeNull();
   });
 
+  it("refreshes status while Home remains open and stops on unmount", async () => {
+    const statusStore = new DesktopStatusStore();
+    const refresh = vi.spyOn(statusStore, "refresh").mockResolvedValue(null);
+    await render({
+      entries: [],
+      view: { kind: "empty", warnings: [] },
+      statusStore
+    });
+    await act(async () => vi.advanceTimersByTime(15_000));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    await act(async () => vi.advanceTimersByTime(15_000));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    root = createRoot(container);
+  });
+
   it("opens a Project from its Kin", async () => {
     const onOpenProject = vi.fn();
     await render({
@@ -170,7 +186,7 @@ describe("Home", () => {
         warnings: [],
         ingestion: {
           active: true,
-          finished: 2,
+          finished: 4,
           selected: null,
           clients: [
             {
@@ -181,6 +197,8 @@ describe("Home", () => {
               completed: 2,
               skipped: 0,
               lastErrorCode: null,
+              lastProgressAt: "2026-11-03T11:59:00Z",
+              activity: { recordsRead: 45, embedded: 7, eligible: 20 },
               stuck: false
             },
             {
@@ -203,10 +221,32 @@ describe("Home", () => {
     const pills = [...container.querySelectorAll(".v1-home-pill")].map(
       (pill) => pill.textContent
     );
-    expect(pills).toEqual(["Reading 2", "Retrying · 2 of 8"]);
+    expect(pills).toEqual(["2 finished", "Retrying · 2 of 8 finished"]);
     // Progress takes the pill, so connecting moves to the small line.
     expect(container.textContent).toContain("Connect · 2.1.312");
-    expect(container.textContent).toContain("2 conversations so far");
+    expect(container.textContent).toContain("4 conversations finished");
+    expect(container.textContent).toContain(
+      "Reading history · 45 records read"
+    );
+    expect(container.textContent).toContain(
+      "Making memories searchable · 7 of 20 items indexed so far"
+    );
+    const help = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Why conversations are skipped"]'
+    )!;
+    await act(async () => help.click());
+    expect(container.querySelector('[role="tooltip"]')?.textContent).toContain(
+      "too large or invalid"
+    );
+    await act(async () =>
+      help.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      )
+    );
+    expect(container.querySelector('[role="tooltip"]')).toBeNull();
+    // The "?" help button sits between the skipped count and last activity.
+    expect(container.textContent).toContain("3 completed · 1 skipped");
+    expect(container.textContent).toContain("Last activity 1m ago");
     const bar = container.querySelector('[role="progressbar"]')!;
     expect(bar.hasAttribute("aria-valuenow")).toBe(false);
     expect(bar.hasAttribute("data-indeterminate")).toBe(true);
@@ -268,7 +308,7 @@ describe("Home", () => {
       [...container.querySelectorAll(".v1-home-pill")].map(
         (pill) => pill.textContent
       )
-    ).toEqual(["Starting", "Stuck · 1"]);
+    ).toEqual(["Starting", "Stuck · 1 finished"]);
     expect(container.textContent).toContain(
       "Claude Code history has stalled, so Koed keeps retrying."
     );

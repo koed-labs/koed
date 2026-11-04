@@ -176,6 +176,10 @@ describe("ingestion", () => {
       historicalIngestion: { codex: progress("idle", 10, 3) }
     } as Partial<KoedServerStatus>);
     expect(selectHomeView(idle, []).kind).toBe("empty");
+    const waiting = homeStatus({
+      historicalIngestion: { codex: progress("waiting", 10, 3) }
+    } as Partial<KoedServerStatus>);
+    expect(selectHomeView(waiting, []).kind).toBe("ingesting");
   });
 
   it("ignores history progress from an AI Client that isn't connected", () => {

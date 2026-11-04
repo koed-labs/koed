@@ -167,6 +167,8 @@ export type HomeIngestionClient = {
   completed: number;
   skipped: number;
   lastErrorCode: string | null;
+  lastProgressAt?: string | null;
+  activity?: { recordsRead: number; embedded: number; eligible: number };
   // Failing with no progress for HOME_STUCK_MS: retries alone won't fix it.
   stuck: boolean;
 };
@@ -174,7 +176,7 @@ export type HomeIngestionClient = {
 export const HOME_STUCK_MS = 10 * 60 * 1_000;
 
 export type HomeIngestion = {
-  // Running or retrying; idle and unknown never hold Home on this screen.
+  // Running, waiting, or retrying; stale and unknown runs do not hold Home here.
   active: boolean;
   clients: HomeIngestionClient[];
   // Finished Conversations (completed or skipped) out of the selection; the
@@ -202,6 +204,8 @@ export function homeIngestion(
         completed: progress.completed,
         skipped: progress.skipped,
         lastErrorCode: progress.lastErrorCode,
+        lastProgressAt: progress.lastProgressAt,
+        activity: progress.activity,
         stuck:
           progress.lifecycle === "failed" &&
           progress.failingSince !== null &&
@@ -211,7 +215,10 @@ export function homeIngestion(
   });
   return {
     active: listed.some(
-      ({ lifecycle }) => lifecycle === "running" || lifecycle === "failed"
+      ({ lifecycle }) =>
+        lifecycle === "running" ||
+        lifecycle === "waiting" ||
+        lifecycle === "failed"
     ),
     clients: listed,
     finished: listed.reduce(

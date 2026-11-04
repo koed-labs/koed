@@ -82,14 +82,18 @@ scrolls, only when the caption needs more room than the window leaves.
   running again first.
 
 - **Hatching** shows while any connected AI Client's automatic historical
-  ingestion is running or retrying after a failure, from
+  ingestion is running, waiting, or retrying after a failure, from
   `status.historicalIngestion`. Koed reads only connected clients, so progress
   left from a client that is no longer connected is ignored and its keycap
   offers Connect. It
   states the selection limits (recent history only), counts finished
-  Conversations per client with skipped ones apart, and keeps the progress bar
-  indeterminate until every selection is known. It shows no time estimate and
-  no completion notification. Idle or unknown ingestion never holds Home here.
+  Conversations per client and overall (completed plus skipped), and keeps the
+  progress bar indeterminate until every selection is known. Below the bar it
+  shows completed and skipped apart, with a short note on why a Conversation
+  is skipped, the latest recorded progress, and, when status can read them,
+  the records read and items indexed for the selected Conversations. It shows
+  no time estimate and no completion notification. Idle or unknown ingestion
+  never holds Home here.
   Once a client counts as stuck, the caption says its history has stalled and
   the warning chip reads "Check <client> history", with diagnostics.
 

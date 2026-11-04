@@ -1917,6 +1917,112 @@ export const inspectHistoricalIngestion = (
   ) as KoedServerStatus["historicalIngestion"];
 };
 
+/** Aggregate only the frozen selection. If history exceeds the bounded query or
+ * any request fails, omit detail instead of presenting an incomplete total. */
+export async function fetchHistoricalActivity(input: {
+  koedHome: string;
+  apiUrl: string;
+  token: string;
+  fetcher: typeof globalThis.fetch;
+  readFile: (path: string) => string;
+}): Promise<Record<
+  string,
+  { recordsRead: number; embedded: number; eligible: number }
+> | null> {
+  try {
+    const selected = new Map<string, Set<string>>();
+    for (const client of historicalIngestionClients) {
+      try {
+        const state = JSON.parse(
+          input.readFile(
+            resolve(
+              input.koedHome,
+              "state",
+              `${client}-historical-ingestion.json`
+            )
+          )
+        ) as { selectionFrozen?: unknown; selections?: unknown };
+        if (state.selectionFrozen === true && Array.isArray(state.selections))
+          selected.set(
+            client,
+            new Set(
+              (state.selections as { candidateId?: unknown }[])
+                .map((selection) => selection.candidateId)
+                .filter((id): id is string => typeof id === "string")
+            )
+          );
+      } catch {
+        /* No selection for this client. */
+      }
+    }
+    if (!selected.size) return null;
+    const headers = { authorization: `Bearer ${input.token}` };
+    const listUrl = new URL("/v1/historical-imports?limit=20", input.apiUrl);
+    const list = await input.fetcher(listUrl, { headers });
+    if (!list.ok) return null;
+    const body = (await list.json()) as { runs?: { id?: unknown }[] };
+    if (
+      !Array.isArray(body.runs) ||
+      body.runs.length >= 20 ||
+      body.runs.some((run) => typeof run.id !== "string")
+    )
+      return null;
+    const totals: Record<
+      string,
+      { recordsRead: number; embedded: number; eligible: number }
+    > = {};
+    for (const client of selected.keys())
+      totals[client] = { recordsRead: 0, embedded: 0, eligible: 0 };
+    const seen = new Set<string>();
+    for (const run of body.runs) {
+      const result = await input.fetcher(
+        new URL(
+          `/v1/historical-imports/${encodeURIComponent(run.id as string)}`,
+          input.apiUrl
+        ),
+        { headers }
+      );
+      if (!result.ok) return null;
+      const detail = (await result.json()) as {
+        run?: { sources?: Record<string, unknown>[] };
+      };
+      if (!Array.isArray(detail.run?.sources)) return null;
+      for (const source of detail.run.sources) {
+        const {
+          aiClient,
+          sourceSessionId,
+          id,
+          rawIngestedRecordCount,
+          embeddedEventCount,
+          embeddingEligibleEventCount
+        } = source;
+        if (
+          typeof aiClient !== "string" ||
+          typeof sourceSessionId !== "string" ||
+          !selected.get(aiClient)?.has(sourceSessionId)
+        )
+          continue;
+        if (typeof id !== "string" || seen.has(id)) continue;
+        if (
+          ![
+            rawIngestedRecordCount,
+            embeddedEventCount,
+            embeddingEligibleEventCount
+          ].every((n) => Number.isSafeInteger(n) && Number(n) >= 0)
+        )
+          return null;
+        seen.add(id);
+        totals[aiClient]!.recordsRead += Number(rawIngestedRecordCount);
+        totals[aiClient]!.embedded += Number(embeddedEventCount);
+        totals[aiClient]!.eligible += Number(embeddingEligibleEventCount);
+      }
+    }
+    return totals;
+  } catch {
+    return null;
+  }
+}
+
 export const inspectAiClientReadiness = (input: {
   codex: KoedServerStatus["codex"];
   claudeCode: KoedServerStatus["claudeCode"];
@@ -3166,6 +3272,27 @@ export const collectKoedServerStatus = async (
     inspectDeviceIdentity(paths, environment),
     Promise.resolve(inspectUpstreamBackends(paths, deps))
   ]);
+  const historicalIngestion = inspectHistoricalIngestion(paths, deps);
+  const historicalToken = resolveActiveIntegrationApiToken(
+    paths,
+    runtimeEnvironment,
+    repoEnv
+  );
+  const activity =
+    historicalToken && runtimeProcessRunning
+      ? await fetchHistoricalActivity({
+          koedHome: paths.koedHome,
+          apiUrl,
+          token: historicalToken.token,
+          fetcher,
+          readFile: (file) => String(deps.readFileSync(file, "utf8"))
+        })
+      : null;
+  if (activity)
+    for (const client of historicalIngestionClients) {
+      if (activity[client])
+        historicalIngestion[client].activity = activity[client];
+    }
   const statusWithoutState = {
     ok: false,
     state: "starting" as KoedServerComponentState,
@@ -3193,7 +3320,7 @@ export const collectKoedServerStatus = async (
     aiClientInstances,
     aiClientFlowReadiness,
     lcmSummaryService,
-    historicalIngestion: inspectHistoricalIngestion(paths, deps),
+    historicalIngestion,
     embeddingState,
     deviceIdentity,
     upstreamBackends,

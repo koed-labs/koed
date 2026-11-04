@@ -28,6 +28,7 @@ export interface HistoricalIngestionProgressRecord {
 export type HistoricalIngestionLifecycle =
   | "unknown"
   | "idle"
+  | "waiting"
   | "running"
   | "completed"
   | "failed"
@@ -39,9 +40,12 @@ export interface HistoricalIngestionProgress {
   selected: number | null;
   /** Conversations whose processing reached the completed outcome. */
   completed: number;
+  /** Aggregate records and memory items for selected sources, when available. */
+  activity?: { recordsRead: number; embedded: number; eligible: number };
   /** Conversations explicitly skipped; reported apart from completions. */
   skipped: number;
   updatedAt: string | null;
+  lastProgressAt?: string | null;
   lastErrorCode: string | null;
   /** Set while failing: when the current run of failures began. */
   failingSince: string | null;
@@ -106,6 +110,7 @@ export function summarizeHistoricalIngestionState(
     completed,
     skipped,
     updatedAt: progress?.updatedAt ?? null,
+    lastProgressAt: progress?.lastProgressAt ?? null,
     lastErrorCode: progress?.lastErrorCode ?? null,
     failingSince: null
   };
@@ -125,6 +130,6 @@ export function summarizeHistoricalIngestionState(
       failingSince: progress.failingSince ?? progress.lastErrorAt ?? null
     };
   if (progress.lastBatchState === "waiting")
-    return { ...base, lifecycle: "idle" };
+    return { ...base, lifecycle: "waiting" };
   return { ...base, lifecycle: "running" };
 }

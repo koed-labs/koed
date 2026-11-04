@@ -344,7 +344,7 @@ export function V1App({
   const selectedProjectIdRef = useRef<string | null>(null);
   selectedProjectIdRef.current = selectedProjectId;
   const platform = useMemo(() => createRendererPlatform(), []);
-  const { status } = useDesktopStatus(statusStore);
+  const { status, revision: statusRevision } = useDesktopStatus(statusStore);
   const store = useMemo(
     () =>
       personalMemoryApi ? new PersonalMemoryStore(personalMemoryApi) : null,
@@ -427,6 +427,22 @@ export function V1App({
       return;
     void store.loadProjects().catch((cause) => setError(String(cause)));
   }, [store, profile?.onboarding.completed, status?.api.state]);
+  useEffect(() => {
+    if (
+      !store ||
+      !profile?.onboarding.completed ||
+      status?.api.state !== "healthy"
+    )
+      return;
+    const active = Object.values(status.historicalIngestion ?? {}).some(
+      (item) =>
+        item.lifecycle === "running" ||
+        item.lifecycle === "waiting" ||
+        item.lifecycle === "failed"
+    );
+    if (active)
+      void store.loadProjects({ silent: true }).catch(() => undefined);
+  }, [store, profile?.onboarding.completed, status, statusRevision]);
   useEffect(() => {
     if (status?.api.state === "healthy") setError(null);
   }, [status?.api.state]);

@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   aggregateState,
+  fetchHistoricalActivity,
   collectKoedServerDoctor,
   collectKoedServerStartupStatus,
   collectKoedServerStatus,
@@ -49,6 +50,69 @@ const response = (
     text: async () => JSON.stringify(body),
     json: async () => body
   }) as Response;
+
+describe("historical activity", () => {
+  it("sums only selected source records and searchable items across runs", async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/historical-imports")
+        return response(true, 200, { runs: [{ id: "run-1" }] });
+      return response(true, 200, {
+        run: {
+          sources: [
+            {
+              id: "a",
+              aiClient: "codex",
+              sourceSessionId: "selected",
+              rawIngestedRecordCount: 47,
+              embeddedEventCount: 8,
+              embeddingEligibleEventCount: 20
+            },
+            {
+              id: "b",
+              aiClient: "codex",
+              sourceSessionId: "other",
+              rawIngestedRecordCount: 999,
+              embeddedEventCount: 999,
+              embeddingEligibleEventCount: 999
+            }
+          ]
+        }
+      });
+    }) as unknown as typeof fetch;
+    const activity = await fetchHistoricalActivity({
+      koedHome: "/fixture",
+      apiUrl: "http://localhost:43300",
+      token: "test",
+      fetcher,
+      readFile: (path) => {
+        if (!path.includes("codex-")) throw new Error("missing");
+        return JSON.stringify({
+          selectionFrozen: true,
+          selections: [{ candidateId: "selected" }]
+        });
+      }
+    });
+    expect(activity).toEqual({
+      codex: { recordsRead: 47, embedded: 8, eligible: 20 }
+    });
+  });
+  it("omits incomplete totals when the run list reaches its bound", async () => {
+    const fetcher = vi.fn(async () =>
+      response(true, 200, {
+        runs: Array.from({ length: 20 }, (_, i) => ({ id: String(i) }))
+      })
+    ) as unknown as typeof fetch;
+    const result = await fetchHistoricalActivity({
+      koedHome: "/fixture",
+      apiUrl: "http://localhost:43300",
+      token: "test",
+      fetcher,
+      readFile: () => JSON.stringify({ selectionFrozen: true, selections: [] })
+    });
+    expect(result).toBeNull();
+  });
+});
 
 const healthyReadyPayload = {
   status: "ok",

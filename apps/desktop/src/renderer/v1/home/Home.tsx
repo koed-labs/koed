@@ -630,16 +630,20 @@ const ingestionLine = (client: HomeIngestionClient) => {
       // Nothing read and no selection yet: still finding conversations.
       return finished === 0 && client.selected === null
         ? "Starting"
-        : `Reading ${of}`;
+        : `${of} finished`;
     case "completed":
       return "Done";
+    case "waiting":
+      return `Waiting · ${of} finished`;
     // A failed pass retries on its own; it is not something to act on here.
     case "failed":
-      return client.stuck ? `Stuck · ${of}` : `Retrying · ${of}`;
+      return client.stuck
+        ? `Stuck · ${of} finished`
+        : `Retrying · ${of} finished`;
     case "cancelled":
-      return `Stopped · ${of}`;
+      return `Stopped · ${of} finished`;
     default:
-      return `Waiting · ${of}`;
+      return `Waiting · ${of} finished`;
   }
 };
 
@@ -874,13 +878,45 @@ function HatchingStage({
 }
 
 function IngestionProgress({ ingestion }: { ingestion: HomeIngestion }) {
+  const [showSkipped, setShowSkipped] = useState(false);
   const total = ingestion.selected;
+  const completed = ingestion.clients.reduce(
+    (sum, client) => sum + client.completed,
+    0
+  );
+  const skipped = ingestion.clients.reduce(
+    (sum, client) => sum + client.skipped,
+    0
+  );
+  const lastProgress = ingestion.clients
+    .map((client) => client.lastProgressAt)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1);
+  const now = useNow(30_000);
+  const activity = ingestion.clients.flatMap((client) =>
+    client.activity ? [client.activity] : []
+  );
+  const recordsRead = activity.reduce((sum, item) => sum + item.recordsRead, 0);
+  const embedded = activity.reduce((sum, item) => sum + item.embedded, 0);
+  const eligible = activity.reduce((sum, item) => sum + item.eligible, 0);
   const percent =
     total && total > 0
       ? Math.min(100, Math.round((100 * ingestion.finished) / total))
       : null;
   return (
     <div className="v1-home-progress">
+      {activity.length > 0 && (
+        <>
+          <span className="v1-home-progress-label">
+            Reading history · {recordsRead.toLocaleString()} records read
+          </span>
+          <span className="v1-home-progress-label">
+            Making memories searchable · {embedded.toLocaleString()} of{" "}
+            {eligible.toLocaleString()} items indexed so far
+          </span>
+        </>
+      )}
       <div
         role="progressbar"
         aria-label="Recent history processed"
@@ -889,8 +925,8 @@ function IngestionProgress({ ingestion }: { ingestion: HomeIngestion }) {
         aria-valuenow={percent ?? undefined}
         aria-valuetext={
           total === null
-            ? `${ingestion.finished} conversations so far`
-            : `${ingestion.finished} of ${total} conversations`
+            ? `${ingestion.finished} conversations finished`
+            : `${ingestion.finished} of ${total} conversations finished`
         }
         className="v1-home-progress-track"
         data-indeterminate={percent === null || undefined}
@@ -899,8 +935,52 @@ function IngestionProgress({ ingestion }: { ingestion: HomeIngestion }) {
       </div>
       <span className="v1-home-progress-label">
         {total === null
-          ? `${ingestion.finished} conversations so far`
-          : `${ingestion.finished} of ${total} conversations`}
+          ? `${ingestion.finished} conversations finished`
+          : `${ingestion.finished} of ${total} conversations finished`}
+      </span>
+      <span className="v1-home-progress-label">
+        {completed} completed
+        {skipped > 0 ? (
+          <>
+            {" "}
+            · {skipped} skipped{" "}
+            <span
+              className="v1-home-skip-help"
+              onMouseEnter={() => setShowSkipped(true)}
+              onMouseLeave={(event) => {
+                if (!event.currentTarget.contains(document.activeElement))
+                  setShowSkipped(false);
+              }}
+            >
+              <button
+                type="button"
+                aria-label="Why conversations are skipped"
+                aria-expanded={showSkipped}
+                aria-describedby={
+                  showSkipped ? "v1-home-skip-explanation" : undefined
+                }
+                onFocus={() => setShowSkipped(true)}
+                onBlur={() => setShowSkipped(false)}
+                onClick={() => setShowSkipped(true)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setShowSkipped(false);
+                }}
+              >
+                ?
+              </button>
+              {showSkipped && (
+                <span id="v1-home-skip-explanation" role="tooltip">
+                  Koed may skip a conversation it can’t safely process, such as
+                  one containing a record that is too large or invalid. Skipping
+                  lets the rest continue.
+                </span>
+              )}
+            </span>
+          </>
+        ) : null}
+        {lastProgress
+          ? ` · Last activity ${formatHomeAgo(lastProgress, now)}`
+          : ""}
       </span>
     </div>
   );
@@ -956,6 +1036,10 @@ export function Home({
   statusStore: DesktopStatusStore;
   onOpenProject: (projectId: string) => void;
 }) {
+  useEffect(() => {
+    const timer = window.setInterval(() => void statusStore.refresh(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [statusStore]);
   if (view.kind === "loading")
     return (
       <section className="v1-home" aria-busy="true">
