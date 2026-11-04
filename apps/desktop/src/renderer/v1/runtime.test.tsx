@@ -10,6 +10,8 @@ import type {
 import type { DesktopThreadGroup } from "../../project-memory-ui.js";
 const timelineMock = vi.hoisted(() => ({
   scrollToEnd: vi.fn(),
+  retryOlder: vi.fn(() => true),
+  onLoadOlder: null as null | (() => Promise<void> | void),
   onLoadingOlderChange: null as null | ((loading: boolean) => void),
   onAtEndChange: null as null | ((atEnd: boolean) => void)
 }));
@@ -23,18 +25,25 @@ vi.mock("@koed/memory-ui", async (importOriginal) => {
       renderEvent,
       controllerRef,
       onAtEndChange,
+      onLoadOlder,
       onLoadingOlderChange
     }: {
-      controllerRef?: Ref<{ scrollToEnd: () => void }>;
+      controllerRef?: Ref<{
+        retryOlder: () => boolean;
+        scrollToEnd: () => void;
+      }>;
       onAtEndChange?: (atEnd: boolean) => void;
+      onLoadOlder?: () => Promise<void> | void;
       onLoadingOlderChange?: (loading: boolean) => void;
       events: DesktopConversationTimelineItem[];
       renderEvent: (event: DesktopConversationTimelineItem) => ReactNode;
     }) => {
       React.useImperativeHandle(controllerRef, () => ({
+        retryOlder: timelineMock.retryOlder,
         scrollToEnd: timelineMock.scrollToEnd
       }));
       timelineMock.onAtEndChange = onAtEndChange ?? null;
+      timelineMock.onLoadOlder = onLoadOlder ?? null;
       timelineMock.onLoadingOlderChange = onLoadingOlderChange ?? null;
       return (
         <>
@@ -205,6 +214,7 @@ describe("conversation inspector presentation", () => {
     container = undefined!;
     adapters.writeClipboard.mockReset();
     timelineMock.scrollToEnd.mockClear();
+    timelineMock.retryOlder.mockClear();
   });
 
   it("labels the recorded AI Client and copies the exact response", async () => {
@@ -353,6 +363,49 @@ describe("conversation inspector presentation", () => {
     });
     expect(document.querySelector('[data-slot="sheet-popup"]')).toBeNull();
     expect(container.textContent).toContain("New conversation");
+  });
+
+  const retryButton = () =>
+    [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Retry")
+    );
+
+  it("retries a failed earlier page without reloading the initial page", async () => {
+    const onLoadOlder = vi.fn();
+    const onRetry = vi.fn();
+    const model = {
+      events: [event("answer")],
+      error: "",
+      hasOlderEvents: true,
+      status: "ready" as const
+    };
+    await render([], { model, onLoadOlder, onRetry });
+    await act(async () => timelineMock.onLoadOlder?.());
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await render([], {
+      model: { ...model, error: "offline", status: "error" },
+      onLoadOlder,
+      onRetry
+    });
+    await act(async () => retryButton()!.click());
+    expect(timelineMock.retryOlder).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it("reloads the initial page when the initial load failed", async () => {
+    const onRetry = vi.fn();
+    await render([], {
+      model: {
+        events: [],
+        error: "offline",
+        hasOlderEvents: false,
+        status: "error"
+      },
+      onRetry
+    });
+    await act(async () => retryButton()!.click());
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(timelineMock.retryOlder).not.toHaveBeenCalled();
   });
 
   it("jumps to the latest message only when requested", async () => {

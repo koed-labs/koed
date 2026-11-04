@@ -355,6 +355,45 @@ describe("VirtualizedTimeline compatibility callbacks", () => {
     expect(onLoadOlder).toHaveBeenCalledTimes(2);
   });
 
+  it("retries a failed page on request when a short timeline cannot leave the boundary", async () => {
+    const onLoadOlder = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(undefined);
+    const controllerRef = createRef<VirtualizedTimelineHandle>();
+    // The whole history fits inside the prefetch zone.
+    listMock.getState.mockReturnValue({
+      contentLength: 700,
+      scrollLength: 500,
+      scroll: 200,
+      isAtEnd: true,
+      isStartReached: true
+    });
+    await renderTimeline({ controllerRef, onLoadOlder });
+    await act(async () => listMock.props?.onScroll?.());
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      listMock.props?.onScroll?.();
+      listMock.props?.onStartReached?.();
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    let retried = false;
+    await act(async () => {
+      retried = controllerRef.current?.retryOlder() ?? false;
+    });
+    expect(retried).toBe(true);
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports that there is nothing to retry without older history", async () => {
+    const onLoadOlder = vi.fn();
+    const controllerRef = createRef<VirtualizedTimelineHandle>();
+    await renderTimeline({ controllerRef, hasOlderEvents: false, onLoadOlder });
+    expect(controllerRef.current?.retryOlder()).toBe(false);
+    expect(onLoadOlder).not.toHaveBeenCalled();
+  });
+
   it("ignores an old thread's page completion while the new thread is loading", async () => {
     const oldPage = deferredPage();
     const newPage = deferredPage();

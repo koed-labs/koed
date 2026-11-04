@@ -84,6 +84,23 @@ function ConversationSurface(props: ModelProps) {
   const [atEnd, setAtEnd] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const timeline = useRef<VirtualizedTimelineHandle>(null);
+  // The store reports page failures on the model rather than by throwing, so
+  // remember which request Retry should repeat. Reloading the initial page
+  // would drop loaded history and leave the failed older boundary unchanged.
+  const lastRequest = useRef<"initial" | "older">("initial");
+  const [olderLoadFailed, setOlderLoadFailed] = useState(false);
+  const { onLoadOlder, onRetry } = props;
+  const loadOlder = useCallback(() => {
+    lastRequest.current = "older";
+    setOlderLoadFailed(false);
+    return onLoadOlder();
+  }, [onLoadOlder]);
+  const retry = useCallback(() => {
+    if (lastRequest.current === "older" && timeline.current?.retryOlder())
+      return;
+    lastRequest.current = "initial";
+    void onRetry();
+  }, [onRetry]);
   const inspect = useCallback(
     (event: DesktopConversationEvent) => {
       const sourceId = approvalReviewSourceEventId(event.id) ?? event.id;
@@ -135,10 +152,19 @@ function ConversationSurface(props: ModelProps) {
         {model.error && (
           <div className="v1-conversation-notice" role="alert">
             {model.error}
+            <Button variant="ghost" size="sm" onClick={retry}>
+              <RotateCcw />
+              Retry
+            </Button>
+          </div>
+        )}
+        {olderLoadFailed && !model.error && (
+          <div className="v1-conversation-notice" role="alert">
+            Earlier messages could not be loaded.
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => void props.onRetry()}
+              onClick={() => timeline.current?.retryOlder()}
             >
               <RotateCcw />
               Retry
@@ -189,14 +215,10 @@ function ConversationSurface(props: ModelProps) {
             events={items}
             hasOlderEvents={model.hasOlderEvents}
             olderPageKey={model.events[0]?.id}
-            onLoadOlder={props.onLoadOlder}
+            onLoadOlder={loadOlder}
             onLoadingOlderChange={setLoadingOlder}
             onAtEndChange={setAtEnd}
-            onPageLoadError={() =>
-              setActionError(
-                "Earlier messages could not be loaded. Scroll up to try again."
-              )
-            }
+            onPageLoadError={() => setOlderLoadFailed(true)}
             threadKey={threadSelectionKey(thread)}
             renderEvent={renderEvent}
           />
