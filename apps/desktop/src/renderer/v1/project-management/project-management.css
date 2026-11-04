@@ -305,21 +305,6 @@ label.v1-pm-choice-row:hover {
 .v1-pm-status-warning {
   color: var(--warning);
 }
-.v1-pm-sync-choices {
-  display: grid;
-  gap: 8px;
-}
-.v1-pm-sync-choices .v1-pm-sync-choice {
-  height: auto;
-  min-height: 52px;
-  padding: 10px;
-  justify-content: flex-start;
-  white-space: normal;
-}
-.v1-pm-sync-choice[aria-pressed="true"] {
-  border-color: var(--ring);
-  background: var(--v1-accent-soft);
-}
 .v1-pm-device-row {
   display: flex;
   align-items: center;

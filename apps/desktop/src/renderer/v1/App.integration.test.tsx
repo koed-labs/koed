@@ -217,7 +217,7 @@ describe("V1App launch integration", () => {
     );
     expect(container.textContent).toContain("Services are stopped");
     expect(container.textContent).not.toContain("No conversations yet");
-    expect(container.textContent).not.toContain(
+    expect(container.textContent).toContain(
       "Pin conversations to keep them here"
     );
     expect(inventoryLoad.calls).toBe(0);
@@ -233,6 +233,9 @@ describe("V1App launch integration", () => {
     });
     expect(container.textContent).toContain("Services starting…");
     expect(container.textContent).not.toContain("No conversations yet");
+    expect(container.textContent).toContain(
+      "Pin conversations to keep them here"
+    );
     expect(inventoryLoad.calls).toBe(0);
 
     // A running supervisor is not yet a ready API. Readiness may change

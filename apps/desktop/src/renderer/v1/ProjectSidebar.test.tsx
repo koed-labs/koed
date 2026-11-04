@@ -90,16 +90,22 @@ describe("Project sidebar interactions", () => {
       root.render(<Harness data={[]} inventoryReady={false} />)
     );
     expect(container.textContent).not.toContain("No conversations yet");
-    expect(container.textContent).not.toContain(
+    expect(container.textContent).toContain(
       "Pin conversations to keep them here"
     );
     await act(async () => root.render(<Harness data={[]} servicesStarting />));
     expect(container.textContent).toContain("Services starting…");
     expect(container.textContent).not.toContain("No conversations yet");
+    expect(container.textContent).toContain(
+      "Pin conversations to keep them here"
+    );
     await act(async () => root.render(<Harness data={[]} loading />));
     expect(container.textContent).toContain("Loading conversations…");
     expect(container.textContent).not.toContain("Services starting…");
     expect(container.textContent).not.toContain("No conversations yet");
+    expect(container.textContent).toContain(
+      "Pin conversations to keep them here"
+    );
     await act(async () => root.render(<Harness data={[]} />));
     expect(container.textContent).toContain("No conversations yet");
     expect(container.textContent).toContain(

@@ -637,6 +637,9 @@ export function V1App({
     const claimed = new Set<string>();
     const reconcile = async () => {
       setPendingIntentError(null);
+      // Older versions saved Project creation requests here. Finish any pending
+      // request before retiring its recovery path, even though the current
+      // Project settings flow no longer writes these intents.
       for (const intent of Object.values(provenance.projects)) {
         if (intent.projectId && (!intent.folder || intent.folderAttached))
           continue;
@@ -915,28 +918,19 @@ export function V1App({
     [managedConversations, refreshProvenance]
   );
 
-  const visibleProjects = projects;
   const sidebarProjects = useMemo(
     () =>
       scopeKey && inventoryScope === scopeKey
         ? buildProjectSidebar(
-            visibleProjects,
+            projects,
             Object.values(provenance.conversations),
             lifecycle.drafts
           )
         : [],
-    [
-      visibleProjects,
-      provenance,
-      lifecycle.drafts,
-      revision,
-      scopeKey,
-      inventoryScope
-    ]
+    [projects, provenance, lifecycle.drafts, revision, scopeKey, inventoryScope]
   );
   const activeProject = selectedProjectId
-    ? (visibleProjects.find((project) => project.id === selectedProjectId) ??
-      null)
+    ? (projects.find((project) => project.id === selectedProjectId) ?? null)
     : independentProject;
   const folders =
     activeProject && selectedProjectId && snapshot
@@ -961,7 +955,7 @@ export function V1App({
     : null;
   const routeProject =
     route.kind === "conversation" && route.projectId
-      ? visibleProjects.find((project) => project.id === route.projectId)
+      ? projects.find((project) => project.id === route.projectId)
       : undefined;
   const matchesConversation = (thread: DesktopProject["threads"][number]) =>
     route.kind === "conversation" &&
@@ -977,7 +971,7 @@ export function V1App({
     );
   const capturedProject = routeProject?.threads.some(matchesConversation)
     ? routeProject
-    : [...visibleProjects]
+    : [...projects]
         .sort((a, b) => Number(!!b.namedProject) - Number(!!a.namedProject))
         .find((p) => p.threads.some(matchesConversation));
   const conversationProject =
@@ -1008,7 +1002,7 @@ export function V1App({
     scopeKey,
     api: personalMemoryApi,
     store,
-    projects: visibleProjects,
+    projects,
     onOrganized: (sessionId, nextProjects, preferredProjectId) => {
       const selectedRoute = currentRoute.current;
       if (
@@ -1097,7 +1091,7 @@ export function V1App({
             >
               No project
             </button>
-            {visibleProjects
+            {projects
               .filter((project) => project.namedProject)
               .map((project) => (
                 <button
@@ -1194,7 +1188,6 @@ export function V1App({
         statusStore={statusStore}
       />
     );
-  // The prototype debug restart panel is excluded; Settings owns "Run setup again".
   return (
     <V1AgentContext.Provider value={agent}>
       <ConversationPresentationContext.Provider
@@ -1269,7 +1262,7 @@ export function V1App({
                 <ConversationTags
                   key={`${scopeKey}:${conversationThread.sessionId}`}
                   api={personalMemoryApi}
-                  projects={visibleProjects}
+                  projects={projects}
                   thread={conversationThread}
                   sourceProjectId={
                     conversationProject.namedProject

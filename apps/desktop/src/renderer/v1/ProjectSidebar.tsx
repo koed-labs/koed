@@ -286,9 +286,9 @@ export function ProjectSidebar({
                 <SidebarMenu>
                   {pinned.map((row) => conversation(row, false))}
                 </SidebarMenu>
-                {!pinned.length && showEmptyStates && (
+                {!pinned.length && (
                   <p className="v1-nav-empty">
-                    {query
+                    {query && showEmptyStates
                       ? "No matching pins"
                       : "Pin conversations to keep them here."}
                   </p>
