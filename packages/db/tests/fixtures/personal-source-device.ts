@@ -1,5 +1,6 @@
 import {
   generateKeyPairSync,
+  type KeyObject,
   randomBytes,
   randomUUID,
   sign
@@ -44,7 +45,7 @@ export const personalSourceDeviceFixture = (
   lifecycle?: ReturnType<typeof createPeerLifecycleFixture>
 ) => {
   if (lifecycle) validatePeerLifecycleFixture(lifecycle);
-  const fromKeys = (keys: ReturnType<typeof generateKeyPairSync>) => ({
+  const fromKeys = (keys: { privateKey: KeyObject; publicKey: KeyObject }) => ({
     privateKey: keys.privateKey,
     publicKey: keys.publicKey.export({ format: "jwk" }).x!,
     privateSeed: keys.privateKey.export({ format: "jwk" }).d!
