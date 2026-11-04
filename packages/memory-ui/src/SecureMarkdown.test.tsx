@@ -140,6 +140,25 @@ describe("SecureMarkdown rendering", () => {
     );
   });
 
+  it("allows a code presentation slot without bypassing markdown policies", async () => {
+    const renderCodeBlock = vi.fn(
+      ({ code, language }: { code: string; language: string | null }) =>
+        createElement("pre", { "data-language": language }, code)
+    );
+    await render(
+      "```html\n<img src=x onerror=alert(1)>\n```\n\n[bad](javascript:alert(1))\n\n![image](https://example.com/image.png)\n\n<script>alert(1)</script>",
+      { renderCodeBlock }
+    );
+    expect(renderCodeBlock).toHaveBeenCalledWith({
+      code: "<img src=x onerror=alert(1)>",
+      language: "html"
+    });
+    expect(container.querySelector("pre")?.textContent).toBe(
+      "<img src=x onerror=alert(1)>"
+    );
+    expect(container.querySelector("script, img, [role=link]")).toBeNull();
+  });
+
   it("copies fenced code only through the clipboard adapter", async () => {
     await render("```ts\nconst safe = true;\n```");
     const button = container.querySelector("button");

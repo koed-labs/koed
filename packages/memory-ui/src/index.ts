@@ -6,6 +6,7 @@ export {
 } from "./selection.js";
 export {
   VirtualizedTimeline,
+  type VirtualizedTimelineHandle,
   type TimelineItem,
   type TimelineVisibleRange
 } from "./VirtualizedTimeline.js";

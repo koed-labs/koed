@@ -42,7 +42,7 @@ const run = async () => {
     await evaluate("document.fonts.ready");
     await paint();
     assert.equal(
-      await evaluate("document.querySelectorAll('.v1-app').length"),
+      await evaluate("document.querySelectorAll('.v1-navigation').length"),
       1
     );
     assert.equal(

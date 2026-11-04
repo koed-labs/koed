@@ -294,7 +294,8 @@ export const homeProjectEntries = (
     .map((project) => ({
       id: project.id,
       name: project.name,
-      eventCount: project.eventCount,
+      // A Project read before its counts arrive has none yet.
+      eventCount: Number.isFinite(project.eventCount) ? project.eventCount : 0,
       latestAt: projectLatestAt(project)
     }));
 

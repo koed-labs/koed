@@ -14,6 +14,14 @@ import type {
 } from "../../ipc/managed-conversation-protocol.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+const inventoryLoad = vi.hoisted(() => ({
+  pending: null as Promise<unknown> | null,
+  load: null as null | ((options?: { silent?: boolean }) => unknown),
+  durableRefresh: vi.fn(),
+  collaborationListener: null as
+    | null
+    | ((snapshot: unknown, update: Record<string, unknown>) => void)
+}));
 const uuid = (n: number) =>
   `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 const localProject = {
@@ -57,7 +65,9 @@ vi.mock("../state/personal-memory.js", () => ({
   PersonalMemoryStore: class {
     current = () => snapshot;
     subscribe = () => () => undefined;
-    loadProjects = async () => snapshot;
+    loadProjects = async (options?: { silent?: boolean }) =>
+      inventoryLoad.load?.(options) ?? inventoryLoad.pending ?? snapshot;
+    refreshFromDurableEvent = () => inventoryLoad.durableRefresh();
     upsertThread = () => undefined;
   }
 }));
@@ -70,7 +80,12 @@ vi.mock("../services/platform.js", () => ({
 }));
 vi.mock("../../collaboration/renderer-client.js", () => ({
   createCollaborationRendererClient: () => ({
-    subscribe: () => () => undefined,
+    subscribe: (
+      listener: (snapshot: unknown, update: Record<string, unknown>) => void
+    ) => {
+      inventoryLoad.collaborationListener = listener;
+      return () => undefined;
+    },
     load: async () => ({}),
     dispose: () => undefined
   })
@@ -131,9 +146,141 @@ describe("V1App launch integration", () => {
   afterEach(async () => {
     if (root) await act(async () => root!.unmount());
     container?.remove();
+    inventoryLoad.pending = null;
+    inventoryLoad.load = null;
+    inventoryLoad.collaborationListener = null;
+    inventoryLoad.durableRefresh.mockClear();
     vi.restoreAllMocks();
   });
-  it("selects the rail Project as the composer and Folder context", async () => {
+  const renderOwner = async () => {
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: {
+        status: { subscribe: () => () => {} },
+        v1State: {
+          readProfile: async () => ({
+            agentName: "Ada",
+            onboarding: { selections: {}, completed: true }
+          }),
+          readIdentity: async () => ({
+            ownerId: uuid(3),
+            scopeKey: "a".repeat(64)
+          }),
+          readProvenance: async () => ({
+            schemaVersion: 1,
+            projects: {},
+            conversations: {}
+          })
+        }
+      }
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(
+        <V1App
+          personalMemoryApi={{} as never}
+          managedConversations={null}
+          statusStore={{ refresh: async () => undefined } as never}
+          themeStore={{ load: async () => undefined } as never}
+        />
+      )
+    );
+  };
+  const failedInventory = { ...snapshot, error: "Inventory is unavailable" };
+  it("shows the inventory once a background load recovers from a failed initial load", async () => {
+    inventoryLoad.load = (options) =>
+      options?.silent ? snapshot : failedInventory;
+    await renderOwner();
+    expect(container!.textContent).toContain("External captured Conversation");
+  });
+  it("recovers the inventory gate from a durable event after every load failed", async () => {
+    inventoryLoad.load = () => failedInventory;
+    await renderOwner();
+    expect(container!.textContent).not.toContain(
+      "External captured Conversation"
+    );
+    inventoryLoad.load = null;
+    await act(async () =>
+      inventoryLoad.collaborationListener?.(
+        {},
+        {
+          kind: "realtime",
+          realtimeUpdate: { type: "personal_memory_upserted" }
+        }
+      )
+    );
+    expect(container!.textContent).toContain("External captured Conversation");
+    expect(inventoryLoad.durableRefresh).not.toHaveBeenCalled();
+    await act(async () =>
+      inventoryLoad.collaborationListener?.(
+        {},
+        {
+          kind: "realtime",
+          realtimeUpdate: { type: "personal_memory_upserted" }
+        }
+      )
+    );
+    expect(inventoryLoad.durableRefresh).toHaveBeenCalledTimes(1);
+  });
+  it("hides the previous owner's inventory while the new owner's inventory loads", async () => {
+    let scopeKey = "a".repeat(64);
+    let statusChanged: (() => void) | undefined;
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: {
+        status: {
+          subscribe: (listener: () => void) => {
+            statusChanged = listener;
+            return () => {};
+          }
+        },
+        v1State: {
+          readProfile: async () => ({
+            agentName: "Ada",
+            onboarding: { selections: {}, completed: true }
+          }),
+          readIdentity: async () => ({ ownerId: uuid(3), scopeKey }),
+          readProvenance: async () => ({
+            schemaVersion: 1,
+            projects: {},
+            conversations: {}
+          })
+        }
+      }
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(
+        <V1App
+          personalMemoryApi={{} as never}
+          managedConversations={null}
+          statusStore={{ refresh: async () => undefined } as never}
+          themeStore={{ load: async () => undefined } as never}
+        />
+      )
+    );
+    expect(container.textContent).toContain("External captured Conversation");
+    let finish!: (value: unknown) => void;
+    inventoryLoad.pending = new Promise((resolve) => {
+      finish = resolve;
+    });
+    scopeKey = "b".repeat(64);
+    await act(async () => statusChanged!());
+    expect(container.textContent).not.toContain(
+      "External captured Conversation"
+    );
+    await act(async () =>
+      finish({ ...snapshot, error: "New owner's inventory is unavailable" })
+    );
+    expect(container.textContent).not.toContain(
+      "External captured Conversation"
+    );
+  });
+  it("expands Projects without replacing the conversation pane", async () => {
     const namedId = uuid(30),
       requestId = uuid(31);
     const identity = {
@@ -215,22 +362,16 @@ describe("V1App launch integration", () => {
       await new Promise((resolve) => setTimeout(resolve, 40));
     });
     const rail = [
-      ...container.querySelectorAll<HTMLButtonElement>("button")
-    ].find((button) => button.textContent?.trim() === "Made here");
+      ...container.querySelectorAll<HTMLButtonElement>(".v1-nav-project")
+    ].find((button) => button.textContent?.includes("Made here"));
     expect(rail).toBeDefined();
     await act(async () => rail!.click());
-    expect(container.querySelector(".v1-project-header h1")?.textContent).toBe(
-      "Made here"
-    );
-    expect(
-      container.querySelector(".v1-project-folder code")?.textContent
-    ).toBe("/tmp/koed-v1-project");
-    expect(container.textContent).toContain("koed-v1-project");
+    expect(container.querySelector(".v1-project-page")).toBeNull();
     snapshot.projectsById.delete(namedId);
     (snapshot.inventory.localFolders as unknown[]).length = 0;
   });
 
-  it("hides external capture and persists intent and first prompt before backend calls", async () => {
+  it("shows external captures and returns to Home from them", async () => {
     const calls: string[] = [];
     const state: { profile: V1Profile; provenance: V1Provenance } = {
       profile: {
@@ -376,42 +517,21 @@ describe("V1App launch integration", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
     });
-    expect(container.textContent).not.toContain(
-      "External captured Conversation"
+    expect(container.textContent).toContain("External captured Conversation");
+    const captured = container.querySelector<HTMLButtonElement>(
+      ".v1-nav-conversation"
     );
+    await act(async () => captured!.click());
+    expect(container.textContent).toContain("Conversation opened");
+    expect(container.querySelector('[aria-label="Create Project"]')).toBeNull();
+    expect(container.querySelector('[aria-label^="Projects for"]')).toBeNull();
     await act(async () =>
       container!
-        .querySelector<HTMLButtonElement>('button[aria-label="New chat"]')
-        ?.click()
+        .querySelector<HTMLButtonElement>('[aria-label="Koed, home"]')!
+        .click()
     );
-    const projectButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Select Project"]'
-    );
-    await act(async () => projectButton?.click());
-    expect(container.textContent).not.toContain("External captured Project");
-    const input = container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="First message"]'
-    );
-    expect(input).not.toBeNull();
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value"
-      )!.set!;
-      setter.call(input, "Hello");
-      input!.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () =>
-      container!
-        .querySelector<HTMLButtonElement>('button[aria-label="Send"]')
-        ?.click()
-    );
-    expect(calls.slice(0, 2)).toEqual(["intent", "start"]);
-    expect(calls.indexOf("ack")).toBeLessThan(calls.indexOf("send"));
-    expect(calls.indexOf("prompt-persist")).toBeLessThan(calls.indexOf("send"));
-    expect(
-      Object.values(state.provenance.conversations)[0]?.initialPrompt
-        ?.clientUserMessageId
-    ).toBeTruthy();
+    // Home is the stage; there is no new-chat composer any more.
+    expect(container.querySelector(".v1-home")).not.toBeNull();
+    expect(container.querySelector('[aria-label="First message"]')).toBeNull();
   });
 });

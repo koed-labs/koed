@@ -1,14 +1,15 @@
+import { SidebarValidation } from "./sidebar-validation.js";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ModelPicker,
   V1Composer,
   V1EmptyHero,
-  V1Shell,
   DEFAULT_AGENT_LOOK,
   type V1ModelSelection
 } from "./renderer/v1/visual.js";
 import { V1App } from "./renderer/v1/App.js";
+import { NavigationShell } from "./renderer/v1/NavigationShell.js";
 import { V1Onboarding } from "./renderer/v1/onboarding.js";
 import { installOnboardingValidation } from "./onboarding-validation.js";
 import { DesktopStatusStore } from "./renderer/services/desktop-commands.js";
@@ -96,26 +97,35 @@ function Validation() {
       />
     );
   return (
-    <V1Shell
-      title={onboarding ? "Getting started" : ""}
-      accountLabel="Local user"
-      onAccount={() => {}}
-      onNewConversation={() => setOnboarding(false)}
-      onNewProject={() => {}}
+    <NavigationShell
+      projects={[]}
+      route={{ kind: "home" }}
+      scopeKey="v1-presentation-validation"
+      profileName="Local user"
+      onSelect={() => {}}
       onHome={() => setOnboarding(false)}
-      groups={[]}
+      onSettings={() => {}}
+      onProfile={() => {}}
+      onBack={() => {}}
+      onForward={() => {}}
+      canGoBack={false}
+      canGoForward={false}
+      onRetry={() => {}}
     >
       <V1EmptyHero
         agentName="Juno"
         look={DEFAULT_AGENT_LOOK}
         composer={composer}
       />
-    </V1Shell>
+    </NavigationShell>
   );
 }
-document.documentElement.classList.add("light");
+if (new URLSearchParams(location.search).get("sidebar") !== "1")
+  document.documentElement.classList.add("light");
 createRoot(document.querySelector("#root")!).render(
-  new URLSearchParams(location.search).get("full") === "1" ? (
+  new URLSearchParams(location.search).get("sidebar") === "1" ? (
+    <SidebarValidation />
+  ) : new URLSearchParams(location.search).get("full") === "1" ? (
     <FullAppValidation />
   ) : (
     <Validation />

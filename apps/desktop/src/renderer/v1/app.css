@@ -66,80 +66,15 @@ body {
   display: flex;
   flex: 1;
   flex-direction: column;
+  /* The timeline host is a grid item, not a flex container. Bound the list
+     to its height so long transcripts scroll instead of being clipped. */
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
 .v1-app .v1-conversation-scroll {
   flex: 1;
   min-height: 0;
-  padding: 24px max(24px, calc((100% - 832px) / 2));
-}
-.v1-app .v1-tool-activity {
-  margin: 10px auto;
-  max-width: 760px;
-  font-size: 13px;
-  color: var(--v1-muted);
-}
-.v1-app .v1-tool-activity summary {
-  cursor: pointer;
-}
-.v1-app .v1-conversation-content > [role="alert"] {
-  margin: 12px 24px;
-  color: var(--v1-fg2);
-}
-.v1-app .v1-memory-panel {
-  position: absolute;
-  top: 52px;
-  right: 0;
-  bottom: 0;
-  z-index: 40;
-  width: min(390px, 100%);
-  border-left: 1px solid var(--v1-border);
-  background: var(--v1-bg);
-  padding: 22px;
-  overflow: auto;
-  box-shadow: var(--v1-shadow);
-}
-.v1-app .v1-memory-panel header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.v1-app .v1-memory-panel h2 {
-  font-size: 18px;
-  font-weight: 600;
-}
-.v1-app .v1-memory-panel h3 {
-  font-size: 14px;
-  margin: 24px 0 12px;
-}
-.v1-app .v1-memory-panel p {
-  font-size: 13px;
-  color: var(--v1-muted);
-}
-.v1-app .v1-memory-panel input {
-  display: block;
-  width: 100%;
-  padding: 10px 12px;
-  margin: 8px 0;
-  background: var(--v1-field);
-  color: var(--v1-fg);
-  border: 1px solid var(--v1-border);
-  border-radius: 10px;
-}
-.v1-app .v1-memory-panel button {
-  color: var(--v1-fg);
-  background: var(--v1-surface);
-  border: 0;
-  padding: 7px 12px;
-  border-radius: 20px;
-}
-.v1-app .v1-memory-panel article {
-  border-bottom: 1px solid var(--v1-hairline);
-  padding: 12px 0;
-}
-.v1-app .v1-memory-panel small {
-  display: block;
-  color: var(--v1-muted);
-  font-size: 12px;
+  height: 100%;
+  padding: 0 24px 24px;
 }

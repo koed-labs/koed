@@ -36,8 +36,9 @@ Project membership commands; execution Folder identity is not rewritten.
 
 ### Home
 
-Home is a read-only stage over existing state; it adds no backend calls and
-never starts a Conversation (New chat opens its own composer route). Every
+Home is what the navigation rail's Koed button opens: a read-only stage over
+existing state. It adds no backend calls and never starts a Conversation;
+there is no new-chat composer. Every
 state uses the same layout: the AI Client keycaps in a fixed-height row (empty
 while loading), then one stage with Kin in a spotlight above a caption. Without
 Projects to show, the Koed Kin stands alone; the stage grows, and the page
@@ -59,8 +60,9 @@ scrolls, only when the caption needs more room than the window leaves.
   more are in the sidebar, which is the full list. The stage is laid out in
   design units and scaled to fit the window, so Kin grow and shrink with it
   while their labels keep a fixed size; the spotlight follows the lead Kin, and
-  the back row stays out of its beam and shows names only. Counts are the Project summary's
-  stored captured events, and ranking uses its latest thread activity, then
+  the back row stays out of its beam and shows names only. There is no Project
+  page, so a Kin opens its Project's most recent conversation in the sidebar.
+  Counts are the Project summary's stored captured events, and ranking uses its latest thread activity, then
   name, then id. `conversation_events_changed` refreshes the summaries through
   `PersonalMemoryStore`; a rise in a summary's count plays one coalesced
   animation, so a missed or repeated change event never alters a count. Window
