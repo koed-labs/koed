@@ -47,7 +47,10 @@ describe("peer lifecycle test fixture", () => {
         ...lifecycle,
         identities: {
           ...lifecycle.identities,
-          [name]: generateKeyPairSync(algorithm)
+          [name]:
+            algorithm === "x25519"
+              ? generateKeyPairSync("x25519")
+              : generateKeyPairSync("ed25519")
         }
       };
       expect(() => personalSourceDeviceFixture(altered)).toThrow();

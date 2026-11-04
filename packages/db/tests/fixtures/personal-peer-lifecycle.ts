@@ -1,4 +1,9 @@
-import { createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
+import {
+  createPublicKey,
+  generateKeyPairSync,
+  randomBytes,
+  type KeyObject
+} from "node:crypto";
 import {
   PDS_PROTOCOL,
   createPdsAuthorizedKeyBundle,
@@ -17,8 +22,7 @@ import {
 
 const token = () => randomBytes(32).toString("base64url");
 const id = () => randomBytes(16).toString("base64url");
-const publicKey = (key: ReturnType<typeof generateKeyPairSync>["publicKey"]) =>
-  key.export({ format: "jwk" }).x!;
+const publicKey = (key: KeyObject) => key.export({ format: "jwk" }).x!;
 
 export const createPeerLifecycleFixture = () => {
   const authority = generateKeyPairSync("ed25519");

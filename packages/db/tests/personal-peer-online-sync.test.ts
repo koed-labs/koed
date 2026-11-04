@@ -9,6 +9,8 @@ import { createPeerLifecycleFixture } from "./fixtures/personal-peer-lifecycle.j
 import { personalSourceDeviceFixture } from "./fixtures/personal-source-device.js";
 import { createPeerSyncHarness } from "./fixtures/personal-peer-sync.js";
 
+const backendPid = (client: pg.PoolClient) =>
+  (client as unknown as { processID: number }).processID;
 const originUrl = process.env.P1_SOURCE_ORIGIN_DATABASE_URL;
 const receiverUrl = process.env.P1_SOURCE_RECEIVER_DATABASE_URL;
 
@@ -28,7 +30,7 @@ describe.skipIf(!originUrl || !receiverUrl)(
           "select current_database() as name"
         )
       ]);
-      if (a.rows[0].name === b.rows[0].name)
+      if (a.rows[0]?.name === b.rows[0]?.name)
         throw new Error("Peer fixtures require distinct databases");
       await Promise.all([
         runDbMigrations(originPool),
@@ -244,7 +246,7 @@ describe.skipIf(!originUrl || !receiverUrl)(
             const state = await receiverPool.query<{
               wait_event_type: string | null;
             }>("select wait_event_type from pg_stat_activity where pid=$1", [
-              deleter.processID
+              backendPid(deleter)
             ]);
             if (state.rows[0]?.wait_event_type === "Lock") {
               blocked = true;
@@ -347,16 +349,16 @@ describe.skipIf(!originUrl || !receiverUrl)(
           const pid = (
             await receiverPool.query<{ pid: number }>(
               "select pid from pg_stat_activity where pid = $1",
-              [b.processID]
+              [backendPid(b)]
             )
           ).rows[0]?.pid;
-          expect(pid).toBe(b.processID);
+          expect(pid).toBe(backendPid(b));
           let blocked = false;
           for (let i = 0; i < 100; i++) {
             const state = await receiverPool.query<{
               wait_event_type: string | null;
             }>("select wait_event_type from pg_stat_activity where pid=$1", [
-              b.processID
+              backendPid(b)
             ]);
             if (state.rows[0]?.wait_event_type === "Lock") {
               blocked = true;
