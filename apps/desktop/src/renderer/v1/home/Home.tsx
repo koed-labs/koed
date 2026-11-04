@@ -609,7 +609,9 @@ function ProjectsStage({
             title={
               front
                 ? undefined
-                : `${entry.name} · ${entry.eventCount.toLocaleString()} events · ${ago}`
+                : entry.conversationCount === 0
+                  ? `${entry.name} · No conversations yet`
+                  : `${entry.name} · ${entry.eventCount.toLocaleString()} events · ${ago}`
             }
             aria-label={`Open Project ${entry.name}, ${entry.eventCount} captured events, active ${ago}`}
             onClick={() => onOpenProject(entry.id)}
@@ -632,7 +634,9 @@ function ProjectsStage({
               {/* Back-row Kin carry just a name; the rest is in the tooltip. */}
               {front && (
                 <span>
-                  {entry.eventCount.toLocaleString()} events · {ago}
+                  {entry.conversationCount === 0
+                    ? "No conversations yet"
+                    : `${entry.eventCount.toLocaleString()} events · ${ago}`}
                 </span>
               )}
             </span>

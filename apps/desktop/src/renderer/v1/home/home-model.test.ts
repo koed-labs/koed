@@ -6,6 +6,7 @@ import {
   holdHomeOrder,
   homeClients,
   homeHeat,
+  homeProjectEntries,
   rankHomeProjects,
   selectHomeView,
   type HomeProjectEntry
@@ -195,6 +196,48 @@ describe("ingestion", () => {
       kind: "projects",
       ingestion: { active: true, clients: [{ id: "codex" }] }
     });
+  });
+
+  it("counts the conversations the sidebar lists, not subagent work", () => {
+    const thread = (
+      threadKind: "conversation" | "subagent",
+      eventCount: number,
+      latestAt: string
+    ) => ({ threadKind, eventCount, latestAt });
+    const project = (id: string, threads: ReturnType<typeof thread>[]) =>
+      ({
+        id,
+        name: id,
+        namedProject: { projectId: id, version: 1 },
+        eventCount: threads.reduce((sum, item) => sum + item.eventCount, 0),
+        threads
+      }) as unknown as Parameters<typeof homeProjectEntries>[0][number];
+    expect(
+      homeProjectEntries([
+        project("mixed", [
+          thread("conversation", 5, "2026-11-01T00:00:00Z"),
+          thread("subagent", 9, "2026-11-03T00:00:00Z")
+        ]),
+        project("subagents-only", [
+          thread("subagent", 2, "2026-10-20T00:00:00Z")
+        ])
+      ])
+    ).toEqual([
+      {
+        id: "mixed",
+        name: "mixed",
+        eventCount: 5,
+        latestAt: "2026-11-01T00:00:00Z",
+        conversationCount: 1
+      },
+      {
+        id: "subagents-only",
+        name: "subagents-only",
+        eventCount: 0,
+        latestAt: null,
+        conversationCount: 0
+      }
+    ]);
   });
 
   it("ignores history progress from an AI Client that isn't connected", () => {

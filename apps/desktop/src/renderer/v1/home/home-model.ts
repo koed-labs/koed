@@ -288,6 +288,8 @@ export type HomeProjectEntry = {
   // Stored captured events (messages and tool events) for the Project.
   eventCount: number;
   latestAt: string | null;
+  // Conversations the sidebar lists for the Project; unknown when absent.
+  conversationCount?: number;
 };
 
 // Matches the sidebar's Project list so a Kin and its sidebar row agree.
@@ -296,13 +298,26 @@ export const homeProjectEntries = (
 ): HomeProjectEntry[] =>
   projects
     .filter((project) => project.namedProject)
-    .map((project) => ({
-      id: project.id,
-      name: project.name,
-      // A Project read before its counts arrive has none yet.
-      eventCount: Number.isFinite(project.eventCount) ? project.eventCount : 0,
-      latestAt: projectLatestAt(project)
-    }));
+    .map((project) => {
+      // The sidebar doesn't list subagent conversations on their own, so
+      // Home counts the same conversations it does; otherwise a Project
+      // holding only subagent work shows events but no conversations.
+      const conversations = project.threads.filter(
+        (thread) => thread.threadKind !== "subagent"
+      );
+      return {
+        id: project.id,
+        name: project.name,
+        // A conversation read before its counts arrive has none yet.
+        eventCount: conversations.reduce(
+          (sum, thread) =>
+            sum + (Number.isFinite(thread.eventCount) ? thread.eventCount : 0),
+          0
+        ),
+        latestAt: projectLatestAt({ ...project, threads: conversations }),
+        conversationCount: conversations.length
+      };
+    });
 
 const time = (value: string | null) => {
   const parsed = value ? Date.parse(value) : Number.NaN;

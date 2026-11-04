@@ -63,8 +63,14 @@ leaves.
   while their labels keep a fixed size; the spotlight follows the lead Kin, and
   the back row stays out of its beam and shows names only. There is no Project
   page, so a Kin opens its Project's most recent conversation in the sidebar.
-  Counts are the Project summary's stored captured events, and ranking uses its latest thread activity, then
-  name, then id. `conversation_events_changed` refreshes the summaries through
+  Counts are the stored captured events of the conversations the sidebar lists
+  for the Project; subagent conversations are not listed on their own, so they
+  are not counted either, and a Project with no listed conversation says "No
+  conversations yet". The Projects list is read again, up to three times, when
+  the API reports that membership changed mid-read, as it does constantly while
+  history imports; only a list that keeps changing reports a failed load.
+  Ranking uses those conversations' latest activity, then name, then id.
+  `conversation_events_changed` refreshes the summaries through
   `PersonalMemoryStore`; a rise in a summary's count plays one coalesced
   animation, so a missed or repeated change event never alters a count. Window
   focus refreshes status and Projects. Re-ranking is throttled and holds while
