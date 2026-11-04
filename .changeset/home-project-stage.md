@@ -2,4 +2,4 @@
 "@koed/desktop": minor
 ---
 
-Replace the desktop home composer with a Home stage. It shows a Kin for each Project ranked by recent activity, a quiet stage when there are no Projects yet, and a full-screen attention state only when Koed cannot load Projects. Detected AI Clients appear as keycaps with the same health as Settings, recent history processing shows as a hatching stage, and New chat opens its own composer.
+Replace the desktop home composer with a Home stage. Every state shares one layout: AI Client keycaps above a stage where Kin stand in a spotlight that scales with the window. Projects gather around the most recently active one, a quiet stage shows before there are any, recent history processing shows as a hatching stage with its progress, and a full-screen attention state appears only when Koed cannot load Projects. Keycaps use the same health as Settings and offer Connect or Repair, with the same consent step as Settings, and New chat opens its own composer.
