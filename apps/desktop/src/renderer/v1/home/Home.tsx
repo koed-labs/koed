@@ -376,7 +376,7 @@ function ProblemList({
           <span className="v1-home-dot" aria-hidden="true" />
           <div>
             <strong>{problem.title}</strong>
-            <span>{problem.message}</span>
+            <span title={problem.detail}>{problem.message}</span>
           </div>
           <ProblemAction
             problem={problem}
@@ -420,6 +420,10 @@ function useStageBox(
   caption: RefObject<HTMLElement | null>
 ) {
   const [box, setBox] = useState<(StageBox & { reserve: number }) | null>(null);
+  // Kin glide when the order changes, but a new measurement (the first one,
+  // or a window resize) moves them at once instead of bouncing them there.
+  const [settled, setSettled] = useState(true);
+  const last = useRef<(StageBox & { reserve: number }) | null>(null);
   useLayoutEffect(() => {
     const element = stage.current;
     if (!element || typeof ResizeObserver === "undefined") return;
@@ -428,13 +432,16 @@ function useStageBox(
       const reserve =
         (caption.current?.getBoundingClientRect().height ?? 0) + CAPTION_INSET;
       if (!width || !height) return;
-      setBox((current) =>
+      const current = last.current;
+      if (
         current?.width === width &&
         current.height === height &&
         current.reserve === reserve
-          ? current
-          : { width, height, reserve }
-      );
+      )
+        return;
+      last.current = { width, height, reserve };
+      setSettled(false);
+      setBox(last.current);
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -442,7 +449,12 @@ function useStageBox(
     if (caption.current) observer.observe(caption.current);
     return () => observer.disconnect();
   }, [stage, caption]);
-  return box;
+  useEffect(() => {
+    if (settled) return;
+    const frame = requestAnimationFrame(() => setSettled(true));
+    return () => cancelAnimationFrame(frame);
+  }, [settled, box]);
+  return [box, settled] as const;
 }
 
 const placementStyle = (layout: StageLayout, index: number) => {
@@ -529,7 +541,7 @@ function ProjectsStage({
 
   const stageRef = useRef<HTMLElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
-  const box = useStageBox(stageRef, captionRef);
+  const [box, settled] = useStageBox(stageRef, captionRef);
   const onStage = shown.slice(0, HOME_STAGE_LIMIT);
   const layout = layoutStage(
     box,
@@ -542,6 +554,7 @@ function ProjectsStage({
     <section
       ref={stageRef}
       className="v1-home-stage v1-home-stage-projects"
+      data-settling={!settled || undefined}
       aria-label="Most active Projects"
       data-reduced-motion={reduced || undefined}
       onPointerEnter={() => setPointerOver(true)}
@@ -614,7 +627,10 @@ const ingestionLine = (client: HomeIngestionClient) => {
       : `${finished} of ${client.selected}`;
   switch (client.lifecycle) {
     case "running":
-      return `Reading ${of}`;
+      // Nothing read and no selection yet: still finding conversations.
+      return finished === 0 && client.selected === null
+        ? "Starting"
+        : `Reading ${of}`;
     case "completed":
       return "Done";
     // A failed pass retries on its own; it is not something to act on here.
@@ -646,10 +662,15 @@ function SoloStage({
 }) {
   const stageRef = useRef<HTMLElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
-  const box = useStageBox(stageRef, captionRef);
+  const [box, settled] = useStageBox(stageRef, captionRef);
   const layout = layoutStage(box, box?.reserve ?? CAPTION_FALLBACK, soloSlots);
   return (
-    <section ref={stageRef} className="v1-home-stage" aria-label={label}>
+    <section
+      ref={stageRef}
+      className="v1-home-stage"
+      data-settling={!settled || undefined}
+      aria-label={label}
+    >
       <div
         className="v1-home-spot"
         aria-hidden="true"
@@ -688,6 +709,63 @@ const hatchSlots: readonly StageSlot[] = [
 // The hatching caption carries a progress bar, so it needs more room.
 const HATCH_CAPTION_FALLBACK = 170;
 
+// A pixel egg drawn to sit with the Kin: outline, shell, shade, highlight and
+// a few accent speckles, one row per string.
+const EGG_ROWS = [
+  "....XXXX....",
+  "...XBBBBX...",
+  "..XBHBBBBX..",
+  "..XHBBBBSX..",
+  ".XBHBBPBBSX.",
+  ".XBBBBBBBSX.",
+  "XBBBPBBBBBSX",
+  "XBBBBBBBPBSX",
+  "XBPBBBBBBBSX",
+  "XBBBBBBBBSSX",
+  "XBBBBBPBBSSX",
+  ".XBBBBBBSSX.",
+  ".XSBBBBSSSX.",
+  "..XSSSSSSX..",
+  "...XXXXXX..."
+];
+const EGG_FILL: Record<string, string> = {
+  X: "#141218",
+  B: "#ece3cf",
+  H: "#ffffff",
+  S: "#c3b597",
+  P: "var(--v1-accent)"
+};
+// Runs of one colour per row keep the drawing to a few dozen rects.
+const EGG_RUNS = EGG_ROWS.flatMap((row, y) =>
+  [...row.matchAll(/([XBHSP])\1*/g)].map((run) => ({
+    x: run.index,
+    y,
+    width: run[0].length,
+    fill: EGG_FILL[run[1]!]!
+  }))
+);
+
+function PixelEgg() {
+  return (
+    <svg
+      className="v1-home-egg-art"
+      viewBox={`0 0 ${EGG_ROWS[0]!.length} ${EGG_ROWS.length}`}
+      shapeRendering="crispEdges"
+    >
+      {EGG_RUNS.map(({ x, y, width, fill }) => (
+        <rect
+          key={`${x}-${y}`}
+          x={x}
+          y={y}
+          width={width}
+          height={1}
+          style={{ fill }}
+        />
+      ))}
+    </svg>
+  );
+}
+
 function HatchingStage({
   entries,
   ingestion,
@@ -702,7 +780,7 @@ function HatchingStage({
   const reduced = useReducedMotion();
   const stageRef = useRef<HTMLElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
-  const box = useStageBox(stageRef, captionRef);
+  const [box, settled] = useStageBox(stageRef, captionRef);
   // Projects present on the first render were found before this screen opened.
   const seen = useRef<Set<string> | null>(null);
   seen.current ??= new Set(entries.map(({ id }) => id));
@@ -717,10 +795,14 @@ function HatchingStage({
   );
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const egg = layout.placements[shown.length + 1]!;
+  const stuck = ingestion.clients
+    .filter((client) => client.stuck)
+    .map(({ name }) => name);
   return (
     <section
       ref={stageRef}
       className="v1-home-stage v1-home-stage-hatching"
+      data-settling={!settled || undefined}
       aria-label="Projects found so far"
     >
       <div
@@ -732,7 +814,7 @@ function HatchingStage({
         <Pixelkin
           look={agent.look}
           size={layout.placements[0]!.size}
-          expression="happy"
+          expression={stuck.length ? "neutral" : "happy"}
         />
         <span className="v1-home-kin-shadow" aria-hidden="true" />
       </div>
@@ -765,13 +847,15 @@ function HatchingStage({
         style={
           {
             "--kin-x": `calc(50% + ${egg.x}px)`,
-            // The egg stands where the Kin's feet will be, above its label.
-            "--kin-y": `${egg.bottom + LABEL_BACK + 8}px`,
+            "--kin-y": `${egg.bottom}px`,
             "--kin-size": `${egg.size}px`
           } as CSSProperties
         }
       >
-        <i />
+        <PixelEgg />
+        <span className="v1-home-kin-shadow" />
+        {/* Stands where the Kin will, so it hatches in place. */}
+        <span style={{ height: LABEL_BACK }} />
       </span>
       <div className="v1-home-caption" ref={captionRef}>
         <h1>Hatching your Projects</h1>
@@ -779,8 +863,9 @@ function HatchingStage({
           className="v1-home-sub"
           title={`Up to ${AUTOMATIC_HISTORICAL_CONVERSATION_CAP} conversations per AI Client from the last ${AUTOMATIC_HISTORICAL_WINDOW_DAYS} days.`}
         >
-          {agent.name} is reading your recent conversations. Projects appear as
-          they’re found.
+          {stuck.length
+            ? `${stuck.join(" and ")} history has stalled, so ${agent.name} keeps retrying. Projects still appear as they’re found.`
+            : `${agent.name} is reading your recent conversations. Projects appear as they’re found.`}
         </p>
         <IngestionProgress ingestion={ingestion} />
       </div>

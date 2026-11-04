@@ -79,6 +79,29 @@ describe("selectHomeView", () => {
     expect(view.kind === "attention" && view.problems).toHaveLength(1);
   });
 
+  it("words down services plainly, keeping the status message as detail", () => {
+    const view = selectHomeView(
+      homeStatus({
+        api: {
+          state: "needs_attention",
+          message: "API is not responding on 127.0.0.1:43300."
+        }
+      } as Partial<KoedServerStatus>),
+      null
+    );
+    expect(view).toMatchObject({
+      kind: "attention",
+      problems: [
+        {
+          id: "services",
+          title: "Koed services",
+          detail: "API is not responding on 127.0.0.1:43300.",
+          action: { command: "start", label: "Start Koed" }
+        }
+      ]
+    });
+  });
+
   it("leaves a stale diagnostics result out of Home", () => {
     expect(
       selectHomeView(
@@ -174,7 +197,8 @@ describe("ingestion", () => {
     });
     expect(selectHomeView(failing(15), null)).toMatchObject({
       kind: "ingesting",
-      warnings: [{ id: "ingestion-codex" }],
+      // The chip reads "Check Codex history".
+      warnings: [{ id: "ingestion-codex", title: "Codex history" }],
       ingestion: { clients: [{ stuck: true }] }
     });
   });

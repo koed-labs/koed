@@ -20,6 +20,7 @@
 }
 .v1-home-sub {
   margin: 0;
+  text-wrap: balance;
   font-size: 15px;
   line-height: 1.5;
   color: var(--v1-muted);
@@ -91,9 +92,25 @@
   color: var(--v1-muted);
   background: var(--v1-surface);
 }
-.v1-home-keycaps li[data-state="connected"] .v1-home-pill {
-  color: var(--v1-heat-2);
-  background: color-mix(in srgb, var(--v1-heat-2) 14%, transparent);
+/* Connected and done carry a green dot, not a green fill, so they don't
+   blur into the Codex keycap's own green. */
+.v1-home-keycaps li[data-state="connected"] .v1-home-pill:not([data-lifecycle]),
+.v1-home-keycaps li .v1-home-pill[data-lifecycle="completed"] {
+  color: var(--v1-fg2);
+  background: var(--v1-surface);
+}
+.v1-home-keycaps
+  li[data-state="connected"]
+  .v1-home-pill:not([data-lifecycle])::before,
+.v1-home-keycaps li .v1-home-pill[data-lifecycle="completed"]::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--v1-heat-2);
 }
 .v1-home-keycaps li[data-state="attention"] .v1-home-pill {
   color: var(--v1-heat-3);
@@ -120,7 +137,7 @@
 .v1-home-problems li + li {
   border-top: 1px solid var(--v1-hairline);
 }
-.v1-home-problems li > div {
+.v1-home-problems li > div:not(.v1-home-action) {
   flex: 1 1 260px;
   min-width: 0;
   display: grid;
@@ -131,6 +148,7 @@
 }
 .v1-home-problems li > div span {
   font-size: 13px;
+  text-wrap: pretty;
   color: var(--v1-muted);
 }
 .v1-home-problems-compact {
@@ -146,6 +164,8 @@
   width: 9px;
   height: 9px;
   flex: none;
+  align-self: flex-start;
+  margin-top: 6px;
   border-radius: 50%;
   background: var(--v1-heat-4);
 }
@@ -233,12 +253,22 @@
 .v1-home-kin:not([data-front]) {
   opacity: 0.8;
 }
+.v1-home-kin .v1-pixelkin {
+  transition: transform 160ms ease;
+}
+.v1-home-kin:hover {
+  opacity: 1;
+}
+.v1-home-kin:hover .v1-pixelkin {
+  transform: translateY(-4px);
+}
 .v1-home-kin:focus-visible {
   outline: 2px solid var(--v1-accent-text);
   outline-offset: 6px;
   border-radius: 16px;
 }
-.v1-home-stage[data-reduced-motion] .v1-home-kin {
+.v1-home-stage[data-reduced-motion] .v1-home-kin,
+.v1-home-stage[data-settling] .v1-home-kin {
   transition: none;
 }
 .v1-home-kin-shadow {
@@ -246,9 +276,10 @@
   height: calc(var(--kin-size) * 0.12);
   margin-top: -10px;
   border-radius: 50%;
+  /* Neutral: position and the "ago" text already say how recent it is. */
   background: radial-gradient(
     closest-side,
-    color-mix(in srgb, var(--kin-heat) 40%, transparent),
+    color-mix(in srgb, var(--v1-fg) 14%, transparent),
     transparent
   );
 }
@@ -429,18 +460,17 @@
   position: absolute;
   left: var(--kin-x);
   bottom: var(--kin-y);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   transform: translateX(-50%);
 }
-.v1-home-egg i {
+.v1-home-egg-art {
   display: block;
-  width: calc(var(--kin-size) * 0.7);
-  height: calc(var(--kin-size) * 0.85);
-  border-radius: 50% 50% 46% 46% / 58% 58% 42% 42%;
-  background: radial-gradient(
-    ellipse at 35% 30%,
-    color-mix(in srgb, var(--v1-fg) 22%, transparent),
-    color-mix(in srgb, var(--v1-fg) 6%, transparent) 70%
-  );
+  width: calc(var(--kin-size) * 0.62);
+  height: calc(var(--kin-size) * 0.775);
+  margin-top: calc(var(--kin-size) * 0.225);
   animation: v1-home-wobble 2.4s ease-in-out infinite;
   transform-origin: 50% 100%;
 }
@@ -451,10 +481,10 @@
 }
 .v1-home-progress-label {
   font-size: 12px;
-  color: var(--v1-faint);
+  color: var(--v1-muted);
 }
 .v1-home-progress-track {
-  height: 3px;
+  height: 4px;
   overflow: hidden;
   border-radius: 2px;
   background: var(--v1-surface);
@@ -466,8 +496,17 @@
   background: linear-gradient(90deg, var(--v1-accent), var(--v1-accent-text));
   transition: width 600ms ease;
 }
+/* Without a total the whole track moves, so a still frame never reads as a
+   fraction done. */
 .v1-home-progress-track[data-indeterminate] span {
-  animation: v1-home-indeterminate 1.6s ease-in-out infinite;
+  width: 100% !important;
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--v1-accent) 70%, transparent) 0 6px,
+    color-mix(in srgb, var(--v1-accent) 25%, transparent) 6px 12px
+  );
+  background-size: 17px 100%;
+  animation: v1-home-indeterminate 0.8s linear infinite;
 }
 .v1-home-keycaps small {
   font-size: 11px;
@@ -487,10 +526,6 @@
 .v1-home-keycaps li .v1-home-pill[data-stuck] {
   color: var(--v1-heat-3);
   background: color-mix(in srgb, var(--v1-heat-3) 14%, transparent);
-}
-.v1-home-keycaps li .v1-home-pill[data-lifecycle="completed"] {
-  color: var(--v1-heat-2);
-  background: color-mix(in srgb, var(--v1-heat-2) 14%, transparent);
 }
 .v1-home-warnings {
   position: absolute;
@@ -523,6 +558,8 @@
 .v1-home-chip .v1-home-dot {
   width: 7px;
   height: 7px;
+  align-self: center;
+  margin-top: 0;
 }
 @keyframes v1-home-wobble {
   0%,
@@ -554,15 +591,12 @@
   }
 }
 @keyframes v1-home-indeterminate {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(340%);
+  to {
+    background-position: 17px 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .v1-home-egg i,
+  .v1-home-egg-art,
   .v1-home-progress-track[data-indeterminate] span {
     animation: none;
   }

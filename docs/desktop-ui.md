@@ -47,7 +47,9 @@ scrolls, only when the caption needs more room than the window leaves.
   or Koed is stopped, because Projects cannot load. Other setup problems and an
   unhealthy Capture Hook show as a warning chip above the normal content. While
   Koed is stopped, attention shows one Start Koed step instead of each
-  component's symptom. A problem
+  component's symptom; when the services are down it shows the same plain
+  wording and Start Koed button, with the component's own message kept as
+  hover detail. A problem
   offers its existing setup command, keeping that command's consent step, or
   its status message as manual guidance.
 - **Quiet stage** shows when Projects have loaded and none exist. It offers to
@@ -85,6 +87,8 @@ scrolls, only when the caption needs more room than the window leaves.
   Conversations per client with skipped ones apart, and keeps the progress bar
   indeterminate until every selection is known. It shows no time estimate and
   no completion notification. Idle or unknown ingestion never holds Home here.
+  Once a client counts as stuck, the caption says its history has stalled and
+  the warning chip reads "Check <client> history", with diagnostics.
 
 Run `pnpm --filter @koed/desktop test:browser:v1` for the isolated Electron
 presentation smoke check. This fixture does not configure local AI Clients or

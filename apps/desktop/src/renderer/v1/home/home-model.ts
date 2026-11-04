@@ -18,6 +18,8 @@ export type HomeProblem = {
   // Only an existing command that applies to this problem; null means the
   // message is the guidance.
   action: SetupStep["action"];
+  // The raw status message, for an Operator, when the message is plainer.
+  detail?: string;
 };
 
 export type HomeView =
@@ -95,9 +97,25 @@ export function selectHomeView(
     const stopped =
       status.lifecycle?.state === "stopped" ||
       status.lifecycle?.state === "unavailable";
+    // Down services get the same plain wording and button as stopped Koed;
+    // the component's own message stays available as detail.
     const listed =
       problems.length && !stopped
-        ? problems
+        ? problems.map((problem) =>
+            problem.id === "services"
+              ? ({
+                  ...problem,
+                  title: "Koed services",
+                  message:
+                    "Koed’s local services aren’t responding. Starting Koed again usually fixes this.",
+                  detail: problem.message,
+                  action: problem.action && {
+                    ...problem.action,
+                    label: "Start Koed"
+                  }
+                } satisfies HomeProblem)
+              : problem
+          )
         : [
             {
               id: "services",
@@ -122,8 +140,10 @@ export function selectHomeView(
     if (!client.stuck) continue;
     problems.push({
       id: `ingestion-${client.id}`,
-      title: `${client.name} history isn’t progressing`,
-      message: `Processing recent ${client.name} history keeps failing (${client.lastErrorCode ?? "unknown error"}). New conversations are still captured.`,
+      // The chip reads "Check <title>", so the title is a noun phrase.
+      title: `${client.name} history`,
+      message: `Reading recent ${client.name} history keeps failing, so Koed keeps retrying. New conversations are still captured.`,
+      detail: client.lastErrorCode ?? undefined,
       action: {
         command: "doctor",
         label: "Run diagnostics",

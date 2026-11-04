@@ -215,6 +215,65 @@ describe("Home", () => {
     ).not.toBeNull();
   });
 
+  it("says when history has stalled and when a client is only starting", async () => {
+    const client = (
+      id: "codex" | "claude",
+      name: string,
+      lifecycle: "running" | "failed",
+      completed: number,
+      stuck: boolean
+    ) => ({
+      id,
+      name,
+      lifecycle,
+      selected: null,
+      completed,
+      skipped: 0,
+      lastErrorCode: null,
+      stuck
+    });
+    await render({
+      entries: [],
+      view: {
+        kind: "ingesting",
+        warnings: [],
+        ingestion: {
+          active: true,
+          finished: 1,
+          selected: null,
+          clients: [
+            client("codex", "Codex", "running", 0, false),
+            client("claude", "Claude Code", "failed", 1, true)
+          ]
+        }
+      },
+      clients: [
+        {
+          id: "codex",
+          name: "Codex",
+          state: "connected",
+          label: "Connected",
+          version: null
+        },
+        {
+          id: "claude",
+          name: "Claude Code",
+          state: "connected",
+          label: "Connected",
+          version: null
+        }
+      ]
+    });
+    expect(
+      [...container.querySelectorAll(".v1-home-pill")].map(
+        (pill) => pill.textContent
+      )
+    ).toEqual(["Starting", "Stuck · 1"]);
+    expect(container.textContent).toContain(
+      "Claude Code history has stalled, so Koed keeps retrying."
+    );
+  });
+
   const claude = {
     id: "claude" as const,
     name: "Claude Code",

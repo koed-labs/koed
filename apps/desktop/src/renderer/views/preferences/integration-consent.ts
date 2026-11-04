@@ -36,7 +36,7 @@ export const integrationConsentCopy: Record<
   setup_pi: {
     title: "Set up the Pi integration?",
     description:
-      "Koed will register its local package in your active global Pi profile, or remove only that Koed-owned package. It preserves unrelated Pi settings, packages, and provider credentials.",
+      "Koed will register its local package in your active global Pi profile. It preserves unrelated Pi settings, packages, and provider credentials.",
     confirmLabel: "Set up Pi"
   },
   repair_pi: {
@@ -54,7 +54,7 @@ export const integrationConsentCopy: Record<
   setup_claude: {
     title: "Set up the Claude Code integration?",
     description:
-      "Koed will add its MCP Server and Supported Capture Hook to Claude Code settings, or remove only those Koed-owned entries. It preserves unrelated settings, hooks, and provider credentials.",
+      "Koed will add its MCP Server and Supported Capture Hook to Claude Code settings. It preserves unrelated settings, hooks, and provider credentials.",
     confirmLabel: "Set up Claude Code"
   },
   repair_claude: {
