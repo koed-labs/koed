@@ -1,9 +1,9 @@
-import {
-  PERSONAL_PROJECT_INSPECTION_BATCH_SIZE,
-  type PersonalProjectBatchInput,
-  type PersonalProjectMembershipExplanation
+import type {
+  PersonalProjectBatchInput,
+  PersonalProjectMembershipExplanation
 } from "@koed/shared";
 import {
+  PERSONAL_PROJECT_INSPECTION_BATCH_SIZE,
   personalRecallTargetsEqual,
   type PersonalDesktopApi
 } from "@koed/shared/personal-desktop";

@@ -42,6 +42,7 @@ import {
 } from "./personal-source-contract.js";
 import { personalMembershipReasonSchema } from "./personal-membership-contract.js";
 export {
+  PERSONAL_PROJECT_INSPECTION_BATCH_SIZE,
   personalProjectCommandSchema,
   personalProjectCommandResultSchema
 } from "./personal-project-contract.js";
