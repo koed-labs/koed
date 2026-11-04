@@ -1,1 +1,0 @@
-ALTER TABLE "pds_session_invariant_locks" ADD CONSTRAINT "pds_session_invariant_locks_session_id_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE cascade ON UPDATE no action;

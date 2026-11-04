@@ -46,19 +46,7 @@ Personal Device Group device. It is relay-backed. Each device remains a
 symmetric local replica: capture and Recall are local, while compatible
 origin-signed derived artifacts may be imported to avoid repeating Projection
 or embedding work. Relay outage never stops local capture or Recall of already
-materialized Memory. A materialized replica Session cannot register a local-origin
-source artifact; it remains read-only for local source capture. Database
-migration 0051 rejects an upgrade if existing artifacts violate this invariant,
-so the Operator must inspect and resolve those conflicts before retrying. It
-does not automatically remove or reassign artifacts. Stop database writers
-before applying this migration to avoid lock-order contention during upgrade.
-Attached replica records cannot be deleted or detached, including through a
-group deletion cascade, because doing so would remove the Session's read-only
-protection. Session and user hard deletion can also be blocked by this guard.
-An explicit teardown path is not yet available; unattached replica records
-remain removable. Direct database writers must retry whole transactions aborted
-with PostgreSQL serialization failure (`40001`) or deadlock (`40P01`); arbitrary
-row-first transactions can deadlock with the invariant's coordination locks.
+materialized Memory.
 
 The same-network V1 profile uses one fixed Authority/Relay-hosting
 installation. This is an operational availability hub, not a plaintext Memory,

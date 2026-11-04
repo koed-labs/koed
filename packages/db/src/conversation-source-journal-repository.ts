@@ -858,19 +858,6 @@ const ensureConversationSourceArtifactWithClient = async (
   if (session.rows[0]?.exists !== true) {
     throw statusError("Captured Session not found for source artifact", 404);
   }
-  if (input.replicaRole === "origin_local") {
-    const replica = await client.query<{ exists: boolean }>(
-      "select exists(select 1 from pds_logical_replicas where local_session_id=$1) as exists",
-      [input.sessionId]
-    );
-    if (replica.rows[0]?.exists) {
-      throw statusError(
-        "Conversation source replica is read-only",
-        409,
-        "conversation_source_replica_read_only"
-      );
-    }
-  }
   await client.query(
     `select pg_advisory_xact_lock(
        hashtextextended($1 || ':' || $2::text, 0)

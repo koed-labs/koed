@@ -949,13 +949,6 @@ export const teamInvites = pgTable(
   ]
 );
 
-export const pdsSessionInvariantLocks = pgTable("pds_session_invariant_locks", {
-  sessionId: uuid("session_id")
-    .primaryKey()
-    .references(() => sessions.id, { onDelete: "cascade" }),
-  revision: bigint("revision", { mode: "number" }).notNull().default(0)
-});
-
 export const sessions = pgTable(
   "sessions",
   {

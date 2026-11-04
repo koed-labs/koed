@@ -18,10 +18,6 @@ Migration generation formats only `packages/db/drizzle/meta/*.json` with the
 repository's Oxfmt configuration. To format existing metadata separately, run
 `pnpm --filter @koed/db migrate:format`.
 
-Use a disposable `DATABASE_URL` for database integration tests. Tests that create
-attached PDS replicas retain their fixture rows because attached replica teardown
-is not yet supported; discard the test database after the run.
-
 `pnpm db:migrate:acceptance` uses `DATABASE_URL` to connect to a Postgres
 server and creates a separate disposable database for every acceptance case.
 The complete checked-in migration journal determines the current schema; the
