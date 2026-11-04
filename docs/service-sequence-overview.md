@@ -6,6 +6,11 @@ the backend stores, projects, embeds, and retrieves memory, while the connected
 AI Client performs Answer Synthesis and creates LCM Summaries through the Local
 AI Runtime.
 
+Sections describing Managed Conversation execution reflect existing implementation,
+not current product direction. [ADR 0065](adr/0065-capture-and-recall-without-managed-conversation-execution.md)
+removes Koed-managed Conversation execution from scope; retirement and a detailed
+documentation inventory remain follow-up work.
+
 ## Services In Scope
 
 - **AI Client**: Codex, Claude Code, and Pi are supported AI Clients in this build.

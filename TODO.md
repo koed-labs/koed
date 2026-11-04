@@ -1,5 +1,17 @@
 # Implementation backlog
 
+## Retire Koed-managed Conversation execution
+
+- [ ] Inventory execution-dependent ADRs and operational documentation; update
+      their scoped requirements in line with ADR 0065 while preserving independent
+      capture, Memory, source-access, and realtime decisions.
+- [ ] Design and implement retirement of managed Conversation UI, routes, and
+      runtime work, including safe handling of persisted and in-flight executions,
+      handoffs, retained Memory, and compatibility.
+- [ ] Review replica source-authority enforcement and existing data against the
+      remaining capture, source-generation, import, and PDS V1 paths before
+      introducing a migration or changing synchronization behavior.
+
 ## Combined Oxfmt and Oxlint migration
 
 - [x] Pin both Oxc packages and the typed engine. Replace the formatter and lint
