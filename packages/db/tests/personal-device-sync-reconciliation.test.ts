@@ -303,6 +303,18 @@ describeDb("Personal Device Sync local reconciliation", () => {
         )
       ).resolves.toMatchObject({ rowCount: 1 });
       await expect(
+        pool.query(
+          "delete from pds_logical_replicas where local_session_id=$1",
+          [localSession.rows[0]!.id]
+        )
+      ).rejects.toThrow(/attached replica/i);
+      await expect(
+        pool.query(
+          "update pds_logical_replicas set local_session_id=null where local_session_id=$1",
+          [localSession.rows[0]!.id]
+        )
+      ).rejects.toThrow(/attached replica|identity is immutable/i);
+      await expect(
         pool.query("update sessions set source_kind='tampered' where id=$1", [
           localSession.rows[0]!.id
         ])
@@ -314,20 +326,29 @@ describeDb("Personal Device Sync local reconciliation", () => {
         )
       ).rejects.toThrow("read-only");
     } finally {
-      await pool.query(
-        "delete from local_personal_identities where owner_user_id=$1",
+      // Attached replicas cannot be removed until a supported teardown exists.
+      const attached = await pool.query(
+        "select 1 from pds_logical_replicas where owner_user_id=$1 and local_session_id is not null limit 1",
         [userId]
       );
-      await pool.query(
-        "delete from conversation_items where owner_user_id=$1",
-        [userId]
-      );
-      await pool.query("delete from sessions where owner_user_id=$1", [userId]);
-      await pool.query(
-        "delete from personal_project_default_reconciliation where owner_user_id=$1",
-        [userId]
-      );
-      await pool.query("delete from users where id=$1", [userId]);
+      if (!attached.rowCount) {
+        await pool.query(
+          "delete from local_personal_identities where owner_user_id=$1",
+          [userId]
+        );
+        await pool.query(
+          "delete from conversation_items where owner_user_id=$1",
+          [userId]
+        );
+        await pool.query("delete from sessions where owner_user_id=$1", [
+          userId
+        ]);
+        await pool.query(
+          "delete from personal_project_default_reconciliation where owner_user_id=$1",
+          [userId]
+        );
+        await pool.query("delete from users where id=$1", [userId]);
+      }
     }
   });
 });

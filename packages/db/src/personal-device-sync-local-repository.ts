@@ -1259,6 +1259,10 @@ export const createPersonalDeviceSyncLocalRepository = (
         input.closureHash,
         input.sourceSequence
       );
+      // Match the replica INSERT trigger's lock order before locking an existing row.
+      await client.query("select koed_lock_pds_source_authority($1)", [
+        input.localSessionId
+      ]);
       const known = await client.query<{
         id: string;
         source_profile_epoch: number;

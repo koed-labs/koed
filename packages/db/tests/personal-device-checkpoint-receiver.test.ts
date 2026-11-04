@@ -696,22 +696,29 @@ describeDb("PDS cumulative checkpoint receiver", () => {
           conflict_state: "quarantined"
         });
       } finally {
-        await pool.query(
-          "delete from local_personal_identities where owner_user_id=$1",
+        // Attached replicas cannot be removed until a supported teardown exists.
+        const attached = await pool.query(
+          "select 1 from pds_logical_replicas where owner_user_id=$1 and local_session_id is not null limit 1",
           [userId]
         );
-        await pool.query(
-          "delete from conversation_items where owner_user_id=$1",
-          [userId]
-        );
-        await pool.query("delete from sessions where owner_user_id=$1", [
-          userId
-        ]);
-        await pool.query(
-          "delete from personal_project_default_reconciliation where owner_user_id=$1",
-          [userId]
-        );
-        await pool.query("delete from users where id=$1", [userId]);
+        if (!attached.rowCount) {
+          await pool.query(
+            "delete from local_personal_identities where owner_user_id=$1",
+            [userId]
+          );
+          await pool.query(
+            "delete from conversation_items where owner_user_id=$1",
+            [userId]
+          );
+          await pool.query("delete from sessions where owner_user_id=$1", [
+            userId
+          ]);
+          await pool.query(
+            "delete from personal_project_default_reconciliation where owner_user_id=$1",
+            [userId]
+          );
+          await pool.query("delete from users where id=$1", [userId]);
+        }
       }
     }
   );
