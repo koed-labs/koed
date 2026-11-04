@@ -39,6 +39,7 @@
   list-style: none;
 }
 .v1-home-keycaps li {
+  position: relative;
   min-width: 120px;
   display: flex;
   flex-direction: column;
@@ -571,4 +572,102 @@
   .v1-home-stage-hatching .v1-home-sub {
     display: none;
   }
+}
+
+/* Connect or Repair, from a keycap or the quiet stage's caption. */
+button.v1-home-pill {
+  border: 0;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--v1-accent-text);
+  background: color-mix(in srgb, var(--v1-accent) 18%, transparent);
+  cursor: pointer;
+}
+button.v1-home-pill:hover {
+  background: color-mix(in srgb, var(--v1-accent) 30%, transparent);
+}
+button.v1-home-pill[data-repair] {
+  color: var(--v1-heat-3);
+  background: color-mix(in srgb, var(--v1-heat-3) 14%, transparent);
+}
+button.v1-home-pill[data-repair]:hover {
+  background: color-mix(in srgb, var(--v1-heat-3) 24%, transparent);
+}
+.v1-home-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--v1-accent-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.v1-home-link[data-repair] {
+  color: var(--v1-heat-3);
+}
+.v1-home-actions {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+.v1-home-primary,
+.v1-home-secondary,
+.v1-home-consent-actions button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--v1-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--v1-fg2);
+  font: inherit;
+  cursor: pointer;
+}
+.v1-home-actions .v1-home-primary,
+.v1-home-consent-actions .v1-home-primary {
+  border-color: transparent;
+  background: var(--v1-btn);
+  color: var(--v1-btn-fg);
+  font-weight: 600;
+}
+.v1-home-client-action button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+/* The consent step opens beside what was clicked: below a keycap, above the
+   caption's buttons. */
+.v1-home-consent {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  z-index: 10;
+  display: grid;
+  gap: 8px;
+  width: min(320px, 80vw);
+  padding: 14px 16px;
+  border: 1px solid var(--v1-border);
+  border-radius: 14px;
+  background: var(--v1-card);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.4);
+  transform: translateX(-50%);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  color: var(--v1-muted);
+}
+.v1-home-consent strong {
+  color: var(--v1-fg);
+}
+.v1-home-actions .v1-home-consent {
+  top: auto;
+  bottom: calc(100% + 10px);
+}
+.v1-home-consent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
 }

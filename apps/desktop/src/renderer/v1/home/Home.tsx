@@ -14,6 +14,10 @@ import {
 } from "@koed/shared/historical-ingestion-progress";
 import type { DesktopStatusStore } from "../../services/desktop-commands.js";
 import { AiClientLogo } from "../../views/personal/AiClientLogo.js";
+import {
+  integrationConsentCopy,
+  type IntegrationMutationCommand
+} from "../../views/preferences/integration-consent.js";
 import { Pixelkin } from "../pixelkin/Pixelkin.js";
 import { projectKinLook, type AgentLook } from "../pixelkin/agent-kin.js";
 import {
@@ -81,12 +85,152 @@ const useNow = (intervalMs: number) => {
   return now;
 };
 
+// A detected client can be connected and a client needing attention
+// repaired, with the same consent step as Settings.
+const clientCommand = (
+  client: HomeClient
+): IntegrationMutationCommand | null =>
+  client.state === "detected"
+    ? `setup_${client.id}`
+    : client.state === "attention"
+      ? `repair_${client.id}`
+      : null;
+
+function ClientAction({
+  client,
+  statusStore,
+  variant,
+  label
+}: {
+  client: HomeClient;
+  statusStore: DesktopStatusStore;
+  // A pill under a keycap, a link in its small line, or a caption button.
+  variant: "pill" | "link" | "primary" | "secondary";
+  label?: string;
+}) {
+  const command = clientCommand(client);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const root = useRef<HTMLSpanElement>(null);
+  const card = open || error !== null;
+  useEffect(() => {
+    if (!card) return;
+    const close = (event: Event) => {
+      if (
+        event instanceof KeyboardEvent
+          ? event.key === "Escape"
+          : !root.current?.contains(event.target as Node)
+      ) {
+        setOpen(false);
+        setError(null);
+      }
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [card]);
+  if (!command) return null;
+  const connect = client.state === "detected";
+  const copy = integrationConsentCopy[command];
+  const run = async () => {
+    setOpen(false);
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await statusStore.run<{ ok?: boolean; message?: string }>(
+        command,
+        { operatorConsented: true }
+      );
+      if (result?.ok === false)
+        setError(result.message ?? "Nothing was changed.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+      void statusStore.refresh();
+    }
+  };
+  return (
+    <span className="v1-home-client-action" ref={root}>
+      <button
+        type="button"
+        className={`v1-home-${variant}`}
+        data-repair={!connect || undefined}
+        disabled={busy}
+        aria-expanded={open}
+        aria-label={
+          label ? undefined : `${connect ? "Connect" : "Repair"} ${client.name}`
+        }
+        title={connect ? undefined : client.label}
+        onClick={() => {
+          setError(null);
+          setOpen((value) => !value);
+        }}
+      >
+        {busy
+          ? connect
+            ? "Connecting…"
+            : "Repairing…"
+          : (label ?? (connect ? "Connect" : "Repair"))}
+      </button>
+      {open && (
+        <span className="v1-home-consent" role="dialog" aria-label={copy.title}>
+          <strong>{copy.title}</strong>
+          <span>{copy.description}</span>
+          <span className="v1-home-consent-actions">
+            <button
+              type="button"
+              className="v1-home-primary"
+              autoFocus
+              onClick={() => void run()}
+            >
+              {copy.confirmLabel}
+            </button>
+            <button type="button" onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+          </span>
+        </span>
+      )}
+      {error !== null && (
+        <span className="v1-home-consent" role="alert">
+          <strong>
+            Couldn’t {connect ? "connect" : "repair"} {client.name}
+          </strong>
+          <span>{error}</span>
+          <span className="v1-home-consent-actions">
+            <button
+              type="button"
+              className="v1-home-primary"
+              onClick={() => {
+                setError(null);
+                setOpen(true);
+              }}
+            >
+              Try again
+            </button>
+            <button type="button" onClick={() => setError(null)}>
+              Close
+            </button>
+          </span>
+        </span>
+      )}
+    </span>
+  );
+}
+
 function Keycaps({
   clients,
-  ingestion
+  ingestion,
+  statusStore
 }: {
   clients: readonly HomeClient[];
   ingestion?: HomeIngestion;
+  statusStore?: DesktopStatusStore;
 }) {
   // An empty row keeps the stage where it will be once the clients load.
   if (!clients.length)
@@ -114,14 +258,33 @@ function Keycaps({
             >
               {ingestionLine(progress.get(client.id)!)}
             </span>
+          ) : statusStore && clientCommand(client) ? (
+            <ClientAction
+              client={client}
+              statusStore={statusStore}
+              variant="pill"
+            />
           ) : (
             <span className="v1-home-pill">{client.label}</span>
           )}
-          {client.state === "detected" && (
+          {/* While history is read the pill shows progress, so the action
+              moves to the small line. */}
+          {(client.state === "detected" || client.state === "attention") && (
             <small>
-              {progress.has(client.id) ? "Not connected" : null}
-              {client.version && progress.has(client.id) ? " · " : null}
-              {client.version}
+              {progress.has(client.id) &&
+                (statusStore ? (
+                  <ClientAction
+                    client={client}
+                    statusStore={statusStore}
+                    variant="link"
+                  />
+                ) : client.state === "detected" ? (
+                  "Not connected"
+                ) : (
+                  "Needs attention"
+                ))}
+              {progress.has(client.id) && client.version ? " · " : null}
+              {client.state === "detected" ? client.version : null}
             </small>
           )}
         </li>
@@ -723,6 +886,7 @@ export function Home({
   if (view.kind === "attention")
     return (
       <section className="v1-home" data-mood="attention">
+        {/* Koed has to be running again first; client changes can wait. */}
         <Keycaps clients={clients} />
         <SoloStage
           agent={agent}
@@ -753,7 +917,11 @@ export function Home({
     return (
       <section className="v1-home" data-mood="ingesting">
         {warnings}
-        <Keycaps clients={clients} ingestion={view.ingestion} />
+        <Keycaps
+          clients={clients}
+          ingestion={view.ingestion}
+          statusStore={statusStore}
+        />
         <HatchingStage
           entries={entries}
           ingestion={view.ingestion}
@@ -762,11 +930,15 @@ export function Home({
         />
       </section>
     );
+  // The next step on an empty stage is connecting a detected client.
+  const connectable = clients
+    .filter(({ state }) => state === "detected")
+    .slice(0, 2);
   if (view.kind === "empty")
     return (
       <section className="v1-home" data-mood="empty">
         {warnings}
-        <Keycaps clients={clients} />
+        <Keycaps clients={clients} statusStore={statusStore} />
         <SoloStage
           agent={agent}
           expression="neutral"
@@ -775,9 +947,23 @@ export function Home({
             <>
               <h1>A quiet stage, for now</h1>
               <p className="v1-home-sub">
-                {agent.name} is ready, but there’s no history to learn from yet.
-                Projects appear here as you work with your AI Clients.
+                {clients.some(({ state }) => state !== "detected")
+                  ? `${agent.name} is ready, but there’s no history to learn from yet. Projects appear here as you work with your AI Clients.`
+                  : `${agent.name} is ready. Connect an AI Client and your Projects appear here as you work.`}
               </p>
+              {connectable.length > 0 && (
+                <div className="v1-home-actions">
+                  {connectable.map((client, index) => (
+                    <ClientAction
+                      key={client.id}
+                      client={client}
+                      statusStore={statusStore}
+                      variant={index === 0 ? "primary" : "secondary"}
+                      label={`Connect ${client.name}`}
+                    />
+                  ))}
+                </div>
+              )}
             </>
           }
         />
@@ -788,7 +974,7 @@ export function Home({
   return (
     <section className="v1-home" data-mood="projects">
       {warnings}
-      <Keycaps clients={clients} />
+      <Keycaps clients={clients} statusStore={statusStore} />
       <ProjectsStage
         entries={entries}
         onOpenProject={onOpenProject}

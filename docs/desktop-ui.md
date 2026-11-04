@@ -50,7 +50,8 @@ scrolls, only when the caption needs more room than the window leaves.
   component's symptom. A problem
   offers its existing setup command, keeping that command's consent step, or
   its status message as manual guidance.
-- **Quiet stage** shows when Projects have loaded and none exist.
+- **Quiet stage** shows when Projects have loaded and none exist. It offers to
+  connect up to two detected AI Clients, the same step their keycaps offer.
 - **Projects** shows a Kin for each named Project the sidebar lists, up to seven
   on the stage with the most recent in the spotlight; the caption says how many
   more are in the sidebar, which is the full list. The stage is laid out in
@@ -71,7 +72,12 @@ scrolls, only when the caption needs more room than the window leaves.
   `automatic_capture` readiness. A client needing attention also appears as a
   warning offering its existing repair command. A configured client stays
   listed when its snapshot is stale, shown as unsure; the version is shown for
-  a detected client that is not connected.
+  a detected client that is not connected. A detected client's keycap offers
+  Connect (`setup_<client>`) and one needing attention offers Repair
+  (`repair_<client>`), each after the same consent step and wording as
+  Settings; while history is being read the action moves under the progress
+  pill. Keycaps offer no actions while Attention is shown, since Koed must be
+  running again first.
 
 - **Hatching** shows while any AI Client's automatic historical ingestion is
   running or retrying after a failure, from `status.historicalIngestion`. It

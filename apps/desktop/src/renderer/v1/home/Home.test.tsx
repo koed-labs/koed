@@ -204,7 +204,8 @@ describe("Home", () => {
       (pill) => pill.textContent
     );
     expect(pills).toEqual(["Reading 2", "Retrying · 2 of 8"]);
-    expect(container.textContent).toContain("Not connected · 2.1.312");
+    // Progress takes the pill, so connecting moves to the small line.
+    expect(container.textContent).toContain("Connect · 2.1.312");
     expect(container.textContent).toContain("2 conversations so far");
     const bar = container.querySelector('[role="progressbar"]')!;
     expect(bar.hasAttribute("aria-valuenow")).toBe(false);
@@ -212,6 +213,57 @@ describe("Home", () => {
     expect(
       container.querySelector('button[aria-label="Open Project koed"]')
     ).not.toBeNull();
+  });
+
+  const claude = {
+    id: "claude" as const,
+    name: "Claude Code",
+    state: "detected" as const,
+    label: "Detected · not connected",
+    version: "2.1.312"
+  };
+
+  it("connects a detected AI Client from its keycap after consent", async () => {
+    const statusStore = new DesktopStatusStore();
+    const run = vi.spyOn(statusStore, "run").mockResolvedValue({ ok: true });
+    vi.spyOn(statusStore, "refresh").mockResolvedValue(null);
+    await render({
+      entries: [entry("koed", "2026-11-03T11:00:00Z")],
+      clients: [claude],
+      statusStore
+    });
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Connect Claude Code"]'
+        )!
+        .click()
+    );
+    expect(run).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      "Set up the Claude Code integration?"
+    );
+    const confirm = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Set up Claude Code"
+    )!;
+    await act(async () => confirm.click());
+    expect(run.mock.calls).toEqual([
+      ["setup_claude", { operatorConsented: true }]
+    ]);
+  });
+
+  it("offers to connect detected AI Clients on an empty stage", async () => {
+    await render({
+      entries: [],
+      clients: [claude],
+      view: { kind: "empty", warnings: [] }
+    });
+    expect(container.textContent).toContain("Connect an AI Client");
+    expect(
+      [...container.querySelectorAll(".v1-home-actions button")].map(
+        (button) => button.textContent
+      )
+    ).toEqual(["Connect Claude Code"]);
   });
 
   it("asks before running a command that needs consent", async () => {
