@@ -151,12 +151,46 @@ const sourcePageSchema = z
   })
   .strict();
 
+// The API answers 409 when Project membership changes while it assembles the
+// list, which history import does constantly. That is not a conflict to show
+// the User: read again. If it keeps changing, report a failed load rather than
+// a conflict, whose message describes another device's edit.
+const INVENTORY_STALE_RETRIES = 3;
+const INVENTORY_RETRY_MS = 200;
+
+const requestStableInventory = async (
+  request: (path: string) => Promise<Record<string, unknown>>,
+  path: string,
+  wait: (ms: number) => Promise<void>
+) => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await request(path);
+    } catch (error) {
+      if (
+        !(error instanceof PersonalMemoryBoundaryError) ||
+        error.code !== "conflict"
+      )
+        throw error;
+      if (attempt >= INVENTORY_STALE_RETRIES)
+        throw new PersonalMemoryBoundaryError("request_failed", true);
+      await wait(INVENTORY_RETRY_MS * (attempt + 1));
+    }
+  }
+};
+
 export const loadNamedPersonalInventory = async (
   request: (path: string) => Promise<Record<string, unknown>>,
-  deviceNames: Record<string, string> = {}
+  deviceNames: Record<string, string> = {},
+  wait: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms))
 ) =>
   personalProjectsData(
-    await request("/v1/personal/projects/inventory"),
+    await requestStableInventory(
+      request,
+      "/v1/personal/projects/inventory",
+      wait
+    ),
     false,
     deviceNames
   );

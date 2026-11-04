@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PersonalMemoryBoundaryError } from "./personal-memory-boundary.js";
 import {
   loadNamedPersonalInventory,
   loadPersonalInventory
@@ -13,6 +14,37 @@ describe("Personal inventory scheduling", () => {
     });
     expect(result.projects).toEqual([]);
     expect(paths).toEqual(["/v1/personal/projects/inventory"]);
+  });
+
+  it("reads named Projects again when they change mid-read", async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    const result = await loadNamedPersonalInventory(
+      async () => {
+        calls += 1;
+        if (calls < 3) throw new PersonalMemoryBoundaryError("conflict", false);
+        return { projects: [] };
+      },
+      {},
+      async (ms) => {
+        waits.push(ms);
+      }
+    );
+    expect(result.projects).toEqual([]);
+    expect(calls).toBe(3);
+    expect(waits).toEqual([200, 400]);
+  });
+
+  it("reports a failed load, not a conflict, when Projects keep changing", async () => {
+    await expect(
+      loadNamedPersonalInventory(
+        async () => {
+          throw new PersonalMemoryBoundaryError("conflict", false);
+        },
+        {},
+        async () => undefined
+      )
+    ).rejects.toMatchObject({ code: "request_failed", retryable: true });
   });
 
   it("starts independent inventories together and preserves complete source pagination", async () => {
