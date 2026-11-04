@@ -41,6 +41,7 @@ import { isVersionDowngrade } from "./package-runtime.js";
 import { renameAtomically } from "./generation-lifecycle-filesystem.js";
 import { acquireDirectoryLock } from "./directory-lock.js";
 import { canonicalArtifactJson } from "./artifact-canonical-json.mjs";
+import { observeStoppedRuntime } from "./stopped-runtime.js";
 
 interface LifecycleLockRecord {
   pid: number;
@@ -576,6 +577,41 @@ export async function readCurrentRuntimeOwner(
         readGenerationOrderingEvidence(paths, id)
     )
   ).owner;
+}
+
+// Reuse the generation lock for stopped-runtime mutations. The action must
+// bound and await all of its work, including test-process cleanup. Never race it
+// against a timer that could release the lock while mutation is still running.
+export async function withStoppedRuntime<T>(
+  paths: KoedServerPaths,
+  requester: RuntimeOwner,
+  action: () => Promise<T>
+): Promise<T> {
+  const lock = acquireLifecycleLock(paths);
+  try {
+    assertDirectoryChain(paths.koedHome, paths.postgresDataDir);
+    assertDirectoryChain(paths.koedHome, dirname(paths.runtimeStatePath));
+    assertDirectoryChain(paths.koedHome, dirname(generationStatePath(paths)));
+    assertDirectoryChain(paths.koedHome, paths.componentsDir);
+    try {
+      if (!lstatSync(resolve(paths.componentsDir, "current.json")).isFile())
+        throw new Error("current generation pointer is not a regular file");
+    } catch (error) {
+      // lstat distinguishes an absent pointer from a
+      // dangling symlink, which must not bypass the ownership check.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const owner = await readCurrentRuntimeOwner(paths);
+    if (owner) assertOwner({ owner }, requester);
+    const observation = observeStoppedRuntime(paths);
+    if (observation.state !== "stopped")
+      throw new Error(
+        `${observation.message} Run koed stop before retrying. Stale or unreadable locks require stopped-runtime Operator recovery.`
+      );
+    return await action();
+  } finally {
+    releaseLifecycleLock(paths, lock);
+  }
 }
 
 const persistPinState = (

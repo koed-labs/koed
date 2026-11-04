@@ -32,28 +32,32 @@ can run independently and through the proposed selection links.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Split the existing Linux native archive locally and record actual compressed
+Evidence: `docs/qualification/linux-native-baseline.md` and its JSON report.
+The peak disk figure is sampled. Complete release-provider savings remain
+provisional until tickets 05 and 07. No CUDA binary ran.
+
+- [x] Split the existing Linux native archive locally and record actual compressed
       and unpacked sizes. Review the contents if the core exceeds about 50 MB.
-- [ ] Measure the complete existing Homebrew installation: npm package, Base
+- [x] Measure the complete existing Homebrew installation: npm package, Base
       component, native dependencies, and embedding model. Record downloaded
       bytes, installed size, and peak additional disk use on a clean Linux image.
-- [ ] State product/model versions, host assumptions, and cache conditions. Report
+- [x] State product/model versions, host assumptions, and cache conditions. Report
       Node and Homebrew bootstrap costs separately and exclude optional Privacy
       Filter and CUDA payloads from the required CPU total.
-- [ ] Record a provisional complete CPU download total for the proposed path,
+- [x] Record a provisional complete CPU download total for the proposed path,
       clearly distinguished from measured installation savings.
-- [ ] Demonstrate Postgres initialization and restart, pgvector loading, native
+- [x] Demonstrate Postgres initialization and restart, pgvector loading, native
       library loading, and CPU embeddings through the proposed selection links.
-- [ ] Demonstrate launcher behavior without the add-on: CPU for automatic and
+- [x] Demonstrate launcher behavior without the add-on: CPU for automatic and
       explicit CPU policies, and the expected failure for explicit CUDA.
-- [ ] Record the archive's symlink inventory, the existing extractor's refusal,
+- [x] Record the archive's symlink inventory, the existing extractor's refusal,
       and the required native extraction boundary.
-- [ ] Record Homebrew formula versions and a Linux device listing. Confirm the
+- [x] Record Homebrew formula versions and a Linux device listing. Confirm the
       expected lack of CUDA through the standard Koed Homebrew path without
       generalizing to custom builds or explicit binary overrides.
-- [ ] Separate repeatable archive packaging from fresh compilation reproducibility.
+- [x] Separate repeatable archive packaging from fresh compilation reproducibility.
       Identify recipe inputs requiring stronger pins. No production code changes
       or GPU execution are required to complete this investigation.
 
@@ -64,19 +68,24 @@ lifecycle exclusion without introducing a second ownership protocol.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Expose the existing lifecycle lock and stopped-runtime observation through
+Evidence: `docs/stopped-native-runtime.md`, `stopped-runtime.test.ts`, and
+the existing lifecycle suites. Focused regressions and production/test typechecks
+passed. Production-file lint passed. Targeted test-file lint encounters the
+Oxc inferred-project Node-type discovery limitation.
+
+- [x] Expose the existing lifecycle lock and stopped-runtime observation through
       a bounded operation that later activation can reuse.
-- [ ] Preserve existing start, generation pin, shutdown, and Desktop ownership
+- [x] Preserve existing start, generation pin, shutdown, and Desktop ownership
       behavior. Retain immediate refusal on lock contention.
-- [ ] Distinguish stopped, running, and uncertain process state. Absence of a lock
+- [x] Distinguish stopped, running, and uncertain process state. Absence of a lock
       alone does not prove that the supervisor and its native processes stopped.
-- [ ] Preserve the existing PID, process-identity, and owner checks. Stale or
+- [x] Preserve the existing PID, process-identity, and owner checks. Stale or
       unreadable locks still require Operator recovery.
-- [ ] Demonstrate that protected work releases the lock on normal completion or
+- [x] Demonstrate that protected work releases the lock on normal completion or
       exceptions and cannot acquire it while a running generation retains it.
-- [ ] Keep current lifecycle tests green. Add focused regression coverage for the
+- [x] Keep current lifecycle tests green. Add focused regression coverage for the
       reusable boundary without adding automatic stop, restart, or reclamation.
 
 ## 03: Produce independently versioned CPU core candidates
@@ -86,22 +95,29 @@ without a CUDA toolkit, GPU, or cached CUDA payload.
 
 **Blocked by:** 01: Measure the footprint and prove the native selection layout.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Build a core containing Postgres, pgvector, CPU llama.cpp, the launcher, and
+Evidence: `docs/qualification/linux-native-core-2026-11-04.json` and
+`docs/qualification/linux-core-handover.md`. The cold CPU-only build, extracted
+archive qualification, identical frozen repackaging, focused regressions, and
+standalone handover loading passed. Core: 23,808,875 compressed bytes and
+56,535,066 expanded regular-file bytes. No CUDA binary ran. Publication and
+release-provider installation remain separate acceptance gates.
+
+- [x] Build a core containing Postgres, pgvector, CPU llama.cpp, the launcher, and
       its own inventory. Include file digests, link targets, and executable modes.
-- [ ] Define a complete recipe identity covering upstream digests, toolchain,
+- [x] Define a complete recipe identity covering upstream digests, toolchain,
       flags, build logic, bundled libraries, and packaging policy.
-- [ ] Give the core a monotonic runtime version and native contract metadata,
+- [x] Give the core a monotonic runtime version and native contract metadata,
       separate from its recipe identity and the product version.
-- [ ] Remove product-version coupling from in-archive provenance. Packaging the
+- [x] Remove product-version coupling from in-archive provenance. Packaging the
       same frozen payload and metadata produces identical archive bytes.
-- [ ] Make core-only content, loader, and CPU embedding checks pass without
+- [x] Make core-only content, loader, and CPU embedding checks pass without
       weakening validation of existing CUDA artifacts.
-- [ ] Add an explicit core size budget while preserving historical measurements.
-- [ ] Record the independent-native-version decision in an ADR and update the
+- [x] Add an explicit core size budget while preserving historical measurements.
+- [x] Record the independent-native-version decision in an ADR and update the
       superseded requirement that every Linux artifact contains both variants.
-- [ ] Keep the combined native artifact working during the transition.
+- [x] Keep the combined native artifact working during the transition.
 
 ## 04: Publish retained core assets and compile trusted pins
 
@@ -110,25 +126,42 @@ core by compiled identity and digest, independently of product releases.
 
 **Blocked by:** 03: Produce independently versioned CPU core candidates.
 
-**Status:** ready-for-agent
+**Status:** in progress
+
+The first CPU candidate passed ticket 03. Repository release immutability was
+read on 2026-11-04: disabled, with no owner enforcement. Publication must retain
+the protected production approval boundary. No native release or production pin
+has been published from this work.
+
+Implemented: independent CPU workflow and publication adapter, compiled catalog
+schema and source authority, packaged pin inspection, and native URL admission
+in product promotion. A local dry run accepted the exact ticket 03 candidate.
+Publication retry fixtures and 81 focused packaging/promotion checks passed.
+Live publication, reviewed production pins, and repository immutability acceptance
+remain outstanding. The source catalog is intentionally unset.
+The retention audit found no automated release/tag deletion path. Product release
+tools require a product tag or matching draft, while published native retries
+authenticate retained bytes without mutation. A fresh GitHub read still showed
+immutability disabled and no native-core tags. Administrator actions outside the
+workflow remain an explicitly documented limitation.
 
 - [ ] Publish the core through a separate reviewed native workflow when relevant
       recipe inputs change. Product releases consume it without rebuilding it.
 - [ ] Compile the reviewed URL, recipe ID, archive digest, compressed and expanded
       sizes, manifest digest, runtime version, and contracts into the Control Plane.
       Do not add an Operator-supplied production pin override.
-- [ ] Support a catalog containing only the core until CUDA qualification finishes.
+- [x] Support a catalog containing only the core until CUDA qualification finishes.
 - [ ] Publish native releases without making them the latest product release.
       Refuse changed bytes under an existing native identity.
 - [ ] Confirm the repository's immutability setting and exercise product release
       publication and retries. Enable immutability through the normal configuration
       process if compatible, or explicitly document the remaining limitation.
-- [ ] Enforce no-overwrite and no-delete rules for published native releases,
+- [x] Enforce no-overwrite and no-delete rules for published native releases,
       assets, and tags, including cleanup workflows. Upload all assets before
       publishing. Whole-release retention remains necessary with immutability.
-- [ ] Product promotion checks authenticate every referenced native URL and digest
+- [x] Product promotion checks authenticate every referenced native URL and digest
       while preserving existing reviewed-build and publication approval boundaries.
-- [ ] Verify effective pins inside the distributed Control Plane. Missing,
+- [x] Verify effective pins inside the distributed Control Plane. Missing,
       conflicting, or changed native assets fail admission or promotion.
 
 ## 05: Install a fresh CPU runtime through the release provider
@@ -235,7 +268,18 @@ composes with a matching core and remains unchanged by unrelated Postgres update
 
 **Blocked by:** 03: Produce independently versioned CPU core candidates.
 
-**Status:** ready-for-agent
+**Status:** in progress
+
+Prepared: independent CUDA source recipe, builder, frozen inventory and packaging,
+core compatibility checks, separate size budgets, and deferred fixture and loader
+qualification. `docs/qualification/linux-cuda-handover.md` describes the offline
+source bundle with the exact ticket 03 CPU candidate. No CUDA build, test, loader
+check, or GPU inference ran. Actual candidate production, identical repackaging,
+and layout qualification remain pending the Operator's machine arrangement.
+Bundle identity and static validation are recorded in
+`docs/qualification/linux-cuda-preparation-2026-11-04.json`.
+Production CUDA pins remain unset. The ticket 09 shipped CLI validator is not
+included or replaced by these candidate checks.
 
 - [ ] Package only the CUDA payload and its own manifest, with no CPU or Postgres
       files. Keep all archive paths and resolved links inside the CUDA payload.

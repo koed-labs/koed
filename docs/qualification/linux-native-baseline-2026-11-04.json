@@ -1,0 +1,400 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-04",
+  "purpose": "ticket-01-investigation-not-production-qualification",
+  "host": {
+    "os": "Ubuntu 22.04.5",
+    "image": "ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11",
+    "architecture": "x86_64",
+    "kernel": "6.8.0-134-generic",
+    "glibc": "2.35-0ubuntu3.15",
+    "gzip": "1.10",
+    "cpusLimit": 4,
+    "memoryLimitBytes": 6442450944,
+    "execution": "isolated rootless Docker container on koed-vps; no host mounts, published ports or CUDA devices"
+  },
+  "versions": {
+    "product": "0.10.3",
+    "node": "24.13.1",
+    "homebrewCommit": "6ceeda0fc65e173d84a7ae8d104f222618970120",
+    "nativePostgres": "17.6",
+    "nativePgvector": "0.8.3",
+    "nativeLlamaCpp": "b10514 / 7221e24f5",
+    "embeddingModel": "Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "embeddingModelSha256": "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+    "homebrewFormulaVersions": [
+      "binutils 2.47",
+      "ca-certificates 2026-10-20",
+      "cyrus-sasl 2.1.28_4",
+      "expat 2.10.0",
+      "gcc 16.2.0",
+      "gdbm 1.26",
+      "ggml 0.29.0",
+      "glibc 2.39_1",
+      "gmp 6.3.0",
+      "icu4c@79 79.1",
+      "isl 0.28",
+      "keyutils 1.6.3",
+      "krb5 1.22.2_2",
+      "libffi 3.8.0",
+      "libgcrypt 1.12.4",
+      "libgpg-error 1.61",
+      "libmpc 1.4.1",
+      "libnsl 2.0.1",
+      "libtirpc 1.3.8",
+      "libx11 1.8.14",
+      "libxau 1.0.12",
+      "libxcb 1.17.0",
+      "libxcrypt 4.5.2",
+      "libxdmcp 1.1.5",
+      "libxml2 2.15.4",
+      "libxslt 1.1.45",
+      "linux-headers@6.8 6.8.12_1",
+      "linux-pam 1.7.3",
+      "llama.cpp 0.8.0",
+      "lz4 1.10.0",
+      "mpfr 4.2.2",
+      "ncurses 6.6",
+      "openblas 0.3.34",
+      "openldap 2.7.2",
+      "openssl@4 4.1.0",
+      "perl 5.44.0",
+      "pgvector 0.8.7",
+      "postgresql@17 17.11_1",
+      "readline 8.3.6",
+      "spirv-headers 1.4.363.0",
+      "sqlite 3.54.1",
+      "util-linux 2.42.4",
+      "vulkan-headers 1.4.363.0",
+      "vulkan-loader 1.4.363.0",
+      "wayland 1.26.0",
+      "xorgproto 2026.1",
+      "xz 5.8.4",
+      "zlib-ng-compat 2.3.3_1",
+      "zstd 1.5.7_1"
+    ]
+  },
+  "archives": {
+    "combined": {
+      "bytes": 734753331,
+      "sha256": "f71dbb635159aef14c8d8e7ebe23d04a6314058a7009a8bac278a900250b45d7"
+    },
+    "core": {
+      "kind": "core",
+      "archiveBytes": 23765976,
+      "sha256": "9bdca6ff1acf41ed3f5ff05819653e34cc5c0dcede2a55522906a7dcd89fdae9",
+      "regularBytes": 56304649,
+      "links": [
+        {
+          "path": "llama.cpp/cpu/libggml-base.so",
+          "target": "libggml-base.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cpu/libggml-base.so.0",
+          "target": "libggml-base.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cpu/libggml.so",
+          "target": "libggml.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cpu/libggml.so.0",
+          "target": "libggml.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cpu/libllama-common.so",
+          "target": "libllama-common.so.0.1.2"
+        },
+        {
+          "path": "llama.cpp/cpu/libllama-common.so.0",
+          "target": "libllama-common.so.0.1.2"
+        },
+        {
+          "path": "llama.cpp/cpu/libllama.so",
+          "target": "libllama.so.0.1.2"
+        },
+        {
+          "path": "llama.cpp/cpu/libllama.so.0",
+          "target": "libllama.so.0.1.2"
+        },
+        {
+          "path": "llama.cpp/cpu/libmtmd.so",
+          "target": "libmtmd.so.0.1.2"
+        },
+        {
+          "path": "llama.cpp/cpu/libmtmd.so.0",
+          "target": "libmtmd.so.0.1.2"
+        },
+        {
+          "path": "postgres/lib/libecpg.so",
+          "target": "libecpg.so.6.17"
+        },
+        {
+          "path": "postgres/lib/libecpg.so.6",
+          "target": "libecpg.so.6.17"
+        },
+        {
+          "path": "postgres/lib/libecpg_compat.so",
+          "target": "libecpg_compat.so.3.17"
+        },
+        {
+          "path": "postgres/lib/libecpg_compat.so.3",
+          "target": "libecpg_compat.so.3.17"
+        },
+        {
+          "path": "postgres/lib/libpgtypes.so",
+          "target": "libpgtypes.so.3.17"
+        },
+        {
+          "path": "postgres/lib/libpgtypes.so.3",
+          "target": "libpgtypes.so.3.17"
+        },
+        {
+          "path": "postgres/lib/libpq.so",
+          "target": "libpq.so.5.17"
+        },
+        {
+          "path": "postgres/lib/libpq.so.5",
+          "target": "libpq.so.5.17"
+        }
+      ],
+      "largest": [
+        {
+          "path": "postgres/bin/postgres",
+          "bytes": 9929888
+        },
+        {
+          "path": "llama.cpp/cpu/libllama-server-impl.so",
+          "bytes": 6664096
+        },
+        {
+          "path": "llama.cpp/cpu/libllama-common.so.0.1.2",
+          "bytes": 4897600
+        },
+        {
+          "path": "llama.cpp/cpu/libllama.so.0.1.2",
+          "bytes": 3671552
+        },
+        {
+          "path": "llama.cpp/cpu/libmtmd.so.0.1.2",
+          "bytes": 1654832
+        },
+        {
+          "path": "llama.cpp/cpu/libggml-cpu-sapphirerapids.so",
+          "bytes": 1452344
+        },
+        {
+          "path": "llama.cpp/cpu/libggml-cpu-cannonlake.so",
+          "bytes": 1206384
+        },
+        {
+          "path": "llama.cpp/cpu/libggml-cpu-skylakex.so",
+          "bytes": 1206384
+        },
+        {
+          "path": "llama.cpp/cpu/libggml-cpu-cascadelake.so",
+          "bytes": 1202288
+        },
+        {
+          "path": "llama.cpp/cpu/libggml-cpu-cooperlake.so",
+          "bytes": 1202288
+        },
+        {
+          "path": "llama.cpp/cpu/libggml-cpu-icelake.so",
+          "bytes": 1202288
+        },
+        {
+          "path": "llama.cpp/cpu/libggml-cpu-zen4.so",
+          "bytes": 1202288
+        }
+      ]
+    },
+    "cuda": {
+      "kind": "cuda",
+      "archiveBytes": 710992929,
+      "sha256": "488614333baab38df5796757a077bdc4d464c571965470e9ced874a5e8cf735b",
+      "regularBytes": 1467391264,
+      "links": [
+        {
+          "path": "llama.cpp/cuda/libggml-base.so",
+          "target": "libggml-base.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libggml-base.so.0",
+          "target": "libggml-base.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libggml-cpu.so",
+          "target": "libggml-cpu.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libggml-cpu.so.0",
+          "target": "libggml-cpu.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libggml-cuda.so",
+          "target": "libggml-cuda.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libggml-cuda.so.0",
+          "target": "libggml-cuda.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libggml.so",
+          "target": "libggml.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libggml.so.0",
+          "target": "libggml.so.0.20.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libllama-common.so",
+          "target": "libllama-common.so.0.1.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libllama-common.so.0",
+          "target": "libllama-common.so.0.1.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libllama.so",
+          "target": "libllama.so.0.1.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libllama.so.0",
+          "target": "libllama.so.0.1.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libmtmd.so",
+          "target": "libmtmd.so.0.1.2"
+        },
+        {
+          "path": "llama.cpp/cuda/libmtmd.so.0",
+          "target": "libmtmd.so.0.1.2"
+        }
+      ],
+      "largest": [
+        {
+          "path": "llama.cpp/cuda/libggml-cuda.so.0.20.2",
+          "bytes": 896279552
+        },
+        {
+          "path": "llama.cpp/cuda/libcublasLt.so.12",
+          "bytes": 441938896
+        },
+        {
+          "path": "llama.cpp/cuda/libcublas.so.12",
+          "bytes": 109604768
+        },
+        {
+          "path": "llama.cpp/cuda/libllama-server-impl.so",
+          "bytes": 6664096
+        },
+        {
+          "path": "llama.cpp/cuda/libllama-common.so.0.1.2",
+          "bytes": 4897600
+        },
+        {
+          "path": "llama.cpp/cuda/libllama.so.0.1.2",
+          "bytes": 3675648
+        },
+        {
+          "path": "llama.cpp/cuda/libmtmd.so.0.1.2",
+          "bytes": 1658928
+        },
+        {
+          "path": "llama.cpp/cuda/libggml-cpu.so.0.20.2",
+          "bytes": 1067088
+        },
+        {
+          "path": "llama.cpp/cuda/libggml-base.so.0.20.2",
+          "bytes": 834344
+        },
+        {
+          "path": "llama.cpp/cuda/libcudart.so.12",
+          "bytes": 707904
+        },
+        {
+          "path": "llama.cpp/cuda/libggml.so.0.20.2",
+          "bytes": 47848
+        },
+        {
+          "path": "llama.cpp/cuda/llama-server",
+          "bytes": 14592
+        }
+      ]
+    },
+    "coreRepackSha256": "9bdca6ff1acf41ed3f5ff05819653e34cc5c0dcede2a55522906a7dcd89fdae9"
+  },
+  "cpuDownloadPayloads": {
+    "npm": 762558,
+    "base": 19602817,
+    "baseManifest": 1229699,
+    "embeddingModel": 639150592,
+    "homebrewBottlesAndBottleManifests": 390598245,
+    "currentHomebrewTotal": 1051343911,
+    "proposedCoreTotalProvisional": 684511642,
+    "excludes": "Node and Homebrew bootstrap, optional Privacy, optional CUDA, research archive downloads, transport overhead and separate package-index metadata"
+  },
+  "bootstrap": {
+    "nodeArchiveBytes": 31008136,
+    "nodeChecksumListBytes": 2967,
+    "nodeInstalledAllocatedBytes": 208445440,
+    "homebrewNetworkReceivedBytes": 24152599,
+    "homebrewInstalledAndCacheAllocatedBytes": 130244608
+  },
+  "homebrewInstallation": {
+    "runtimeAndModelNetworkReceivedBytes": 1058802458,
+    "networkNote": "Container interface RX includes protocol overhead and index requests. npm, Base and its manifest were downloaded beforehand, verified, then installed offline; their exact content bytes are listed separately. No concurrent network workload ran in the container.",
+    "finalAllocatedBytesIncludingBootstrapCachesAndStagedCpuArchives": 2797326336,
+    "sampledPeakAllocatedBytesIncludingBootstrapCachesAndStagedCpuArchives": 2797334528,
+    "sampledPeakAdditionalBytesExcludingInitialBootstrapAndTemp": 2667016192,
+    "sampling": "2 seconds during npm/runtime/model installation, 0.2 seconds during Base installation; sampled peak is a lower bound",
+    "stagedCpuArchiveAllocatedBytes": 21602304,
+    "measuredRoots": [
+      "/home/linuxbrew",
+      "/work/npm",
+      "/work/homebrew-koed",
+      "/tmp",
+      "/var/tmp"
+    ],
+    "retainedCaches": true,
+    "initialCaches": "empty before bootstrap and artifact acquisition",
+    "excludedResearchFiles": "combined/split native archives, extracted research trees, logs under /work/evidence, and CPU probe databases",
+    "installationState": "active",
+    "homebrewDevices": "Available devices:\n  BLAS: OpenBLAS (0 MiB, 0 MiB free)"
+  },
+  "cpuLayout": {
+    "postgresInitialized": true,
+    "postgresRestarted": true,
+    "pgvector": "0.8.3",
+    "pgcrypto": "1.3",
+    "loaderChecks": 98,
+    "loaderFailures": 0,
+    "requiredPostgresEnvironment": "LD_LIBRARY_PATH=<selected-runtime>/postgres/lib",
+    "cpuEmbeddings": {
+      "ok": true,
+      "backend": "cpu",
+      "inputCount": 2,
+      "dimensions": [1024, 1024],
+      "finite": true,
+      "nonzero": true,
+      "modelSha256": "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
+    },
+    "launcherAuto": "CPU",
+    "launcherCpu": "CPU",
+    "missingCudaLauncherExit": 69,
+    "cudaBinariesExecuted": false,
+    "packagedProviderValidation": {
+      "skipped": true,
+      "reason": "/work/packages/koed-server/dist/cli.js is missing; build @koed-labs/server first."
+    },
+    "componentExtractorRefusal": "Package archives must not contain symbolic links."
+  },
+  "limits": [
+    "No production release-provider installation exists yet.",
+    "No fresh compilation reproducibility claim.",
+    "No GPU inference, WSL2, or multi-distribution acceptance.",
+    "No measured savings for a complete release-provider installation yet.",
+    "Split archives retain investigation metadata and are not publishable candidates."
+  ]
+}

@@ -4,6 +4,11 @@
 
 Status: Accepted.
 
+> Supersession (4 November 2026): [ADR 0067](0067-independent-linux-native-runtime.md)
+> permits an independently versioned CPU core and optional CUDA add-on. The
+> combined Linux artifact remains supported during the transition. Existing
+> acceleration policy and real GPU qualification requirements still apply.
+
 Related decisions:
 
 - [0020 Portable Personal Derived Artifact Replication](./0020-portable-personal-derived-artifact-replication.md)

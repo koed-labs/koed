@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "runtimeVersion": "1.0.0",
+  "target": {
+    "platform": "linux",
+    "architecture": "x64",
+    "libc": { "family": "glibc", "minimumVersion": "2.35" }
+  },
+  "contracts": { "layout": 1, "postgres": 1, "embedding": 1 },
+  "llamaCppRevision": "7221e24f579efbb5fd2a2ced1fffaef1aff2fe0d"
+}
