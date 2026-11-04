@@ -4078,6 +4078,20 @@ TRANSCRIPT END Reviewed Codex session id: 019fd139-5ec2-7660-adb2-0fdb559672e1`;
       JSON.parse(String(personalMemoryFetch.mock.calls[0]?.[1]?.body))
     ).toEqual({ expectedVersion: 4, displayMode: "settled" });
     expect(personalMemoryFetch).toHaveBeenCalledTimes(1);
+    await expect(
+      manager.personalMemory({
+        contractVersion: PERSONAL_DESKTOP_CONTRACT_VERSION,
+        operation: "personal.projects.named.list",
+        input: {}
+      })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "conflict",
+        message: "The conversation list changed while refreshing. Try again.",
+        retryable: true
+      }
+    });
   });
 
   it("rediscovers the local API origin after a request failure", async () => {

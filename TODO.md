@@ -32,12 +32,10 @@ The [installation guide](docs/optional-privacy-installation.md) defines compatib
 
 ## Conversation inspector
 
-- [ ] Make startup Project inventory resilient to concurrent capture. The named
-      inventory's owner-wide selection fence can return
-      `selection_enumeration_stale` while the source inventory succeeds, leaving
-      Desktop waiting for a complete successful inventory. Preserve membership
-      and owner isolation when defining an inspection snapshot or retry strategy;
-      do not relax the shared selection-consumer fence used by other workflows.
+- [x] Make startup Project inventory resilient to concurrent capture. Inspection
+      uses a bounded owner-scoped membership snapshot and retries discarded reads
+      after membership changes. Generic selection consumers retain their
+      owner-wide fence. See [Personal inventory](docs/personal-inventory.md).
 - [ ] Hide the unavailable prompt composer for captured conversations when no
       supported continuation action exists, so the inspector gets that space.
       Keep the composer for Conversations that can be continued.

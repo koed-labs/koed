@@ -26,6 +26,7 @@ export * from "./primitives/toast.js";
 export * from "./primitives/tooltip.js";
 
 export * from "./primitives/sidebar.js";
+export * from "./primitives/checkbox.js";
 export { Collapsible } from "@base-ui/react/collapsible";
 
 export * from "./primitives/message.js";

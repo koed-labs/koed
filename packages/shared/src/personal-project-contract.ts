@@ -180,6 +180,20 @@ const projectCommandBase = {
 export const personalProjectBatchChangeSchema = z.discriminatedUnion("action", [
   z
     .object({
+      action: z.literal("rename"),
+      name: z.string().trim().min(1).max(160)
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("add_back"),
+      sessionId: z.uuid(),
+      exclusionId: z.uuid(),
+      expectedExclusionRevisionId: z.uuid()
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("add_repository"),
       repository: personalGitContextSchema
     })

@@ -30,7 +30,9 @@ const page = async (
   options: SelectionConsumerOptions
 ) => {
   const changed =
-    options.scopeToSharingReview || options.scopeToSharingMembership
+    options.scopeToInventory ||
+    options.scopeToSharingReview ||
+    options.scopeToSharingMembership
       ? (await personalSelectionScopeVersion(
           client,
           actor,
@@ -146,7 +148,9 @@ export const createPersonalSelectionConsumerRepository = (
           kind: "enumeration",
           selection,
           snapshot_version:
-            options.scopeToSharingReview || options.scopeToSharingMembership
+            options.scopeToInventory ||
+            options.scopeToSharingReview ||
+            options.scopeToSharingMembership
               ? await personalSelectionScopeVersion(
                   client,
                   actor,
@@ -192,7 +196,7 @@ export const createPersonalSelectionConsumerRepository = (
           400,
           "Finish the enumeration before collecting changes"
         );
-      if (options.scopeToSharingReview) {
+      if (options.scopeToInventory || options.scopeToSharingReview) {
         return personalSelectionConsumerChangesSchema.parse({
           version: 1,
           selection: cursor.selection,
@@ -253,4 +257,23 @@ export const createPersonalSelectionConsumerRepository = (
 });
 export type PersonalSelectionConsumerRepository = ReturnType<
   typeof createPersonalSelectionConsumerRepository
+>;
+
+/** Inspection-only adapter. Generic consumers keep their owner-wide fence. */
+export const createPersonalInventorySelectionRepository = (pool: pg.Pool) => {
+  const {
+    startPersonalSelectionEnumeration,
+    continuePersonalSelectionEnumeration,
+    reconcilePersonalSelectionChanges
+  } = createPersonalSelectionConsumerRepository(pool, {
+    scopeToInventory: true
+  });
+  return {
+    startPersonalSelectionEnumeration,
+    continuePersonalSelectionEnumeration,
+    reconcilePersonalSelectionChanges
+  };
+};
+export type PersonalInventorySelectionRepository = ReturnType<
+  typeof createPersonalInventorySelectionRepository
 >;

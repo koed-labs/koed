@@ -1,16 +1,45 @@
 import type { MemorySourceRepository, ActorContext } from "@koed/db";
 import type { PersonalSelectionSnapshot } from "@koed/shared";
 
-/** Current Desktop inventories use the same bounded source enumeration as
- * future consumers. Header reads retain the target and enumerated IDs. */
+type InventoryRepository = Pick<
+  MemorySourceRepository,
+  | "listLcmGraphThreads"
+  | "personalInventorySelections"
+  | "startPersonalSelectionEnumeration"
+  | "continuePersonalSelectionEnumeration"
+  | "reconcilePersonalSelectionChanges"
+>;
+
+/** Header reads retain the exact target and enumerated IDs. A membership
+ * change discards the whole attempt; new content alone does not invalidate it. */
 export const listSelectedPersonalThreads = async (
-  repo: Pick<
-    MemorySourceRepository,
-    | "listLcmGraphThreads"
-    | "startPersonalSelectionEnumeration"
-    | "continuePersonalSelectionEnumeration"
-    | "reconcilePersonalSelectionChanges"
-  >,
+  repo: InventoryRepository,
+  actor: ActorContext,
+  personalSelection: PersonalSelectionSnapshot,
+  label: string
+) => {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await readSelectedPersonalThreads(
+        repo,
+        actor,
+        personalSelection,
+        label
+      );
+    } catch (cause) {
+      if (
+        attempt >= 2 ||
+        !(cause instanceof Error) ||
+        !("code" in cause) ||
+        cause.code !== "selection_enumeration_stale"
+      )
+        throw cause;
+    }
+  }
+};
+
+const readSelectedPersonalThreads = async (
+  repo: InventoryRepository,
   actor: ActorContext,
   personalSelection: PersonalSelectionSnapshot,
   label: string
@@ -25,7 +54,10 @@ export const listSelectedPersonalThreads = async (
       ),
       { statusCode: 400 }
     );
-  let page = await repo.startPersonalSelectionEnumeration(actor, {
+  // Older adapters retain the stricter generic fence. Production uses the
+  // inspection-only adapter; sharing and recall consumers remain unchanged.
+  const selections = repo.personalInventorySelections ?? repo;
+  let page = await selections.startPersonalSelectionEnumeration(actor, {
     target: personalSelection.target
   });
   const threads = new Map<
@@ -60,11 +92,11 @@ export const listSelectedPersonalThreads = async (
           threads.set(thread.sessionId, thread);
     }
     if (!page.nextCursor) break;
-    page = await repo.continuePersonalSelectionEnumeration(actor, {
+    page = await selections.continuePersonalSelectionEnumeration(actor, {
       cursor: page.nextCursor
     });
   }
-  const changed = await repo.reconcilePersonalSelectionChanges(actor, {
+  const changed = await selections.reconcilePersonalSelectionChanges(actor, {
     cursor: page.changeCursor!
   });
   if (changed.reconciliationRequired)

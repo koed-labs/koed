@@ -3,6 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DesktopProject } from "../../project-memory-ui.js";
+import type { KoedServerStatus } from "../../types.js";
+import { DesktopStatusStore } from "../services/desktop-commands.js";
 import type {
   V1ConversationIntent,
   V1Profile,
@@ -15,7 +17,15 @@ import type {
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const inventoryLoad = vi.hoisted(() => ({
-  pending: null as Promise<unknown> | null
+  pending: null as Promise<unknown> | null,
+  calls: 0
+}));
+const desktopStatus = vi.hoisted(() => ({
+  status: {
+    state: "healthy",
+    api: { state: "healthy" }
+  } as KoedServerStatus | null,
+  error: null as string | null
 }));
 const uuid = (n: number) =>
   `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
@@ -59,7 +69,10 @@ vi.mock("../state/personal-memory.js", () => ({
   PersonalMemoryStore: class {
     current = () => snapshot;
     subscribe = () => () => undefined;
-    loadProjects = async () => inventoryLoad.pending ?? snapshot;
+    loadProjects = async () => {
+      inventoryLoad.calls++;
+      return inventoryLoad.pending ?? snapshot;
+    };
     upsertThread = () => undefined;
   }
 }));
@@ -77,11 +90,20 @@ vi.mock("../../collaboration/renderer-client.js", () => ({
     dispose: () => undefined
   })
 }));
-vi.mock("../state/use-status.js", () => ({
-  useDesktopStatus: () => ({
-    status: { state: "healthy", api: { state: "healthy" } }
-  })
-}));
+vi.mock("../state/use-status.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../state/use-status.js")>();
+  const fixtureStore = {
+    current: () => desktopStatus,
+    subscribe: () => () => undefined
+  } as unknown as DesktopStatusStore;
+  return {
+    useDesktopStatus: (store: DesktopStatusStore) =>
+      actual.useDesktopStatus(
+        typeof store.current === "function" ? store : fixtureStore
+      )
+  };
+});
 vi.mock("../views/personal/PersonalMemoryViews.js", () => ({
   StoreConversation: () => <div>Conversation opened</div>
 }));
@@ -134,7 +156,123 @@ describe("V1App launch integration", () => {
     if (root) await act(async () => root!.unmount());
     container?.remove();
     inventoryLoad.pending = null;
+    inventoryLoad.calls = 0;
+    desktopStatus.status = {
+      state: "healthy",
+      api: { state: "healthy" }
+    } as KoedServerStatus;
+    desktopStatus.error = null;
     vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+  it("follows cold-start lifecycle events and service readiness without showing an empty inventory", async () => {
+    vi.useFakeTimers();
+    let status = {
+      state: "needs_attention",
+      api: { state: "needs_attention" },
+      lifecycle: { state: "stopped", message: "Stopped" }
+    } as KoedServerStatus;
+    const listeners = new Set<() => void>();
+    const invoke = vi.fn(async () => structuredClone(status));
+    Object.defineProperty(window, "koedDesktop", {
+      configurable: true,
+      value: {
+        invoke,
+        status: {
+          subscribe: (listener: () => void) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          }
+        },
+        v1State: {
+          readProfile: async () => ({
+            agentName: "Ada",
+            onboarding: { selections: {}, completed: true }
+          }),
+          readIdentity: async () => ({
+            ownerId: uuid(3),
+            scopeKey: "a".repeat(64)
+          }),
+          readProvenance: async () => ({
+            schemaVersion: 1,
+            projects: {},
+            conversations: {}
+          })
+        }
+      }
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const statusStore = new DesktopStatusStore();
+    await act(async () =>
+      root!.render(
+        <V1App
+          personalMemoryApi={{} as never}
+          managedConversations={null}
+          statusStore={statusStore}
+          themeStore={{ load: async () => undefined } as never}
+        />
+      )
+    );
+    expect(container.textContent).toContain("Services are stopped");
+    expect(container.textContent).not.toContain("No conversations yet");
+    expect(container.textContent).not.toContain(
+      "Pin conversations to keep them here"
+    );
+    expect(inventoryLoad.calls).toBe(0);
+
+    // The window opens before runtime startup. Its first lifecycle event must
+    // refresh the status store even though the API is not ready yet.
+    status = {
+      ...status,
+      lifecycle: { state: "starting", message: "Starting" }
+    };
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    expect(container.textContent).toContain("Services starting…");
+    expect(container.textContent).not.toContain("No conversations yet");
+    expect(inventoryLoad.calls).toBe(0);
+
+    // A running supervisor is not yet a ready API. Readiness may change
+    // without another lifecycle epoch, so the regular probe must pick it up.
+    status = { ...status, lifecycle: { state: "running", message: "Running" } };
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    expect(container.textContent).toContain("Services starting…");
+    status = {
+      ...status,
+      state: "healthy",
+      api: { ...status.api, state: "healthy" }
+    };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(container.textContent).not.toContain("Services starting…");
+    expect(container.textContent).toContain("External captured Conversation");
+    expect(inventoryLoad.calls).toBeGreaterThan(0);
+    const readyProbes = invoke.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(invoke).toHaveBeenCalledTimes(readyProbes);
+
+    status = {
+      ...status,
+      api: { ...status.api, state: "needs_attention" },
+      lifecycle: { state: "unavailable", message: "Unavailable" }
+    };
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    expect(container.textContent).not.toContain("Services starting…");
+    expect(container.textContent).toContain("Services are unavailable");
+    expect(container.textContent).toContain("External captured Conversation");
+    await act(async () => root!.unmount());
+    root = undefined;
+    expect(listeners.size).toBe(0);
   });
   it("hides the previous owner's inventory while the new owner's inventory loads", async () => {
     let scopeKey = "a".repeat(64);
