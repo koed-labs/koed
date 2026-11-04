@@ -2,7 +2,7 @@
 
 Execution owner routing is defined in [Managed Conversation AI Client Routing](../managed-conversation-ai-client-routing.md). Every execution persists explicit AI Client instance identity; runtime lifecycle selection is fail-closed and provider-neutral.
 
-Status: Accepted.
+Status: Accepted; partially superseded by [ADR 0065](./0065-capture-and-recall-without-managed-conversation-execution.md). Koed-managed Conversation execution is outside the current product scope; independent realtime requirements require separate review. This document remains a historical record and does not imply that existing implementation has already been retired.
 
 Related decisions:
 
